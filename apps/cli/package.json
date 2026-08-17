@@ -1,0 +1,29 @@
+{
+  "name": "@opentag/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "opentag": "./dist/cli/index.mjs"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown src/index.ts src/cli/index.ts --format esm --dts",
+    "start": "node dist/cli/index.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --maxWorkers=1"
+  },
+  "dependencies": {
+    "@opentag/client": "workspace:*",
+    "@opentag/shared": "workspace:*",
+    "commander": "^13.1.0"
+  }
+}

@@ -1,0 +1,35 @@
+name: Feature request
+description: Propose an outcome that would improve OpenTag
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Who has the problem, and what are they unable to do today?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the result users need without requiring a specific implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe workarounds or other approaches you evaluated.
+  - type: dropdown
+    id: contribution
+    attributes:
+      label: Contribution willingness
+      description: Would you be willing to help implement this after maintainers agree on the design?
+      options:
+        - Yes
+        - Maybe, with guidance
+        - No
+    validations:
+      required: true

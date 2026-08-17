@@ -1,0 +1,26 @@
+{
+  "name": "@opentag/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown src/index.ts src/app.ts --format esm --dts",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --maxWorkers=1"
+  },
+  "dependencies": {
+    "@opentag/shared": "workspace:*",
+    "fastify": "^5.3.0"
+  }
+}

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/first-tree-ai/opentag/security/advisories/new
+    about: Report security issues privately. Do not disclose vulnerabilities in a public issue.
+  - name: Contribution guide
+    url: https://github.com/first-tree-ai/opentag/blob/main/CONTRIBUTING.md
+    about: Read the contribution workflow before proposing a change.

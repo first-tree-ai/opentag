@@ -1,0 +1,76 @@
+# OpenTag development
+
+[简体中文](./DEVELOPMENT.zh-CN.md)
+
+## Prerequisites
+
+- Node.js 22.13 or newer (Node.js 24 is recommended)
+- Corepack and pnpm 10.12.1
+- Docker with Compose support, only when running the local PostgreSQL service
+
+## Setup
+
+```bash
+corepack enable
+pnpm install
+```
+
+The repository pins pnpm in `package.json`. Do not use npm or Yarn to update dependencies.
+
+## Validation
+
+```bash
+pnpm check
+pnpm build
+pnpm typecheck
+pnpm test
+```
+
+Use `pnpm lint` for lint-only feedback. Use `pnpm format` to apply Biome formatting.
+
+## Run the health-check path
+
+Build the workspaces, then start the server:
+
+```bash
+pnpm build
+pnpm --filter @opentag/server start
+```
+
+The server listens on `http://127.0.0.1:8000` by default. In another terminal, run:
+
+```bash
+pnpm --filter open-tag start doctor
+```
+
+Use a different server URL with `--server-url` or `OPENTAG_SERVER_URL`:
+
+```bash
+pnpm --filter open-tag start doctor --server-url http://127.0.0.1:9000
+```
+
+## Local PostgreSQL
+
+PostgreSQL is reserved for upcoming persistence work; the current code does not connect to it or run migrations.
+
+```bash
+docker compose up -d postgres
+docker compose down
+```
+
+The service exposes port `5432` and stores data in the `opentag-postgres-data` named volume.
+
+## Environment variables
+
+Copy `.env.example` only when you need local overrides. Environment files are not loaded automatically by the current
+processes.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OPENTAG_HOST` | `127.0.0.1` | Server listen host |
+| `OPENTAG_PORT` | `8000` | Server listen port |
+| `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor target |
+| `OPENTAG_DATABASE_URL` | local PostgreSQL URL | Reserved for future persistence work |
+
+If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm
+the server is running and that the configured URL points to its base address.

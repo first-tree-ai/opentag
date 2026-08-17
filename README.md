@@ -29,7 +29,7 @@ pnpm --filter @opentag/server start
 In another terminal:
 
 ```bash
-pnpm --filter @opentag/cli start doctor
+pnpm --filter open-tag start doctor
 ```
 
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full local workflow.

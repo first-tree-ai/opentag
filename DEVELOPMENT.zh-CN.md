@@ -41,13 +41,13 @@ pnpm --filter @opentag/server start
 Server 默认监听 `http://127.0.0.1:8000`。在另一个终端中运行：
 
 ```bash
-pnpm --filter @opentag/cli start doctor
+pnpm --filter open-tag start doctor
 ```
 
 可以通过 `--server-url` 或 `OPENTAG_SERVER_URL` 指定其他 Server URL：
 
 ```bash
-pnpm --filter @opentag/cli start doctor --server-url http://127.0.0.1:9000
+pnpm --filter open-tag start doctor --server-url http://127.0.0.1:9000
 ```
 
 ## 本地 PostgreSQL

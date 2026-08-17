@@ -30,7 +30,7 @@ pnpm --filter @opentag/server start
 在另一个终端中运行：
 
 ```bash
-pnpm --filter @opentag/cli start doctor
+pnpm --filter open-tag start doctor
 ```
 
 完整本地工作流请参阅 [DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)。

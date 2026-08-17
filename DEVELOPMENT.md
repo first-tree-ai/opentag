@@ -40,13 +40,13 @@ pnpm --filter @opentag/server start
 The server listens on `http://127.0.0.1:8000` by default. In another terminal, run:
 
 ```bash
-pnpm --filter @opentag/cli start doctor
+pnpm --filter open-tag start doctor
 ```
 
 Use a different server URL with `--server-url` or `OPENTAG_SERVER_URL`:
 
 ```bash
-pnpm --filter @opentag/cli start doctor --server-url http://127.0.0.1:9000
+pnpm --filter open-tag start doctor --server-url http://127.0.0.1:9000
 ```
 
 ## Local PostgreSQL

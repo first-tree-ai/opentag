@@ -29,6 +29,17 @@ pnpm test
 
 仅检查 lint 可运行 `pnpm lint`；应用 Biome 格式化可运行 `pnpm format`。
 
+Pull Request 的必过检查是稳定的 `CI` fan-in job。它会覆盖上述命令、source/staging CLI tarball 安装和生产容器
+健康检查。构建后可在本地验证当前 source tarball：
+
+~~~bash
+node scripts/cli-pack-smoke.mjs \
+  --channel source \
+  --name open-tag \
+  --version 0.0.1 \
+  --binary opentag
+~~~
+
 ## 运行健康检查链路
 
 构建 workspace 后启动 Server：
@@ -73,3 +84,9 @@ docker compose down
 | `OPENTAG_DATABASE_URL` | 本地 PostgreSQL URL | 为后续持久化工作预留 |
 
 如果 `doctor` 失败，其错误类别会区分配置、网络、HTTP 和无效响应。请确认 Server 已启动，且配置的 URL 指向其基础地址。
+
+## 发布
+
+发布只能由 GitHub Actions 和 npm trusted publishing 执行。禁止从维护者机器发布任一 channel，也禁止向仓库
+添加长期 npm token。channel identity、发布 guard、package smoke 和恢复步骤请参阅
+[docs/zh-CN/releasing.md](./docs/zh-CN/releasing.md)。

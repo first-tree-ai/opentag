@@ -44,6 +44,7 @@ OpenTag 正通过小型、可验证的纵向切片逐步构建。首个稳定版
 
 - [开发指南](./DEVELOPMENT.zh-CN.md)
 - [贡献指南](./CONTRIBUTING.zh-CN.md)
+- [发布指南](./docs/zh-CN/releasing.md)
 - [安全政策](./SECURITY.zh-CN.md)
 - [行为准则](./CODE_OF_CONDUCT.zh-CN.md)
 

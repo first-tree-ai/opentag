@@ -28,6 +28,18 @@ pnpm test
 
 Use `pnpm lint` for lint-only feedback. Use `pnpm format` to apply Biome formatting.
 
+The required pull request check is the stable `CI` fan-in job. It covers the commands above, source and staging CLI
+tarball installation, and a production-container health smoke. To exercise the current source tarball locally after a
+build:
+
+~~~bash
+node scripts/cli-pack-smoke.mjs \
+  --channel source \
+  --name open-tag \
+  --version 0.0.1 \
+  --binary opentag
+~~~
+
 ## Run the health-check path
 
 Build the workspaces, then start the server:
@@ -74,3 +86,9 @@ processes.
 
 If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm
 the server is running and that the configured URL points to its base address.
+
+## Releases
+
+Release publishing belongs to GitHub Actions and npm trusted publishing. Never publish either channel from a maintainer
+machine and never add a long-lived npm token to the repository. See [docs/releasing.md](./docs/releasing.md) for channel
+identities, release guards, package smoke checks, and recovery steps.

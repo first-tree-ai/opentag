@@ -1,0 +1,116 @@
+#!/usr/bin/env node
+
+import { appendFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+
+const STABLE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/;
+
+export function parseStableVersion(version, label = "version") {
+  const match = STABLE_VERSION_PATTERN.exec(version);
+  if (!match) {
+    throw new Error(`${label} must be a stable semantic version, got "${version}"`);
+  }
+
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+  };
+}
+
+export function compareStableVersions(left, right) {
+  const leftParts = parseStableVersion(left, "left version");
+  const rightParts = parseStableVersion(right, "right version");
+
+  return leftParts.major - rightParts.major || leftParts.minor - rightParts.minor || leftParts.patch - rightParts.patch;
+}
+
+export function resolveStagingVersion(sourceVersion, runNumber, runAttempt) {
+  const source = parseStableVersion(sourceVersion, "source version");
+  if (!POSITIVE_INTEGER_PATTERN.test(String(runNumber)) || !POSITIVE_INTEGER_PATTERN.test(String(runAttempt))) {
+    throw new Error("GitHub run number and attempt must be positive integers");
+  }
+
+  return `${source.major}.${source.minor}.${source.patch + 1}-staging.${runNumber}.${runAttempt}`;
+}
+
+export function resolveProductionVersion(sourceVersion, tag) {
+  parseStableVersion(sourceVersion, "source version");
+  const tagMatch = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(tag);
+  if (!tagMatch) {
+    throw new Error(`production tag must match vX.Y.Z, got "${tag}"`);
+  }
+
+  const tagVersion = tag.slice(1);
+  if (tagVersion !== sourceVersion) {
+    throw new Error(`production tag version ${tagVersion} does not match source version ${sourceVersion}`);
+  }
+  if (compareStableVersions(tagVersion, "0.0.2") < 0) {
+    throw new Error("the first production release must be version 0.0.2 or newer");
+  }
+
+  return tagVersion;
+}
+
+function parseArguments(arguments_) {
+  const values = new Map();
+  for (let index = 0; index < arguments_.length; index += 2) {
+    const key = arguments_[index];
+    const value = arguments_[index + 1];
+    if (!key?.startsWith("--") || value === undefined) {
+      throw new Error(`invalid argument sequence near "${key ?? ""}"`);
+    }
+    values.set(key.slice(2), value);
+  }
+  return values;
+}
+
+async function main() {
+  const arguments_ = parseArguments(process.argv.slice(2));
+  const channel = arguments_.get("channel");
+  const sourceVersion = arguments_.get("source-version");
+  if (!sourceVersion) {
+    throw new Error("--source-version is required");
+  }
+
+  let output;
+  if (channel === "staging") {
+    output = {
+      package_name: "open-tag-staging",
+      binary_name: "opentag-staging",
+      source_version: sourceVersion,
+      version: resolveStagingVersion(sourceVersion, arguments_.get("run-number"), arguments_.get("run-attempt")),
+    };
+  } else if (channel === "prod") {
+    output = {
+      package_name: "open-tag",
+      binary_name: "opentag",
+      source_version: sourceVersion,
+      version: resolveProductionVersion(sourceVersion, arguments_.get("tag") ?? ""),
+    };
+  } else {
+    throw new Error('--channel must be either "staging" or "prod"');
+  }
+
+  const outputPath = process.env.GITHUB_OUTPUT;
+  if (outputPath) {
+    await appendFile(
+      outputPath,
+      `${Object.entries(output)
+        .map(([key, value]) => `${key}=${value}`)
+        .join("\n")}\n`,
+    );
+  }
+  console.log(JSON.stringify(output));
+}
+
+const isProcessEntry =
+  process.argv[1] !== undefined && pathToFileURL(resolve(process.argv[1])).href === import.meta.url;
+if (isProcessEntry) {
+  main().catch((error) => {
+    console.error(`[release-version] ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
+  });
+}

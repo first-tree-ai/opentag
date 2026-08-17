@@ -1,0 +1,17 @@
+.git
+.github
+.turbo
+**/.turbo
+node_modules
+**/node_modules
+dist
+**/dist
+coverage
+**/coverage
+.env
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo
+Dockerfile*
+docker-compose*.yml

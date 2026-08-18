@@ -176,8 +176,14 @@ function collectModuleSpecifiers(source, filePath) {
     ) {
       specifiers.push(node.moduleReference.expression.text);
     } else if (
+      ts.isImportTypeNode(node) &&
+      ts.isLiteralTypeNode(node.argument) &&
+      ts.isStringLiteralLike(node.argument.literal)
+    ) {
+      specifiers.push(node.argument.literal.text);
+    } else if (
       ts.isCallExpression(node) &&
-      node.arguments.length === 1 &&
+      node.arguments.length >= 1 &&
       ts.isStringLiteralLike(node.arguments[0]) &&
       (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
         (ts.isIdentifier(node.expression) && node.expression.text === "require"))
@@ -190,6 +196,75 @@ function collectModuleSpecifiers(source, filePath) {
 
   visit(sourceFile);
   return specifiers;
+}
+
+function rootExportValue(exportsField) {
+  if (typeof exportsField === "string" || exportsField === null || Array.isArray(exportsField)) {
+    return { defined: exportsField !== undefined, value: exportsField };
+  }
+  if (!exportsField || typeof exportsField !== "object") {
+    return { defined: false, value: undefined };
+  }
+  if ("." in exportsField) {
+    return { defined: true, value: exportsField["."] };
+  }
+  if (Object.keys(exportsField).every((key) => !key.startsWith("."))) {
+    return { defined: true, value: exportsField };
+  }
+  return { defined: false, value: undefined };
+}
+
+function collectExportTargets(value, targets) {
+  if (typeof value === "string") {
+    targets.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectExportTargets(item, targets);
+    }
+    return;
+  }
+  if (value && typeof value === "object") {
+    for (const target of Object.values(value)) {
+      collectExportTargets(target, targets);
+    }
+  }
+}
+
+function globPatternToRegExp(pattern) {
+  let source = "^";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index];
+    if (character === "*" && pattern[index + 1] === "*") {
+      if (pattern[index + 2] === "/") {
+        source += "(?:[^/]+/)*";
+        index += 2;
+      } else {
+        source += ".*";
+        index += 1;
+      }
+    } else if (character === "*") {
+      source += "[^/]*";
+    } else if (character === "?") {
+      source += "[^/]";
+    } else {
+      source += character.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+    }
+  }
+  return new RegExp(`${source}$`);
+}
+
+function filesEntryCoversTarget(filesEntry, target) {
+  const normalizedEntry = filesEntry.replace(/^\.\//, "").replace(/\/$/, "");
+  const normalizedTarget = target.replace(/^\.\//, "");
+  if (normalizedEntry.length === 0 || normalizedEntry.startsWith("!")) {
+    return false;
+  }
+  if (/[*?]/.test(normalizedEntry)) {
+    return globPatternToRegExp(normalizedEntry).test(normalizedTarget);
+  }
+  return normalizedTarget === normalizedEntry || normalizedTarget.startsWith(`${normalizedEntry}/`);
 }
 
 function declaredDependencies(manifest) {
@@ -287,11 +362,38 @@ function validateManifest(workspace, workspaceNames, violations) {
   if (manifest.type !== "module") {
     violations.push(`${manifestPath}: type must be "module"`);
   }
-  if (contract.requiresRootExport && (!manifest.exports || !("." in manifest.exports))) {
+  const rootExport = rootExportValue(manifest.exports);
+  if (contract.requiresRootExport && !rootExport.defined) {
     violations.push(`${manifestPath}: exports must define the public "." entry point`);
   }
-  if (contract.requiresFiles && (!Array.isArray(manifest.files) || manifest.files.length === 0)) {
+
+  const hasFilesBoundary = Array.isArray(manifest.files) && manifest.files.length > 0;
+  const validFilesEntries = hasFilesBoundary
+    ? manifest.files.filter((entry) => typeof entry === "string" && entry.length > 0)
+    : [];
+  if (contract.requiresFiles && !hasFilesBoundary) {
     violations.push(`${manifestPath}: files must declare the published artifact boundary`);
+  } else if (contract.requiresFiles && validFilesEntries.length !== manifest.files.length) {
+    violations.push(`${manifestPath}: files entries must be non-empty strings`);
+  }
+
+  if (contract.requiresRootExport && rootExport.defined) {
+    const exportTargets = [];
+    collectExportTargets(rootExport.value, exportTargets);
+    if (exportTargets.length === 0) {
+      violations.push(`${manifestPath}: exports "." must resolve to at least one artifact target`);
+    }
+    for (const target of exportTargets) {
+      if (!target.startsWith("./")) {
+        violations.push(`${manifestPath}: root export target "${target}" must be package-relative`);
+      } else if (
+        contract.requiresFiles &&
+        hasFilesBoundary &&
+        !validFilesEntries.some((entry) => filesEntryCoversTarget(entry, target))
+      ) {
+        violations.push(`${manifestPath}: root export target "${target}" is not covered by files`);
+      }
+    }
   }
 
   const allowedDependencies = new Set(contract.allowedWorkspaceDependencies ?? []);
@@ -305,6 +407,59 @@ function validateManifest(workspace, workspaceNames, violations) {
       }
       if (typeof range !== "string" || !range.startsWith("workspace:")) {
         violations.push(`${manifestPath}: internal dependency "${dependencyName}" must use the workspace: protocol`);
+      }
+    }
+  }
+}
+
+async function validateTypeScriptReferences(workspaces, violations) {
+  const byDirectory = new Map(workspaces.map((workspace) => [resolve(workspace.directory), workspace]));
+
+  for (const workspace of workspaces) {
+    const tsconfigPath = join(workspace.directory, "tsconfig.json");
+    const displayPath = `${workspace.workspacePath}/tsconfig.json`;
+    if (!(await exists(tsconfigPath))) {
+      violations.push(`${displayPath}: file is required to validate workspace project references`);
+      continue;
+    }
+
+    const tsconfig = await readJson(tsconfigPath);
+    if (tsconfig.references !== undefined && !Array.isArray(tsconfig.references)) {
+      violations.push(`${displayPath}: references must be an array`);
+      continue;
+    }
+
+    const referencedNames = new Set();
+    for (const reference of tsconfig.references ?? []) {
+      if (!reference || typeof reference !== "object" || typeof reference.path !== "string") {
+        violations.push(`${displayPath}: each project reference must declare a string path`);
+        continue;
+      }
+      const resolvedReference = resolve(workspace.directory, reference.path);
+      const referencedDirectory =
+        extname(resolvedReference) === ".json" ? dirname(resolvedReference) : resolvedReference;
+      const referencedWorkspace = byDirectory.get(referencedDirectory);
+      if (!referencedWorkspace) {
+        violations.push(`${displayPath}: reference "${reference.path}" does not target a registered workspace root`);
+        continue;
+      }
+      if (referencedNames.has(referencedWorkspace.manifest.name)) {
+        violations.push(
+          `${displayPath}: contains duplicate reference to workspace package "${referencedWorkspace.manifest.name}"`,
+        );
+      }
+      referencedNames.add(referencedWorkspace.manifest.name);
+    }
+
+    const allowedNames = new Set(workspace.contract.allowedWorkspaceDependencies ?? []);
+    for (const referencedName of referencedNames) {
+      if (!allowedNames.has(referencedName)) {
+        violations.push(`${displayPath}: references forbidden workspace package "${referencedName}"`);
+      }
+    }
+    for (const allowedName of allowedNames) {
+      if (!referencedNames.has(allowedName)) {
+        violations.push(`${displayPath}: missing reference to allowed workspace package "${allowedName}"`);
       }
     }
   }
@@ -415,6 +570,7 @@ export async function verifyWorkspaceContracts({
   for (const workspace of workspaces) {
     validateManifest(workspace, workspaceNames, violations);
   }
+  await validateTypeScriptReferences(workspaces, violations);
   await validateImports(resolvedRoot, workspaces, violations);
 
   if (violations.length > 0) {

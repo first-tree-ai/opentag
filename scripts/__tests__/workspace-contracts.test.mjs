@@ -80,6 +80,13 @@ const workspaceManifests = {
   },
 };
 
+const workspaceReferences = {
+  "apps/cli": [{ path: "../../packages/client" }, { path: "../../packages/shared" }],
+  "packages/client": [{ path: "../shared" }],
+  "packages/server": [{ path: "../shared" }],
+  "packages/shared": [],
+};
+
 async function writeJson(filePath, value) {
   await mkdir(dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
@@ -92,6 +99,9 @@ async function createFixture() {
 
   for (const [workspacePath, manifest] of Object.entries(workspaceManifests)) {
     await writeJson(join(rootDirectory, workspacePath, "package.json"), manifest);
+    await writeJson(join(rootDirectory, workspacePath, "tsconfig.json"), {
+      references: workspaceReferences[workspacePath],
+    });
     await mkdir(join(rootDirectory, workspacePath, "src"), { recursive: true });
     await writeFile(join(rootDirectory, workspacePath, "src/index.ts"), "export {};\n");
   }
@@ -146,6 +156,20 @@ test("rejects forbidden workspace dependencies and non-workspace ranges", async 
   });
 });
 
+test("rejects TypeScript project references that drift from the contract", async () => {
+  await withFixture(async (rootDirectory) => {
+    await writeJson(join(rootDirectory, "packages/client/tsconfig.json"), {
+      references: [{ path: "../server" }],
+    });
+
+    await assert.rejects(verifyWorkspaceContracts({ rootDirectory }), (error) => {
+      assert.match(error.message, /references forbidden workspace package "@opentag\/server"/);
+      assert.match(error.message, /missing reference to allowed workspace package "@opentag\/shared"/);
+      return true;
+    });
+  });
+});
+
 test("rejects package metadata that weakens the artifact boundary", async () => {
   await withFixture(async (rootDirectory) => {
     const manifestPath = join(rootDirectory, "packages/shared/package.json");
@@ -162,6 +186,34 @@ test("rejects package metadata that weakens the artifact boundary", async () => 
   });
 });
 
+test("rejects a null root export", async () => {
+  await withFixture(async (rootDirectory) => {
+    const manifestPath = join(rootDirectory, "packages/shared/package.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.exports["."] = null;
+    await writeJson(manifestPath, manifest);
+
+    await assert.rejects(
+      verifyWorkspaceContracts({ rootDirectory }),
+      /exports "\." must resolve to at least one artifact target/,
+    );
+  });
+});
+
+test("rejects root export targets outside the files boundary", async () => {
+  await withFixture(async (rootDirectory) => {
+    const manifestPath = join(rootDirectory, "packages/shared/package.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.files = ["README.md"];
+    await writeJson(manifestPath, manifest);
+
+    await assert.rejects(
+      verifyWorkspaceContracts({ rootDirectory }),
+      /root export target "\.\/dist\/index\.mjs" is not covered by files/,
+    );
+  });
+});
+
 test("rejects package deep imports", async () => {
   await withFixture(async (rootDirectory) => {
     await writeFile(
@@ -173,6 +225,35 @@ test("rejects package deep imports", async () => {
       verifyWorkspaceContracts({ rootDirectory }),
       /import "@opentag\/shared\/internal" bypasses the public root export/,
     );
+  });
+});
+
+test("rejects deep imports in TypeScript import types", async () => {
+  await withFixture(async (rootDirectory) => {
+    await writeFile(
+      join(rootDirectory, "packages/client/src/index.ts"),
+      'export type SharedValue = import("@opentag/shared/internal").SharedValue;\n',
+    );
+
+    await assert.rejects(
+      verifyWorkspaceContracts({ rootDirectory }),
+      /import "@opentag\/shared\/internal" bypasses the public root export/,
+    );
+  });
+});
+
+test("rejects dynamic imports with an options argument", async () => {
+  await withFixture(async (rootDirectory) => {
+    await writeFile(
+      join(rootDirectory, "packages/client/src/index.ts"),
+      'void import("@opentag/server/internal", { with: { type: "json" } });\n',
+    );
+
+    await assert.rejects(verifyWorkspaceContracts({ rootDirectory }), (error) => {
+      assert.match(error.message, /import "@opentag\/server\/internal" bypasses the public root export/);
+      assert.match(error.message, /imports forbidden workspace package "@opentag\/server"/);
+      return true;
+    });
   });
 });
 

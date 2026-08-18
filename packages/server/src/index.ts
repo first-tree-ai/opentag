@@ -4,7 +4,8 @@ import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { parseServerConfig } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
-import { AuthService, AuthTokenService } from "./services/auth/index.js";
+import { AuthService, AuthTokenService, formatStartupError } from "./services/auth/index.js";
+import { ComputerService } from "./services/computers/index.js";
 
 export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
 export { createApp } from "./app.js";
@@ -18,13 +19,16 @@ export {
   withMigrationLock,
 } from "./db/migrate.js";
 export { AuthService, AuthServiceError, AuthTokenService } from "./services/auth/index.js";
+export { ComputerService } from "./services/computers/index.js";
 
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
+  const knownSecrets: string[] = [];
 
   try {
     const config = parseServerConfig(process.env);
+    knownSecrets.push(config.jwtSecret);
     readiness.complete("configuration");
     if (config.autoMigrate) {
       await migrateDatabase(config.databaseUrl, config.migrationsDirectory);
@@ -38,17 +42,18 @@ export async function startServer(): Promise<void> {
       database,
       new AuthTokenService(config.jwtSecret, config.accessTokenTtlSeconds, config.refreshTokenTtlSeconds),
     );
-    app = createApp({ authService, readiness });
+    const computerService = new ComputerService(database, authService);
+    app = createApp({ authService, computerService, readiness });
     app.addHook("onClose", async () => sql.end());
     readiness.complete("application");
     await app.listen({ host: config.host, port: config.port });
     readiness.complete("listen");
   } catch (error) {
     if (app) {
-      app.log.error(error, "Failed to start OpenTag server");
+      app.log.error({ detail: formatStartupError(error, knownSecrets) }, "Failed to start OpenTag server");
       await app.close();
     } else {
-      process.stderr.write("Failed to start OpenTag server\n");
+      process.stderr.write(`Failed to start OpenTag server: ${formatStartupError(error, knownSecrets)}\n`);
     }
     process.exitCode = 1;
   }

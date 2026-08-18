@@ -8,11 +8,12 @@ currently **pre-alpha**: its product workflows are still under development and a
 This repository currently provides the engineering foundation and first control-plane slice for OpenTag:
 
 - a TypeScript monorepo with CLI, client, server, and shared workspaces;
-- a Fastify server with health and readiness endpoints;
+- a Fastify server with health, readiness, REST, and Computer WebSocket endpoints;
 - a schema-validating client health check;
 - PostgreSQL migrations and bootstrap authentication for the first user and team;
-- one-time connect-code login with sliding stateless refresh JWTs; and
-- `opentag doctor` and `opentag login` commands.
+- one-time connect-code login with sliding stateless refresh JWTs;
+- user-owned Computer registration and presence; and
+- `opentag-dev doctor`, `login`, `daemon run`, and `computer list` commands.
 
 Messaging integrations, agent providers, and session runtimes are not implemented yet.
 
@@ -30,19 +31,28 @@ pnpm build
 pnpm --filter @opentag/server start
 ```
 
-In another terminal:
+In another terminal, bootstrap and log in once, then start the foreground daemon:
 
 ```bash
-pnpm --filter open-tag start doctor
+export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
+export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
+export OPENTAG_BOOTSTRAP_TEAM_NAME=example
+export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
+pnpm --filter @opentag/server bootstrap:admin
+pnpm --filter open-tag start login <connect-code>
+pnpm --filter open-tag start daemon run
 ```
+
+In a third terminal, `pnpm --filter open-tag start computer list` shows the Computer as online. Stop the foreground
+daemon with Ctrl+C and list again to see it offline.
 
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full local workflow.
 
 ## Project status
 
 OpenTag is being built in small, validated vertical slices. Public APIs and package boundaries may change before the
-first stable release. The current code establishes database bootstrap and user authentication; agent execution and
-messaging remain future vertical slices.
+first stable release. The current code establishes database bootstrap, user authentication, and the local Computer
+connection; agent execution and messaging remain future vertical slices.
 
 ## Documentation
 

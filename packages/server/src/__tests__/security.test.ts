@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hashSecret, redactSecrets } from "../services/auth/security.js";
+import { formatStartupError, hashSecret, redactSecrets } from "../services/auth/security.js";
 import { AuthTokenService } from "../services/auth/tokens.js";
 
 describe("auth secret handling", () => {
@@ -15,6 +15,17 @@ describe("auth secret handling", () => {
     expect(redacted).not.toContain("xyz");
     expect(redacted).not.toContain("token.value");
   });
+
+  it("preserves startup root causes while redacting database credentials and known secrets", () => {
+    const secret = "jwt-secret-that-must-not-leak";
+    const output = formatStartupError(
+      new Error(`permission denied for database opentag at postgresql://user:password@localhost/opentag ${secret}`),
+      [secret],
+    );
+    expect(output).toContain("permission denied for database opentag");
+    expect(output).not.toContain("password");
+    expect(output).not.toContain(secret);
+  });
 });
 
 describe("stateless auth tokens", () => {
@@ -26,6 +37,7 @@ describe("stateless auth tokens", () => {
     const pair = await tokens.issuePairForUser("53e2babe-e4ac-4e2c-b7d1-d092d5a4568e");
 
     await expect(tokens.verifyAccess(pair.accessToken)).resolves.toEqual({
+      expiresAt: new Date("2026-08-18T00:01:00.000Z"),
       userId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
     });
     await expect(tokens.verifyAccess(pair.refreshToken)).rejects.toMatchObject({ code: "AUTH_INVALID_TOKEN" });
@@ -33,6 +45,7 @@ describe("stateless auth tokens", () => {
     now = new Date("2026-08-18T00:01:01.000Z");
     await expect(tokens.verifyAccess(pair.accessToken)).rejects.toMatchObject({ code: "AUTH_INVALID_TOKEN" });
     await expect(tokens.verifyRefresh(pair.refreshToken)).resolves.toEqual({
+      expiresAt: new Date("2026-08-18T01:00:00.000Z"),
       userId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
     });
 

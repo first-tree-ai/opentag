@@ -3,6 +3,7 @@
 import { appendFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { CHANNEL_CONFIG } from "./channel-config.mjs";
 
 const STABLE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/;
@@ -78,15 +79,15 @@ async function main() {
   let output;
   if (channel === "staging") {
     output = {
-      package_name: "open-tag-staging",
-      binary_name: "opentag-staging",
+      package_name: CHANNEL_CONFIG.staging.packageName,
+      binary_name: CHANNEL_CONFIG.staging.binName,
       source_version: sourceVersion,
       version: resolveStagingVersion(sourceVersion, arguments_.get("run-number"), arguments_.get("run-attempt")),
     };
   } else if (channel === "prod") {
     output = {
-      package_name: "open-tag",
-      binary_name: "opentag",
+      package_name: CHANNEL_CONFIG.prod.packageName,
+      binary_name: CHANNEL_CONFIG.prod.binName,
       source_version: sourceVersion,
       version: resolveProductionVersion(sourceVersion, arguments_.get("tag") ?? ""),
     };

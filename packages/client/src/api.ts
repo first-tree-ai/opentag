@@ -4,6 +4,9 @@ import {
   type ErrorCategory,
   type ErrorCode,
   ErrorEnvelopeSchema,
+  HTTP_PATHS,
+  type ListComputersResponse,
+  ListComputersResponseSchema,
   type MeResponse,
   MeResponseSchema,
   type RefreshTokenResponse,
@@ -14,7 +17,7 @@ interface RuntimeSchema<T> {
   safeParse(value: unknown): { success: true; data: T } | { success: false };
 }
 
-export class AuthApiError extends Error {
+export class OpenTagApiError extends Error {
   constructor(
     readonly code: ErrorCode,
     readonly category: ErrorCategory,
@@ -22,11 +25,11 @@ export class AuthApiError extends Error {
     readonly status?: number,
   ) {
     super(message);
-    this.name = "AuthApiError";
+    this.name = "OpenTagApiError";
   }
 }
 
-export class AuthApi {
+export class OpenTagApi {
   readonly #baseUrl: URL;
   readonly #fetch: typeof fetch;
 
@@ -35,24 +38,30 @@ export class AuthApi {
     this.#fetch = fetchImpl;
   }
 
-  async exchangeConnectCode(code: string): Promise<ConnectCodeExchangeResponse> {
-    return this.#request("/v1/auth/connect/exchange", ConnectCodeExchangeResponseSchema, {
+  exchangeConnectCode(code: string, expectedUserId?: string): Promise<ConnectCodeExchangeResponse> {
+    return this.#request(HTTP_PATHS.authConnectExchange, ConnectCodeExchangeResponseSchema, {
       method: "POST",
-      body: JSON.stringify({ code }),
+      body: JSON.stringify({ code, ...(expectedUserId ? { expectedUserId } : {}) }),
       headers: { "content-type": "application/json" },
     });
   }
 
-  async refresh(refreshToken: string): Promise<RefreshTokenResponse> {
-    return this.#request("/v1/auth/refresh", RefreshTokenResponseSchema, {
+  refresh(refreshToken: string): Promise<RefreshTokenResponse> {
+    return this.#request(HTTP_PATHS.authRefresh, RefreshTokenResponseSchema, {
       method: "POST",
       body: JSON.stringify({ refreshToken }),
       headers: { "content-type": "application/json" },
     });
   }
 
-  async me(accessToken: string): Promise<MeResponse> {
-    return this.#request("/v1/me", MeResponseSchema, {
+  me(accessToken: string): Promise<MeResponse> {
+    return this.#request(HTTP_PATHS.me, MeResponseSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  listComputers(accessToken: string): Promise<ListComputersResponse> {
+    return this.#request(HTTP_PATHS.meComputers, ListComputersResponseSchema, {
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }
@@ -62,14 +71,13 @@ export class AuthApi {
     try {
       response = await this.#fetch(new URL(path, this.#baseUrl), init);
     } catch {
-      throw new AuthApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server is unavailable");
+      throw new OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server is unavailable");
     }
-
     const body = await response.json().catch(() => undefined);
     if (!response.ok) {
       const parsed = ErrorEnvelopeSchema.safeParse(body);
       if (parsed.success) {
-        throw new AuthApiError(
+        throw new OpenTagApiError(
           parsed.data.error.code,
           parsed.data.error.category,
           parsed.data.error.message,
@@ -77,22 +85,21 @@ export class AuthApi {
         );
       }
       if (response.status === 429) {
-        throw new AuthApiError("RATE_LIMITED", "rate_limit", "The OpenTag server rate limit was reached", 429);
+        throw new OpenTagApiError("RATE_LIMITED", "rate_limit", "The OpenTag server rate limit was reached", 429);
       }
       if (response.status >= 500) {
-        throw new AuthApiError(
+        throw new OpenTagApiError(
           "SERVICE_UNAVAILABLE",
           "transient",
           "The OpenTag server is unavailable",
           response.status,
         );
       }
-      throw new AuthApiError("AUTH_INVALID_TOKEN", "credential", "Authentication failed", response.status);
+      throw new OpenTagApiError("AUTH_INVALID_TOKEN", "credential", "Authentication failed", response.status);
     }
-
     const parsed = schema.safeParse(body);
     if (!parsed.success) {
-      throw new AuthApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server returned an invalid response");
+      throw new OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server returned an invalid response");
     }
     return parsed.data;
   }

@@ -1,14 +1,20 @@
+import websocket from "@fastify/websocket";
 import { ErrorEnvelopeSchema, ServerHealthSchema } from "@opentag/shared";
 import Fastify from "fastify";
 import { registerAuthRoutes } from "./api/auth.js";
+import { registerComputerRoutes } from "./api/computers.js";
 import { registerMeRoute } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
+import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { AuthServiceError, type UserAuthService } from "./services/auth/index.js";
+import type { ComputerService } from "./services/computers/index.js";
 
 export interface CreateAppOptions {
   authService?: UserAuthService;
+  computerService?: ComputerService;
   readiness?: BootstrapReadiness;
+  runtime?: RuntimeRoutesOptions;
 }
 
 function contentTypeParserErrorStatus(error: unknown): number | undefined {
@@ -48,8 +54,17 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   if (options.authService) {
-    registerAuthRoutes(app, options.authService);
-    registerMeRoute(app, options.authService);
+    const authService = options.authService;
+    registerAuthRoutes(app, authService);
+    registerMeRoute(app, authService);
+    if (options.computerService) {
+      const computerService = options.computerService;
+      registerComputerRoutes(app, authService, computerService);
+      app.register(async (runtimeApp) => {
+        await runtimeApp.register(websocket, { options: { maxPayload: 64 * 1024 } });
+        registerRuntimeRoutes(runtimeApp, authService, computerService, options.runtime);
+      });
+    }
   }
 
   app.setErrorHandler((error, request, reply) => {

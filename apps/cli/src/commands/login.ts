@@ -1,5 +1,6 @@
 import { resolveOpenTagHome } from "@opentag/client";
 import type { Command } from "commander";
+import { channelConfig } from "../core/channel.js";
 import { runLogin } from "../core/login.js";
 
 interface LoginCommandOptions {
@@ -15,7 +16,10 @@ export function registerLoginCommand(program: Command): void {
     .option("--server <url>", "OpenTag server URL")
     .option("--home <path>", "OpenTag home directory")
     .action(async (code: string, options: LoginCommandOptions) => {
-      const serverUrl = options.server ?? process.env.OPENTAG_SERVER_URL ?? "http://127.0.0.1:8000";
+      const serverUrl = options.server ?? process.env.OPENTAG_SERVER_URL ?? channelConfig.defaultServerUrl;
+      if (!serverUrl) {
+        throw new Error(`The ${channelConfig.channel} channel requires --server for login`);
+      }
       const result = await runLogin({
         code,
         home: options.home ?? resolveOpenTagHome(process.env),

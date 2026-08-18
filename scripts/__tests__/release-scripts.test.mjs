@@ -19,7 +19,7 @@ const sourceManifest = {
     directory: "apps/cli",
   },
   bin: {
-    opentag: "./dist/cli/index.mjs",
+    "opentag-dev": "./dist/cli/index.mjs",
   },
   devDependencies: {
     "@opentag/client": "workspace:*",
@@ -130,8 +130,10 @@ test("generates complete notices for bundled CLI dependencies", async () => {
   const notices = await generateThirdPartyNotices();
 
   assert.match(notices, /^## commander@\d+\.\d+\.\d+$/m);
+  assert.match(notices, /^## ws@\d+\.\d+\.\d+$/m);
   assert.match(notices, /^## zod@\d+\.\d+\.\d+$/m);
   assert.match(notices, /Copyright \(c\) 2011 TJ Holowaychuk/);
+  assert.match(notices, /Copyright \(c\) 2011 Einar Otto Stangvik/);
   assert.match(notices, /Copyright \(c\) 2025 Colin McDonnell/);
-  assert.equal((notices.match(/Permission is hereby granted/g) ?? []).length, 2);
+  assert.equal((notices.match(/Permission is hereby granted/g) ?? []).length, 3);
 });

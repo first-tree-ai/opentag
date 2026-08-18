@@ -40,7 +40,7 @@ node scripts/cli-pack-smoke.mjs \
   --channel source \
   --name open-tag \
   --version 0.0.1 \
-  --binary opentag
+  --binary opentag-dev
 ~~~
 
 ## Run the server and health-check path
@@ -94,6 +94,21 @@ pnpm --filter @opentag/server bootstrap:admin
 pnpm --filter open-tag start login <connect-code>
 ```
 
+The source checkout is the `dev` channel. It exposes the `opentag-dev` binary when packed and defaults to
+`~/.opentag-dev`; staging and production builds use `opentag-staging` / `~/.opentag-staging` and `opentag` /
+`~/.opentag`. An explicit `OPENTAG_HOME` overrides the channel default.
+
+After login, start the foreground daemon and inspect the user-owned Computer from another terminal:
+
+```bash
+pnpm --filter open-tag start daemon run
+pnpm --filter open-tag start computer list
+```
+
+The daemon reuses the stable Computer ID stored in its home, creates a new process instance on every start, and connects
+to `/api/v1/computer/ws`. Ctrl+C performs a clean shutdown; a second daemon using the same home is rejected. The CLI
+uses `/api/v1/auth/...` and `/api/v1/me/...`; `/healthz` and `/readyz` remain unversioned deployment probes.
+
 The four `OPENTAG_BOOTSTRAP_*` values are inputs to this one-time command only; the running server does not read them.
 The bootstrap email is account profile data, not an email/password credential. The current connect-code flow resolves a
 stable user ID and then uses the provider-neutral token issuer. Future Google or OIDC identity resolvers can join at that
@@ -114,7 +129,7 @@ processes.
 | `OPENTAG_AUTO_MIGRATE` | `true` | Run checked-in migrations before listening |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | Access-token lifetime |
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-JWT lifetime |
-| `OPENTAG_HOME` | `~/.opentag` | CLI credentials directory |
+| `OPENTAG_HOME` | channel-specific | CLI credentials, Computer identity, and daemon ownership directory (`~/.opentag-dev` in source) |
 
 If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm
 the server is running and that the configured URL points to its base address.

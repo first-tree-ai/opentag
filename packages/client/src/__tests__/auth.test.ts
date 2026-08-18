@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AuthApi, AuthApiError, normalizeServerUrl } from "../auth/api.js";
+import { normalizeServerUrl, OpenTagApi, OpenTagApiError } from "../api.js";
 import {
   credentialsPath,
   readCredentials,
@@ -10,6 +10,7 @@ import {
   writeCredentialsAtomically,
 } from "../auth/credentials.js";
 import { AccessTokenProvider } from "../auth/token-provider.js";
+import { computerIdentityPath, resolveComputerIdentity } from "../runtime/computer-identity.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -57,7 +58,7 @@ describe("credential storage", () => {
   });
 });
 
-describe("AuthApi", () => {
+describe("OpenTagApi", () => {
   it("rejects server URLs that could persist or print embedded credentials", () => {
     expect(() => normalizeServerUrl("https://user:secret@opentag.example")).toThrow();
     expect(() => normalizeServerUrl("file:///tmp/server")).toThrow();
@@ -80,10 +81,10 @@ describe("AuthApi", () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValue(new Response(JSON.stringify({ accessToken: "leaked", refreshToken: "leaked" }), { status }));
-    const api = new AuthApi("https://opentag.example", fetchImpl);
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
 
     const error = await api.exchangeConnectCode("1234567890abcdef").catch((caught: unknown) => caught);
-    expect(error).toBeInstanceOf(AuthApiError);
+    expect(error).toBeInstanceOf(OpenTagApiError);
     expect(error).toMatchObject({ category });
     expect(String(error)).not.toContain("leaked");
   });
@@ -100,7 +101,7 @@ describe("AccessTokenProvider", () => {
       expiresIn: 900,
     });
     const provider = new AccessTokenProvider({
-      authApi: { refresh },
+      api: { refresh },
       home,
       now: () => new Date("2026-08-18T00:00:00.000Z"),
     });
@@ -112,5 +113,38 @@ describe("AccessTokenProvider", () => {
       refreshToken: "new-refresh",
       accessTokenExpiresAt: "2026-08-18T00:15:00.000Z",
     });
+  });
+
+  it("coalesces concurrent refreshes and returns token leases", async () => {
+    const home = await temporaryHome();
+    await writeCredentialsAtomically({ ...credentials, accessTokenExpiresAt: "2026-08-18T00:00:30.000Z" }, home);
+    const refresh = vi.fn().mockResolvedValue({
+      accessToken: "new-access",
+      refreshToken: "new-refresh",
+      tokenType: "Bearer",
+      expiresIn: 900,
+    });
+    const provider = new AccessTokenProvider({
+      api: { refresh },
+      home,
+      now: () => new Date("2026-08-18T00:00:00.000Z"),
+    });
+    await expect(Promise.all([provider.getAccessTokenLease(), provider.getAccessTokenLease()])).resolves.toEqual([
+      { accessToken: "new-access", expiresAt: "2026-08-18T00:15:00.000Z" },
+      { accessToken: "new-access", expiresAt: "2026-08-18T00:15:00.000Z" },
+    ]);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Computer identity", () => {
+  it("persists a stable private identity and rejects server or user rebinding", async () => {
+    const home = await temporaryHome();
+    const first = await resolveComputerIdentity(home, "https://opentag.example", crypto.randomUUID());
+    expect(await resolveComputerIdentity(home, first.serverUrl, first.userId)).toEqual(first);
+    expect((await stat(computerIdentityPath(home))).mode & 0o777).toBe(0o600);
+    await expect(resolveComputerIdentity(home, "https://other.example", first.userId)).rejects.toThrow(
+      "bound to another server or user",
+    );
   });
 });

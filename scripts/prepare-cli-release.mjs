@@ -3,13 +3,18 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { CHANNEL_CONFIG } from "./channel-config.mjs";
 import { compareStableVersions, parseStableVersion } from "./release-versions.mjs";
 
-const SOURCE_PACKAGE_NAME = "open-tag";
-const STAGING_PACKAGE_NAME = "open-tag-staging";
+const SOURCE_PACKAGE_NAME = CHANNEL_CONFIG.dev.packageName;
 const EXPECTED_REPOSITORY_URL = "git+https://github.com/first-tree-ai/opentag.git";
 
-export async function prepareCliRelease({ channel, version, manifestPath = "apps/cli/package.json" }) {
+export async function prepareCliRelease({
+  channel,
+  version,
+  manifestPath = "apps/cli/package.json",
+  buildInfoPath = manifestPath === "apps/cli/package.json" ? "apps/cli/src/build-info.ts" : undefined,
+}) {
   const resolvedManifestPath = resolve(manifestPath);
   const manifest = JSON.parse(await readFile(resolvedManifestPath, "utf8"));
 
@@ -26,6 +31,12 @@ export async function prepareCliRelease({ channel, version, manifestPath = "apps
   if (manifest.repository?.url !== EXPECTED_REPOSITORY_URL) {
     throw new Error(`source package repository must be ${EXPECTED_REPOSITORY_URL}`);
   }
+  if (
+    manifest.bin?.[CHANNEL_CONFIG.dev.binName] !== "./dist/cli/index.mjs" ||
+    Object.keys(manifest.bin ?? {}).length !== 1
+  ) {
+    throw new Error(`source package binary must be ${CHANNEL_CONFIG.dev.binName}`);
+  }
   for (const dependencyField of ["dependencies", "optionalDependencies", "peerDependencies"]) {
     const internalDependency = Object.keys(manifest[dependencyField] ?? {}).find((name) =>
       name.startsWith("@opentag/"),
@@ -40,8 +51,8 @@ export async function prepareCliRelease({ channel, version, manifestPath = "apps
     if (!new RegExp(`^${expectedPrefix.replaceAll(".", "\\.")}(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$`).test(version)) {
       throw new Error(`staging version must match ${expectedPrefix}<run>.<attempt>, got "${version}"`);
     }
-    manifest.name = STAGING_PACKAGE_NAME;
-    manifest.bin = { "opentag-staging": "./dist/cli/index.mjs" };
+    manifest.name = CHANNEL_CONFIG.staging.packageName;
+    manifest.bin = { [CHANNEL_CONFIG.staging.binName]: "./dist/cli/index.mjs" };
   } else if (channel === "prod") {
     parseStableVersion(version, "production version");
     if (version !== manifest.version) {
@@ -51,7 +62,7 @@ export async function prepareCliRelease({ channel, version, manifestPath = "apps
       throw new Error("the first production release must be version 0.0.2 or newer");
     }
     manifest.name = SOURCE_PACKAGE_NAME;
-    manifest.bin = { opentag: "./dist/cli/index.mjs" };
+    manifest.bin = { [CHANNEL_CONFIG.prod.binName]: "./dist/cli/index.mjs" };
   } else {
     throw new Error('channel must be either "staging" or "prod"');
   }
@@ -64,6 +75,16 @@ export async function prepareCliRelease({ channel, version, manifestPath = "apps
     }
   }
   await writeFile(resolvedManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  if (buildInfoPath) {
+    const resolvedBuildInfoPath = resolve(buildInfoPath);
+    const buildInfo = await readFile(resolvedBuildInfoPath, "utf8");
+    const next = buildInfo.replace(
+      /export const CHANNEL: ChannelName = "(?:dev|staging|prod)";/,
+      `export const CHANNEL: ChannelName = "${channel}";`,
+    );
+    if (next === buildInfo) throw new Error("build-info CHANNEL declaration was not found");
+    await writeFile(resolvedBuildInfoPath, next);
+  }
   return manifest;
 }
 
@@ -92,6 +113,7 @@ async function main() {
     channel,
     version,
     manifestPath: arguments_.get("manifest") ?? "apps/cli/package.json",
+    buildInfoPath: arguments_.get("build-info") ?? "apps/cli/src/build-info.ts",
   });
   console.log(`Prepared ${manifest.name}@${manifest.version}`);
 }

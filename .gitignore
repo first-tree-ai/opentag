@@ -17,6 +17,7 @@ npm-debug.log*
 pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+/run_*.sh
 
 # OS and editor files
 .DS_Store

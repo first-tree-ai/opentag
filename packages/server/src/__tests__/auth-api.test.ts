@@ -1,3 +1,4 @@
+import { HTTP_PATHS } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -23,6 +24,7 @@ function createAuthService(): UserAuthService {
       expiresIn: 900,
     }),
     getAuthenticatedUser: vi.fn().mockResolvedValue({
+      tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       me: {
         user: {
           id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
@@ -39,6 +41,7 @@ function createAuthService(): UserAuthService {
         ],
       },
     }),
+    getActiveUserById: vi.fn(),
   };
 }
 
@@ -50,12 +53,12 @@ describe("auth HTTP API", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/v1/auth/connect/exchange",
+      url: HTTP_PATHS.authConnectExchange,
       payload: { code: "1234567890abcdef" },
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ accessToken: "access", refreshToken: "refresh" });
-    expect(authService.exchangeConnectCode).toHaveBeenCalledWith("1234567890abcdef");
+    expect(authService.exchangeConnectCode).toHaveBeenCalledWith("1234567890abcdef", undefined);
   });
 
   it("rejects extra request authority fields", async () => {
@@ -65,7 +68,7 @@ describe("auth HTTP API", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/v1/auth/connect/exchange",
+      url: HTTP_PATHS.authConnectExchange,
       payload: { code: "1234567890abcdef", teamId: "caller-authority" },
     });
     expect(response.statusCode).toBe(400);
@@ -80,7 +83,7 @@ describe("auth HTTP API", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/v1/auth/connect/exchange",
+      url: HTTP_PATHS.authConnectExchange,
       headers: { "content-type": "application/json" },
       payload: '{"code":',
     });
@@ -97,24 +100,24 @@ describe("auth HTTP API", () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/v1/auth/connect/exchange",
+      url: HTTP_PATHS.authConnectExchange,
       payload: { code: "1234567890abcdef" },
     });
     expect(response.statusCode).toBe(500);
     expect(response.json()).toMatchObject({ error: { code: "INTERNAL_ERROR", category: "transient" } });
   });
 
-  it("authenticates /v1/me and returns live membership data", async () => {
+  it("authenticates /api/v1/me and returns live membership data", async () => {
     const authService = createAuthService();
     const app = createApp({ authService });
     apps.push(app);
 
-    const missing = await app.inject({ method: "GET", url: "/v1/me" });
+    const missing = await app.inject({ method: "GET", url: HTTP_PATHS.me });
     expect(missing.statusCode).toBe(401);
 
     const response = await app.inject({
       method: "GET",
-      url: "/v1/me",
+      url: HTTP_PATHS.me,
       headers: { authorization: "Bearer access" },
     });
     expect(response.statusCode).toBe(200);

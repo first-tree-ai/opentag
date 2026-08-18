@@ -8,6 +8,13 @@
       "when": 1787044153263,
       "tag": "0000_strong_thunderbolt_ross",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1787047719822,
+      "tag": "0001_living_franklin_richards",
+      "breakpoints": true
     }
   ]
 }

@@ -3,6 +3,7 @@ import { jwtVerify, SignJWT } from "jose";
 import { AuthServiceError, invalidCredential } from "./errors.js";
 
 export interface AuthTokenIdentity {
+  expiresAt: Date;
   userId: string;
 }
 
@@ -77,10 +78,10 @@ export class AuthTokenService implements AuthTokenProvider {
         currentDate: this.#now(),
         issuer: "opentag",
       });
-      if (payload.type !== expectedType || typeof payload.sub !== "string") {
+      if (payload.type !== expectedType || typeof payload.sub !== "string" || typeof payload.exp !== "number") {
         throw invalidCredential("AUTH_INVALID_TOKEN", `The ${expectedType} token is invalid`);
       }
-      return { userId: payload.sub };
+      return { expiresAt: new Date(payload.exp * 1000), userId: payload.sub };
     } catch (error) {
       if (error instanceof AuthServiceError) {
         throw error;

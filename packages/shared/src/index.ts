@@ -16,6 +16,17 @@ export {
   type TeamName,
   TeamNameSchema,
 } from "./auth.js";
+export { type ChannelConfig, type ChannelName, ChannelNameSchema, getChannelConfig } from "./channel.js";
+export {
+  type Computer,
+  type ComputerConnectionStatus,
+  ComputerConnectionStatusSchema,
+  type ComputerPlatform,
+  ComputerPlatformSchema,
+  ComputerSchema,
+  type ListComputersResponse,
+  ListComputersResponseSchema,
+} from "./computer.js";
 export {
   type ErrorCategory,
   ErrorCategorySchema,
@@ -27,3 +38,28 @@ export {
   ErrorEnvelopeSchema,
 } from "./errors.js";
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
+export { API_V1_PREFIX, HTTP_PATHS, runtimeWebSocketUrl } from "./http-paths.js";
+export {
+  type AuthFrame,
+  AuthFrameSchema,
+  type AuthResultFrame,
+  AuthResultFrameSchema,
+  type ClientRuntimeFrame,
+  ClientRuntimeFrameSchema,
+  type ComputerRegisterFrame,
+  ComputerRegisterFrameSchema,
+  type ComputerRegisterResultFrame,
+  ComputerRegisterResultFrameSchema,
+  type HeartbeatFrame,
+  HeartbeatFrameSchema,
+  type HeartbeatResultFrame,
+  HeartbeatResultFrameSchema,
+  RUNTIME_PROTOCOL_VERSION,
+  type RuntimeErrorFrame,
+  RuntimeErrorFrameSchema,
+  RuntimeRequestIdSchema,
+  type ServerRuntimeFrame,
+  ServerRuntimeFrameSchema,
+  type ServerWelcomeFrame,
+  ServerWelcomeFrameSchema,
+} from "./runtime-protocol.js";

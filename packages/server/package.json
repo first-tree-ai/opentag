@@ -24,15 +24,18 @@
     "test:integration": "vitest run src/__tests__/integration --maxWorkers=1"
   },
   "dependencies": {
+    "@fastify/websocket": "^11.3.0",
     "@opentag/shared": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "fastify": "^5.3.0",
     "jose": "^6.2.9",
     "postgres": "^3.4.9",
+    "ws": "^8.21.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^11.14.0",
+    "@types/ws": "^8.18.1",
     "drizzle-kit": "^0.31.10"
   }
 }

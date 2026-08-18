@@ -166,12 +166,49 @@ jobs:
           --version "${{ steps.version.outputs.version }}"
           --binary "${{ steps.version.outputs.binary_name }}"
 
+      - name: Restore and prepare production identity
+        run: |
+          git checkout -- apps/cli/package.json apps/cli/src/build-info.ts
+          node -e '
+            const fs = require("node:fs");
+            const path = "apps/cli/package.json";
+            const manifest = JSON.parse(fs.readFileSync(path, "utf8"));
+            manifest.version = "0.0.2";
+            fs.writeFileSync(path, `${JSON.stringify(manifest, null, 2)}\n`);
+          '
+          node scripts/prepare-cli-release.mjs --channel prod --version 0.0.2
+
+      - name: Rebuild and smoke production CLI
+        run: |
+          pnpm --dir apps/cli build
+          node scripts/cli-pack-smoke.mjs \
+            --channel prod \
+            --name open-tag \
+            --version 0.0.2 \
+            --binary opentag
+
   container-smoke:
     name: Container Smoke
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.12.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+          cache: pnpm
+
+      - name: Build source CLI and dependencies
+        run: |
+          pnpm install --frozen-lockfile --config.engine-strict=true
+          pnpm exec turbo run build --filter=open-tag...
 
       - name: Build image
         run: docker build --tag opentag-server:ci .
@@ -217,7 +254,7 @@ jobs:
           docker logs opentag-server-ci
           exit 1
 
-      - name: Smoke production administration entrypoints
+      - name: Smoke production administration entrypoints and Computer runtime
         run: |
           docker exec opentag-server-ci node packages/server/dist/db/migrate-cli.mjs
           bootstrap=$(docker exec \
@@ -226,12 +263,68 @@ jobs:
             --env OPENTAG_BOOTSTRAP_TEAM_NAME=example \
             --env OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example \
             opentag-server-ci node packages/server/dist/admin/bootstrap-cli.mjs)
-          node -e '
+          connect_code=$(node -e '
             const result = JSON.parse(process.argv[1]);
             if (!result.userId || !result.teamId || !result.connectCode || !result.expiresAt) {
               throw new Error("Bootstrap output is incomplete");
             }
-          ' "$bootstrap"
+            process.stdout.write(result.connectCode);
+          ' "$bootstrap")
+
+          runtime_home=$(mktemp -d)
+          daemon_log="$runtime_home/daemon.log"
+          cleanup_runtime() {
+            if [ -n "${daemon_pid:-}" ] && kill -0 "$daemon_pid" 2>/dev/null; then
+              kill -TERM "$daemon_pid" || true
+              wait "$daemon_pid" || true
+            fi
+          }
+          trap cleanup_runtime EXIT
+          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs \
+            login "$connect_code" --server http://127.0.0.1:18000
+          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs daemon run >"$daemon_log" 2>&1 &
+          daemon_pid=$!
+
+          for attempt in $(seq 1 30); do
+            if OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list | grep -q $'\tonline\t'; then
+              break
+            fi
+            if [ "$attempt" = 30 ]; then
+              cat "$daemon_log"
+              exit 1
+            fi
+            sleep 1
+          done
+          if OPENTAG_HOME="$runtime_home" timeout 5s node apps/cli/dist/cli/index.mjs daemon run >"$runtime_home/second.log" 2>&1; then
+            echo "A second daemon unexpectedly acquired the same home" >&2
+            exit 1
+          fi
+          grep -q "already running" "$runtime_home/second.log"
+          computer_id=$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).computerId" \
+            "$runtime_home/computer.json")
+
+          kill -INT "$daemon_pid"
+          wait "$daemon_pid"
+          unset daemon_pid
+          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list | grep -q $'\toffline\t'
+
+          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs daemon run >"$daemon_log" 2>&1 &
+          daemon_pid=$!
+          for attempt in $(seq 1 30); do
+            if list=$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list) && \
+              printf '%s\n' "$list" | grep -q "$computer_id" && printf '%s\n' "$list" | grep -q $'\tonline\t'; then
+              break
+            fi
+            if [ "$attempt" = 30 ]; then
+              cat "$daemon_log"
+              exit 1
+            fi
+            sleep 1
+          done
+          kill -INT "$daemon_pid"
+          wait "$daemon_pid"
+          unset daemon_pid
+          trap - EXIT
 
       - name: Verify runtime boundary
         run: |

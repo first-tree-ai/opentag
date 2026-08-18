@@ -23,7 +23,11 @@ export interface SessionActivity extends SessionTurnIdentity {
 
 export interface RuntimePreparation {
   prepareAgent(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void>;
-  prepareSession(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): Promise<void>;
+  verifyAgent?(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void>;
+  prepareSession(
+    request: SessionReconcileRequest,
+    hashes: RuntimeSnapshotHashes,
+  ): Promise<{ unresolvedTurn?: SessionTurnIdentity } | undefined>;
   stopSession(sessionId: string, placementGeneration: number): Promise<void>;
 }
 
@@ -142,7 +146,6 @@ export class SessionReconciler {
     if (input.placementGeneration < session.placementGeneration) return "stale_generation";
     if (input.placementGeneration > session.placementGeneration) return "session_not_ready";
     if (this.#recoveries.has(input.sessionId)) return "session_recovery_required";
-    if (this.#activities.has(input.sessionId)) return "session_busy";
 
     const agent = this.#agents.get(input.agentId);
     if (!agent) return "session_not_ready";
@@ -292,7 +295,8 @@ export class SessionReconciler {
       snapshot.revision.session.sequence > existingSession.revisionSequence ||
       existingSession.status === "stopped";
     if (shouldPrepareAgent) await this.#preparation.prepareAgent(snapshot, hashes);
-    if (shouldPrepareSession) await this.#preparation.prepareSession(request, hashes);
+    else await this.#preparation.verifyAgent?.(snapshot, hashes);
+    const preparedSession = shouldPrepareSession ? await this.#preparation.prepareSession(request, hashes) : undefined;
 
     if (shouldPrepareAgent) {
       this.#agents.set(request.agentId, {
@@ -315,6 +319,13 @@ export class SessionReconciler {
       status: "ready",
       workspaceId: snapshot.workspace.workspaceId,
     });
+    if (preparedSession?.unresolvedTurn) {
+      this.setRecovery(request.sessionId, preparedSession.unresolvedTurn);
+      return {
+        ...this.#result(request, "recovery_required", "unresolved_turn"),
+        turn: preparedSession.unresolvedTurn,
+      };
+    }
     return this.#result(request, "ready");
   }
 

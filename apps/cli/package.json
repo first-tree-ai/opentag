@@ -1,7 +1,25 @@
 {
   "name": "open-tag",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "private": true,
+  "description": "OpenTag command-line interface for connecting team messaging with AI coding agents.",
+  "keywords": [
+    "ai",
+    "cli",
+    "coding-agent",
+    "messaging",
+    "opentag"
+  ],
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/first-tree-ai/opentag#readme",
+  "bugs": {
+    "url": "https://github.com/first-tree-ai/opentag/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/first-tree-ai/opentag.git",
+    "directory": "apps/cli"
+  },
   "type": "module",
   "bin": {
     "opentag": "./dist/cli/index.mjs"
@@ -13,15 +31,26 @@
     }
   },
   "files": [
-    "dist"
+    "dist/**/*.d.mts",
+    "dist/**/*.map",
+    "dist/**/*.mjs",
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES"
   ],
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "build": "tsdown src/index.ts src/cli/index.ts --format esm --dts",
     "start": "node dist/cli/index.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --maxWorkers=1"
   },
-  "dependencies": {
+  "devDependencies": {
     "@opentag/client": "workspace:*",
     "@opentag/shared": "workspace:*",
     "commander": "^13.1.0"

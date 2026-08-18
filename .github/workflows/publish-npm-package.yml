@@ -1,0 +1,211 @@
+name: npm Publish
+
+on:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  staging:
+    name: Publish CLI Staging
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.head_repository.full_name == github.repository &&
+       github.event.workflow_run.head_branch == 'main') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the successful main revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.12.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Use trusted-publishing npm client
+        run: npm install --global npm@11.5.1
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.engine-strict=true
+
+      - name: Check source formatting and lint rules
+        run: pnpm check
+
+      - name: Build source workspaces
+        run: pnpm build
+
+      - name: Type-check source workspaces
+        run: pnpm typecheck
+
+      - name: Resolve release revision
+        id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve staging version
+        id: version
+        run: |
+          SOURCE_VERSION=$(node -p "require('./apps/cli/package.json').version")
+          node scripts/release-versions.mjs \
+            --channel staging \
+            --source-version "$SOURCE_VERSION" \
+            --run-number "${{ github.run_number }}" \
+            --run-attempt "${{ github.run_attempt }}"
+
+      - name: Check npm coordinate
+        id: registry
+        run: >-
+          node scripts/check-npm-version.mjs
+          --package "${{ steps.version.outputs.package_name }}"
+          --version "${{ steps.version.outputs.version }}"
+          --git-head "${{ steps.revision.outputs.sha }}"
+
+      - name: Prepare staging package identity
+        run: >-
+          node scripts/prepare-cli-release.mjs
+          --channel staging
+          --version "${{ steps.version.outputs.version }}"
+
+      - name: Build staging CLI
+        run: pnpm --dir apps/cli build
+
+      - name: Type-check staging CLI
+        run: pnpm --dir apps/cli typecheck
+
+      - name: Smoke staging tarball
+        run: >-
+          node scripts/cli-pack-smoke.mjs
+          --channel staging
+          --name "${{ steps.version.outputs.package_name }}"
+          --version "${{ steps.version.outputs.version }}"
+          --binary "${{ steps.version.outputs.binary_name }}"
+
+      - name: Publish staging package
+        if: steps.registry.outputs.publish == 'true'
+        working-directory: apps/cli
+        run: npm publish --tag latest --access public
+
+  production:
+    name: Publish CLI Production
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.12.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: pnpm
+
+      - name: Use trusted-publishing npm client
+        run: npm install --global npm@11.5.1
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.engine-strict=true
+
+      - name: Check source formatting and lint rules
+        run: pnpm check
+
+      - name: Build source workspaces
+        run: pnpm build
+
+      - name: Type-check source workspaces
+        run: pnpm typecheck
+
+      - name: Validate production source and tag
+        id: version
+        env:
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REPOSITORY_VISIBILITY" != "public" ]; then
+            echo "Production npm publishing requires a public source repository" >&2
+            exit 1
+          fi
+          if [ "$(node -p "require('./apps/cli/package.json').name")" != "open-tag" ]; then
+            echo "Unexpected source package identity" >&2
+            exit 1
+          fi
+          SOURCE_VERSION=$(node -p "require('./apps/cli/package.json').version")
+          node scripts/release-versions.mjs \
+            --channel prod \
+            --source-version "$SOURCE_VERSION" \
+            --tag "$TAG_NAME"
+          git fetch origin main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor HEAD refs/remotes/origin/main; then
+            echo "Production tag must point to a commit in main history" >&2
+            exit 1
+          fi
+
+      - name: Resolve release revision
+        id: revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Check npm coordinate
+        id: registry
+        run: >-
+          node scripts/check-npm-version.mjs
+          --package "${{ steps.version.outputs.package_name }}"
+          --version "${{ steps.version.outputs.version }}"
+          --git-head "${{ steps.revision.outputs.sha }}"
+
+      - name: Prepare production package identity
+        run: >-
+          node scripts/prepare-cli-release.mjs
+          --channel prod
+          --version "${{ steps.version.outputs.version }}"
+
+      - name: Build production CLI
+        run: pnpm --dir apps/cli build
+
+      - name: Type-check production CLI
+        run: pnpm --dir apps/cli typecheck
+
+      - name: Smoke production tarball
+        run: >-
+          node scripts/cli-pack-smoke.mjs
+          --channel prod
+          --name "${{ steps.version.outputs.package_name }}"
+          --version "${{ steps.version.outputs.version }}"
+          --binary "${{ steps.version.outputs.binary_name }}"
+
+      - name: Publish production package
+        if: steps.registry.outputs.publish == 'true'
+        working-directory: apps/cli
+        run: npm publish --tag latest --access public --provenance

@@ -15,36 +15,43 @@ permissions:
   contents: read
 
 jobs:
-  ci:
-    name: CI
+  checks:
+    name: Checks
     runs-on: ubuntu-latest
     steps:
       - name: Validate pull request branch name
         if: github.event_name == 'pull_request'
         env:
+          ACTOR: ${{ github.actor }}
           BRANCH_NAME: ${{ github.head_ref }}
         run: |
           case "$BRANCH_NAME" in
             feat/*|fix/*|refactor/*|test/*|docs/*|chore/*|merge/*) ;;
+            dependabot/npm_and_yarn/*|dependabot/github_actions/*)
+              if [ "$ACTOR" != "dependabot[bot]" ]; then
+                echo "Dependabot branch prefix is reserved for dependabot[bot]" >&2
+                exit 1
+              fi
+              ;;
             *) echo "Invalid branch name: $BRANCH_NAME" >&2; exit 1 ;;
           esac
 
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 10.12.1
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22.13.1
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --frozen-lockfile --config.engine-strict=true
 
       - name: Check formatting and lint rules
         run: pnpm check
@@ -57,3 +64,131 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+  cli-pack-smoke:
+    name: CLI Pack Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.12.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22.13.1
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.engine-strict=true
+
+      - name: Build source CLI and dependencies
+        run: pnpm exec turbo run build --filter=open-tag...
+
+      - name: Resolve deterministic pack coordinates
+        id: version
+        run: |
+          SOURCE_NAME=$(node -p "require('./apps/cli/package.json').name")
+          SOURCE_VERSION=$(node -p "require('./apps/cli/package.json').version")
+          SOURCE_BINARY=$(node -p "Object.keys(require('./apps/cli/package.json').bin)[0]")
+          printf 'source_name=%s\nsource_version=%s\nsource_binary=%s\n' \
+            "$SOURCE_NAME" "$SOURCE_VERSION" "$SOURCE_BINARY" >> "$GITHUB_OUTPUT"
+          node scripts/release-versions.mjs \
+            --channel staging \
+            --source-version "$SOURCE_VERSION" \
+            --run-number "${{ github.run_number }}" \
+            --run-attempt "${{ github.run_attempt }}"
+
+      - name: Smoke source tarball
+        run: >-
+          node scripts/cli-pack-smoke.mjs
+          --channel source
+          --name "${{ steps.version.outputs.source_name }}"
+          --version "${{ steps.version.outputs.source_version }}"
+          --binary "${{ steps.version.outputs.source_binary }}"
+
+      - name: Prepare deterministic staging identity
+        run: >-
+          node scripts/prepare-cli-release.mjs
+          --channel staging
+          --version "${{ steps.version.outputs.version }}"
+
+      - name: Rebuild staging CLI
+        run: pnpm --dir apps/cli build
+
+      - name: Smoke staging tarball
+        run: >-
+          node scripts/cli-pack-smoke.mjs
+          --channel staging
+          --name "${{ steps.version.outputs.package_name }}"
+          --version "${{ steps.version.outputs.version }}"
+          --binary "${{ steps.version.outputs.binary_name }}"
+
+  container-smoke:
+    name: Container Smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build image
+        run: docker build --tag opentag-server:ci .
+
+      - name: Start container
+        run: docker run --detach --name opentag-server-ci --publish 18000:8000 opentag-server:ci
+
+      - name: Wait for health endpoint
+        run: |
+          for attempt in $(seq 1 30); do
+            if response=$(curl --fail --silent http://127.0.0.1:18000/healthz); then
+              node -e '
+                const health = JSON.parse(process.argv[1]);
+                if (health.status !== "ok" || health.service !== "opentag-server") {
+                  throw new Error(`Unexpected health response: ${process.argv[1]}`);
+                }
+              ' "$response"
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs opentag-server-ci
+          exit 1
+
+      - name: Verify runtime boundary
+        run: |
+          test "$(docker inspect --format '{{.Config.User}}' opentag-server-ci)" = "opentag"
+          if docker exec opentag-server-ci test -e /app/apps/cli; then
+            echo "CLI artifact must not be present in the server image" >&2
+            exit 1
+          fi
+          docker exec opentag-server-ci test -f /app/LICENSE
+
+      - name: Stop container
+        if: always()
+        run: docker rm --force opentag-server-ci
+
+  ci:
+    name: CI
+    if: always()
+    needs:
+      - checks
+      - cli-pack-smoke
+      - container-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify required jobs
+        env:
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          CLI_PACK_RESULT: ${{ needs.cli-pack-smoke.result }}
+          CONTAINER_RESULT: ${{ needs.container-smoke.result }}
+        run: |
+          for result in "$CHECKS_RESULT" "$CLI_PACK_RESULT" "$CONTAINER_RESULT"; do
+            if [ "$result" != "success" ]; then
+              echo "Required CI job did not succeed: $result" >&2
+              exit 1
+            fi
+          done

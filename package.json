@@ -10,11 +10,12 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
-    "check": "biome check .",
+    "check": "biome check . && node scripts/third-party-notices.mjs --check",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test --concurrency=2"
+    "test": "node --test --test-concurrency=1 scripts/__tests__/*.test.mjs && turbo run test --concurrency=2",
+    "notices:write": "node scripts/third-party-notices.mjs --write"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.0",

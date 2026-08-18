@@ -30,3 +30,6 @@ canonical document has a Chinese mirror, update both in the same pull request an
 
 Never commit credentials, local environment files, generated build output, or vulnerability details. Report security
 issues through the private process in [SECURITY.md](./SECURITY.md).
+
+Maintainers must use the repository release workflows described in [docs/releasing.md](./docs/releasing.md). Local npm
+publishing, production tags outside the protected release process, and token-based fallback publishing are not accepted.

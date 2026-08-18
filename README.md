@@ -43,6 +43,7 @@ first stable release. The current code proves only the repository toolchain and 
 
 - [Development guide](./DEVELOPMENT.md)
 - [Contributing guide](./CONTRIBUTING.md)
+- [Release guide](./docs/releasing.md)
 - [Security policy](./SECURITY.md)
 - [Code of Conduct](./CODE_OF_CONDUCT.md)
 

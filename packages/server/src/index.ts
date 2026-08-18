@@ -1,25 +1,55 @@
 import { fileURLToPath } from "node:url";
 import { createApp } from "./app.js";
+import { BootstrapReadiness } from "./bootstrap-readiness.js";
+import { parseServerConfig } from "./config.js";
+import { createDatabaseClient } from "./db/client.js";
+import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
+import { AuthService, AuthTokenService } from "./services/auth/index.js";
 
+export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
 export { createApp } from "./app.js";
-
-function readPort(value: string | undefined): number {
-  const port = Number(value ?? "8000");
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
-    throw new Error(`Invalid OPENTAG_PORT: ${value ?? ""}`);
-  }
-  return port;
-}
+export { BootstrapReadiness } from "./bootstrap-readiness.js";
+export { type DatabaseConfig, parseDatabaseConfig, parseServerConfig, type ServerConfig } from "./config.js";
+export { createDatabaseClient, type DatabaseClient } from "./db/client.js";
+export {
+  MigrationVerificationError,
+  migrateDatabase,
+  verifyDatabaseMigrations,
+  withMigrationLock,
+} from "./db/migrate.js";
+export { AuthService, AuthServiceError, AuthTokenService } from "./services/auth/index.js";
 
 export async function startServer(): Promise<void> {
-  const app = createApp();
+  const readiness = new BootstrapReadiness();
+  let app: ReturnType<typeof createApp> | undefined;
 
   try {
-    const host = process.env.OPENTAG_HOST ?? "127.0.0.1";
-    const port = readPort(process.env.OPENTAG_PORT);
-    await app.listen({ host, port });
+    const config = parseServerConfig(process.env);
+    readiness.complete("configuration");
+    if (config.autoMigrate) {
+      await migrateDatabase(config.databaseUrl, config.migrationsDirectory);
+    } else {
+      await verifyDatabaseMigrations(config.databaseUrl, config.migrationsDirectory);
+    }
+    readiness.complete("migration");
+
+    const { database, sql } = createDatabaseClient(config.databaseUrl);
+    const authService = new AuthService(
+      database,
+      new AuthTokenService(config.jwtSecret, config.accessTokenTtlSeconds, config.refreshTokenTtlSeconds),
+    );
+    app = createApp({ authService, readiness });
+    app.addHook("onClose", async () => sql.end());
+    readiness.complete("application");
+    await app.listen({ host: config.host, port: config.port });
+    readiness.complete("listen");
   } catch (error) {
-    app.log.error(error, "Failed to start OpenTag server");
+    if (app) {
+      app.log.error(error, "Failed to start OpenTag server");
+      await app.close();
+    } else {
+      process.stderr.write("Failed to start OpenTag server\n");
+    }
     process.exitCode = 1;
   }
 }

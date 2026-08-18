@@ -32,6 +32,7 @@ WORKDIR /app
 COPY --from=prod-deps /app ./
 COPY --from=build /app/packages/shared/dist packages/shared/dist
 COPY --from=build /app/packages/server/dist packages/server/dist
+COPY --from=build /app/packages/server/drizzle packages/server/drizzle
 COPY LICENSE /app/LICENSE
 
 RUN addgroup -S opentag && adduser -S -G opentag opentag

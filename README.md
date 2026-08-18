@@ -5,15 +5,16 @@
 OpenTag is a new, independent open-source product for connecting team messaging with AI coding agents. The project is
 currently **pre-alpha**: its product workflows are still under development and are not ready for production use.
 
-This repository currently provides the engineering foundation for OpenTag:
+This repository currently provides the engineering foundation and first control-plane slice for OpenTag:
 
 - a TypeScript monorepo with CLI, client, server, and shared workspaces;
-- a Fastify server health endpoint;
+- a Fastify server with health and readiness endpoints;
 - a schema-validating client health check;
-- an `opentag doctor` command; and
-- a local PostgreSQL 17 development service for future persistence work.
+- PostgreSQL migrations and bootstrap authentication for the first user and team;
+- one-time connect-code login with sliding stateless refresh JWTs; and
+- `opentag doctor` and `opentag login` commands.
 
-No messaging integration, agent provider, session runtime, or database schema is implemented yet.
+Messaging integrations, agent providers, and session runtimes are not implemented yet.
 
 ## Quick start
 
@@ -22,6 +23,9 @@ Prerequisites: Node.js 22.13 or newer on the 22.x line, Node.js 24.x, or Node.js
 ```bash
 corepack enable
 pnpm install
+docker compose up -d postgres
+export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
+export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
 pnpm build
 pnpm --filter @opentag/server start
 ```
@@ -37,7 +41,8 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full local workflow.
 ## Project status
 
 OpenTag is being built in small, validated vertical slices. Public APIs and package boundaries may change before the
-first stable release. The current code proves only the repository toolchain and health-check path described above.
+first stable release. The current code establishes database bootstrap and user authentication; agent execution and
+messaging remain future vertical slices.
 
 ## Documentation
 

@@ -68,6 +68,9 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Test PostgreSQL integration
+        run: pnpm --filter @opentag/server test:integration
+
   node-compatibility:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
@@ -173,17 +176,38 @@ jobs:
       - name: Build image
         run: docker build --tag opentag-server:ci .
 
-      - name: Start container
-        run: docker run --detach --name opentag-server-ci --publish 18000:8000 opentag-server:ci
+      - name: Start PostgreSQL
+        run: |
+          docker network create opentag-ci
+          docker run --detach --name opentag-postgres-ci --network opentag-ci \
+            --env POSTGRES_DB=opentag \
+            --env POSTGRES_USER=opentag \
+            --env POSTGRES_PASSWORD=opentag \
+            postgres:17-alpine
+          for attempt in $(seq 1 30); do
+            if docker exec opentag-postgres-ci pg_isready --username opentag --dbname opentag; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs opentag-postgres-ci
+          exit 1
 
-      - name: Wait for health endpoint
+      - name: Start container
+        run: >-
+          docker run --detach --name opentag-server-ci --network opentag-ci --publish 18000:8000
+          --env OPENTAG_DATABASE_URL=postgresql://opentag:opentag@opentag-postgres-ci:5432/opentag
+          --env OPENTAG_JWT_SECRET=ci-only-secret-that-is-at-least-32-characters
+          opentag-server:ci
+
+      - name: Wait for readiness endpoint
         run: |
           for attempt in $(seq 1 30); do
-            if response=$(curl --fail --silent http://127.0.0.1:18000/healthz); then
+            if response=$(curl --fail --silent http://127.0.0.1:18000/readyz); then
               node -e '
-                const health = JSON.parse(process.argv[1]);
-                if (health.status !== "ok" || health.service !== "opentag-server") {
-                  throw new Error(`Unexpected health response: ${process.argv[1]}`);
+                const readiness = JSON.parse(process.argv[1]);
+                if (readiness.status !== "ready") {
+                  throw new Error(`Unexpected readiness response: ${process.argv[1]}`);
                 }
               ' "$response"
               exit 0
@@ -192,6 +216,22 @@ jobs:
           done
           docker logs opentag-server-ci
           exit 1
+
+      - name: Smoke production administration entrypoints
+        run: |
+          docker exec opentag-server-ci node packages/server/dist/db/migrate-cli.mjs
+          bootstrap=$(docker exec \
+            --env OPENTAG_BOOTSTRAP_EMAIL=admin@example.com \
+            --env OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin \
+            --env OPENTAG_BOOTSTRAP_TENANT_SLUG=example \
+            --env OPENTAG_BOOTSTRAP_TENANT_NAME=Example \
+            opentag-server-ci node packages/server/dist/admin/bootstrap-cli.mjs)
+          node -e '
+            const result = JSON.parse(process.argv[1]);
+            if (!result.userId || !result.tenantId || !result.connectCode || !result.expiresAt) {
+              throw new Error("Bootstrap output is incomplete");
+            }
+          ' "$bootstrap"
 
       - name: Verify runtime boundary
         run: |
@@ -204,7 +244,10 @@ jobs:
 
       - name: Stop container
         if: always()
-        run: docker rm --force opentag-server-ci
+        run: |
+          docker rm --force opentag-server-ci || true
+          docker rm --force opentag-postgres-ci || true
+          docker network rm opentag-ci || true
 
   ci:
     name: CI

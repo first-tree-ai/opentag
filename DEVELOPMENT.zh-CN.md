@@ -25,6 +25,7 @@ pnpm check
 pnpm build
 pnpm typecheck
 pnpm test
+pnpm --filter @opentag/server test:integration
 ```
 
 仅检查 lint 可运行 `pnpm lint`；应用 Biome 格式化可运行 `pnpm format`。
@@ -42,11 +43,15 @@ node scripts/cli-pack-smoke.mjs \
   --binary opentag
 ~~~
 
-## 运行健康检查链路
+## 运行 Server 与健康检查链路
 
-构建 workspace 后启动 Server：
+先启动 PostgreSQL，配置必需的数据库地址和 JWT secret，再构建并启动 Server。Server 会在开始监听前执行
+migration。
 
 ```bash
+docker compose up -d postgres
+export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
+export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
 pnpm build
 pnpm --filter @opentag/server start
 ```
@@ -65,14 +70,27 @@ pnpm --filter open-tag start doctor --server-url http://127.0.0.1:9000
 
 ## 本地 PostgreSQL
 
-PostgreSQL 仅为后续持久化工作预留；当前代码不会连接数据库或运行 migration。
+本地 PostgreSQL 服务用于 migration 和认证开发：
 
 ```bash
 docker compose up -d postgres
+pnpm --filter @opentag/server db:migrate
 docker compose down
 ```
 
 服务暴露 `5432` 端口，并使用 `opentag-postgres-data` 命名 volume 保存数据。
+
+初始化空安装时，设置必需的 bootstrap 字段并运行一次性管理员命令。该命令会先迁移空数据库，再创建首个
+用户、tenant、admin membership 和 connect code。
+
+```bash
+export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
+export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
+export OPENTAG_BOOTSTRAP_TENANT_SLUG=example
+export OPENTAG_BOOTSTRAP_TENANT_NAME=Example
+pnpm --filter @opentag/server bootstrap:admin
+pnpm --filter open-tag start login <connect-code>
+```
 
 ## 环境变量
 
@@ -83,7 +101,12 @@ docker compose down
 | `OPENTAG_HOST` | `127.0.0.1` | Server 监听地址 |
 | `OPENTAG_PORT` | `8000` | Server 监听端口 |
 | `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor 目标地址 |
-| `OPENTAG_DATABASE_URL` | 本地 PostgreSQL URL | 为后续持久化工作预留 |
+| `OPENTAG_DATABASE_URL` | 无 | 必需的 PostgreSQL 连接地址 |
+| `OPENTAG_JWT_SECRET` | 无 | 必需的 access token 签名 secret，至少 32 个字符 |
+| `OPENTAG_AUTO_MIGRATE` | `true` | 监听前执行已入库的 migration |
+| `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | access token 有效期 |
+| `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | refresh session 有效期 |
+| `OPENTAG_HOME` | `~/.opentag` | CLI credentials 目录 |
 
 如果 `doctor` 失败，其错误类别会区分配置、网络、HTTP 和无效响应。请确认 Server 已启动，且配置的 URL 指向其基础地址。
 

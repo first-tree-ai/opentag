@@ -13,14 +13,26 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsdown src/index.ts src/app.ts --format esm --dts",
+    "build": "tsdown src/index.ts src/app.ts src/admin/bootstrap.ts src/admin/bootstrap-cli.ts src/db/migrate-cli.ts --format esm --dts",
+    "bootstrap:admin": "node dist/admin/bootstrap-cli.mjs",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "node dist/db/migrate-cli.mjs",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --maxWorkers=1"
+    "test": "vitest run --maxWorkers=1 --exclude 'src/__tests__/integration/**'",
+    "test:integration": "vitest run src/__tests__/integration --maxWorkers=1"
   },
   "dependencies": {
     "@opentag/shared": "workspace:*",
-    "fastify": "^5.3.0"
+    "drizzle-orm": "^0.45.2",
+    "fastify": "^5.3.0",
+    "jose": "^6.2.9",
+    "postgres": "^3.4.9",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "^12.1.0",
+    "drizzle-kit": "^0.31.10"
   }
 }

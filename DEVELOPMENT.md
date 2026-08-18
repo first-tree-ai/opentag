@@ -24,6 +24,7 @@ pnpm check
 pnpm build
 pnpm typecheck
 pnpm test
+pnpm --filter @opentag/server test:integration
 ```
 
 Use `pnpm lint` for lint-only feedback. Use `pnpm format` to apply Biome formatting.
@@ -42,11 +43,15 @@ node scripts/cli-pack-smoke.mjs \
   --binary opentag
 ~~~
 
-## Run the health-check path
+## Run the server and health-check path
 
-Build the workspaces, then start the server:
+Start PostgreSQL, configure the required database and JWT secret, then build and start the server. Migrations run before
+the server listens.
 
 ```bash
+docker compose up -d postgres
+export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
+export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
 pnpm build
 pnpm --filter @opentag/server start
 ```
@@ -65,14 +70,27 @@ pnpm --filter open-tag start doctor --server-url http://127.0.0.1:9000
 
 ## Local PostgreSQL
 
-PostgreSQL is reserved for upcoming persistence work; the current code does not connect to it or run migrations.
+The local PostgreSQL service supports migration and authentication development:
 
 ```bash
 docker compose up -d postgres
+pnpm --filter @opentag/server db:migrate
 docker compose down
 ```
 
 The service exposes port `5432` and stores data in the `opentag-postgres-data` named volume.
+
+To bootstrap an empty installation, set the required bootstrap fields and run the one-time admin command. It migrates an
+empty database before creating the initial user, tenant, admin membership, and connect code.
+
+```bash
+export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
+export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
+export OPENTAG_BOOTSTRAP_TENANT_SLUG=example
+export OPENTAG_BOOTSTRAP_TENANT_NAME=Example
+pnpm --filter @opentag/server bootstrap:admin
+pnpm --filter open-tag start login <connect-code>
+```
 
 ## Environment variables
 
@@ -84,7 +102,12 @@ processes.
 | `OPENTAG_HOST` | `127.0.0.1` | Server listen host |
 | `OPENTAG_PORT` | `8000` | Server listen port |
 | `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor target |
-| `OPENTAG_DATABASE_URL` | local PostgreSQL URL | Reserved for future persistence work |
+| `OPENTAG_DATABASE_URL` | none | Required PostgreSQL connection URL |
+| `OPENTAG_JWT_SECRET` | none | Required access-token signing secret; at least 32 characters |
+| `OPENTAG_AUTO_MIGRATE` | `true` | Run checked-in migrations before listening |
+| `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | Access-token lifetime |
+| `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-session lifetime |
+| `OPENTAG_HOME` | `~/.opentag` | CLI credentials directory |
 
 If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm
 the server is running and that the configured URL points to its base address.

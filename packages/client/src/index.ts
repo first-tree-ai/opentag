@@ -16,6 +16,35 @@ export {
   ServerHealthResponseError,
 } from "./health.js";
 export {
+  buildOpenTagRuntimeContext,
+  CODEX_V0_APP_SERVER_ARGS,
+  CODEX_V0_ITEM_LIMIT,
+  CODEX_V0_NOTIFICATION_BYTES,
+  CODEX_V0_NOTIFICATION_LIMIT,
+  CODEX_V0_REASONING_EFFORTS,
+  CodexAdapter,
+  type CodexAdapterOptions,
+  CodexLocalPolicy,
+  type CodexTraceItemType,
+  type CodexTraceSink,
+  CodexTurnError,
+  type CodexTurnOutcome,
+  type CodexTurnResult,
+  type CodexTurnRunOptions,
+  codexProviderEnvironment,
+  safeRelativeTracePath,
+} from "./providers/codex/adapter.js";
+export {
+  CODEX_APP_SERVER_MAX_LINE_BYTES,
+  CODEX_APP_SERVER_REQUEST_TIMEOUT_MS,
+  type CodexAppServerClient,
+  CodexAppServerError,
+  type CodexAppServerMessage,
+  CodexAppServerProcess,
+  type CodexProcessSpawnOptions,
+  type CodexSpawnOptions,
+} from "./providers/codex/app-server-wire.js";
+export {
   AdmissionController,
   type AdmissionDecision,
   type AdmissionLimits,
@@ -34,6 +63,13 @@ export {
   type ClientRuntimeOptions,
   type DeliveryDecision,
 } from "./runtime/client-runtime.js";
+export {
+  CodexClientRuntime,
+  type CreateCodexClientRuntimeOptions,
+  createCodexClientRuntime,
+  resolveCodexHome,
+} from "./runtime/codex-client-runtime.js";
+export { CodexTurnRunner, type CodexTurnRunnerOptions } from "./runtime/codex-turn-runner.js";
 export {
   COMPUTER_IDENTITY_FILE_NAME,
   type ComputerIdentity,
@@ -85,10 +121,24 @@ export {
   type SessionTurnIdentity,
 } from "./runtime/session-reconciler.js";
 export {
+  TURN_TRACE_BATCH_SOFT_LIMIT_BYTES,
+  TURN_TRACE_MAX_BUFFER_BYTES,
+  TURN_TRACE_MAX_BUFFER_EVENTS,
+  TURN_TRACE_SEND_DEADLINE_MS,
+  TurnTraceBuffer,
+  type TurnTraceBufferOptions,
+  type TurnTraceSummary,
+} from "./runtime/trace-buffer.js";
+export {
   type LiveTurnOwner,
   TurnCustodyOwner,
   type TurnCustodyOwnerOptions,
 } from "./runtime/turn-custody-owner.js";
+export {
+  TurnReportOwner,
+  type TurnReportOwnerOptions,
+  TurnReportOwnerStoppedError,
+} from "./runtime/turn-report-owner.js";
 export {
   assertRealDirectory,
   assertWithin,

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { arch, hostname, platform } from "node:os";
 import {
   AccessTokenProvider,
-  ClientRuntime,
+  createCodexClientRuntime,
   OpenTagApi,
   RuntimeConnection,
   readCredentials,
@@ -79,18 +79,17 @@ export async function runDaemon(options: DaemonRunOptions = {}): Promise<void> {
       if (currentPlatform !== "darwin" && currentPlatform !== "linux" && currentPlatform !== "win32") {
         throw new Error(`Unsupported Computer platform: ${currentPlatform}`);
       }
-      return new ClientRuntime(
-        new RuntimeConnection({
-          arch: arch(),
-          clientVersion: CLI_VERSION,
-          computer: identity,
-          displayName: hostname(),
-          instanceId,
-          log,
-          platform: currentPlatform,
-          tokenProvider,
-        }),
-      );
+      const connection = new RuntimeConnection({
+        arch: arch(),
+        clientVersion: CLI_VERSION,
+        computer: identity,
+        displayName: hostname(),
+        instanceId,
+        log,
+        platform: currentPlatform,
+        tokenProvider,
+      });
+      return createCodexClientRuntime(connection, { home, clientVersion: CLI_VERSION, log, signal });
     }, signals);
   } finally {
     await ownership.release();

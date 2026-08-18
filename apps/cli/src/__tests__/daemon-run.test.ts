@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const clientMocks = vi.hoisted(() => ({
+  createCodexClientRuntime: vi.fn(),
   getAccessTokenLease: vi.fn(),
   me: vi.fn(),
   readCredentials: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock("@opentag/client", async (importOriginal) => {
     OpenTagApi: class {
       me = clientMocks.me;
     },
+    createCodexClientRuntime: clientMocks.createCodexClientRuntime,
     readCredentials: clientMocks.readCredentials,
     resolveComputerIdentity: clientMocks.resolveComputerIdentity,
   };
@@ -86,5 +88,39 @@ describe("daemon lifecycle", () => {
 
     expect(clientMocks.me).not.toHaveBeenCalled();
     await expect(access(join(home, "daemon-owner.json"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("composes the Codex Client Runtime after authenticated daemon startup", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-run-"));
+    directories.push(home);
+    const signals = new EventEmitter();
+    const run = vi.fn(async () => undefined);
+    const stop = vi.fn();
+    clientMocks.readCredentials.mockResolvedValue({
+      accessToken: "access",
+      accessTokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      refreshToken: "refresh",
+      serverUrl: "http://127.0.0.1:3000",
+    });
+    clientMocks.getAccessTokenLease.mockResolvedValue({
+      accessToken: "access",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    clientMocks.me.mockResolvedValue({ user: { id: "user-1" }, memberships: [] });
+    clientMocks.resolveComputerIdentity.mockResolvedValue({
+      version: 1,
+      computerId: "00000000-0000-4000-8000-000000000001",
+      serverUrl: "http://127.0.0.1:3000",
+      userId: "user-1",
+    });
+    clientMocks.createCodexClientRuntime.mockResolvedValue({ run, stop });
+
+    await runDaemon({ home, log: () => undefined, signals: signals as unknown as NodeJS.Process });
+
+    expect(clientMocks.createCodexClientRuntime).toHaveBeenCalledOnce();
+    expect(clientMocks.createCodexClientRuntime.mock.calls[0]?.[1]).toMatchObject({ home, clientVersion: "0.0.1" });
+    expect(clientMocks.createCodexClientRuntime.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal);
+    expect(run).toHaveBeenCalledOnce();
+    expect(stop).not.toHaveBeenCalled();
   });
 });

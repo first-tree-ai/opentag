@@ -1,14 +1,29 @@
 import { ErrorEnvelopeSchema, ServerHealthSchema } from "@opentag/shared";
 import Fastify from "fastify";
-import { ZodError } from "zod";
 import { registerAuthRoutes } from "./api/auth.js";
 import { registerMeRoute } from "./api/me.js";
+import { RequestValidationError } from "./api/request-validation.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { AuthServiceError, type UserAuthService } from "./services/auth/index.js";
 
 export interface CreateAppOptions {
   authService?: UserAuthService;
   readiness?: BootstrapReadiness;
+}
+
+function contentTypeParserErrorStatus(error: unknown): number | undefined {
+  if (
+    typeof error !== "object" ||
+    error === null ||
+    !("code" in error) ||
+    !("statusCode" in error) ||
+    typeof error.code !== "string" ||
+    !error.code.startsWith("FST_ERR_CTP_")
+  ) {
+    return undefined;
+  }
+  const statusCode = error.statusCode;
+  return typeof statusCode === "number" && statusCode >= 400 && statusCode < 500 ? statusCode : undefined;
 }
 
 export function createApp(options: CreateAppOptions = {}) {
@@ -49,7 +64,8 @@ export function createApp(options: CreateAppOptions = {}) {
       });
       return reply.code(error.statusCode).send(envelope);
     }
-    if (error instanceof ZodError) {
+    const statusCode = contentTypeParserErrorStatus(error);
+    if (error instanceof RequestValidationError || statusCode !== undefined) {
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: "VALIDATION_ERROR",
@@ -58,7 +74,7 @@ export function createApp(options: CreateAppOptions = {}) {
           requestId: request.id,
         },
       });
-      return reply.code(400).send(envelope);
+      return reply.code(statusCode ?? 400).send(envelope);
     }
     request.log.error({ err: error }, "Request failed");
     const envelope = ErrorEnvelopeSchema.parse({

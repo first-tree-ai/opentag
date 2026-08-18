@@ -79,18 +79,24 @@ docker compose down
 ```
 
 服务暴露 `5432` 端口，并使用 `opentag-postgres-data` 命名 volume 保存数据。
+生产 Server 镜像不会内置或启动 PostgreSQL。部署时通过 `OPENTAG_DATABASE_URL` 指向独立管理的 PostgreSQL
+实例；上面的 Compose 服务仅用于本地开发。
 
 初始化空安装时，设置必需的 bootstrap 字段并运行一次性管理员命令。该命令会先迁移空数据库，再创建首个
-用户、tenant、admin membership 和 connect code。
+用户、team、admin membership 和 connect code。
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
 export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-export OPENTAG_BOOTSTRAP_TENANT_SLUG=example
-export OPENTAG_BOOTSTRAP_TENANT_NAME=Example
+export OPENTAG_BOOTSTRAP_TEAM_SLUG=example
+export OPENTAG_BOOTSTRAP_TEAM_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 pnpm --filter open-tag start login <connect-code>
 ```
+
+bootstrap email 是账号资料，不是邮箱密码凭据。当前 connect code 流程先解析稳定的 user ID，再进入与 provider
+无关的 token 颁发边界。未来 Google 或 OIDC identity resolver 可以接入这个边界，无需改变 JWT claims 或 team
+权限模型；每次鉴权始终从 PostgreSQL 读取有效 membership。
 
 ## 环境变量
 
@@ -105,7 +111,7 @@ pnpm --filter open-tag start login <connect-code>
 | `OPENTAG_JWT_SECRET` | 无 | 必需的 access token 签名 secret，至少 32 个字符 |
 | `OPENTAG_AUTO_MIGRATE` | `true` | 监听前执行已入库的 migration |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | access token 有效期 |
-| `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | refresh session 有效期 |
+| `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | refresh JWT 有效期 |
 | `OPENTAG_HOME` | `~/.opentag` | CLI credentials 目录 |
 
 如果 `doctor` 失败，其错误类别会区分配置、网络、HTTP 和无效响应。请确认 Server 已启动，且配置的 URL 指向其基础地址。

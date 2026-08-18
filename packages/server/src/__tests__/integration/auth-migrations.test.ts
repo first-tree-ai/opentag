@@ -12,8 +12,14 @@ import {
   verifyDatabaseMigrations,
   withMigrationLock,
 } from "../../db/migrate.js";
-import { authSessions, connectCodes, memberships, users } from "../../db/schema/index.js";
-import { AccessTokenService, AuthService, AuthServiceError, hashSecret } from "../../services/auth/index.js";
+import { connectCodes, memberships, users } from "../../db/schema/index.js";
+import {
+  AuthService,
+  AuthServiceError,
+  type AuthTokenProvider,
+  AuthTokenService,
+  hashSecret,
+} from "../../services/auth/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 const jwtSecret = "integration-test-secret-at-least-32-characters";
@@ -40,7 +46,7 @@ beforeEach(async () => {
   }
 });
 
-async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z")) {
+async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z"), authTokens?: AuthTokenProvider) {
   await migrateDatabase(databaseUrl, migrationsFolder);
   const client = createDatabaseClient(databaseUrl);
   const bootstrap = await bootstrapInitialAdmin(
@@ -48,15 +54,18 @@ async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z")) {
     {
       displayName: "Admin",
       email: "admin@example.com",
-      tenantDisplayName: "Example",
-      tenantSlug: "example",
+      teamDisplayName: "Example",
+      teamSlug: "example",
     },
     now,
   );
-  const auth = new AuthService(client.database, new AccessTokenService(jwtSecret, 900), {
-    now: () => now,
-    refreshTokenTtlSeconds: 3600,
-  });
+  const auth = new AuthService(
+    client.database,
+    authTokens ?? new AuthTokenService(jwtSecret, 900, 3600, { now: () => now }),
+    {
+      now: () => now,
+    },
+  );
   return { auth, bootstrap, ...client };
 }
 
@@ -70,9 +79,9 @@ describe("database migrations", () => {
       const [row] = await sql<{ table_count: number }[]>`
         select count(*)::int as table_count
         from information_schema.tables
-        where table_schema = 'public' and table_name in ('users', 'tenants', 'memberships', 'connect_codes', 'auth_sessions')
+        where table_schema = 'public' and table_name in ('users', 'teams', 'memberships', 'connect_codes')
       `;
-      expect(row?.table_count).toBe(5);
+      expect(row?.table_count).toBe(4);
     } finally {
       await sql.end();
     }
@@ -166,8 +175,8 @@ describe("authentication persistence", () => {
     const input = {
       displayName: "Admin",
       email: "admin@example.com",
-      tenantDisplayName: "Example",
-      tenantSlug: "example",
+      teamDisplayName: "Example",
+      teamSlug: "example",
     };
 
     try {
@@ -193,8 +202,8 @@ describe("authentication persistence", () => {
           connectCodeTtlSeconds: 0,
           displayName: "   ",
           email: "not-an-email",
-          tenantDisplayName: "   ",
-          tenantSlug: "Not Valid",
+          teamDisplayName: "   ",
+          teamSlug: "Not Valid",
         }),
       ).rejects.toThrow();
       expect(await client.database.select().from(users)).toHaveLength(0);
@@ -202,8 +211,8 @@ describe("authentication persistence", () => {
       const result = await bootstrapInitialAdmin(client.database, {
         displayName: "  Admin  ",
         email: "  ADMIN@EXAMPLE.COM  ",
-        tenantDisplayName: "  Example  ",
-        tenantSlug: "  EXAMPLE  ",
+        teamDisplayName: "  Example  ",
+        teamSlug: "  EXAMPLE  ",
       });
       const [storedUser] = await client.database.select().from(users).where(eq(users.id, result.userId));
       expect(storedUser).toMatchObject({ displayName: "Admin", email: "admin@example.com" });
@@ -212,23 +221,75 @@ describe("authentication persistence", () => {
     }
   });
 
-  it("stores only hashes and consumes a connect code once", async () => {
+  it("stores only the connect-code hash and issues authority-free JWTs", async () => {
     const fixture = await createAuthFixture();
     try {
       const tokens = await fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode);
       const [storedCode] = await fixture.database.select().from(connectCodes);
-      const [storedSession] = await fixture.database.select().from(authSessions);
       expect(storedCode?.codeHash).toBe(hashSecret(fixture.bootstrap.connectCode));
       expect(storedCode?.codeHash).not.toBe(fixture.bootstrap.connectCode);
-      expect(storedSession?.refreshTokenHash).toBe(hashSecret(tokens.refreshToken));
-      expect(storedSession?.refreshTokenHash).not.toBe(tokens.refreshToken);
-      const claims = decodeJwt(tokens.accessToken);
-      expect(claims).not.toHaveProperty("tenantId");
-      expect(claims).not.toHaveProperty("role");
+      for (const token of [tokens.accessToken, tokens.refreshToken]) {
+        const claims = decodeJwt(token);
+        expect(claims.sub).toBe(fixture.bootstrap.userId);
+        expect(claims).toHaveProperty("jti");
+        expect(claims).not.toHaveProperty("email");
+        expect(claims).not.toHaveProperty("teamId");
+        expect(claims).not.toHaveProperty("role");
+        expect(claims).not.toHaveProperty("sid");
+      }
 
       await expect(fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode)).rejects.toMatchObject({
         code: "AUTH_CODE_CONSUMED",
       });
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("does not consume a connect code when token issuance fails", async () => {
+    const now = new Date("2026-08-18T00:00:00.000Z");
+    const delegate = new AuthTokenService(jwtSecret, 900, 3600, { now: () => now });
+    let shouldFail = true;
+    const authTokens: AuthTokenProvider = {
+      issuePairForUser: async (userId) => {
+        if (shouldFail) {
+          shouldFail = false;
+          throw new Error("Injected token signing failure");
+        }
+        return delegate.issuePairForUser(userId);
+      },
+      verifyAccess: (token) => delegate.verifyAccess(token),
+      verifyRefresh: (token) => delegate.verifyRefresh(token),
+    };
+    const fixture = await createAuthFixture(now, authTokens);
+
+    try {
+      await expect(fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode)).rejects.toThrow(
+        "Injected token signing failure",
+      );
+      const [afterFailure] = await fixture.database.select().from(connectCodes);
+      expect(afterFailure?.consumedAt).toBeNull();
+
+      await expect(fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode)).resolves.toMatchObject({
+        tokenType: "Bearer",
+      });
+      const [afterRetry] = await fixture.database.select().from(connectCodes);
+      expect(afterRetry?.consumedAt).not.toBeNull();
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("issues tokens through the provider-neutral post-identity boundary", async () => {
+    const fixture = await createAuthFixture();
+    try {
+      const tokens = await fixture.auth.issueTokensForUser(fixture.bootstrap.userId);
+      await expect(fixture.auth.getAuthenticatedUser(tokens.accessToken)).resolves.toMatchObject({
+        me: { user: { id: fixture.bootstrap.userId } },
+      });
+
+      const [storedCode] = await fixture.database.select().from(connectCodes);
+      expect(storedCode?.consumedAt).toBeNull();
     } finally {
       await fixture.sql.end();
     }
@@ -259,27 +320,25 @@ describe("authentication persistence", () => {
     }
   });
 
-  it("rotates refresh tokens and honors explicit revocation", async () => {
+  it("uses stateless sliding refresh JWTs while preserving live account checks", async () => {
     const fixture = await createAuthFixture();
     try {
       const initial = await fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode);
-      const initialIdentity = await fixture.auth.getAuthenticatedUser(initial.accessToken);
       const rotated = await fixture.auth.refresh(initial.refreshToken);
-      await expect(fixture.auth.refresh(initial.refreshToken)).rejects.toMatchObject({ code: "AUTH_INVALID_TOKEN" });
-
+      expect(rotated.accessToken).not.toBe(initial.accessToken);
+      expect(rotated.refreshToken).not.toBe(initial.refreshToken);
+      await expect(fixture.auth.refresh(initial.refreshToken)).resolves.toMatchObject({ tokenType: "Bearer" });
       await expect(fixture.auth.getAuthenticatedUser(initial.accessToken)).resolves.toMatchObject({
-        sessionId: initialIdentity.sessionId,
+        me: { user: { id: fixture.bootstrap.userId } },
       });
 
-      const authenticated = await fixture.auth.getAuthenticatedUser(rotated.accessToken);
-      expect(authenticated.sessionId).toBe(initialIdentity.sessionId);
-      await fixture.auth.revokeSession(authenticated.sessionId);
-      await expect(fixture.auth.refresh(rotated.refreshToken)).rejects.toMatchObject({ code: "AUTH_SESSION_REVOKED" });
+      await fixture.database
+        .update(users)
+        .set({ suspendedAt: new Date() })
+        .where(eq(users.id, fixture.bootstrap.userId));
+      await expect(fixture.auth.refresh(rotated.refreshToken)).rejects.toMatchObject({ code: "AUTH_USER_SUSPENDED" });
       await expect(fixture.auth.getAuthenticatedUser(rotated.accessToken)).rejects.toMatchObject({
-        code: "AUTH_SESSION_REVOKED",
-      });
-      await expect(fixture.auth.getAuthenticatedUser(initial.accessToken)).rejects.toMatchObject({
-        code: "AUTH_SESSION_REVOKED",
+        code: "AUTH_USER_SUSPENDED",
       });
     } finally {
       await fixture.sql.end();
@@ -291,7 +350,7 @@ describe("authentication persistence", () => {
     try {
       const tokens = await fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode);
       await expect(fixture.auth.getAuthenticatedUser(tokens.accessToken)).resolves.toMatchObject({
-        me: { memberships: [{ tenantId: fixture.bootstrap.tenantId, role: "admin" }] },
+        me: { memberships: [{ teamId: fixture.bootstrap.teamId, role: "admin" }] },
       });
 
       await fixture.database
@@ -301,6 +360,9 @@ describe("authentication persistence", () => {
       const error = await fixture.auth.getAuthenticatedUser(tokens.accessToken).catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(AuthServiceError);
       expect(error).toMatchObject({ code: "AUTH_MEMBERSHIP_REQUIRED" });
+      await expect(fixture.auth.refresh(tokens.refreshToken)).rejects.toMatchObject({
+        code: "AUTH_MEMBERSHIP_REQUIRED",
+      });
     } finally {
       await fixture.sql.end();
     }

@@ -27,9 +27,9 @@ export const MembershipRoleSchema = z.enum(["admin", "member"]);
 
 export const MeMembershipSchema = z
   .object({
-    tenantId: z.string().uuid(),
-    tenantSlug: z.string().min(1),
-    tenantDisplayName: z.string().min(1),
+    teamId: z.string().uuid(),
+    teamSlug: z.string().min(1),
+    teamDisplayName: z.string().min(1),
     role: MembershipRoleSchema,
   })
   .strict();

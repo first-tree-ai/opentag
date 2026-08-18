@@ -79,18 +79,24 @@ docker compose down
 ```
 
 The service exposes port `5432` and stores data in the `opentag-postgres-data` named volume.
+The production server image does not bundle or start PostgreSQL. Set `OPENTAG_DATABASE_URL` to a separately managed
+PostgreSQL instance when deploying it; the Compose service above is only a local development convenience.
 
 To bootstrap an empty installation, set the required bootstrap fields and run the one-time admin command. It migrates an
-empty database before creating the initial user, tenant, admin membership, and connect code.
+empty database before creating the initial user, team, admin membership, and connect code.
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
 export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-export OPENTAG_BOOTSTRAP_TENANT_SLUG=example
-export OPENTAG_BOOTSTRAP_TENANT_NAME=Example
+export OPENTAG_BOOTSTRAP_TEAM_SLUG=example
+export OPENTAG_BOOTSTRAP_TEAM_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 pnpm --filter open-tag start login <connect-code>
 ```
+
+The bootstrap email is account profile data, not an email/password credential. The current connect-code flow resolves a
+stable user ID and then uses the provider-neutral token issuer. Future Google or OIDC identity resolvers can join at that
+boundary without changing JWT claims or team authorization; active memberships are always loaded from PostgreSQL.
 
 ## Environment variables
 
@@ -106,7 +112,7 @@ processes.
 | `OPENTAG_JWT_SECRET` | none | Required access-token signing secret; at least 32 characters |
 | `OPENTAG_AUTO_MIGRATE` | `true` | Run checked-in migrations before listening |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | Access-token lifetime |
-| `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-session lifetime |
+| `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-JWT lifetime |
 | `OPENTAG_HOME` | `~/.opentag` | CLI credentials directory |
 
 If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm

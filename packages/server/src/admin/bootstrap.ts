@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient } from "../db/client.js";
-import { connectCodes, memberships, tenants, users } from "../db/schema/index.js";
+import { connectCodes, memberships, teams, users } from "../db/schema/index.js";
 import { generateSecret, hashSecret } from "../services/auth/security.js";
 
 export const BootstrapAdminInputSchema = z
@@ -13,8 +13,8 @@ export const BootstrapAdminInputSchema = z
       .default(15 * 60),
     displayName: z.string().trim().min(1),
     email: z.string().trim().toLowerCase().email(),
-    tenantDisplayName: z.string().trim().min(1),
-    tenantSlug: z
+    teamDisplayName: z.string().trim().min(1),
+    teamSlug: z
       .string()
       .trim()
       .toLowerCase()
@@ -27,7 +27,7 @@ export type BootstrapAdminInput = z.input<typeof BootstrapAdminInputSchema>;
 export interface BootstrapAdminResult {
   connectCode: string;
   expiresAt: Date;
-  tenantId: string;
+  teamId: string;
   userId: string;
 }
 
@@ -51,15 +51,15 @@ export async function bootstrapInitialAdmin(
       .insert(users)
       .values({ email: validated.email, displayName: validated.displayName })
       .returning({ id: users.id });
-    const [tenant] = await transaction
-      .insert(tenants)
-      .values({ slug: validated.tenantSlug, displayName: validated.tenantDisplayName })
-      .returning({ id: tenants.id });
-    if (!user || !tenant) {
+    const [team] = await transaction
+      .insert(teams)
+      .values({ slug: validated.teamSlug, displayName: validated.teamDisplayName })
+      .returning({ id: teams.id });
+    if (!user || !team) {
       throw new Error("Failed to create the initial account");
     }
 
-    await transaction.insert(memberships).values({ tenantId: tenant.id, userId: user.id, role: "admin" });
+    await transaction.insert(memberships).values({ teamId: team.id, userId: user.id, role: "admin" });
     await transaction.insert(connectCodes).values({
       codeHash: hashSecret(connectCode),
       userId: user.id,
@@ -67,6 +67,6 @@ export async function bootstrapInitialAdmin(
       expiresAt,
     });
 
-    return { connectCode, expiresAt, tenantId: tenant.id, userId: user.id };
+    return { connectCode, expiresAt, teamId: team.id, userId: user.id };
   });
 }

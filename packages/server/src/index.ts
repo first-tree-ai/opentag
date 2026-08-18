@@ -4,7 +4,7 @@ import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { parseServerConfig } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
-import { AccessTokenService, AuthService } from "./services/auth/index.js";
+import { AuthService, AuthTokenService } from "./services/auth/index.js";
 
 export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
 export { createApp } from "./app.js";
@@ -17,7 +17,7 @@ export {
   verifyDatabaseMigrations,
   withMigrationLock,
 } from "./db/migrate.js";
-export { AccessTokenService, AuthService, AuthServiceError } from "./services/auth/index.js";
+export { AuthService, AuthServiceError, AuthTokenService } from "./services/auth/index.js";
 
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
@@ -36,10 +36,7 @@ export async function startServer(): Promise<void> {
     const { database, sql } = createDatabaseClient(config.databaseUrl);
     const authService = new AuthService(
       database,
-      new AccessTokenService(config.jwtSecret, config.accessTokenTtlSeconds),
-      {
-        refreshTokenTtlSeconds: config.refreshTokenTtlSeconds,
-      },
+      new AuthTokenService(config.jwtSecret, config.accessTokenTtlSeconds, config.refreshTokenTtlSeconds),
     );
     app = createApp({ authService, readiness });
     app.addHook("onClose", async () => sql.end());

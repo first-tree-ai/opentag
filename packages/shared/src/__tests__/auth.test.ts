@@ -22,7 +22,7 @@ describe("auth contracts", () => {
   });
 
   it("rejects unexpected fields on every request", () => {
-    expect(() => ConnectCodeExchangeRequestSchema.parse({ code: "1234567890abcdef", tenantId: "authority" })).toThrow();
+    expect(() => ConnectCodeExchangeRequestSchema.parse({ code: "1234567890abcdef", teamId: "authority" })).toThrow();
     expect(() => RefreshTokenRequestSchema.parse({ refreshToken: "token", role: "admin" })).toThrow();
   });
 
@@ -35,9 +35,9 @@ describe("auth contracts", () => {
       },
       memberships: [
         {
-          tenantId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
-          tenantSlug: "example",
-          tenantDisplayName: "Example",
+          teamId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
+          teamSlug: "example",
+          teamDisplayName: "Example",
           role: "admin",
         },
       ],

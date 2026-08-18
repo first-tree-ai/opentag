@@ -11,8 +11,8 @@ OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与
 - 包含 CLI、Client、Server 和 Shared 的 TypeScript monorepo；
 - 带健康与就绪检查端点的 Fastify Server；
 - 会校验 schema 的 Client 健康检查；
-- PostgreSQL migration，以及首个用户和 tenant 的 bootstrap 认证；
-- 使用轮换 refresh credential 的一次性 connect code 登录；
+- PostgreSQL migration，以及首个用户和 team 的 bootstrap 认证；
+- 使用滑动续期无状态 refresh JWT 的一次性 connect code 登录；
 - `opentag doctor` 和 `opentag login` 命令。
 
 仓库尚未实现即时通信集成、Agent Provider 或 Session Runtime。

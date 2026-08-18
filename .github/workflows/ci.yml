@@ -223,12 +223,12 @@ jobs:
           bootstrap=$(docker exec \
             --env OPENTAG_BOOTSTRAP_EMAIL=admin@example.com \
             --env OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin \
-            --env OPENTAG_BOOTSTRAP_TENANT_SLUG=example \
-            --env OPENTAG_BOOTSTRAP_TENANT_NAME=Example \
+            --env OPENTAG_BOOTSTRAP_TEAM_SLUG=example \
+            --env OPENTAG_BOOTSTRAP_TEAM_NAME=Example \
             opentag-server-ci node packages/server/dist/admin/bootstrap-cli.mjs)
           node -e '
             const result = JSON.parse(process.argv[1]);
-            if (!result.userId || !result.tenantId || !result.connectCode || !result.expiresAt) {
+            if (!result.userId || !result.teamId || !result.connectCode || !result.expiresAt) {
               throw new Error("Bootstrap output is incomplete");
             }
           ' "$bootstrap"

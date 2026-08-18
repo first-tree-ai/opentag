@@ -23,7 +23,6 @@ function createAuthService(): UserAuthService {
       expiresIn: 900,
     }),
     getAuthenticatedUser: vi.fn().mockResolvedValue({
-      sessionId: "938c1f22-5e24-48b9-a82d-b336ac01820f",
       me: {
         user: {
           id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
@@ -32,9 +31,9 @@ function createAuthService(): UserAuthService {
         },
         memberships: [
           {
-            tenantId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
-            tenantSlug: "example",
-            tenantDisplayName: "Example",
+            teamId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
+            teamSlug: "example",
+            teamDisplayName: "Example",
             role: "admin",
           },
         ],
@@ -67,11 +66,42 @@ describe("auth HTTP API", () => {
     const response = await app.inject({
       method: "POST",
       url: "/v1/auth/connect/exchange",
-      payload: { code: "1234567890abcdef", tenantId: "caller-authority" },
+      payload: { code: "1234567890abcdef", teamId: "caller-authority" },
     });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: { code: "VALIDATION_ERROR", category: "validation" } });
     expect(authService.exchangeConnectCode).not.toHaveBeenCalled();
+  });
+
+  it("preserves malformed JSON as a typed client error", async () => {
+    const authService = createAuthService();
+    const app = createApp({ authService });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/auth/connect/exchange",
+      headers: { "content-type": "application/json" },
+      payload: '{"code":',
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: "VALIDATION_ERROR", category: "validation" } });
+    expect(authService.exchangeConnectCode).not.toHaveBeenCalled();
+  });
+
+  it("classifies an invalid service response as an internal error", async () => {
+    const authService = createAuthService();
+    vi.mocked(authService.exchangeConnectCode).mockResolvedValue({ accessToken: "missing-fields" } as never);
+    const app = createApp({ authService });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/auth/connect/exchange",
+      payload: { code: "1234567890abcdef" },
+    });
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toMatchObject({ error: { code: "INTERNAL_ERROR", category: "transient" } });
   });
 
   it("authenticates /v1/me and returns live membership data", async () => {
@@ -88,7 +118,7 @@ describe("auth HTTP API", () => {
       headers: { authorization: "Bearer access" },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ memberships: [{ tenantSlug: "example", role: "admin" }] });
+    expect(response.json()).toMatchObject({ memberships: [{ teamSlug: "example", role: "admin" }] });
     expect(authService.getAuthenticatedUser).toHaveBeenCalledWith("access");
   });
 });

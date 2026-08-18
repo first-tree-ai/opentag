@@ -1,19 +1,17 @@
 import type { ConnectCodeExchangeResponse, MeResponse, RefreshTokenResponse } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { authSessions, connectCodes, memberships, tenants, users } from "../../db/schema/index.js";
+import { connectCodes, memberships, teams, users } from "../../db/schema/index.js";
 import { AuthServiceError, invalidCredential } from "./errors.js";
-import { generateSecret, hashSecret } from "./security.js";
-import type { AccessTokenService } from "./tokens.js";
+import { hashSecret } from "./security.js";
+import type { AuthTokenProvider } from "./tokens.js";
 
 export interface AuthServiceOptions {
   now?: () => Date;
-  refreshTokenTtlSeconds: number;
 }
 
 export interface AuthenticatedUser {
   me: MeResponse;
-  sessionId: string;
 }
 
 export interface UserAuthService {
@@ -22,25 +20,26 @@ export interface UserAuthService {
   refresh(refreshToken: string): Promise<RefreshTokenResponse>;
 }
 
-export class AuthService implements UserAuthService {
-  readonly #accessTokens: AccessTokenService;
+/** Issues OpenTag credentials after any login provider has resolved and verified a stable user id. */
+export interface ResolvedUserTokenIssuer {
+  issueTokensForUser(userId: string): Promise<RefreshTokenResponse>;
+}
+
+export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
+  readonly #authTokens: AuthTokenProvider;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
-  readonly #options: AuthServiceOptions;
 
-  constructor(database: DatabaseClient, accessTokens: AccessTokenService, options: AuthServiceOptions) {
+  constructor(database: DatabaseClient, authTokens: AuthTokenProvider, options: AuthServiceOptions = {}) {
     this.#database = database;
-    this.#accessTokens = accessTokens;
-    this.#options = options;
+    this.#authTokens = authTokens;
     this.#now = options.now ?? (() => new Date());
   }
 
   async exchangeConnectCode(code: string): Promise<ConnectCodeExchangeResponse> {
     const now = this.#now();
     const codeHash = hashSecret(code);
-    const refreshToken = generateSecret();
-    const refreshTokenHash = hashSecret(refreshToken);
-    const session = await this.#database.transaction(async (transaction) => {
+    return this.#database.transaction(async (transaction) => {
       const [connectCode] = await transaction
         .select()
         .from(connectCodes)
@@ -66,7 +65,7 @@ export class AuthService implements UserAuthService {
       }
 
       const [membership] = await transaction
-        .select({ tenantId: memberships.tenantId })
+        .select({ teamId: memberships.teamId })
         .from(memberships)
         .where(and(eq(memberships.userId, user.id), isNull(memberships.leftAt)))
         .limit(1);
@@ -74,94 +73,44 @@ export class AuthService implements UserAuthService {
         throw new AuthServiceError(
           "AUTH_MEMBERSHIP_REQUIRED",
           "deterministic",
-          "An active tenant membership is required",
+          "An active team membership is required",
           403,
         );
       }
 
-      const [createdSession] = await transaction
-        .insert(authSessions)
-        .values({
-          userId: user.id,
-          refreshTokenHash,
-          expiresAt: new Date(now.getTime() + this.#options.refreshTokenTtlSeconds * 1000),
-        })
-        .returning({ id: authSessions.id, userId: authSessions.userId });
-      if (!createdSession) {
-        throw new Error("Failed to create an authentication session");
-      }
-
-      await transaction
+      const tokenPair = await this.#authTokens.issuePairForUser(user.id);
+      const [consumed] = await transaction
         .update(connectCodes)
         .set({ consumedAt: now })
-        .where(and(eq(connectCodes.id, connectCode.id), isNull(connectCodes.consumedAt)));
-      return createdSession;
+        .where(and(eq(connectCodes.id, connectCode.id), isNull(connectCodes.consumedAt)))
+        .returning({ id: connectCodes.id });
+      if (!consumed) {
+        throw invalidCredential("AUTH_CODE_CONSUMED", "The connect code has already been used");
+      }
+      return { ...tokenPair, tokenType: "Bearer" as const };
     });
-
-    return this.#createTokenResponse(session.userId, session.id, refreshToken);
   }
 
   async refresh(refreshToken: string): Promise<RefreshTokenResponse> {
-    const now = this.#now();
-    const currentHash = hashSecret(refreshToken);
-    const nextRefreshToken = generateSecret();
-    const nextHash = hashSecret(nextRefreshToken);
-    const session = await this.#database.transaction(async (transaction) => {
-      const [current] = await transaction
-        .select()
-        .from(authSessions)
-        .where(eq(authSessions.refreshTokenHash, currentHash))
-        .for("update");
-      if (!current) {
-        throw invalidCredential("AUTH_INVALID_TOKEN", "The refresh token is invalid");
-      }
-      if (current.revokedAt) {
-        throw invalidCredential("AUTH_SESSION_REVOKED", "The authentication session has been revoked");
-      }
-      if (current.expiresAt <= now) {
-        throw invalidCredential("AUTH_INVALID_TOKEN", "The refresh token has expired");
-      }
+    const identity = await this.#authTokens.verifyRefresh(refreshToken);
+    return this.issueTokensForUser(identity.userId);
+  }
 
-      const [user] = await transaction.select().from(users).where(eq(users.id, current.userId)).limit(1);
-      if (!user) {
-        throw invalidCredential("AUTH_INVALID_TOKEN", "The refresh token is invalid");
-      }
-      if (user.suspendedAt) {
-        throw invalidCredential("AUTH_USER_SUSPENDED", "The user account is suspended");
-      }
-
-      const [rotated] = await transaction
-        .update(authSessions)
-        .set({
-          lastUsedAt: now,
-          refreshTokenHash: nextHash,
-          updatedAt: now,
-        })
-        .where(and(eq(authSessions.id, current.id), isNull(authSessions.revokedAt)))
-        .returning({ id: authSessions.id, userId: authSessions.userId });
-      if (!rotated) {
-        throw new Error("Failed to rotate the authentication session");
-      }
-      return rotated;
-    });
-
-    return this.#createTokenResponse(session.userId, session.id, nextRefreshToken);
+  /** Shared post-identity boundary for connect codes and future OAuth/OIDC resolvers. */
+  async issueTokensForUser(userId: string): Promise<RefreshTokenResponse> {
+    await this.#resolveActiveUser(userId);
+    return { ...(await this.#authTokens.issuePairForUser(userId)), tokenType: "Bearer" };
   }
 
   async getAuthenticatedUser(accessToken: string): Promise<AuthenticatedUser> {
-    const identity = await this.#accessTokens.verify(accessToken);
-    const [session] = await this.#database
-      .select({ expiresAt: authSessions.expiresAt, revokedAt: authSessions.revokedAt, userId: authSessions.userId })
-      .from(authSessions)
-      .where(eq(authSessions.id, identity.sessionId))
-      .limit(1);
-    if (!session || session.userId !== identity.userId || session.revokedAt || session.expiresAt <= this.#now()) {
-      throw invalidCredential("AUTH_SESSION_REVOKED", "The authentication session has been revoked");
-    }
+    const identity = await this.#authTokens.verifyAccess(accessToken);
+    return { me: await this.#resolveActiveUser(identity.userId) };
+  }
 
-    const [user] = await this.#database.select().from(users).where(eq(users.id, identity.userId)).limit(1);
+  async #resolveActiveUser(userId: string): Promise<MeResponse> {
+    const [user] = await this.#database.select().from(users).where(eq(users.id, userId)).limit(1);
     if (!user) {
-      throw invalidCredential("AUTH_INVALID_TOKEN", "The access token is invalid");
+      throw invalidCredential("AUTH_INVALID_TOKEN", "The token is invalid");
     }
     if (user.suspendedAt) {
       throw invalidCredential("AUTH_USER_SUSPENDED", "The user account is suspended");
@@ -170,45 +119,25 @@ export class AuthService implements UserAuthService {
     const activeMemberships = await this.#database
       .select({
         role: memberships.role,
-        tenantDisplayName: tenants.displayName,
-        tenantId: tenants.id,
-        tenantSlug: tenants.slug,
+        teamDisplayName: teams.displayName,
+        teamId: teams.id,
+        teamSlug: teams.slug,
       })
       .from(memberships)
-      .innerJoin(tenants, eq(memberships.tenantId, tenants.id))
-      .where(and(eq(memberships.userId, user.id), isNull(memberships.leftAt)));
+      .innerJoin(teams, eq(memberships.teamId, teams.id))
+      .where(and(eq(memberships.userId, userId), isNull(memberships.leftAt)));
     if (activeMemberships.length === 0) {
       throw new AuthServiceError(
         "AUTH_MEMBERSHIP_REQUIRED",
         "deterministic",
-        "An active tenant membership is required",
+        "An active team membership is required",
         403,
       );
     }
 
     return {
-      sessionId: identity.sessionId,
-      me: {
-        user: { id: user.id, email: user.email, displayName: user.displayName },
-        memberships: activeMemberships,
-      },
-    };
-  }
-
-  async revokeSession(sessionId: string): Promise<void> {
-    const now = this.#now();
-    await this.#database
-      .update(authSessions)
-      .set({ revokedAt: now, updatedAt: now })
-      .where(and(eq(authSessions.id, sessionId), isNull(authSessions.revokedAt)));
-  }
-
-  async #createTokenResponse(userId: string, sessionId: string, refreshToken: string) {
-    return {
-      accessToken: await this.#accessTokens.issue({ userId, sessionId }),
-      refreshToken,
-      tokenType: "Bearer" as const,
-      expiresIn: this.#accessTokens.ttlSeconds,
+      user: { id: user.id, email: user.email, displayName: user.displayName },
+      memberships: activeMemberships,
     };
   }
 }

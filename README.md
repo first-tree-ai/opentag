@@ -10,8 +10,8 @@ This repository currently provides the engineering foundation and first control-
 - a TypeScript monorepo with CLI, client, server, and shared workspaces;
 - a Fastify server with health and readiness endpoints;
 - a schema-validating client health check;
-- PostgreSQL migrations and bootstrap authentication for the first user and tenant;
-- one-time connect-code login with rotating refresh credentials; and
+- PostgreSQL migrations and bootstrap authentication for the first user and team;
+- one-time connect-code login with sliding stateless refresh JWTs; and
 - `opentag doctor` and `opentag login` commands.
 
 Messaging integrations, agent providers, and session runtimes are not implemented yet.

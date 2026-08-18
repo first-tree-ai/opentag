@@ -4,7 +4,7 @@
 
 ## Prerequisites
 
-- Node.js 22.13 or newer (Node.js 24 is recommended)
+- Node.js 22.13 or newer on 22.x, Node.js 24.x, or Node.js 26.x (use the latest patch; Node.js 24 is primary)
 - Corepack and pnpm 10.12.1
 - Docker with Compose support, only when running the local PostgreSQL service
 
@@ -29,8 +29,10 @@ pnpm test
 Use `pnpm lint` for lint-only feedback. Use `pnpm format` to apply Biome formatting.
 
 The required pull request check is the stable `CI` fan-in job. It covers the commands above, source and staging CLI
-tarball installation, and a production-container health smoke. To exercise the current source tarball locally after a
-build:
+tarball installation, a production-container health smoke, and the supported Node.js lines. Full validation and releases
+run on Node.js 24. Compatibility jobs run `pnpm check:node-compat` on the exact Node.js 22.13.0 floor and the latest
+Node.js 26 release; that command builds, tests, and installs the packed CLI. Node.js 23 and 25 are end-of-life and are not
+supported. To exercise the current source tarball locally after a build:
 
 ~~~bash
 node scripts/cli-pack-smoke.mjs \

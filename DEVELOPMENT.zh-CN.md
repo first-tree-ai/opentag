@@ -1,11 +1,11 @@
 # OpenTag 开发指南
 
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-08-17
+> Last synced with: 2026-08-18
 
 ## 前置要求
 
-- Node.js 22.13 或更高版本（推荐 Node.js 24）
+- Node.js 22.x（最低 22.13）、Node.js 24.x 或 Node.js 26.x（使用最新补丁版本；主力版本为 Node.js 24）
 - Corepack 和 pnpm 10.12.1
 - Docker 及 Compose 支持（仅运行本地 PostgreSQL 服务时需要）
 
@@ -29,8 +29,10 @@ pnpm test
 
 仅检查 lint 可运行 `pnpm lint`；应用 Biome 格式化可运行 `pnpm format`。
 
-Pull Request 的必过检查是稳定的 `CI` fan-in job。它会覆盖上述命令、source/staging CLI tarball 安装和生产容器
-健康检查。构建后可在本地验证当前 source tarball：
+Pull Request 的必过检查是稳定的 `CI` fan-in job。它会覆盖上述命令、source/staging CLI tarball 安装、生产容器
+健康检查和受支持的 Node.js 版本。完整验证与发布使用 Node.js 24；兼容 job 会在精确下限 Node.js 22.13.0 和
+最新 Node.js 26 上运行 `pnpm check:node-compat`，完成构建、测试和 CLI tarball 安装。Node.js 23 与 25 已 EOL，
+不在支持范围内。构建后可在本地验证当前 source tarball：
 
 ~~~bash
 node scripts/cli-pack-smoke.mjs \

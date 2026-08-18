@@ -14,6 +14,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  PRIMARY_NODE_VERSION: "24"
+
 jobs:
   checks:
     name: Checks
@@ -47,7 +50,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22.13.1
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
           cache: pnpm
 
       - name: Install dependencies
@@ -65,6 +68,38 @@ jobs:
       - name: Test
         run: pnpm test
 
+  node-compatibility:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - node: "22.13.0"
+            name: Node 22.13.0 Compatibility
+          - node: "26"
+            name: Node 26 Compatibility
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.12.1
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --config.engine-strict=true
+
+      - name: Run compatibility smokes
+        run: pnpm check:node-compat
+
   cli-pack-smoke:
     name: CLI Pack Smoke
     runs-on: ubuntu-latest
@@ -80,7 +115,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22.13.1
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
           cache: pnpm
 
       - name: Install dependencies
@@ -176,6 +211,7 @@ jobs:
     if: always()
     needs:
       - checks
+      - node-compatibility
       - cli-pack-smoke
       - container-smoke
     runs-on: ubuntu-latest
@@ -183,10 +219,11 @@ jobs:
       - name: Verify required jobs
         env:
           CHECKS_RESULT: ${{ needs.checks.result }}
+          NODE_COMPATIBILITY_RESULT: ${{ needs.node-compatibility.result }}
           CLI_PACK_RESULT: ${{ needs.cli-pack-smoke.result }}
           CONTAINER_RESULT: ${{ needs.container-smoke.result }}
         run: |
-          for result in "$CHECKS_RESULT" "$CLI_PACK_RESULT" "$CONTAINER_RESULT"; do
+          for result in "$CHECKS_RESULT" "$NODE_COMPATIBILITY_RESULT" "$CLI_PACK_RESULT" "$CONTAINER_RESULT"; do
             if [ "$result" != "success" ]; then
               echo "Required CI job did not succeed: $result" >&2
               exit 1

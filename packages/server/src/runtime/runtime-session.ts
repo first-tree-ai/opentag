@@ -3,6 +3,7 @@ import {
   type ComputerRegisterFrame,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_VERSION,
+  RUNTIME_V0_CAPABILITIES,
   type RuntimeErrorFrame,
   RuntimeFrameEnvelopeSchema,
   runtimeFrameByteLength,
@@ -80,6 +81,7 @@ export class RuntimeSession {
     const heartbeat = ServerWelcomeFrameSchema.parse({
       type: "server:welcome",
       protocolVersion: RUNTIME_PROTOCOL_VERSION,
+      capabilities: RUNTIME_V0_CAPABILITIES,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 30_000,
       heartbeatTimeoutMs: options.heartbeatTimeoutMs ?? 90_000,
     });
@@ -214,6 +216,7 @@ export class RuntimeSession {
       this.#send({
         type: "server:welcome",
         protocolVersion: RUNTIME_PROTOCOL_VERSION,
+        capabilities: RUNTIME_V0_CAPABILITIES,
         heartbeatIntervalMs: this.#options.heartbeatIntervalMs,
         heartbeatTimeoutMs: this.#options.heartbeatTimeoutMs,
       });

@@ -578,7 +578,13 @@ function tokenProvider(): AccessTokenProvider {
 }
 
 function welcome(heartbeatIntervalMs = 10, heartbeatTimeoutMs = 1_000) {
-  return { type: "server:welcome", protocolVersion: 1, heartbeatIntervalMs, heartbeatTimeoutMs };
+  return {
+    type: "server:welcome",
+    protocolVersion: 1,
+    capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1 },
+    heartbeatIntervalMs,
+    heartbeatTimeoutMs,
+  };
 }
 
 function completeAuth(

@@ -3,6 +3,12 @@ import { ComputerPlatformSchema } from "./computer.js";
 import { ErrorCodeSchema } from "./errors.js";
 
 export const RUNTIME_PROTOCOL_VERSION = 1 as const;
+export const RUNTIME_V0_CAPABILITIES = {
+  sessionReconcile: 1,
+  imDelivery: 1,
+  turnReport: 1,
+  agentTrace: 1,
+} as const;
 export const RUNTIME_MAX_FRAME_BYTES = 64 * 1024;
 export const RUNTIME_HEARTBEAT_INTERVAL_MIN_MS = 10;
 export const RUNTIME_HEARTBEAT_INTERVAL_MAX_MS = 5 * 60 * 1_000;
@@ -30,10 +36,20 @@ export const RuntimeHeartbeatTimeoutMsSchema = z
   .min(RUNTIME_HEARTBEAT_TIMEOUT_MIN_MS)
   .max(RUNTIME_HEARTBEAT_TIMEOUT_MAX_MS);
 
+export const RuntimeCapabilitiesSchema = z
+  .object({
+    sessionReconcile: z.literal(1),
+    imDelivery: z.literal(1),
+    turnReport: z.literal(1),
+    agentTrace: z.literal(1),
+  })
+  .strict();
+
 export const ServerWelcomeFrameSchema = z
   .object({
     type: z.literal("server:welcome"),
     protocolVersion: z.literal(RUNTIME_PROTOCOL_VERSION),
+    capabilities: RuntimeCapabilitiesSchema,
     heartbeatIntervalMs: RuntimeHeartbeatIntervalMsSchema,
     heartbeatTimeoutMs: RuntimeHeartbeatTimeoutMsSchema,
   })
@@ -145,6 +161,7 @@ export const ServerRuntimeFrameSchema = z.discriminatedUnion("type", [
 ]);
 
 export type ServerWelcomeFrame = z.infer<typeof ServerWelcomeFrameSchema>;
+export type RuntimeCapabilities = z.infer<typeof RuntimeCapabilitiesSchema>;
 export type RuntimeFrameEnvelope = z.infer<typeof RuntimeFrameEnvelopeSchema>;
 export type AuthFrame = z.infer<typeof AuthFrameSchema>;
 export type AuthResultFrame = z.infer<typeof AuthResultFrameSchema>;

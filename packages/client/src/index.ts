@@ -15,7 +15,11 @@ export {
   ServerHealthNetworkError,
   ServerHealthResponseError,
 } from "./health.js";
-export { ClientRuntime } from "./runtime/client-runtime.js";
+export {
+  ClientRuntime,
+  type ClientRuntimeOptions,
+  type DeliveryDecision,
+} from "./runtime/client-runtime.js";
 export {
   COMPUTER_IDENTITY_FILE_NAME,
   type ComputerIdentity,
@@ -35,4 +39,15 @@ export {
   type RuntimeSendOptions,
   type RuntimeSendPriority,
 } from "./runtime/runtime-connection.js";
+export {
+  type AgentRuntimeState,
+  type RuntimeLocalPolicy,
+  type RuntimePreparation,
+  type SessionActivity,
+  type SessionActivityPhase,
+  SessionReconciler,
+  type SessionReconcilerOptions,
+  type SessionRuntimeState,
+  type SessionTurnIdentity,
+} from "./runtime/session-reconciler.js";
 export { readPrivateJson, writePrivateJson } from "./storage/private-json-file.js";

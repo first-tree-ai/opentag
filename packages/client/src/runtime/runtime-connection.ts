@@ -5,6 +5,7 @@ import {
   RuntimeFrameEnvelopeSchema,
   runtimeFrameByteLength,
   runtimeWebSocketUrl,
+  ServerRuntimeBusinessFrameSchema,
   ServerRuntimeFrameSchema,
   type ServerWelcomeFrame,
 } from "@opentag/shared";
@@ -157,6 +158,14 @@ export class RuntimeConnection {
 
   get state(): RuntimeConnectionState {
     return this.#state;
+  }
+
+  get computerId(): string {
+    return this.#options.computer.computerId;
+  }
+
+  get instanceId(): string {
+    return this.#options.instanceId;
   }
 
   subscribeState(listener: (state: RuntimeConnectionState) => void): () => void {
@@ -403,11 +412,11 @@ export class RuntimeConnection {
           if (
             this.#state === "registered" &&
             !SERVER_CONTROL_FRAME_TYPES.has(envelope.data.type) &&
-            this.#options.parseBusinessFrame
+            (this.#options.parseBusinessFrame ?? parseServerBusinessFrame)
           ) {
             let businessFrame: RuntimeBusinessFrame | undefined;
             try {
-              businessFrame = this.#options.parseBusinessFrame(decoded);
+              businessFrame = (this.#options.parseBusinessFrame ?? parseServerBusinessFrame)(decoded);
             } catch {
               businessFrame = undefined;
             }
@@ -743,6 +752,11 @@ function safeJson(value: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+function parseServerBusinessFrame(value: unknown): RuntimeBusinessFrame | undefined {
+  const parsed = ServerRuntimeBusinessFrameSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 
 function abortError(): RuntimeSendError {

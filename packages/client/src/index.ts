@@ -24,8 +24,15 @@ export {
   resolveComputerIdentity,
 } from "./runtime/computer-identity.js";
 export {
+  type RuntimeBusinessFrame,
   RuntimeConnection,
   RuntimeConnectionError,
   type RuntimeConnectionOptions,
+  type RuntimeConnectionState,
+  type RuntimeQueueLimits,
+  RuntimeSendError,
+  type RuntimeSendErrorCode,
+  type RuntimeSendOptions,
+  type RuntimeSendPriority,
 } from "./runtime/runtime-connection.js";
 export { readPrivateJson, writePrivateJson } from "./storage/private-json-file.js";

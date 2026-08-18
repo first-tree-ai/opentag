@@ -3,19 +3,58 @@ import { ComputerPlatformSchema } from "./computer.js";
 import { ErrorCodeSchema } from "./errors.js";
 
 export const RUNTIME_PROTOCOL_VERSION = 1 as const;
+export const RUNTIME_MAX_FRAME_BYTES = 64 * 1024;
+export const RUNTIME_HEARTBEAT_INTERVAL_MIN_MS = 10;
+export const RUNTIME_HEARTBEAT_INTERVAL_MAX_MS = 5 * 60 * 1_000;
+export const RUNTIME_HEARTBEAT_TIMEOUT_MIN_MS = 100;
+export const RUNTIME_HEARTBEAT_TIMEOUT_MAX_MS = 15 * 60 * 1_000;
 export const RuntimeRequestIdSchema = z.string().uuid();
+
+export const RuntimeFrameEnvelopeSchema = z
+  .object({
+    type: z.string().min(1).max(128),
+    requestId: RuntimeRequestIdSchema.optional(),
+    protocolVersion: z.number().int().safe().optional(),
+  })
+  .passthrough();
+
+export const RuntimeHeartbeatIntervalMsSchema = z
+  .number()
+  .int()
+  .min(RUNTIME_HEARTBEAT_INTERVAL_MIN_MS)
+  .max(RUNTIME_HEARTBEAT_INTERVAL_MAX_MS);
+
+export const RuntimeHeartbeatTimeoutMsSchema = z
+  .number()
+  .int()
+  .min(RUNTIME_HEARTBEAT_TIMEOUT_MIN_MS)
+  .max(RUNTIME_HEARTBEAT_TIMEOUT_MAX_MS);
 
 export const ServerWelcomeFrameSchema = z
   .object({
     type: z.literal("server:welcome"),
     protocolVersion: z.literal(RUNTIME_PROTOCOL_VERSION),
-    heartbeatIntervalMs: z.number().int().positive(),
-    heartbeatTimeoutMs: z.number().int().positive(),
+    heartbeatIntervalMs: RuntimeHeartbeatIntervalMsSchema,
+    heartbeatTimeoutMs: RuntimeHeartbeatTimeoutMsSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.heartbeatTimeoutMs < frame.heartbeatIntervalMs * 2) {
+      context.addIssue({
+        code: "custom",
+        path: ["heartbeatTimeoutMs"],
+        message: "Heartbeat timeout must be at least twice the interval",
+      });
+    }
+  });
 
 export const AuthFrameSchema = z
-  .object({ type: z.literal("auth"), requestId: RuntimeRequestIdSchema, accessToken: z.string().min(1).max(4096) })
+  .object({
+    type: z.literal("auth"),
+    requestId: RuntimeRequestIdSchema,
+    protocolVersion: z.literal(RUNTIME_PROTOCOL_VERSION),
+    accessToken: z.string().min(1).max(4096),
+  })
   .strict();
 export const AuthResultFrameSchema = z
   .object({
@@ -106,6 +145,7 @@ export const ServerRuntimeFrameSchema = z.discriminatedUnion("type", [
 ]);
 
 export type ServerWelcomeFrame = z.infer<typeof ServerWelcomeFrameSchema>;
+export type RuntimeFrameEnvelope = z.infer<typeof RuntimeFrameEnvelopeSchema>;
 export type AuthFrame = z.infer<typeof AuthFrameSchema>;
 export type AuthResultFrame = z.infer<typeof AuthResultFrameSchema>;
 export type ComputerRegisterFrame = z.infer<typeof ComputerRegisterFrameSchema>;
@@ -115,3 +155,7 @@ export type HeartbeatResultFrame = z.infer<typeof HeartbeatResultFrameSchema>;
 export type RuntimeErrorFrame = z.infer<typeof RuntimeErrorFrameSchema>;
 export type ClientRuntimeFrame = z.infer<typeof ClientRuntimeFrameSchema>;
 export type ServerRuntimeFrame = z.infer<typeof ServerRuntimeFrameSchema>;
+
+export function runtimeFrameByteLength(serializedFrame: string): number {
+  return new TextEncoder().encode(serializedFrame).byteLength;
+}

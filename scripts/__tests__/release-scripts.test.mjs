@@ -25,6 +25,7 @@ const sourceManifest = {
     "@opentag/client": "workspace:*",
     "@opentag/shared": "workspace:*",
     commander: "^13.1.0",
+    ws: "^8.21.3",
   },
 };
 
@@ -57,7 +58,7 @@ test("rewrites the staging identity without losing release metadata", async () =
     assert.equal(manifest.private, undefined);
     assert.equal(manifest.license, "Apache-2.0");
     assert.equal(manifest.repository.url, sourceManifest.repository.url);
-    assert.deepEqual(manifest.devDependencies, { commander: "^13.1.0" });
+    assert.deepEqual(manifest.devDependencies, { commander: "^13.1.0", ws: "^8.21.3" });
   });
 });
 

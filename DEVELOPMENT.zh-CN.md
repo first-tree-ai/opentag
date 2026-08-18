@@ -88,12 +88,13 @@ docker compose down
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
 export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-export OPENTAG_BOOTSTRAP_TEAM_SLUG=example
-export OPENTAG_BOOTSTRAP_TEAM_NAME=Example
+export OPENTAG_BOOTSTRAP_TEAM_NAME=example
+export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 pnpm --filter open-tag start login <connect-code>
 ```
 
+这四个 `OPENTAG_BOOTSTRAP_*` 值仅作为一次性命令的输入，运行中的 Server 不会读取它们。
 bootstrap email 是账号资料，不是邮箱密码凭据。当前 connect code 流程先解析稳定的 user ID，再进入与 provider
 无关的 token 颁发边界。未来 Google 或 OIDC identity resolver 可以接入这个边界，无需改变 JWT claims 或 team
 权限模型；每次鉴权始终从 PostgreSQL 读取有效 membership。

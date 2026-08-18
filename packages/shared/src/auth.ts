@@ -24,11 +24,12 @@ export const RefreshTokenRequestSchema = z
 export const RefreshTokenResponseSchema = z.object(TokenResponseFields).strict();
 
 export const MembershipRoleSchema = z.enum(["admin", "member"]);
+export const TeamNameSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/);
 
 export const MeMembershipSchema = z
   .object({
     teamId: z.string().uuid(),
-    teamSlug: z.string().min(1),
+    teamName: TeamNameSchema,
     teamDisplayName: z.string().min(1),
     role: MembershipRoleSchema,
   })
@@ -52,5 +53,6 @@ export type ConnectCodeExchangeResponse = z.infer<typeof ConnectCodeExchangeResp
 export type RefreshTokenRequest = z.infer<typeof RefreshTokenRequestSchema>;
 export type RefreshTokenResponse = z.infer<typeof RefreshTokenResponseSchema>;
 export type MembershipRole = z.infer<typeof MembershipRoleSchema>;
+export type TeamName = z.infer<typeof TeamNameSchema>;
 export type MeMembership = z.infer<typeof MeMembershipSchema>;
 export type MeResponse = z.infer<typeof MeResponseSchema>;

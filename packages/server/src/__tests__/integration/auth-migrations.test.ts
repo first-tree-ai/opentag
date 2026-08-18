@@ -12,7 +12,7 @@ import {
   verifyDatabaseMigrations,
   withMigrationLock,
 } from "../../db/migrate.js";
-import { connectCodes, memberships, users } from "../../db/schema/index.js";
+import { connectCodes, memberships, teams, users } from "../../db/schema/index.js";
 import {
   AuthService,
   AuthServiceError,
@@ -55,7 +55,7 @@ async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z"), aut
       displayName: "Admin",
       email: "admin@example.com",
       teamDisplayName: "Example",
-      teamSlug: "example",
+      teamName: "example",
     },
     now,
   );
@@ -176,7 +176,7 @@ describe("authentication persistence", () => {
       displayName: "Admin",
       email: "admin@example.com",
       teamDisplayName: "Example",
-      teamSlug: "example",
+      teamName: "example",
     };
 
     try {
@@ -203,7 +203,7 @@ describe("authentication persistence", () => {
           displayName: "   ",
           email: "not-an-email",
           teamDisplayName: "   ",
-          teamSlug: "Not Valid",
+          teamName: "Not Valid",
         }),
       ).rejects.toThrow();
       expect(await client.database.select().from(users)).toHaveLength(0);
@@ -212,10 +212,12 @@ describe("authentication persistence", () => {
         displayName: "  Admin  ",
         email: "  ADMIN@EXAMPLE.COM  ",
         teamDisplayName: "  Example  ",
-        teamSlug: "  EXAMPLE  ",
+        teamName: "  EXAMPLE  ",
       });
       const [storedUser] = await client.database.select().from(users).where(eq(users.id, result.userId));
+      const [storedTeam] = await client.database.select().from(teams).where(eq(teams.id, result.teamId));
       expect(storedUser).toMatchObject({ displayName: "Admin", email: "admin@example.com" });
+      expect(storedTeam).toMatchObject({ displayName: "Example", name: "example" });
     } finally {
       await client.sql.end();
     }

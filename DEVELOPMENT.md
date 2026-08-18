@@ -88,12 +88,13 @@ empty database before creating the initial user, team, admin membership, and con
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
 export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-export OPENTAG_BOOTSTRAP_TEAM_SLUG=example
-export OPENTAG_BOOTSTRAP_TEAM_NAME=Example
+export OPENTAG_BOOTSTRAP_TEAM_NAME=example
+export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 pnpm --filter open-tag start login <connect-code>
 ```
 
+The four `OPENTAG_BOOTSTRAP_*` values are inputs to this one-time command only; the running server does not read them.
 The bootstrap email is account profile data, not an email/password credential. The current connect-code flow resolves a
 stable user ID and then uses the provider-neutral token issuer. Future Google or OIDC identity resolvers can join at that
 boundary without changing JWT claims or team authorization; active memberships are always loaded from PostgreSQL.

@@ -4,6 +4,7 @@ import {
   ConnectCodeExchangeResponseSchema,
   MeResponseSchema,
   RefreshTokenRequestSchema,
+  TeamNameSchema,
 } from "../auth.js";
 
 describe("auth contracts", () => {
@@ -26,6 +27,13 @@ describe("auth contracts", () => {
     expect(() => RefreshTokenRequestSchema.parse({ refreshToken: "token", role: "admin" })).toThrow();
   });
 
+  it("enforces canonical team names", () => {
+    expect(TeamNameSchema.parse("first-tree-1")).toBe("first-tree-1");
+    for (const invalid of ["", "Example", "example team", "example_team"]) {
+      expect(() => TeamNameSchema.parse(invalid)).toThrow();
+    }
+  });
+
   it("validates the current user and live memberships response", () => {
     const response = {
       user: {
@@ -36,7 +44,7 @@ describe("auth contracts", () => {
       memberships: [
         {
           teamId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
-          teamSlug: "example",
+          teamName: "example",
           teamDisplayName: "Example",
           role: "admin",
         },

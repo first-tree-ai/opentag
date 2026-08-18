@@ -24,11 +24,11 @@ export const teams = pgTable(
   "teams",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    slug: text("slug").notNull(),
+    name: text("name").notNull(),
     displayName: text("display_name").notNull(),
     ...timestamps,
   },
-  (table) => [uniqueIndex("teams_slug_unique").on(sql`lower(${table.slug})`)],
+  (table) => [uniqueIndex("teams_name_unique").on(sql`lower(${table.name})`)],
 );
 
 export const memberships = pgTable(

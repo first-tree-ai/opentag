@@ -1,5 +1,5 @@
 {
-  "id": "b964e2c9-25a0-4a7f-bf70-31383e2e0ee8",
+  "id": "6d66c487-f31b-44a9-8222-50886151e05c",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -226,8 +226,8 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "slug": {
-          "name": "slug",
+        "name": {
+          "name": "name",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -254,11 +254,11 @@
         }
       },
       "indexes": {
-        "teams_slug_unique": {
-          "name": "teams_slug_unique",
+        "teams_name_unique": {
+          "name": "teams_name_unique",
           "columns": [
             {
-              "expression": "lower(\"slug\")",
+              "expression": "lower(\"name\")",
               "asc": true,
               "isExpression": true,
               "nulls": "last"

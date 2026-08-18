@@ -13,6 +13,8 @@ export {
   RefreshTokenRequestSchema,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
+  type TeamName,
+  TeamNameSchema,
 } from "./auth.js";
 export {
   type ErrorCategory,

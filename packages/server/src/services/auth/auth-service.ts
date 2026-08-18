@@ -121,7 +121,7 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
         role: memberships.role,
         teamDisplayName: teams.displayName,
         teamId: teams.id,
-        teamSlug: teams.slug,
+        teamName: teams.name,
       })
       .from(memberships)
       .innerJoin(teams, eq(memberships.teamId, teams.id))

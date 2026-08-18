@@ -1,3 +1,4 @@
+import { TeamNameSchema } from "@opentag/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient } from "../db/client.js";
@@ -14,11 +15,7 @@ export const BootstrapAdminInputSchema = z
     displayName: z.string().trim().min(1),
     email: z.string().trim().toLowerCase().email(),
     teamDisplayName: z.string().trim().min(1),
-    teamSlug: z
-      .string()
-      .trim()
-      .toLowerCase()
-      .regex(/^[a-z0-9][a-z0-9-]*$/),
+    teamName: z.string().trim().toLowerCase().pipe(TeamNameSchema),
   })
   .strict();
 
@@ -53,7 +50,7 @@ export async function bootstrapInitialAdmin(
       .returning({ id: users.id });
     const [team] = await transaction
       .insert(teams)
-      .values({ slug: validated.teamSlug, displayName: validated.teamDisplayName })
+      .values({ name: validated.teamName, displayName: validated.teamDisplayName })
       .returning({ id: teams.id });
     if (!user || !team) {
       throw new Error("Failed to create the initial account");

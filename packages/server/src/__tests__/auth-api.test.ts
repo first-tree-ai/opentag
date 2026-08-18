@@ -32,7 +32,7 @@ function createAuthService(): UserAuthService {
         memberships: [
           {
             teamId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
-            teamSlug: "example",
+            teamName: "example",
             teamDisplayName: "Example",
             role: "admin",
           },
@@ -118,7 +118,7 @@ describe("auth HTTP API", () => {
       headers: { authorization: "Bearer access" },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ memberships: [{ teamSlug: "example", role: "admin" }] });
+    expect(response.json()).toMatchObject({ memberships: [{ teamName: "example", role: "admin" }] });
     expect(authService.getAuthenticatedUser).toHaveBeenCalledWith("access");
   });
 });

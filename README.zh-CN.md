@@ -1,7 +1,7 @@
 # OpenTag
 
 > Canonical source: [README.md](./README.md)
-> Last synced with: 2026-08-17
+> Last synced with: 2026-08-18
 
 OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与 AI 编码 Agent。项目目前处于 **pre-alpha**
 阶段：产品工作流仍在开发中，尚不适合生产使用。
@@ -18,7 +18,7 @@ OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与
 
 ## 快速开始
 
-前置要求：Node.js 22.13 或更高版本、Corepack 和 pnpm 10.12.1。
+前置要求：Node.js 22.x（最低 22.13）、Node.js 24.x 或 Node.js 26.x，以及 Corepack 和 pnpm 10.12.1。
 
 ```bash
 corepack enable

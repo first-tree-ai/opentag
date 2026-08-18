@@ -17,7 +17,7 @@ No messaging integration, agent provider, session runtime, or database schema is
 
 ## Quick start
 
-Prerequisites: Node.js 22.13 or newer, Corepack, and pnpm 10.12.1.
+Prerequisites: Node.js 22.13 or newer on the 22.x line, Node.js 24.x, or Node.js 26.x; Corepack; and pnpm 10.12.1.
 
 ```bash
 corepack enable

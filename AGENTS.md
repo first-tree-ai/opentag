@@ -9,7 +9,7 @@ historical feature with the same name in the First Tree repository. Do not copy 
 
 ## Toolchain
 
-- Node.js `>=22.13.0` (Node.js 24 recommended), ESM, strict TypeScript
+- Node.js `^22.13.0 || ^24.0.0 || ^26.0.0` (Node.js 24 primary), ESM, strict TypeScript
 - pnpm 10.12.1 and Turborepo
 - Biome for formatting and linting
 - tsdown for ESM builds and Vitest for tests

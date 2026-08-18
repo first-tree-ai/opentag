@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "workspaces": {
+    "apps/cli": {
+      "name": "open-tag",
+      "private": true,
+      "requiresRootExport": true,
+      "requiresFiles": true,
+      "allowedWorkspaceDependencies": ["@opentag/client", "@opentag/shared"]
+    },
+    "packages/client": {
+      "name": "@opentag/client",
+      "private": true,
+      "requiresRootExport": true,
+      "requiresFiles": true,
+      "allowedWorkspaceDependencies": ["@opentag/shared"]
+    },
+    "packages/server": {
+      "name": "@opentag/server",
+      "private": true,
+      "requiresRootExport": true,
+      "requiresFiles": true,
+      "allowedWorkspaceDependencies": ["@opentag/shared"]
+    },
+    "packages/shared": {
+      "name": "@opentag/shared",
+      "private": true,
+      "requiresRootExport": true,
+      "requiresFiles": true,
+      "allowedWorkspaceDependencies": []
+    }
+  }
+}

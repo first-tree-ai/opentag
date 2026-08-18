@@ -79,9 +79,9 @@ describe("database migrations", () => {
       const [row] = await sql<{ table_count: number }[]>`
         select count(*)::int as table_count
         from information_schema.tables
-        where table_schema = 'public' and table_name in ('users', 'teams', 'memberships', 'connect_codes')
+        where table_schema = 'public' and table_name in ('users', 'teams', 'memberships', 'connect_codes', 'computers')
       `;
-      expect(row?.table_count).toBe(4);
+      expect(row?.table_count).toBe(5);
     } finally {
       await sql.end();
     }
@@ -277,6 +277,25 @@ describe("authentication persistence", () => {
       });
       const [afterRetry] = await fixture.database.select().from(connectCodes);
       expect(afterRetry?.consumedAt).not.toBeNull();
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("does not consume a connect code when a bound home expects another user", async () => {
+    const fixture = await createAuthFixture();
+    try {
+      await expect(
+        fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode, crypto.randomUUID()),
+      ).rejects.toMatchObject({
+        code: "AUTH_USER_MISMATCH",
+        statusCode: 409,
+      });
+      const [afterMismatch] = await fixture.database.select().from(connectCodes);
+      expect(afterMismatch?.consumedAt).toBeNull();
+      await expect(
+        fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode, fixture.bootstrap.userId),
+      ).resolves.toMatchObject({ tokenType: "Bearer" });
     } finally {
       await fixture.sql.end();
     }

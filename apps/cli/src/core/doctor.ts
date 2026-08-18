@@ -6,8 +6,7 @@ import {
   ServerHealthResponseError,
 } from "@opentag/client";
 import type { ServerHealth } from "@opentag/shared";
-
-const DEFAULT_SERVER_URL = "http://127.0.0.1:8000";
+import { channelConfig } from "./channel.js";
 
 export type HealthChecker = (serverUrl: string) => Promise<ServerHealth>;
 
@@ -23,11 +22,18 @@ export interface DoctorResult {
 }
 
 export function resolveServerUrl(serverUrl: string | undefined, env: NodeJS.ProcessEnv = process.env): string {
-  return serverUrl ?? env.OPENTAG_SERVER_URL ?? DEFAULT_SERVER_URL;
+  const resolved = serverUrl ?? env.OPENTAG_SERVER_URL ?? channelConfig.defaultServerUrl;
+  if (!resolved) throw new ServerHealthConfigurationError(`The ${channelConfig.channel} channel requires a server URL`);
+  return resolved;
 }
 
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorResult> {
-  const serverUrl = resolveServerUrl(options.serverUrl, options.env);
+  let serverUrl: string;
+  try {
+    serverUrl = resolveServerUrl(options.serverUrl, options.env);
+  } catch (error) {
+    return { exitCode: 1, message: formatDoctorError(error, "<not configured>") };
+  }
   const healthChecker = options.healthChecker ?? checkServerHealth;
 
   try {

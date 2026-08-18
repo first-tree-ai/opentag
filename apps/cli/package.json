@@ -22,7 +22,7 @@
   },
   "type": "module",
   "bin": {
-    "opentag": "./dist/cli/index.mjs"
+    "opentag-dev": "./dist/cli/index.mjs"
   },
   "exports": {
     ".": {

@@ -12,10 +12,12 @@ export interface AuthServiceOptions {
 
 export interface AuthenticatedUser {
   me: MeResponse;
+  tokenExpiresAt: Date;
 }
 
 export interface UserAuthService {
-  exchangeConnectCode(code: string): Promise<ConnectCodeExchangeResponse>;
+  exchangeConnectCode(code: string, expectedUserId?: string): Promise<ConnectCodeExchangeResponse>;
+  getActiveUserById(userId: string): Promise<MeResponse>;
   getAuthenticatedUser(accessToken: string): Promise<AuthenticatedUser>;
   refresh(refreshToken: string): Promise<RefreshTokenResponse>;
 }
@@ -36,7 +38,7 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
     this.#now = options.now ?? (() => new Date());
   }
 
-  async exchangeConnectCode(code: string): Promise<ConnectCodeExchangeResponse> {
+  async exchangeConnectCode(code: string, expectedUserId?: string): Promise<ConnectCodeExchangeResponse> {
     const now = this.#now();
     const codeHash = hashSecret(code);
     return this.#database.transaction(async (transaction) => {
@@ -62,6 +64,14 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
       }
       if (user.suspendedAt || issuer.suspendedAt) {
         throw invalidCredential("AUTH_USER_SUSPENDED", "The user account is suspended");
+      }
+      if (expectedUserId && expectedUserId !== user.id) {
+        throw new AuthServiceError(
+          "AUTH_USER_MISMATCH",
+          "deterministic",
+          "The connect code belongs to another user",
+          409,
+        );
       }
 
       const [membership] = await transaction
@@ -104,7 +114,11 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
 
   async getAuthenticatedUser(accessToken: string): Promise<AuthenticatedUser> {
     const identity = await this.#authTokens.verifyAccess(accessToken);
-    return { me: await this.#resolveActiveUser(identity.userId) };
+    return { me: await this.#resolveActiveUser(identity.userId), tokenExpiresAt: identity.expiresAt };
+  }
+
+  getActiveUserById(userId: string): Promise<MeResponse> {
+    return this.#resolveActiveUser(userId);
   }
 
   async #resolveActiveUser(userId: string): Promise<MeResponse> {
@@ -113,7 +127,7 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
       throw invalidCredential("AUTH_INVALID_TOKEN", "The token is invalid");
     }
     if (user.suspendedAt) {
-      throw invalidCredential("AUTH_USER_SUSPENDED", "The user account is suspended");
+      throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
     }
 
     const activeMemberships = await this.#database

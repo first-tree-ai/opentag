@@ -13,6 +13,12 @@ describe("auth contracts", () => {
       code: "1234567890abcdef",
     });
     expect(
+      ConnectCodeExchangeRequestSchema.parse({
+        code: "1234567890abcdef",
+        expectedUserId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+      }),
+    ).toMatchObject({ expectedUserId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e" });
+    expect(
       ConnectCodeExchangeResponseSchema.parse({
         accessToken: "access",
         refreshToken: "refresh",

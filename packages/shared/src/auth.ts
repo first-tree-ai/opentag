@@ -10,6 +10,7 @@ const TokenResponseFields = {
 export const ConnectCodeExchangeRequestSchema = z
   .object({
     code: z.string().trim().min(16).max(512),
+    expectedUserId: z.string().uuid().optional(),
   })
   .strict();
 

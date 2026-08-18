@@ -18,6 +18,10 @@
     "test": "vitest run --maxWorkers=1"
   },
   "dependencies": {
-    "@opentag/shared": "workspace:*"
+    "@opentag/shared": "workspace:*",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
   }
 }

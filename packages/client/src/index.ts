@@ -1,4 +1,4 @@
-export { AuthApi, AuthApiError, normalizeServerUrl } from "./auth/api.js";
+export { normalizeServerUrl, OpenTagApi, OpenTagApiError } from "./api.js";
 export {
   CREDENTIALS_FILE_NAME,
   credentialsPath,
@@ -7,7 +7,7 @@ export {
   type StoredCredentials,
   writeCredentialsAtomically,
 } from "./auth/credentials.js";
-export { AccessTokenProvider, type TokenProviderOptions } from "./auth/token-provider.js";
+export { type AccessTokenLease, AccessTokenProvider, type TokenProviderOptions } from "./auth/token-provider.js";
 export {
   checkServerHealth,
   ServerHealthConfigurationError,
@@ -15,3 +15,17 @@ export {
   ServerHealthNetworkError,
   ServerHealthResponseError,
 } from "./health.js";
+export { ClientRuntime } from "./runtime/client-runtime.js";
+export {
+  COMPUTER_IDENTITY_FILE_NAME,
+  type ComputerIdentity,
+  computerIdentityPath,
+  readComputerIdentity,
+  resolveComputerIdentity,
+} from "./runtime/computer-identity.js";
+export {
+  RuntimeConnection,
+  RuntimeConnectionError,
+  type RuntimeConnectionOptions,
+} from "./runtime/runtime-connection.js";
+export { readPrivateJson, writePrivateJson } from "./storage/private-json-file.js";

@@ -40,7 +40,7 @@ node scripts/cli-pack-smoke.mjs \
   --channel source \
   --name open-tag \
   --version 0.0.1 \
-  --binary opentag
+  --binary opentag-dev
 ~~~
 
 ## 运行 Server 与健康检查链路
@@ -94,6 +94,21 @@ pnpm --filter @opentag/server bootstrap:admin
 pnpm --filter open-tag start login <connect-code>
 ```
 
+源码 checkout 属于 `dev` channel。打包后暴露 `opentag-dev` binary，默认使用 `~/.opentag-dev`；staging 与
+production build 分别使用 `opentag-staging` / `~/.opentag-staging` 和 `opentag` / `~/.opentag`。显式设置
+`OPENTAG_HOME` 会覆盖 channel 默认值。
+
+登录后启动前台 daemon，并在另一个终端查看当前用户所有的 Computer：
+
+```bash
+pnpm --filter open-tag start daemon run
+pnpm --filter open-tag start computer list
+```
+
+daemon 会复用 home 中的稳定 Computer ID，每次启动创建新的进程 instance，并连接
+`/api/v1/computer/ws`。Ctrl+C 会干净退出；同一个 home 的第二个 daemon 会被拒绝。CLI 使用
+`/api/v1/auth/...` 与 `/api/v1/me/...`；`/healthz` 和 `/readyz` 继续作为无版本部署探针。
+
 这四个 `OPENTAG_BOOTSTRAP_*` 值仅作为一次性命令的输入，运行中的 Server 不会读取它们。
 bootstrap email 是账号资料，不是邮箱密码凭据。当前 connect code 流程先解析稳定的 user ID，再进入与 provider
 无关的 token 颁发边界。未来 Google 或 OIDC identity resolver 可以接入这个边界，无需改变 JWT claims 或 team
@@ -113,7 +128,7 @@ bootstrap email 是账号资料，不是邮箱密码凭据。当前 connect code
 | `OPENTAG_AUTO_MIGRATE` | `true` | 监听前执行已入库的 migration |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | access token 有效期 |
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | refresh JWT 有效期 |
-| `OPENTAG_HOME` | `~/.opentag` | CLI credentials 目录 |
+| `OPENTAG_HOME` | 随 channel 而定 | CLI credentials、Computer identity 与 daemon ownership 目录（源码默认为 `~/.opentag-dev`） |
 
 如果 `doctor` 失败，其错误类别会区分配置、网络、HTTP 和无效响应。请确认 Server 已启动，且配置的 URL 指向其基础地址。
 

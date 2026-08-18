@@ -12,5 +12,16 @@ const TOKEN_FIELD_PATTERN = /("?(?:accessToken|refreshToken|code)"?\s*[:=]\s*)[^
 const BEARER_PATTERN = /Bearer\s+[A-Za-z0-9._~-]+/gi;
 
 export function redactSecrets(value: string): string {
-  return value.replace(TOKEN_FIELD_PATTERN, "$1[REDACTED]").replace(BEARER_PATTERN, "Bearer [REDACTED]");
+  return value
+    .replace(TOKEN_FIELD_PATTERN, "$1[REDACTED]")
+    .replace(BEARER_PATTERN, "Bearer [REDACTED]")
+    .replace(/(postgres(?:ql)?:\/\/)[^\s/@]+(?::[^\s/@]*)?@/gi, "$1[REDACTED]@");
+}
+
+export function formatStartupError(error: unknown, knownSecrets: string[] = []): string {
+  let detail = error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : String(error);
+  for (const secret of knownSecrets) {
+    if (secret) detail = detail.replaceAll(secret, "[REDACTED]");
+  }
+  return redactSecrets(detail);
 }

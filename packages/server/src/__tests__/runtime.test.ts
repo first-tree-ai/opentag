@@ -3,6 +3,7 @@ import { HTTP_PATHS, ServerRuntimeFrameSchema } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { createApp } from "../app.js";
+import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { AuthServiceError } from "../services/auth/index.js";
 import type { ComputerService } from "../services/computers/index.js";
@@ -159,7 +160,181 @@ describe("Computer runtime WebSocket", () => {
     expect(await nextFrame(socket)).toMatchObject({ type: "error", code: "AUTH_MEMBERSHIP_REQUIRED" });
     await expect(closeCode(socket)).resolves.toBe(4403);
   });
+
+  it("serializes concurrent registration persistence and publishes one final winner", async () => {
+    const registry = new ConnectionRegistry();
+    const computers = computerService();
+    const computerId = randomUUID();
+    const firstInstanceId = randomUUID();
+    const secondInstanceId = randomUUID();
+    let persistedInstanceId: string | undefined;
+    let releaseFirst: (() => void) | undefined;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    computers.register.mockImplementation(async (_userId, frame) => {
+      if (frame.instanceId === firstInstanceId) await firstBlocked;
+      persistedInstanceId = frame.instanceId;
+    });
+    const app = createApp({
+      authService: authService(),
+      computerService: computers as unknown as ComputerService,
+      runtime: { registry },
+    });
+    apps.push(app);
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const first = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+    const second = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+    const firstFrames = frameQueue(first);
+    const secondFrames = frameQueue(second);
+    await Promise.all([authenticate(first, firstFrames), authenticate(second, secondFrames)]);
+    const firstRegister = registerFrame(computerId, firstInstanceId);
+    const secondRegister = registerFrame(computerId, secondInstanceId);
+    first.send(JSON.stringify(firstRegister));
+    await vi.waitFor(() => expect(computers.register).toHaveBeenCalledTimes(1));
+    second.send(JSON.stringify(secondRegister));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(computers.register).toHaveBeenCalledTimes(1);
+    const firstClosed = closeCode(first);
+    releaseFirst?.();
+
+    expect(await firstFrames.next()).toMatchObject({ type: "computer:register:result", ok: true });
+    expect(await secondFrames.next()).toMatchObject({ type: "computer:register:result", ok: true });
+    await expect(firstClosed).resolves.toBe(4001);
+    expect(persistedInstanceId).toBe(secondInstanceId);
+    expect(registry.currentInstanceId(computerId)).toBe(secondInstanceId);
+    second.close();
+  });
+
+  it("rejects an auth-frame flood while authentication is in flight without queueing it", async () => {
+    let releaseAuth: (() => void) | undefined;
+    const authBlocked = new Promise<void>((resolve) => {
+      releaseAuth = resolve;
+    });
+    const auth = authService();
+    vi.mocked(auth.getAuthenticatedUser).mockImplementation(async () => {
+      await authBlocked;
+      return { me, tokenExpiresAt: new Date(Date.now() + 60_000) };
+    });
+    const app = createApp({ authService: auth, computerService: computerService() as unknown as ComputerService });
+    apps.push(app);
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+    const frames = frameQueue(socket);
+    await frames.next();
+    const closed = closeCode(socket);
+    socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), accessToken: "first" }));
+    for (let index = 0; index < 100; index += 1) {
+      socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), accessToken: `flood-${index}` }));
+    }
+    await vi.waitFor(() => expect(auth.getAuthenticatedUser).toHaveBeenCalledTimes(1));
+    expect(await frames.next()).toMatchObject({ type: "error", code: "PROTOCOL_ERROR" });
+    await expect(closed).resolves.toBe(4400);
+    releaseAuth?.();
+    expect(auth.getAuthenticatedUser).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects duplicate register frames while persistence is in flight", async () => {
+    let releaseRegister: (() => void) | undefined;
+    const registerBlocked = new Promise<void>((resolve) => {
+      releaseRegister = resolve;
+    });
+    const computers = computerService();
+    computers.register.mockImplementation(async () => registerBlocked);
+    const registry = new ConnectionRegistry();
+    const app = createApp({
+      authService: authService(),
+      computerService: computers as unknown as ComputerService,
+      runtime: { registry },
+    });
+    apps.push(app);
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+    const frames = frameQueue(socket);
+    await authenticate(socket, frames);
+    const frame = registerFrame(randomUUID(), randomUUID());
+    const closed = closeCode(socket);
+    socket.send(JSON.stringify(frame));
+    socket.send(JSON.stringify({ ...frame, requestId: randomUUID() }));
+    await vi.waitFor(() => expect(computers.register).toHaveBeenCalledTimes(1));
+    expect(await frames.next()).toMatchObject({ type: "error", code: "PROTOCOL_ERROR" });
+    await expect(closed).resolves.toBe(4400);
+    releaseRegister?.();
+    await vi.waitFor(() => expect(computers.disconnect).toHaveBeenCalledWith(frame.computerId, frame.instanceId));
+    expect(computers.register).toHaveBeenCalledTimes(1);
+    expect(registry.currentInstanceId(frame.computerId)).toBeUndefined();
+  });
+
+  it("finishes a closed pending replacement as offline and fences the old socket", async () => {
+    const registry = new ConnectionRegistry();
+    const computers = computerService();
+    const computerId = randomUUID();
+    const oldInstanceId = randomUUID();
+    const replacementInstanceId = randomUUID();
+    let persistedInstanceId: string | undefined;
+    let releaseReplacement: (() => void) | undefined;
+    const replacementBlocked = new Promise<void>((resolve) => {
+      releaseReplacement = resolve;
+    });
+    computers.register.mockImplementation(async (_userId, frame) => {
+      if (frame.instanceId === replacementInstanceId) await replacementBlocked;
+      persistedInstanceId = frame.instanceId;
+    });
+    computers.disconnect.mockImplementation(async (_computerId, instanceId) => {
+      if (persistedInstanceId !== instanceId) return false;
+      persistedInstanceId = undefined;
+      return true;
+    });
+    const app = createApp({
+      authService: authService(),
+      computerService: computers as unknown as ComputerService,
+      runtime: { registry },
+    });
+    apps.push(app);
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const oldSocket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+    const oldFrames = frameQueue(oldSocket);
+    await authenticate(oldSocket, oldFrames);
+    oldSocket.send(JSON.stringify(registerFrame(computerId, oldInstanceId)));
+    expect(await oldFrames.next()).toMatchObject({ type: "computer:register:result", ok: true });
+
+    const replacement = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+    const replacementFrames = frameQueue(replacement);
+    await authenticate(replacement, replacementFrames);
+    replacement.send(JSON.stringify(registerFrame(computerId, replacementInstanceId)));
+    await vi.waitFor(() => expect(computers.register).toHaveBeenCalledTimes(2));
+    const oldClosed = closeCode(oldSocket);
+    const replacementClosed = closeCode(replacement);
+    replacement.close();
+    await replacementClosed;
+    await new Promise((resolve) => setImmediate(resolve));
+    releaseReplacement?.();
+
+    await expect(oldClosed).resolves.toBe(4001);
+    await vi.waitFor(() => expect(computers.disconnect).toHaveBeenCalledWith(computerId, replacementInstanceId));
+    expect(persistedInstanceId).toBeUndefined();
+    expect(registry.currentInstanceId(computerId)).toBeUndefined();
+  });
 });
+
+async function authenticate(socket: WebSocket, frames = frameQueue(socket)): Promise<void> {
+  await frames.next();
+  socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), accessToken: "access" }));
+  expect(await frames.next()).toMatchObject({ type: "auth:result", ok: true });
+}
+
+function registerFrame(computerId: string, instanceId: string) {
+  return {
+    type: "computer:register" as const,
+    requestId: randomUUID(),
+    computerId,
+    instanceId,
+    displayName: "host",
+    platform: "linux" as const,
+    arch: "x64",
+    clientVersion: "0.0.1",
+  };
+}
 
 function nextFrame(socket: WebSocket): Promise<ReturnType<typeof ServerRuntimeFrameSchema.parse>> {
   return new Promise((resolve, reject) => {
@@ -182,6 +357,25 @@ function nextFrame(socket: WebSocket): Promise<ReturnType<typeof ServerRuntimeFr
     socket.on("message", onMessage);
     socket.on("error", onError);
   });
+}
+
+function frameQueue(socket: WebSocket): { next(): Promise<ReturnType<typeof ServerRuntimeFrameSchema.parse>> } {
+  type Frame = ReturnType<typeof ServerRuntimeFrameSchema.parse>;
+  const buffered: Frame[] = [];
+  const waiting: Array<(frame: Frame) => void> = [];
+  socket.on("message", (data) => {
+    const frame = ServerRuntimeFrameSchema.parse(JSON.parse(data.toString()));
+    const resolve = waiting.shift();
+    if (resolve) resolve(frame);
+    else buffered.push(frame);
+  });
+  return {
+    next: async () => {
+      const frame = buffered.shift();
+      if (frame) return frame;
+      return new Promise<Frame>((resolve) => waiting.push(resolve));
+    },
+  };
 }
 
 function closeCode(socket: WebSocket): Promise<number> {

@@ -10,18 +10,38 @@ export interface RuntimeConnectionEntry {
 
 export class ConnectionRegistry {
   readonly #entries = new Map<string, RuntimeConnectionEntry>();
+  readonly #registrationTails = new Map<string, Promise<void>>();
 
-  register(entry: RuntimeConnectionEntry): void {
-    const previous = this.#entries.get(entry.computerId);
-    this.#entries.set(entry.computerId, entry);
-    if (previous && previous.socket !== entry.socket) {
-      previous.socket.close(4001, "Replaced by a newer daemon instance");
+  async register(entry: RuntimeConnectionEntry, persist: () => Promise<void>): Promise<void> {
+    const previousRegistration = this.#registrationTails.get(entry.computerId) ?? Promise.resolve();
+    let releaseRegistration: (() => void) | undefined;
+    const currentRegistration = new Promise<void>((resolve) => {
+      releaseRegistration = resolve;
+    });
+    this.#registrationTails.set(entry.computerId, currentRegistration);
+    await previousRegistration;
+    try {
+      await persist();
+      const previous = this.#entries.get(entry.computerId);
+      this.#entries.set(entry.computerId, entry);
+      if (previous && previous.socket !== entry.socket) {
+        previous.socket.close(4001, "Replaced by a newer daemon instance");
+      }
+    } finally {
+      releaseRegistration?.();
+      if (this.#registrationTails.get(entry.computerId) === currentRegistration) {
+        this.#registrationTails.delete(entry.computerId);
+      }
     }
   }
 
   isCurrent(computerId: string, instanceId: string, socket: WebSocket): boolean {
     const current = this.#entries.get(computerId);
     return current?.instanceId === instanceId && current.socket === socket;
+  }
+
+  currentInstanceId(computerId: string): string | undefined {
+    return this.#entries.get(computerId)?.instanceId;
   }
 
   touch(computerId: string, instanceId: string, socket: WebSocket, now = Date.now()): boolean {

@@ -27,9 +27,11 @@ export interface RuntimeConnectionOptions {
   displayName: string;
   jitter?: () => number;
   handshakeTimeoutMs?: number;
+  instanceId: string;
   log?: (message: string) => void;
   platform: "darwin" | "linux" | "win32";
   tokenProvider: AccessTokenProvider;
+  waitForRetry?: (milliseconds: number) => Promise<void>;
   webSocketFactory?: (url: string) => WebSocket;
 }
 
@@ -48,8 +50,9 @@ export class RuntimeConnection {
     let attempt = 0;
     while (!this.#stopped) {
       try {
-        await this.#connectOnce();
-        attempt = 0;
+        await this.#connectOnce(() => {
+          attempt = 0;
+        });
       } catch (error) {
         if (this.#stopped) return;
         if (error instanceof RuntimeConnectionError && error.fatal) throw error;
@@ -64,13 +67,17 @@ export class RuntimeConnection {
         const jitter = Math.min(1, Math.max(0, this.#options.jitter?.() ?? Math.random()));
         const delay = Math.floor(maximum * jitter);
         this.#options.log?.(`Runtime connection lost; retrying in ${delay}ms`);
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, delay);
-          this.#wakeBackoff = () => {
-            clearTimeout(timer);
-            resolve();
-          };
-        });
+        if (this.#options.waitForRetry) {
+          await this.#options.waitForRetry(delay);
+        } else {
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, delay);
+            this.#wakeBackoff = () => {
+              clearTimeout(timer);
+              resolve();
+            };
+          });
+        }
         this.#wakeBackoff = undefined;
       }
     }
@@ -83,14 +90,15 @@ export class RuntimeConnection {
     else this.#active?.close(1000, "Daemon shutting down");
   }
 
-  async #connectOnce(): Promise<void> {
+  async #connectOnce(onRegistered: () => void): Promise<void> {
     const lease = await this.#options.tokenProvider.getAccessTokenLease(this.#forceRefresh);
     this.#forceRefresh = false;
+    if (this.#stopped) return;
     const socket =
       this.#options.webSocketFactory?.(runtimeWebSocketUrl(this.#options.computer.serverUrl)) ??
       new WebSocket(runtimeWebSocketUrl(this.#options.computer.serverUrl), { maxPayload: 64 * 1024 });
     this.#active = socket;
-    const instanceId = randomUUID();
+    const instanceId = this.#options.instanceId;
 
     await new Promise<void>((resolve, reject) => {
       let state: "welcome" | "auth" | "register" | "registered" = "welcome";
@@ -99,11 +107,13 @@ export class RuntimeConnection {
       let handshakeTimer: NodeJS.Timeout | undefined;
       let silenceTimer: NodeJS.Timeout | undefined;
       let tokenTimer: NodeJS.Timeout | undefined;
+      let serverTokenExpiresAt: string | undefined;
       let settled = false;
       let established = false;
+      let pendingHeartbeatRequestId: string | undefined;
 
       const clearTimers = () => {
-        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        if (heartbeatTimer) clearTimeout(heartbeatTimer);
         if (handshakeTimer) clearTimeout(handshakeTimer);
         if (silenceTimer) clearTimeout(silenceTimer);
         if (tokenTimer) clearTimeout(tokenTimer);
@@ -122,6 +132,18 @@ export class RuntimeConnection {
       };
       const send = (frame: unknown) => {
         if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(frame));
+      };
+      const scheduleHeartbeat = () => {
+        if (!welcome || settled || pendingHeartbeatRequestId) return;
+        heartbeatTimer = setTimeout(() => {
+          pendingHeartbeatRequestId = randomUUID();
+          send({
+            type: "heartbeat",
+            requestId: pendingHeartbeatRequestId,
+            computerId: this.#options.computer.computerId,
+            instanceId,
+          });
+        }, welcome.heartbeatIntervalMs);
       };
 
       handshakeTimer = setTimeout(() => {
@@ -150,6 +172,7 @@ export class RuntimeConnection {
           return;
         }
         if (state === "auth" && frame.type === "auth:result" && frame.ok) {
+          serverTokenExpiresAt = frame.tokenExpiresAt;
           state = "register";
           send({
             type: "computer:register",
@@ -166,17 +189,11 @@ export class RuntimeConnection {
         if (state === "register" && frame.type === "computer:register:result" && frame.ok && welcome) {
           state = "registered";
           established = true;
+          onRegistered();
           if (handshakeTimer) clearTimeout(handshakeTimer);
           this.#options.log?.(`Computer ${this.#options.computer.computerId} connected`);
-          heartbeatTimer = setInterval(() => {
-            send({
-              type: "heartbeat",
-              requestId: randomUUID(),
-              computerId: this.#options.computer.computerId,
-              instanceId,
-            });
-          }, welcome.heartbeatIntervalMs);
-          const remaining = Date.parse(lease.expiresAt) - Date.now();
+          scheduleHeartbeat();
+          const remaining = Date.parse(serverTokenExpiresAt ?? lease.expiresAt) - Date.now();
           tokenTimer = setTimeout(
             () => {
               this.#forceRefresh = true;
@@ -186,8 +203,23 @@ export class RuntimeConnection {
           );
           return;
         }
-        if (state === "registered" && frame.type === "heartbeat:result" && frame.ok) return;
+        if (state === "registered" && frame.type === "heartbeat:result" && frame.ok) {
+          if (frame.requestId !== pendingHeartbeatRequestId) {
+            finish(new RuntimeConnectionError("The server returned an unmatched heartbeat result", true));
+            socket.close(4400, "Heartbeat request mismatch");
+            return;
+          }
+          pendingHeartbeatRequestId = undefined;
+          scheduleHeartbeat();
+          return;
+        }
         if (frame.type === "error") {
+          if (state === "registered" && frame.code === "AUTH_INVALID_TOKEN") {
+            this.#forceRefresh = true;
+            finish();
+            socket.close(4000, "Refreshing access token");
+            return;
+          }
           const fatal = frame.code !== "INTERNAL_ERROR" && frame.code !== "SERVICE_UNAVAILABLE";
           finish(new RuntimeConnectionError(frame.message, fatal));
           socket.close(fatal ? 4403 : 1011, frame.message.slice(0, 120));

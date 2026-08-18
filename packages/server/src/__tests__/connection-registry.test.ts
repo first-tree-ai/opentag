@@ -4,27 +4,33 @@ import type WebSocket from "ws";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 
 describe("ConnectionRegistry", () => {
-  it("fences replacement close, heartbeat, and stale-instance cleanup by exact socket", () => {
+  it("fences replacement close, heartbeat, and stale-instance cleanup by exact socket", async () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();
     const first = socket();
     const second = socket();
     const firstInstance = randomUUID();
     const secondInstance = randomUUID();
-    registry.register({
-      computerId,
-      instanceId: firstInstance,
-      lastHeartbeatAt: 1,
-      socket: first,
-      userId: randomUUID(),
-    });
-    registry.register({
-      computerId,
-      instanceId: secondInstance,
-      lastHeartbeatAt: 2,
-      socket: second,
-      userId: randomUUID(),
-    });
+    await registry.register(
+      {
+        computerId,
+        instanceId: firstInstance,
+        lastHeartbeatAt: 1,
+        socket: first,
+        userId: randomUUID(),
+      },
+      async () => undefined,
+    );
+    await registry.register(
+      {
+        computerId,
+        instanceId: secondInstance,
+        lastHeartbeatAt: 2,
+        socket: second,
+        userId: randomUUID(),
+      },
+      async () => undefined,
+    );
 
     expect(first.close).toHaveBeenCalledWith(4001, "Replaced by a newer daemon instance");
     expect(registry.touch(computerId, firstInstance, first, 3)).toBe(false);
@@ -33,24 +39,30 @@ describe("ConnectionRegistry", () => {
     expect(registry.touch(computerId, secondInstance, second, 4)).toBe(true);
   });
 
-  it("terminates only stale sockets and closes all current sockets during shutdown", () => {
+  it("terminates only stale sockets and closes all current sockets during shutdown", async () => {
     const registry = new ConnectionRegistry();
     const stale = socket();
     const fresh = socket();
-    registry.register({
-      computerId: randomUUID(),
-      instanceId: randomUUID(),
-      lastHeartbeatAt: 10,
-      socket: stale,
-      userId: randomUUID(),
-    });
-    registry.register({
-      computerId: randomUUID(),
-      instanceId: randomUUID(),
-      lastHeartbeatAt: 20,
-      socket: fresh,
-      userId: randomUUID(),
-    });
+    await registry.register(
+      {
+        computerId: randomUUID(),
+        instanceId: randomUUID(),
+        lastHeartbeatAt: 10,
+        socket: stale,
+        userId: randomUUID(),
+      },
+      async () => undefined,
+    );
+    await registry.register(
+      {
+        computerId: randomUUID(),
+        instanceId: randomUUID(),
+        lastHeartbeatAt: 20,
+        socket: fresh,
+        userId: randomUUID(),
+      },
+      async () => undefined,
+    );
     registry.terminateStale(15);
     expect(stale.terminate).toHaveBeenCalledOnce();
     expect(fresh.terminate).not.toHaveBeenCalled();

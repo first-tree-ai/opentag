@@ -24,9 +24,10 @@ export class RuntimeSession {
   readonly #registry: ConnectionRegistry;
   readonly #socket: WebSocket;
   readonly #options: Required<Omit<RuntimeSessionOptions, "now">> & { now: () => Date };
-  #state: "await-auth" | "await-register" | "registered" | "closed" = "await-auth";
+  #state: "await-auth" | "await-register" | "registered" | "closing" | "closed" = "await-auth";
   #timer?: NodeJS.Timeout;
   #tokenTimer?: NodeJS.Timeout;
+  #frameInFlight = false;
   #userId?: string;
   #computerId?: string;
   #instanceId?: string;
@@ -59,13 +60,23 @@ export class RuntimeSession {
       heartbeatTimeoutMs: this.#options.heartbeatTimeoutMs,
     });
     this.#armTimeout(this.#options.authTimeoutMs, "RUNTIME_AUTH_TIMEOUT", "Authentication timed out");
-    this.#socket.on("message", (data) => void this.#onMessage(data.toString()));
+    this.#socket.on("message", (data) => {
+      if (this.#state === "closing" || this.#state === "closed") return;
+      if (this.#frameInFlight) {
+        this.#fail("PROTOCOL_ERROR", "A runtime request is already in progress", 4400);
+        return;
+      }
+      this.#frameInFlight = true;
+      void this.#onMessage(data.toString()).finally(() => {
+        this.#frameInFlight = false;
+      });
+    });
     this.#socket.on("close", () => void this.#onClose());
     this.#socket.on("error", () => undefined);
   }
 
   async #onMessage(raw: string): Promise<void> {
-    if (this.#state === "closed") return;
+    if (this.#state === "closing" || this.#state === "closed") return;
     let parsedJson: unknown;
     try {
       parsedJson = JSON.parse(raw);
@@ -80,6 +91,7 @@ export class RuntimeSession {
     try {
       if (this.#state === "await-auth" && frame.type === "auth") {
         const authenticated = await this.#auth.getAuthenticatedUser(frame.accessToken);
+        if (this.#isClosing()) return;
         this.#userId = authenticated.me.user.id;
         this.#send({
           type: "auth:result",
@@ -132,16 +144,25 @@ export class RuntimeSession {
 
   async #register(frame: ComputerRegisterFrame): Promise<void> {
     if (!this.#userId) throw new Error("Missing authenticated user");
-    await this.#computers.register(this.#userId, frame);
+    const userId = this.#userId;
+    await this.#registry.register(
+      {
+        computerId: frame.computerId,
+        instanceId: frame.instanceId,
+        lastHeartbeatAt: this.#options.now().getTime(),
+        socket: this.#socket,
+        userId,
+      },
+      () => this.#computers.register(userId, frame),
+    );
+    if (this.#state === "closing" || this.#state === "closed") {
+      if (this.#registry.remove(frame.computerId, frame.instanceId, this.#socket)) {
+        await this.#computers.disconnect(frame.computerId, frame.instanceId).catch(() => undefined);
+      }
+      return;
+    }
     this.#computerId = frame.computerId;
     this.#instanceId = frame.instanceId;
-    this.#registry.register({
-      computerId: frame.computerId,
-      instanceId: frame.instanceId,
-      lastHeartbeatAt: this.#options.now().getTime(),
-      socket: this.#socket,
-      userId: this.#userId,
-    });
     this.#state = "registered";
     this.#clearHandshakeTimer();
     this.#send({ type: "computer:register:result", requestId: frame.requestId, ok: true });
@@ -181,6 +202,10 @@ export class RuntimeSession {
   }
 
   #fail(code: RuntimeErrorFrame["code"], message: string, closeCode: number, requestId?: string): void {
+    if (this.#state === "closing" || this.#state === "closed") return;
+    this.#state = "closing";
+    this.#clearHandshakeTimer();
+    if (this.#tokenTimer) clearTimeout(this.#tokenTimer);
     this.#send({ type: "error", code, message, ...(requestId ? { requestId } : {}) });
     this.#socket.close(closeCode, message.slice(0, 120));
   }
@@ -193,5 +218,9 @@ export class RuntimeSession {
   #clearHandshakeTimer(): void {
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = undefined;
+  }
+
+  #isClosing(): boolean {
+    return this.#state === "closing" || this.#state === "closed";
   }
 }

@@ -59,9 +59,13 @@ Production 发布有更严格的门槛：
 - version 必须不低于 `0.0.2` 且未存在于 npm；
 - `v*` tag 必须通过受保护的 release-tag ruleset 创建。
 
-同一个 tag 会发布 npm CLI 与 GHCR server image。image 带 full commit、SemVer 和 `latest` tag，并在
-`/app/LICENSE` 携带 OpenTag 的 Apache-2.0 许可证。创建 production tag 是不可逆的发布动作，必须获得明确
-release 决策；验证 workflow 不代表获得创建 tag 的授权。
+同一个 tag 会发布 npm CLI 与 `ghcr.io/first-tree-ai/opentag` server image。release tag 会为 image 打上
+full commit、SemVer 和 `latest` tag，image 还在 `/app/LICENSE` 携带 OpenTag 的 Apache-2.0 许可证。创建
+production tag 是不可逆的发布动作，必须获得明确 release 决策；验证 workflow 不代表获得创建 tag 的授权。
+
+每次推送到 `main` 还会单独发布同一个 image，并打上 full commit 与 `edge` tag。该路径由推送本身触发，不会
+等待 `CI`，也不应用上述任何 guard，因此 `edge` 只是预览构建，永远不是 release。部署应固定 SemVer 或
+full commit image tag，详见 [deploying.md](./deploying.md)。
 
 ## Contributor smoke
 

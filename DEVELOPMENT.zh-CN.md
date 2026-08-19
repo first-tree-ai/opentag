@@ -82,7 +82,8 @@ docker compose down
 
 服务暴露 `5432` 端口，并使用 `opentag-postgres-data` 命名 volume 保存数据。
 生产 Server 镜像不会内置或启动 PostgreSQL。部署时通过 `OPENTAG_DATABASE_URL` 指向独立管理的 PostgreSQL
-实例；上面的 Compose 服务仅用于本地开发。
+实例；上面的 Compose 服务仅用于本地开发。独立的 `docker-compose.prod.yml` 会把已发布的镜像与它自己的
+PostgreSQL 服务一起运行，详见 [docs/zh-CN/deploying.md](./docs/zh-CN/deploying.md)。
 
 初始化空安装时，设置必需的 bootstrap 字段并运行一次性管理员命令。该命令会先迁移空数据库，再创建首个
 用户、team、admin membership 和 connect code。
@@ -211,6 +212,13 @@ fail-closed 原则拒绝读取。
 | `OPENTAG_HOME` | 随 channel 而定 | CLI credentials、Computer identity 与 daemon ownership 目录（源码默认为 `~/.opentag-dev`） |
 
 如果 `doctor` 失败，其错误类别会区分配置、网络、HTTP 和无效响应。请确认 Server 已启动，且配置的 URL 指向其基础地址。
+
+## 部署
+
+部署运行已发布的 `ghcr.io/first-tree-ai/opentag` 镜像，而不是源码 checkout。该镜像在同一个端口提供 API、
+Computer WebSocket 端点和 Admin Web，需要在 TLS 反向代理后使用 HTTPS 的 `OPENTAG_PUBLIC_URL`，且不包含
+CLI。镜像 tag 选择、运行时环境变量约定、`docker-compose.prod.yml`、migration、首个管理员 bootstrap 和升级
+步骤请参阅 [docs/zh-CN/deploying.md](./docs/zh-CN/deploying.md)。
 
 ## 发布
 

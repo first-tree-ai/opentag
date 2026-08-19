@@ -1,5 +1,4 @@
 import {
-  type Agent,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
   type ConnectCodeIssueResponse,
@@ -10,6 +9,7 @@ import {
   InvitationRedemptionResponseSchema,
   invitationPreviewPath,
   invitationRedeemPath,
+  type ListAgentsResponse,
   ListAgentsResponseSchema,
   type ListComputersResponse,
   ListComputersResponseSchema,
@@ -56,7 +56,7 @@ export class BrowserApi {
     return this.request(teamMembersPath(teamId), ListTeamMembersResponseSchema);
   }
 
-  agents(teamId: string): Promise<{ agents: Agent[] }> {
+  agents(teamId: string): Promise<ListAgentsResponse> {
     return this.request(teamAgentsPath(teamId), ListAgentsResponseSchema);
   }
 

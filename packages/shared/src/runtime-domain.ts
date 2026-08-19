@@ -1,32 +1,42 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import {
+  runtimeByteString as byteString,
+  RUNTIME_ID_MAX_BYTES,
+  RuntimeAllowedToolsSchema,
+  RuntimeInstructionsSchema,
+  RuntimeMaxDurationMsSchema,
+  RuntimeModelSchema,
+  RuntimeReasoningEffortSchema,
+  runtimeUtf8Length as utf8Length,
+} from "./runtime-config.js";
 import { RuntimeRequestIdSchema } from "./runtime-protocol.js";
 
-export const RUNTIME_ID_MAX_BYTES = 128;
+export {
+  OPENTAG_MESSAGE_TOOLS,
+  OPENTAG_PLATFORM_INSTRUCTIONS,
+  RUNTIME_ALLOWED_TOOLS_MAX_COUNT,
+  RUNTIME_ID_MAX_BYTES,
+  RUNTIME_INSTRUCTIONS_MAX_BYTES,
+  RUNTIME_MAX_DURATION_MS,
+  RuntimeAllowedToolsSchema,
+  RuntimeInstructionSchema,
+  RuntimeInstructionsSchema,
+  RuntimeMaxDurationMsSchema,
+  RuntimeModelSchema,
+  RuntimeReasoningEffortSchema,
+  RuntimeToolIdSchema,
+} from "./runtime-config.js";
+
 export const RUNTIME_DIRECT_TEXT_MAX_BYTES = 16 * 1024;
-export const RUNTIME_INSTRUCTIONS_MAX_BYTES = 24 * 1024;
 export const RUNTIME_FINAL_TEXT_MAX_BYTES = 48 * 1024;
 export const RUNTIME_TRACE_EVENT_MAX_BYTES = 16 * 1024;
 export const RUNTIME_TRACE_BATCH_MAX_EVENTS = 64;
 // MVP recovery bridge. Post-MVP, authoritative Turn results move to durable Server ownership.
 export const RUNTIME_MVP_RETAINED_REPORT_LIMIT = 65;
 
-const utf8 = new TextEncoder();
 const opaqueIdPattern = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
 const relativePathPattern = /^(?![A-Za-z]:)(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[^\\\0]+$/;
-
-function utf8Length(value: string): number {
-  return utf8.encode(value).byteLength;
-}
-
-function byteString(maxBytes: number, message: string, minimumBytes = 0) {
-  return z.string().superRefine((value, context) => {
-    const bytes = utf8Length(value);
-    if (bytes < minimumBytes || bytes > maxBytes) {
-      context.addIssue({ code: "custom", message });
-    }
-  });
-}
 
 export const RuntimeOpaqueIdSchema = z
   .string()
@@ -61,16 +71,10 @@ export const EffectiveRuntimeSnapshotSchema = z
       .strict(),
     agentId: RuntimeOpaqueIdSchema,
     provider: z.literal("codex"),
-    model: byteString(128, "Model exceeds the 128-byte limit", 1).optional(),
-    reasoningEffort: byteString(64, "Reasoning effort exceeds the 64-byte limit", 1).optional(),
-    instructions: z
-      .object({
-        platform: byteString(RUNTIME_INSTRUCTIONS_MAX_BYTES, "Platform instructions are too large"),
-        agent: byteString(RUNTIME_INSTRUCTIONS_MAX_BYTES, "Agent instructions are too large"),
-        session: byteString(RUNTIME_INSTRUCTIONS_MAX_BYTES, "Session instructions are too large").optional(),
-      })
-      .strict(),
-    allowedTools: z.array(byteString(RUNTIME_ID_MAX_BYTES, "Tool ID exceeds the 128-byte limit", 1)).max(64),
+    model: RuntimeModelSchema.optional(),
+    reasoningEffort: RuntimeReasoningEffortSchema.optional(),
+    instructions: RuntimeInstructionsSchema,
+    allowedTools: RuntimeAllowedToolsSchema,
     execution: z
       .object({
         approvalPolicy: z.literal("never"),
@@ -86,34 +90,12 @@ export const EffectiveRuntimeSnapshotSchema = z
       .strict(),
     budget: z
       .object({
-        maxDurationMs: z
-          .number()
-          .int()
-          .safe()
-          .positive()
-          .max(24 * 60 * 60 * 1_000)
-          .optional(),
+        maxDurationMs: RuntimeMaxDurationMsSchema.optional(),
       })
       .strict()
       .optional(),
   })
-  .strict()
-  .superRefine((snapshot, context) => {
-    const instructionBytes =
-      utf8Length(snapshot.instructions.platform) +
-      utf8Length(snapshot.instructions.agent) +
-      utf8Length(snapshot.instructions.session ?? "");
-    if (instructionBytes > RUNTIME_INSTRUCTIONS_MAX_BYTES) {
-      context.addIssue({
-        code: "custom",
-        path: ["instructions"],
-        message: "Combined instructions exceed the 24 KiB limit",
-      });
-    }
-    if (new Set(snapshot.allowedTools).size !== snapshot.allowedTools.length) {
-      context.addIssue({ code: "custom", path: ["allowedTools"], message: "Tool IDs must be unique" });
-    }
-  });
+  .strict();
 
 export const InputRejectReasonSchema = z.enum([
   "invalid_input",

@@ -34,4 +34,16 @@ describe("error contracts", () => {
       }),
     ).toThrow();
   });
+
+  it.each([
+    "AGENT_FORBIDDEN",
+    "AGENT_NAME_CONFLICT",
+    "AGENT_REVISION_CONFLICT",
+    "COMPUTER_NOT_FOUND",
+    "RESOURCE_NOT_FOUND",
+  ])("accepts Agent control-plane error code %s", (code) => {
+    expect(
+      ErrorEnvelopeSchema.parse({ error: { code, category: "deterministic", message: "Agent request failed" } }),
+    ).toMatchObject({ error: { code } });
+  });
 });

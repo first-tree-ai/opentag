@@ -1,4 +1,20 @@
 export {
+  type Agent,
+  type AgentDisplayName,
+  AgentDisplayNameSchema,
+  type AgentName,
+  AgentNameSchema,
+  type AgentRuntimeProvider,
+  AgentRuntimeProviderSchema,
+  AgentSchema,
+  type CreateAgentRequest,
+  CreateAgentRequestSchema,
+  type ListAgentsResponse,
+  ListAgentsResponseSchema,
+  type UpdateAgentRequest,
+  UpdateAgentRequestSchema,
+} from "./agent.js";
+export {
   type ConnectCodeExchangeRequest,
   ConnectCodeExchangeRequestSchema,
   type ConnectCodeExchangeResponse,
@@ -38,7 +54,15 @@ export {
   ErrorEnvelopeSchema,
 } from "./errors.js";
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
-export { API_V1_PREFIX, HTTP_PATHS, runtimeWebSocketUrl } from "./http-paths.js";
+export {
+  AGENT_BY_ID_TEMPLATE,
+  API_V1_PREFIX,
+  agentByIdPath,
+  HTTP_PATHS,
+  runtimeWebSocketUrl,
+  TEAM_AGENTS_TEMPLATE,
+  teamAgentsPath,
+} from "./http-paths.js";
 export {
   type AgentTraceBatch,
   AgentTraceBatchSchema,

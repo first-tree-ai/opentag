@@ -109,6 +109,32 @@ The daemon reuses the stable Computer ID stored in its home, creates a new proce
 to `/api/v1/computer/ws`. Ctrl+C performs a clean shutdown; a second daemon using the same home is rejected. The CLI
 uses `/api/v1/auth/...` and `/api/v1/me/...`; `/healthz` and `/readyz` remain unversioned deployment probes.
 
+## Manage Agent configurations
+
+An Agent belongs to a Team and is bound at creation time to one Computer owned by its manager. When the current user has
+one Team and one Computer, both are selected automatically:
+
+```bash
+pnpm --filter open-tag start agent create \
+  --name code-reviewer \
+  --display-name "Code Reviewer" \
+  --provider codex
+pnpm --filter open-tag start agent list
+```
+
+Use `--team <canonical-name>` or `--computer <uuid>` when more than one choice is available. An offline Computer may be
+selected because online presence is not Agent configuration state. Inspect and change the mutable display name with:
+
+```bash
+pnpm --filter open-tag start agent show <agent-id>
+pnpm --filter open-tag start agent update <agent-id> --display-name "Reviewer"
+pnpm --filter open-tag start agent delete <agent-id>
+```
+
+Updates use revision compare-and-swap and never overwrite a concurrent change automatically. Deletion is a server-side
+soft delete and is idempotent for the Agent manager or a Team admin. `claude-code` is an accepted configuration value,
+but its runtime adapter and all Session/Turn delivery remain future work.
+
 The four `OPENTAG_BOOTSTRAP_*` values are inputs to this one-time command only; the running server does not read them.
 The bootstrap email is account profile data, not an email/password credential. The current connect-code flow resolves a
 stable user ID and then uses the provider-neutral token issuer. Future Google or OIDC identity resolvers can join at that

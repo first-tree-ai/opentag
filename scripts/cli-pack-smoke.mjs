@@ -145,6 +145,10 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
     if (!help.stdout.includes(`Usage: ${expectedBinary}`)) {
       throw new Error(`CLI help does not use expected binary name ${expectedBinary}`);
     }
+    const agentHelp = run(binaryPath, ["agent", "--help"]);
+    if (!agentHelp.stdout.includes("create") || !agentHelp.stdout.includes("delete")) {
+      throw new Error("CLI Agent command group is missing from the packed artifact");
+    }
     const doctor = run(binaryPath, ["doctor", "--server-url", "http://127.0.0.1:1"], { expectedStatus: 1 });
     if (!doctor.stderr.includes("Network error:")) {
       throw new Error("CLI doctor smoke did not report the expected network failure");

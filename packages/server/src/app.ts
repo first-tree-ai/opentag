@@ -1,17 +1,20 @@
 import websocket from "@fastify/websocket";
 import { ErrorEnvelopeSchema, ServerHealthSchema } from "@opentag/shared";
 import Fastify from "fastify";
+import { registerAgentRoutes } from "./api/agents.js";
 import { registerAuthRoutes } from "./api/auth.js";
 import { registerComputerRoutes } from "./api/computers.js";
 import { registerMeRoute } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
+import { type AgentService, AgentServiceError } from "./services/agents/index.js";
 import { AuthServiceError, type UserAuthService } from "./services/auth/index.js";
 import type { ComputerService } from "./services/computers/index.js";
 
 export interface CreateAppOptions {
   authService?: UserAuthService;
+  agentService?: AgentService;
   computerService?: ComputerService;
   readiness?: BootstrapReadiness;
   runtime?: RuntimeRoutesOptions;
@@ -57,6 +60,9 @@ export function createApp(options: CreateAppOptions = {}) {
     const authService = options.authService;
     registerAuthRoutes(app, authService);
     registerMeRoute(app, authService);
+    if (options.agentService) {
+      registerAgentRoutes(app, authService, options.agentService);
+    }
     if (options.computerService) {
       const computerService = options.computerService;
       registerComputerRoutes(app, authService, computerService);
@@ -68,7 +74,7 @@ export function createApp(options: CreateAppOptions = {}) {
   }
 
   app.setErrorHandler((error, request, reply) => {
-    if (error instanceof AuthServiceError) {
+    if (error instanceof AuthServiceError || error instanceof AgentServiceError) {
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: error.code,

@@ -1,10 +1,11 @@
 import { Command } from "commander";
 import { CLI_VERSION } from "../build-info.js";
-import { registerComputerCommand } from "../commands/computer.js";
-import { registerDaemonCommand } from "../commands/daemon.js";
+import { registerAgentCommand } from "../commands/agent/index.js";
+import { registerComputerCommand } from "../commands/computer/index.js";
+import { registerDaemonCommand } from "../commands/daemon/index.js";
 import { registerDoctorCommand } from "../commands/doctor.js";
 import { registerLoginCommand } from "../commands/login.js";
-import { channelConfig } from "../core/channel.js";
+import { channelConfig } from "../core/channel/config.js";
 
 export function createProgram(): Command {
   const program = new Command();
@@ -14,6 +15,7 @@ export function createProgram(): Command {
     .version(CLI_VERSION)
     .showHelpAfterError();
   registerComputerCommand(program);
+  registerAgentCommand(program);
   registerDaemonCommand(program);
   registerDoctorCommand(program);
   registerLoginCommand(program);

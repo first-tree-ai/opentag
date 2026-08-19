@@ -98,16 +98,26 @@ pnpm --filter open-tag start login <connect-code>
 production build 分别使用 `opentag-staging` / `~/.opentag-staging` 和 `opentag` / `~/.opentag`。显式设置
 `OPENTAG_HOME` 会覆盖 channel 默认值。
 
-登录后启动前台 daemon，并在另一个终端查看当前用户所有的 Computer：
+Linux/macOS 上登录会安装并启动用户服务。在另一个终端检查服务和当前用户所有的 Computer：
 
 ```bash
-pnpm --filter open-tag start daemon run
+pnpm --filter open-tag start daemon status
 pnpm --filter open-tag start computer list
 ```
 
-daemon 会复用 home 中的稳定 Computer ID，每次启动创建新的进程 instance，并连接
-`/api/v1/computer/ws`。Ctrl+C 会干净退出；同一个 home 的第二个 daemon 会被拒绝。CLI 使用
-`/api/v1/auth/...` 与 `/api/v1/me/...`；`/healthz` 和 `/readyz` 继续作为无版本部署探针。
+daemon 会复用 home 中的稳定 Computer ID，每次服务启动创建新的进程 instance，并连接
+`/api/v1/computer/ws`。使用 `daemon install/start/stop/restart/status/uninstall` 管理服务；`uninstall` 会保留
+凭据和 Computer identity。只需写入凭据时使用 `login --no-start`；v0.1 不支持 Windows daemon 服务。
+Linux 日志通过 `journalctl --user -u opentag-dev.service` 查看，macOS 日志位于 channel home 的 `logs`
+目录。可选的 `${OPENTAG_HOME}/daemon.env` 必须是私有普通文件（权限 `0600`），用于补充服务环境且不会
+覆盖固定的服务配置。CLI 使用 `/api/v1/auth/...` 与 `/api/v1/me/...`；`/healthz` 和 `/readyz` 继续作为
+无版本部署探针。
+
+dev 服务定义在 Linux 上位于 `~/.config/systemd/user/opentag-dev.service`，在 macOS 上位于
+`~/Library/LaunchAgents/opentag-dev.plist`；macOS wrapper 位于 `${OPENTAG_HOME}/service/opentag-dev`。
+staging 与 production 使用各自的 channel `serviceId`（`opentag-staging` 或 `opentag`）替换后缀。如果登录已
+保存凭据但服务安装失败，修复提示的 manager 问题后运行 `opentag-dev daemon install`，不需要申请新的
+connect code。
 
 ## 管理 Agent 配置
 

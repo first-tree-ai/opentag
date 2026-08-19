@@ -15,7 +15,7 @@ OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与
 - 使用滑动续期无状态 refresh JWT 的一次性 connect code 登录；
 - 用户所有的 Computer 注册与在线状态；
 - Team 所有的 Agent Registry、不可变 Computer/provider 绑定与 revision fencing；
-- `opentag-dev doctor`、`login`、`daemon run`、`computer list` 和 `agent` 命令。
+- `opentag-dev doctor`、`login`、daemon 服务管理、`computer list` 和 `agent` 命令。
 
 仓库尚未实现 Agent 执行、即时通信集成或 Session Runtime。
 
@@ -33,7 +33,7 @@ pnpm build
 pnpm --filter @opentag/server start
 ```
 
-在另一个终端中执行一次 bootstrap 与登录，然后启动前台 daemon：
+在另一个终端中执行一次 bootstrap 与登录。Linux/macOS 上，登录会安装并启动当前用户的 daemon 服务：
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
@@ -42,11 +42,12 @@ export OPENTAG_BOOTSTRAP_TEAM_NAME=example
 export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 pnpm --filter open-tag start login <connect-code>
-pnpm --filter open-tag start daemon run
+pnpm --filter open-tag start daemon status
 ```
 
-在第三个终端运行 `pnpm --filter open-tag start computer list`，可以看到 Computer 为 online。按 Ctrl+C 停止
-前台 daemon 后再次查询，应显示 offline。
+运行 `pnpm --filter open-tag start computer list` 可以看到 Computer 为 online。使用 `daemon stop`、`start`、
+`restart`、`status` 与 `uninstall` 管理生命周期。只需保存凭据时使用 `login --no-start`。v0.1 不支持
+Windows daemon 服务。
 
 daemon 注册后，可以创建并查看 Agent 配置：
 

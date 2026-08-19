@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { CHANNEL_CONFIG } from "./channel-config.mjs";
 
 const STABLE_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const STAGING_VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-staging\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/;
 
 export function parseStableVersion(version, label = "version") {
@@ -28,13 +29,105 @@ export function compareStableVersions(left, right) {
   return leftParts.major - rightParts.major || leftParts.minor - rightParts.minor || leftParts.patch - rightParts.patch;
 }
 
-export function resolveStagingVersion(sourceVersion, runNumber, runAttempt) {
+export function formatStagingVersion(sourceVersion, sequence, runAttempt) {
   const source = parseStableVersion(sourceVersion, "source version");
-  if (!POSITIVE_INTEGER_PATTERN.test(String(runNumber)) || !POSITIVE_INTEGER_PATTERN.test(String(runAttempt))) {
-    throw new Error("GitHub run number and attempt must be positive integers");
+  if (!POSITIVE_INTEGER_PATTERN.test(String(sequence)) || !POSITIVE_INTEGER_PATTERN.test(String(runAttempt))) {
+    throw new Error("staging sequence and GitHub run attempt must be positive integers");
   }
 
-  return `${source.major}.${source.minor}.${source.patch + 1}-staging.${runNumber}.${runAttempt}`;
+  return `${source.major}.${source.minor}.${source.patch + 1}-staging.${sequence}.${runAttempt}`;
+}
+
+export function parseStagingVersion(version, label = "staging version") {
+  const match = STAGING_VERSION_PATTERN.exec(version);
+  if (!match) {
+    throw new Error(`${label} must be a staging semantic version, got "${version}"`);
+  }
+
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    sequence: Number(match[4]),
+    attempt: Number(match[5]),
+  };
+}
+
+function compareVersionParts(left, right) {
+  return left.major - right.major || left.minor - right.minor || left.patch - right.patch;
+}
+
+function targetStagingLine(sourceVersion) {
+  const source = parseStableVersion(sourceVersion, "source version");
+  return { major: source.major, minor: source.minor, patch: source.patch + 1 };
+}
+
+export function findLatestStagingVersion(sourceVersion, publishedVersions) {
+  if (!Array.isArray(publishedVersions) || publishedVersions.some((version) => typeof version !== "string")) {
+    throw new Error("published versions must be an array of strings");
+  }
+
+  const target = targetStagingLine(sourceVersion);
+  let latest;
+  for (const version of publishedVersions) {
+    const stagingMatch = STAGING_VERSION_PATTERN.exec(version);
+    if (stagingMatch) {
+      const parsed = parseStagingVersion(version, "published version");
+      const lineComparison = compareVersionParts(parsed, target);
+      if (lineComparison > 0) {
+        throw new Error(`published staging version ${version} is ahead of the target release line`);
+      }
+      if (
+        lineComparison === 0 &&
+        (!latest ||
+          parsed.sequence > latest.sequence ||
+          (parsed.sequence === latest.sequence && parsed.attempt > latest.attempt))
+      ) {
+        latest = { ...parsed, version };
+      }
+      continue;
+    }
+
+    const stableMatch = STABLE_VERSION_PATTERN.exec(version);
+    if (!stableMatch) {
+      throw new Error(`published version ${version} is not a supported stable or staging version`);
+    }
+    const stable = parseStableVersion(version, "published version");
+    if (compareVersionParts(stable, target) >= 0) {
+      throw new Error(`published stable version ${version} is not below the target staging release line`);
+    }
+  }
+
+  return latest?.version;
+}
+
+export function resolveNextPublishedStagingVersion({
+  sourceVersion,
+  publishedVersions,
+  latestGitHead,
+  releaseGitHead,
+  runAttempt,
+}) {
+  if (!POSITIVE_INTEGER_PATTERN.test(String(runAttempt))) {
+    throw new Error("GitHub run attempt must be a positive integer");
+  }
+  if (typeof releaseGitHead !== "string" || releaseGitHead.length === 0) {
+    throw new Error("release git head is required");
+  }
+
+  const latestVersion = findLatestStagingVersion(sourceVersion, publishedVersions);
+  if (!latestVersion) {
+    return formatStagingVersion(sourceVersion, 1, runAttempt);
+  }
+  if (typeof latestGitHead !== "string" || latestGitHead.length === 0) {
+    throw new Error(`published version ${latestVersion} is missing gitHead`);
+  }
+  if (latestGitHead === releaseGitHead) {
+    return latestVersion;
+  }
+
+  const latest = parseStagingVersion(latestVersion);
+  return formatStagingVersion(sourceVersion, latest.sequence + 1, runAttempt);
 }
 
 export function resolveProductionVersion(sourceVersion, tag) {
@@ -82,7 +175,7 @@ async function main() {
       package_name: CHANNEL_CONFIG.staging.packageName,
       binary_name: CHANNEL_CONFIG.staging.binName,
       source_version: sourceVersion,
-      version: resolveStagingVersion(sourceVersion, arguments_.get("run-number"), arguments_.get("run-attempt")),
+      version: formatStagingVersion(sourceVersion, arguments_.get("sequence"), arguments_.get("run-attempt")),
     };
   } else if (channel === "prod") {
     output = {

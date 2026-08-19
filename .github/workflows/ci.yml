@@ -138,7 +138,7 @@ jobs:
           node scripts/release-versions.mjs \
             --channel staging \
             --source-version "$SOURCE_VERSION" \
-            --run-number "${{ github.run_number }}" \
+            --sequence "${{ github.run_number }}" \
             --run-attempt "${{ github.run_attempt }}"
 
       - name: Smoke source tarball

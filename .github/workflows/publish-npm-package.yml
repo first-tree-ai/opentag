@@ -4,6 +4,8 @@ on:
   workflow_run:
     workflows:
       - CI
+    branches:
+      - main
     types:
       - completed
   workflow_dispatch:
@@ -25,6 +27,9 @@ jobs:
        github.event.workflow_run.head_branch == 'main') ||
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
+    concurrency:
+      group: npm-publish-staging
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
@@ -45,6 +50,9 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
           cache: pnpm
+
+      - name: Verify staging revision is current main
+        run: node scripts/check-staging-revision.mjs
 
       - name: Use trusted-publishing npm client
         run: npm install --global npm@11.5.1
@@ -69,10 +77,9 @@ jobs:
         id: version
         run: |
           SOURCE_VERSION=$(node -p "require('./apps/cli/package.json').version")
-          node scripts/release-versions.mjs \
-            --channel staging \
+          node scripts/resolve-staging-release.mjs \
             --source-version "$SOURCE_VERSION" \
-            --run-number "${{ github.run_number }}" \
+            --git-head "${{ steps.revision.outputs.sha }}" \
             --run-attempt "${{ github.run_attempt }}"
 
       - name: Check npm coordinate
@@ -102,6 +109,9 @@ jobs:
           --name "${{ steps.version.outputs.package_name }}"
           --version "${{ steps.version.outputs.version }}"
           --binary "${{ steps.version.outputs.binary_name }}"
+
+      - name: Recheck staging revision is current main
+        run: node scripts/check-staging-revision.mjs
 
       - name: Publish staging package
         if: steps.registry.outputs.publish == 'true'

@@ -155,6 +155,19 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
     if (!agentHelp.stdout.includes("create") || !agentHelp.stdout.includes("delete")) {
       throw new Error("CLI Agent command group is missing from the packed artifact");
     }
+    const daemonHelp = run(binaryPath, ["daemon", "--help"]);
+    for (const command of ["install", "start", "stop", "restart", "status", "uninstall"]) {
+      if (!daemonHelp.stdout.includes(command)) {
+        throw new Error(`CLI daemon command group is missing ${command}`);
+      }
+    }
+    if (/\bservice-run\b/u.test(daemonHelp.stdout) || /^\s+run\b/mu.test(daemonHelp.stdout)) {
+      throw new Error("CLI daemon help exposes an internal or removed runtime command");
+    }
+    const loginHelp = run(binaryPath, ["login", "--help"]);
+    if (!loginHelp.stdout.includes("--no-start")) {
+      throw new Error("CLI login help is missing --no-start");
+    }
     const doctor = run(binaryPath, ["doctor", "--server-url", "http://127.0.0.1:1"], { expectedStatus: 1 });
     if (!doctor.stderr.includes("Network error:")) {
       throw new Error("CLI doctor smoke did not report the expected network failure");

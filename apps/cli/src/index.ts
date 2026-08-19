@@ -12,6 +12,16 @@ export { type LoginOptions, type LoginResult, runLogin } from "./core/auth/login
 export { channelConfig } from "./core/channel/config.js";
 export { formatComputerList } from "./core/computer/formatting.js";
 export { listComputers } from "./core/computer/queries.js";
-export { type DaemonRunOptions, runDaemon } from "./core/daemon/runtime.js";
 export { type DoctorOptions, type DoctorResult, resolveServerUrl, runDoctor } from "./core/diagnostics/doctor.js";
 export { selectTeam } from "./core/selection/team.js";
+export { formatTeamInvitation, formatTeamMember, formatTeamMembers } from "./core/team/formatting.js";
+export {
+  runTeamInvitationRotate,
+  runTeamInvitationShow,
+  runTeamLeave,
+  runTeamMemberList,
+  runTeamMemberRemove,
+  runTeamMemberRestore,
+  runTeamMemberRole,
+  type TeamSelectionOptions,
+} from "./core/team/operations.js";

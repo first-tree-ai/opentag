@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq } from "drizzle-orm";
@@ -79,9 +80,54 @@ describe("database migrations", () => {
       const [row] = await sql<{ table_count: number }[]>`
         select count(*)::int as table_count
         from information_schema.tables
-        where table_schema = 'public' and table_name in ('users', 'teams', 'memberships', 'connect_codes', 'computers')
+        where table_schema = 'public' and table_name in (
+          'users', 'teams', 'memberships', 'connect_codes', 'computers', 'agents',
+          'auth_identities', 'invitations', 'invitation_redemptions'
+        )
       `;
-      expect(row?.table_count).toBe(5);
+      expect(row?.table_count).toBe(9);
+    } finally {
+      await sql.end();
+    }
+  });
+
+  it("maps legacy left_at rows to the single membership status truth", async () => {
+    const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+    const applyFile = async (name: string) => {
+      const source = await readFile(`${migrationsFolder}/${name}`, "utf8");
+      for (const statement of source
+        .split("--> statement-breakpoint")
+        .map((value) => value.trim())
+        .filter(Boolean)) {
+        await sql.unsafe(statement);
+      }
+    };
+    try {
+      await applyFile("0000_strong_thunderbolt_ross.sql");
+      await applyFile("0001_living_franklin_richards.sql");
+      await applyFile("0002_sticky_crystal.sql");
+      const [user] = await sql<{ id: string }[]>`
+        insert into users (email, display_name) values ('left@example.com', 'Left User') returning id
+      `;
+      const [team] = await sql<{ id: string }[]>`
+        insert into teams (name, display_name) values ('legacy', 'Legacy') returning id
+      `;
+      if (!user || !team) throw new Error("Legacy fixtures were not created");
+      await sql`
+        insert into memberships (team_id, user_id, role, left_at)
+        values (${team.id}, ${user.id}, 'admin', now())
+      `;
+      await applyFile("0003_noisy_husk.sql");
+      const [membership] = await sql<{ status: string }[]>`select status from memberships`;
+      expect(membership?.status).toBe("left");
+      const columns = await sql<{ column_name: string }[]>`
+        select column_name from information_schema.columns where table_name = 'memberships'
+      `;
+      expect(columns.map(({ column_name }) => column_name)).not.toContain("left_at");
+      const emailIndex = await sql<{ count: number }[]>`
+        select count(*)::int as count from pg_indexes where indexname = 'users_email_unique'
+      `;
+      expect(emailIndex[0]?.count).toBe(0);
     } finally {
       await sql.end();
     }
@@ -376,7 +422,7 @@ describe("authentication persistence", () => {
 
       await fixture.database
         .update(memberships)
-        .set({ leftAt: new Date("2026-08-18T00:01:00.000Z") })
+        .set({ status: "left", updatedAt: new Date("2026-08-18T00:01:00.000Z") })
         .where(eq(memberships.userId, fixture.bootstrap.userId));
       const error = await fixture.auth.getAuthenticatedUser(tokens.accessToken).catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(AuthServiceError);

@@ -52,6 +52,8 @@ migration。
 docker compose up -d postgres
 export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
 export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
+export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
+export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
 pnpm build
 pnpm --filter @opentag/server start
 ```
@@ -98,16 +100,26 @@ pnpm --filter open-tag start login <connect-code>
 production build 分别使用 `opentag-staging` / `~/.opentag-staging` 和 `opentag` / `~/.opentag`。显式设置
 `OPENTAG_HOME` 会覆盖 channel 默认值。
 
-登录后启动前台 daemon，并在另一个终端查看当前用户所有的 Computer：
+Linux/macOS 上登录会安装并启动用户服务。在另一个终端检查服务和当前用户所有的 Computer：
 
 ```bash
-pnpm --filter open-tag start daemon run
+pnpm --filter open-tag start daemon status
 pnpm --filter open-tag start computer list
 ```
 
-daemon 会复用 home 中的稳定 Computer ID，每次启动创建新的进程 instance，并连接
-`/api/v1/computer/ws`。Ctrl+C 会干净退出；同一个 home 的第二个 daemon 会被拒绝。CLI 使用
-`/api/v1/auth/...` 与 `/api/v1/me/...`；`/healthz` 和 `/readyz` 继续作为无版本部署探针。
+daemon 会复用 home 中的稳定 Computer ID，每次服务启动创建新的进程 instance，并连接
+`/api/v1/computer/ws`。使用 `daemon install/start/stop/restart/status/uninstall` 管理服务；`uninstall` 会保留
+凭据和 Computer identity。只需写入凭据时使用 `login --no-start`；v0.1 不支持 Windows daemon 服务。
+Linux 日志通过 `journalctl --user -u opentag-dev.service` 查看，macOS 日志位于 channel home 的 `logs`
+目录。可选的 `${OPENTAG_HOME}/daemon.env` 必须是私有普通文件（权限 `0600`），用于补充服务环境且不会
+覆盖固定的服务配置。CLI 使用 `/api/v1/auth/...` 与 `/api/v1/me/...`；`/healthz` 和 `/readyz` 继续作为
+无版本部署探针。
+
+dev 服务定义在 Linux 上位于 `~/.config/systemd/user/opentag-dev.service`，在 macOS 上位于
+`~/Library/LaunchAgents/opentag-dev.plist`；macOS wrapper 位于 `${OPENTAG_HOME}/service/opentag-dev`。
+staging 与 production 使用各自的 channel `serviceId`（`opentag-staging` 或 `opentag`）替换后缀。如果登录已
+保存凭据但服务安装失败，修复提示的 manager 问题后运行 `opentag-dev daemon install`，不需要申请新的
+connect code。
 
 ## 管理 Agent 配置
 
@@ -139,6 +151,30 @@ bootstrap email 是账号资料，不是邮箱密码凭据。当前 connect code
 无关的 token 颁发边界。未来 Google 或 OIDC identity resolver 可以接入这个边界，无需改变 JWT claims 或 team
 权限模型；每次鉴权始终从 PostgreSQL 读取有效 membership。
 
+## Google 登录、Team membership 与 Admin Web
+
+创建 Google Web OAuth client，并将 callback 配置为
+`http://127.0.0.1:8000/api/v1/auth/google/callback`，然后设置 `OPENTAG_GOOGLE_CLIENT_ID` 与
+`OPENTAG_GOOGLE_CLIENT_SECRET`。Server 会在监听前校验 Google 配置；生产环境的 `OPENTAG_PUBLIC_URL` 必须
+使用 HTTPS。浏览器 access/refresh JWT 只保存在 HttpOnly cookie 中，浏览器 mutation 还必须同时通过同源检查
+和可读 double-submit CSRF cookie 校验。
+
+打开 `/admin/` 可使用只读 Team 管理界面。membership 与邀请变更使用 CLI：
+
+```bash
+pnpm --filter open-tag start team member list --team example
+pnpm --filter open-tag start team member role <user-id> --role admin --team example
+pnpm --filter open-tag start team member remove <user-id> --team example
+pnpm --filter open-tag start team member restore <user-id> --role member --team example
+pnpm --filter open-tag start team leave --team example
+pnpm --filter open-tag start team invitation show --team example
+pnpm --filter open-tag start team invitation rotate --team example
+```
+
+邀请明文只在授权的 `show`/`rotate` 响应中恢复；PostgreSQL 保存 SHA-256 查询 hash 和 AES-256-GCM 密文。
+使用 `openssl rand -base64 32` 生成 `OPENTAG_ENCRYPTION_KEY`；若直接更换密钥而不轮换已有邀请，旧邀请会按
+fail-closed 原则拒绝读取。
+
 ## 环境变量
 
 仅在需要本地覆盖时复制 `.env.example`。当前进程不会自动加载环境文件。
@@ -148,8 +184,12 @@ bootstrap email 是账号资料，不是邮箱密码凭据。当前 connect code
 | `OPENTAG_HOST` | `127.0.0.1` | Server 监听地址 |
 | `OPENTAG_PORT` | `8000` | Server 监听端口 |
 | `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor 目标地址 |
+| `OPENTAG_PUBLIC_URL` | 无 | 浏览器 callback 和邀请链接使用的必需 Server 公共 origin |
 | `OPENTAG_DATABASE_URL` | 无 | 必需的 PostgreSQL 连接地址 |
 | `OPENTAG_JWT_SECRET` | 无 | 必需的 access token 签名 secret，至少 32 个字符 |
+| `OPENTAG_ENCRYPTION_KEY` | 无 | 必需的 canonical base64 编码 32-byte 应用层加密密钥 |
+| `OPENTAG_GOOGLE_CLIENT_ID` | 无 | 可选 Google OIDC client id，必须与 secret 同时配置 |
+| `OPENTAG_GOOGLE_CLIENT_SECRET` | 无 | 可选 Google OIDC client secret，必须与 client id 同时配置 |
 | `OPENTAG_AUTO_MIGRATE` | `true` | 监听前执行已入库的 migration |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | access token 有效期 |
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | refresh JWT 有效期 |

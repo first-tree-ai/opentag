@@ -18,13 +18,19 @@ describe("auth secret handling", () => {
 
   it("preserves startup root causes while redacting database credentials and known secrets", () => {
     const secret = "jwt-secret-that-must-not-leak";
+    const googleSecret = "google-secret-that-must-not-leak";
+    const encryptionKey = "encryption-key-that-must-not-leak";
     const output = formatStartupError(
-      new Error(`permission denied for database opentag at postgresql://user:password@localhost/opentag ${secret}`),
-      [secret],
+      new Error(
+        `permission denied for database opentag at postgresql://user:password@localhost/opentag ${secret} ${googleSecret} ${encryptionKey}`,
+      ),
+      [secret, googleSecret, encryptionKey],
     );
     expect(output).toContain("permission denied for database opentag");
     expect(output).not.toContain("password");
     expect(output).not.toContain(secret);
+    expect(output).not.toContain(googleSecret);
+    expect(output).not.toContain(encryptionKey);
   });
 });
 

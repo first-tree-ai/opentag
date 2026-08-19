@@ -7,18 +7,15 @@ const timestamps = {
 };
 
 export const membershipRole = pgEnum("membership_role", ["admin", "member"]);
+export const membershipStatus = pgEnum("membership_status", ["active", "left", "removed"]);
 
-export const users = pgTable(
-  "users",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    email: text("email").notNull(),
-    displayName: text("display_name").notNull(),
-    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
-    ...timestamps,
-  },
-  (table) => [uniqueIndex("users_email_unique").on(sql`lower(${table.email})`)],
-);
+export const users = pgTable("users", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  email: text("email").notNull(),
+  displayName: text("display_name").notNull(),
+  suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+  ...timestamps,
+});
 
 export const teams = pgTable(
   "teams",
@@ -41,7 +38,7 @@ export const memberships = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     role: membershipRole("role").notNull(),
-    leftAt: timestamp("left_at", { withTimezone: true }),
+    status: membershipStatus("status").notNull().default("active"),
     ...timestamps,
   },
   (table) => [

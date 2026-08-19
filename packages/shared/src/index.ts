@@ -15,6 +15,10 @@ export {
   UpdateAgentRequestSchema,
 } from "./agent.js";
 export {
+  type AuthIdentityProvider,
+  AuthIdentityProviderSchema,
+  type AuthProvidersResponse,
+  AuthProvidersResponseSchema,
   type ConnectCodeExchangeRequest,
   ConnectCodeExchangeRequestSchema,
   type ConnectCodeExchangeResponse,
@@ -23,6 +27,8 @@ export {
   MeMembershipSchema,
   type MembershipRole,
   MembershipRoleSchema,
+  type MembershipStatus,
+  MembershipStatusSchema,
   type MeResponse,
   MeResponseSchema,
   type RefreshTokenRequest,
@@ -32,7 +38,14 @@ export {
   type TeamName,
   TeamNameSchema,
 } from "./auth.js";
-export { type ChannelConfig, type ChannelName, ChannelNameSchema, getChannelConfig } from "./channel.js";
+export {
+  type ChannelConfig,
+  type ChannelName,
+  ChannelNameSchema,
+  getChannelConfig,
+  type ServiceId,
+  ServiceIdSchema,
+} from "./channel.js";
 export {
   type Computer,
   type ComputerConnectionStatus,
@@ -59,10 +72,36 @@ export {
   API_V1_PREFIX,
   agentByIdPath,
   HTTP_PATHS,
+  INVITATION_PREVIEW_TEMPLATE,
+  INVITATION_REDEEM_TEMPLATE,
+  invitationPreviewPath,
+  invitationRedeemPath,
   runtimeWebSocketUrl,
   TEAM_AGENTS_TEMPLATE,
+  TEAM_COMPUTERS_TEMPLATE,
+  TEAM_INVITATION_TEMPLATE,
+  TEAM_MEMBER_TEMPLATE,
+  TEAM_MEMBERS_TEMPLATE,
   teamAgentsPath,
+  teamComputersPath,
+  teamInvitationPath,
+  teamInvitationRotatePath,
+  teamLeavePath,
+  teamMemberPath,
+  teamMemberRemovePath,
+  teamMemberRestorePath,
+  teamMembersPath,
 } from "./http-paths.js";
+export {
+  type InvitationPreview,
+  InvitationPreviewSchema,
+  type InvitationRedemptionResponse,
+  InvitationRedemptionResponseSchema,
+  type InvitationToken,
+  InvitationTokenSchema,
+  type TeamInvitation,
+  TeamInvitationSchema,
+} from "./invitation.js";
 export {
   type AgentTraceBatch,
   AgentTraceBatchSchema,
@@ -150,3 +189,17 @@ export {
   type ServerWelcomeFrame,
   ServerWelcomeFrameSchema,
 } from "./runtime-protocol.js";
+export {
+  type ListTeamComputersResponse,
+  ListTeamComputersResponseSchema,
+  type ListTeamMembersResponse,
+  ListTeamMembersResponseSchema,
+  type RestoreTeamMemberRequest,
+  RestoreTeamMemberRequestSchema,
+  type TeamComputer,
+  TeamComputerSchema,
+  type TeamMember,
+  TeamMemberSchema,
+  type UpdateTeamMemberRequest,
+  UpdateTeamMemberRequestSchema,
+} from "./team.js";

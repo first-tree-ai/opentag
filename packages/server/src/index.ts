@@ -1,12 +1,25 @@
 import { fileURLToPath } from "node:url";
+import { defaultAdminWebRoot } from "./admin-web.js";
 import { createApp } from "./app.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { parseServerConfig } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
 import { AgentService } from "./services/agents/index.js";
-import { AuthService, AuthTokenService, formatStartupError } from "./services/auth/index.js";
+import {
+  AuthIdentityService,
+  AuthService,
+  AuthTokenService,
+  DefaultGoogleIdentityClient,
+  formatStartupError,
+  GoogleBrowserAuthService,
+  OAuthFlowService,
+  PostAuthenticationService,
+} from "./services/auth/index.js";
 import { ComputerService } from "./services/computers/index.js";
+import { ApplicationCipher } from "./services/crypto.js";
+import { InvitationService } from "./services/invitations/index.js";
+import { TeamMembershipService } from "./services/teams/index.js";
 
 export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
 export { createApp } from "./app.js";
@@ -42,8 +55,13 @@ export async function startServer(): Promise<void> {
   const knownSecrets: string[] = [];
 
   try {
+    knownSecrets.push(
+      process.env.OPENTAG_DATABASE_URL ?? "",
+      process.env.OPENTAG_JWT_SECRET ?? "",
+      process.env.OPENTAG_GOOGLE_CLIENT_SECRET ?? "",
+      process.env.OPENTAG_ENCRYPTION_KEY ?? "",
+    );
     const config = parseServerConfig(process.env);
-    knownSecrets.push(config.jwtSecret);
     readiness.complete("configuration");
     if (config.autoMigrate) {
       await migrateDatabase(config.databaseUrl, config.migrationsDirectory);
@@ -58,8 +76,44 @@ export async function startServer(): Promise<void> {
       new AuthTokenService(config.jwtSecret, config.accessTokenTtlSeconds, config.refreshTokenTtlSeconds),
     );
     const computerService = new ComputerService(database, authService);
-    const agentService = new AgentService(database);
-    app = createApp({ agentService, authService, computerService, readiness });
+    const teamService = new TeamMembershipService(database);
+    const agentService = new AgentService(database, { membershipService: teamService });
+    const invitationService = new InvitationService(
+      database,
+      teamService,
+      new ApplicationCipher(config.encryptionKey),
+      config.publicUrl,
+    );
+    const identityService = new AuthIdentityService(database);
+    const postAuthentication = new PostAuthenticationService(database, invitationService, {
+      membershipService: teamService,
+    });
+    const google = config.google
+      ? new GoogleBrowserAuthService({
+          database,
+          flow: new OAuthFlowService(config.jwtSecret),
+          google: new DefaultGoogleIdentityClient(config.google.clientId, config.google.clientSecret),
+          identities: identityService,
+          postAuthentication,
+          publicUrl: config.publicUrl,
+          tokenIssuer: authService,
+        })
+      : undefined;
+    app = createApp({
+      adminWebRoot: defaultAdminWebRoot,
+      agentService,
+      authService,
+      browserAuth: {
+        google,
+        publicOrigin: config.publicUrl,
+        refreshTokenTtlSeconds: config.refreshTokenTtlSeconds,
+        secureCookies: config.environment === "production",
+      },
+      computerService,
+      invitationService,
+      readiness,
+      teamService,
+    });
     app.addHook("onClose", async () => sql.end());
     readiness.complete("application");
     await app.listen({ host: config.host, port: config.port });

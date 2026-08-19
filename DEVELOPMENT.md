@@ -52,6 +52,8 @@ the server listens.
 docker compose up -d postgres
 export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
 export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
+export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
+export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
 pnpm build
 pnpm --filter @opentag/server start
 ```
@@ -98,16 +100,26 @@ The source checkout is the `dev` channel. It exposes the `opentag-dev` binary wh
 `~/.opentag-dev`; staging and production builds use `opentag-staging` / `~/.opentag-staging` and `opentag` /
 `~/.opentag`. An explicit `OPENTAG_HOME` overrides the channel default.
 
-After login, start the foreground daemon and inspect the user-owned Computer from another terminal:
+Login installs and starts the user service on Linux and macOS. Inspect it and the user-owned Computer from another terminal:
 
 ```bash
-pnpm --filter open-tag start daemon run
+pnpm --filter open-tag start daemon status
 pnpm --filter open-tag start computer list
 ```
 
-The daemon reuses the stable Computer ID stored in its home, creates a new process instance on every start, and connects
-to `/api/v1/computer/ws`. Ctrl+C performs a clean shutdown; a second daemon using the same home is rejected. The CLI
-uses `/api/v1/auth/...` and `/api/v1/me/...`; `/healthz` and `/readyz` remain unversioned deployment probes.
+The daemon reuses the stable Computer ID stored in its home, creates a new process instance on every service start, and
+connects to `/api/v1/computer/ws`. Manage it with `daemon install/start/stop/restart/status/uninstall`. `uninstall`
+preserves credentials and Computer identity. Use `login --no-start` for credential-only setup; Windows services are not
+supported in v0.1. Linux logs are available through `journalctl --user -u opentag-dev.service`; macOS logs are under the
+channel home's `logs` directory. Optional `${OPENTAG_HOME}/daemon.env` must be a private regular file (mode `0600`) and
+can provide service-only environment values without overriding pinned service settings. The CLI uses `/api/v1/auth/...`
+and `/api/v1/me/...`; `/healthz` and `/readyz` remain unversioned deployment probes.
+
+The dev service definition is `~/.config/systemd/user/opentag-dev.service` on Linux or
+`~/Library/LaunchAgents/opentag-dev.plist` on macOS; the macOS wrapper is `${OPENTAG_HOME}/service/opentag-dev`.
+Staging and production replace the suffix with their channel `serviceId` (`opentag-staging` or `opentag`). If login saves
+credentials but service installation fails, fix the reported manager issue and run `opentag-dev daemon install`; do not
+request another connect code.
 
 ## Manage Agent configurations
 
@@ -140,6 +152,30 @@ The bootstrap email is account profile data, not an email/password credential. T
 stable user ID and then uses the provider-neutral token issuer. Future Google or OIDC identity resolvers can join at that
 boundary without changing JWT claims or team authorization; active memberships are always loaded from PostgreSQL.
 
+## Google sign-in, Team membership, and Admin Web
+
+Create a Google Web OAuth client whose callback is
+`http://127.0.0.1:8000/api/v1/auth/google/callback`, then set `OPENTAG_GOOGLE_CLIENT_ID` and
+`OPENTAG_GOOGLE_CLIENT_SECRET`. The Google configuration is validated before the server listens; production requires an
+HTTPS `OPENTAG_PUBLIC_URL`. Browser access and refresh JWTs stay in HttpOnly cookies, while browser mutations require a
+same-origin request and the readable double-submit CSRF cookie.
+
+Open `/admin/` for the read-only Team view. Use the CLI for membership and invitation mutations:
+
+```bash
+pnpm --filter open-tag start team member list --team example
+pnpm --filter open-tag start team member role <user-id> --role admin --team example
+pnpm --filter open-tag start team member remove <user-id> --team example
+pnpm --filter open-tag start team member restore <user-id> --role member --team example
+pnpm --filter open-tag start team leave --team example
+pnpm --filter open-tag start team invitation show --team example
+pnpm --filter open-tag start team invitation rotate --team example
+```
+
+Invitation plaintext is recovered only for an authorized `show`/`rotate` response. PostgreSQL stores its SHA-256 lookup
+hash and AES-256-GCM ciphertext. Generate `OPENTAG_ENCRYPTION_KEY` with `openssl rand -base64 32`; changing the key
+without rotating existing invitations makes them intentionally fail closed.
+
 ## Environment variables
 
 Copy `.env.example` only when you need local overrides. Environment files are not loaded automatically by the current
@@ -150,8 +186,12 @@ processes.
 | `OPENTAG_HOST` | `127.0.0.1` | Server listen host |
 | `OPENTAG_PORT` | `8000` | Server listen port |
 | `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor target |
+| `OPENTAG_PUBLIC_URL` | none | Required public Server origin used for browser callbacks and invitation links |
 | `OPENTAG_DATABASE_URL` | none | Required PostgreSQL connection URL |
 | `OPENTAG_JWT_SECRET` | none | Required access-token signing secret; at least 32 characters |
+| `OPENTAG_ENCRYPTION_KEY` | none | Required canonical base64-encoded 32-byte application encryption key |
+| `OPENTAG_GOOGLE_CLIENT_ID` | none | Optional Google OIDC client id; requires the matching secret |
+| `OPENTAG_GOOGLE_CLIENT_SECRET` | none | Optional Google OIDC client secret; requires the matching client id |
 | `OPENTAG_AUTO_MIGRATE` | `true` | Run checked-in migrations before listening |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | Access-token lifetime |
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-JWT lifetime |

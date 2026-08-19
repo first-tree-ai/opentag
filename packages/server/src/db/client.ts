@@ -12,3 +12,4 @@ export function createDatabaseClient(databaseUrl: string, options: { max?: numbe
 }
 
 export type DatabaseClient = ReturnType<typeof createDatabaseClient>["database"];
+export type DatabaseTransaction = Parameters<Parameters<DatabaseClient["transaction"]>[0]>[0];

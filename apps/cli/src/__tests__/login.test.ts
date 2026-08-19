@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { credentialsPath, readCredentials, resolveComputerIdentity } from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { executeLoginCommand } from "../commands/login.js";
 import { runLogin } from "../core/auth/login.js";
+import { LoginServiceInstallError, runLoginWithService } from "../core/auth/login-service.js";
+import type { DaemonServiceManager } from "../core/daemon/service/index.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -51,4 +54,116 @@ describe("runLogin", () => {
     ).rejects.toThrow("bound to another server");
     expect(exchangeConnectCode).not.toHaveBeenCalled();
   });
+
+  it("preflights the service before consuming a connect code", async () => {
+    const login = vi.fn();
+    const manager = fakeManager();
+    manager.preflight = vi.fn().mockRejectedValue(new Error("unsupported"));
+
+    await expect(
+      runLoginWithService({ code: "one-time-secret", login, manager, serverUrl: "https://opentag.example" }),
+    ).rejects.toThrow("unsupported");
+
+    expect(login).not.toHaveBeenCalled();
+    expect(manager.installAndStart).not.toHaveBeenCalled();
+  });
+
+  it("installs the service after credentials are written", async () => {
+    const order: string[] = [];
+    const login = vi.fn(async () => {
+      order.push("login");
+      return { credentialsPath: "/private/credentials.json", message: "Logged in" };
+    });
+    const manager = fakeManager(order);
+
+    const result = await runLoginWithService({
+      code: "one-time-secret",
+      login,
+      manager,
+      serverUrl: "https://opentag.example",
+    });
+
+    expect(order).toEqual(["preflight", "login", "install"]);
+    expect(result.service?.state).toBe("active");
+  });
+
+  it("skips all service work with --no-start", async () => {
+    const login = vi.fn().mockResolvedValue({ credentialsPath: "/private/credentials.json", message: "Logged in" });
+    const manager = fakeManager();
+
+    const result = await runLoginWithService({
+      code: "one-time-secret",
+      login,
+      manager,
+      noStart: true,
+      serverUrl: "https://opentag.example",
+    });
+
+    expect(result.service).toBeUndefined();
+    expect(manager.preflight).not.toHaveBeenCalled();
+    expect(manager.installAndStart).not.toHaveBeenCalled();
+  });
+
+  it("retains the successful login result when service installation fails", async () => {
+    const login = vi.fn().mockResolvedValue({ credentialsPath: "/private/credentials.json", message: "Logged in" });
+    const manager = fakeManager();
+    manager.installAndStart = vi.fn().mockRejectedValue(new Error("manager failed"));
+
+    const error = await runLoginWithService({
+      code: "one-time-secret",
+      login,
+      manager,
+      serverUrl: "https://opentag.example",
+    }).catch((value: unknown) => value);
+
+    expect(error).toBeInstanceOf(LoginServiceInstallError);
+    expect((error as LoginServiceInstallError).loginResult.message).toBe("Logged in");
+    expect(JSON.stringify(error)).not.toContain("one-time-secret");
+    expect(login).toHaveBeenCalledOnce();
+  });
+
+  it("reports partial success with only the daemon install recovery command", async () => {
+    const output: string[] = [];
+    const errors: string[] = [];
+    const loginResult = { credentialsPath: "/private/credentials.json", message: "Logged in" };
+    const login = vi.fn().mockRejectedValue(new LoginServiceInstallError(loginResult, { cause: new Error("secret") }));
+
+    const exitCode = await executeLoginCommand(
+      "one-time-secret",
+      { server: "https://opentag.example" },
+      { login, writeError: (message) => errors.push(message), writeOutput: (message) => output.push(message) },
+    );
+
+    expect(exitCode).toBe(1);
+    expect(output).toEqual(["Logged in"]);
+    expect(errors.join(" ")).toContain("opentag-dev daemon install");
+    expect(`${output.join(" ")} ${errors.join(" ")}`).not.toMatch(/one-time-secret|refresh|access/iu);
+    expect(login).toHaveBeenCalledOnce();
+  });
 });
+
+function fakeManager(order: string[] = []): DaemonServiceManager {
+  const info = {
+    currentHome: "/home/user/.opentag-dev",
+    definitionPath: "/unit/opentag-dev.service",
+    drifted: false,
+    logHint: "logs",
+    platform: "systemd" as const,
+    serviceId: "opentag-dev",
+    state: "active" as const,
+  };
+  return {
+    preflight: vi.fn(async () => {
+      order.push("preflight");
+    }),
+    installAndStart: vi.fn(async () => {
+      order.push("install");
+      return info;
+    }),
+    restart: vi.fn(async () => info),
+    start: vi.fn(async () => info),
+    status: vi.fn(async () => info),
+    stop: vi.fn(async () => ({ ...info, state: "inactive" as const })),
+    uninstall: vi.fn(async () => ({ ...info, state: "not-installed" as const })),
+  };
+}

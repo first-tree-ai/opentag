@@ -28,7 +28,7 @@ vi.mock("@opentag/client", async (importOriginal) => {
   };
 });
 
-import { runDaemon, runDaemonLifecycle } from "../core/daemon/runtime.js";
+import { runDaemonLifecycle, runDaemonService } from "../core/daemon/runtime.js";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -36,7 +36,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-describe("daemon lifecycle", () => {
+describe("daemon service runtime", () => {
   it("does not start after a signal arrives during startup", async () => {
     const signals = new EventEmitter();
     const run = vi.fn<() => Promise<void>>().mockResolvedValue(undefined);
@@ -80,7 +80,7 @@ describe("daemon lifecycle", () => {
       }),
     );
 
-    const daemon = runDaemon({ home, signals: signals as unknown as NodeJS.Process });
+    const daemon = runDaemonService({ home, signals: signals as unknown as NodeJS.Process });
     await vi.waitFor(() => expect(clientMocks.getAccessTokenLease).toHaveBeenCalledOnce());
     signals.emit("SIGINT");
     finishRefresh?.({ accessToken: "new-access", expiresAt: new Date(Date.now() + 60_000).toISOString() });
@@ -115,7 +115,7 @@ describe("daemon lifecycle", () => {
     });
     clientMocks.createCodexClientRuntime.mockResolvedValue({ run, stop });
 
-    await runDaemon({ home, log: () => undefined, signals: signals as unknown as NodeJS.Process });
+    await runDaemonService({ home, log: () => undefined, signals: signals as unknown as NodeJS.Process });
 
     expect(clientMocks.createCodexClientRuntime).toHaveBeenCalledOnce();
     expect(clientMocks.createCodexClientRuntime.mock.calls[0]?.[1]).toMatchObject({ home, clientVersion: "0.0.1" });

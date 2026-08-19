@@ -19,6 +19,11 @@ export interface DeliveryDecision {
 export interface ClientRuntimeOptions {
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
   handleTurnReportResult?(result: TurnReportResult): Promise<void> | void;
+  onReconcileResultSendFailed?(
+    request: SessionReconcileRequest,
+    result: SessionReconcileResult,
+    error: unknown,
+  ): Promise<void> | void;
   onReconciled?(request: SessionReconcileRequest, result: SessionReconcileResult): Promise<void> | void;
   prepareReconcileResult?(
     request: SessionReconcileRequest,
@@ -64,7 +69,12 @@ export class ClientRuntime {
       const result = SessionReconcileResultSchema.parse(
         (await this.#options.prepareReconcileResult?.(frame, reconciled)) ?? reconciled,
       );
-      await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
+      try {
+        await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
+      } catch (error) {
+        await this.#options.onReconcileResultSendFailed?.(frame, result, error);
+        throw error;
+      }
       await this.#options.onReconciled?.(frame, result);
       return;
     }

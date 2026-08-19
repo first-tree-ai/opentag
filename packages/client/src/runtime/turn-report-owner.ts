@@ -16,6 +16,12 @@ export interface TurnReportOwnerOptions {
   retryDelayMs?: number;
 }
 
+export type TurnReportTerminalStatus = "conflict" | "stale_generation";
+
+export interface TurnReportSubmitOptions {
+  onTerminal?(status: TurnReportTerminalStatus): void;
+}
+
 interface PendingReport {
   confirm(): Promise<void> | void;
   confirming: boolean;
@@ -26,7 +32,8 @@ interface PendingReport {
   resendRequested: boolean;
   retryTimer?: ReturnType<typeof setTimeout>;
   sending: boolean;
-  serverStatus?: "conflict" | "stale_generation";
+  serverStatus?: TurnReportTerminalStatus;
+  terminalListeners: Set<NonNullable<TurnReportSubmitOptions["onTerminal"]>>;
 }
 
 export class TurnReportOwnerStoppedError extends Error {
@@ -73,13 +80,21 @@ export class TurnReportOwner {
     return TurnReportRequestSchema.parse(report);
   }
 
-  submit(reportInput: TurnReportRequest, confirm: () => Promise<void> | void): Promise<void> {
+  submit(
+    reportInput: TurnReportRequest,
+    confirm: () => Promise<void> | void,
+    options: TurnReportSubmitOptions = {},
+  ): Promise<void> {
     if (this.#stopped) return Promise.reject(new TurnReportOwnerStoppedError());
     const report = TurnReportRequestSchema.parse(reportInput);
     const existing = this.#pending.get(report.turnId);
     if (existing) {
       if (existing.report.requestId !== report.requestId || existing.report.resultHash !== report.resultHash) {
         return Promise.reject(new Error("A different Turn Report already owns this Turn"));
+      }
+      if (options.onTerminal) {
+        if (existing.serverStatus) this.#notifyTerminal(options.onTerminal, existing.serverStatus);
+        else existing.terminalListeners.add(options.onTerminal);
       }
       if (this.#connection.state === "registered" && !existing.serverStatus) {
         if (existing.sending) existing.resendRequested = true;
@@ -105,6 +120,7 @@ export class TurnReportOwner {
       promise,
       resolve: () => resolvePromise?.(),
       reject: (error) => rejectPromise?.(error),
+      terminalListeners: new Set(options.onTerminal ? [options.onTerminal] : []),
     };
     this.#pending.set(report.turnId, pending);
     if (this.#connection.state === "registered") this.#send(pending);
@@ -119,6 +135,9 @@ export class TurnReportOwner {
     if (result.status === "conflict" || result.status === "stale_generation") {
       pending.serverStatus = result.status;
       this.#clearRetry(pending);
+      const listeners = [...pending.terminalListeners];
+      pending.terminalListeners.clear();
+      for (const listener of listeners) this.#notifyTerminal(listener, result.status);
       return true;
     }
     if (pending.confirming) return true;
@@ -136,7 +155,7 @@ export class TurnReportOwner {
     return true;
   }
 
-  get(turnId: string): { report: TurnReportRequest; serverStatus?: "conflict" | "stale_generation" } | undefined {
+  get(turnId: string): { report: TurnReportRequest; serverStatus?: TurnReportTerminalStatus } | undefined {
     const pending = this.#pending.get(turnId);
     if (!pending) return undefined;
     return {
@@ -208,5 +227,16 @@ export class TurnReportOwner {
     if (!pending.retryTimer) return;
     clearTimeout(pending.retryTimer);
     pending.retryTimer = undefined;
+  }
+
+  #notifyTerminal(
+    listener: NonNullable<TurnReportSubmitOptions["onTerminal"]>,
+    status: TurnReportTerminalStatus,
+  ): void {
+    try {
+      listener(status);
+    } catch {
+      // A terminal observer cannot alter the durable Report fence.
+    }
   }
 }

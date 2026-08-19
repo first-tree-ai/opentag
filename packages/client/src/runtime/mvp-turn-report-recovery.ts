@@ -21,7 +21,7 @@ type RetainedReportReference = NonNullable<SessionReconcileResult["retainedRepor
 
 interface PreparedBatch {
   agentId: string;
-  references: RetainedReportReference[];
+  pendingSends: number;
   sessionId: string;
 }
 
@@ -75,10 +75,11 @@ export class MvpTurnReportRecovery {
       if (!this.#prepared.has(request.requestId) && this.#prepared.size >= this.#maxPreparedBatches) {
         throw new Error("The MVP Turn Report prepared batch limit was reached");
       }
+      const existing = this.#prepared.get(request.requestId);
       const references = reports.map(reportReference);
       this.#prepared.set(request.requestId, {
         agentId: request.agentId,
-        references,
+        pendingSends: (existing?.pendingSends ?? 0) + 1,
         sessionId: request.sessionId,
       });
       return {
@@ -88,7 +89,9 @@ export class MvpTurnReportRecovery {
     });
   }
 
-  afterReconciled(request: SessionReconcileRequest): void {
+  afterReconciled(request: SessionReconcileRequest, result: SessionReconcileResult): void {
+    const references = result.retainedReports;
+    if (!references || references.length === 0) return;
     const batch = this.#prepared.get(request.requestId);
     if (!batch) return;
     this.#prepared.delete(request.requestId);
@@ -107,13 +110,24 @@ export class MvpTurnReportRecovery {
     if (!this.#queues.has(batch.sessionId)) this.#queues.set(batch.sessionId, queue);
     queue.blocked = false;
     if (queue.running) queue.restartRequested = true;
-    for (const reference of batch.references) {
+    for (const reference of references) {
       const key = reportKey(reference);
       if (queue.keys.has(key)) continue;
       queue.keys.add(key);
       queue.references.push(reference);
     }
     this.#startQueues();
+  }
+
+  cancel(
+    request: Pick<SessionReconcileRequest, "requestId">,
+    result: Pick<SessionReconcileResult, "retainedReports">,
+  ): void {
+    if (!result.retainedReports || result.retainedReports.length === 0) return;
+    const batch = this.#prepared.get(request.requestId);
+    if (!batch) return;
+    if (batch.pendingSends === 1) this.#prepared.delete(request.requestId);
+    else batch.pendingSends -= 1;
   }
 
   #startQueues(): void {
@@ -148,12 +162,25 @@ export class MvpTurnReportRecovery {
           queue.keys.delete(reportKey(reference));
           continue;
         }
-        await this.#reportOwner.submit(report, () =>
-          this.#reconciler.withAgentLock(queue.agentId, async () => {
-            await this.#bindingStore.recordResult(queue.agentId, sessionId, report.turnId, report.resultHash);
-            this.#reconciler.clearRecovery(sessionId, report.turnId);
-          }),
-        );
+        let reportTerminal: (() => void) | undefined;
+        const terminal = new Promise<"terminal">((resolve) => {
+          reportTerminal = () => resolve("terminal");
+        });
+        const submitted = this.#reportOwner
+          .submit(
+            report,
+            () =>
+              this.#reconciler.withAgentLock(queue.agentId, async () => {
+                await this.#bindingStore.recordResult(queue.agentId, sessionId, report.turnId, report.resultHash);
+                this.#reconciler.clearRecovery(sessionId, report.turnId);
+              }),
+            { onTerminal: () => reportTerminal?.() },
+          )
+          .then(() => "recorded" as const);
+        if ((await Promise.race([submitted, terminal])) === "terminal") {
+          this.#log?.(`MVP Turn Report replay for Session ${sessionId} reached a terminal Server status`);
+          return false;
+        }
         queue.references.shift();
         queue.keys.delete(reportKey(reference));
       }

@@ -42,19 +42,110 @@ describe("MvpTurnReportRecovery", () => {
     expect(firstResult.retainedReports).toEqual([reportReference(first)]);
     expect(secondResult.retainedReports).toEqual([reportReference(second)]);
 
-    recovery.afterReconciled(firstRequest);
-    recovery.afterReconciled(secondRequest);
+    recovery.afterReconciled(firstRequest, firstResult);
+    recovery.afterReconciled(secondRequest, secondResult);
     await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
-    expect(submit).toHaveBeenLastCalledWith(first, expect.any(Function));
+    expect(submit).toHaveBeenLastCalledWith(first, expect.any(Function), { onTerminal: expect.any(Function) });
 
     const reloadedSecond = { ...second, requestId: randomUUID() };
     bindings.set(bindingKey(second.agentId, second.sessionId), reportingBinding(reloadedSecond));
     releaseFirst?.();
 
     await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
-    expect(submit).toHaveBeenLastCalledWith(reloadedSecond, expect.any(Function));
+    expect(submit).toHaveBeenLastCalledWith(reloadedSecond, expect.any(Function), {
+      onTerminal: expect.any(Function),
+    });
+  });
+
+  it("releases an active replay slot when the Server returns a terminal Report status", async () => {
+    const first = turnReport("agent-1", "session-1", "terminal");
+    const second = turnReport("agent-2", "session-2", "recorded");
+    const bindings = new Map([
+      [bindingKey(first.agentId, first.sessionId), reportingBinding(first)],
+      [bindingKey(second.agentId, second.sessionId), reportingBinding(second)],
+    ]);
+    const submit = vi.fn(
+      (
+        report: TurnReportRequest,
+        _confirm: () => Promise<void> | void,
+        options?: { onTerminal?(status: "conflict" | "stale_generation"): void },
+      ) => {
+        if (report.sessionId !== first.sessionId) return Promise.resolve();
+        options?.onTerminal?.("conflict");
+        return new Promise<void>(() => undefined);
+      },
+    );
+    const recovery = recoveryFor(bindings, submit, { maxActiveReplays: 1 });
+    const firstRequest = reconcileRequest(first.agentId, first.sessionId);
+    const secondRequest = reconcileRequest(second.agentId, second.sessionId);
+
+    const firstResult = await recovery.prepare(firstRequest, recoveryRequired(firstRequest, first));
+    const secondResult = await recovery.prepare(secondRequest, recoveryRequired(secondRequest, second));
+    recovery.afterReconciled(firstRequest, firstResult);
+    recovery.afterReconciled(secondRequest, secondResult);
+
+    await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+    expect(submit.mock.calls[1]?.[0]).toEqual(second);
+  });
+
+  it("cancels a prepared batch when its reconcile result was not sent", async () => {
+    const first = turnReport("agent-1", "session-1", "first-prepared");
+    const second = turnReport("agent-2", "session-2", "second-prepared");
+    const bindings = new Map([
+      [bindingKey(first.agentId, first.sessionId), reportingBinding(first)],
+      [bindingKey(second.agentId, second.sessionId), reportingBinding(second)],
+    ]);
+    const recovery = recoveryFor(
+      bindings,
+      vi.fn(async () => undefined),
+      { maxPreparedBatches: 1 },
+    );
+    const firstRequest = reconcileRequest(first.agentId, first.sessionId);
+    const secondRequest = reconcileRequest(second.agentId, second.sessionId);
+
+    const firstResult = await recovery.prepare(firstRequest, recoveryRequired(firstRequest, first));
+    await recovery.prepare(firstRequest, recoveryRequired(firstRequest, first));
+    await expect(recovery.prepare(secondRequest, recoveryRequired(secondRequest, second))).rejects.toThrow(
+      "prepared batch limit",
+    );
+
+    const resultWithoutManifest = recoveryRequired(firstRequest, first);
+    recovery.afterReconciled(firstRequest, resultWithoutManifest);
+    recovery.cancel(firstRequest, resultWithoutManifest);
+    await expect(recovery.prepare(secondRequest, recoveryRequired(secondRequest, second))).rejects.toThrow(
+      "prepared batch limit",
+    );
+
+    recovery.cancel(firstRequest, firstResult);
+    await expect(recovery.prepare(secondRequest, recoveryRequired(secondRequest, second))).rejects.toThrow(
+      "prepared batch limit",
+    );
+
+    recovery.cancel(firstRequest, firstResult);
+    await expect(recovery.prepare(secondRequest, recoveryRequired(secondRequest, second))).resolves.toMatchObject({
+      retainedReports: [reportReference(second)],
+    });
   });
 });
+
+function recoveryFor(
+  bindings: Map<string, ReturnType<typeof reportingBinding>>,
+  submit: MvpTurnReportRecoveryOptions["reportOwner"]["submit"],
+  limits: Pick<MvpTurnReportRecoveryOptions, "maxActiveReplays" | "maxPreparedBatches">,
+): MvpTurnReportRecovery {
+  return new MvpTurnReportRecovery({
+    bindingStore: {
+      read: vi.fn(async (agentId: string, sessionId: string) => bindings.get(bindingKey(agentId, sessionId))),
+      recordResult: vi.fn(async () => undefined),
+    } as unknown as MvpTurnReportRecoveryOptions["bindingStore"],
+    ...limits,
+    reconciler: {
+      clearRecovery: vi.fn(),
+      withAgentLock: vi.fn(async (_agentId: string, action: () => unknown) => action()),
+    } as unknown as MvpTurnReportRecoveryOptions["reconciler"],
+    reportOwner: { submit },
+  });
+}
 
 function reconcileRequest(agentId: string, sessionId: string): SessionReconcileRequest {
   return {

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { EffectiveRuntimeSnapshot } from "@opentag/shared";
-import { afterEach, describe, expect, it } from "vitest";
+import type { EffectiveRuntimeSnapshot, SessionReconcileRequest, SessionReconcileResult } from "@opentag/shared";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
 import { ClientRuntime } from "../runtime/client-runtime.js";
@@ -95,7 +95,60 @@ describe("ClientRuntime domain dispatch", () => {
       }),
     ]);
   });
+
+  it("cancels prepared reconcile state when sending the result fails", async () => {
+    const computerId = randomUUID();
+    const request = reconcile(computerId, randomUUID()) as SessionReconcileRequest;
+    const sendError = new Error("socket unavailable");
+    const connection = new FailingResultConnection(computerId, request, sendError);
+    const onReconcileResultSendFailed = vi.fn();
+    const runtime = new ClientRuntime(connection as unknown as RuntimeConnection, {
+      onReconcileResultSendFailed,
+      prepareReconcileResult: (_request, result) => result,
+    });
+
+    await expect(runtime.run()).rejects.toBe(sendError);
+    expect(onReconcileResultSendFailed).toHaveBeenCalledOnce();
+    expect(onReconcileResultSendFailed).toHaveBeenCalledWith(
+      request,
+      expect.objectContaining<Partial<SessionReconcileResult>>({
+        type: "session:reconcile:result",
+        requestId: request.requestId,
+      }),
+      sendError,
+    );
+  });
 });
+
+class FailingResultConnection {
+  readonly computerId: string;
+  readonly #error: Error;
+  readonly #request: SessionReconcileRequest;
+  #listener?: (frame: Record<string, unknown>) => Promise<void> | void;
+
+  constructor(computerId: string, request: SessionReconcileRequest, error: Error) {
+    this.computerId = computerId;
+    this.#request = request;
+    this.#error = error;
+  }
+
+  subscribeBusinessFrames(listener: (frame: Record<string, unknown>) => Promise<void> | void): () => void {
+    this.#listener = listener;
+    return () => {
+      this.#listener = undefined;
+    };
+  }
+
+  async run(): Promise<void> {
+    await this.#listener?.(this.#request);
+  }
+
+  async send(): Promise<void> {
+    throw this.#error;
+  }
+
+  stop(): void {}
+}
 
 function reconcile(computerId: string, requestId: string) {
   return {

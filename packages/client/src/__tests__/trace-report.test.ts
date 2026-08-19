@@ -94,7 +94,17 @@ describe("TurnReportOwner", () => {
     const owner = new TurnReportOwner({ connection, id: () => REPORT_REQUEST_ID });
     const report = owner.create(reportInput());
     const confirm = vi.fn(async () => undefined);
-    void owner.submit(report, confirm).catch(() => undefined);
+    const onTerminal = vi.fn();
+    let settled = false;
+    const submitted = owner.submit(report, confirm, { onTerminal });
+    void submitted.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
 
     expect(
       await owner.handleResult({
@@ -116,6 +126,11 @@ describe("TurnReportOwner", () => {
       resultHash: report.resultHash,
     });
     expect(owner.get(report.turnId)?.serverStatus).toBe("conflict");
+    expect(onTerminal).toHaveBeenCalledWith("conflict");
+    expect(settled).toBe(false);
+    const lateTerminalObserver = vi.fn();
+    expect(owner.submit(report, confirm, { onTerminal: lateTerminalObserver })).toBe(submitted);
+    expect(lateTerminalObserver).toHaveBeenCalledWith("conflict");
     expect(owner.pendingCount).toBe(1);
     expect(confirm).not.toHaveBeenCalled();
     owner.stop();

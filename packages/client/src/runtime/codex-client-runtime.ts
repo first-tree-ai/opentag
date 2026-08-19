@@ -161,7 +161,8 @@ export async function createCodexClientRuntime(
       await reportOwner.handleResult(result);
     },
     prepareReconcileResult: (request, result) => mvpReportRecovery.prepare(request, result),
-    onReconciled: (request) => mvpReportRecovery.afterReconciled(request),
+    onReconcileResultSendFailed: (request, result) => mvpReportRecovery.cancel(request, result),
+    onReconciled: (request, result) => mvpReportRecovery.afterReconciled(request, result),
   });
   return new CodexClientRuntime(runtime, { bindingStore, custody, reconciler, reportOwner, runner, workspace });
 }

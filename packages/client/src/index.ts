@@ -138,6 +138,8 @@ export {
   TurnReportOwner,
   type TurnReportOwnerOptions,
   TurnReportOwnerStoppedError,
+  type TurnReportSubmitOptions,
+  type TurnReportTerminalStatus,
 } from "./runtime/turn-report-owner.js";
 export {
   assertRealDirectory,

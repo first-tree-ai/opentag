@@ -139,6 +139,44 @@ export async function resolveCoordinate({ image, reference, token, fetchImpl = f
   });
 }
 
+const sleep = (milliseconds) => new Promise((settle) => setTimeout(settle, milliseconds));
+
+/**
+ * Waits for a coordinate to become published.
+ *
+ * The release path never builds; it consumes the image the branch build published for the same
+ * commit. Tagging a freshly merged commit is normal, so the release waits for that build to land
+ * rather than racing it with a second build of its own.
+ *
+ * An inconclusive lookup propagates immediately instead of being retried away, because it means the
+ * registry answer is unknown rather than "not yet".
+ */
+export async function waitForCoordinate({
+  image,
+  reference,
+  token,
+  attempts = 60,
+  intervalMs = 30_000,
+  lookup = resolveCoordinate,
+  pause = sleep,
+  onWait = () => {},
+}) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const result = await lookup({ image, reference, token });
+    if (result.present) {
+      return result;
+    }
+    if (attempt === attempts) {
+      break;
+    }
+    onWait(attempt);
+    await pause(intervalMs);
+  }
+  throw new Error(
+    `${image}:${reference} never became available; the branch build for this commit has not published an image`,
+  );
+}
+
 function parseArguments(arguments_) {
   const values = new Map();
   for (let index = 0; index < arguments_.length; index += 1) {
@@ -165,11 +203,16 @@ async function main() {
     throw new Error("--image and --reference are required");
   }
 
-  const result = await resolveCoordinate({
-    image,
-    reference,
-    token: process.env.GITHUB_TOKEN,
-  });
+  const token = process.env.GITHUB_TOKEN;
+  const result =
+    arguments_.get("wait") === "true"
+      ? await waitForCoordinate({
+          image,
+          reference,
+          token,
+          onWait: () => console.log(`${image}:${reference} is not published yet; waiting for the branch build`),
+        })
+      : await resolveCoordinate({ image, reference, token });
 
   if (arguments_.get("require-absent") === "true" && result.present) {
     throw new Error(`${image}:${reference} is already published at ${result.digest} and must not be overwritten`);

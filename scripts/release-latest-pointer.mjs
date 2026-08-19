@@ -18,36 +18,36 @@ export function parseReleaseTag(tag, label = "release tag") {
 }
 
 /**
- * Selects the release tags that rank strictly above `currentTag`, newest first.
+ * Orders the stable release versions found among `tags`, highest first.
  *
  * Tags that are not stable release coordinates are ignored rather than rejected: the repository also
  * carries staging tags, and they never compete for the `latest` pointer.
  */
-export function selectGreaterReleases(currentTag, tags) {
-  const current = parseReleaseTag(currentTag, "current tag");
+export function selectReleaseVersions(tags) {
   return tags
     .filter((tag) => RELEASE_TAG_PATTERN.test(tag))
-    .map((tag) => ({ tag, version: tag.slice(1) }))
-    .filter((candidate) => compareStableVersions(candidate.version, current) > 0)
-    .sort((left, right) => compareStableVersions(right.version, left.version));
+    .map((tag) => tag.slice(1))
+    .sort((left, right) => compareStableVersions(right, left));
 }
 
 /**
- * Decides whether this release may take over the `latest` pointer.
+ * Resolves the coordinate `latest` should point at: the highest release that is actually published.
  *
- * Release builds for different tags run concurrently, so finishing order says nothing about version
- * order. The pointer therefore only moves when no higher release is already published: a higher tag
- * whose own build failed or has not published yet does not block, and whichever build publishes last
- * still leaves `latest` on the highest version.
+ * This reconciles rather than deciding whether the current run may promote itself. Pointer runs can
+ * be dropped from the queue, and a run that only asked "am I the highest?" would then skip and leave
+ * `latest` behind forever. Because every run converges on the same answer, whichever run survives
+ * the queue lands the pointer on the right digest.
+ *
+ * A release tag whose build never published is skipped, so a failed release cannot pin `latest`.
  */
-export async function decideLatestPromotion({ currentTag, tags, isPublished }) {
-  const greater = selectGreaterReleases(currentTag, tags);
-  for (const candidate of greater) {
-    if (await isPublished(candidate.version)) {
-      return { promote: false, blockedBy: candidate.tag };
+export async function resolveLatestTarget({ tags, lookup }) {
+  for (const version of selectReleaseVersions(tags)) {
+    const result = await lookup(version);
+    if (result.present) {
+      return { version, digest: result.digest };
     }
   }
-  return { promote: true, blockedBy: null };
+  return null;
 }
 
 function parseArguments(arguments_) {
@@ -66,9 +66,8 @@ function parseArguments(arguments_) {
 async function main() {
   const arguments_ = parseArguments(process.argv.slice(2));
   const image = arguments_.get("image");
-  const currentTag = arguments_.get("tag");
-  if (!image || !currentTag) {
-    throw new Error("--image and --tag are required");
+  if (!image) {
+    throw new Error("--image is required");
   }
 
   const tags = (process.env.RELEASE_TAGS ?? "")
@@ -77,19 +76,29 @@ async function main() {
     .filter((tag) => tag.length > 0);
   const token = process.env.GITHUB_TOKEN;
 
-  const decision = await decideLatestPromotion({
-    currentTag,
+  const target = await resolveLatestTarget({
     tags,
-    isPublished: async (version) => (await resolveCoordinate({ image, reference: version, token })).present,
+    lookup: (version) => resolveCoordinate({ image, reference: version, token }),
   });
 
+  if (!target) {
+    if (process.env.GITHUB_OUTPUT) {
+      await appendFile(process.env.GITHUB_OUTPUT, "move=false\n");
+    }
+    console.log("no published release exists yet; latest is left alone");
+    return;
+  }
+
+  const current = await resolveCoordinate({ image, reference: "latest", token });
+  const move = current.digest !== target.digest;
+
   if (process.env.GITHUB_OUTPUT) {
-    await appendFile(process.env.GITHUB_OUTPUT, `promote=${decision.promote}\n`);
+    await appendFile(process.env.GITHUB_OUTPUT, `move=${move}\ndigest=${target.digest}\nversion=${target.version}\n`);
   }
   console.log(
-    decision.promote
-      ? `${currentTag} is the highest published release; latest may point at it`
-      : `leaving latest alone: ${decision.blockedBy} is already published and ranks above ${currentTag}`,
+    move
+      ? `latest should point at ${target.version} (${target.digest})`
+      : `latest already points at ${target.version} (${target.digest})`,
   );
 }
 

@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { parseCommitList, resolveEdgeTarget } from "../edge-pointer.mjs";
 import {
   classifyManifestLookup,
   parseAuthenticateChallenge,
   parseImageReference,
   resolveCoordinate,
+  waitForCoordinate,
 } from "../registry-coordinate.mjs";
-import { decideLatestPromotion, parseReleaseTag, selectGreaterReleases } from "../release-latest-pointer.mjs";
+import { parseReleaseTag, resolveLatestTarget, selectReleaseVersions } from "../release-latest-pointer.mjs";
 
 const DIGEST = `sha256:${"a".repeat(64)}`;
 
@@ -129,82 +131,152 @@ test("resolveCoordinate surfaces a registry fault instead of reporting absence",
   );
 });
 
+test("waitForCoordinate returns as soon as the image is published", async () => {
+  let calls = 0;
+  const result = await waitForCoordinate({
+    image: "ghcr.io/first-tree-ai/opentag",
+    reference: "abc",
+    lookup: async () => {
+      calls += 1;
+      return { present: true, digest: DIGEST };
+    },
+    pause: async () => assert.fail("must not wait once the image is published"),
+  });
+  assert.deepEqual(result, { present: true, digest: DIGEST });
+  assert.equal(calls, 1);
+});
+
+test("waitForCoordinate keeps polling while the branch build is still running", async () => {
+  const waits = [];
+  let calls = 0;
+  const result = await waitForCoordinate({
+    image: "ghcr.io/first-tree-ai/opentag",
+    reference: "abc",
+    attempts: 5,
+    intervalMs: 1000,
+    lookup: async () => {
+      calls += 1;
+      return calls < 3 ? { present: false, digest: null } : { present: true, digest: DIGEST };
+    },
+    pause: async (ms) => waits.push(ms),
+  });
+  assert.deepEqual(result, { present: true, digest: DIGEST });
+  assert.equal(calls, 3);
+  assert.deepEqual(waits, [1000, 1000]);
+});
+
+test("waitForCoordinate gives up rather than releasing an image that never appeared", async () => {
+  let calls = 0;
+  await assert.rejects(
+    waitForCoordinate({
+      image: "ghcr.io/first-tree-ai/opentag",
+      reference: "abc",
+      attempts: 3,
+      lookup: async () => {
+        calls += 1;
+        return { present: false, digest: null };
+      },
+      pause: async () => {},
+    }),
+    /never became available/,
+  );
+  assert.equal(calls, 3);
+});
+
+test("waitForCoordinate propagates an inconclusive lookup instead of retrying it away", async () => {
+  await assert.rejects(
+    waitForCoordinate({
+      image: "ghcr.io/first-tree-ai/opentag",
+      reference: "abc",
+      lookup: async () => {
+        throw new Error("registry manifest lookup was inconclusive with status 503");
+      },
+      pause: async () => {},
+    }),
+    /inconclusive/,
+  );
+});
+
 test("parseReleaseTag accepts only stable release tags", () => {
   assert.equal(parseReleaseTag("v1.2.3"), "1.2.3");
   assert.throws(() => parseReleaseTag("1.2.3"), /vX\.Y\.Z/);
   assert.throws(() => parseReleaseTag("v1.2.3-staging.1.1"), /vX\.Y\.Z/);
 });
 
-test("selectGreaterReleases ranks higher releases newest first and ignores other tags", () => {
-  const greater = selectGreaterReleases("v1.2.3", [
-    "v1.2.3",
-    "v1.2.4",
-    "v2.0.0",
-    "v1.0.0",
-    "v1.2.4-staging.1.1",
-    "not-a-tag",
+test("selectReleaseVersions orders releases highest first and ignores other tags", () => {
+  assert.deepEqual(selectReleaseVersions(["v1.2.3", "v2.0.0", "v1.0.0", "v1.2.4-staging.1.1", "not-a-tag"]), [
+    "2.0.0",
+    "1.2.3",
+    "1.0.0",
   ]);
-  assert.deepEqual(
-    greater.map((candidate) => candidate.tag),
-    ["v2.0.0", "v1.2.4"],
-  );
 });
 
-test("decideLatestPromotion promotes when no higher release is published", async () => {
-  const decision = await decideLatestPromotion({
-    currentTag: "v1.2.4",
-    tags: ["v1.2.3", "v1.2.4"],
-    isPublished: async () => assert.fail("no higher release should be queried"),
-  });
-  assert.deepEqual(decision, { promote: true, blockedBy: null });
-});
-
-test("decideLatestPromotion refuses to drag latest backwards", async () => {
+test("resolveLatestTarget converges on the highest published release", async () => {
   const queried = [];
-  const decision = await decideLatestPromotion({
-    currentTag: "v1.2.3",
-    tags: ["v1.2.3", "v1.2.4"],
-    isPublished: async (version) => {
+  const target = await resolveLatestTarget({
+    tags: ["v1.0.0", "v1.2.3", "v2.0.0"],
+    lookup: async (version) => {
       queried.push(version);
-      return true;
+      return { present: version === "2.0.0", digest: version === "2.0.0" ? DIGEST : null };
     },
   });
-  assert.deepEqual(decision, { promote: false, blockedBy: "v1.2.4" });
-  assert.deepEqual(queried, ["1.2.4"]);
-});
-
-test("decideLatestPromotion is not blocked by a higher tag that never published", async () => {
-  const decision = await decideLatestPromotion({
-    currentTag: "v1.2.3",
-    tags: ["v1.2.3", "v1.2.4", "v2.0.0"],
-    isPublished: async () => false,
-  });
-  assert.deepEqual(decision, { promote: true, blockedBy: null });
-});
-
-test("decideLatestPromotion stops at the highest published release", async () => {
-  const queried = [];
-  const decision = await decideLatestPromotion({
-    currentTag: "v1.0.0",
-    tags: ["v1.0.0", "v1.1.0", "v2.0.0"],
-    isPublished: async (version) => {
-      queried.push(version);
-      return version === "2.0.0";
-    },
-  });
-  assert.deepEqual(decision, { promote: false, blockedBy: "v2.0.0" });
+  assert.deepEqual(target, { version: "2.0.0", digest: DIGEST });
   assert.deepEqual(queried, ["2.0.0"]);
 });
 
-test("decideLatestPromotion propagates an inconclusive lookup rather than promoting", async () => {
-  await assert.rejects(
-    decideLatestPromotion({
-      currentTag: "v1.2.3",
-      tags: ["v1.2.4"],
-      isPublished: async () => {
-        throw new Error("registry manifest lookup was inconclusive with status 503");
-      },
-    }),
-    /inconclusive/,
-  );
+test("resolveLatestTarget skips a higher release whose build never published", async () => {
+  const target = await resolveLatestTarget({
+    tags: ["v1.2.3", "v2.0.0"],
+    lookup: async (version) => ({ present: version === "1.2.3", digest: version === "1.2.3" ? DIGEST : null }),
+  });
+  assert.deepEqual(target, { version: "1.2.3", digest: DIGEST });
+});
+
+test("resolveLatestTarget returns the same answer regardless of which run asks", async () => {
+  const lookup = async (version) => ({ present: version !== "3.0.0", digest: version !== "3.0.0" ? DIGEST : null });
+  const fromHigh = await resolveLatestTarget({ tags: ["v3.0.0", "v2.0.0", "v1.0.0"], lookup });
+  const fromLow = await resolveLatestTarget({ tags: ["v1.0.0", "v2.0.0", "v3.0.0"], lookup });
+  assert.deepEqual(fromHigh, fromLow);
+  assert.equal(fromHigh.version, "2.0.0");
+});
+
+test("resolveLatestTarget reports no target when nothing is published", async () => {
+  assert.equal(await resolveLatestTarget({ tags: ["v1.0.0"], lookup: async () => ({ present: false }) }), null);
+  assert.equal(await resolveLatestTarget({ tags: [], lookup: async () => assert.fail("no lookup") }), null);
+});
+
+const SHA_A = "a".repeat(40);
+const SHA_B = "b".repeat(40);
+const SHA_C = "c".repeat(40);
+
+test("parseCommitList rejects anything that is not a full commit SHA", () => {
+  assert.deepEqual(parseCommitList(`${SHA_A}\n${SHA_B}\n`), [SHA_A, SHA_B]);
+  assert.throws(() => parseCommitList("abc123"), /not a full commit SHA/);
+});
+
+test("resolveEdgeTarget converges on the newest commit with a published image", async () => {
+  const queried = [];
+  const target = await resolveEdgeTarget({
+    commits: [SHA_C, SHA_B, SHA_A],
+    lookup: async (commit) => {
+      queried.push(commit);
+      return { present: commit === SHA_B, digest: commit === SHA_B ? DIGEST : null };
+    },
+  });
+  assert.deepEqual(target, { commit: SHA_B, digest: DIGEST });
+  assert.deepEqual(queried, [SHA_C, SHA_B]);
+});
+
+test("resolveEdgeTarget does not strand edge when the tip build failed", async () => {
+  // C is the tip but never published; B is newer than A and did publish.
+  const lookup = async (commit) => ({ present: commit !== SHA_C, digest: commit !== SHA_C ? DIGEST : null });
+  const fromTip = await resolveEdgeTarget({ commits: [SHA_C, SHA_B, SHA_A], lookup });
+  const fromSuperseded = await resolveEdgeTarget({ commits: [SHA_C, SHA_B, SHA_A], lookup });
+  assert.deepEqual(fromTip, fromSuperseded);
+  assert.equal(fromTip.commit, SHA_B);
+});
+
+test("resolveEdgeTarget reports no target when nothing is published", async () => {
+  assert.equal(await resolveEdgeTarget({ commits: [SHA_A], lookup: async () => ({ present: false }) }), null);
+  assert.equal(await resolveEdgeTarget({ commits: [], lookup: async () => assert.fail("no lookup") }), null);
 });

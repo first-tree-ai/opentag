@@ -60,7 +60,8 @@ Production 发布有更严格的门槛：
 - `v*` tag 必须通过受保护的 release-tag ruleset 创建。
 
 同一个 tag 会发布 npm CLI 与 GHCR server image。image 带 full commit 和 SemVer tag；除非已有更高版本的
-release 发布，否则它还会接管 `latest`。该 image 是该 commit 已构建出的那一个而非重新构建，并在
+release 发布，否则它还会接管 `latest`。该 image 是 `main` 构建为该 commit 已发布的那一个而非重新构建，
+因此 release 会等待该构建；若它从未发布过 image，则 release 失败。该 image 在
 `/app/LICENSE` 携带 OpenTag 的 Apache-2.0 许可证。创建 production tag 是不可逆的发布动作，必须获得明确
 release 决策；验证 workflow 不代表获得创建 tag 的授权。
 

@@ -6,7 +6,15 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
-import { agents, authIdentities, computers, memberships, teams, users } from "../../db/schema/index.js";
+import {
+  agentRuntimeConfigs,
+  agents,
+  authIdentities,
+  computers,
+  memberships,
+  teams,
+  users,
+} from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import {
   AuthIdentityService,
@@ -17,6 +25,7 @@ import {
 } from "../../services/auth/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import { InvitationService } from "../../services/invitations/index.js";
+import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../services/runtime-config/index.js";
 import { TeamMembershipService } from "../../services/teams/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
@@ -233,6 +242,7 @@ describe("account identity and Team foundation persistence", () => {
         })
         .returning();
       if (!agent) throw new Error("Agent fixture was not created");
+      await value.database.insert(agentRuntimeConfigs).values({ agentId: agent.id, ...DEFAULT_AGENT_RUNTIME_CONFIG });
 
       const result = await value.teamService.listComputers(value.bootstrap.userId, value.bootstrap.teamId);
       expect(result.computers.map((computer) => computer.id)).toEqual([activeComputerId, adminComputerId]);
@@ -326,6 +336,7 @@ describe("account identity and Team foundation persistence", () => {
         })
         .returning();
       if (!agent) throw new Error("Agent fixture was not created");
+      await value.database.insert(agentRuntimeConfigs).values({ agentId: agent.id, ...DEFAULT_AGENT_RUNTIME_CONFIG });
       await expect(value.teamService.remove(secondAdmin.id, value.bootstrap.teamId, member.id)).rejects.toMatchObject({
         code: "MEMBERSHIP_ACTIVE_AGENTS",
       });

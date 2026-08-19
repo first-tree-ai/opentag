@@ -317,13 +317,14 @@ function AgentsPage({ teamId }: { teamId: string }) {
       <Resource state={state}>
         {(value) => (
           <Table
-            headers={["Name", "Provider", "Manager", "Computer", "Revision"]}
+            headers={["Name", "Provider", "Manager", "Computer", "Revision", "Runtime config"]}
             rows={value.agents.map((agent) => [
               agent.displayName,
               agent.runtimeProvider,
               agent.managerUserId,
               agent.computerId,
               String(agent.revision),
+              String(agent.runtimeConfigRevision),
             ])}
           />
         )}

@@ -1,3 +1,4 @@
+import type { Agent } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { formatAgent, formatAgentCreated, formatAgentList } from "../core/agent/formatting.js";
 import { runAgentCreate, runAgentDelete, runAgentUpdate, selectComputer } from "../core/agent/mutations.js";
@@ -24,7 +25,7 @@ const computer = {
   connectedAt: "2026-08-19T00:00:00.000Z",
   lastSeenAt: "2026-08-19T00:00:01.000Z",
 };
-const agent = {
+const agent: Agent = {
   id: agentId,
   teamId,
   managerUserId: userId,
@@ -33,16 +34,26 @@ const agent = {
   displayName: "Code Reviewer",
   runtimeProvider: "codex" as const,
   revision: 1,
+  runtimeConfig: {
+    revision: 1,
+    model: null,
+    reasoningEffort: null,
+    instructions: "Follow instructions.",
+    allowedTools: ["opentag_message_react", "opentag_message_reply", "opentag_message_send"],
+    maxDurationMs: null,
+  },
   createdAt: "2026-08-19T00:00:00.000Z",
   updatedAt: "2026-08-19T00:00:00.000Z",
 };
+const { runtimeConfig, ...agentBase } = agent;
+const agentSummary = { ...agentBase, runtimeConfigRevision: runtimeConfig.revision };
 
 function api() {
   return {
     me: vi.fn().mockResolvedValue(me),
     listComputers: vi.fn().mockResolvedValue({ computers: [computer] }),
     createAgent: vi.fn().mockResolvedValue(agent),
-    listAgents: vi.fn().mockResolvedValue({ agents: [agent] }),
+    listAgents: vi.fn().mockResolvedValue({ agents: [agentSummary] }),
     getAgent: vi.fn().mockResolvedValue(agent),
     updateAgent: vi.fn().mockResolvedValue({ ...agent, displayName: "Reviewer", revision: 2 }),
     deleteAgent: vi.fn().mockResolvedValue(undefined),
@@ -97,6 +108,8 @@ describe("Agent CLI core", () => {
     expect(client.listAgents).toHaveBeenCalledWith("access", teamId);
     expect(formatAgentList(response)).toContain("code-reviewer\t");
     expect(formatAgent(agent)).toContain(`revision\t1`);
+    expect(formatAgent(agent)).toContain(`runtimeConfig.model\t`);
+    expect(formatAgentList(response)).toContain("runtimeConfigRevision=1");
     expect(formatAgentList({ agents: [] })).toBe("No Agents registered");
     await expect(runAgentShow(agentId, { accessToken: "access", api: client })).resolves.toEqual(agent);
     expect(client.getAgent).toHaveBeenCalledWith("access", agentId);

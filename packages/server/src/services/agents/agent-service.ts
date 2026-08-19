@@ -1,19 +1,25 @@
 import {
   type Agent,
+  type AgentRuntimeConfig,
+  AgentRuntimeConfigSchema,
+  type AgentSummary,
   type CreateAgentRequest,
   CreateAgentRequestSchema,
+  type CreateAgentRuntimeConfig,
   type ListAgentsResponse,
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, computers, memberships, users } from "../../db/schema/index.js";
+import { agentRuntimeConfigs, agents, computers, memberships, users } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
+import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import { TeamMembershipService } from "../teams/index.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
 
 type AgentRow = typeof agents.$inferSelect;
+type AgentRuntimeConfigRow = typeof agentRuntimeConfigs.$inferSelect;
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
 interface AgentScope {
@@ -21,7 +27,18 @@ interface AgentScope {
   canManage: boolean;
 }
 
-function toAgent(row: AgentRow): Agent {
+function toRuntimeConfig(row: AgentRuntimeConfigRow): AgentRuntimeConfig {
+  return AgentRuntimeConfigSchema.parse({
+    revision: row.revision,
+    model: row.model,
+    reasoningEffort: row.reasoningEffort,
+    instructions: row.instructions,
+    allowedTools: row.allowedTools,
+    maxDurationMs: row.maxDurationMs,
+  });
+}
+
+function toAgent(row: AgentRow, runtimeConfig: AgentRuntimeConfigRow): Agent {
   return {
     id: row.id,
     teamId: row.teamId,
@@ -31,9 +48,40 @@ function toAgent(row: AgentRow): Agent {
     displayName: row.displayName,
     runtimeProvider: row.runtimeProvider,
     revision: row.revision,
+    runtimeConfig: toRuntimeConfig(runtimeConfig),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+function toAgentSummary(row: AgentRow, runtimeConfigRevision: number): AgentSummary {
+  return {
+    id: row.id,
+    teamId: row.teamId,
+    managerUserId: row.managerUserId,
+    computerId: row.computerId,
+    name: row.name,
+    displayName: row.displayName,
+    runtimeProvider: row.runtimeProvider,
+    revision: row.revision,
+    runtimeConfigRevision,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  };
+}
+
+function runtimeConfigsEqual(
+  left: AgentRuntimeConfigRow,
+  right: Readonly<Required<CreateAgentRuntimeConfig>>,
+): boolean {
+  return (
+    left.model === right.model &&
+    left.reasoningEffort === right.reasoningEffort &&
+    left.instructions === right.instructions &&
+    left.maxDurationMs === right.maxDurationMs &&
+    left.allowedTools.length === right.allowedTools.length &&
+    left.allowedTools.every((toolId, index) => toolId === right.allowedTools[index])
+  );
 }
 
 function isAgentNameConflict(error: unknown): boolean {
@@ -76,6 +124,7 @@ export class AgentService {
 
   async createForTeam(callerUserId: string, teamId: string, rawInput: CreateAgentRequest): Promise<Agent> {
     const input = CreateAgentRequestSchema.parse(rawInput);
+    const runtimeConfig = resolveAgentRuntimeConfig(input.runtimeConfig);
     try {
       return await this.#database.transaction(async (transaction) => {
         await this.#requireTeamMembershipForMutation(transaction, callerUserId, teamId);
@@ -109,7 +158,12 @@ export class AgentService {
           })
           .returning();
         if (!created) throw new Error("Agent insert did not return a row");
-        return toAgent(created);
+        const [createdRuntimeConfig] = await transaction
+          .insert(agentRuntimeConfigs)
+          .values({ agentId: created.id, ...runtimeConfig, createdAt: now, updatedAt: now })
+          .returning();
+        if (!createdRuntimeConfig) throw new Error("Agent runtime config insert did not return a row");
+        return toAgent(created, createdRuntimeConfig);
       });
     } catch (error) {
       if (isAgentNameConflict(error)) {
@@ -126,10 +180,11 @@ export class AgentService {
 
   async listForTeam(callerUserId: string, teamId: string): Promise<ListAgentsResponse> {
     const rows = await this.#database
-      .select({ agent: agents })
+      .select({ agent: agents, runtimeConfigRevision: agentRuntimeConfigs.revision })
       .from(memberships)
       .innerJoin(users, eq(users.id, memberships.userId))
       .leftJoin(agents, and(eq(agents.teamId, memberships.teamId), isNull(agents.deletedAt)))
+      .leftJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
       .where(
         and(
           eq(memberships.teamId, teamId),
@@ -140,11 +195,18 @@ export class AgentService {
       )
       .orderBy(asc(agents.name), asc(agents.id));
     if (rows.length === 0) throw resourceNotFound();
-    return { agents: rows.flatMap(({ agent }) => (agent ? [toAgent(agent)] : [])) };
+    return {
+      agents: rows.flatMap(({ agent, runtimeConfigRevision }) => {
+        if (!agent) return [];
+        if (runtimeConfigRevision === null) throw new Error("Active Agent is missing its runtime config");
+        return [toAgentSummary(agent, runtimeConfigRevision)];
+      }),
+    };
   }
 
   async getById(callerUserId: string, agentId: string): Promise<Agent> {
-    return toAgent((await this.#resolveAgentScope(this.#database, callerUserId, agentId, false)).agent);
+    const scope = await this.#resolveAgentDetailScope(this.#database, callerUserId, agentId);
+    return toAgent(scope.agent, scope.runtimeConfig);
   }
 
   async updateById(callerUserId: string, agentId: string, rawInput: UpdateAgentRequest): Promise<Agent> {
@@ -152,16 +214,53 @@ export class AgentService {
     return this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId, false);
       this.#requireManagePermission(scope);
+      if (scope.agent.revision !== input.expectedRevision) {
+        throw new AgentServiceError(
+          "AGENT_REVISION_CONFLICT",
+          "deterministic",
+          "The Agent changed since it was read",
+          409,
+        );
+      }
+      const currentRuntimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
+      const currentRuntimeProjection = toRuntimeConfig(currentRuntimeConfig);
+      const nextRuntimeConfig = resolveAgentRuntimeConfig({
+        model: input.runtimeConfig?.model !== undefined ? input.runtimeConfig.model : currentRuntimeProjection.model,
+        reasoningEffort:
+          input.runtimeConfig?.reasoningEffort !== undefined
+            ? input.runtimeConfig.reasoningEffort
+            : currentRuntimeProjection.reasoningEffort,
+        instructions: input.runtimeConfig?.instructions ?? currentRuntimeProjection.instructions,
+        allowedTools: input.runtimeConfig?.allowedTools ?? currentRuntimeProjection.allowedTools,
+        maxDurationMs:
+          input.runtimeConfig?.maxDurationMs !== undefined
+            ? input.runtimeConfig.maxDurationMs
+            : currentRuntimeProjection.maxDurationMs,
+      });
+      const runtimeConfigChanged = !runtimeConfigsEqual(currentRuntimeConfig, nextRuntimeConfig);
+      const now = this.#now();
       const [updated] = await transaction
         .update(agents)
         .set({
-          displayName: input.displayName,
+          displayName: input.displayName ?? scope.agent.displayName,
           revision: sql`${agents.revision} + 1`,
-          updatedAt: this.#now(),
+          updatedAt: now,
         })
         .where(and(eq(agents.id, agentId), isNull(agents.deletedAt), eq(agents.revision, input.expectedRevision)))
         .returning();
-      if (updated) return toAgent(updated);
+      if (updated) {
+        let runtimeConfig = currentRuntimeConfig;
+        if (runtimeConfigChanged) {
+          const [updatedRuntimeConfig] = await transaction
+            .update(agentRuntimeConfigs)
+            .set({ ...nextRuntimeConfig, revision: sql`nextval('runtime_config_revision_sequence')`, updatedAt: now })
+            .where(eq(agentRuntimeConfigs.agentId, agentId))
+            .returning();
+          if (!updatedRuntimeConfig) throw new Error("Agent runtime config update did not return a row");
+          runtimeConfig = updatedRuntimeConfig;
+        }
+        return toAgent(updated, runtimeConfig);
+      }
 
       const current = await this.#resolveAgentScope(transaction, callerUserId, agentId, false);
       this.#requireManagePermission(current);
@@ -214,6 +313,17 @@ export class AgentService {
     return { agent, canManage: agent.managerUserId === callerUserId || role === "admin" };
   }
 
+  async #lockRuntimeConfig(transaction: DatabaseTransaction, agentId: string): Promise<AgentRuntimeConfigRow> {
+    const [runtimeConfig] = await transaction
+      .select()
+      .from(agentRuntimeConfigs)
+      .where(eq(agentRuntimeConfigs.agentId, agentId))
+      .limit(1)
+      .for("update");
+    if (!runtimeConfig) throw new Error("Active Agent is missing its runtime config");
+    return runtimeConfig;
+  }
+
   async #requireTeamMembership(
     executor: QueryExecutor,
     callerUserId: string,
@@ -263,6 +373,26 @@ export class AgentService {
     if (!agent) throw resourceNotFound();
     const role = await this.#requireTeamMembership(executor, callerUserId, agent.teamId);
     return { agent, canManage: agent.managerUserId === callerUserId || role === "admin" };
+  }
+
+  async #resolveAgentDetailScope(
+    executor: QueryExecutor,
+    callerUserId: string,
+    agentId: string,
+  ): Promise<AgentScope & { runtimeConfig: AgentRuntimeConfigRow }> {
+    const [row] = await executor
+      .select({ agent: agents, runtimeConfig: agentRuntimeConfigs })
+      .from(agents)
+      .innerJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
+      .where(and(eq(agents.id, agentId), isNull(agents.deletedAt)))
+      .limit(1);
+    if (!row) throw resourceNotFound();
+    const role = await this.#requireTeamMembership(executor, callerUserId, row.agent.teamId);
+    return {
+      agent: row.agent,
+      runtimeConfig: row.runtimeConfig,
+      canManage: row.agent.managerUserId === callerUserId || role === "admin",
+    };
   }
 
   #requireManagePermission(scope: AgentScope): void {

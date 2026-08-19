@@ -44,6 +44,7 @@ interface RunRecord {
   admissionEvent?: Promise<void>;
   signalCleanup?: () => void;
   abortPromise?: Promise<void>;
+  providerTerminalClaimed?: boolean;
 }
 
 interface OutstandingInteraction {
@@ -288,6 +289,10 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     return {
       runId: record.request.runId,
       signal: record.controller.signal,
+      claimTerminal: () => {
+        assertCurrent();
+        record.providerTerminalClaimed = true;
+      },
       emit: async (event: AgentProviderRunEvent) => {
         assertCurrent();
         await this.#dispatch({ ...event, runId: record.request.runId } as AgentRuntimeEvent);
@@ -461,7 +466,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
   }
 
   #failAbort(record: RunRecord, error: unknown): void {
-    if (record.state !== "active" || this.#active !== record) return;
+    if (record.state !== "active" || this.#active !== record || record.providerTerminalClaimed) return;
     record.failExecution(
       new AgentProviderError("provider_error", "provider interrupt failed", {
         cause: error,

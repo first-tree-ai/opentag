@@ -289,6 +289,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       const turn = parseTurn(params?.turn, "turn/completed");
       this.#assertTurn(turn.id);
       if (turn.status === "inProgress") throw protocolError("turn/completed carried an active turn");
+      context.claimTerminal();
       this.#terminal?.resolve(turn);
       return;
     }

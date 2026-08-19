@@ -496,6 +496,42 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
   });
 
+  it("keeps a received Codex terminal when an in-flight interrupt rejects while event delivery drains", async () => {
+    const interruptResponse = deferred<void>();
+    const releaseWarning = deferred<void>();
+    const client = new ManualCodexClient({ interruptResponse: interruptResponse.promise });
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await factory(client).create(
+      createRequest(async (event) => {
+        events.push(event);
+        if (event.type === "provider_warning" && event.message === "after terminal") {
+          await releaseWarning.promise;
+        }
+      }),
+    );
+    const run = runtime.prompt({ runId: "terminal-before-interrupt-error", input: input("finish") });
+    await client.called("turn/start");
+    const aborting = runtime.abort({ expectedRunId: "terminal-before-interrupt-error" });
+    await vi.waitFor(() => expect(client.interrupts).toHaveLength(1));
+
+    client.complete();
+    client.emit({ method: "warning", params: { message: "after terminal" } });
+    await vi.waitFor(() =>
+      expect(events.some((event) => event.type === "provider_warning" && event.message === "after terminal")).toBe(
+        true,
+      ),
+    );
+    interruptResponse.reject(new Error("turn is already terminal"));
+
+    await expect(aborting).rejects.toThrow("turn is already terminal");
+    expect(runtime.state.phase).toBe("running");
+    expect(client.closed).toBe(false);
+    releaseWarning.resolve();
+    await expect(run).resolves.toMatchObject({ status: "completed" });
+    expect(runtime.state.phase).toBe("idle");
+    await runtime.close();
+  });
+
   it("rejects malformed turn/start responses and accepts buffered notifications", async () => {
     for (const response of [
       null,
@@ -862,6 +898,7 @@ interface ManualClientOptions {
   readonly beforeTurnStartResponse?: (client: ManualCodexClient) => void;
   readonly closeError?: boolean;
   readonly initializeError?: Error;
+  readonly interruptResponse?: Promise<void>;
   readonly steerTurnId?: string;
   readonly threadStartResponse?: unknown;
   readonly turnStartResponse?: unknown | Promise<unknown>;
@@ -936,6 +973,7 @@ class ManualCodexClient implements InteractiveCodexAppServerClient {
 
   async interrupt(threadId: string, turnId: string): Promise<void> {
     this.interrupts.push({ threadId, turnId });
+    await this.#options.interruptResponse;
   }
 
   async close(): Promise<void> {
@@ -1056,11 +1094,13 @@ async function temporaryDirectory(prefix: string): Promise<string> {
   return directory;
 }
 
-function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
+function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: Error) => void } {
   let resolveValue: ((value: T) => void) | undefined;
-  const promise = new Promise<T>((resolve) => {
+  let rejectValue: ((error: Error) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
     resolveValue = resolve;
+    rejectValue = reject;
   });
-  if (!resolveValue) throw new Error("could not create deferred promise");
-  return { promise, resolve: resolveValue };
+  if (!resolveValue || !rejectValue) throw new Error("could not create deferred promise");
+  return { promise, resolve: resolveValue, reject: rejectValue };
 }

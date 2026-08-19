@@ -499,22 +499,27 @@ describe("BaseAgentRuntime exhaustive behavior", () => {
     await runtime.close();
   });
 
-  it("keeps an already claimed Provider result when a late interrupt rejects", async () => {
+  it("keeps an authoritative Provider terminal when an in-flight interrupt rejects before result settlement", async () => {
     const abortGate = deferred<void>();
-    const finish = deferred<void>();
+    const terminalClaimed = deferred<void>();
+    const releaseResult = deferred<void>();
     const runtime = new HarnessRuntime({
       abort: async () => abortGate.promise,
-      execute: async () => {
-        await finish.promise;
+      execute: async (_request, context) => {
+        context.claimTerminal();
+        terminalClaimed.resolve();
+        await releaseResult.promise;
         return { status: "completed" };
       },
     });
-    const run = runtime.prompt(prompt("late-abort-failure"));
-    const abort = runtime.abort({ expectedRunId: "late-abort-failure" });
-    finish.resolve();
-    await expect(run).resolves.toMatchObject({ status: "completed" });
+    const run = runtime.prompt(prompt("claimed-terminal"));
+    const abort = runtime.abort({ expectedRunId: "claimed-terminal" });
+    await terminalClaimed.promise;
     abortGate.reject(new Error("late interrupt failure"));
     await expect(abort).rejects.toThrow("late interrupt failure");
+    expect(runtime.state.phase).toBe("running");
+    releaseResult.resolve();
+    await expect(run).resolves.toMatchObject({ status: "completed" });
     expect(runtime.state.phase).toBe("idle");
     await runtime.close();
   });

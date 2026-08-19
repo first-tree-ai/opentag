@@ -234,6 +234,8 @@ export interface AgentProviderRunResult {
 export interface AgentProviderRunContext {
   readonly runId: AgentRunId;
   readonly signal: AbortSignal;
+  /** Marks that the authoritative Provider terminal arrived; public settlement still waits for executeRun. */
+  claimTerminal(): void;
   emit(event: AgentProviderRunEvent): Promise<void>;
   updateBinding(binding: AgentRuntimeBinding): Promise<void>;
   requestInteraction(request: AgentInteractionRequest): Promise<void>;

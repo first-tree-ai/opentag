@@ -60,6 +60,7 @@ Required cases are:
 - ordered, awaited event delivery before Promise settlement;
 - steer, respond, abort, and interaction Run fences;
 - caller `AbortSignal` handling for active and queued Runs;
+- rejected interrupts before and after an authoritative Provider terminal claim;
 - completed, failed, aborted, and cancelled terminal mappings;
 - event-sink failure fallback and irrecoverable Runtime shutdown;
 - provider failure versus caller close semantics;
@@ -74,6 +75,7 @@ A scripted interactive App Server client verifies:
 - workspace, sandbox, network, approval, model, effort, and Provider config mapping;
 - fail-closed rejection of policy combinations Codex cannot enforce;
 - ordered message, tool, usage, warning, Provider extension, and terminal events;
+- terminal notification precedence over a late interrupt rejection while trailing events drain;
 - approval, permissions, structured question, and MCP elicitation responses;
 - foreign Thread/Turn events, duplicate requests, malformed data, and process failure;
 - probe outcomes, credential discovery, process environment allow-listing, and cleanup.
@@ -125,7 +127,7 @@ failure; it is never converted into a skipped success.
 
 ## Latest Local Execution
 
-On 2026-08-19 the final scoped suite passed 79 tests with 100% statements,
+On 2026-08-19 the final scoped suite passed 80 tests with 100% statements,
 branches, functions, and lines. The live test passed against `codex-cli 0.144.1`:
 both create and resumed Runs completed, the opaque binding was preserved, and
 each Run produced 16 ordered events. The monorepo formatting, build, and

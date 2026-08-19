@@ -24,7 +24,7 @@
     "test:integration": "vitest run src/__tests__/integration --maxWorkers=1"
   },
   "dependencies": {
-    "@fastify/static": "^8.2.0",
+    "@fastify/static": "^10.1.2",
     "@fastify/websocket": "^11.3.0",
     "@larksuiteoapi/node-sdk": "^1.73.0",
     "@opentag/shared": "workspace:*",

@@ -8,7 +8,7 @@ import {
 } from "@opentag/shared";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, computers, integrationCredentials, integrations, memberships, users } from "../../db/schema/index.js";
+import { agents, computers, integrations, memberships, users } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import { TeamMembershipService } from "../teams/index.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
@@ -155,9 +155,8 @@ export class AgentService {
       this.#requireManagePermission(scope);
       if (input.receiveMode === "all_message") {
         const [integration] = await transaction
-          .select({ provider: integrations.provider, capabilities: integrationCredentials.grantedCapabilities })
+          .select({ provider: integrations.provider, capabilities: integrations.grantedCapabilities })
           .from(integrations)
-          .innerJoin(integrationCredentials, eq(integrationCredentials.integrationId, integrations.id))
           .where(and(eq(integrations.agentId, agentId), isNull(integrations.disabledAt)))
           .limit(1);
         const required =

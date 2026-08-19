@@ -132,7 +132,7 @@ export function normalizeSlackEnvelope(envelope: VerifiedSlackEnvelope): Normali
     NormalizedInboundImEventSchema.parse({
       providerEventId: envelope.eventId,
       externalAppId: envelope.appId,
-      externalTenantId: envelope.teamId,
+      externalTeamId: envelope.teamId,
       conversation: { externalId: event.channel, kind: conversationKind(event.channel_type) },
       message: {
         externalId: messageId,
@@ -198,7 +198,7 @@ export class SlackAdapter implements ImProviderAdapter<VerifiedSlackEnvelope> {
     if (identity.appId !== this.#appId || identity.teamId !== this.#teamId || identity.botUserId !== this.#botUserId) {
       throw new Error("SLACK_BINDING_IDENTITY_MISMATCH");
     }
-    return { externalAppId: identity.appId, externalTenantId: identity.teamId, externalBotId: identity.botUserId };
+    return { externalAppId: identity.appId, externalTeamId: identity.teamId, externalBotId: identity.botUserId };
   }
 
   normalizeInbound(input: VerifiedSlackEnvelope): NormalizedInboundImEvent[] {
@@ -211,7 +211,7 @@ export class SlackAdapter implements ImProviderAdapter<VerifiedSlackEnvelope> {
         token: this.#token,
         channel: input.conversationExternalId,
         text: input.fallbackText,
-        threadTs: input.threadKey,
+        threadTs: input.threadKey ?? input.replyToExternalId,
       }),
     );
   }

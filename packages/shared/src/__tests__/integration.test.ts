@@ -24,7 +24,7 @@ describe("IM integration contracts", () => {
     const event = NormalizedInboundImEventSchema.parse({
       providerEventId: "event-1",
       externalAppId: "app-1",
-      externalTenantId: "tenant-1",
+      externalTeamId: "team-1",
       conversation: { externalId: "chat-1", kind: "channel" },
       message: {
         externalId: "message-1",
@@ -76,6 +76,7 @@ describe("IM integration contracts", () => {
         id: crypto.randomUUID(),
         agentId: crypto.randomUUID(),
         provider: "slack",
+        status: "active",
         disabledAt: null,
         createdAt: "2026-08-19T00:00:00.000Z",
         updatedAt: "2026-08-19T00:00:00.000Z",

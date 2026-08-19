@@ -48,7 +48,7 @@ describe("MvpTurnReportRecovery", () => {
     expect(submit).toHaveBeenLastCalledWith(first, expect.any(Function), { onTerminal: expect.any(Function) });
 
     const reloadedSecond = { ...second, requestId: randomUUID() };
-    bindings.set(bindingKey(second.agentId, second.sessionId), reportingBinding(reloadedSecond));
+    bindings.set(bindingKey(second.agentId, second.sessionId), reportingBinding(reloadedSecond, second.requestId));
     releaseFirst?.();
 
     await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
@@ -217,10 +217,10 @@ function turnReport(agentId: string, sessionId: string, suffix: string): TurnRep
   };
 }
 
-function reportingBinding(report: TurnReportRequest) {
+function reportingBinding(report: TurnReportRequest, dispatchRequestId = report.requestId) {
   return {
     unresolvedTurn: {
-      requestId: randomUUID(),
+      requestId: dispatchRequestId,
       deliveryId: report.deliveryId,
       inputHash: "a".repeat(64),
       turnId: report.turnId,
@@ -234,7 +234,9 @@ function reportingBinding(report: TurnReportRequest) {
 
 function reportReference(report: TurnReportRequest) {
   return {
+    dispatchRequestId: report.requestId,
     deliveryId: report.deliveryId,
+    inputHash: "a".repeat(64),
     turnId: report.turnId,
     placementGeneration: report.placementGeneration,
     resultHash: report.resultHash,

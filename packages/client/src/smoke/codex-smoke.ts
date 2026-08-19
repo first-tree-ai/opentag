@@ -64,7 +64,6 @@ function delivery(sequence: number, text: string): DirectImMessageDeliveryReques
     requestId: randomUUID(),
     deliveryId: `delivery-smoke-${sequence}`,
     imMessageId: `message-smoke-${sequence}`,
-    imMessageRevision: 1,
     sessionId: "session-smoke",
     agentId: "agent-smoke",
     placementGeneration: 1,

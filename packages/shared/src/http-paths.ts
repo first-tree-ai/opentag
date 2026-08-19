@@ -7,7 +7,7 @@ export const FEISHU_SETUP_ATTEMPT_TEMPLATE = `${API_V1_PREFIX}/integrations/feis
 export const INTEGRATION_BY_ID_TEMPLATE = `${API_V1_PREFIX}/integrations/:integrationId`;
 export const INTEGRATION_DIAGNOSTICS_TEMPLATE = `${INTEGRATION_BY_ID_TEMPLATE}/diagnostics`;
 export const SLACK_EVENTS_PATH = `${API_V1_PREFIX}/integrations/slack/events`;
-export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-resources/:resourceId`;
+export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-messages/:imMessageId/resources/:ordinal`;
 export const TEAM_MEMBERS_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/members`;
 export const TEAM_MEMBER_TEMPLATE = `${TEAM_MEMBERS_TEMPLATE}/:userId`;
 export const TEAM_COMPUTERS_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/computers`;
@@ -101,7 +101,8 @@ export function integrationDiagnosticsPath(integrationId: string): string {
 }
 
 export function runtimeImResourcePath(
-  resourceId: string,
+  imMessageId: string,
+  ordinal: number,
   input: { sessionId: string; computerId: string; instanceId: string; placementGeneration: number },
 ): string {
   const query = new URLSearchParams({
@@ -110,7 +111,7 @@ export function runtimeImResourcePath(
     instanceId: input.instanceId,
     placementGeneration: String(input.placementGeneration),
   });
-  return `${API_V1_PREFIX}/runtime/im-resources/${encodeURIComponent(resourceId)}?${query.toString()}`;
+  return `${API_V1_PREFIX}/runtime/im-messages/${encodeURIComponent(imMessageId)}/resources/${ordinal}?${query.toString()}`;
 }
 
 export function runtimeWebSocketUrl(serverUrl: string): string {

@@ -42,7 +42,9 @@ describe("runtime domain contract", () => {
         status: "ready",
         retainedReports: [
           {
+            dispatchRequestId: directDelivery(runtime).requestId,
             deliveryId: report.deliveryId,
+            inputHash: computeDirectInputHash(directDelivery(runtime)),
             turnId: report.turnId,
             placementGeneration: report.placementGeneration,
             resultHash: report.resultHash,
@@ -143,7 +145,9 @@ describe("runtime domain contract", () => {
         reason: "configuration_conflict",
         retainedReports: [
           {
+            dispatchRequestId: directDelivery(runtime).requestId,
             deliveryId: report.deliveryId,
+            inputHash: computeDirectInputHash(directDelivery(runtime)),
             turnId: report.turnId,
             placementGeneration: report.placementGeneration,
             resultHash: report.resultHash,
@@ -160,7 +164,9 @@ describe("runtime domain contract", () => {
         status: "ready",
         retainedReports: [
           {
+            dispatchRequestId: directDelivery(runtime).requestId,
             deliveryId: report.deliveryId,
+            inputHash: computeDirectInputHash(directDelivery(runtime)),
             turnId: report.turnId,
             placementGeneration: report.placementGeneration + 1,
             resultHash: report.resultHash,
@@ -203,7 +209,7 @@ describe("runtime domain contract", () => {
     });
     expect(computeRuntimeSnapshotHashes({ ...runtime, allowedTools: ["read", "write"] })).toEqual(hashes);
     expect(computeDirectInputHash(directDelivery(runtime))).toBe(
-      "663213ee66a0e4d078f719e5fa9e0204c23efd87cffeb702d5b3ac1842e6eba0",
+      "a38ede98941af44199dfef03456eb2d6f887c8c6771a664c78a89f3f9b2dc3d0",
     );
     expect(turnReport().resultHash).toBe("1531ebd9cb35b71727fd8913be9afad9f44e24fb3299ced53716085642e460c9");
   });
@@ -243,7 +249,6 @@ function directDelivery(runtime: EffectiveRuntimeSnapshot) {
     requestId: "11111111-1111-4111-8111-111111111111",
     deliveryId: "delivery-1",
     imMessageId: "message-1",
-    imMessageRevision: 1,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

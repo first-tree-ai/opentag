@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
-import { mapSlackWriteResult, normalizeSlackEnvelope } from "../services/integrations/slack/adapter.js";
+import { mapSlackWriteResult, normalizeSlackEnvelope, SlackAdapter } from "../services/integrations/slack/adapter.js";
 import { SlackBindingActivator } from "../services/integrations/slack/binding-activator.js";
 import { DefaultSlackApiClient, SLACK_WEB_CLIENT_OPTIONS } from "../services/integrations/slack/default-api-client.js";
 import { preparseSlackRoute, verifySlackSignature } from "../services/integrations/slack/signature.js";
@@ -137,6 +137,36 @@ describe("Slack installed-binding adapter", () => {
     });
     expect(postMessage).toHaveBeenCalledTimes(1);
     expect(add).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps channel replies and existing thread replies to the correct Slack thread root", async () => {
+    const postMessage = vi.fn().mockResolvedValue({ ok: true, ts: "3.4" });
+    const adapter = new SlackAdapter({
+      api: { postMessage } as never,
+      token: "xoxb",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U1",
+    });
+    await adapter.send({ conversationExternalId: "C1", fallbackText: "root reply", replyToExternalId: "1.2" });
+    await adapter.send({
+      conversationExternalId: "C1",
+      fallbackText: "thread reply",
+      threadKey: "1.0",
+      replyToExternalId: "1.2",
+    });
+    expect(postMessage).toHaveBeenNthCalledWith(1, {
+      token: "xoxb",
+      channel: "C1",
+      text: "root reply",
+      threadTs: "1.2",
+    });
+    expect(postMessage).toHaveBeenNthCalledWith(2, {
+      token: "xoxb",
+      channel: "C1",
+      text: "thread reply",
+      threadTs: "1.0",
+    });
   });
 
   it("registers the raw-body route without breaking adjacent JSON parsing", async () => {

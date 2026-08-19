@@ -1,23 +1,20 @@
 import { createHash } from "node:crypto";
 import { ImContentV1Schema, type ProviderWriteResult } from "@opentag/shared";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
-import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
+import type { DatabaseClient } from "../../db/client.js";
 import {
   agents,
   computers,
-  feishuIntegrationIdentities,
-  imConversations,
   imMessageDeliveries,
   imMessages,
   imOutboundRequests,
-  integrationCredentials,
   integrations,
   sessionPlacements,
   sessions,
-  slackIntegrationIdentities,
 } from "../../db/schema/index.js";
 import type { ImProviderAdapter } from "../integrations/index.js";
+import { ProviderAdapterResolutionError } from "../integrations/provider-adapter-resolver.js";
 
 const OutboundRequestSchema = z
   .object({
@@ -77,49 +74,38 @@ export class OutboundMessageService {
 
   async execute(rawInput: OutboundRequest): Promise<OutboundResult> {
     const input = OutboundRequestSchema.parse(rawInput);
-    const normalizedPayload = JSON.parse(JSON.stringify(input)) as Record<string, unknown>;
+    const normalizedPayload = stableOutboundIntent(input);
     const payloadHash = createHash("sha256").update(JSON.stringify(normalizedPayload)).digest("hex");
 
     const prepared = await this.#database.transaction(async (transaction) => {
-      // Serialize admission before the first read. This makes concurrent
-      // callers with the same id converge on one provider write instead of
-      // racing into the request_id unique constraint.
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`im-outbound:${input.requestId}`}, 0))`,
       );
-      const [existing] = await transaction
-        .select()
-        .from(imOutboundRequests)
-        .where(eq(imOutboundRequests.requestId, input.requestId))
-        .limit(1);
-      if (existing) {
-        if (existing.payloadHash !== payloadHash) throw new Error("OUTBOUND_REQUEST_CONFLICT");
-        return { existing } as const;
-      }
-
       const [scope] = await transaction
         .select({
           session: sessions,
           placement: sessionPlacements,
-          conversation: imConversations,
-          integration: integrations,
+          integration: {
+            id: integrations.id,
+            provider: integrations.provider,
+            status: integrations.status,
+            credentialGeneration: integrations.credentialGeneration,
+            grantedCapabilities: integrations.grantedCapabilities,
+            externalBotId: integrations.externalBotId,
+          },
           agentId: agents.id,
-          credential: integrationCredentials,
           currentInstanceId: computers.currentInstanceId,
         })
         .from(sessions)
         .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
         .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
-        .innerJoin(imConversations, eq(imConversations.id, sessions.conversationId))
-        .innerJoin(integrations, eq(integrations.id, imConversations.integrationId))
+        .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
         .innerJoin(agents, eq(agents.id, integrations.agentId))
-        .innerJoin(integrationCredentials, eq(integrationCredentials.integrationId, integrations.id))
         .where(
           and(
             eq(sessions.id, input.sessionId),
             isNull(sessions.endedAt),
-            isNull(imConversations.detachedAt),
-            isNull(integrations.disabledAt),
+            ne(integrations.status, "disabled"),
             isNull(agents.deletedAt),
           ),
         )
@@ -134,57 +120,78 @@ export class OutboundMessageService {
       ) {
         throw new Error("OUTBOUND_PLACEMENT_STALE");
       }
+      const [existing] = await transaction
+        .select()
+        .from(imOutboundRequests)
+        .where(eq(imOutboundRequests.requestId, input.requestId))
+        .limit(1);
+      if (existing) {
+        if (existing.payloadHash !== payloadHash) throw new Error("OUTBOUND_REQUEST_CONFLICT");
+        return { existing } as const;
+      }
+      if (scope.integration.status !== "active") throw new Error("OUTBOUND_INTEGRATION_NOT_ACTIVE");
 
       const [latest] = await transaction
         .select({ id: imMessages.id })
         .from(imMessages)
         .innerJoin(
           imMessageDeliveries,
-          and(
-            eq(imMessageDeliveries.messageId, imMessages.id),
-            eq(imMessageDeliveries.messageRevision, imMessages.currentRevision),
-            eq(imMessageDeliveries.sessionId, scope.session.id),
-          ),
+          and(eq(imMessageDeliveries.messageId, imMessages.id), eq(imMessageDeliveries.sessionId, scope.session.id)),
         )
         .where(
           and(
-            eq(imMessages.conversationId, scope.conversation.id),
+            eq(imMessages.integrationId, scope.integration.id),
+            eq(imMessages.channelId, scope.session.channelId),
             eq(imMessages.direction, "inbound"),
             inArray(imMessageDeliveries.state, ["pending", "accepted"]),
           ),
         )
-        .orderBy(desc(imMessages.occurredAt), desc(imMessages.id))
+        .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
         .limit(1);
       if (!latest || latest.id !== input.expectedLatestImMessageId) throw new Error("OUTBOUND_LATEST_MESSAGE_STALE");
 
       const targetId = input.operation === "react" ? input.targetImMessageId : input.replyToImMessageId;
       const [target] = targetId
         ? await transaction
-            .select({ externalId: imMessages.externalMessageId })
+            .select({ message: imMessages })
             .from(imMessages)
             .innerJoin(
               imMessageDeliveries,
               and(
                 eq(imMessageDeliveries.messageId, imMessages.id),
-                eq(imMessageDeliveries.messageRevision, imMessages.currentRevision),
                 eq(imMessageDeliveries.sessionId, scope.session.id),
               ),
             )
             .where(
               and(
                 eq(imMessages.id, targetId),
-                eq(imMessages.conversationId, scope.conversation.id),
-                isNull(imMessages.deletedAt),
+                eq(imMessages.integrationId, scope.integration.id),
+                eq(imMessages.channelId, scope.session.channelId),
                 inArray(imMessageDeliveries.state, ["pending", "accepted"]),
               ),
             )
             .limit(1)
         : [];
       if (targetId && !target) throw new Error("OUTBOUND_TARGET_INVALID");
+      if (target) {
+        const [currentTarget] = await transaction
+          .select({ operation: imMessages.operation })
+          .from(imMessages)
+          .where(
+            and(
+              eq(imMessages.integrationId, target.message.integrationId),
+              eq(imMessages.channelId, target.message.channelId),
+              eq(imMessages.externalMessageId, target.message.externalMessageId),
+            ),
+          )
+          .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
+          .limit(1);
+        if (!currentTarget || currentTarget.operation === "deleted") throw new Error("OUTBOUND_TARGET_INVALID");
+      }
       if (input.operation === "react") {
         const requiredScope =
           scope.integration.provider === "slack" ? "reactions:write" : "im:message.reactions:write_only";
-        if (!scope.credential.grantedCapabilities.includes(requiredScope)) {
+        if (!scope.integration.grantedCapabilities.includes(requiredScope)) {
           throw new Error("OUTBOUND_CAPABILITY_MISSING");
         }
       }
@@ -195,6 +202,7 @@ export class OutboundMessageService {
           requestId: input.requestId,
           sessionId: input.sessionId,
           expectedLatestImMessageId: input.expectedLatestImMessageId,
+          admittedCredentialGeneration: scope.integration.credentialGeneration,
           operation: input.operation,
           payloadHash,
           normalizedPayload,
@@ -203,27 +211,38 @@ export class OutboundMessageService {
         })
         .returning();
       if (!request) throw new Error("Outbound request insert did not return a row");
-      return { request, scope, targetExternalId: target?.externalId } as const;
+      return { request, scope, targetExternalId: target?.message.externalMessageId } as const;
     });
 
     if ("existing" in prepared && prepared.existing) {
       return prepared.existing.state === "prepared"
-        ? this.#awaitExisting(prepared.existing.id)
+        ? this.#awaitExisting(prepared.existing.requestId)
         : this.#existingResult(prepared.existing);
     }
     const { request, scope, targetExternalId } = prepared;
     let providerResult: ProviderWriteResult;
     try {
-      const adapter = await this.#resolveAdapter(scope.integration.id, scope.credential.generation);
-      if (input.operation === "react") {
+      const adapter = await this.#resolveAdapter(scope.integration.id, request.admittedCredentialGeneration).catch(
+        (error: unknown) => {
+          const code =
+            error instanceof ProviderAdapterResolutionError && error.code === "INTEGRATION_GENERATION_STALE"
+              ? "generation_stale"
+              : "provider_unavailable";
+          return { resolutionFailure: { ok: false as const, category: "transient" as const, code } };
+        },
+      );
+      if ("resolutionFailure" in adapter) {
+        providerResult = adapter.resolutionFailure;
+      } else if (input.operation === "react") {
         providerResult = await adapter.react({
-          conversationExternalId: scope.conversation.externalId,
+          conversationExternalId: scope.session.channelId,
           messageExternalId: targetExternalId as string,
           emoji: input.emoji as string,
         });
       } else {
         providerResult = await adapter.send({
-          conversationExternalId: scope.conversation.externalId,
+          requestId: input.requestId,
+          conversationExternalId: scope.session.channelId,
           fallbackText: input.content?.fallbackText ?? "",
           threadKey: scope.session.threadKey ?? undefined,
           replyToExternalId: targetExternalId,
@@ -235,7 +254,7 @@ export class OutboundMessageService {
 
     const mapped = this.#mapProviderResult(providerResult);
     await this.#database.transaction(async (transaction) => {
-      await transaction
+      const [finalized] = await transaction
         .update(imOutboundRequests)
         .set({
           state: mapped.state,
@@ -244,72 +263,47 @@ export class OutboundMessageService {
           retryAfterSeconds: mapped.retryAfterSeconds ?? null,
           completedAt: this.#now(),
         })
-        .where(and(eq(imOutboundRequests.id, request.id), eq(imOutboundRequests.state, "prepared")));
+        .where(and(eq(imOutboundRequests.requestId, request.requestId), eq(imOutboundRequests.state, "prepared")))
+        .returning({ requestId: imOutboundRequests.requestId });
+      if (!finalized) return;
       if (!providerResult.ok) {
         if (mapped.state === "credential_failed") {
           await transaction
             .update(integrations)
             .set({
-              reauthorizationRequired: true,
+              status: "reauthorization_required",
               lastErrorCode: mapped.code ?? "provider_unknown",
               updatedAt: this.#now(),
             })
-            .where(eq(integrations.id, scope.integration.id));
+            .where(
+              and(
+                eq(integrations.id, scope.integration.id),
+                eq(integrations.status, "active"),
+                eq(integrations.credentialGeneration, request.admittedCredentialGeneration),
+              ),
+            );
         }
         return;
       }
-      const authorExternalId = await this.#botExternalId(transaction, scope.integration.id, scope.integration.provider);
-      await transaction
-        .insert(imMessages)
-        .values({
-          conversationId: scope.conversation.id,
-          externalMessageId: providerResult.externalMessageId,
-          currentRevision: 1,
-          currentRevisionKey: `outbound:${input.requestId}`,
-          direction: "outbound",
-          threadKey: scope.session.threadKey,
-          authorKind: "bot",
-          authorExternalId,
-          content: input.content ?? { version: 1, fallbackText: "", blocks: [], truncated: false },
-          occurredAt: providerResult.occurredAt,
-        })
-        .onConflictDoUpdate({
-          target: [imMessages.conversationId, imMessages.externalMessageId],
-          set: {
-            direction: "outbound",
-            authorKind: "bot",
-            authorExternalId,
-            content: input.content ?? { version: 1, fallbackText: "", blocks: [], truncated: false },
-          },
-        });
-      await transaction
-        .update(integrations)
-        .set({ lastOutboundAt: this.#now(), updatedAt: this.#now() })
-        .where(eq(integrations.id, scope.integration.id));
+      if (input.operation === "react") return;
+      await transaction.insert(imMessages).values({
+        integrationId: scope.integration.id,
+        providerEventId: null,
+        channelId: scope.session.channelId,
+        externalMessageId: providerResult.externalMessageId,
+        providerRevisionKey: `outbound:${input.requestId}`,
+        operation: "created",
+        direction: "outbound",
+        threadKey: scope.session.threadKey,
+        replyToExternalId: targetExternalId ?? null,
+        authorKind: "bot",
+        authorExternalId: scope.integration.externalBotId ?? "unknown",
+        content: input.content as NonNullable<typeof input.content>,
+        occurredAt: providerResult.occurredAt,
+        receivedAt: this.#now(),
+      });
     });
     return mapped;
-  }
-
-  async #botExternalId(
-    transaction: DatabaseTransaction,
-    integrationId: string,
-    provider: "feishu" | "slack",
-  ): Promise<string> {
-    const [identity] =
-      provider === "feishu"
-        ? await transaction
-            .select({ id: feishuIntegrationIdentities.botOpenId })
-            .from(feishuIntegrationIdentities)
-            .where(eq(feishuIntegrationIdentities.integrationId, integrationId))
-            .limit(1)
-        : await transaction
-            .select({ id: slackIntegrationIdentities.botUserId })
-            .from(slackIntegrationIdentities)
-            .where(eq(slackIntegrationIdentities.integrationId, integrationId))
-            .limit(1);
-    const id = identity?.id;
-    if (!id) throw new Error("OUTBOUND_BOT_IDENTITY_MISSING");
-    return id;
   }
 
   #existingResult(row: typeof imOutboundRequests.$inferSelect): OutboundResult {
@@ -322,13 +316,13 @@ export class OutboundMessageService {
     };
   }
 
-  async #awaitExisting(id: string): Promise<OutboundResult> {
+  async #awaitExisting(requestId: string): Promise<OutboundResult> {
     const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       const [row] = await this.#database
         .select()
         .from(imOutboundRequests)
-        .where(eq(imOutboundRequests.id, id))
+        .where(eq(imOutboundRequests.requestId, requestId))
         .limit(1);
       if (row && row.state !== "prepared") return this.#existingResult(row);
       await new Promise<void>((resolve) => setTimeout(resolve, 25));
@@ -358,7 +352,13 @@ const PROVIDER_RESULT_CODES = new Set([
   "account_inactive",
   "channel_not_found",
   "feishu_unknown",
+  "feishu_api_error",
+  "feishu_invalid_request",
+  "feishu_invalid_target",
+  "feishu_permission_denied",
+  "feishu_rate_limited",
   "format_error",
+  "generation_stale",
   "invalid_auth",
   "invalid_blocks",
   "missing_scope",
@@ -372,3 +372,16 @@ const PROVIDER_RESULT_CODES = new Set([
   "target_revoked",
   "token_revoked",
 ]);
+
+function stableOutboundIntent(input: OutboundRequest): Record<string, unknown> {
+  return {
+    sessionId: input.sessionId,
+    agentId: input.agentId,
+    expectedLatestImMessageId: input.expectedLatestImMessageId,
+    operation: input.operation,
+    ...(input.content ? { content: input.content } : {}),
+    ...(input.replyToImMessageId ? { replyToImMessageId: input.replyToImMessageId } : {}),
+    ...(input.targetImMessageId ? { targetImMessageId: input.targetImMessageId } : {}),
+    ...(input.emoji ? { emoji: input.emoji } : {}),
+  };
+}

@@ -5,11 +5,10 @@ import type {
   TurnReportRequest,
   TurnReportResult,
 } from "@opentag/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
   agents,
-  imConversations,
   imMessageDeliveries,
   imMessages,
   integrations,
@@ -37,8 +36,19 @@ export interface RecordedTurnRecord {
 }
 
 export type DeliveryCustodyStatus = "accepted" | "already_accepted" | "conflict" | "stale_generation";
+export type DeliveryDispatchStatus = "dispatched" | "already_dispatched" | "conflict" | "stale_generation";
+
+export interface DeliveryDispatchContext {
+  computerId: string;
+  instanceId: string;
+}
 
 export interface RuntimeCustodyStore {
+  beginDeliveryDispatch(
+    request: DirectImMessageDeliveryRequest,
+    inputHash: string,
+    context: DeliveryDispatchContext,
+  ): Promise<DeliveryDispatchStatus>;
   acceptDelivery(
     request: DirectImMessageDeliveryRequest,
     inputHash: string,
@@ -76,6 +86,36 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     this.#now = options.now ?? (() => new Date());
   }
 
+  async beginDeliveryDispatch(
+    request: DirectImMessageDeliveryRequest,
+    inputHash: string,
+    context: DeliveryDispatchContext,
+  ): Promise<DeliveryDispatchStatus> {
+    return this.#database.transaction(async (transaction) => {
+      const scope = await this.#deliveryScope(transaction, request.deliveryId);
+      if (!scope || !deliveryRequestMatches(scope, request)) return "conflict";
+      if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
+      if (scope.delivery.state !== "pending") return "conflict";
+      if (scope.delivery.dispatchRequestId !== null) {
+        return scope.delivery.dispatchRequestId === request.requestId && scope.delivery.dispatchInputHash === inputHash
+          ? "already_dispatched"
+          : "conflict";
+      }
+      const [dispatched] = await transaction
+        .update(imMessageDeliveries)
+        .set({ dispatchRequestId: request.requestId, dispatchInputHash: inputHash, dispatchPayload: request })
+        .where(
+          and(
+            eq(imMessageDeliveries.id, request.deliveryId),
+            eq(imMessageDeliveries.state, "pending"),
+            isNull(imMessageDeliveries.dispatchRequestId),
+          ),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      return dispatched ? "dispatched" : "conflict";
+    });
+  }
+
   async acceptDelivery(
     request: DirectImMessageDeliveryRequest,
     inputHash: string,
@@ -86,16 +126,20 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
       if (!scope || !deliveryRequestMatches(scope, request)) return "conflict";
       if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
+      if (scope.delivery.dispatchRequestId !== request.requestId || scope.delivery.dispatchInputHash !== inputHash) {
+        return "conflict";
+      }
       if (scope.delivery.state === "accepted") {
         return scope.delivery.inputHash === inputHash && scope.delivery.turnId === turnId
           ? "already_accepted"
           : "conflict";
       }
-      if (scope.delivery.state !== "pending") return "conflict";
+      if (scope.delivery.state !== "pending" && scope.delivery.state !== "expired") return "conflict";
       const [accepted] = await transaction
         .update(imMessageDeliveries)
         .set({
           state: "accepted",
+          dispatchPayload: null,
           placementGeneration: request.placementGeneration,
           inputHash,
           turnId,
@@ -104,7 +148,14 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           reason: null,
           lastErrorCode: null,
         })
-        .where(and(eq(imMessageDeliveries.id, request.deliveryId), eq(imMessageDeliveries.state, "pending")))
+        .where(
+          and(
+            eq(imMessageDeliveries.id, request.deliveryId),
+            inArray(imMessageDeliveries.state, ["pending", "expired"]),
+            eq(imMessageDeliveries.dispatchRequestId, request.requestId),
+            eq(imMessageDeliveries.dispatchInputHash, inputHash),
+          ),
+        )
         .returning({ id: imMessageDeliveries.id });
       return accepted ? "accepted" : "conflict";
     });
@@ -134,16 +185,42 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       for (const claim of claims) {
         const scope = await this.#deliveryScope(transaction, claim.deliveryId);
         if (
-          scope?.delivery.state !== "accepted" ||
-          scope.delivery.turnId !== claim.turnId ||
+          !scope ||
           scope.delivery.sessionId !== request.sessionId ||
           scope.agentId !== request.agentId ||
           scope.delivery.placementGeneration !== claim.placementGeneration ||
           !placementMatches(scope, context.computerId, request.placementGeneration) ||
+          scope.delivery.dispatchRequestId !== claim.dispatchRequestId ||
+          scope.delivery.dispatchInputHash !== claim.inputHash ||
           (scope.delivery.resultHash !== null && scope.delivery.resultHash !== claim.resultHash)
         ) {
           continue;
         }
+        if (scope.delivery.state === "pending" || scope.delivery.state === "expired") {
+          await transaction
+            .update(imMessageDeliveries)
+            .set({
+              state: "accepted",
+              dispatchPayload: null,
+              inputHash: claim.inputHash,
+              turnId: claim.turnId,
+              reportOwnerInstanceId: context.instanceId,
+              resultHash: claim.resultHash,
+              acceptedAt: this.#now(),
+              reason: null,
+              lastErrorCode: null,
+            })
+            .where(
+              and(
+                eq(imMessageDeliveries.id, claim.deliveryId),
+                inArray(imMessageDeliveries.state, ["pending", "expired"]),
+                eq(imMessageDeliveries.dispatchRequestId, claim.dispatchRequestId),
+                eq(imMessageDeliveries.dispatchInputHash, claim.inputHash),
+              ),
+            );
+          continue;
+        }
+        if (scope.delivery.state !== "accepted" || scope.delivery.turnId !== claim.turnId) continue;
         await transaction
           .update(imMessageDeliveries)
           .set({ reportOwnerInstanceId: context.instanceId, resultHash: claim.resultHash })
@@ -162,8 +239,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .from(imMessageDeliveries)
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-      .innerJoin(imConversations, eq(imConversations.id, sessions.conversationId))
-      .innerJoin(integrations, eq(integrations.id, imConversations.integrationId))
+      .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
       .innerJoin(agents, eq(agents.id, integrations.agentId))
       .where(eq(imMessageDeliveries.id, deliveryId))
       .limit(1);
@@ -232,6 +308,19 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
   }
 
   async #deliveryScope(transaction: DatabaseTransaction, deliveryId: string): Promise<DeliveryScope | undefined> {
+    const [identity] = await transaction
+      .select({ sessionId: imMessageDeliveries.sessionId })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deliveryId))
+      .limit(1);
+    if (!identity) return undefined;
+    const [placement] = await transaction
+      .select({ sessionId: sessionPlacements.sessionId })
+      .from(sessionPlacements)
+      .where(eq(sessionPlacements.sessionId, identity.sessionId))
+      .limit(1)
+      .for("update");
+    if (!placement) return undefined;
     const [scope] = await transaction
       .select({
         delivery: imMessageDeliveries,
@@ -244,12 +333,11 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-      .innerJoin(imConversations, eq(imConversations.id, sessions.conversationId))
-      .innerJoin(integrations, eq(integrations.id, imConversations.integrationId))
+      .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
       .innerJoin(agents, eq(agents.id, integrations.agentId))
       .where(eq(imMessageDeliveries.id, deliveryId))
       .limit(1)
-      .for("update");
+      .for("update", { of: imMessageDeliveries });
     return scope;
   }
 }
@@ -277,7 +365,6 @@ function deliveryRequestMatches(scope: DeliveryScope, request: DirectImMessageDe
   return (
     scope.delivery.id === request.deliveryId &&
     scope.delivery.sessionId === request.sessionId &&
-    scope.delivery.messageRevision === request.imMessageRevision &&
     scope.message.id === request.imMessageId &&
     scope.agentId === request.agentId
   );

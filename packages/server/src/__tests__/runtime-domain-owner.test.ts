@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  computeDirectInputHash,
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
@@ -12,6 +13,7 @@ import WebSocket from "ws";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import type {
   AcceptedDeliveryRecord,
+  DeliveryDispatchStatus,
   RecordedTurnRecord,
   RuntimeCustodyStore,
 } from "../runtime/runtime-custody-store.js";
@@ -60,27 +62,22 @@ describe("RuntimeDomainOwner", () => {
     const fixture = await ownerFixture();
     const request = deliveryRequest();
     const first = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, request);
+    await waitForDeliveryFrame(fixture.frames, request.requestId);
     await fixture.owner.handle(acceptedResult(request), fixture.context);
     await expect(first).resolves.toMatchObject({ status: "accepted", turnId: "turn-1" });
 
-    const retry = { ...request, requestId: randomUUID() };
+    const retry = structuredClone(request);
     const retried = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, retry);
     await fixture.owner.handle(acceptedResult(retry), fixture.context);
     await expect(retried).resolves.toMatchObject({ status: "accepted", turnId: "turn-1" });
     expect(await fixture.owner.getDelivery("delivery-1")).toMatchObject({ turnId: "turn-1" });
     const conflictRequest = {
       ...request,
-      requestId: randomUUID(),
       content: { kind: "text" as const, text: "different" },
     };
-    const conflicting = fixture.owner
-      .requestDelivery(fixture.computerId, fixture.instanceId, conflictRequest)
-      .catch((error: unknown) => error);
-    await expect(fixture.owner.handle(acceptedResult(conflictRequest), fixture.context)).rejects.toBeInstanceOf(
+    expect(() => fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, conflictRequest)).toThrow(
       RuntimeDomainConflictError,
     );
-    fixture.owner.close();
-    await expect(conflicting).resolves.toBeInstanceOf(Error);
   });
 
   it("B-21 records a report only after acceptance and makes equal duplicates idempotent", async () => {
@@ -104,6 +101,7 @@ describe("RuntimeDomainOwner", () => {
     await reconciled;
     await expect(fixture.owner.handle(report, fixture.context)).resolves.toBeUndefined();
     const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, request);
+    await waitForDeliveryFrame(fixture.frames, request.requestId);
     await fixture.owner.handle(acceptedResult(request), fixture.context);
     await delivery;
     await expect(fixture.owner.handle(report, fixture.context)).resolves.toMatchObject({ status: "recorded" });
@@ -176,6 +174,7 @@ describe("RuntimeDomainOwner", () => {
       const timedOut = fixture.owner
         .requestDelivery(fixture.computerId, fixture.instanceId, request)
         .catch((error: unknown) => error);
+      await waitForDeliveryFrame(fixture.frames, request.requestId);
       await vi.advanceTimersByTimeAsync(10);
       await expect(timedOut).resolves.toBeInstanceOf(Error);
 
@@ -196,6 +195,7 @@ describe("RuntimeDomainOwner", () => {
       const timedOut = fixture.owner
         .requestDelivery(fixture.computerId, fixture.instanceId, request)
         .catch((error: unknown) => error);
+      await waitForDeliveryFrame(fixture.frames, request.requestId);
       await vi.advanceTimersByTimeAsync(10);
       await expect(timedOut).resolves.toBeInstanceOf(Error);
 
@@ -213,6 +213,7 @@ describe("RuntimeDomainOwner", () => {
     const request = deliveryRequest();
     const report = turnReport();
     const pending = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, request);
+    await waitForDeliveryFrame(fixture.frames, request.requestId);
 
     const business = fixture.owner.businessOptions();
     expect(business.failureResult(report as never)).toBeUndefined();
@@ -231,6 +232,7 @@ describe("RuntimeDomainOwner", () => {
     const report = turnReport();
     const deliveryFrame = deliveryRequest();
     const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, deliveryFrame);
+    await waitForDeliveryFrame(fixture.frames, deliveryFrame.requestId);
     await fixture.owner.handle(acceptedResult(deliveryFrame), fixture.context);
     await delivery;
     const pending = fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request);
@@ -245,7 +247,9 @@ describe("RuntimeDomainOwner", () => {
         turn: { deliveryId: "delivery-1", turnId: "turn-1" },
         retainedReports: [
           {
+            dispatchRequestId: deliveryFrame.requestId,
             deliveryId: report.deliveryId,
+            inputHash: computeDirectInputHash(deliveryFrame),
             turnId: report.turnId,
             placementGeneration: report.placementGeneration,
             resultHash: report.resultHash,
@@ -270,6 +274,7 @@ describe("RuntimeDomainOwner", () => {
     const fixture = await ownerFixture();
     const deliveryRequestFrame = deliveryRequest();
     const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, deliveryRequestFrame);
+    await waitForDeliveryFrame(fixture.frames, deliveryRequestFrame.requestId);
     await fixture.owner.handle(acceptedResult(deliveryRequestFrame), fixture.context);
     await delivery;
     const report = turnReport();
@@ -300,6 +305,7 @@ describe("RuntimeDomainOwner", () => {
     const fixture = await ownerFixture();
     const deliveryRequestFrame = deliveryRequest();
     const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, deliveryRequestFrame);
+    await waitForDeliveryFrame(fixture.frames, deliveryRequestFrame.requestId);
     await fixture.owner.handle(acceptedResult(deliveryRequestFrame), fixture.context);
     await delivery;
 
@@ -323,6 +329,7 @@ describe("RuntimeDomainOwner", () => {
     const fixture = await ownerFixture();
     const deliveryRequestFrame = deliveryRequest();
     const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, deliveryRequestFrame);
+    await waitForDeliveryFrame(fixture.frames, deliveryRequestFrame.requestId);
     await fixture.owner.handle(acceptedResult(deliveryRequestFrame), fixture.context);
     await delivery;
 
@@ -342,6 +349,7 @@ describe("RuntimeDomainOwner", () => {
     const report = turnReport();
     const deliveryFrame = deliveryRequest();
     const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, deliveryFrame);
+    await waitForDeliveryFrame(fixture.frames, deliveryFrame.requestId);
     await fixture.owner.handle(acceptedResult(deliveryFrame), fixture.context);
     await delivery;
     await establishRetainedClaim(fixture, fixture.instanceId, fixture.context, report);
@@ -353,6 +361,12 @@ describe("RuntimeDomainOwner", () => {
     expect((await fixture.owner.getTurn(report.turnId))?.instanceId).toBe(replacement.instanceId);
   });
 });
+
+async function waitForDeliveryFrame(frames: unknown[], requestId: string): Promise<void> {
+  await vi.waitFor(() => {
+    expect(frames).toEqual(expect.arrayContaining([expect.objectContaining({ requestId, type: "im:deliver" })]));
+  });
+}
 
 async function ownerFixture(requestTimeoutMs = 1_000) {
   const registry = new ConnectionRegistry();
@@ -445,8 +459,11 @@ async function establishReconciliationWithoutRetainedClaim(
 }
 
 function retainedClaim(report: TurnReportRequest) {
+  const request = deliveryRequest();
   return {
+    dispatchRequestId: request.requestId,
     deliveryId: report.deliveryId,
+    inputHash: computeDirectInputHash(request),
     turnId: report.turnId,
     placementGeneration: report.placementGeneration,
     resultHash: report.resultHash,
@@ -496,10 +513,9 @@ function reconcileRequest(computerId: string): SessionReconcileRequest {
 function deliveryRequest(): DirectImMessageDeliveryRequest {
   return {
     type: "im:deliver",
-    requestId: randomUUID(),
+    requestId: "11111111-1111-4111-8111-111111111111",
     deliveryId: "delivery-1",
     imMessageId: "message-1",
-    imMessageRevision: 1,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,
@@ -539,8 +555,23 @@ function turnReport(): TurnReportRequest {
 
 class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
   readonly #deliveries = new Map<string, AcceptedDeliveryRecord>();
+  readonly #dispatches = new Map<string, { inputHash: string; requestId: string }>();
   readonly #expectedResultHashes = new Map<string, string>();
   readonly #turns = new Map<string, RecordedTurnRecord>();
+
+  async beginDeliveryDispatch(
+    request: DirectImMessageDeliveryRequest,
+    inputHash: string,
+  ): Promise<DeliveryDispatchStatus> {
+    const current = this.#dispatches.get(request.deliveryId);
+    if (current) {
+      return current.requestId === request.requestId && current.inputHash === inputHash
+        ? "already_dispatched"
+        : "conflict";
+    }
+    this.#dispatches.set(request.deliveryId, { inputHash, requestId: request.requestId });
+    return "dispatched";
+  }
 
   async acceptDelivery(
     request: DirectImMessageDeliveryRequest,

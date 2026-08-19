@@ -2,6 +2,7 @@ import {
   computeRuntimeSnapshotHashes,
   type DirectImMessageDeliveryRequest,
   EffectiveRuntimeSnapshotSchema,
+  RuntimeRequestIdSchema,
   RuntimeSha256Schema,
   type RuntimeSnapshotHashes,
   type SessionReconcileRequest,
@@ -24,6 +25,7 @@ export type UnresolvedTurnPhase = "accepted" | "starting" | "running" | "reporti
 export interface RecordedInput {
   deliveryId: string;
   inputHash: string;
+  requestId?: string;
   report?: TurnReportRequest;
   resultHash: string;
   turnId: string;
@@ -277,6 +279,7 @@ export class SessionBindingStore {
       const recorded: RecordedInput = {
         deliveryId: unresolved.deliveryId,
         inputHash: unresolved.inputHash,
+        requestId: unresolved.requestId,
         ...(unresolved.report ? { report: unresolved.report } : {}),
         resultHash,
         turnId,
@@ -433,11 +436,12 @@ function parseRecordedInput(
 ): RecordedInput {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["deliveryId", "inputHash", "turnId", "resultHash", "report"]) ||
+    !hasOnlyKeys(value, ["deliveryId", "inputHash", "requestId", "turnId", "resultHash", "report"]) ||
     !isString(value.deliveryId) ||
     !RuntimeSha256Schema.safeParse(value.inputHash).success ||
     !isString(value.turnId) ||
-    !RuntimeSha256Schema.safeParse(value.resultHash).success
+    !RuntimeSha256Schema.safeParse(value.resultHash).success ||
+    (value.requestId !== undefined && !RuntimeRequestIdSchema.safeParse(value.requestId).success)
   ) {
     throw new RuntimeStorageError("invalid", "Recorded input is invalid");
   }
@@ -456,6 +460,7 @@ function parseRecordedInput(
   return {
     deliveryId: value.deliveryId,
     inputHash: value.inputHash as string,
+    ...(value.requestId ? { requestId: value.requestId as string } : {}),
     ...(report ? { report } : {}),
     resultHash: value.resultHash as string,
     turnId: value.turnId,

@@ -194,7 +194,8 @@ const ReconcileTurnSchema = z
 
 export const RuntimeImResourceReferenceSchema = z
   .object({
-    resourceId: RuntimeOpaqueIdSchema,
+    imMessageId: RuntimeOpaqueIdSchema,
+    ordinal: z.number().int().min(0).max(15),
     kind: z.enum(["image", "file", "audio", "video"]),
     filename: byteString(512, "Resource filename exceeds the 512-byte limit", 1).optional(),
     mediaType: byteString(255, "Resource media type exceeds the 255-byte limit", 1).optional(),
@@ -213,7 +214,9 @@ export const RuntimeImHistoryItemSchema = z
 
 export const RetainedTurnReportClaimSchema = z
   .object({
+    dispatchRequestId: RuntimeRequestIdSchema,
     deliveryId: RuntimeOpaqueIdSchema,
+    inputHash: RuntimeSha256Schema,
     turnId: RuntimeOpaqueIdSchema,
     placementGeneration: RuntimeSequenceSchema,
     resultHash: RuntimeSha256Schema,
@@ -290,7 +293,6 @@ export const DirectImMessageDeliveryRequestSchema = z
     requestId: RuntimeRequestIdSchema,
     deliveryId: RuntimeOpaqueIdSchema,
     imMessageId: RuntimeOpaqueIdSchema,
-    imMessageRevision: z.number().int().safe().positive(),
     sessionId: RuntimeOpaqueIdSchema,
     agentId: RuntimeOpaqueIdSchema,
     placementGeneration: RuntimeSequenceSchema,
@@ -561,7 +563,6 @@ export function computeDirectInputHash(input: DirectImMessageDeliveryRequest): s
   return hashTuple([
     1,
     frame.imMessageId,
-    frame.imMessageRevision,
     frame.sessionId,
     frame.agentId,
     frame.placementGeneration,

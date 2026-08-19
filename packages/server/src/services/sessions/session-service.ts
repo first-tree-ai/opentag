@@ -1,7 +1,7 @@
-import type { Session, SessionKind, SessionPlacement } from "@opentag/shared";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import type { ImConversationKind, Session, SessionKind, SessionPlacement } from "@opentag/shared";
+import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, imConversations, integrations, sessionPlacements, sessions } from "../../db/schema/index.js";
+import { agents, imMessageDeliveries, integrations, sessionPlacements, sessions } from "../../db/schema/index.js";
 
 type SessionRow = typeof sessions.$inferSelect;
 type PlacementRow = typeof sessionPlacements.$inferSelect;
@@ -9,7 +9,9 @@ type PlacementRow = typeof sessionPlacements.$inferSelect;
 function toSession(row: SessionRow): Session {
   return {
     id: row.id,
-    conversationId: row.conversationId,
+    integrationId: row.integrationId,
+    channelId: row.channelId,
+    conversationKind: row.conversationKind,
     kind: row.kind,
     threadKey: row.threadKey,
     createdBySessionId: row.createdBySessionId,
@@ -39,15 +41,17 @@ export class SessionServiceError extends Error {
 
 export class SessionService {
   readonly #database: DatabaseClient;
+  readonly #afterPlacementLock: (() => Promise<void>) | undefined;
   readonly #now: () => Date;
 
-  constructor(database: DatabaseClient, options: { now?: () => Date } = {}) {
+  constructor(database: DatabaseClient, options: { afterPlacementLock?: () => Promise<void>; now?: () => Date } = {}) {
     this.#database = database;
+    this.#afterPlacementLock = options.afterPlacementLock;
     this.#now = options.now ?? (() => new Date());
   }
 
   async ensureChatSession(
-    conversationId: string,
+    scope: { integrationId: string; channelId: string; conversationKind: ImConversationKind },
     kind: Exclude<SessionKind, "internal">,
     threadKey?: string,
   ): Promise<{ session: Session; placement: SessionPlacement }> {
@@ -59,16 +63,17 @@ export class SessionService {
     }
 
     return this.#database.transaction(async (transaction) => {
-      const computerId = await this.#resolveComputer(transaction, conversationId);
-      const existing = await this.#findActive(transaction, conversationId, kind, threadKey);
+      const computerId = await this.#resolveComputer(transaction, scope.integrationId);
+      const existing = await this.#findActive(transaction, scope.integrationId, scope.channelId, kind, threadKey);
       if (existing) return this.#withPlacement(transaction, existing, computerId);
 
       const [created] = await transaction
         .insert(sessions)
-        .values({ conversationId, kind, threadKey: threadKey ?? null, createdAt: this.#now() })
+        .values({ ...scope, kind, threadKey: threadKey ?? null, createdAt: this.#now() })
         .onConflictDoNothing()
         .returning();
-      const session = created ?? (await this.#findActive(transaction, conversationId, kind, threadKey));
+      const session =
+        created ?? (await this.#findActive(transaction, scope.integrationId, scope.channelId, kind, threadKey));
       if (!session) throw new Error("Active Session ensure did not converge");
       return this.#withPlacement(transaction, session, computerId);
     });
@@ -87,7 +92,9 @@ export class SessionService {
       const [created] = await transaction
         .insert(sessions)
         .values({
-          conversationId: creator.session.conversationId,
+          integrationId: creator.session.integrationId,
+          channelId: creator.session.channelId,
+          conversationKind: creator.session.conversationKind,
           kind: "internal",
           threadKey: creator.session.threadKey,
           createdBySessionId: creatorSessionId,
@@ -125,13 +132,62 @@ export class SessionService {
   }
 
   async movePlacement(sessionId: string, computerId: string): Promise<SessionPlacement> {
-    const [placement] = await this.#database
-      .update(sessionPlacements)
-      .set({ computerId, generation: sql`${sessionPlacements.generation} + 1`, updatedAt: this.#now() })
-      .where(eq(sessionPlacements.sessionId, sessionId))
-      .returning();
-    if (!placement) throw new SessionServiceError("SESSION_NOT_FOUND", "The Session placement was not found");
-    return toPlacement(placement);
+    return this.#database.transaction(async (transaction) => {
+      const [current] = await transaction
+        .select({ placement: sessionPlacements })
+        .from(sessionPlacements)
+        .innerJoin(sessions, eq(sessions.id, sessionPlacements.sessionId))
+        .where(and(eq(sessionPlacements.sessionId, sessionId), isNull(sessions.endedAt)))
+        .limit(1)
+        .for("update", { of: sessionPlacements });
+      if (!current) throw new SessionServiceError("SESSION_NOT_FOUND", "The Session placement was not found");
+      await this.#afterPlacementLock?.();
+
+      const [uncertainCustody] = await transaction
+        .select({ id: imMessageDeliveries.id, state: imMessageDeliveries.state })
+        .from(imMessageDeliveries)
+        .where(
+          and(
+            eq(imMessageDeliveries.sessionId, sessionId),
+            or(
+              and(eq(imMessageDeliveries.state, "accepted"), isNull(imMessageDeliveries.reportedAt)),
+              and(
+                inArray(imMessageDeliveries.state, ["pending", "expired"]),
+                isNotNull(imMessageDeliveries.dispatchRequestId),
+              ),
+            ),
+          ),
+        )
+        .limit(1);
+      if (uncertainCustody) {
+        throw new SessionServiceError(
+          uncertainCustody.state === "accepted"
+            ? "SESSION_PLACEMENT_CUSTODY_PENDING"
+            : "SESSION_PLACEMENT_CUSTODY_UNCERTAIN",
+          uncertainCustody.state === "accepted"
+            ? "The Session has accepted runtime custody that must report before placement can move"
+            : "The Session has an unresolved runtime dispatch that must reconcile before placement can move",
+        );
+      }
+
+      const generation = current.placement.generation + 1;
+      const now = this.#now();
+      await transaction
+        .update(imMessageDeliveries)
+        .set({
+          placementGeneration: generation,
+          nextAttemptAt: now,
+          lastErrorCode: "IM_DELIVERY_PLACEMENT_MOVED",
+        })
+        .where(and(eq(imMessageDeliveries.sessionId, sessionId), eq(imMessageDeliveries.state, "pending")));
+      const [placement] = await transaction
+        .update(sessionPlacements)
+        .set({ computerId, generation, updatedAt: now })
+        .where(eq(sessionPlacements.sessionId, sessionId))
+        .returning();
+      if (!placement) throw new SessionServiceError("SESSION_NOT_FOUND", "The Session placement was not found");
+      return toPlacement(placement);
+    });
   }
 
   async assertPlacement(sessionId: string, computerId: string, generation: number): Promise<void> {
@@ -151,27 +207,21 @@ export class SessionService {
     if (!placement) throw new SessionServiceError("SESSION_PLACEMENT_STALE", "The Session placement is stale");
   }
 
-  async #resolveComputer(transaction: DatabaseTransaction, conversationId: string): Promise<string> {
+  async #resolveComputer(transaction: DatabaseTransaction, integrationId: string): Promise<string> {
     const [scope] = await transaction
       .select({ computerId: agents.computerId })
-      .from(imConversations)
-      .innerJoin(integrations, eq(integrations.id, imConversations.integrationId))
+      .from(integrations)
       .innerJoin(agents, eq(agents.id, integrations.agentId))
-      .where(
-        and(
-          eq(imConversations.id, conversationId),
-          isNull(imConversations.detachedAt),
-          isNull(integrations.disabledAt),
-        ),
-      )
+      .where(and(eq(integrations.id, integrationId), eq(integrations.status, "active"), isNull(agents.deletedAt)))
       .limit(1);
-    if (!scope) throw new SessionServiceError("CONVERSATION_NOT_ACTIVE", "The IM conversation is not active");
+    if (!scope) throw new SessionServiceError("INTEGRATION_NOT_ACTIVE", "The IM Integration is not active");
     return scope.computerId;
   }
 
   async #findActive(
     transaction: DatabaseTransaction,
-    conversationId: string,
+    integrationId: string,
+    channelId: string,
     kind: Exclude<SessionKind, "internal">,
     threadKey?: string,
   ): Promise<SessionRow | undefined> {
@@ -180,7 +230,8 @@ export class SessionService {
       .from(sessions)
       .where(
         and(
-          eq(sessions.conversationId, conversationId),
+          eq(sessions.integrationId, integrationId),
+          eq(sessions.channelId, channelId),
           eq(sessions.kind, kind),
           kind === "channel" ? isNull(sessions.threadKey) : eq(sessions.threadKey, threadKey ?? ""),
           isNull(sessions.endedAt),

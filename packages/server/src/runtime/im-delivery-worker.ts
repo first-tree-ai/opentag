@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   type DirectImMessageDeliveryRequest,
+  DirectImMessageDeliveryRequestSchema,
   type EffectiveRuntimeSnapshot,
   OPENTAG_MESSAGE_TOOLS,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
@@ -8,14 +9,12 @@ import {
   RUNTIME_MAX_FRAME_BYTES,
   runtimeFrameByteLength,
 } from "@opentag/shared";
-import { and, asc, desc, eq, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import {
   agents,
   computers,
-  imConversations,
   imMessageDeliveries,
-  imMessageResources,
   imMessages,
   integrations,
   sessionPlacements,
@@ -86,56 +85,87 @@ export class ImDeliveryWorker {
       await transaction
         .update(imMessageDeliveries)
         .set({ state: "expired", reason: "ttl" })
-        .where(and(eq(imMessageDeliveries.state, "pending"), lte(imMessageDeliveries.expiresAt, now)));
-      const [row] = await transaction
-        .select({ id: imMessageDeliveries.id, generation: sessionPlacements.generation })
-        .from(imMessageDeliveries)
-        .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
         .where(
           and(
             eq(imMessageDeliveries.state, "pending"),
-            lte(imMessageDeliveries.nextAttemptAt, now),
-            sql`${imMessageDeliveries.expiresAt} > now()`,
+            isNull(imMessageDeliveries.reason),
+            lte(imMessageDeliveries.expiresAt, now),
+          ),
+        );
+      const [row] = await transaction
+        .select({
+          id: imMessageDeliveries.id,
+          state: imMessageDeliveries.state,
+          deliveryGeneration: imMessageDeliveries.placementGeneration,
+          dispatchRequestId: imMessageDeliveries.dispatchRequestId,
+          dispatchPayload: imMessageDeliveries.dispatchPayload,
+          generation: sessionPlacements.generation,
+        })
+        .from(imMessageDeliveries)
+        .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
+        .where(
+          or(
+            and(
+              eq(imMessageDeliveries.state, "pending"),
+              isNull(imMessageDeliveries.reason),
+              lte(imMessageDeliveries.nextAttemptAt, now),
+              sql`${imMessageDeliveries.expiresAt} > now()`,
+            ),
+            and(
+              eq(imMessageDeliveries.state, "expired"),
+              isNotNull(imMessageDeliveries.dispatchRequestId),
+              lte(imMessageDeliveries.nextAttemptAt, now),
+            ),
+            and(
+              eq(imMessageDeliveries.state, "accepted"),
+              isNull(imMessageDeliveries.reportedAt),
+              lte(imMessageDeliveries.nextAttemptAt, now),
+            ),
           ),
         )
         .orderBy(asc(imMessageDeliveries.nextAttemptAt), asc(imMessageDeliveries.id))
         .limit(1)
-        .for("update", { skipLocked: true });
-      if (row) {
+        .for("update", { of: imMessageDeliveries, skipLocked: true });
+      if (!row) return undefined;
+      if (row.state === "accepted") {
         await transaction
           .update(imMessageDeliveries)
           .set({
             attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
-            placementGeneration: row.generation,
             nextAttemptAt: new Date(now.getTime() + RETRY_DELAY_MS),
             lastErrorCode: null,
           })
-          .where(and(eq(imMessageDeliveries.id, row.id), eq(imMessageDeliveries.state, "pending")));
-        return { id: row.id, kind: "pending" as const };
+          .where(and(eq(imMessageDeliveries.id, row.id), eq(imMessageDeliveries.state, "accepted")));
+        return { id: row.id, kind: "recovery" as const };
       }
-      const [recovery] = await transaction
-        .select({ id: imMessageDeliveries.id })
-        .from(imMessageDeliveries)
-        .where(
-          and(
-            eq(imMessageDeliveries.state, "accepted"),
-            isNull(imMessageDeliveries.reportedAt),
-            lte(imMessageDeliveries.nextAttemptAt, now),
-          ),
-        )
-        .orderBy(asc(imMessageDeliveries.nextAttemptAt), asc(imMessageDeliveries.id))
-        .limit(1)
-        .for("update", { skipLocked: true });
-      if (!recovery) return undefined;
+      const persistedRequest = row.dispatchPayload
+        ? DirectImMessageDeliveryRequestSchema.safeParse(row.dispatchPayload)
+        : undefined;
+      const staleCorrelation =
+        row.dispatchRequestId !== null &&
+        (row.deliveryGeneration !== row.generation ||
+          !persistedRequest?.success ||
+          persistedRequest.data.placementGeneration !== row.generation);
+      if (staleCorrelation) {
+        await transaction
+          .update(imMessageDeliveries)
+          .set({
+            nextAttemptAt: new Date(now.getTime() + RETRY_DELAY_MS),
+            lastErrorCode: "IM_DELIVERY_PLACEMENT_STALE",
+          })
+          .where(eq(imMessageDeliveries.id, row.id));
+        return undefined;
+      }
       await transaction
         .update(imMessageDeliveries)
         .set({
           attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
+          ...(row.state === "pending" ? { placementGeneration: row.generation } : {}),
           nextAttemptAt: new Date(now.getTime() + RETRY_DELAY_MS),
           lastErrorCode: null,
         })
-        .where(eq(imMessageDeliveries.id, recovery.id));
-      return { id: recovery.id, kind: "recovery" as const };
+        .where(eq(imMessageDeliveries.id, row.id));
+      return { id: row.id, kind: "pending" as const };
     });
   }
 
@@ -146,7 +176,6 @@ export class ImDeliveryWorker {
         message: imMessages,
         session: sessions,
         placement: sessionPlacements,
-        conversation: imConversations,
         integration: integrations,
         agent: agents,
         computer: computers,
@@ -155,17 +184,18 @@ export class ImDeliveryWorker {
       .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-      .innerJoin(imConversations, eq(imConversations.id, sessions.conversationId))
-      .innerJoin(integrations, eq(integrations.id, imConversations.integrationId))
+      .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
       .innerJoin(agents, eq(agents.id, integrations.agentId))
       .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(
         and(
           eq(imMessageDeliveries.id, deliveryId),
-          eq(imMessageDeliveries.state, "pending"),
+          or(
+            and(eq(imMessageDeliveries.state, "pending"), isNull(imMessageDeliveries.reason)),
+            and(eq(imMessageDeliveries.state, "expired"), isNotNull(imMessageDeliveries.dispatchRequestId)),
+          ),
           isNull(sessions.endedAt),
-          isNull(imConversations.detachedAt),
-          isNull(integrations.disabledAt),
+          eq(integrations.status, "active"),
           isNull(agents.deletedAt),
         ),
       )
@@ -184,7 +214,12 @@ export class ImDeliveryWorker {
       await this.#reject(deliveryId, "configuration_unsupported");
       return;
     }
-    const runtime = runtimeSnapshot(row.agent.id, row.agent.revision, row.session.id, row.session.revision);
+    const persistedRequest = row.delivery.dispatchPayload
+      ? DirectImMessageDeliveryRequestSchema.parse(row.delivery.dispatchPayload)
+      : undefined;
+    const runtime =
+      persistedRequest?.runtime ??
+      runtimeSnapshot(row.agent.id, row.agent.revision, row.session.id, row.session.revision);
     try {
       const reconcile = await this.#domain.requestReconcile(row.placement.computerId, instanceId, {
         type: "session:reconcile",
@@ -196,20 +231,36 @@ export class ImDeliveryWorker {
         desired: "ready",
         runtime,
       });
-      if (reconcile.status !== "ready") {
-        await this.#recordFailure(deliveryId, "IM_DELIVERY_RECONCILE_NOT_READY");
+      const [currentDelivery] = await this.#database
+        .select({ state: imMessageDeliveries.state })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId))
+        .limit(1);
+      if (!currentDelivery || currentDelivery.state === "accepted" || currentDelivery.state === "terminal_rejected") {
         return;
       }
-      const resources = await this.#database
-        .select()
-        .from(imMessageResources)
-        .where(
-          and(
-            eq(imMessageResources.messageId, row.message.id),
-            eq(imMessageResources.messageRevision, row.delivery.messageRevision),
-          ),
-        )
-        .orderBy(asc(imMessageResources.ordinal));
+      if (reconcile.status !== "ready") {
+        await this.#recordFailure(
+          deliveryId,
+          reconcile.status === "rejected" ? "IM_DELIVERY_RECONCILE_REJECTED" : "IM_DELIVERY_RECONCILE_NOT_READY",
+        );
+        return;
+      }
+      if (reconcile.retainedReports?.some((claim) => claim.deliveryId === deliveryId)) {
+        await this.#recordFailure(deliveryId, "IM_DELIVERY_RETAINED_CUSTODY_CONFLICT");
+        return;
+      }
+      if (currentDelivery.state === "expired") {
+        if (persistedRequest) {
+          await this.#releaseDispatch(deliveryId, persistedRequest.requestId, "IM_DELIVERY_EXPIRED");
+        }
+        return;
+      }
+      if (persistedRequest) {
+        await this.#releaseDispatch(deliveryId, persistedRequest.requestId, "IM_DELIVERY_RECONCILED_NO_CUSTODY");
+        return;
+      }
+      const resources = row.message.content.resources ?? [];
       const history =
         row.agent.receiveMode === "mention_only" && row.delivery.attention === "direct"
           ? await this.#history(row.session.id, row.message.occurredAt, row.message.id)
@@ -219,7 +270,6 @@ export class ImDeliveryWorker {
         requestId: randomUUID(),
         deliveryId: row.delivery.id,
         imMessageId: row.message.id,
-        imMessageRevision: row.delivery.messageRevision,
         sessionId: row.session.id,
         agentId: row.agent.id,
         placementGeneration: row.placement.generation,
@@ -227,19 +277,20 @@ export class ImDeliveryWorker {
         content: {
           kind: "text",
           text: truncateUtf8(
-            row.message.deletedAt ? "[deleted]" : row.message.content.fallbackText,
+            row.message.operation === "deleted" ? "[deleted]" : row.message.content.fallbackText,
             RUNTIME_DIRECT_TEXT_MAX_BYTES,
           ),
           ...(history.items.length > 0 ? { history: history.items, historyTruncated: history.truncated } : {}),
           ...(resources.length > 0
             ? {
-                resources: resources.map((resource) => ({
-                  resourceId: resource.id,
+                resources: resources.map((resource, index) => ({
+                  imMessageId: row.message.id,
+                  ordinal: resource.ordinal ?? index,
                   kind: resource.kind,
                   ...(resource.filename ? { filename: resource.filename } : {}),
                   ...(resource.mediaType ? { mediaType: resource.mediaType } : {}),
                   ...(resource.sizeBytes !== null ? { sizeBytes: resource.sizeBytes } : {}),
-                  availability: resource.availability,
+                  availability: resource.availability ?? "available",
                 })),
               }
             : {}),
@@ -255,7 +306,7 @@ export class ImDeliveryWorker {
       ) {
         await this.#reject(deliveryId, result.reason ?? "terminal_rejected");
       } else if (result.status === "rejected") {
-        await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_REJECTED");
+        await this.#releaseDispatch(deliveryId, request.requestId, "IM_DELIVERY_RUNTIME_REJECTED");
       }
     } catch {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_FAILED");
@@ -268,7 +319,6 @@ export class ImDeliveryWorker {
         delivery: imMessageDeliveries,
         session: sessions,
         placement: sessionPlacements,
-        conversation: imConversations,
         integration: integrations,
         agent: agents,
         computer: computers,
@@ -276,8 +326,7 @@ export class ImDeliveryWorker {
       .from(imMessageDeliveries)
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-      .innerJoin(imConversations, eq(imConversations.id, sessions.conversationId))
-      .innerJoin(integrations, eq(integrations.id, imConversations.integrationId))
+      .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
       .innerJoin(agents, eq(agents.id, integrations.agentId))
       .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(
@@ -286,8 +335,7 @@ export class ImDeliveryWorker {
           eq(imMessageDeliveries.state, "accepted"),
           isNull(imMessageDeliveries.reportedAt),
           isNull(sessions.endedAt),
-          isNull(imConversations.detachedAt),
-          isNull(integrations.disabledAt),
+          eq(integrations.status, "active"),
           isNull(agents.deletedAt),
         ),
       )
@@ -323,14 +371,41 @@ export class ImDeliveryWorker {
     await this.#database
       .update(imMessageDeliveries)
       .set({ lastErrorCode: bounded })
-      .where(and(eq(imMessageDeliveries.id, deliveryId), sql`${imMessageDeliveries.state} in ('pending', 'accepted')`));
+      .where(
+        and(
+          eq(imMessageDeliveries.id, deliveryId),
+          sql`${imMessageDeliveries.state} in ('pending', 'accepted', 'expired')`,
+        ),
+      );
+    this.#onDiagnostic(bounded);
+  }
+
+  async #releaseDispatch(deliveryId: string, requestId: string, code: string): Promise<void> {
+    const bounded = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/.test(code) ? code : "IM_DELIVERY_FAILED";
+    await this.#database
+      .update(imMessageDeliveries)
+      .set({ dispatchRequestId: null, dispatchInputHash: null, dispatchPayload: null, lastErrorCode: bounded })
+      .where(
+        and(
+          eq(imMessageDeliveries.id, deliveryId),
+          inArray(imMessageDeliveries.state, ["pending", "expired"]),
+          eq(imMessageDeliveries.dispatchRequestId, requestId),
+        ),
+      );
     this.#onDiagnostic(bounded);
   }
 
   async #reject(deliveryId: string, reason: string): Promise<void> {
     await this.#database
       .update(imMessageDeliveries)
-      .set({ state: "terminal_rejected", reason: reason.slice(0, 120), lastErrorCode: "IM_DELIVERY_TERMINAL" })
+      .set({
+        state: "terminal_rejected",
+        dispatchRequestId: null,
+        dispatchInputHash: null,
+        dispatchPayload: null,
+        reason: reason.slice(0, 120),
+        lastErrorCode: "IM_DELIVERY_TERMINAL",
+      })
       .where(and(eq(imMessageDeliveries.id, deliveryId), eq(imMessageDeliveries.state, "pending")));
   }
 

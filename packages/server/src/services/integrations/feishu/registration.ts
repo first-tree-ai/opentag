@@ -9,7 +9,7 @@ export interface FeishuAppProfile {
 export interface FeishuRegistrationResult {
   appId: string;
   appSecret: string;
-  tenantBrand?: "feishu" | "lark";
+  teamBrand?: "feishu" | "lark";
   requestedScopes: string[];
 }
 
@@ -86,7 +86,7 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
       .then((credentials) => ({
         appId: credentials.client_id,
         appSecret: credentials.client_secret,
-        tenantBrand: credentials.user_info?.tenant_brand,
+        teamBrand: credentials.user_info?.tenant_brand,
         requestedScopes,
       }))
       .catch((error) => {

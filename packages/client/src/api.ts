@@ -250,10 +250,11 @@ export class OpenTagApi {
 
   async openImResource(
     accessToken: string,
-    resourceId: string,
+    imMessageId: string,
+    ordinal: number,
     scope: { sessionId: string; computerId: string; instanceId: string; placementGeneration: number },
   ): Promise<Response> {
-    const response = await this.#fetchResponse(runtimeImResourcePath(resourceId, scope), {
+    const response = await this.#fetchResponse(runtimeImResourcePath(imMessageId, ordinal, scope), {
       headers: { authorization: `Bearer ${accessToken}` },
     });
     if (!response.ok) {

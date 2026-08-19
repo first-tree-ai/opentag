@@ -428,21 +428,44 @@ export function codexDynamicToolSpecs(allowedTools: readonly string[]): Array<Re
         ? {
             type: "object",
             additionalProperties: false,
-            properties: { targetImMessageId: { type: "string" }, emoji: { type: "string" } },
-            required: ["targetImMessageId", "emoji"],
+            properties: {
+              requestId: {
+                type: "string",
+                format: "uuid",
+                description: "Stable operation ID. Reuse it when retrying the same logical write.",
+              },
+              targetImMessageId: { type: "string", format: "uuid" },
+              emoji: { type: "string" },
+            },
+            required: ["requestId", "targetImMessageId", "emoji"],
           }
         : name === "opentag_message_reply"
           ? {
               type: "object",
               additionalProperties: false,
-              properties: { replyToImMessageId: { type: "string" }, text: { type: "string" } },
-              required: ["replyToImMessageId", "text"],
+              properties: {
+                requestId: {
+                  type: "string",
+                  format: "uuid",
+                  description: "Stable operation ID. Reuse it when retrying the same logical write.",
+                },
+                replyToImMessageId: { type: "string", format: "uuid" },
+                text: { type: "string" },
+              },
+              required: ["requestId", "replyToImMessageId", "text"],
             }
           : {
               type: "object",
               additionalProperties: false,
-              properties: { text: { type: "string" } },
-              required: ["text"],
+              properties: {
+                requestId: {
+                  type: "string",
+                  format: "uuid",
+                  description: "Stable operation ID. Reuse it when retrying the same logical write.",
+                },
+                text: { type: "string" },
+              },
+              required: ["requestId", "text"],
             },
   }));
 }
@@ -464,6 +487,7 @@ export function buildOpenTagRuntimeContext(request: DirectImMessageDeliveryReque
     `Agent revision: ${request.runtime.revision.agent.sequence}/${request.runtime.revision.agent.id}`,
     `Session revision: ${request.runtime.revision.session.sequence}/${request.runtime.revision.session.id}`,
     "Reload and obey the managed AGENTS.md before acting.",
+    "For the same logical IM write retry, reuse the exact same requestId; never mint a new ID after an unknown result.",
     "Session instructions:",
     sessionInstructions,
   ].join("\n");

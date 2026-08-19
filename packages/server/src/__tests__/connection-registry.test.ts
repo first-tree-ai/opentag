@@ -78,6 +78,7 @@ describe("ConnectionRegistry", () => {
     await registry.register(
       {
         capabilities: { imMessageTool: 0 },
+        capabilitiesUpdatedAt: 1,
         computerId,
         instanceId: firstInstanceId,
         lastHeartbeatAt: 1,
@@ -86,22 +87,29 @@ describe("ConnectionRegistry", () => {
       },
       async () => undefined,
     );
-    expect(registry.supports(computerId, firstInstanceId, "imMessageTool")).toBe(false);
+    expect(registry.supports(computerId, firstInstanceId, "imMessageTool", 1)).toBe(false);
 
     const verifiedInstanceId = randomUUID();
+    const verifiedSocket = socket();
     await registry.register(
       {
         capabilities: { imMessageTool: 1 },
+        capabilitiesUpdatedAt: 2,
         computerId,
         instanceId: verifiedInstanceId,
         lastHeartbeatAt: 2,
-        socket: socket(),
+        socket: verifiedSocket,
         userId: randomUUID(),
       },
       async () => undefined,
     );
-    expect(registry.supports(computerId, firstInstanceId, "imMessageTool")).toBe(false);
-    expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool")).toBe(true);
+    expect(registry.supports(computerId, firstInstanceId, "imMessageTool", 2)).toBe(false);
+    expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 2)).toBe(true);
+
+    expect(registry.touch(computerId, verifiedInstanceId, verifiedSocket, 3, { imMessageTool: 0 })).toBe(true);
+    expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 3)).toBe(false);
+    expect(registry.touch(computerId, verifiedInstanceId, verifiedSocket, 4, { imMessageTool: 1 })).toBe(true);
+    expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 4)).toBe(true);
   });
 });
 

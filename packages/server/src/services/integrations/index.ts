@@ -8,3 +8,4 @@ export type {
   ReadableResource,
   VerifiedBotIdentity,
 } from "./provider-adapter.js";
+export { createImProviderAdapterResolver, ProviderAdapterResolutionError } from "./provider-adapter-resolver.js";

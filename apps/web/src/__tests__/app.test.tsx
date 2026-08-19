@@ -18,6 +18,58 @@ function me(role: "admin" | "member") {
   };
 }
 
+function feishuIntegrationFetch(diagnostics: Record<string, unknown>) {
+  return async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path === "/api/v1/me") return response(me("admin"));
+    if (path === `/api/v1/agents/${agentId}`) {
+      return response({
+        id: agentId,
+        teamId,
+        managerUserId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+        computerId: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+        name: "assistant",
+        displayName: "Assistant",
+        runtimeProvider: "codex",
+        receiveMode: "all_message",
+        revision: 1,
+        createdAt: "2026-08-19T00:00:00.000Z",
+        updatedAt: "2026-08-19T00:00:00.000Z",
+      });
+    }
+    if (path === `/api/v1/agents/${agentId}/integration`) {
+      return response({
+        integration: {
+          id: "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0",
+          agentId,
+          provider: "feishu",
+          status: "active",
+          disabledAt: null,
+          createdAt: "2026-08-19T00:00:00.000Z",
+          updatedAt: "2026-08-19T00:00:00.000Z",
+        },
+        identity: {
+          provider: "feishu",
+          appId: "cli_1",
+          teamId: "team_1",
+          botOpenId: "ou_bot",
+          teamBrand: "feishu",
+        },
+        receiveMode: "all_message",
+        credentialGeneration: 1,
+        grantedCapabilities: ["im:message:send_as_bot"],
+        reauthorizationRequired: false,
+        lastInboundAt: null,
+        lastOutboundAt: null,
+      });
+    }
+    if (path === "/api/v1/integrations/6d93de68-ec32-4ac9-a41e-e96ed2d7dac0/diagnostics") {
+      return response(diagnostics);
+    }
+    throw new Error(`Unexpected request: ${path}`);
+  };
+}
+
 describe("Admin Web", () => {
   it("renders only browser sign-in methods reported by the server", async () => {
     window.history.replaceState({}, "", "/admin/login");
@@ -138,6 +190,7 @@ describe("Admin Web", () => {
             id: "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0",
             agentId,
             provider: "feishu",
+            status: "active",
             disabledAt: null,
             createdAt: "2026-08-19T00:00:00.000Z",
             updatedAt: "2026-08-19T00:00:00.000Z",
@@ -145,9 +198,9 @@ describe("Admin Web", () => {
           identity: {
             provider: "feishu",
             appId: "cli_1",
-            tenantKey: null,
+            teamId: null,
             botOpenId: "ou_bot",
-            tenantBrand: "feishu",
+            teamBrand: "feishu",
           },
           receiveMode: "all_message",
           credentialGeneration: 1,
@@ -177,5 +230,35 @@ describe("Admin Web", () => {
     expect(await screen.findByText(/runtime message tool unavailable/)).toBeTruthy();
     expect(screen.queryByText(/^Ready/)).toBeNull();
     expect(screen.queryByText(/Message the Bot directly/)).toBeNull();
+  });
+
+  it.each([
+    ["a disconnected Channel", false, "disconnected", "2026-08-19T00:01:00.000Z"],
+    ["an expired Channel lease", false, "disconnected", "2026-08-19T00:02:00.000Z"],
+    ["a reconnected Channel", true, "connected", "2026-08-19T00:03:00.000Z"],
+  ])("gates Feishu work handoff for %s", async (_label, ready, connectionState, observedAt) => {
+    window.history.replaceState({}, "", `/admin/teams/${teamId}/agents/${agentId}`);
+    vi.mocked(fetch).mockImplementation(
+      feishuIntegrationFetch({
+        integrationId: "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0",
+        provider: "feishu",
+        ready,
+        runtimeToolAvailable: true,
+        credentialGeneration: 1,
+        reauthorizationRequired: false,
+        lastInboundAt: null,
+        lastOutboundAt: null,
+        lastErrorCode: null,
+        connection: { state: connectionState, observedAt },
+      }),
+    );
+    render(<App />);
+    if (ready) {
+      expect(await screen.findByText(/^Ready as/)).toBeTruthy();
+      expect(screen.getByText(/Message the Bot directly/)).toBeTruthy();
+    } else {
+      expect(await screen.findByText(/^Validating as/)).toBeTruthy();
+      expect(screen.queryByText(/Message the Bot directly/)).toBeNull();
+    }
   });
 });

@@ -8,6 +8,7 @@ export const IntegrationSchema = z
     id: z.string().uuid(),
     agentId: z.string().uuid(),
     provider: ImProviderSchema,
+    status: z.enum(["provisioning", "active", "reauthorization_required", "error", "disabled"]),
     disabledAt: z.string().datetime().nullable(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
@@ -19,11 +20,11 @@ export const IntegrationIdentitySchema = z.discriminatedUnion("provider", [
     .object({
       provider: z.literal("feishu"),
       appId: z.string().min(1).max(255),
-      // Feishu does not expose tenant_key during registerApp or bot profile
-      // validation. It is filled from the first verified event envelope.
-      tenantKey: z.string().min(1).max(255).nullable(),
+      // Feishu exposes the external Team identifier only after the first verified event.
+      // OpenTag fills it from that verified event envelope.
+      teamId: z.string().min(1).max(255).nullable(),
       botOpenId: z.string().min(1).max(255),
-      tenantBrand: z.string().max(255).nullable(),
+      teamBrand: z.string().max(255).nullable(),
     })
     .strict(),
   z

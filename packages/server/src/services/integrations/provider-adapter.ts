@@ -3,11 +3,12 @@ import type { NormalizedInboundImEvent, ProviderWriteResult } from "@opentag/sha
 
 export interface VerifiedBotIdentity {
   externalAppId: string;
-  externalTenantId: string;
+  externalTeamId: string;
   externalBotId: string;
 }
 
 export interface ProviderSendInput {
+  requestId?: string;
   conversationExternalId: string;
   fallbackText: string;
   threadKey?: string;

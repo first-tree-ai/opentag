@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   type DirectImMessageDeliveryRequest,
   type RuntimeImToolRequest,
@@ -12,6 +12,8 @@ const TOOL_TIMEOUT_MS = 60_000;
 const TOOL_TEXT_MAX_BYTES = 24 * 1024;
 
 interface PendingTool {
+  hash: string;
+  promise: Promise<RuntimeImToolResult>;
   reject(error: Error): void;
   resolve(result: RuntimeImToolResult): void;
   timer: ReturnType<typeof setTimeout>;
@@ -54,41 +56,38 @@ export class RuntimeToolHost {
 
   async #request(request: RuntimeImToolRequest, signal?: AbortSignal): Promise<RuntimeImToolResult> {
     if (signal?.aborted) throw new Error("OpenTag runtime tool call was aborted");
-    const result = new Promise<RuntimeImToolResult>((resolve, reject) => {
-      const cleanup = () => {
-        const pending = this.#pending.get(request.requestId);
-        if (pending) clearTimeout(pending.timer);
-        this.#pending.delete(request.requestId);
-        signal?.removeEventListener("abort", onAbort);
-      };
-      const onAbort = () => {
-        cleanup();
-        reject(new Error("OpenTag runtime tool call was aborted"));
-      };
-      const timer = setTimeout(() => {
-        cleanup();
-        reject(new Error("OpenTag runtime tool call timed out"));
-      }, TOOL_TIMEOUT_MS);
-      timer.unref();
-      this.#pending.set(request.requestId, {
-        timer,
-        resolve: (value) => {
-          cleanup();
-          resolve(value);
-        },
-        reject: (error) => {
-          cleanup();
-          reject(error);
-        },
-      });
-      signal?.addEventListener("abort", onAbort, { once: true });
-    });
-    try {
-      await this.#connection.send(request, { priority: "result", signal });
-    } catch (error) {
-      this.#pending.get(request.requestId)?.reject(error instanceof Error ? error : new Error("Runtime send failed"));
+    const hash = requestHash(request);
+    const existing = this.#pending.get(request.requestId);
+    if (existing) {
+      if (existing.hash !== hash) throw new Error("OpenTag runtime tool request ID conflicts with another intent");
+      return withCallerAbort(existing.promise, signal);
     }
-    return result;
+    let resolveResult!: (result: RuntimeImToolResult) => void;
+    let rejectResult!: (error: Error) => void;
+    const promise = new Promise<RuntimeImToolResult>((resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    });
+    const timer = setTimeout(() => rejectResult(new Error("OpenTag runtime tool call timed out")), TOOL_TIMEOUT_MS);
+    timer.unref();
+    const pending: PendingTool = {
+      hash,
+      promise,
+      timer,
+      resolve: resolveResult,
+      reject: rejectResult,
+    };
+    this.#pending.set(request.requestId, pending);
+    const cleanup = () => {
+      if (this.#pending.get(request.requestId) !== pending) return;
+      clearTimeout(timer);
+      this.#pending.delete(request.requestId);
+    };
+    void promise.then(cleanup, cleanup);
+    void (async () => this.#connection.send(request, { priority: "result" }))().catch((error: unknown) => {
+      pending.reject(error instanceof Error ? error : new Error("Runtime send failed"));
+    });
+    return withCallerAbort(promise, signal);
   }
 
   #handleResult(input: unknown): void {
@@ -98,11 +97,25 @@ export class RuntimeToolHost {
   }
 }
 
+function requestHash(request: RuntimeImToolRequest): string {
+  return createHash("sha256").update(JSON.stringify(request)).digest("hex");
+}
+
+function withCallerAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new Error("OpenTag runtime tool call was aborted"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error("OpenTag runtime tool call was aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    void promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
 function buildToolRequest(delivery: DirectImMessageDeliveryRequest, call: CodexDynamicToolCall): RuntimeImToolRequest {
   const input = requireRecord(call.arguments);
   const base = {
     type: "im:tool" as const,
-    requestId: randomUUID(),
+    requestId: requireUuid(input.requestId),
     sessionId: delivery.sessionId,
     agentId: delivery.agentId,
     placementGeneration: delivery.placementGeneration,

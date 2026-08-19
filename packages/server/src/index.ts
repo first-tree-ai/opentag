@@ -32,7 +32,7 @@ import {
   FeishuConnectionManager,
   FeishuSetupService,
 } from "./services/integrations/feishu/index.js";
-import { IntegrationService } from "./services/integrations/index.js";
+import { createImProviderAdapterResolver, IntegrationService } from "./services/integrations/index.js";
 import { DefaultSlackApiClient, SlackAdapter } from "./services/integrations/slack/index.js";
 import { InvitationService } from "./services/invitations/index.js";
 import { TeamMembershipService } from "./services/teams/index.js";
@@ -164,20 +164,7 @@ export async function startServer(): Promise<void> {
       activation: feishuConnections,
     });
     const slackApi = new DefaultSlackApiClient();
-    const resolveImAdapter = async (integrationId: string, generation: number) => {
-      const slack = await integrationService.getSlackConnectionMaterial(integrationId);
-      if (slack) {
-        if (slack.generation !== generation) throw new Error("INTEGRATION_GENERATION_STALE");
-        return new SlackAdapter({
-          api: slackApi,
-          token: slack.botAccessToken,
-          appId: slack.appId,
-          teamId: slack.teamId,
-          botUserId: slack.botUserId,
-        });
-      }
-      return feishuConnections.resolveAdapter(integrationId, generation);
-    };
+    const resolveImAdapter = createImProviderAdapterResolver({ integrations: integrationService, slackApi });
     outboundMessageService = new OutboundMessageService(database, resolveImAdapter);
     const imResourceService = new ImResourceService(database, resolveImAdapter);
     const imDeliveryWorker = new ImDeliveryWorker({

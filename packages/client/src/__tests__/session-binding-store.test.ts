@@ -168,7 +168,6 @@ function delivery(runtime: EffectiveRuntimeSnapshot, index: number): DirectImMes
     requestId: randomUUID(),
     deliveryId: `delivery-${index}`,
     imMessageId: `message-${index}`,
-    imMessageRevision: 1,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

@@ -1,7 +1,8 @@
+import { randomUUID } from "node:crypto";
 import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient } from "../../../db/client.js";
-import { agents, feishuIntegrationIdentities, feishuSetupAttempts, integrations } from "../../../db/schema/index.js";
+import { agents, integrations } from "../../../db/schema/index.js";
 import type { ApplicationCipher } from "../../crypto.js";
 import type { IntegrationService, VerifiedFeishuBinding } from "../integration-service.js";
 import type { FeishuAppProfile, FeishuRegistration, FeishuRegistrationGateway } from "./registration.js";
@@ -13,7 +14,7 @@ export interface FeishuBindingActivation {
     agentId: string;
     appId: string;
     appSecret: string;
-    tenantBrand?: "feishu" | "lark";
+    teamBrand?: "feishu" | "lark";
     requestedScopes: string[];
   }): Promise<VerifiedFeishuBinding>;
 }
@@ -41,6 +42,7 @@ export class FeishuSetupService {
   readonly #database: DatabaseClient;
   readonly #instanceId: string;
   readonly #integrations: IntegrationService;
+  readonly #onDiagnostic: (code: string) => void;
   readonly #registrations: FeishuRegistrationGateway;
   readonly #running = new Map<string, FeishuRegistration>();
   #heartbeatTimer: ReturnType<typeof setInterval> | undefined;
@@ -52,6 +54,7 @@ export class FeishuSetupService {
     integrations: IntegrationService;
     registrations: FeishuRegistrationGateway;
     activation: FeishuBindingActivation;
+    onDiagnostic?: (code: string) => void;
   }) {
     this.#database = input.database;
     this.#cipher = input.cipher;
@@ -59,24 +62,36 @@ export class FeishuSetupService {
     this.#integrations = input.integrations;
     this.#registrations = input.registrations;
     this.#activation = input.activation;
+    this.#onDiagnostic = input.onDiagnostic ?? (() => undefined);
   }
 
   start(): void {
     if (this.#heartbeatTimer) return;
-    this.#heartbeatTimer = setInterval(() => void this.#heartbeat().catch(() => undefined), OWNER_HEARTBEAT_MS);
+    this.#heartbeatTimer = setInterval(() => {
+      void this.#heartbeat().catch(() => this.#onDiagnostic("FEISHU_SETUP_HEARTBEAT_FAILED"));
+    }, OWNER_HEARTBEAT_MS);
     this.#heartbeatTimer.unref();
   }
 
   async stop(): Promise<void> {
     if (this.#heartbeatTimer) clearInterval(this.#heartbeatTimer);
     this.#heartbeatTimer = undefined;
+    const now = new Date();
     await this.#database
-      .update(feishuSetupAttempts)
-      .set({ state: "failed", errorCode: "FEISHU_SETUP_OWNER_RESTARTED", completedAt: new Date() })
+      .update(integrations)
+      .set({
+        setupState: "failed",
+        lastErrorCode: "FEISHU_SETUP_OWNER_RESTARTED",
+        setupOwnerInstanceId: null,
+        setupOwnerHeartbeatAt: null,
+        encryptedSetupContext: null,
+        setupExpiresAt: null,
+        updatedAt: now,
+      })
       .where(
         and(
-          eq(feishuSetupAttempts.ownerInstanceId, this.#instanceId),
-          inArray(feishuSetupAttempts.state, ["awaiting_user", "validating"]),
+          eq(integrations.setupOwnerInstanceId, this.#instanceId),
+          inArray(integrations.setupState, ["awaiting_user", "validating"]),
         ),
       );
     for (const registration of this.#running.values()) registration.abort();
@@ -85,33 +100,21 @@ export class FeishuSetupService {
 
   async createOrReuse(callerUserId: string, agentId: string, intent: FeishuSetupIntent): Promise<FeishuSetupAttempt> {
     await this.#integrations.assertCanManage(callerUserId, agentId);
-    const [active] = await this.#database
-      .select()
-      .from(feishuSetupAttempts)
-      .where(
-        and(
-          eq(feishuSetupAttempts.agentId, agentId),
-          inArray(feishuSetupAttempts.state, ["awaiting_user", "validating"]),
-        ),
-      )
-      .limit(1);
-    if (active) {
+    const current = await this.#currentForAgent(agentId);
+    if (current?.setupAttemptId && current.setupState && ["awaiting_user", "validating"].includes(current.setupState)) {
       if (
-        (active.ownerInstanceId === this.#instanceId && !this.#running.has(active.id)) ||
-        active.ownerHeartbeatAt.getTime() < Date.now() - OWNER_STALE_MS
+        (current.setupOwnerInstanceId === this.#instanceId && !this.#running.has(current.setupAttemptId)) ||
+        !current.setupOwnerHeartbeatAt ||
+        current.setupOwnerHeartbeatAt.getTime() < Date.now() - OWNER_STALE_MS
       ) {
-        await this.#database
-          .update(feishuSetupAttempts)
-          .set({ state: "failed", errorCode: "FEISHU_SETUP_OWNER_RESTARTED", completedAt: new Date() })
-          .where(
-            and(
-              eq(feishuSetupAttempts.id, active.id),
-              eq(feishuSetupAttempts.ownerInstanceId, active.ownerInstanceId),
-              inArray(feishuSetupAttempts.state, ["awaiting_user", "validating"]),
-            ),
-          );
+        await this.#failOwnedSlot(
+          current.id,
+          current.setupAttemptId,
+          current.setupOwnerInstanceId,
+          "FEISHU_SETUP_OWNER_RESTARTED",
+        );
       } else {
-        return this.#toAttempt(active);
+        return this.#toAttempt(current);
       }
     }
 
@@ -121,25 +124,26 @@ export class FeishuSetupService {
       .where(and(eq(agents.id, agentId), isNull(agents.deletedAt)))
       .limit(1);
     if (!agent) throw new Error("AGENT_NOT_FOUND");
-    const [existingBinding] = await this.#database
-      .select({ provider: integrations.provider, appId: feishuIntegrationIdentities.appId })
-      .from(integrations)
-      .leftJoin(feishuIntegrationIdentities, eq(feishuIntegrationIdentities.integrationId, integrations.id))
-      .where(eq(integrations.agentId, agentId))
-      .limit(1);
-    if (intent === "create" && existingBinding) throw new Error("FEISHU_INTEGRATION_ALREADY_EXISTS");
-    if (intent === "reauthorize" && (existingBinding?.provider !== "feishu" || !existingBinding.appId)) {
+    const existing = await this.#currentForAgent(agentId);
+    if (intent === "create" && existing && existing.status !== "provisioning") {
+      throw new Error("FEISHU_INTEGRATION_ALREADY_EXISTS");
+    }
+    if (intent === "reauthorize" && (existing?.provider !== "feishu" || !existing.externalAppId)) {
       throw new Error("FEISHU_REAUTHORIZATION_REQUIRES_BINDING");
     }
-    if (intent === "replace" && existingBinding?.provider !== "feishu") {
+    if (intent === "replace" && (existing?.provider !== "feishu" || existing.status === "provisioning")) {
       throw new Error("FEISHU_REPLACEMENT_REQUIRES_BINDING");
     }
-    const existingAppId = intent === "reauthorize" ? (existingBinding?.appId ?? undefined) : undefined;
     const profile: FeishuAppProfile = {
       name: agent.displayName,
       description: `OpenTag Agent: ${agent.displayName}`,
     };
-    const registration = this.#registrations.start({ profile, intent, existingAppId, receiveMode: agent.receiveMode });
+    const registration = this.#registrations.start({
+      profile,
+      intent,
+      existingAppId: intent === "reauthorize" ? (existing?.externalAppId ?? undefined) : undefined,
+      receiveMode: agent.receiveMode,
+    });
     let qr: Awaited<FeishuRegistration["qrReady"]>;
     try {
       qr = await registration.qrReady;
@@ -148,96 +152,132 @@ export class FeishuSetupService {
       registration.abort();
       throw error;
     }
-    let created: typeof feishuSetupAttempts.$inferSelect | undefined;
+
+    const attemptId = randomUUID();
+    const now = new Date();
+    let row: typeof integrations.$inferSelect | undefined;
     try {
-      [created] = await this.#database
-        .insert(feishuSetupAttempts)
-        .values({
-          agentId,
-          intent,
-          state: "awaiting_user",
-          ownerInstanceId: this.#instanceId,
-          ownerHeartbeatAt: new Date(),
-          encryptedQrContext: this.#cipher.encrypt(JSON.stringify({ qrUrl: qr.url } satisfies AttemptSecret)),
-          expiresAt: qr.expiresAt,
-        })
-        .returning();
+      if (existing) {
+        [row] = await this.#database
+          .update(integrations)
+          .set({
+            setupAttemptId: attemptId,
+            setupIntent: intent,
+            setupState: "awaiting_user",
+            setupOwnerInstanceId: this.#instanceId,
+            setupOwnerHeartbeatAt: now,
+            encryptedSetupContext: this.#cipher.encrypt(JSON.stringify({ qrUrl: qr.url } satisfies AttemptSecret)),
+            setupExpiresAt: qr.expiresAt,
+            lastErrorCode: null,
+            updatedAt: now,
+          })
+          .where(
+            and(
+              eq(integrations.id, existing.id),
+              ne(integrations.status, "disabled"),
+              isNull(integrations.setupOwnerInstanceId),
+            ),
+          )
+          .returning();
+      } else {
+        [row] = await this.#database
+          .insert(integrations)
+          .values({
+            agentId,
+            provider: "feishu",
+            status: "provisioning",
+            setupAttemptId: attemptId,
+            setupIntent: intent,
+            setupState: "awaiting_user",
+            setupOwnerInstanceId: this.#instanceId,
+            setupOwnerHeartbeatAt: now,
+            encryptedSetupContext: this.#cipher.encrypt(JSON.stringify({ qrUrl: qr.url } satisfies AttemptSecret)),
+            setupExpiresAt: qr.expiresAt,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+      }
     } catch (error) {
       void registration.result.catch(() => undefined);
       registration.abort();
-      const [concurrent] = await this.#database
-        .select()
-        .from(feishuSetupAttempts)
-        .where(
-          and(
-            eq(feishuSetupAttempts.agentId, agentId),
-            inArray(feishuSetupAttempts.state, ["awaiting_user", "validating"]),
-          ),
-        )
-        .limit(1);
-      if (concurrent) return this.#toAttempt(concurrent);
+      const concurrent = await this.#currentForAgent(agentId);
+      if (concurrent?.setupAttemptId && ["awaiting_user", "validating"].includes(concurrent.setupState ?? "")) {
+        return this.#toAttempt(concurrent);
+      }
       throw error;
     }
-    if (!created) throw new Error("Feishu setup attempt insert did not return a row");
-    this.#running.set(created.id, registration);
-    void this.#complete(created.id, agentId, registration);
-    return this.#toAttempt(created);
+    if (!row) {
+      void registration.result.catch(() => undefined);
+      registration.abort();
+      const concurrent = await this.#currentForAgent(agentId);
+      if (concurrent?.setupAttemptId && ["awaiting_user", "validating"].includes(concurrent.setupState ?? "")) {
+        return this.#toAttempt(concurrent);
+      }
+      throw new Error("Feishu setup slot admission did not converge");
+    }
+    this.#running.set(attemptId, registration);
+    void this.#complete(attemptId, agentId, registration).catch(() =>
+      this.#onDiagnostic("FEISHU_SETUP_COMPLETION_FAILED"),
+    );
+    return this.#toAttempt(row);
   }
 
   async get(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
-    const [attempt] = await this.#database
-      .select()
-      .from(feishuSetupAttempts)
-      .where(eq(feishuSetupAttempts.id, attemptId))
-      .limit(1);
-    if (!attempt) throw new Error("FEISHU_SETUP_NOT_FOUND");
-    await this.#integrations.assertCanManage(callerUserId, attempt.agentId);
-    let current = attempt;
+    const row = await this.#load(attemptId);
+    if (!row) throw new Error("FEISHU_SETUP_NOT_FOUND");
+    await this.#integrations.assertCanManage(callerUserId, row.agentId);
+    let current = row;
     if (
-      (["awaiting_user", "validating"].includes(attempt.state) &&
-        attempt.ownerInstanceId === this.#instanceId &&
-        !this.#running.has(attempt.id)) ||
-      (["awaiting_user", "validating"].includes(attempt.state) &&
-        attempt.ownerHeartbeatAt.getTime() < Date.now() - OWNER_STALE_MS)
+      current.setupState &&
+      ["awaiting_user", "validating"].includes(current.setupState) &&
+      ((current.setupOwnerInstanceId === this.#instanceId && !this.#running.has(attemptId)) ||
+        !current.setupOwnerHeartbeatAt ||
+        current.setupOwnerHeartbeatAt.getTime() < Date.now() - OWNER_STALE_MS)
     ) {
-      const [failed] = await this.#database
-        .update(feishuSetupAttempts)
-        .set({ state: "failed", errorCode: "FEISHU_SETUP_OWNER_RESTARTED", completedAt: new Date() })
-        .where(
-          and(
-            eq(feishuSetupAttempts.id, attempt.id),
-            eq(feishuSetupAttempts.ownerInstanceId, attempt.ownerInstanceId),
-            inArray(feishuSetupAttempts.state, ["awaiting_user", "validating"]),
-          ),
-        )
-        .returning();
-      if (failed) return this.#toAttempt(failed);
-      current = (await this.#load(attempt.id)) ?? attempt;
+      await this.#failOwnedSlot(current.id, attemptId, current.setupOwnerInstanceId, "FEISHU_SETUP_OWNER_RESTARTED");
+      current = (await this.#load(attemptId)) ?? current;
     }
-    if (current.state === "awaiting_user" && current.expiresAt <= new Date()) {
+    if (current.setupState === "awaiting_user" && current.setupExpiresAt && current.setupExpiresAt <= new Date()) {
       const [expired] = await this.#database
-        .update(feishuSetupAttempts)
-        .set({ state: "expired", errorCode: "FEISHU_SETUP_EXPIRED", completedAt: new Date() })
+        .update(integrations)
+        .set({
+          setupState: "expired",
+          lastErrorCode: "FEISHU_SETUP_EXPIRED",
+          setupOwnerInstanceId: null,
+          setupOwnerHeartbeatAt: null,
+          encryptedSetupContext: null,
+          setupExpiresAt: null,
+          updatedAt: new Date(),
+        })
         .where(
           and(
-            eq(feishuSetupAttempts.id, current.id),
-            eq(feishuSetupAttempts.ownerInstanceId, current.ownerInstanceId),
-            eq(feishuSetupAttempts.state, "awaiting_user"),
+            eq(integrations.id, current.id),
+            eq(integrations.setupAttemptId, attemptId),
+            eq(integrations.setupState, "awaiting_user"),
           ),
         )
         .returning();
-      if (expired) return this.#toAttempt(expired);
-      current = (await this.#load(attempt.id)) ?? current;
+      if (expired) current = expired;
     }
     return this.#toAttempt(current);
   }
 
   async cancel(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
     const attempt = await this.get(callerUserId, attemptId);
+    const now = new Date();
     const [canceled] = await this.#database
-      .update(feishuSetupAttempts)
-      .set({ state: "canceled", errorCode: "FEISHU_SETUP_CANCELED", completedAt: new Date() })
-      .where(and(eq(feishuSetupAttempts.id, attemptId), eq(feishuSetupAttempts.state, "awaiting_user")))
+      .update(integrations)
+      .set({
+        setupState: "canceled",
+        lastErrorCode: "FEISHU_SETUP_CANCELED",
+        setupOwnerInstanceId: null,
+        setupOwnerHeartbeatAt: null,
+        encryptedSetupContext: null,
+        setupExpiresAt: null,
+        updatedAt: now,
+      })
+      .where(and(eq(integrations.setupAttemptId, attemptId), eq(integrations.setupState, "awaiting_user")))
       .returning();
     if (canceled) this.#running.get(attemptId)?.abort();
     return canceled ? this.#toAttempt(canceled) : attempt;
@@ -247,42 +287,52 @@ export class FeishuSetupService {
     try {
       const result = await registration.result;
       const [claimed] = await this.#database
-        .update(feishuSetupAttempts)
-        .set({ state: "validating" })
+        .update(integrations)
+        .set({ setupState: "validating", updatedAt: new Date() })
         .where(
           and(
-            eq(feishuSetupAttempts.id, attemptId),
-            eq(feishuSetupAttempts.state, "awaiting_user"),
-            eq(feishuSetupAttempts.ownerInstanceId, this.#instanceId),
+            eq(integrations.setupAttemptId, attemptId),
+            eq(integrations.agentId, agentId),
+            eq(integrations.setupState, "awaiting_user"),
+            eq(integrations.setupOwnerInstanceId, this.#instanceId),
           ),
         )
-        .returning({ id: feishuSetupAttempts.id });
+        .returning({ id: integrations.id });
       if (!claimed) return;
-      const activationInput = {
+      await this.#activation.activateAtomicAttempt({
         attemptId,
         ownerInstanceId: this.#instanceId,
         agentId,
         appId: result.appId,
         appSecret: result.appSecret,
-        tenantBrand: result.tenantBrand,
+        teamBrand: result.teamBrand,
         requestedScopes: result.requestedScopes,
-      };
-      await this.#activation.activateAtomicAttempt(activationInput);
+      });
     } catch (error) {
       const code = errorCode(error);
-      await this.#database
-        .update(feishuSetupAttempts)
-        .set({
-          state: code === "FEISHU_SETUP_EXPIRED" ? "expired" : code === "FEISHU_SETUP_CANCELED" ? "canceled" : "failed",
-          errorCode: code,
-          completedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(feishuSetupAttempts.id, attemptId),
-            inArray(feishuSetupAttempts.state, ["awaiting_user", "validating"]),
-          ),
-        );
+      const state =
+        code === "FEISHU_SETUP_EXPIRED" ? "expired" : code === "FEISHU_SETUP_CANCELED" ? "canceled" : "failed";
+      try {
+        await this.#database
+          .update(integrations)
+          .set({
+            setupState: state,
+            lastErrorCode: code,
+            setupOwnerInstanceId: null,
+            setupOwnerHeartbeatAt: null,
+            encryptedSetupContext: null,
+            setupExpiresAt: null,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(integrations.setupAttemptId, attemptId),
+              inArray(integrations.setupState, ["awaiting_user", "validating"]),
+            ),
+          );
+      } catch {
+        this.#onDiagnostic("FEISHU_SETUP_FAILURE_STATE_WRITE_FAILED");
+      }
     } finally {
       this.#running.delete(attemptId);
     }
@@ -291,37 +341,78 @@ export class FeishuSetupService {
   async #heartbeat(): Promise<void> {
     if (this.#running.size === 0) return;
     await this.#database
-      .update(feishuSetupAttempts)
-      .set({ ownerHeartbeatAt: new Date() })
+      .update(integrations)
+      .set({ setupOwnerHeartbeatAt: new Date() })
       .where(
         and(
-          eq(feishuSetupAttempts.ownerInstanceId, this.#instanceId),
-          inArray(feishuSetupAttempts.state, ["awaiting_user", "validating"]),
+          eq(integrations.setupOwnerInstanceId, this.#instanceId),
+          inArray(integrations.setupState, ["awaiting_user", "validating"]),
         ),
       );
   }
 
-  async #load(attemptId: string): Promise<typeof feishuSetupAttempts.$inferSelect | undefined> {
-    const [attempt] = await this.#database
+  async #currentForAgent(agentId: string): Promise<typeof integrations.$inferSelect | undefined> {
+    const [row] = await this.#database
       .select()
-      .from(feishuSetupAttempts)
-      .where(eq(feishuSetupAttempts.id, attemptId))
+      .from(integrations)
+      .where(and(eq(integrations.agentId, agentId), ne(integrations.status, "disabled")))
       .limit(1);
-    return attempt;
+    return row;
   }
 
-  #toAttempt(row: typeof feishuSetupAttempts.$inferSelect): FeishuSetupAttempt {
-    const secret = JSON.parse(this.#cipher.decrypt(row.encryptedQrContext)) as AttemptSecret;
+  async #load(attemptId: string): Promise<typeof integrations.$inferSelect | undefined> {
+    const [row] = await this.#database
+      .select()
+      .from(integrations)
+      .where(eq(integrations.setupAttemptId, attemptId))
+      .limit(1);
+    return row;
+  }
+
+  async #failOwnedSlot(
+    integrationId: string,
+    attemptId: string,
+    ownerInstanceId: string | null,
+    code: string,
+  ): Promise<void> {
+    if (!ownerInstanceId) return;
+    await this.#database
+      .update(integrations)
+      .set({
+        setupState: "failed",
+        lastErrorCode: code,
+        setupOwnerInstanceId: null,
+        setupOwnerHeartbeatAt: null,
+        encryptedSetupContext: null,
+        setupExpiresAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(integrations.id, integrationId),
+          eq(integrations.setupAttemptId, attemptId),
+          eq(integrations.setupOwnerInstanceId, ownerInstanceId),
+          inArray(integrations.setupState, ["awaiting_user", "validating"]),
+        ),
+      );
+  }
+
+  #toAttempt(row: typeof integrations.$inferSelect): FeishuSetupAttempt {
+    if (!row.setupAttemptId || !row.setupIntent || !row.setupState) throw new Error("FEISHU_SETUP_NOT_FOUND");
+    const secret = row.encryptedSetupContext
+      ? (JSON.parse(this.#cipher.decrypt(row.encryptedSetupContext)) as AttemptSecret)
+      : undefined;
+    const terminal = !["awaiting_user", "validating"].includes(row.setupState);
     return {
-      id: row.id,
+      id: row.setupAttemptId,
       agentId: row.agentId,
-      intent: row.intent,
-      state: row.state,
-      qrUrl: ["awaiting_user", "validating"].includes(row.state) ? secret.qrUrl : null,
-      expiresAt: row.expiresAt.toISOString(),
-      errorCode: row.errorCode,
-      completedAt: row.completedAt?.toISOString() ?? null,
-      createdAt: row.createdAt.toISOString(),
+      intent: row.setupIntent,
+      state: row.setupState,
+      qrUrl: !terminal && secret ? secret.qrUrl : null,
+      expiresAt: (row.setupExpiresAt ?? row.updatedAt).toISOString(),
+      errorCode: row.lastErrorCode,
+      completedAt: terminal ? row.updatedAt.toISOString() : null,
+      createdAt: row.updatedAt.toISOString(),
     };
   }
 }

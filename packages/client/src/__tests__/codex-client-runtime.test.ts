@@ -56,7 +56,7 @@ describe("createCodexClientRuntime", () => {
     await expect(runtime.custody.accept(delivery(runtimeSnapshot))).resolves.toMatchObject({
       result: { status: "accepted" },
     });
-    expect(probe).toHaveBeenCalledOnce();
+    expect(probe).toHaveBeenCalledTimes(2);
     expect(probe.mock.calls[0]?.[1]).toMatchObject({ HOME: home, CODEX_HOME: await realpath(codexHome) });
     expect(JSON.stringify(probe.mock.calls[0]?.[1])).not.toContain("canary");
     expect(runtime.reconciler).toBeDefined();
@@ -101,6 +101,75 @@ describe("createCodexClientRuntime", () => {
     await expect(
       probeCodexRuntime(readinessCli, { ...environment, CODEX_FIXTURE_VERSION: "codex-cli 0.146.0" }),
     ).rejects.toThrow("Codex 0.147.0 or newer is required");
+  });
+
+  it("revokes and restores the current instance message-tool capability after fresh probes", async () => {
+    const home = await temporaryDirectory("opentag-readiness-refresh-home-");
+    const server = await runtimeServer();
+    cleanup.push(server.close);
+    const connection = runtimeConnection(server.url);
+    const observed: number[] = [];
+    let ready = true;
+    server.wss.on("connection", (socket) => {
+      socket.on("message", (data) => {
+        const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (frame.type === "auth") {
+          socket.send(
+            JSON.stringify({
+              type: "auth:result",
+              requestId: frame.requestId,
+              ok: true,
+              userId: randomUUID(),
+              tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+            }),
+          );
+          socket.send(
+            JSON.stringify({
+              type: "server:welcome",
+              protocolVersion: 1,
+              capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
+              heartbeatIntervalMs: 10,
+              heartbeatTimeoutMs: 100,
+            }),
+          );
+          return;
+        }
+        if (frame.type === "computer:register") {
+          observed.push((frame.capabilities as { imMessageTool: number }).imMessageTool);
+          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          return;
+        }
+        if (frame.type === "heartbeat") {
+          observed.push((frame.capabilities as { imMessageTool: number }).imMessageTool);
+          socket.send(
+            JSON.stringify({
+              type: "heartbeat:result",
+              requestId: frame.requestId,
+              ok: true,
+              serverTime: new Date().toISOString(),
+            }),
+          );
+        }
+      });
+    });
+    const runtime = await createCodexClientRuntime(connection, {
+      home,
+      clientVersion: "0.0.1",
+      codexCommand: process.execPath,
+      environment: { HOME: home, PATH: process.env.PATH },
+      capabilityRefreshIntervalMs: 10,
+      probe: async () => {
+        if (!ready) throw new Error("provider unavailable");
+      },
+    });
+    const running = runtime.run();
+    await vi.waitFor(() => expect(observed[0]).toBe(1));
+    ready = false;
+    await vi.waitFor(() => expect(observed).toContain(0));
+    ready = true;
+    await vi.waitFor(() => expect(observed.slice(observed.indexOf(0) + 1)).toContain(1));
+    runtime.stop();
+    await running;
   });
 
   it("replays durable reports after restart and rearms an uncertain manifest handoff", async () => {
@@ -149,7 +218,6 @@ describe("createCodexClientRuntime", () => {
       requestId: randomUUID(),
       deliveryId: "delivery-unresolved",
       imMessageId: "message-unresolved",
-      imMessageRevision: 1,
     };
     const unresolvedReport = seed.reportOwner.create({
       deliveryId: unresolvedInput.deliveryId,
@@ -260,13 +328,17 @@ describe("createCodexClientRuntime", () => {
     await vi.waitFor(() =>
       expect(retainedReports).toEqual([
         {
+          dispatchRequestId: unresolvedInput.requestId,
           deliveryId: unresolvedReport.deliveryId,
+          inputHash: computeDirectInputHash(unresolvedInput),
           turnId: unresolvedReport.turnId,
           placementGeneration: unresolvedReport.placementGeneration,
           resultHash: unresolvedReport.resultHash,
         },
         {
+          dispatchRequestId: recordedInput.requestId,
           deliveryId: recordedReport.deliveryId,
+          inputHash: computeDirectInputHash(recordedInput),
           turnId: recordedReport.turnId,
           placementGeneration: recordedReport.placementGeneration,
           resultHash: recordedReport.resultHash,
@@ -353,7 +425,6 @@ function delivery(runtime: EffectiveRuntimeSnapshot): DirectImMessageDeliveryReq
     requestId: randomUUID(),
     deliveryId: "delivery-1",
     imMessageId: "message-1",
-    imMessageRevision: 1,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

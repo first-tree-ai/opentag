@@ -193,6 +193,7 @@ export {
   HeartbeatFrameSchema,
   type HeartbeatResultFrame,
   HeartbeatResultFrameSchema,
+  RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_HEARTBEAT_INTERVAL_MAX_MS,
   RUNTIME_HEARTBEAT_INTERVAL_MIN_MS,
   RUNTIME_HEARTBEAT_TIMEOUT_MAX_MS,

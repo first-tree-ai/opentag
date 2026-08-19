@@ -4,6 +4,7 @@ import {
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_VERSION,
   RUNTIME_V0_CAPABILITIES,
+  type RuntimeClientCapabilities,
   type RuntimeErrorFrame,
   RuntimeFrameEnvelopeSchema,
   runtimeFrameByteLength,
@@ -182,7 +183,12 @@ export class RuntimeSession {
         return;
       }
       this.#heartbeatInFlight = true;
-      void this.#heartbeat(parsed.data.requestId, parsed.data.computerId, parsed.data.instanceId).finally(() => {
+      void this.#heartbeat(
+        parsed.data.requestId,
+        parsed.data.computerId,
+        parsed.data.instanceId,
+        parsed.data.capabilities,
+      ).finally(() => {
         this.#heartbeatInFlight = false;
       });
       return;
@@ -240,6 +246,7 @@ export class RuntimeSession {
       await this.#registry.register(
         {
           capabilities: frame.capabilities,
+          capabilitiesUpdatedAt: this.#options.now().getTime(),
           computerId: frame.computerId,
           instanceId: frame.instanceId,
           lastHeartbeatAt: this.#options.now().getTime(),
@@ -264,13 +271,18 @@ export class RuntimeSession {
     }
   }
 
-  async #heartbeat(requestId: string, computerId: string, instanceId: string): Promise<void> {
+  async #heartbeat(
+    requestId: string,
+    computerId: string,
+    instanceId: string,
+    capabilities: RuntimeClientCapabilities,
+  ): Promise<void> {
     try {
       if (!this.#userId || computerId !== this.#computerId || instanceId !== this.#instanceId) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance is not registered", 4409, requestId);
         return;
       }
-      if (!this.#registry.touch(computerId, instanceId, this.#socket, this.#options.now().getTime())) {
+      if (!this.#registry.touch(computerId, instanceId, this.#socket, this.#options.now().getTime(), capabilities)) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, requestId);
         return;
       }

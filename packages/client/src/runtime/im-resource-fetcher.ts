@@ -32,21 +32,22 @@ export class ImResourceFetcher {
     if (resources.length === 0) return undefined;
     const lines: string[] = ["OpenTag IM resources (managed, user-supplied content):"];
     for (const resource of resources) {
+      const resourceLabel = `${resource.imMessageId}:${resource.ordinal}`;
       if (resource.availability !== "available") {
-        lines.push(`- ${resource.resourceId}: unavailable (${resource.availability})`);
+        lines.push(`- ${resourceLabel}: unavailable (${resource.availability})`);
         continue;
       }
       if (!this.#api || !this.#tokens) {
-        lines.push(`- ${resource.resourceId}: unavailable (runtime resource client is not configured)`);
+        lines.push(`- ${resourceLabel}: unavailable (runtime resource client is not configured)`);
         continue;
       }
-      const filename = safeFilename(resource.filename ?? `${resource.resourceId}.${resource.kind}`);
+      const filename = safeFilename(resource.filename ?? `${resource.ordinal}.${resource.kind}`);
       const directory = resolve(workspace, ".opentag", "im-resources");
-      const target = join(directory, `${resource.resourceId}-${filename}`);
+      const target = join(directory, `${resource.imMessageId}-${resource.ordinal}-${filename}`);
       try {
         await mkdir(directory, { recursive: true, mode: 0o700 });
         const lease = await this.#tokens.getAccessTokenLease();
-        const response = await this.#api.openImResource(lease.accessToken, resource.resourceId, {
+        const response = await this.#api.openImResource(lease.accessToken, resource.imMessageId, resource.ordinal, {
           sessionId: request.sessionId,
           computerId: this.#computerId,
           instanceId: this.#instanceId,
@@ -65,10 +66,10 @@ export class ImResourceFetcher {
           limiter,
           createWriteStream(target, { flags: "wx", mode: 0o600 }),
         );
-        lines.push(`- ${resource.resourceId}: ${target}`);
+        lines.push(`- ${resourceLabel}: ${target}`);
       } catch {
         await rm(target, { force: true }).catch(() => undefined);
-        lines.push(`- ${resource.resourceId}: unavailable (download failed)`);
+        lines.push(`- ${resourceLabel}: unavailable (download failed)`);
       }
     }
     return lines.join("\n");

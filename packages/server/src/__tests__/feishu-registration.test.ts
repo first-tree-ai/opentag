@@ -44,7 +44,7 @@ describe("Feishu registration", () => {
     await expect(registration.result).resolves.toEqual({
       appId: "cli_new",
       appSecret: "secret",
-      tenantBrand: "feishu",
+      teamBrand: "feishu",
       requestedScopes: feishuMessageScopes("all_message"),
     });
     const options = register.mock.calls[0]?.[0] as RegistrationOptions;

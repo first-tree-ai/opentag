@@ -6,7 +6,9 @@ import type { UserAuthService } from "../services/auth/index.js";
 import type { ImResourceService } from "../services/im/index.js";
 import { parseRequest } from "./request-validation.js";
 
-const ParamsSchema = z.object({ resourceId: z.string().uuid() }).strict();
+const ParamsSchema = z
+  .object({ imMessageId: z.string().uuid(), ordinal: z.coerce.number().int().min(0).max(15) })
+  .strict();
 const QuerySchema = z
   .object({
     sessionId: z.string().uuid(),
@@ -34,9 +36,9 @@ export function registerImResourceRoute(
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
   app.get(RUNTIME_IM_RESOURCE_TEMPLATE, { preHandler }, async (request, reply) => {
-    const { resourceId } = parseRequest(ParamsSchema, request.params);
+    const { imMessageId, ordinal } = parseRequest(ParamsSchema, request.params);
     const scope = parseRequest(QuerySchema, request.query);
-    const resource = await resources.open(userId(request), scope, resourceId);
+    const resource = await resources.open(userId(request), scope, imMessageId, ordinal);
     reply.header("content-type", safeMediaType(resource.mediaType));
     if (resource.sizeBytes !== undefined) reply.header("content-length", String(resource.sizeBytes));
     if (resource.filename) {

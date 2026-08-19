@@ -28,6 +28,7 @@ describe("RuntimeToolHost", () => {
       },
     });
     const delivery = request();
+    const requestId = randomUUID();
     await expect(
       host.execute(delivery, {
         threadId: "thread-1",
@@ -36,6 +37,7 @@ describe("RuntimeToolHost", () => {
         namespace: null,
         tool: "opentag_message_reply",
         arguments: {
+          requestId,
           text: "reply",
           replyToImMessageId: delivery.imMessageId,
           sessionId: randomUUID(),
@@ -49,6 +51,7 @@ describe("RuntimeToolHost", () => {
     expect(send).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "im:tool",
+        requestId,
         sessionId: delivery.sessionId,
         agentId: delivery.agentId,
         placementGeneration: delivery.placementGeneration,
@@ -57,6 +60,52 @@ describe("RuntimeToolHost", () => {
       }),
       expect.objectContaining({ priority: "result" }),
     );
+    host.close();
+  });
+
+  it("shares one pending owner for the same request intent and rejects conflicting reuse before send", async () => {
+    let listener: ((frame: RuntimeBusinessFrame) => void | Promise<void>) | undefined;
+    const send = vi.fn(async () => undefined);
+    const host = new RuntimeToolHost({
+      send,
+      subscribeBusinessFrames: (next) => {
+        listener = next;
+        return () => {
+          listener = undefined;
+        };
+      },
+    });
+    const delivery = request();
+    const requestId = randomUUID();
+    const call = (text: string, callId: string) => ({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      callId,
+      namespace: null,
+      tool: "opentag_message_send",
+      arguments: { requestId, text },
+    });
+    const first = host.execute(delivery, call("hello", "call-1"));
+    const same = host.execute(delivery, call("hello", "call-2"));
+    await expect.poll(() => send.mock.calls.length).toBe(1);
+    await listener?.({ type: "im:tool:result", requestId, state: "unknown", code: "provider_unknown" });
+    await expect(first).resolves.toMatchObject({ success: false });
+    await expect(same).resolves.toEqual(await first);
+
+    const conflictingId = randomUUID();
+    const pending = host.execute(delivery, {
+      ...call("one", "call-3"),
+      arguments: { requestId: conflictingId, text: "one" },
+    });
+    await expect(
+      host.execute(delivery, {
+        ...call("two", "call-4"),
+        arguments: { requestId: conflictingId, text: "two" },
+      }),
+    ).rejects.toThrow("request ID conflicts");
+    expect(send).toHaveBeenCalledTimes(2);
+    await listener?.({ type: "im:tool:result", requestId: conflictingId, state: "succeeded" });
+    await expect(pending).resolves.toMatchObject({ success: true });
     host.close();
   });
 });
@@ -68,7 +117,6 @@ function request(): DirectImMessageDeliveryRequest {
     requestId: randomUUID(),
     deliveryId: randomUUID(),
     imMessageId: randomUUID(),
-    imMessageRevision: 1,
     sessionId: randomUUID(),
     agentId,
     placementGeneration: 1,

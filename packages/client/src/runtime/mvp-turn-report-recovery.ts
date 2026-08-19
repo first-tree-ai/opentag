@@ -19,6 +19,11 @@ export interface MvpTurnReportRecoveryOptions {
 
 type RetainedReportReference = NonNullable<SessionReconcileResult["retainedReports"]>[number];
 
+interface RetainedReport {
+  reference: RetainedReportReference;
+  report: TurnReportRequest;
+}
+
 interface PreparedBatch {
   agentId: string;
   pendingSends: number;
@@ -76,7 +81,7 @@ export class MvpTurnReportRecovery {
         throw new Error("The MVP Turn Report prepared batch limit was reached");
       }
       const existing = this.#prepared.get(request.requestId);
-      const references = reports.map(reportReference);
+      const references = reports.map((report) => report.reference);
       this.#prepared.set(request.requestId, {
         agentId: request.agentId,
         pendingSends: (existing?.pendingSends ?? 0) + 1,
@@ -156,12 +161,13 @@ export class MvpTurnReportRecovery {
         const reference = queue.references[0];
         if (!reference) break;
         const binding = await this.#bindingStore.read(queue.agentId, sessionId);
-        const report = retainedReports(binding).find((candidate) => reportMatchesReference(candidate, reference));
-        if (!report) {
+        const retained = retainedReports(binding).find((candidate) => reportMatchesReference(candidate, reference));
+        if (!retained) {
           queue.references.shift();
           queue.keys.delete(reportKey(reference));
           continue;
         }
+        const report = retained.report;
         this.#reportOwner.rearmTerminal(report);
         let reportTerminal: (() => void) | undefined;
         const terminal = new Promise<"terminal">((resolve) => {
@@ -193,15 +199,29 @@ export class MvpTurnReportRecovery {
   }
 }
 
-function retainedReports(binding: Awaited<ReturnType<SessionBindingStore["read"]>>): TurnReportRequest[] {
+function retainedReports(binding: Awaited<ReturnType<SessionBindingStore["read"]>>): RetainedReport[] {
   if (!binding) return [];
-  const reports: TurnReportRequest[] = [];
+  const reports: RetainedReport[] = [];
   if (binding.unresolvedTurn?.phase === "reporting" && binding.unresolvedTurn.report) {
-    reports.push(binding.unresolvedTurn.report);
+    reports.push({
+      report: binding.unresolvedTurn.report,
+      reference: reportReference(
+        binding.unresolvedTurn.report,
+        binding.unresolvedTurn.requestId,
+        binding.unresolvedTurn.inputHash,
+      ),
+    });
   }
   for (const recorded of binding.recentRecordedInputs) {
-    if (recorded.report && !reports.some((report) => report.turnId === recorded.report?.turnId)) {
-      reports.push(recorded.report);
+    if (
+      recorded.report &&
+      recorded.requestId &&
+      !reports.some((candidate) => candidate.report.turnId === recorded.report?.turnId)
+    ) {
+      reports.push({
+        report: recorded.report,
+        reference: reportReference(recorded.report, recorded.requestId, recorded.inputHash),
+      });
     }
   }
   return reports;
@@ -211,20 +231,28 @@ function reportKey(report: Pick<TurnReportRequest, "resultHash" | "turnId">): st
   return `${report.turnId}:${report.resultHash}`;
 }
 
-function reportReference(report: TurnReportRequest): RetainedReportReference {
+function reportReference(
+  report: TurnReportRequest,
+  dispatchRequestId: string,
+  inputHash: string,
+): RetainedReportReference {
   return {
+    dispatchRequestId,
     deliveryId: report.deliveryId,
+    inputHash,
     turnId: report.turnId,
     placementGeneration: report.placementGeneration,
     resultHash: report.resultHash,
   };
 }
 
-function reportMatchesReference(report: TurnReportRequest, reference: RetainedReportReference): boolean {
+function reportMatchesReference(report: RetainedReport, reference: RetainedReportReference): boolean {
   return (
-    report.deliveryId === reference.deliveryId &&
-    report.turnId === reference.turnId &&
-    report.placementGeneration === reference.placementGeneration &&
-    report.resultHash === reference.resultHash
+    report.reference.dispatchRequestId === reference.dispatchRequestId &&
+    report.reference.deliveryId === reference.deliveryId &&
+    report.reference.inputHash === reference.inputHash &&
+    report.reference.turnId === reference.turnId &&
+    report.reference.placementGeneration === reference.placementGeneration &&
+    report.reference.resultHash === reference.resultHash
   );
 }

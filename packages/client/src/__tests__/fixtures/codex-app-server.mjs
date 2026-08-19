@@ -64,7 +64,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         callId: "call-1",
         namespace: null,
         tool: "opentag_message_send",
-        arguments: { text: "hello" },
+        arguments: { requestId: "11111111-1111-4111-8111-111111111111", text: "hello" },
       },
     });
     return;

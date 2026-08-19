@@ -15,6 +15,7 @@ export const RUNTIME_HEARTBEAT_INTERVAL_MIN_MS = 10;
 export const RUNTIME_HEARTBEAT_INTERVAL_MAX_MS = 5 * 60 * 1_000;
 export const RUNTIME_HEARTBEAT_TIMEOUT_MIN_MS = 100;
 export const RUNTIME_HEARTBEAT_TIMEOUT_MAX_MS = 15 * 60 * 1_000;
+export const RUNTIME_CLIENT_CAPABILITY_TTL_MS = 60_000;
 export const RuntimeRequestIdSchema = z.string().uuid();
 
 export const RuntimeFrameEnvelopeSchema = z
@@ -130,6 +131,7 @@ export const HeartbeatFrameSchema = z
     requestId: RuntimeRequestIdSchema,
     computerId: z.string().uuid(),
     instanceId: z.string().uuid(),
+    capabilities: RuntimeClientCapabilitiesSchema.default({ imMessageTool: 0 }),
   })
   .strict();
 export const HeartbeatResultFrameSchema = z

@@ -80,12 +80,20 @@ interface CompletedRequest {
   result: SessionReconcileResult | ImMessageDeliveryResult;
 }
 
+interface StartingDelivery {
+  computerId: string;
+  hash: string;
+  instanceId: string;
+  promise: Promise<ImMessageDeliveryResult>;
+}
+
 export class RuntimeDomainOwner {
   readonly #registry: ConnectionRegistry;
   readonly #custody: RuntimeCustodyStore;
   readonly #options: Required<Pick<RuntimeDomainOwnerOptions, "maxPendingRequests" | "requestTimeoutMs">> &
     Pick<RuntimeDomainOwnerOptions, "onImToolRequest" | "onTrace">;
   readonly #pending = new Map<string, PendingRequest>();
+  readonly #startingDeliveries = new Map<string, StartingDelivery>();
   readonly #expiredDeliveries = new Map<string, ExpiredDelivery>();
   readonly #completed = new Map<string, CompletedRequest>();
 
@@ -120,6 +128,7 @@ export class RuntimeDomainOwner {
       pending.reject(new RuntimeDomainRequestError("The runtime domain owner stopped"));
     }
     this.#pending.clear();
+    this.#startingDeliveries.clear();
     this.#expiredDeliveries.clear();
     this.#completed.clear();
   }
@@ -144,12 +153,62 @@ export class RuntimeDomainOwner {
     request: DirectImMessageDeliveryRequest,
   ): Promise<ImMessageDeliveryResult> {
     const inputHash = computeDirectInputHash(request);
+    const requestHash = hashTuple([request.deliveryId, inputHash]);
+    const starting = this.#startingDeliveries.get(request.requestId);
+    if (starting) {
+      if (starting.hash !== requestHash || starting.computerId !== computerId || starting.instanceId !== instanceId) {
+        throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
+      }
+      return starting.promise;
+    }
+    if (
+      this.#pending.has(request.requestId) ||
+      this.#completed.has(request.requestId) ||
+      this.#expiredDeliveries.has(request.requestId)
+    ) {
+      return this.#request(
+        "delivery",
+        computerId,
+        instanceId,
+        request,
+        requestHash,
+        inputHash,
+      ) as Promise<ImMessageDeliveryResult>;
+    }
+    const promise = this.#startDelivery(computerId, instanceId, request, requestHash, inputHash);
+    const owner = { computerId, hash: requestHash, instanceId, promise };
+    this.#startingDeliveries.set(request.requestId, owner);
+    void promise.then(
+      () => {
+        if (this.#startingDeliveries.get(request.requestId) === owner)
+          this.#startingDeliveries.delete(request.requestId);
+      },
+      () => {
+        if (this.#startingDeliveries.get(request.requestId) === owner)
+          this.#startingDeliveries.delete(request.requestId);
+      },
+    );
+    return promise;
+  }
+
+  async #startDelivery(
+    computerId: string,
+    instanceId: string,
+    request: DirectImMessageDeliveryRequest,
+    requestHash: string,
+    inputHash: string,
+  ): Promise<ImMessageDeliveryResult> {
+    const dispatch = await this.#custody.beginDeliveryDispatch(request, inputHash, { computerId, instanceId });
+    if (dispatch === "conflict") throw new RuntimeDomainConflictError("The delivery dispatch conflicts");
+    if (dispatch === "stale_generation") {
+      throw new RuntimeDomainRequestError("The delivery dispatch placement is stale");
+    }
     return this.#request(
       "delivery",
       computerId,
       instanceId,
       request,
-      hashTuple([request.deliveryId, inputHash]),
+      requestHash,
       inputHash,
     ) as Promise<ImMessageDeliveryResult>;
   }

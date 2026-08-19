@@ -5,7 +5,12 @@ import { access, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { computeRuntimeSnapshotHashes, type InputRejectReason, OPENTAG_MESSAGE_TOOLS } from "@opentag/shared";
+import {
+  computeRuntimeSnapshotHashes,
+  type InputRejectReason,
+  OPENTAG_MESSAGE_TOOLS,
+  RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+} from "@opentag/shared";
 import type { OpenTagApi } from "../api.js";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
 import {
@@ -30,6 +35,7 @@ import { TurnCustodyOwner } from "./turn-custody-owner.js";
 import { TurnReportOwner } from "./turn-report-owner.js";
 
 const execFileAsync = promisify(execFile);
+const DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS = Math.floor(RUNTIME_CLIENT_CAPABILITY_TTL_MS / 2);
 
 export interface CreateCodexClientRuntimeOptions {
   adapter?: CodexAdapter;
@@ -41,6 +47,7 @@ export interface CreateCodexClientRuntimeOptions {
   log?: (message: string) => void;
   probe?: (command: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal) => Promise<void>;
   signal?: AbortSignal;
+  capabilityRefreshIntervalMs?: number;
   api?: Pick<OpenTagApi, "openImResource">;
   tokenProvider?: Pick<AccessTokenProvider, "getAccessTokenLease">;
 }
@@ -55,6 +62,10 @@ export class CodexClientRuntime {
   readonly toolHost: RuntimeToolHost;
   readonly messageToolAvailable: boolean;
   readonly #runtime: ClientRuntime;
+  readonly #refreshCapability: () => Promise<void>;
+  readonly #capabilityRefreshIntervalMs: number;
+  #capabilityTimer?: ReturnType<typeof setInterval>;
+  #capabilityRefreshInFlight = false;
 
   constructor(
     runtime: ClientRuntime,
@@ -67,6 +78,8 @@ export class CodexClientRuntime {
       workspace: AgentWorkspaceManager;
       toolHost: RuntimeToolHost;
       messageToolAvailable: boolean;
+      refreshCapability: () => Promise<void>;
+      capabilityRefreshIntervalMs: number;
     },
   ) {
     this.#runtime = runtime;
@@ -78,12 +91,16 @@ export class CodexClientRuntime {
     this.workspace = components.workspace;
     this.toolHost = components.toolHost;
     this.messageToolAvailable = components.messageToolAvailable;
+    this.#refreshCapability = components.refreshCapability;
+    this.#capabilityRefreshIntervalMs = components.capabilityRefreshIntervalMs;
   }
 
   async run(): Promise<void> {
+    this.#startCapabilityMonitor();
     try {
       await this.#runtime.run();
     } finally {
+      this.#stopCapabilityMonitor();
       this.runner.stop();
       await this.runner.settled();
       this.reportOwner.stop();
@@ -92,9 +109,28 @@ export class CodexClientRuntime {
   }
 
   stop(): void {
+    this.#stopCapabilityMonitor();
     this.runner.stop();
     this.toolHost.close();
     this.#runtime.stop();
+  }
+
+  #startCapabilityMonitor(): void {
+    if (this.#capabilityTimer) return;
+    this.#capabilityTimer = setInterval(() => {
+      if (this.#capabilityRefreshInFlight) return;
+      this.#capabilityRefreshInFlight = true;
+      void this.#refreshCapability().finally(() => {
+        this.#capabilityRefreshInFlight = false;
+      });
+    }, this.#capabilityRefreshIntervalMs);
+    this.#capabilityTimer.unref();
+  }
+
+  #stopCapabilityMonitor(): void {
+    if (!this.#capabilityTimer) return;
+    clearInterval(this.#capabilityTimer);
+    this.#capabilityTimer = undefined;
   }
 }
 
@@ -124,6 +160,12 @@ export async function createCodexClientRuntime(
     signal: options.signal,
     sourceEnvironment,
   });
+  const refreshCapability = async (): Promise<void> => {
+    const available = await ensureProviderReady()
+      .then(() => true)
+      .catch(() => false);
+    connection.setVerifiedCapabilities({ imMessageTool: available ? 1 : 0 });
+  };
   const messageToolAvailable = await ensureProviderReady()
     .then(() => true)
     .catch(() => false);
@@ -206,6 +248,11 @@ export async function createCodexClientRuntime(
     runner,
     toolHost,
     messageToolAvailable,
+    refreshCapability,
+    capabilityRefreshIntervalMs: Math.max(
+      10,
+      options.capabilityRefreshIntervalMs ?? DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS,
+    ),
     workspace,
   });
 }
@@ -220,12 +267,8 @@ interface ProviderReadinessOptions {
 }
 
 function providerReadiness(options: ProviderReadinessOptions): () => Promise<string> {
-  let readyCommand: string | undefined;
   let pending: Promise<string> | undefined;
-  let failure: Error | undefined;
   return async () => {
-    if (readyCommand) return readyCommand;
-    if (failure) throw failure;
     if (!pending) {
       pending = (async () => {
         options.signal?.throwIfAborted();
@@ -234,16 +277,10 @@ function providerReadiness(options: ProviderReadinessOptions): () => Promise<str
         await options.probe(command, options.environment, options.signal);
         options.signal?.throwIfAborted();
         options.process.command = command;
-        readyCommand = command;
         return command;
-      })()
-        .catch((error: unknown) => {
-          failure = error instanceof Error ? error : new Error("Codex readiness failed");
-          throw failure;
-        })
-        .finally(() => {
-          pending = undefined;
-        });
+      })().finally(() => {
+        pending = undefined;
+      });
     }
     return pending;
   };

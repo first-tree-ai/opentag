@@ -415,21 +415,30 @@ export class RuntimeDomainOwner {
       turnId: report.turnId,
       resultHash: report.resultHash,
     };
+    const recovered = this.#recoveredTurns.get(report.turnId);
+    const currentRecovered =
+      recovered && this.#matchesContext(recovered, context) && recoveredClaimMatchesReport(recovered, report)
+        ? recovered
+        : undefined;
     const recorded = this.#turns.get(report.turnId);
     if (recorded) {
-      const sameOwner =
+      const sameTurn =
         recorded.computerId === context.computerId &&
-        recorded.instanceId === context.instanceId &&
         recorded.report.deliveryId === report.deliveryId &&
         recorded.report.sessionId === report.sessionId &&
         recorded.report.agentId === report.agentId &&
-        recorded.report.placementGeneration === report.placementGeneration;
-      if (!sameOwner) return { ...base, status: "conflict" };
-      return { ...base, status: recorded.resultHash === report.resultHash ? "already_recorded" : "conflict" };
+        recorded.report.placementGeneration === report.placementGeneration &&
+        recorded.resultHash === report.resultHash;
+      if (!sameTurn) return { ...base, status: "conflict" };
+      if (recorded.instanceId !== context.instanceId) {
+        if (!currentRecovered) return { ...base, status: "conflict" };
+        this.#turns.set(report.turnId, { ...recorded, instanceId: context.instanceId });
+      }
+      if (currentRecovered) this.#recoveredTurns.delete(report.turnId);
+      return { ...base, status: "already_recorded" };
     }
 
     let delivery = this.#deliveries.get(report.deliveryId);
-    const recovered = this.#recoveredTurns.get(report.turnId);
     const attempt = this.#matchingDeliveryAttempt(report, context);
     if (!delivery && !recovered && attempt) {
       this.#completeDelivery(
@@ -446,7 +455,7 @@ export class RuntimeDomainOwner {
       );
       delivery = this.#deliveries.get(report.deliveryId);
     }
-    const owner = delivery ?? recovered;
+    const owner = currentRecovered ?? delivery ?? recovered;
     if (!owner) {
       const reconciled = this.#reconciledSessions.get(report.sessionId);
       if (!reconciled || !this.#matchesContext(reconciled, context)) return undefined;
@@ -514,7 +523,13 @@ export class RuntimeDomainOwner {
       sessionId: pending.request.sessionId,
       turnId: retained.turnId,
     };
-    if (current && !sameRecoveredTurn(current, claim)) return;
+    const delivery =
+      this.#deliveries.get(claim.deliveryId) ??
+      [...this.#deliveries.values()].find((candidate) => candidate.turnId === claim.turnId);
+    if (delivery && !deliveryMatchesRecoveredClaim(delivery, claim)) return;
+    const recorded = this.#turns.get(claim.turnId);
+    if (recorded && !recordedTurnMatchesRecoveredClaim(recorded, claim)) return;
+    if (current && !sameRecoveredTurnIdentity(current, claim)) return;
     this.#recoveredTurns.set(retained.turnId, claim);
     const limit = this.#options.maxPendingRequests * RUNTIME_MVP_RETAINED_REPORT_LIMIT;
     while (this.#recoveredTurns.size > limit) {
@@ -595,15 +610,48 @@ function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   return `turn:${frame.turnId}`;
 }
 
-function sameRecoveredTurn(left: RecoveredTurnClaim, right: RecoveredTurnClaim): boolean {
+function sameRecoveredTurnIdentity(left: RecoveredTurnClaim, right: RecoveredTurnClaim): boolean {
   return (
     left.agentId === right.agentId &&
     left.computerId === right.computerId &&
     left.deliveryId === right.deliveryId &&
-    left.instanceId === right.instanceId &&
     left.placementGeneration === right.placementGeneration &&
     left.resultHash === right.resultHash &&
     left.sessionId === right.sessionId &&
     left.turnId === right.turnId
+  );
+}
+
+function recoveredClaimMatchesReport(claim: RecoveredTurnClaim, report: TurnReportRequest): boolean {
+  return (
+    claim.agentId === report.agentId &&
+    claim.deliveryId === report.deliveryId &&
+    claim.placementGeneration === report.placementGeneration &&
+    claim.resultHash === report.resultHash &&
+    claim.sessionId === report.sessionId &&
+    claim.turnId === report.turnId
+  );
+}
+
+function deliveryMatchesRecoveredClaim(delivery: AcceptedDeliveryRecord, claim: RecoveredTurnClaim): boolean {
+  return (
+    delivery.agentId === claim.agentId &&
+    delivery.computerId === claim.computerId &&
+    delivery.deliveryId === claim.deliveryId &&
+    delivery.placementGeneration === claim.placementGeneration &&
+    delivery.sessionId === claim.sessionId &&
+    delivery.turnId === claim.turnId
+  );
+}
+
+function recordedTurnMatchesRecoveredClaim(recorded: RecordedTurnRecord, claim: RecoveredTurnClaim): boolean {
+  return (
+    recorded.computerId === claim.computerId &&
+    recorded.report.agentId === claim.agentId &&
+    recorded.report.deliveryId === claim.deliveryId &&
+    recorded.report.placementGeneration === claim.placementGeneration &&
+    recorded.report.sessionId === claim.sessionId &&
+    recorded.report.turnId === claim.turnId &&
+    recorded.resultHash === claim.resultHash
   );
 }

@@ -253,6 +253,67 @@ describe("RuntimeDomainOwner", () => {
     expect(fixture.owner.getTurn(report.turnId)).toBeUndefined();
     await expect(fixture.owner.handle(report, fixture.context)).resolves.toMatchObject({ status: "recorded" });
   });
+
+  it("transfers an exact recorded Turn claim to a replacement daemon", async () => {
+    const fixture = await ownerFixture();
+    const deliveryRequestFrame = deliveryRequest();
+    const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, deliveryRequestFrame);
+    await fixture.owner.handle(acceptedResult(deliveryRequestFrame), fixture.context);
+    await delivery;
+    const report = turnReport();
+    await expect(fixture.owner.handle(report, fixture.context)).resolves.toMatchObject({ status: "recorded" });
+
+    const replacement = await replaceRuntimeInstance(fixture);
+    await establishRetainedClaim(fixture, replacement.instanceId, replacement.context, report);
+    await expect(
+      fixture.owner.handle({ ...report, requestId: randomUUID() }, replacement.context),
+    ).resolves.toMatchObject({ status: "already_recorded" });
+    expect(fixture.owner.getTurn(report.turnId)?.instanceId).toBe(replacement.instanceId);
+
+    const conflictingBody = { ...report, finalText: "replacement tried a different result" };
+    const conflicting = {
+      ...conflictingBody,
+      requestId: randomUUID(),
+      resultHash: computeTurnResultHash(conflictingBody),
+    };
+    await expect(fixture.owner.handle(conflicting, replacement.context)).resolves.toMatchObject({
+      status: "conflict",
+    });
+  });
+
+  it("prefers an exact replacement claim over a surviving old-instance delivery", async () => {
+    const fixture = await ownerFixture();
+    const deliveryRequestFrame = deliveryRequest();
+    const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, deliveryRequestFrame);
+    await fixture.owner.handle(acceptedResult(deliveryRequestFrame), fixture.context);
+    await delivery;
+
+    const report = turnReport();
+    const replacement = await replaceRuntimeInstance(fixture);
+    const forgedBody = { ...report, turnId: "turn-forged" };
+    const forged = {
+      ...forgedBody,
+      requestId: randomUUID(),
+      resultHash: computeTurnResultHash(forgedBody),
+    };
+    await establishRetainedClaim(fixture, replacement.instanceId, replacement.context, forged);
+    await expect(fixture.owner.handle(forged, replacement.context)).resolves.toMatchObject({ status: "conflict" });
+
+    await establishRetainedClaim(fixture, replacement.instanceId, replacement.context, report);
+    await expect(fixture.owner.handle(report, replacement.context)).resolves.toMatchObject({ status: "recorded" });
+    expect(fixture.owner.getTurn(report.turnId)?.instanceId).toBe(replacement.instanceId);
+  });
+
+  it("moves an identical recovered claim from the old daemon to its replacement", async () => {
+    const fixture = await ownerFixture();
+    const report = turnReport();
+    await establishRetainedClaim(fixture, fixture.instanceId, fixture.context, report);
+
+    const replacement = await replaceRuntimeInstance(fixture);
+    await establishRetainedClaim(fixture, replacement.instanceId, replacement.context, report);
+    await expect(fixture.owner.handle(report, replacement.context)).resolves.toMatchObject({ status: "recorded" });
+    expect(fixture.owner.getTurn(report.turnId)?.instanceId).toBe(replacement.instanceId);
+  });
 });
 
 async function ownerFixture(requestTimeoutMs = 1_000) {
@@ -279,6 +340,59 @@ async function ownerFixture(requestTimeoutMs = 1_000) {
     userId,
   };
   return { computerId, context, frames, instanceId, owner, registry };
+}
+
+async function replaceRuntimeInstance(fixture: Awaited<ReturnType<typeof ownerFixture>>) {
+  const instanceId = randomUUID();
+  const frames: unknown[] = [];
+  await fixture.registry.register(
+    {
+      computerId: fixture.computerId,
+      instanceId,
+      lastHeartbeatAt: 2,
+      socket: socketFixture(frames),
+      userId: fixture.context.userId,
+    },
+    async () => undefined,
+  );
+  return {
+    context: { ...fixture.context, instanceId },
+    frames,
+    instanceId,
+  };
+}
+
+async function establishRetainedClaim(
+  fixture: Awaited<ReturnType<typeof ownerFixture>>,
+  instanceId: string,
+  context: RuntimeBusinessContext,
+  report: TurnReportRequest,
+): Promise<void> {
+  const request = reconcileRequest(fixture.computerId);
+  const pending = fixture.owner.requestReconcile(fixture.computerId, instanceId, request);
+  await fixture.owner.handle(
+    {
+      type: "session:reconcile:result",
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      status: "recovery_required",
+      reason: "unresolved_turn",
+      turn: { deliveryId: report.deliveryId, turnId: report.turnId },
+      retainedReports: [retainedClaim(report)],
+    },
+    context,
+  );
+  await pending;
+}
+
+function retainedClaim(report: TurnReportRequest) {
+  return {
+    deliveryId: report.deliveryId,
+    turnId: report.turnId,
+    placementGeneration: report.placementGeneration,
+    resultHash: report.resultHash,
+  };
 }
 
 function socketFixture(frames: unknown[]): WebSocket {

@@ -11,20 +11,26 @@ import type { TurnReportOwner } from "./turn-report-owner.js";
 export interface MvpTurnReportRecoveryOptions {
   bindingStore: Pick<SessionBindingStore, "read" | "recordResult">;
   log?: (message: string) => void;
+  maxActiveReplays?: number;
   maxPreparedBatches?: number;
   reconciler: Pick<SessionReconciler, "clearRecovery" | "withAgentLock">;
   reportOwner: Pick<TurnReportOwner, "submit">;
 }
 
+type RetainedReportReference = NonNullable<SessionReconcileResult["retainedReports"]>[number];
+
 interface PreparedBatch {
   agentId: string;
-  reports: TurnReportRequest[];
+  references: RetainedReportReference[];
   sessionId: string;
 }
 
 interface ReplayQueue {
+  agentId: string;
+  blocked: boolean;
   keys: Set<string>;
-  reports: TurnReportRequest[];
+  references: RetainedReportReference[];
+  restartRequested: boolean;
   running: boolean;
 }
 
@@ -33,18 +39,24 @@ interface ReplayQueue {
 export class MvpTurnReportRecovery {
   readonly #bindingStore: MvpTurnReportRecoveryOptions["bindingStore"];
   readonly #log?: (message: string) => void;
+  readonly #maxActiveReplays: number;
   readonly #maxPreparedBatches: number;
   readonly #reconciler: MvpTurnReportRecoveryOptions["reconciler"];
   readonly #reportOwner: MvpTurnReportRecoveryOptions["reportOwner"];
   readonly #prepared = new Map<string, PreparedBatch>();
   readonly #queues = new Map<string, ReplayQueue>();
+  #activeReplays = 0;
 
   constructor(options: MvpTurnReportRecoveryOptions) {
     this.#bindingStore = options.bindingStore;
     this.#log = options.log;
+    this.#maxActiveReplays = options.maxActiveReplays ?? 10;
     this.#maxPreparedBatches = options.maxPreparedBatches ?? 256;
     this.#reconciler = options.reconciler;
     this.#reportOwner = options.reportOwner;
+    if (!Number.isSafeInteger(this.#maxActiveReplays) || this.#maxActiveReplays < 1) {
+      throw new Error("MVP Turn Report active replay limit must be a positive safe integer");
+    }
     if (!Number.isSafeInteger(this.#maxPreparedBatches) || this.#maxPreparedBatches < 1) {
       throw new Error("MVP Turn Report prepared batch limit must be a positive safe integer");
     }
@@ -60,20 +72,18 @@ export class MvpTurnReportRecovery {
       if (reports.length > RUNTIME_MVP_RETAINED_REPORT_LIMIT) {
         throw new Error("The MVP retained Turn Report manifest exceeded its protocol limit");
       }
+      if (!this.#prepared.has(request.requestId) && this.#prepared.size >= this.#maxPreparedBatches) {
+        throw new Error("The MVP Turn Report prepared batch limit was reached");
+      }
+      const references = reports.map(reportReference);
       this.#prepared.set(request.requestId, {
         agentId: request.agentId,
-        reports,
+        references,
         sessionId: request.sessionId,
       });
-      this.#trimPrepared();
       return {
         ...result,
-        retainedReports: reports.map((report) => ({
-          deliveryId: report.deliveryId,
-          turnId: report.turnId,
-          placementGeneration: report.placementGeneration,
-          resultHash: report.resultHash,
-        })),
+        retainedReports: references,
       };
     });
   }
@@ -82,45 +92,75 @@ export class MvpTurnReportRecovery {
     const batch = this.#prepared.get(request.requestId);
     if (!batch) return;
     this.#prepared.delete(request.requestId);
-    const queue = this.#queues.get(batch.sessionId) ?? { keys: new Set<string>(), reports: [], running: false };
+    const queue = this.#queues.get(batch.sessionId) ?? {
+      agentId: batch.agentId,
+      blocked: false,
+      keys: new Set<string>(),
+      references: [],
+      restartRequested: false,
+      running: false,
+    };
+    if (queue.agentId !== batch.agentId) {
+      this.#log?.(`MVP Turn Report replay for Session ${batch.sessionId} has a conflicting Agent owner`);
+      return;
+    }
     if (!this.#queues.has(batch.sessionId)) this.#queues.set(batch.sessionId, queue);
-    for (const report of batch.reports) {
-      const key = reportKey(report);
+    queue.blocked = false;
+    if (queue.running) queue.restartRequested = true;
+    for (const reference of batch.references) {
+      const key = reportKey(reference);
       if (queue.keys.has(key)) continue;
       queue.keys.add(key);
-      queue.reports.push(report);
+      queue.references.push(reference);
     }
-    if (!queue.running) void this.#runQueue(batch.agentId, batch.sessionId, queue);
+    this.#startQueues();
   }
 
-  async #runQueue(agentId: string, sessionId: string, queue: ReplayQueue): Promise<void> {
-    queue.running = true;
+  #startQueues(): void {
+    for (const [sessionId, queue] of this.#queues) {
+      if (this.#activeReplays >= this.#maxActiveReplays) return;
+      if (queue.running || queue.blocked || queue.references.length === 0) continue;
+      queue.running = true;
+      this.#activeReplays += 1;
+      void this.#runQueue(sessionId, queue).then((completed) => {
+        const restartRequested = queue.restartRequested;
+        queue.restartRequested = false;
+        queue.running = false;
+        queue.blocked = !completed && !restartRequested;
+        this.#activeReplays -= 1;
+        if (queue.references.length === 0 && this.#queues.get(sessionId) === queue) {
+          this.#queues.delete(sessionId);
+        }
+        this.#startQueues();
+      });
+    }
+  }
+
+  async #runQueue(sessionId: string, queue: ReplayQueue): Promise<boolean> {
     try {
-      while (queue.reports.length > 0) {
-        const report = queue.reports[0];
-        if (!report) break;
+      while (queue.references.length > 0) {
+        const reference = queue.references[0];
+        if (!reference) break;
+        const binding = await this.#bindingStore.read(queue.agentId, sessionId);
+        const report = retainedReports(binding).find((candidate) => reportMatchesReference(candidate, reference));
+        if (!report) {
+          queue.references.shift();
+          queue.keys.delete(reportKey(reference));
+          continue;
+        }
         await this.#reportOwner.submit(report, () =>
-          this.#reconciler.withAgentLock(agentId, async () => {
-            await this.#bindingStore.recordResult(agentId, sessionId, report.turnId, report.resultHash);
+          this.#reconciler.withAgentLock(queue.agentId, async () => {
+            await this.#bindingStore.recordResult(queue.agentId, sessionId, report.turnId, report.resultHash);
             this.#reconciler.clearRecovery(sessionId, report.turnId);
           }),
         );
-        queue.reports.shift();
-        queue.keys.delete(reportKey(report));
+        queue.references.shift();
+        queue.keys.delete(reportKey(reference));
       }
+      return true;
     } catch {
       this.#log?.(`MVP Turn Report replay for Session ${sessionId} remains pending`);
-    } finally {
-      queue.running = false;
-      if (queue.reports.length === 0) this.#queues.delete(sessionId);
-    }
-  }
-
-  #trimPrepared(): void {
-    while (this.#prepared.size > this.#maxPreparedBatches) {
-      const oldest = this.#prepared.keys().next().value;
-      if (oldest === undefined) break;
-      this.#prepared.delete(oldest);
+      return false;
     }
   }
 }
@@ -139,6 +179,24 @@ function retainedReports(binding: Awaited<ReturnType<SessionBindingStore["read"]
   return reports;
 }
 
-function reportKey(report: TurnReportRequest): string {
+function reportKey(report: Pick<TurnReportRequest, "resultHash" | "turnId">): string {
   return `${report.turnId}:${report.resultHash}`;
+}
+
+function reportReference(report: TurnReportRequest): RetainedReportReference {
+  return {
+    deliveryId: report.deliveryId,
+    turnId: report.turnId,
+    placementGeneration: report.placementGeneration,
+    resultHash: report.resultHash,
+  };
+}
+
+function reportMatchesReference(report: TurnReportRequest, reference: RetainedReportReference): boolean {
+  return (
+    report.deliveryId === reference.deliveryId &&
+    report.turnId === reference.turnId &&
+    report.placementGeneration === reference.placementGeneration &&
+    report.resultHash === reference.resultHash
+  );
 }

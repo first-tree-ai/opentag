@@ -131,6 +131,23 @@ describe("TurnReportOwner", () => {
     const lateTerminalObserver = vi.fn();
     expect(owner.submit(report, confirm, { onTerminal: lateTerminalObserver })).toBe(submitted);
     expect(lateTerminalObserver).toHaveBeenCalledWith("conflict");
+    expect(owner.rearmTerminal({ ...report, resultHash: sha256("different claim") })).toBe(false);
+    expect(owner.get(report.turnId)?.serverStatus).toBe("conflict");
+
+    expect(owner.rearmTerminal(report)).toBe(true);
+    expect(owner.get(report.turnId)?.serverStatus).toBeUndefined();
+    const rearmedTerminalObserver = vi.fn();
+    expect(owner.submit(report, confirm, { onTerminal: rearmedTerminalObserver })).toBe(submitted);
+    await vi.waitFor(() => expect(connection.sent).toHaveLength(2));
+    await owner.handleResult({
+      type: "turn:report:result",
+      requestId: report.requestId,
+      turnId: report.turnId,
+      status: "stale_generation",
+      resultHash: report.resultHash,
+    });
+    expect(rearmedTerminalObserver).toHaveBeenCalledWith("stale_generation");
+    expect(owner.get(report.turnId)?.serverStatus).toBe("stale_generation");
     expect(owner.pendingCount).toBe(1);
     expect(confirm).not.toHaveBeenCalled();
     owner.stop();

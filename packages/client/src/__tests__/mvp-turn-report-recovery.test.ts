@@ -32,7 +32,7 @@ describe("MvpTurnReportRecovery", () => {
         clearRecovery: vi.fn(),
         withAgentLock: vi.fn(async (_agentId: string, action: () => unknown) => action()),
       } as unknown as MvpTurnReportRecoveryOptions["reconciler"],
-      reportOwner: { submit } as unknown as MvpTurnReportRecoveryOptions["reportOwner"],
+      reportOwner: { rearmTerminal: vi.fn(), submit },
     });
     const firstRequest = reconcileRequest(first.agentId, first.sessionId);
     const secondRequest = reconcileRequest(second.agentId, second.sessionId);
@@ -64,6 +64,7 @@ describe("MvpTurnReportRecovery", () => {
       [bindingKey(first.agentId, first.sessionId), reportingBinding(first)],
       [bindingKey(second.agentId, second.sessionId), reportingBinding(second)],
     ]);
+    let terminalAttempts = 0;
     const submit = vi.fn(
       (
         report: TurnReportRequest,
@@ -71,11 +72,14 @@ describe("MvpTurnReportRecovery", () => {
         options?: { onTerminal?(status: "conflict" | "stale_generation"): void },
       ) => {
         if (report.sessionId !== first.sessionId) return Promise.resolve();
+        terminalAttempts += 1;
+        if (terminalAttempts > 1) return Promise.resolve();
         options?.onTerminal?.("conflict");
         return new Promise<void>(() => undefined);
       },
     );
-    const recovery = recoveryFor(bindings, submit, { maxActiveReplays: 1 });
+    const rearmTerminal = vi.fn(() => true);
+    const recovery = recoveryFor(bindings, submit, { maxActiveReplays: 1 }, rearmTerminal);
     const firstRequest = reconcileRequest(first.agentId, first.sessionId);
     const secondRequest = reconcileRequest(second.agentId, second.sessionId);
 
@@ -86,6 +90,15 @@ describe("MvpTurnReportRecovery", () => {
 
     await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
     expect(submit.mock.calls[1]?.[0]).toEqual(second);
+
+    rearmTerminal.mockClear();
+    const retryRequest = reconcileRequest(first.agentId, first.sessionId);
+    const retryResult = await recovery.prepare(retryRequest, recoveryRequired(retryRequest, first));
+    recovery.afterReconciled(retryRequest, retryResult);
+
+    await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(3));
+    expect(submit.mock.calls[2]?.[0]).toEqual(first);
+    expect(rearmTerminal).toHaveBeenCalledWith(first);
   });
 
   it("cancels a prepared batch when its reconcile result was not sent", async () => {
@@ -132,6 +145,7 @@ function recoveryFor(
   bindings: Map<string, ReturnType<typeof reportingBinding>>,
   submit: MvpTurnReportRecoveryOptions["reportOwner"]["submit"],
   limits: Pick<MvpTurnReportRecoveryOptions, "maxActiveReplays" | "maxPreparedBatches">,
+  rearmTerminal: MvpTurnReportRecoveryOptions["reportOwner"]["rearmTerminal"] = vi.fn(() => false),
 ): MvpTurnReportRecovery {
   return new MvpTurnReportRecovery({
     bindingStore: {
@@ -143,7 +157,7 @@ function recoveryFor(
       clearRecovery: vi.fn(),
       withAgentLock: vi.fn(async (_agentId: string, action: () => unknown) => action()),
     } as unknown as MvpTurnReportRecoveryOptions["reconciler"],
-    reportOwner: { submit },
+    reportOwner: { rearmTerminal, submit },
   });
 }
 

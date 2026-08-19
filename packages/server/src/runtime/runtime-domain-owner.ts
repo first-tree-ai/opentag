@@ -431,7 +431,11 @@ export class RuntimeDomainOwner {
         recorded.resultHash === report.resultHash;
       if (!sameTurn) return { ...base, status: "conflict" };
       if (recorded.instanceId !== context.instanceId) {
-        if (!currentRecovered) return { ...base, status: "conflict" };
+        if (!currentRecovered) {
+          return this.#hasCurrentReconciliation(report.sessionId, context)
+            ? { ...base, status: "conflict" }
+            : undefined;
+        }
         this.#turns.set(report.turnId, { ...recorded, instanceId: context.instanceId });
       }
       if (currentRecovered) this.#recoveredTurns.delete(report.turnId);
@@ -468,7 +472,6 @@ export class RuntimeDomainOwner {
     if (
       owner.deliveryId !== report.deliveryId ||
       owner.computerId !== context.computerId ||
-      owner.instanceId !== context.instanceId ||
       owner.turnId !== report.turnId ||
       owner.sessionId !== report.sessionId ||
       owner.agentId !== report.agentId
@@ -479,6 +482,9 @@ export class RuntimeDomainOwner {
       return { ...base, status: "stale_generation" };
     }
     if ("resultHash" in owner && owner.resultHash !== report.resultHash) return { ...base, status: "conflict" };
+    if (owner.instanceId !== context.instanceId) {
+      return this.#hasCurrentReconciliation(report.sessionId, context) ? { ...base, status: "conflict" } : undefined;
+    }
     this.#turns.set(report.turnId, {
       computerId: context.computerId,
       instanceId: context.instanceId,
@@ -559,6 +565,11 @@ export class RuntimeDomainOwner {
     context: RuntimeBusinessContext,
   ): boolean {
     return request.computerId === context.computerId && request.instanceId === context.instanceId;
+  }
+
+  #hasCurrentReconciliation(sessionId: string, context: RuntimeBusinessContext): boolean {
+    const reconciled = this.#reconciledSessions.get(sessionId);
+    return Boolean(reconciled && this.#matchesContext(reconciled, context));
   }
 
   #settle(pending: PendingRequest, result: SessionReconcileResult | ImMessageDeliveryResult): void {

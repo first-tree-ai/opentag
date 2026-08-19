@@ -14,7 +14,7 @@ export interface MvpTurnReportRecoveryOptions {
   maxActiveReplays?: number;
   maxPreparedBatches?: number;
   reconciler: Pick<SessionReconciler, "clearRecovery" | "withAgentLock">;
-  reportOwner: Pick<TurnReportOwner, "submit">;
+  reportOwner: Pick<TurnReportOwner, "rearmTerminal" | "submit">;
 }
 
 type RetainedReportReference = NonNullable<SessionReconcileResult["retainedReports"]>[number];
@@ -162,6 +162,7 @@ export class MvpTurnReportRecovery {
           queue.keys.delete(reportKey(reference));
           continue;
         }
+        this.#reportOwner.rearmTerminal(report);
         let reportTerminal: (() => void) | undefined;
         const terminal = new Promise<"terminal">((resolve) => {
           reportTerminal = () => resolve("terminal");

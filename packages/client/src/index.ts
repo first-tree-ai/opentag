@@ -138,6 +138,7 @@ export {
   TurnReportOwner,
   type TurnReportOwnerOptions,
   TurnReportOwnerStoppedError,
+  type TurnReportRearmClaim,
   type TurnReportSubmitOptions,
   type TurnReportTerminalStatus,
 } from "./runtime/turn-report-owner.js";

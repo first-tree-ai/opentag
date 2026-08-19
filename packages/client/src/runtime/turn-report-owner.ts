@@ -22,6 +22,11 @@ export interface TurnReportSubmitOptions {
   onTerminal?(status: TurnReportTerminalStatus): void;
 }
 
+export type TurnReportRearmClaim = Pick<
+  TurnReportRequest,
+  "agentId" | "deliveryId" | "placementGeneration" | "resultHash" | "sessionId" | "turnId"
+>;
+
 interface PendingReport {
   confirm(): Promise<void> | void;
   confirming: boolean;
@@ -164,6 +169,16 @@ export class TurnReportOwner {
     };
   }
 
+  // MVP-only: only an exact durable Report advertised by a later reconciliation
+  // may retry a terminal response from an uncertain manifest handoff.
+  rearmTerminal(claim: TurnReportRearmClaim): boolean {
+    if (this.#stopped) return false;
+    const pending = this.#pending.get(claim.turnId);
+    if (!pending?.serverStatus || !reportMatchesRearmClaim(pending.report, claim)) return false;
+    pending.serverStatus = undefined;
+    return true;
+  }
+
   stop(): void {
     if (this.#stopped) return;
     this.#stopped = true;
@@ -239,4 +254,15 @@ export class TurnReportOwner {
       // A terminal observer cannot alter the durable Report fence.
     }
   }
+}
+
+function reportMatchesRearmClaim(report: TurnReportRequest, claim: TurnReportRearmClaim): boolean {
+  return (
+    report.agentId === claim.agentId &&
+    report.deliveryId === claim.deliveryId &&
+    report.placementGeneration === claim.placementGeneration &&
+    report.resultHash === claim.resultHash &&
+    report.sessionId === claim.sessionId &&
+    report.turnId === claim.turnId
+  );
 }

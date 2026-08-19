@@ -264,6 +264,9 @@ describe("RuntimeDomainOwner", () => {
     await expect(fixture.owner.handle(report, fixture.context)).resolves.toMatchObject({ status: "recorded" });
 
     const replacement = await replaceRuntimeInstance(fixture);
+    await expect(
+      fixture.owner.handle({ ...report, requestId: randomUUID() }, replacement.context),
+    ).resolves.toBeUndefined();
     await establishRetainedClaim(fixture, replacement.instanceId, replacement.context, report);
     await expect(
       fixture.owner.handle({ ...report, requestId: randomUUID() }, replacement.context),
@@ -304,12 +307,31 @@ describe("RuntimeDomainOwner", () => {
     expect(fixture.owner.getTurn(report.turnId)?.instanceId).toBe(replacement.instanceId);
   });
 
+  it("keeps an exact old-instance delivery retriable until the replacement manifest is processed", async () => {
+    const fixture = await ownerFixture();
+    const deliveryRequestFrame = deliveryRequest();
+    const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, deliveryRequestFrame);
+    await fixture.owner.handle(acceptedResult(deliveryRequestFrame), fixture.context);
+    await delivery;
+
+    const report = turnReport();
+    const replacement = await replaceRuntimeInstance(fixture);
+    await expect(fixture.owner.handle(report, replacement.context)).resolves.toBeUndefined();
+
+    await establishReconciliationWithoutRetainedClaim(fixture, replacement.instanceId, replacement.context);
+    await expect(fixture.owner.handle(report, replacement.context)).resolves.toMatchObject({ status: "conflict" });
+
+    await establishRetainedClaim(fixture, replacement.instanceId, replacement.context, report);
+    await expect(fixture.owner.handle(report, replacement.context)).resolves.toMatchObject({ status: "recorded" });
+  });
+
   it("moves an identical recovered claim from the old daemon to its replacement", async () => {
     const fixture = await ownerFixture();
     const report = turnReport();
     await establishRetainedClaim(fixture, fixture.instanceId, fixture.context, report);
 
     const replacement = await replaceRuntimeInstance(fixture);
+    await expect(fixture.owner.handle(report, replacement.context)).resolves.toBeUndefined();
     await establishRetainedClaim(fixture, replacement.instanceId, replacement.context, report);
     await expect(fixture.owner.handle(report, replacement.context)).resolves.toMatchObject({ status: "recorded" });
     expect(fixture.owner.getTurn(report.turnId)?.instanceId).toBe(replacement.instanceId);
@@ -380,6 +402,26 @@ async function establishRetainedClaim(
       reason: "unresolved_turn",
       turn: { deliveryId: report.deliveryId, turnId: report.turnId },
       retainedReports: [retainedClaim(report)],
+    },
+    context,
+  );
+  await pending;
+}
+
+async function establishReconciliationWithoutRetainedClaim(
+  fixture: Awaited<ReturnType<typeof ownerFixture>>,
+  instanceId: string,
+  context: RuntimeBusinessContext,
+): Promise<void> {
+  const request = reconcileRequest(fixture.computerId);
+  const pending = fixture.owner.requestReconcile(fixture.computerId, instanceId, request);
+  await fixture.owner.handle(
+    {
+      type: "session:reconcile:result",
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      status: "ready",
     },
     context,
   );

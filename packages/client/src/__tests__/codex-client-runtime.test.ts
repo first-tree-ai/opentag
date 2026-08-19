@@ -89,7 +89,7 @@ describe("createCodexClientRuntime", () => {
     expect(resolveCodexHome({ HOME: "/provider-home" })).toBe(resolve("/provider-home/.codex"));
   });
 
-  it("replays unresolved and acknowledged durable reports after the client process restarts", async () => {
+  it("replays durable reports after restart and rearms an uncertain manifest handoff", async () => {
     const home = await temporaryDirectory("opentag-client-home-");
     const codexHome = resolve(home, "codex-home");
     const seedConnection = runtimeConnection();
@@ -166,6 +166,7 @@ describe("createCodexClientRuntime", () => {
     cleanup.push(server.close);
     const connection = runtimeConnection(server.url);
     const receivedReports: TurnReportRequest[] = [];
+    let conflictedUncertainHandoff = false;
     let reconcileStatus: unknown;
     let retainedReports: unknown;
     server.wss.on("connection", (socket) => {
@@ -205,6 +206,20 @@ describe("createCodexClientRuntime", () => {
         if (frame.type === "turn:report") {
           const receivedReport = frame as unknown as TurnReportRequest;
           receivedReports.push(receivedReport);
+          if (!conflictedUncertainHandoff) {
+            conflictedUncertainHandoff = true;
+            socket.send(
+              JSON.stringify({
+                type: "turn:report:result",
+                requestId: receivedReport.requestId,
+                turnId: receivedReport.turnId,
+                status: "conflict",
+                resultHash: receivedReport.resultHash,
+              }),
+            );
+            socket.send(JSON.stringify(reconcileRequest(connection.computerId, runtimeSnapshot)));
+            return;
+          }
           socket.send(
             JSON.stringify({
               type: "turn:report:result",
@@ -243,7 +258,7 @@ describe("createCodexClientRuntime", () => {
         },
       ]),
     );
-    await vi.waitFor(() => expect(receivedReports).toEqual([unresolvedReport, recordedReport]));
+    await vi.waitFor(() => expect(receivedReports).toEqual([unresolvedReport, unresolvedReport, recordedReport]));
     await vi.waitFor(async () => {
       expect(
         (await recovered.bindingStore.read(unresolvedInput.agentId, unresolvedInput.sessionId))?.unresolvedTurn,

@@ -33,6 +33,19 @@ export {
   verifyDatabaseMigrations,
   withMigrationLock,
 } from "./db/migrate.js";
+export {
+  ConnectionRegistry,
+  type RuntimeConnectionEntry,
+  RuntimeRegistrySendError,
+} from "./runtime/connection-registry.js";
+export {
+  type AcceptedDeliveryRecord,
+  type RecordedTurnRecord,
+  RuntimeDomainConflictError,
+  RuntimeDomainOwner,
+  type RuntimeDomainOwnerOptions,
+  RuntimeDomainRequestError,
+} from "./runtime/runtime-domain-owner.js";
 export { AgentService, AgentServiceError } from "./services/agents/index.js";
 export { AuthService, AuthServiceError, AuthTokenService } from "./services/auth/index.js";
 export { ComputerService } from "./services/computers/index.js";

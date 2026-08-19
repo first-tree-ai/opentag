@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { arch, hostname, platform } from "node:os";
 import {
   AccessTokenProvider,
-  ClientRuntime,
+  createCodexClientRuntime,
   OpenTagApi,
   OpenTagApiError,
   RuntimeConnection,
@@ -118,18 +118,17 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
       if (currentPlatform !== "darwin" && currentPlatform !== "linux") {
         throw new DaemonRuntimeConfigurationError(`Unsupported daemon service platform: ${currentPlatform}`);
       }
-      return new ClientRuntime(
-        new RuntimeConnection({
-          arch: arch(),
-          clientVersion: CLI_VERSION,
-          computer: identity,
-          displayName: hostname(),
-          instanceId,
-          log,
-          platform: currentPlatform,
-          tokenProvider,
-        }),
-      );
+      const connection = new RuntimeConnection({
+        arch: arch(),
+        clientVersion: CLI_VERSION,
+        computer: identity,
+        displayName: hostname(),
+        instanceId,
+        log,
+        platform: currentPlatform,
+        tokenProvider,
+      });
+      return createCodexClientRuntime(connection, { home, clientVersion: CLI_VERSION, log, signal });
     }, signals);
   } finally {
     await ownership.release();

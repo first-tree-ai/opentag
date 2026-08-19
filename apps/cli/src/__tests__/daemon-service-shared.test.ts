@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getChannelConfig } from "@opentag/shared";
@@ -54,7 +54,7 @@ describe("daemon service primitives", () => {
     const alias = join(root, "alias");
     await mkdir(actual);
     await symlink(actual, alias);
-    await expect(canonicalizeServiceHome(alias)).resolves.toBe(actual);
+    await expect(canonicalizeServiceHome(alias)).resolves.toBe(await realpath(actual));
   });
 
   it("atomically replaces files and leaves no temporary files", async () => {

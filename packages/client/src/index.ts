@@ -77,6 +77,7 @@ export {
   readComputerIdentity,
   resolveComputerIdentity,
 } from "./runtime/computer-identity.js";
+export { ImResourceFetcher } from "./runtime/im-resource-fetcher.js";
 export {
   type RuntimeBusinessFrame,
   RuntimeConnection,
@@ -96,6 +97,7 @@ export {
   sessionBindingPath,
   snapshotPath,
 } from "./runtime/runtime-paths.js";
+export { RuntimeToolHost } from "./runtime/runtime-tool-host.js";
 export {
   type CustodyResult,
   type LocalSessionBinding,

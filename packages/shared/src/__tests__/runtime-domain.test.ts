@@ -203,7 +203,7 @@ describe("runtime domain contract", () => {
     });
     expect(computeRuntimeSnapshotHashes({ ...runtime, allowedTools: ["read", "write"] })).toEqual(hashes);
     expect(computeDirectInputHash(directDelivery(runtime))).toBe(
-      "60aff5101c7f9f81337d88ef869b660041d735f83cb4a0888e26e6871a001a0c",
+      "663213ee66a0e4d078f719e5fa9e0204c23efd87cffeb702d5b3ac1842e6eba0",
     );
     expect(turnReport().resultHash).toBe("1531ebd9cb35b71727fd8913be9afad9f44e24fb3299ced53716085642e460c9");
   });
@@ -243,6 +243,7 @@ function directDelivery(runtime: EffectiveRuntimeSnapshot) {
     requestId: "11111111-1111-4111-8111-111111111111",
     deliveryId: "delivery-1",
     imMessageId: "message-1",
+    imMessageRevision: 1,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

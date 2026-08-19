@@ -1,11 +1,24 @@
 import {
   type Agent,
+  AgentSchema,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
+  agentByIdPath,
+  agentFeishuSetupAttemptsPath,
+  agentIntegrationPath,
+  type FeishuSetupAttempt,
+  FeishuSetupAttemptSchema,
+  feishuSetupAttemptPath,
   HTTP_PATHS,
+  type IntegrationDiagnostics,
+  IntegrationDiagnosticsSchema,
+  type IntegrationSummary,
+  IntegrationSummarySchema,
   type InvitationPreview,
   InvitationPreviewSchema,
   InvitationRedemptionResponseSchema,
+  integrationDiagnosticsPath,
+  integrationDisablePath,
   invitationPreviewPath,
   invitationRedeemPath,
   ListAgentsResponseSchema,
@@ -54,6 +67,40 @@ export class BrowserApi {
 
   agents(teamId: string): Promise<{ agents: Agent[] }> {
     return this.request(teamAgentsPath(teamId), ListAgentsResponseSchema);
+  }
+
+  agent(agentId: string): Promise<Agent> {
+    return this.request(agentByIdPath(agentId), AgentSchema);
+  }
+
+  integration(agentId: string): Promise<IntegrationSummary | undefined> {
+    return this.requestOptional(agentIntegrationPath(agentId), IntegrationSummarySchema);
+  }
+
+  createFeishuSetupAttempt(
+    agentId: string,
+    intent: "create" | "reauthorize" | "replace" = "create",
+  ): Promise<FeishuSetupAttempt> {
+    return this.request(agentFeishuSetupAttemptsPath(agentId), FeishuSetupAttemptSchema, {
+      method: "POST",
+      body: JSON.stringify({ intent }),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  feishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
+    return this.request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema);
+  }
+
+  integrationDiagnostics(integrationId: string): Promise<IntegrationDiagnostics> {
+    return this.request(integrationDiagnosticsPath(integrationId), IntegrationDiagnosticsSchema);
+  }
+
+  disableIntegration(integrationId: string): Promise<void> {
+    return this.requestNoContent(integrationDisablePath(integrationId), {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
   }
 
   computers(teamId: string): Promise<ListTeamComputersResponse> {
@@ -124,6 +171,21 @@ export class BrowserApi {
     const parsed = schema.safeParse(body);
     if (!parsed.success) throw new ApiError(503, "The server returned an invalid response");
     return parsed.data;
+  }
+
+  private async requestOptional<T>(path: string, schema: RuntimeSchema<T>): Promise<T | undefined> {
+    const response = await this.fetchImpl(path, { credentials: "same-origin" });
+    if (response.status === 204) return undefined;
+    const body = await response.json().catch(() => undefined);
+    if (!response.ok) throw new ApiError(response.status, "Request failed");
+    const parsed = schema.safeParse(body);
+    if (!parsed.success) throw new ApiError(503, "The server returned an invalid response");
+    return parsed.data;
+  }
+
+  private async requestNoContent(path: string, init: RequestInit): Promise<void> {
+    const response = await this.fetchImpl(path, { ...init, credentials: "same-origin" });
+    if (!response.ok) throw new ApiError(response.status, "Request failed");
   }
 
   private csrfHeaders(): HeadersInit {

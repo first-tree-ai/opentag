@@ -13,7 +13,7 @@ describe("runtime protocol", () => {
       ServerRuntimeFrameSchema.parse({
         type: "server:welcome",
         protocolVersion: RUNTIME_PROTOCOL_VERSION,
-        capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1 },
+        capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
         heartbeatIntervalMs: 30_000,
         heartbeatTimeoutMs: 90_000,
       }),
@@ -46,7 +46,7 @@ describe("runtime protocol", () => {
       ServerRuntimeFrameSchema.parse({
         type: "server:welcome",
         protocolVersion: 2,
-        capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1 },
+        capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
         heartbeatIntervalMs: 1,
         heartbeatTimeoutMs: 2,
       }),

@@ -233,6 +233,7 @@ function directDelivery(request: SessionReconcileRequest): DirectImMessageDelive
     requestId: randomUUID(),
     deliveryId: "delivery-1",
     imMessageId: "message-1",
+    imMessageRevision: 1,
     sessionId: request.sessionId,
     agentId: request.agentId,
     placementGeneration: request.placementGeneration,

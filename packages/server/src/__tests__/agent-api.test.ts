@@ -17,6 +17,7 @@ const agent = {
   name: "code-reviewer",
   displayName: "Code Reviewer",
   runtimeProvider: "codex" as const,
+  receiveMode: "all_message" as const,
   revision: 1,
   createdAt: "2026-08-19T00:00:00.000Z",
   updatedAt: "2026-08-19T00:00:00.000Z",

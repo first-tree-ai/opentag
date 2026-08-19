@@ -135,6 +135,7 @@ describe("createCodexClientRuntime", () => {
       requestId: randomUUID(),
       deliveryId: "delivery-unresolved",
       imMessageId: "message-unresolved",
+      imMessageRevision: 1,
     };
     const unresolvedReport = seed.reportOwner.create({
       deliveryId: unresolvedInput.deliveryId,
@@ -186,7 +187,7 @@ describe("createCodexClientRuntime", () => {
             JSON.stringify({
               type: "server:welcome",
               protocolVersion: 1,
-              capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1 },
+              capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
               heartbeatIntervalMs: 1_000,
               heartbeatTimeoutMs: 2_000,
             }),
@@ -338,6 +339,7 @@ function delivery(runtime: EffectiveRuntimeSnapshot): DirectImMessageDeliveryReq
     requestId: randomUUID(),
     deliveryId: "delivery-1",
     imMessageId: "message-1",
+    imMessageRevision: 1,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

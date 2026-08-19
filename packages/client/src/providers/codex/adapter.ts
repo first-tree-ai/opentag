@@ -3,6 +3,7 @@ import {
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
   type InputRejectReason,
+  OPENTAG_MESSAGE_TOOLS,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   type RuntimeUsage,
   type TurnFailureReason,
@@ -13,6 +14,8 @@ import {
   CodexAppServerError,
   type CodexAppServerMessage,
   CodexAppServerProcess,
+  type CodexDynamicToolCall,
+  type CodexDynamicToolResult,
   type CodexSpawnOptions,
 } from "./app-server-wire.js";
 
@@ -20,6 +23,7 @@ export const CODEX_V0_NOTIFICATION_LIMIT = 128;
 export const CODEX_V0_NOTIFICATION_BYTES = 1024 * 1024;
 export const CODEX_V0_ITEM_LIMIT = 128;
 export const CODEX_V0_REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
+const OPENTAG_MESSAGE_TOOL_SET: ReadonlySet<string> = new Set(OPENTAG_MESSAGE_TOOLS);
 
 export const CODEX_V0_APP_SERVER_ARGS = [
   "app-server",
@@ -112,9 +116,11 @@ export interface CodexTurnRunOptions {
   cwd: string;
   onThreadReady(threadId: string): Promise<void> | void;
   onTurnStarted(turnId: string): Promise<void> | void;
+  onDynamicToolCall?(call: CodexDynamicToolCall): Promise<CodexDynamicToolResult>;
   providerThreadId?: string;
   request: DirectImMessageDeliveryRequest;
   signal?: AbortSignal;
+  supplementalContext?: string;
   trace?: CodexTraceSink;
 }
 
@@ -141,9 +147,11 @@ export class CodexLocalPolicy implements RuntimeLocalPolicy {
     if (snapshot.execution.approvalPolicy !== "never" || snapshot.execution.networkAccess) {
       return "configuration_unsupported";
     }
-    // V0 exposes only Codex's sandboxed workspace baseline. Optional tools,
-    // Apps, MCP servers, browser/computer use and sub-agents are disabled.
-    if (snapshot.allowedTools.length > 0) return "configuration_unsupported";
+    // Only the three OpenTag-hosted IM functions are allowed. They are
+    // dynamically served by the daemon and never expose provider credentials.
+    if (snapshot.allowedTools.some((tool) => !OPENTAG_MESSAGE_TOOL_SET.has(tool))) {
+      return "configuration_unsupported";
+    }
     if (snapshot.reasoningEffort && !CODEX_V0_REASONING_EFFORTS.has(snapshot.reasoningEffort)) {
       return "configuration_unsupported";
     }
@@ -287,6 +295,23 @@ export class CodexAdapter {
     let failure: CodexTurnError | undefined;
     try {
       options.signal?.throwIfAborted();
+      if (options.request.runtime.allowedTools.length > 0 && !client.setDynamicToolHandler) {
+        throw protocolError("Codex App Server does not support hosted dynamic tools");
+      }
+      client.setDynamicToolHandler?.(async (call) => {
+        if (
+          !options.onDynamicToolCall ||
+          !providerThreadId ||
+          !providerTurnId ||
+          call.threadId !== providerThreadId ||
+          call.turnId !== providerTurnId ||
+          call.namespace !== null ||
+          !options.request.runtime.allowedTools.includes(call.tool)
+        ) {
+          return { success: false, text: "OpenTag rejected this tool call." };
+        }
+        return options.onDynamicToolCall(call);
+      });
       await client.initialize(this.#clientVersion, options.signal);
       const threadResponse = await this.#openThread(client, options);
       providerThreadId = threadResponse.threadId;
@@ -296,7 +321,7 @@ export class CodexAdapter {
       const turnResponse = parseTurnStartResponse(
         await client.request(
           "turn/start",
-          turnStartParams(options.request, providerThreadId, options.cwd),
+          turnStartParams(options.request, providerThreadId, options.cwd, options.supplementalContext),
           options.signal,
         ),
       );
@@ -340,6 +365,7 @@ export class CodexAdapter {
     }
     options.signal?.removeEventListener("abort", abort);
     unsubscribe();
+    client.setDynamicToolHandler?.(undefined);
     if (options.signal?.aborted && providerThreadId && providerTurnId) {
       await client.interrupt(providerThreadId, providerTurnId);
     }
@@ -368,7 +394,16 @@ export class CodexAdapter {
     };
     const response = options.providerThreadId
       ? await client.request("thread/resume", { ...common, threadId: options.providerThreadId }, options.signal)
-      : await client.request("thread/start", { ...common, ephemeral: false, serviceName: "OpenTag" }, options.signal);
+      : await client.request(
+          "thread/start",
+          {
+            ...common,
+            ephemeral: false,
+            serviceName: "OpenTag",
+            dynamicTools: codexDynamicToolSpecs(runtime.allowedTools),
+          },
+          options.signal,
+        );
     return parseThreadResponse(response, {
       agentsFile: options.agentsFile,
       cwd: instructionCwd,
@@ -376,6 +411,40 @@ export class CodexAdapter {
       model: runtime.model,
     });
   }
+}
+
+export function codexDynamicToolSpecs(allowedTools: readonly string[]): Array<Record<string, unknown>> {
+  return allowedTools.map((name) => ({
+    type: "function",
+    name,
+    description:
+      name === "opentag_message_send"
+        ? "Send a new message to the current OpenTag IM conversation."
+        : name === "opentag_message_reply"
+          ? "Reply to a visible OpenTag IM message in the current conversation."
+          : "Add an emoji reaction to a visible OpenTag IM message.",
+    inputSchema:
+      name === "opentag_message_react"
+        ? {
+            type: "object",
+            additionalProperties: false,
+            properties: { targetImMessageId: { type: "string" }, emoji: { type: "string" } },
+            required: ["targetImMessageId", "emoji"],
+          }
+        : name === "opentag_message_reply"
+          ? {
+              type: "object",
+              additionalProperties: false,
+              properties: { replyToImMessageId: { type: "string" }, text: { type: "string" } },
+              required: ["replyToImMessageId", "text"],
+            }
+          : {
+              type: "object",
+              additionalProperties: false,
+              properties: { text: { type: "string" } },
+              required: ["text"],
+            },
+  }));
 }
 
 export function codexProviderEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -400,7 +469,12 @@ export function buildOpenTagRuntimeContext(request: DirectImMessageDeliveryReque
   ].join("\n");
 }
 
-function turnStartParams(request: DirectImMessageDeliveryRequest, threadId: string, cwd: string) {
+function turnStartParams(
+  request: DirectImMessageDeliveryRequest,
+  threadId: string,
+  cwd: string,
+  supplementalContext?: string,
+) {
   const runtime = request.runtime;
   return {
     threadId,
@@ -409,6 +483,17 @@ function turnStartParams(request: DirectImMessageDeliveryRequest, threadId: stri
     input: [
       { type: "text", text: buildOpenTagRuntimeContext(request) },
       { type: "text", text: request.content.text },
+      ...(request.content.history?.length
+        ? [
+            {
+              type: "text",
+              text: `Bounded prior IM history${request.content.historyTruncated ? " (truncated)" : ""}:\n${request.content.history
+                .map((item) => `[${item.occurredAt}] ${item.imMessageId}: ${item.text}`)
+                .join("\n")}`,
+            },
+          ]
+        : []),
+      ...(supplementalContext ? [{ type: "text", text: supplementalContext }] : []),
     ],
     ...(runtime.model ? { model: runtime.model } : {}),
     ...(runtime.reasoningEffort ? { effort: runtime.reasoningEffort } : {}),

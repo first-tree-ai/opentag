@@ -262,6 +262,7 @@ function delivery(
     requestId,
     deliveryId,
     imMessageId: `message-${deliveryId}`,
+    imMessageRevision: 1,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

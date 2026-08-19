@@ -3,6 +3,7 @@ import {
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_VERSION,
   RuntimeFrameEnvelopeSchema,
+  type RuntimeClientCapabilities,
   runtimeFrameByteLength,
   runtimeWebSocketUrl,
   ServerRuntimeBusinessFrameSchema,
@@ -143,6 +144,7 @@ export class RuntimeConnection {
   #sendInFlight?: QueuedFrame;
   #state: RuntimeConnectionState = "stopped";
   #stopped = false;
+  #verifiedCapabilities: RuntimeClientCapabilities = { imMessageTool: 0 };
 
   constructor(options: RuntimeConnectionOptions) {
     this.#options = options;
@@ -166,6 +168,13 @@ export class RuntimeConnection {
 
   get instanceId(): string {
     return this.#options.instanceId;
+  }
+
+  setVerifiedCapabilities(capabilities: RuntimeClientCapabilities): void {
+    if (this.#hasRun || this.#state !== "stopped") {
+      throw new RuntimeConnectionError("Runtime capabilities must be verified before connecting", true);
+    }
+    this.#verifiedCapabilities = { ...capabilities };
   }
 
   subscribeState(listener: (state: RuntimeConnectionState) => void): () => void {
@@ -459,6 +468,7 @@ export class RuntimeConnection {
             platform: this.#options.platform,
             arch: this.#options.arch,
             clientVersion: this.#options.clientVersion,
+            capabilities: this.#verifiedCapabilities,
           }).catch((error: unknown) => finish(asError(error)));
           return;
         }

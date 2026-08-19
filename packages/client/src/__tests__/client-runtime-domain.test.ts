@@ -39,7 +39,7 @@ describe("ClientRuntime domain dispatch", () => {
             JSON.stringify({
               type: "server:welcome",
               protocolVersion: 1,
-              capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1 },
+              capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
               heartbeatIntervalMs: 1_000,
               heartbeatTimeoutMs: 2_000,
             }),
@@ -169,6 +169,7 @@ function delivery(deliveryId: string, requestId: string, _computerId: string) {
     requestId,
     deliveryId,
     imMessageId: `message-${deliveryId}`,
+    imMessageRevision: 1,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

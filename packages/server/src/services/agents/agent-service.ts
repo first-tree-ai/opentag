@@ -8,7 +8,7 @@ import {
 } from "@opentag/shared";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, computers, memberships, users } from "../../db/schema/index.js";
+import { agents, computers, integrationCredentials, integrations, memberships, users } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import { TeamMembershipService } from "../teams/index.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
@@ -30,6 +30,7 @@ function toAgent(row: AgentRow): Agent {
     name: row.name,
     displayName: row.displayName,
     runtimeProvider: row.runtimeProvider,
+    receiveMode: row.receiveMode,
     revision: row.revision,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -152,10 +153,33 @@ export class AgentService {
     return this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId, false);
       this.#requireManagePermission(scope);
+      if (input.receiveMode === "all_message") {
+        const [integration] = await transaction
+          .select({ provider: integrations.provider, capabilities: integrationCredentials.grantedCapabilities })
+          .from(integrations)
+          .innerJoin(integrationCredentials, eq(integrationCredentials.integrationId, integrations.id))
+          .where(and(eq(integrations.agentId, agentId), isNull(integrations.disabledAt)))
+          .limit(1);
+        const required =
+          integration?.provider === "feishu"
+            ? ["im:message.group_msg"]
+            : integration?.provider === "slack"
+              ? ["channels:history", "groups:history", "mpim:history"]
+              : [];
+        if (integration && required.some((capability) => !integration.capabilities.includes(capability))) {
+          throw new AgentServiceError(
+            "INTEGRATION_SCOPE_REAUTH_REQUIRED",
+            "deterministic",
+            "The Integration must be reauthorized before enabling all-message receive mode",
+            409,
+          );
+        }
+      }
       const [updated] = await transaction
         .update(agents)
         .set({
-          displayName: input.displayName,
+          ...(input.displayName === undefined ? {} : { displayName: input.displayName }),
+          ...(input.receiveMode === undefined ? {} : { receiveMode: input.receiveMode }),
           revision: sql`${agents.revision} + 1`,
           updatedAt: this.#now(),
         })

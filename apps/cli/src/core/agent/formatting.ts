@@ -30,6 +30,7 @@ export function formatAgent(agent: Agent): string {
     `managerUserId\t${agent.managerUserId}`,
     `computerId\t${agent.computerId}`,
     `runtimeProvider\t${agent.runtimeProvider}`,
+    `receiveMode\t${agent.receiveMode}`,
     `revision\t${agent.revision}`,
   ].join("\n");
 }

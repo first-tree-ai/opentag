@@ -11,11 +11,13 @@
   },
   "dependencies": {
     "@opentag/shared": "workspace:*",
+    "qrcode": "^1.5.4",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.0",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^19.1.11",
     "@types/react-dom": "^19.1.7",
     "@vitejs/plugin-react": "^4.7.0",

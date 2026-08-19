@@ -2,13 +2,24 @@ import {
   type Agent,
   AgentSchema,
   agentByIdPath,
+  agentFeishuSetupAttemptsPath,
+  agentIntegrationPath,
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
   type CreateAgentRequest,
   type ErrorCategory,
   type ErrorCode,
   ErrorEnvelopeSchema,
+  type FeishuSetupAttempt,
+  FeishuSetupAttemptSchema,
+  feishuSetupAttemptPath,
   HTTP_PATHS,
+  type IntegrationDiagnostics,
+  IntegrationDiagnosticsSchema,
+  type IntegrationSummary,
+  IntegrationSummarySchema,
+  integrationDiagnosticsPath,
+  integrationDisablePath,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
   type ListComputersResponse,
@@ -22,6 +33,7 @@ import {
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
   type RestoreTeamMemberRequest,
+  runtimeImResourcePath,
   type TeamInvitation,
   TeamInvitationSchema,
   type TeamMember,
@@ -192,6 +204,65 @@ export class OpenTagApi {
     });
   }
 
+  getAgentIntegration(accessToken: string, agentId: string): Promise<IntegrationSummary | undefined> {
+    return this.#requestOptional(agentIntegrationPath(agentId), IntegrationSummarySchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  createFeishuSetupAttempt(
+    accessToken: string,
+    agentId: string,
+    intent: "create" | "reauthorize" | "replace" = "create",
+  ): Promise<FeishuSetupAttempt> {
+    return this.#request(agentFeishuSetupAttemptsPath(agentId), FeishuSetupAttemptSchema, {
+      method: "POST",
+      body: JSON.stringify({ intent }),
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+    });
+  }
+
+  getFeishuSetupAttempt(accessToken: string, attemptId: string): Promise<FeishuSetupAttempt> {
+    return this.#request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  cancelFeishuSetupAttempt(accessToken: string, attemptId: string): Promise<FeishuSetupAttempt> {
+    return this.#request(`${feishuSetupAttemptPath(attemptId)}/cancel`, FeishuSetupAttemptSchema, {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  getIntegrationDiagnostics(accessToken: string, integrationId: string): Promise<IntegrationDiagnostics> {
+    return this.#request(integrationDiagnosticsPath(integrationId), IntegrationDiagnosticsSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  disableIntegration(accessToken: string, integrationId: string): Promise<void> {
+    return this.#requestNoContent(integrationDisablePath(integrationId), {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  async openImResource(
+    accessToken: string,
+    resourceId: string,
+    scope: { sessionId: string; computerId: string; instanceId: string; placementGeneration: number },
+  ): Promise<Response> {
+    const response = await this.#fetchResponse(runtimeImResourcePath(resourceId, scope), {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) {
+      const body = await response.json().catch(() => undefined);
+      this.#throwResponseError(response.status, body);
+    }
+    return response;
+  }
+
   async #request<T>(path: string, schema: RuntimeSchema<T>, init: RequestInit): Promise<T> {
     const response = await this.#fetchResponse(path, init);
     const body = await response.json().catch(() => undefined);
@@ -214,6 +285,18 @@ export class OpenTagApi {
     if (response.status !== 204) {
       throw new OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server returned an invalid response");
     }
+  }
+
+  async #requestOptional<T>(path: string, schema: RuntimeSchema<T>, init: RequestInit): Promise<T | undefined> {
+    const response = await this.#fetchResponse(path, init);
+    if (response.status === 204) return undefined;
+    const body = await response.json().catch(() => undefined);
+    if (!response.ok) this.#throwResponseError(response.status, body);
+    const parsed = schema.safeParse(body);
+    if (!parsed.success) {
+      throw new OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server returned an invalid response");
+    }
+    return parsed.data;
   }
 
   async #fetchResponse(path: string, init: RequestInit): Promise<Response> {

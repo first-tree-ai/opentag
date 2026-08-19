@@ -1,10 +1,17 @@
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { eq } from "drizzle-orm";
 import { defaultAdminWebRoot } from "./admin-web.js";
 import { createApp } from "./app.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { parseServerConfig } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
+import { agents } from "./db/schema/index.js";
+import { ConnectionRegistry } from "./runtime/connection-registry.js";
+import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
+import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
+import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { AgentService } from "./services/agents/index.js";
 import {
   AuthIdentityService,
@@ -19,6 +26,14 @@ import {
 } from "./services/auth/index.js";
 import { ComputerService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
+import { ImMessageInbox, ImResourceService, OutboundMessageService } from "./services/im/index.js";
+import {
+  DefaultFeishuRegistrationGateway,
+  FeishuConnectionManager,
+  FeishuSetupService,
+} from "./services/integrations/feishu/index.js";
+import { IntegrationService } from "./services/integrations/index.js";
+import { DefaultSlackApiClient, SlackAdapter } from "./services/integrations/slack/index.js";
 import { InvitationService } from "./services/invitations/index.js";
 import { TeamMembershipService } from "./services/teams/index.js";
 
@@ -46,6 +61,7 @@ export {
   type RuntimeDomainOwnerOptions,
   RuntimeDomainRequestError,
 } from "./runtime/runtime-domain-owner.js";
+export { PostgresRuntimeCustodyStore, type RuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 export { AgentService, AgentServiceError } from "./services/agents/index.js";
 export { AuthService, AuthServiceError, AuthTokenService } from "./services/auth/index.js";
 export { ComputerService } from "./services/computers/index.js";
@@ -79,12 +95,99 @@ export async function startServer(): Promise<void> {
     const computerService = new ComputerService(database, authService);
     const teamService = new TeamMembershipService(database);
     const agentService = new AgentService(database, { membershipService: teamService });
-    const invitationService = new InvitationService(
+    const applicationCipher = new ApplicationCipher(config.encryptionKey);
+    const invitationService = new InvitationService(database, teamService, applicationCipher, config.publicUrl);
+    const registry = new ConnectionRegistry();
+    const integrationService = new IntegrationService(database, applicationCipher, {
+      runtimeReady: async (agentId) => {
+        const [agent] = await database
+          .select({ computerId: agents.computerId })
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .limit(1);
+        const currentInstanceId = agent ? registry.currentInstanceId(agent.computerId) : undefined;
+        return Boolean(
+          agent &&
+            currentInstanceId &&
+            registry.supports(agent.computerId, currentInstanceId, "imMessageTool"),
+        );
+      },
+    });
+    const imMessageInbox = new ImMessageInbox(database);
+    const instanceId = randomUUID();
+    let outboundMessageService: OutboundMessageService;
+    const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
+      onImToolRequest: async (request, context) => {
+        const result = await outboundMessageService.execute({
+          requestId: request.requestId,
+          sessionId: request.sessionId,
+          agentId: request.agentId,
+          computerId: context.computerId,
+          computerInstanceId: context.instanceId,
+          placementGeneration: request.placementGeneration,
+          expectedLatestImMessageId: request.expectedLatestImMessageId,
+          operation: request.operation,
+          ...(request.text
+            ? {
+                content: {
+                  version: 1,
+                  fallbackText: request.text,
+                  blocks: [{ type: "text", text: request.text }],
+                  truncated: false,
+                },
+              }
+            : {}),
+          ...(request.replyToImMessageId ? { replyToImMessageId: request.replyToImMessageId } : {}),
+          ...(request.targetImMessageId ? { targetImMessageId: request.targetImMessageId } : {}),
+          ...(request.emoji ? { emoji: request.emoji } : {}),
+        });
+        return { type: "im:tool:result", requestId: request.requestId, ...result };
+      },
+    });
+    const feishuConnections = new FeishuConnectionManager({
       database,
-      teamService,
-      new ApplicationCipher(config.encryptionKey),
-      config.publicUrl,
-    );
+      inbox: imMessageInbox,
+      instanceId,
+      integrations: integrationService,
+      runtimeReady: async (agentId) => {
+        const computerId = await integrationService.getAgentComputerId(agentId);
+        const currentInstanceId = computerId ? registry.currentInstanceId(computerId) : undefined;
+        return Boolean(
+          computerId && currentInstanceId && registry.supports(computerId, currentInstanceId, "imMessageTool"),
+        );
+      },
+    });
+    const feishuSetupService = new FeishuSetupService({
+      database,
+      cipher: applicationCipher,
+      instanceId,
+      integrations: integrationService,
+      registrations: new DefaultFeishuRegistrationGateway(),
+      activation: feishuConnections,
+    });
+    const slackApi = new DefaultSlackApiClient();
+    const resolveImAdapter = async (integrationId: string, generation: number) => {
+      const slack = await integrationService.getSlackConnectionMaterial(integrationId);
+      if (slack) {
+        if (slack.generation !== generation) throw new Error("INTEGRATION_GENERATION_STALE");
+        return new SlackAdapter({
+          api: slackApi,
+          token: slack.botAccessToken,
+          appId: slack.appId,
+          teamId: slack.teamId,
+          botUserId: slack.botUserId,
+        });
+      }
+      return feishuConnections.resolveAdapter(integrationId, generation);
+    };
+    outboundMessageService = new OutboundMessageService(database, resolveImAdapter);
+    const imResourceService = new ImResourceService(database, resolveImAdapter);
+    const imDeliveryWorker = new ImDeliveryWorker({
+      database,
+      domain: domainOwner,
+      registry,
+      onDiagnostic: (code) => app?.log.error({ code }, "IM delivery worker diagnostic"),
+    });
     const identityService = new AuthIdentityService(database);
     const postAuthentication = new PostAuthenticationService(database, invitationService, {
       membershipService: teamService,
@@ -114,10 +217,34 @@ export async function startServer(): Promise<void> {
       },
       computerService,
       invitationService,
+      integrationService,
+      feishuSetupService,
+      imResourceService,
       readiness,
+      runtime: { registry, domainOwner },
+      slackEvents: {
+        integrations: integrationService,
+        inbox: imMessageInbox,
+        createAdapter: (binding) =>
+          new SlackAdapter({
+            api: slackApi,
+            token: binding.botAccessToken,
+            appId: binding.appId,
+            teamId: binding.teamId,
+            botUserId: binding.botUserId,
+          }),
+      },
       teamService,
     });
-    app.addHook("onClose", async () => sql.end());
+    feishuSetupService.start();
+    feishuConnections.start();
+    imDeliveryWorker.start();
+    app.addHook("onClose", async () => {
+      imDeliveryWorker.stop();
+      await feishuSetupService.stop();
+      await feishuConnections.stop();
+      await sql.end();
+    });
     readiness.complete("application");
     await app.listen({ host: config.host, port: config.port });
     readiness.complete("listen");

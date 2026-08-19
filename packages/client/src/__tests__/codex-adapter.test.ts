@@ -358,6 +358,7 @@ function delivery(): DirectImMessageDeliveryRequest {
     requestId: randomUUID(),
     deliveryId: "delivery-1",
     imMessageId: "message-1",
+    imMessageRevision: 1,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,

@@ -5,14 +5,25 @@ import { access, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
-import { computeRuntimeSnapshotHashes, type InputRejectReason } from "@opentag/shared";
-import { CodexAdapter, CodexLocalPolicy, codexProviderEnvironment } from "../providers/codex/adapter.js";
+import { computeRuntimeSnapshotHashes, type InputRejectReason, OPENTAG_MESSAGE_TOOLS } from "@opentag/shared";
+import type { OpenTagApi } from "../api.js";
+import type { AccessTokenProvider } from "../auth/token-provider.js";
+import {
+  CodexAdapter,
+  CODEX_V0_APP_SERVER_ARGS,
+  CodexLocalPolicy,
+  codexDynamicToolSpecs,
+  codexProviderEnvironment,
+} from "../providers/codex/adapter.js";
+import { CodexAppServerProcess } from "../providers/codex/app-server-wire.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime } from "./client-runtime.js";
 import { CodexTurnRunner } from "./codex-turn-runner.js";
+import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
+import { RuntimeToolHost } from "./runtime-tool-host.js";
 import { SessionBindingStore } from "./session-binding-store.js";
 import { SessionReconciler } from "./session-reconciler.js";
 import { TurnCustodyOwner } from "./turn-custody-owner.js";
@@ -30,6 +41,8 @@ export interface CreateCodexClientRuntimeOptions {
   log?: (message: string) => void;
   probe?: (command: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal) => Promise<void>;
   signal?: AbortSignal;
+  api?: Pick<OpenTagApi, "openImResource">;
+  tokenProvider?: Pick<AccessTokenProvider, "getAccessTokenLease">;
 }
 
 export class CodexClientRuntime {
@@ -39,6 +52,8 @@ export class CodexClientRuntime {
   readonly reportOwner: TurnReportOwner;
   readonly runner: CodexTurnRunner;
   readonly workspace: AgentWorkspaceManager;
+  readonly toolHost: RuntimeToolHost;
+  readonly messageToolAvailable: boolean;
   readonly #runtime: ClientRuntime;
 
   constructor(
@@ -50,6 +65,8 @@ export class CodexClientRuntime {
       reportOwner: TurnReportOwner;
       runner: CodexTurnRunner;
       workspace: AgentWorkspaceManager;
+      toolHost: RuntimeToolHost;
+      messageToolAvailable: boolean;
     },
   ) {
     this.#runtime = runtime;
@@ -59,6 +76,8 @@ export class CodexClientRuntime {
     this.reportOwner = components.reportOwner;
     this.runner = components.runner;
     this.workspace = components.workspace;
+    this.toolHost = components.toolHost;
+    this.messageToolAvailable = components.messageToolAvailable;
   }
 
   async run(): Promise<void> {
@@ -68,11 +87,13 @@ export class CodexClientRuntime {
       this.runner.stop();
       await this.runner.settled();
       this.reportOwner.stop();
+      this.toolHost.close();
     }
   }
 
   stop(): void {
     this.runner.stop();
+    this.toolHost.close();
     this.#runtime.stop();
   }
 }
@@ -103,6 +124,10 @@ export async function createCodexClientRuntime(
     signal: options.signal,
     sourceEnvironment,
   });
+  const messageToolAvailable = await ensureProviderReady()
+    .then(() => true)
+    .catch(() => false);
+  connection.setVerifiedCapabilities({ imMessageTool: messageToolAvailable ? 1 : 0 });
 
   const bindingStore = new SessionBindingStore({ home: options.home, providerHomeIdentity });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
@@ -113,6 +138,13 @@ export async function createCodexClientRuntime(
     localPolicy,
   });
   const reportOwner = new TurnReportOwner({ connection });
+  const toolHost = new RuntimeToolHost(connection);
+  const resourceFetcher = new ImResourceFetcher({
+    computerId: connection.computerId,
+    instanceId: connection.instanceId,
+    api: options.api,
+    tokenProvider: options.tokenProvider,
+  });
   const mvpReportRecovery = new MvpTurnReportRecovery({
     bindingStore,
     log: options.log,
@@ -152,6 +184,8 @@ export async function createCodexClientRuntime(
     custody,
     log: options.log,
     reportOwner,
+    toolHost,
+    resourceFetcher,
     workspace,
   });
   const runtime = new ClientRuntime(connection, {
@@ -164,7 +198,16 @@ export async function createCodexClientRuntime(
     onReconcileResultSendFailed: (request, result) => mvpReportRecovery.cancel(request, result),
     onReconciled: (request, result) => mvpReportRecovery.afterReconciled(request, result),
   });
-  return new CodexClientRuntime(runtime, { bindingStore, custody, reconciler, reportOwner, runner, workspace });
+  return new CodexClientRuntime(runtime, {
+    bindingStore,
+    custody,
+    reconciler,
+    reportOwner,
+    runner,
+    toolHost,
+    messageToolAvailable,
+    workspace,
+  });
 }
 
 interface ProviderReadinessOptions {
@@ -179,8 +222,10 @@ interface ProviderReadinessOptions {
 function providerReadiness(options: ProviderReadinessOptions): () => Promise<string> {
   let readyCommand: string | undefined;
   let pending: Promise<string> | undefined;
+  let failure: Error | undefined;
   return async () => {
     if (readyCommand) return readyCommand;
+    if (failure) throw failure;
     if (!pending) {
       pending = (async () => {
         options.signal?.throwIfAborted();
@@ -191,9 +236,14 @@ function providerReadiness(options: ProviderReadinessOptions): () => Promise<str
         options.process.command = command;
         readyCommand = command;
         return command;
-      })().finally(() => {
-        pending = undefined;
-      });
+      })()
+        .catch((error: unknown) => {
+          failure = error instanceof Error ? error : new Error("Codex readiness failed");
+          throw failure;
+        })
+        .finally(() => {
+          pending = undefined;
+        });
     }
     return pending;
   };
@@ -228,8 +278,60 @@ async function resolveExecutable(command: string, environment: NodeJS.ProcessEnv
 
 async function probeCodex(command: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<void> {
   const common = { env: environment, timeout: 5_000, maxBuffer: 64 * 1024, windowsHide: true, signal };
-  await execFileAsync(command, ["--version"], common);
+  const version = await execFileAsync(command, ["--version"], common);
+  assertCompatibleCodexVersion(version.stdout);
   await execFileAsync(command, ["login", "status"], common);
+  const cwd = environment.CODEX_HOME ?? process.cwd();
+  const appServer = new CodexAppServerProcess({
+    command,
+    args: [...CODEX_V0_APP_SERVER_ARGS],
+    cwd,
+    env: environment,
+    expectedCodexHome: environment.CODEX_HOME,
+    requestTimeoutMs: 5_000,
+  });
+  try {
+    appServer.setDynamicToolHandler(async () => ({ success: false, text: "Readiness probe only." }));
+    await appServer.initialize("opentag-readiness", signal);
+    const response = await appServer.request(
+      "thread/start",
+      {
+        approvalPolicy: "never",
+        cwd,
+        sandbox: "workspace-write",
+        ephemeral: true,
+        serviceName: "OpenTag readiness",
+        dynamicTools: codexDynamicToolSpecs(OPENTAG_MESSAGE_TOOLS),
+      },
+      signal,
+    );
+    if (
+      typeof response !== "object" ||
+      response === null ||
+      !("thread" in response) ||
+      typeof response.thread !== "object" ||
+      response.thread === null ||
+      !("id" in response.thread) ||
+      typeof response.thread.id !== "string"
+    ) {
+      throw new Error("Codex App Server did not accept the hosted dynamic tool contract");
+    }
+  } finally {
+    await appServer.close();
+  }
+}
+
+function assertCompatibleCodexVersion(output: string): void {
+  const match = /(?:codex-cli|codex)\s+(\d+)\.(\d+)\.(\d+)/i.exec(output);
+  if (!match) throw new Error("Codex returned an unsupported version string");
+  const version = match.slice(1).map(Number);
+  const minimum = [0, 147, 0];
+  for (let index = 0; index < minimum.length; index += 1) {
+    const actual = version[index] ?? 0;
+    const required = minimum[index] ?? 0;
+    if (actual > required) return;
+    if (actual < required) throw new Error("Codex 0.147.0 or newer is required");
+  }
 }
 
 function preflightReason(error: unknown): InputRejectReason {

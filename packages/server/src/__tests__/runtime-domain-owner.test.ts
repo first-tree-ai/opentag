@@ -4,11 +4,17 @@ import {
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
   type SessionReconcileRequest,
+  type SessionReconcileResult,
   type TurnReportRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
+import type {
+  AcceptedDeliveryRecord,
+  RecordedTurnRecord,
+  RuntimeCustodyStore,
+} from "../runtime/runtime-custody-store.js";
 import { RuntimeDomainConflictError, RuntimeDomainOwner } from "../runtime/runtime-domain-owner.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
 
@@ -61,14 +67,20 @@ describe("RuntimeDomainOwner", () => {
     const retried = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, retry);
     await fixture.owner.handle(acceptedResult(retry), fixture.context);
     await expect(retried).resolves.toMatchObject({ status: "accepted", turnId: "turn-1" });
-    expect(fixture.owner.getDelivery("delivery-1")).toMatchObject({ turnId: "turn-1" });
-    expect(() =>
-      fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, {
-        ...request,
-        requestId: randomUUID(),
-        content: { kind: "text", text: "different" },
-      }),
-    ).toThrow(RuntimeDomainConflictError);
+    expect(await fixture.owner.getDelivery("delivery-1")).toMatchObject({ turnId: "turn-1" });
+    const conflictRequest = {
+      ...request,
+      requestId: randomUUID(),
+      content: { kind: "text", text: "different" },
+    };
+    const conflicting = fixture.owner
+      .requestDelivery(fixture.computerId, fixture.instanceId, conflictRequest)
+      .catch((error: unknown) => error);
+    await expect(fixture.owner.handle(acceptedResult(conflictRequest), fixture.context)).rejects.toBeInstanceOf(
+      RuntimeDomainConflictError,
+    );
+    fixture.owner.close();
+    await expect(conflicting).resolves.toBeInstanceOf(Error);
   });
 
   it("B-21 records a report only after acceptance and makes equal duplicates idempotent", async () => {
@@ -90,7 +102,7 @@ describe("RuntimeDomainOwner", () => {
       fixture.context,
     );
     await reconciled;
-    await expect(fixture.owner.handle(report, fixture.context)).resolves.toMatchObject({ status: "conflict" });
+    await expect(fixture.owner.handle(report, fixture.context)).resolves.toBeUndefined();
     const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, request);
     await fixture.owner.handle(acceptedResult(request), fixture.context);
     await delivery;
@@ -106,7 +118,7 @@ describe("RuntimeDomainOwner", () => {
       resultHash: computeTurnResultHash(conflictingBody),
     };
     await expect(fixture.owner.handle(conflicting, fixture.context)).resolves.toMatchObject({ status: "conflict" });
-    expect(fixture.owner.getTurn("turn-1")?.report.finalText).toBe("done");
+    expect((await fixture.owner.getTurn("turn-1"))?.report.finalText).toBe("done");
   });
 
   it("B-22 ignores frames from a replaced instance and accepts the current instance", async () => {
@@ -168,7 +180,7 @@ describe("RuntimeDomainOwner", () => {
       await expect(timedOut).resolves.toBeInstanceOf(Error);
 
       await fixture.owner.handle(acceptedResult(request), fixture.context);
-      expect(fixture.owner.getDelivery(request.deliveryId)).toMatchObject({ turnId: "turn-1" });
+      expect(await fixture.owner.getDelivery(request.deliveryId)).toMatchObject({ turnId: "turn-1" });
       await expect(fixture.owner.handle(turnReport(), fixture.context)).resolves.toMatchObject({ status: "recorded" });
     } finally {
       fixture.owner.close();
@@ -189,7 +201,7 @@ describe("RuntimeDomainOwner", () => {
 
       const report = turnReport();
       await expect(fixture.owner.handle(report, fixture.context)).resolves.toMatchObject({ status: "recorded" });
-      expect(fixture.owner.getDelivery(request.deliveryId)).toMatchObject({ turnId: report.turnId });
+      expect(await fixture.owner.getDelivery(request.deliveryId)).toMatchObject({ turnId: report.turnId });
       await expect(
         fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, request),
       ).resolves.toMatchObject({ status: "accepted", turnId: report.turnId });
@@ -213,14 +225,17 @@ describe("RuntimeDomainOwner", () => {
 
     await expect(fixture.owner.handle(report, fixture.context)).resolves.toMatchObject({ status: "recorded" });
     await expect(pending).resolves.toMatchObject({ status: "accepted", turnId: report.turnId });
-    expect(fixture.owner.getDelivery(request.deliveryId)).toMatchObject({ turnId: report.turnId });
+    expect(await fixture.owner.getDelivery(request.deliveryId)).toMatchObject({ turnId: report.turnId });
   });
 
   it("accepts a durable reporting recovery claimed by reconciliation", async () => {
     const fixture = await ownerFixture();
     const request = reconcileRequest(fixture.computerId);
     const report = turnReport();
-    await expect(fixture.owner.handle(report, fixture.context)).resolves.toBeUndefined();
+    const deliveryFrame = deliveryRequest();
+    const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, deliveryFrame);
+    await fixture.owner.handle(acceptedResult(deliveryFrame), fixture.context);
+    await delivery;
     const pending = fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request);
     await fixture.owner.handle(
       {
@@ -250,7 +265,7 @@ describe("RuntimeDomainOwner", () => {
       resultHash: computeTurnResultHash(conflictingBody),
     };
     await expect(fixture.owner.handle(conflicting, fixture.context)).resolves.toMatchObject({ status: "conflict" });
-    expect(fixture.owner.getTurn(report.turnId)).toBeUndefined();
+    expect(await fixture.owner.getTurn(report.turnId)).toBeUndefined();
     await expect(fixture.owner.handle(report, fixture.context)).resolves.toMatchObject({ status: "recorded" });
   });
 
@@ -271,7 +286,7 @@ describe("RuntimeDomainOwner", () => {
     await expect(
       fixture.owner.handle({ ...report, requestId: randomUUID() }, replacement.context),
     ).resolves.toMatchObject({ status: "already_recorded" });
-    expect(fixture.owner.getTurn(report.turnId)?.instanceId).toBe(replacement.instanceId);
+    expect((await fixture.owner.getTurn(report.turnId))?.instanceId).toBe(replacement.instanceId);
 
     const conflictingBody = { ...report, finalText: "replacement tried a different result" };
     const conflicting = {
@@ -304,7 +319,7 @@ describe("RuntimeDomainOwner", () => {
 
     await establishRetainedClaim(fixture, replacement.instanceId, replacement.context, report);
     await expect(fixture.owner.handle(report, replacement.context)).resolves.toMatchObject({ status: "recorded" });
-    expect(fixture.owner.getTurn(report.turnId)?.instanceId).toBe(replacement.instanceId);
+    expect((await fixture.owner.getTurn(report.turnId))?.instanceId).toBe(replacement.instanceId);
   });
 
   it("keeps an exact old-instance delivery retriable until the replacement manifest is processed", async () => {
@@ -319,7 +334,7 @@ describe("RuntimeDomainOwner", () => {
     await expect(fixture.owner.handle(report, replacement.context)).resolves.toBeUndefined();
 
     await establishReconciliationWithoutRetainedClaim(fixture, replacement.instanceId, replacement.context);
-    await expect(fixture.owner.handle(report, replacement.context)).resolves.toMatchObject({ status: "conflict" });
+    await expect(fixture.owner.handle(report, replacement.context)).resolves.toBeUndefined();
 
     await establishRetainedClaim(fixture, replacement.instanceId, replacement.context, report);
     await expect(fixture.owner.handle(report, replacement.context)).resolves.toMatchObject({ status: "recorded" });
@@ -328,13 +343,17 @@ describe("RuntimeDomainOwner", () => {
   it("moves an identical recovered claim from the old daemon to its replacement", async () => {
     const fixture = await ownerFixture();
     const report = turnReport();
+    const deliveryFrame = deliveryRequest();
+    const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, deliveryFrame);
+    await fixture.owner.handle(acceptedResult(deliveryFrame), fixture.context);
+    await delivery;
     await establishRetainedClaim(fixture, fixture.instanceId, fixture.context, report);
 
     const replacement = await replaceRuntimeInstance(fixture);
     await expect(fixture.owner.handle(report, replacement.context)).resolves.toBeUndefined();
     await establishRetainedClaim(fixture, replacement.instanceId, replacement.context, report);
     await expect(fixture.owner.handle(report, replacement.context)).resolves.toMatchObject({ status: "recorded" });
-    expect(fixture.owner.getTurn(report.turnId)?.instanceId).toBe(replacement.instanceId);
+    expect((await fixture.owner.getTurn(report.turnId))?.instanceId).toBe(replacement.instanceId);
   });
 });
 
@@ -354,7 +373,7 @@ async function ownerFixture(requestTimeoutMs = 1_000) {
     },
     async () => undefined,
   );
-  const owner = new RuntimeDomainOwner(registry, { requestTimeoutMs });
+  const owner = new RuntimeDomainOwner(registry, new MemoryRuntimeCustodyStore(), { requestTimeoutMs });
   const context: RuntimeBusinessContext = {
     computerId,
     instanceId,
@@ -483,6 +502,7 @@ function deliveryRequest(): DirectImMessageDeliveryRequest {
     requestId: randomUUID(),
     deliveryId: "delivery-1",
     imMessageId: "message-1",
+    imMessageRevision: 1,
     sessionId: "session-1",
     agentId: "agent-1",
     placementGeneration: 1,
@@ -518,4 +538,99 @@ function turnReport(): TurnReportRequest {
     traceSummary: { lastSequence: 2, droppedEvents: 0 },
   };
   return { type: "turn:report", requestId: randomUUID(), ...body, resultHash: computeTurnResultHash(body) };
+}
+
+class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
+  readonly #deliveries = new Map<string, AcceptedDeliveryRecord>();
+  readonly #expectedResultHashes = new Map<string, string>();
+  readonly #turns = new Map<string, RecordedTurnRecord>();
+
+  async acceptDelivery(
+    request: DirectImMessageDeliveryRequest,
+    inputHash: string,
+    turnId: string,
+    context: RuntimeBusinessContext,
+  ) {
+    const current = this.#deliveries.get(request.deliveryId);
+    if (current) {
+      return current.inputHash === inputHash && current.turnId === turnId ? "already_accepted" : "conflict";
+    }
+    this.#deliveries.set(request.deliveryId, {
+      agentId: request.agentId,
+      computerId: context.computerId,
+      deliveryId: request.deliveryId,
+      inputHash,
+      instanceId: context.instanceId,
+      placementGeneration: request.placementGeneration,
+      sessionId: request.sessionId,
+      turnId,
+    });
+    return "accepted";
+  }
+
+  async claimRetainedReports(
+    request: SessionReconcileRequest,
+    claims: NonNullable<SessionReconcileResult["retainedReports"]>,
+    context: RuntimeBusinessContext,
+  ): Promise<void> {
+    for (const claim of claims) {
+      const delivery = this.#deliveries.get(claim.deliveryId);
+      if (
+        !delivery ||
+        delivery.agentId !== request.agentId ||
+        delivery.sessionId !== request.sessionId ||
+        delivery.turnId !== claim.turnId ||
+        delivery.placementGeneration !== claim.placementGeneration
+      ) {
+        continue;
+      }
+      this.#deliveries.set(claim.deliveryId, {
+        ...delivery,
+        computerId: context.computerId,
+        instanceId: context.instanceId,
+      });
+      this.#expectedResultHashes.set(claim.turnId, claim.resultHash);
+    }
+  }
+
+  async getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {
+    return this.#deliveries.get(deliveryId);
+  }
+
+  async getDeliveryByTurn(turnId: string): Promise<AcceptedDeliveryRecord | undefined> {
+    return [...this.#deliveries.values()].find((delivery) => delivery.turnId === turnId);
+  }
+
+  async getTurn(turnId: string): Promise<RecordedTurnRecord | undefined> {
+    return this.#turns.get(turnId);
+  }
+
+  async recordTurn(report: TurnReportRequest, context: RuntimeBusinessContext) {
+    const existing = this.#turns.get(report.turnId);
+    if (existing) {
+      return existing.report.deliveryId === report.deliveryId && existing.resultHash === report.resultHash
+        ? "already_recorded"
+        : "conflict";
+    }
+    const delivery = this.#deliveries.get(report.deliveryId);
+    if (!delivery) return undefined;
+    if (
+      delivery.turnId !== report.turnId ||
+      delivery.sessionId !== report.sessionId ||
+      delivery.agentId !== report.agentId
+    ) {
+      return "conflict";
+    }
+    if (delivery.placementGeneration !== report.placementGeneration) return "stale_generation";
+    if (delivery.computerId !== context.computerId || delivery.instanceId !== context.instanceId) return undefined;
+    const expectedHash = this.#expectedResultHashes.get(report.turnId);
+    if (expectedHash && expectedHash !== report.resultHash) return "conflict";
+    this.#turns.set(report.turnId, {
+      computerId: context.computerId,
+      instanceId: context.instanceId,
+      report,
+      resultHash: report.resultHash,
+    });
+    return "recorded";
+  }
 }

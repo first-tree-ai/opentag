@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ReceiveModeSchema } from "./integration.js";
 
 export const AgentNameSchema = z
   .string()
@@ -18,6 +19,7 @@ export const AgentSchema = z
     name: AgentNameSchema,
     displayName: AgentDisplayNameSchema,
     runtimeProvider: AgentRuntimeProviderSchema,
+    receiveMode: ReceiveModeSchema,
     revision: z.number().int().min(1),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
@@ -36,9 +38,13 @@ export const CreateAgentRequestSchema = z
 export const UpdateAgentRequestSchema = z
   .object({
     expectedRevision: z.number().int().min(1),
-    displayName: AgentDisplayNameSchema,
+    displayName: AgentDisplayNameSchema.optional(),
+    receiveMode: ReceiveModeSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine((value) => value.displayName !== undefined || value.receiveMode !== undefined, {
+    message: "At least one Agent field must be updated",
+  });
 
 export const ListAgentsResponseSchema = z
   .object({

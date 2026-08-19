@@ -239,6 +239,7 @@ export class RuntimeSession {
       const userId = this.#userId;
       await this.#registry.register(
         {
+          capabilities: frame.capabilities,
           computerId: frame.computerId,
           instanceId: frame.instanceId,
           lastHeartbeatAt: this.#options.now().getTime(),

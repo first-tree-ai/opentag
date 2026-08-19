@@ -1,4 +1,8 @@
-import { RUNTIME_MAX_FRAME_BYTES, runtimeFrameByteLength } from "@opentag/shared";
+import {
+  RUNTIME_MAX_FRAME_BYTES,
+  type RuntimeClientCapabilities,
+  runtimeFrameByteLength,
+} from "@opentag/shared";
 import WebSocket from "ws";
 
 export class RuntimeRegistrySendError extends Error {
@@ -12,6 +16,7 @@ export class RuntimeRegistrySendError extends Error {
 }
 
 export interface RuntimeConnectionEntry {
+  capabilities?: RuntimeClientCapabilities;
   computerId: string;
   instanceId: string;
   lastHeartbeatAt: number;
@@ -53,6 +58,15 @@ export class ConnectionRegistry {
 
   currentInstanceId(computerId: string): string | undefined {
     return this.#entries.get(computerId)?.instanceId;
+  }
+
+  supports(
+    computerId: string,
+    instanceId: string,
+    capability: keyof RuntimeClientCapabilities,
+  ): boolean {
+    const current = this.#entries.get(computerId);
+    return current?.instanceId === instanceId && current.capabilities?.[capability] === 1;
   }
 
   async send(computerId: string, instanceId: string, frame: unknown): Promise<void> {

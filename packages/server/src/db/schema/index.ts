@@ -2,4 +2,7 @@ export * from "./agents.js";
 export * from "./auth.js";
 export * from "./auth-identities.js";
 export * from "./computers.js";
+export * from "./im-messages.js";
+export * from "./integrations.js";
 export * from "./invitations.js";
+export * from "./sessions.js";

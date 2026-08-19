@@ -8,6 +8,7 @@ export const RUNTIME_V0_CAPABILITIES = {
   imDelivery: 1,
   turnReport: 1,
   agentTrace: 1,
+  imMessageTool: 1,
 } as const;
 export const RUNTIME_MAX_FRAME_BYTES = 64 * 1024;
 export const RUNTIME_HEARTBEAT_INTERVAL_MIN_MS = 10;
@@ -42,6 +43,13 @@ export const RuntimeCapabilitiesSchema = z
     imDelivery: z.literal(1),
     turnReport: z.literal(1),
     agentTrace: z.literal(1),
+    imMessageTool: z.literal(1),
+  })
+  .strict();
+
+export const RuntimeClientCapabilitiesSchema = z
+  .object({
+    imMessageTool: z.union([z.literal(0), z.literal(1)]),
   })
   .strict();
 
@@ -100,6 +108,7 @@ export const ComputerRegisterFrameSchema = z
     platform: ComputerPlatformSchema,
     arch: z.string().trim().min(1).max(64),
     clientVersion: z.string().trim().min(1).max(64),
+    capabilities: RuntimeClientCapabilitiesSchema.default({ imMessageTool: 0 }),
   })
   .strict();
 export const ComputerRegisterResultFrameSchema = z
@@ -162,6 +171,7 @@ export const ServerRuntimeFrameSchema = z.discriminatedUnion("type", [
 
 export type ServerWelcomeFrame = z.infer<typeof ServerWelcomeFrameSchema>;
 export type RuntimeCapabilities = z.infer<typeof RuntimeCapabilitiesSchema>;
+export type RuntimeClientCapabilities = z.infer<typeof RuntimeClientCapabilitiesSchema>;
 export type RuntimeFrameEnvelope = z.infer<typeof RuntimeFrameEnvelopeSchema>;
 export type AuthFrame = z.infer<typeof AuthFrameSchema>;
 export type AuthResultFrame = z.infer<typeof AuthResultFrameSchema>;

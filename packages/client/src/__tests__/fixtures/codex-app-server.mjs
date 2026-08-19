@@ -3,6 +3,7 @@ import { createInterface } from "node:readline";
 
 const scenario = process.env.CODEX_FIXTURE_SCENARIO ?? "normal";
 let pendingApproval;
+let pendingHostedTool;
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
@@ -50,5 +51,25 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (message.method === "fixture/unknown-request") {
     send({ id: "unknown-1", method: "fixture/unsupported", params: {} });
+    return;
+  }
+  if (message.method === "fixture/hosted-tool") {
+    pendingHostedTool = message.id;
+    send({
+      id: "hosted-tool-1",
+      method: "item/tool/call",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        callId: "call-1",
+        namespace: null,
+        tool: "opentag_message_send",
+        arguments: { text: "hello" },
+      },
+    });
+    return;
+  }
+  if (message.id === "hosted-tool-1") {
+    send({ id: pendingHostedTool, result: message.result });
   }
 });

@@ -139,7 +139,7 @@ function AdminApp() {
         const membership = value.memberships.find((item) => item.teamId === decodeURIComponent(teamId));
         if (!membership) return <div className="notice error">This Team is not available to your account.</div>;
         if (membership.role !== "admin") return <Forbidden membership={membership} />;
-        return <TeamShell membership={membership} />;
+        return <TeamShell membership={membership} viewerUserId={value.user.id} />;
       }}
     </Resource>
   );
@@ -169,14 +169,14 @@ function TeamSelector({ memberships, displayName }: { memberships: MeMembership[
   );
 }
 
-function ConnectComputerAction() {
+function ConnectComputerAction({ onConnected }: { onConnected?: (computer: Computer) => void } = {}) {
   const [showConnect, setShowConnect] = useState(false);
   return (
     <>
       <button type="button" onClick={() => setShowConnect(true)}>
         Connect computer
       </button>
-      {showConnect ? <ConnectComputerDialog onClose={() => setShowConnect(false)} /> : null}
+      {showConnect ? <ConnectComputerDialog onClose={() => setShowConnect(false)} onConnected={onConnected} /> : null}
     </>
   );
 }
@@ -192,7 +192,7 @@ function Forbidden({ membership }: { membership: MeMembership }) {
   );
 }
 
-function TeamShell({ membership }: { membership: MeMembership }) {
+function TeamShell({ membership, viewerUserId }: { membership: MeMembership; viewerUserId: string }) {
   const section = window.location.pathname.split("/")[4] || "overview";
   const base = `/admin/teams/${membership.teamId}`;
   return (
@@ -221,16 +221,24 @@ function TeamShell({ membership }: { membership: MeMembership }) {
         </nav>
       </aside>
       <main className="content">
-        <TeamPage section={section} membership={membership} />
+        <TeamPage section={section} membership={membership} viewerUserId={viewerUserId} />
       </main>
     </div>
   );
 }
 
-function TeamPage({ section, membership }: { section: string; membership: MeMembership }) {
+function TeamPage({
+  section,
+  membership,
+  viewerUserId,
+}: {
+  section: string;
+  membership: MeMembership;
+  viewerUserId: string;
+}) {
   if (section === "members") return <MembersPage teamId={membership.teamId} />;
   if (section === "agents") return <AgentsPage teamId={membership.teamId} />;
-  if (section === "computers") return <ComputersPage teamId={membership.teamId} />;
+  if (section === "computers") return <ComputersPage teamId={membership.teamId} viewerUserId={viewerUserId} />;
   if (section === "diagnostics") return <DiagnosticsPage />;
   return <OverviewPage membership={membership} />;
 }
@@ -324,29 +332,58 @@ function AgentsPage({ teamId }: { teamId: string }) {
   );
 }
 
-function ComputersPage({ teamId }: { teamId: string }) {
-  const state = useResource(() => browserApi.computers(teamId), teamId);
+function ComputersPage({ teamId, viewerUserId }: { teamId: string; viewerUserId: string }) {
+  const [ownComputersRevision, setOwnComputersRevision] = useState(0);
+  const ownComputers = useResource(() => browserApi.ownComputers(), `own-computers:${ownComputersRevision}`);
+  const teamComputers = useResource(() => browserApi.computers(teamId), `team-computers:${teamId}`);
+  const refreshOwnComputers = useCallback(() => setOwnComputersRevision((revision) => revision + 1), []);
   return (
     <>
       <div className="page-heading-row">
-        <PageHeader title="Computers" subtitle="Only Computers referenced by active Team Agents" />
-        <ConnectComputerAction />
+        <PageHeader title="Computers" subtitle="Your connections and this Team's member computers" />
+        <ConnectComputerAction onConnected={refreshOwnComputers} />
       </div>
-      <Resource state={state}>
-        {(value) => (
-          <Table
-            headers={["Computer", "Owner", "Platform", "Connection snapshot", "Last seen", "Observed"]}
-            rows={value.computers.map((computer) => [
-              computer.displayName,
-              computer.ownerDisplayName,
-              `${computer.platform}/${computer.arch} · ${computer.clientVersion}`,
-              computer.connectionStatus,
-              formatDate(computer.lastSeenAt),
-              formatDate(computer.observedAt),
-            ])}
-          />
-        )}
-      </Resource>
+      <section aria-labelledby="your-computers-title" className="computer-section">
+        <h2 id="your-computers-title">Your computers</h2>
+        <p className="muted">All computers connected to your account, whether or not an Agent uses them yet.</p>
+        <Resource state={ownComputers}>
+          {(value) => (
+            <Table
+              emptyMessage="No computers connected to your account."
+              headers={["Computer", "Platform", "Connection", "Last seen"]}
+              rows={value.computers.map((computer) => [
+                computer.displayName,
+                `${computer.platform}/${computer.arch} · ${computer.clientVersion}`,
+                computer.connectionStatus,
+                formatDate(computer.lastSeenAt),
+              ])}
+            />
+          )}
+        </Resource>
+      </section>
+      <section aria-labelledby="team-computers-title" className="computer-section">
+        <h2 id="team-computers-title">Team computers</h2>
+        <p className="muted">Computers owned by other active Team members; Agent bindings are shown separately.</p>
+        <Resource state={teamComputers}>
+          {(value) => (
+            <Table
+              emptyMessage="No other active Team members have connected computers."
+              headers={["Computer", "Owner", "Platform", "Connection snapshot", "Agents", "Last seen", "Observed"]}
+              rows={value.computers
+                .filter((computer) => computer.ownerUserId !== viewerUserId)
+                .map((computer) => [
+                  computer.displayName,
+                  computer.ownerDisplayName,
+                  `${computer.platform}/${computer.arch} · ${computer.clientVersion}`,
+                  computer.connectionStatus,
+                  String(computer.agentIds.length),
+                  formatDate(computer.lastSeenAt),
+                  formatDate(computer.observedAt),
+                ])}
+            />
+          )}
+        </Resource>
+      </section>
     </>
   );
 }
@@ -358,7 +395,13 @@ type ConnectDialogState =
   | { kind: "expired" }
   | { kind: "success"; computer: Computer };
 
-function ConnectComputerDialog({ onClose }: { onClose: () => void }) {
+function ConnectComputerDialog({
+  onClose,
+  onConnected,
+}: {
+  onClose: () => void;
+  onConnected?: (computer: Computer) => void;
+}) {
   const [state, setState] = useState<ConnectDialogState>({ kind: "loading" });
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
   const [remainingSeconds, setRemainingSeconds] = useState(0);
@@ -429,7 +472,10 @@ function ConnectComputerDialog({ onClose }: { onClose: () => void }) {
             Date.parse(computer.connectedAt) >= state.issuedAtMs &&
             baseline.current.get(computer.id) !== computer.connectedAt,
         );
-        if (connected) setState({ kind: "success", computer: connected });
+        if (connected) {
+          onConnected?.(connected);
+          setState({ kind: "success", computer: connected });
+        }
       } catch {
         // A transient poll failure does not invalidate the already-issued command.
       } finally {
@@ -438,7 +484,7 @@ function ConnectComputerDialog({ onClose }: { onClose: () => void }) {
     };
     const timer = window.setInterval(() => void poll(), 2000);
     return () => window.clearInterval(timer);
-  }, [state]);
+  }, [onConnected, state]);
 
   async function copyCommand(command: string) {
     try {
@@ -557,8 +603,16 @@ function Metric({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-function Table({ headers, rows }: { headers: string[]; rows: string[][] }) {
-  if (rows.length === 0) return <div className="notice">No records in this snapshot.</div>;
+function Table({
+  headers,
+  rows,
+  emptyMessage = "No records in this snapshot.",
+}: {
+  headers: string[];
+  rows: string[][];
+  emptyMessage?: string;
+}) {
+  if (rows.length === 0) return <div className="notice">{emptyMessage}</div>;
   return (
     <div className="table-wrap">
       <table>

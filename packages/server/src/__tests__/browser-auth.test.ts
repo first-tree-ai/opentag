@@ -1,7 +1,7 @@
 import { HTTP_PATHS } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
-import type { GoogleBrowserAuthService, UserAuthService } from "../services/auth/index.js";
+import type { DevBrowserAuthService, GoogleBrowserAuthService, UserAuthService } from "../services/auth/index.js";
 
 const apps: ReturnType<typeof createApp>[] = [];
 afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
@@ -38,12 +38,27 @@ function google() {
   };
 }
 
-function createBrowserApp(googleService = google()) {
+function dev() {
+  return {
+    signIn: vi.fn().mockResolvedValue({
+      accessToken: "dev-access-secret",
+      refreshToken: "dev-refresh-secret",
+      tokenType: "Bearer",
+      expiresIn: 900,
+    }),
+  };
+}
+
+function createBrowserApp(
+  options: { devService?: ReturnType<typeof dev>; googleService?: ReturnType<typeof google> | null } = {},
+) {
+  const googleService = options.googleService === null ? undefined : (options.googleService ?? google());
   const auth = authService();
   const app = createApp({
     authService: auth,
     browserAuth: {
-      google: googleService as unknown as GoogleBrowserAuthService,
+      ...(options.devService ? { dev: options.devService as unknown as DevBrowserAuthService } : {}),
+      ...(googleService ? { google: googleService as unknown as GoogleBrowserAuthService } : {}),
       publicOrigin: "http://localhost:8000",
       refreshTokenTtlSeconds: 3600,
       secureCookies: false,
@@ -57,13 +72,70 @@ describe("browser authentication routes", () => {
   it("reports configured providers and starts Google without putting next in the provider URL itself", async () => {
     const { app, googleService } = createBrowserApp();
     expect((await app.inject({ method: "GET", url: HTTP_PATHS.authProviders })).json()).toEqual({
-      providers: [{ id: "google", enabled: true, startUrl: HTTP_PATHS.authGoogleStart }],
+      providers: [
+        { id: "google", enabled: true, startUrl: HTTP_PATHS.authGoogleStart },
+        { id: "dev", enabled: false, startUrl: null },
+      ],
     });
     const response = await app.inject({ method: "GET", url: `${HTTP_PATHS.authGoogleStart}?next=%2Fadmin` });
     expect(response.statusCode).toBe(302);
     expect(response.headers.location).toBe("https://accounts.google.com/auth");
     expect(String(response.headers["set-cookie"])).toContain("opentag_oauth_context=signed-context");
-    expect(googleService.start).toHaveBeenCalledWith("/admin");
+    expect(googleService?.start).toHaveBeenCalledWith("/admin");
+  });
+
+  it("signs in the configured development user only from a loopback request", async () => {
+    const devService = dev();
+    const { app } = createBrowserApp({ devService, googleService: null });
+    expect((await app.inject({ method: "GET", url: HTTP_PATHS.authProviders })).json()).toEqual({
+      providers: [
+        { id: "google", enabled: false, startUrl: null },
+        { id: "dev", enabled: true, startUrl: HTTP_PATHS.authDevCallback },
+      ],
+    });
+    expect(
+      (
+        await app.inject({
+          method: "GET",
+          url: HTTP_PATHS.authProviders,
+          headers: { host: "example.com" },
+          remoteAddress: "127.0.0.1",
+        })
+      ).json(),
+    ).toMatchObject({ providers: [{ id: "google" }, { id: "dev", enabled: false, startUrl: null }] });
+
+    const response = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.authDevCallback}?next=%2Fadmin`,
+      headers: { host: "localhost:8000" },
+      remoteAddress: "127.0.0.1",
+    });
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("/admin");
+    expect(String(response.headers["set-cookie"])).toContain("opentag_access=dev-access-secret");
+    expect(devService.signIn).toHaveBeenCalledOnce();
+
+    for (const request of [
+      { headers: { host: "localhost:8000" }, remoteAddress: "192.0.2.10" },
+      { headers: { host: "example.com" }, remoteAddress: "127.0.0.1" },
+    ]) {
+      const rejected = await app.inject({ method: "GET", url: HTTP_PATHS.authDevCallback, ...request });
+      expect(rejected.statusCode).toBe(404);
+    }
+    expect(devService.signIn).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an external development redirect before issuing credentials", async () => {
+    const devService = dev();
+    const { app } = createBrowserApp({ devService, googleService: null });
+    const response = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.authDevCallback}?next=${encodeURIComponent("https://example.com")}`,
+      headers: { host: "localhost:8000" },
+      remoteAddress: "127.0.0.1",
+    });
+    expect(response.statusCode).toBe(400);
+    expect(devService.signIn).not.toHaveBeenCalled();
   });
 
   it("sets HttpOnly browser tokens only in cookies after a verified callback", async () => {
@@ -80,7 +152,7 @@ describe("browser authentication routes", () => {
     expect(cookies).toContain("opentag_refresh=refresh-secret");
     expect(cookies).toContain("HttpOnly");
     expect(response.body).not.toContain("access-secret");
-    expect(googleService.callback).toHaveBeenCalledWith("code", "state", "signed-context", expect.any(Object));
+    expect(googleService?.callback).toHaveBeenCalledWith("code", "state", "signed-context", expect.any(Object));
   });
 
   it("requires same-origin double-submit CSRF for refresh while bearer API auth remains unaffected", async () => {

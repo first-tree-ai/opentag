@@ -68,6 +68,10 @@ pnpm --filter open-tag start agent list
 `http://127.0.0.1:8000/admin/`。Team admin 可以查看当前成员、Agent、实际被引用的 Computer、当前邀请链接和
 带时间戳的诊断快照。membership 与邀请变更仍通过显式 CLI 操作完成：
 
+若 loopback 开发环境没有 Google 凭据，可设置 `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true`，并将
+`OPENTAG_DEV_AUTH_EMAIL` 设为已有 bootstrap 用户的唯一 email。该 bypass 在 `development` 以外的环境会被拒绝，
+且不会创建账号或 Team 角色。
+
 ```bash
 pnpm --filter open-tag start team member list
 pnpm --filter open-tag start team invitation show

@@ -1,7 +1,7 @@
 # OpenTag 发布指南
 
 > Canonical source: [../releasing.md](../releasing.md)
-> Last synced with: 2026-08-17
+> Last synced with: 2026-08-19
 
 OpenTag 以两个相互隔离的 npm package identity 发布一个自包含 CLI artifact：
 
@@ -34,11 +34,15 @@ source manifest 保持 `open-tag`、`private: true` 和稳定 base version。wor
 `main` CI 成功后，npm workflow 会计算 next patch 并发布：
 
 ~~~text
-X.Y.(Z+1)-staging.<github_run_number>.<github_run_attempt>
+X.Y.(Z+1)-staging.<release_sequence>.<github_run_attempt>
 ~~~
 
+第一个 prerelease 分量是由 registry 驱动的发布序号，不再使用 GitHub workflow run number。发布 job 会串行
+执行，读取目标 release line 已发布的最大序号并加一；新的 release line 从序号 `1` 开始。同一 commit 重试时
+复用已有坐标，旧 run 的 commit 如果已不是当前 `main`，则会在发布前失败。
+
 发布前会查询 registry。不存在的坐标可以发布；已存在的坐标只有在 `gitHead` 与 release commit 相同时才作为
-幂等成功。registry 失败或坐标属于其他 commit 时会硬失败。
+幂等成功。registry 查询失败、出现不支持的已发布版本、revision 已过期或坐标属于其他 commit 时都会硬失败。
 
 如果首次运行因为 npm trusted publishing 未配置而失败，请先按上述字段配置 publisher，再从 `main` 手动
 dispatch workflow；不要添加 token。发布后应核对 package metadata，并在空目录安装 registry 中的精确版本，

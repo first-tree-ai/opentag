@@ -4,8 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { classifyRegistryLookup } from "../check-npm-version.mjs";
+import { assertCurrentStagingRevision } from "../check-staging-revision.mjs";
 import { prepareCliRelease } from "../prepare-cli-release.mjs";
-import { resolveProductionVersion, resolveStagingVersion } from "../release-versions.mjs";
+import {
+  findLatestStagingVersion,
+  formatStagingVersion,
+  resolveNextPublishedStagingVersion,
+  resolveProductionVersion,
+} from "../release-versions.mjs";
+import { classifyPublishedMetadataLookup, classifyPublishedVersionsLookup } from "../resolve-staging-release.mjs";
 import { generateThirdPartyNotices } from "../third-party-notices.mjs";
 
 const sourceManifest = {
@@ -41,10 +48,78 @@ async function withManifest(manifest, callback) {
 }
 
 test("resolves next-patch staging versions and matching production tags", () => {
-  assert.equal(resolveStagingVersion("0.0.1", "42", "3"), "0.0.2-staging.42.3");
+  assert.equal(formatStagingVersion("0.0.1", "42", "3"), "0.0.2-staging.42.3");
   assert.equal(resolveProductionVersion("1.2.3", "v1.2.3"), "1.2.3");
   assert.throws(() => resolveProductionVersion("1.2.3", "v1.2.4"), /does not match source version/);
   assert.throws(() => resolveProductionVersion("0.0.1", "v0.0.1"), /0\.0\.2 or newer/);
+});
+
+test("increments the registry staging sequence and keeps same-commit retries idempotent", () => {
+  const publishedVersions = ["0.0.1", "0.0.2-staging.42.1", "0.0.2-staging.48.1", "0.0.2-staging.48.2"];
+  assert.equal(findLatestStagingVersion("0.0.1", publishedVersions), "0.0.2-staging.48.2");
+  assert.equal(
+    resolveNextPublishedStagingVersion({
+      sourceVersion: "0.0.1",
+      publishedVersions,
+      latestGitHead: "newer-commit",
+      releaseGitHead: "next-commit",
+      runAttempt: "1",
+    }),
+    "0.0.2-staging.49.1",
+  );
+  assert.equal(
+    resolveNextPublishedStagingVersion({
+      sourceVersion: "0.0.1",
+      publishedVersions,
+      latestGitHead: "next-commit",
+      releaseGitHead: "next-commit",
+      runAttempt: "2",
+    }),
+    "0.0.2-staging.48.2",
+  );
+});
+
+test("starts a new staging release line at one and rejects registry lines ahead of source", () => {
+  assert.equal(
+    resolveNextPublishedStagingVersion({
+      sourceVersion: "0.0.2",
+      publishedVersions: ["0.0.1", "0.0.2-staging.48.1"],
+      releaseGitHead: "next-commit",
+      runAttempt: "3",
+    }),
+    "0.0.3-staging.1.3",
+  );
+  assert.throws(() => findLatestStagingVersion("0.0.1", ["0.0.3-staging.1.1"]), /ahead of the target release line/);
+  assert.throws(() => findLatestStagingVersion("0.0.1", ["0.0.2"]), /not below the target staging release line/);
+});
+
+test("rejects stale staging revisions before an old run can publish", () => {
+  assert.doesNotThrow(() => assertCurrentStagingRevision("current-commit", "current-commit"));
+  assert.throws(
+    () => assertCurrentStagingRevision("old-commit", "current-commit"),
+    /old-commit is stale; current origin\/main is current-commit/,
+  );
+});
+
+test("classifies staging registry version and metadata lookups", () => {
+  assert.deepEqual(
+    classifyPublishedVersionsLookup({ status: 0, stdout: '["0.0.1","0.0.2-staging.1.1"]', stderr: "" }),
+    ["0.0.1", "0.0.2-staging.1.1"],
+  );
+  assert.deepEqual(classifyPublishedVersionsLookup({ status: 1, stdout: "", stderr: "npm error code E404" }), []);
+  assert.deepEqual(
+    classifyPublishedMetadataLookup({
+      status: 0,
+      stdout: '{"version":"0.0.2-staging.1.1","gitHead":"commit"}',
+      stderr: "",
+      expectedVersion: "0.0.2-staging.1.1",
+    }),
+    { version: "0.0.2-staging.1.1", gitHead: "commit" },
+  );
+  assert.throws(
+    () => classifyPublishedVersionsLookup({ status: 1, stdout: "", stderr: "ECONNRESET" }),
+    /versions lookup failed/,
+  );
 });
 
 test("rewrites the staging identity without losing release metadata", async () => {

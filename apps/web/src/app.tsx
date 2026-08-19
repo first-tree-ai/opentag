@@ -48,15 +48,48 @@ export function App() {
 }
 
 function LoginPage() {
+  const providers = useResource(() => browserApi.authProviders(), "auth-providers");
+  const rawNext = new URLSearchParams(window.location.search).get("next");
+  const next = rawNext ?? "/admin";
   return (
     <main className="center-card">
       <span className="eyebrow">OpenTag</span>
       <h1>Admin sign in</h1>
-      <p>Use your configured Google identity. Team roles are checked from the server after sign-in.</p>
-      <a className="button" href="/api/v1/auth/google/start?next=%2Fadmin">
-        Continue with Google
-      </a>
+      <p>Choose an available sign-in method. Team roles are checked from the server after sign-in.</p>
+      <Resource state={providers}>
+        {(value) => {
+          const google = value.providers.find((provider) => provider.id === "google" && provider.enabled);
+          const dev = value.providers.find((provider) => provider.id === "dev" && provider.enabled);
+          const loopback = isLoopbackHostname(window.location.hostname);
+          if (!google?.startUrl && !(dev?.startUrl && loopback)) {
+            return <div className="notice error">No browser sign-in method is available.</div>;
+          }
+          return (
+            <div className="actions">
+              {google?.startUrl ? (
+                <a className="button" href={`${google.startUrl}?next=${encodeURIComponent(next)}`}>
+                  Continue with Google
+                </a>
+              ) : null}
+              {dev?.startUrl && loopback ? (
+                <a className="button secondary" href={`${dev.startUrl}?next=${encodeURIComponent(next)}`}>
+                  Dev: bypass Google
+                </a>
+              ) : null}
+            </div>
+          );
+        }}
+      </Resource>
     </main>
+  );
+}
+
+function isLoopbackHostname(value: string): boolean {
+  const hostname = value.toLowerCase().replace(/^\[|\]$/g, "");
+  if (hostname === "localhost" || hostname === "::1") return true;
+  const parts = hostname.split(".").map(Number);
+  return (
+    parts.length === 4 && parts[0] === 127 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)
   );
 }
 
@@ -69,7 +102,7 @@ function InvitePage({ token }: { token: string }) {
       window.location.assign("/admin");
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
-        window.location.assign(`/api/v1/auth/google/start?next=${encodeURIComponent(`/invite/${token}`)}`);
+        window.location.assign(`/admin/login?next=${encodeURIComponent(`/invite/${token}`)}`);
         return;
       }
       setMessage(error instanceof Error ? error.message : "The invitation could not be redeemed");

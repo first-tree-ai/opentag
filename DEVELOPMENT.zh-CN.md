@@ -159,6 +159,19 @@ bootstrap email 是账号资料，不是邮箱密码凭据。当前 connect code
 使用 HTTPS。浏览器 access/refresh JWT 只保存在 HttpOnly cookie 中，浏览器 mutation 还必须同时通过同源检查
 和可读 double-submit CSRF cookie 校验。
 
+若本地 loopback 开发环境没有 Google 凭据，可显式启用开发 bypass，并指定一个已有 bootstrap 用户：
+
+```bash
+export OPENTAG_ENV=development
+export OPENTAG_DEV_AUTH_BYPASS_ENABLED=true
+export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
+```
+
+`OPENTAG_HOST` 与 `OPENTAG_PUBLIC_URL` 都必须保持为 loopback 地址。登录页随后会显示
+`Dev: bypass Google`。callback 会按不区分大小写的 email 精确解析唯一一个已有用户并签发正常浏览器 session；
+它不会创建用户或 Team，且仍会拒绝 suspended 用户或没有 active membership 的用户。email 不存在或有重复匹配时
+会 fail closed。Server 会在 `test` 和 `production` 环境拒绝这组配置。
+
 打开 `/admin/` 可使用只读 Team 管理界面。membership 与邀请变更使用 CLI：
 
 ```bash
@@ -190,6 +203,8 @@ fail-closed 原则拒绝读取。
 | `OPENTAG_ENCRYPTION_KEY` | 无 | 必需的 canonical base64 编码 32-byte 应用层加密密钥 |
 | `OPENTAG_GOOGLE_CLIENT_ID` | 无 | 可选 Google OIDC client id，必须与 secret 同时配置 |
 | `OPENTAG_GOOGLE_CLIENT_SECRET` | 无 | 可选 Google OIDC client secret，必须与 client id 同时配置 |
+| `OPENTAG_DEV_AUTH_BYPASS_ENABLED` | `false` | 显式启用仅限 loopback 的开发登录，必须同时配置 email |
+| `OPENTAG_DEV_AUTH_EMAIL` | 无 | development bypass 选择的已有唯一 bootstrap 用户 |
 | `OPENTAG_AUTO_MIGRATE` | `true` | 监听前执行已入库的 migration |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | access token 有效期 |
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | refresh JWT 有效期 |

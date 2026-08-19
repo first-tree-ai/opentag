@@ -16,13 +16,39 @@ function me(role: "admin" | "member") {
 }
 
 describe("Admin Web", () => {
-  it("renders a Google login without exposing token storage controls", () => {
+  it("renders only browser sign-in methods reported by the server", async () => {
     window.history.replaceState({}, "", "/admin/login");
+    vi.mocked(fetch).mockResolvedValueOnce(
+      response({
+        providers: [
+          { id: "google", enabled: true, startUrl: "/api/v1/auth/google/start" },
+          { id: "dev", enabled: false, startUrl: null },
+        ],
+      }),
+    );
     render(<App />);
-    expect(screen.getByRole("link", { name: "Continue with Google" }).getAttribute("href")).toBe(
+    expect((await screen.findByRole("link", { name: "Continue with Google" })).getAttribute("href")).toBe(
       "/api/v1/auth/google/start?next=%2Fadmin",
     );
+    expect(screen.queryByRole("link", { name: "Dev: bypass Google" })).toBeNull();
     expect(document.body.textContent).not.toContain("accessToken");
+  });
+
+  it("offers the explicit development bypass on localhost and preserves the destination", async () => {
+    window.history.replaceState({}, "", "/admin/login?next=%2Finvite%2FAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    vi.mocked(fetch).mockResolvedValueOnce(
+      response({
+        providers: [
+          { id: "google", enabled: false, startUrl: null },
+          { id: "dev", enabled: true, startUrl: "/api/v1/auth/dev/callback" },
+        ],
+      }),
+    );
+    render(<App />);
+    expect((await screen.findByRole("link", { name: "Dev: bypass Google" })).getAttribute("href")).toBe(
+      "/api/v1/auth/dev/callback?next=%2Finvite%2FAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    );
+    expect(screen.queryByRole("link", { name: "Continue with Google" })).toBeNull();
   });
 
   it("uses live memberships for the Team selector", async () => {

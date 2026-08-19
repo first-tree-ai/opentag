@@ -11,6 +11,7 @@ import {
   AuthService,
   AuthTokenService,
   DefaultGoogleIdentityClient,
+  DevBrowserAuthService,
   formatStartupError,
   GoogleBrowserAuthService,
   OAuthFlowService,
@@ -99,11 +100,13 @@ export async function startServer(): Promise<void> {
           tokenIssuer: authService,
         })
       : undefined;
+    const dev = config.devAuth ? new DevBrowserAuthService(database, authService, config.devAuth.email) : undefined;
     app = createApp({
       adminWebRoot: defaultAdminWebRoot,
       agentService,
       authService,
       browserAuth: {
+        dev,
         google,
         publicOrigin: config.publicUrl,
         refreshTokenTtlSeconds: config.refreshTokenTtlSeconds,

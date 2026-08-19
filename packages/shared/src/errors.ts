@@ -5,6 +5,7 @@ export const ErrorCategorySchema = z.enum(["credential", "deterministic", "valid
 export const ErrorCodeSchema = z.enum([
   "AUTH_CODE_CONSUMED",
   "AUTH_CODE_EXPIRED",
+  "AUTH_DEV_USER_UNAVAILABLE",
   "AUTH_INVALID_CODE",
   "AUTH_INVALID_TOKEN",
   "AUTH_OAUTH_FAILED",

@@ -13,6 +13,7 @@ export const HTTP_PATHS = {
   authConnectExchange: `${API_V1_PREFIX}/auth/connect/exchange`,
   authBrowserLogout: `${API_V1_PREFIX}/auth/browser/logout`,
   authBrowserRefresh: `${API_V1_PREFIX}/auth/browser/refresh`,
+  authDevCallback: `${API_V1_PREFIX}/auth/dev/callback`,
   authGoogleCallback: `${API_V1_PREFIX}/auth/google/callback`,
   authGoogleStart: `${API_V1_PREFIX}/auth/google/start`,
   authProviders: `${API_V1_PREFIX}/auth/providers`,

@@ -67,6 +67,10 @@ Configure `OPENTAG_GOOGLE_CLIENT_ID` and `OPENTAG_GOOGLE_CLIENT_SECRET` to enabl
 `http://127.0.0.1:8000/admin/`. Team admins can inspect current members, Agents, referenced Computers, the current
 invitation, and timestamped diagnostics. Membership and invitation changes remain explicit CLI operations:
 
+For loopback development without Google credentials, set `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true` and
+`OPENTAG_DEV_AUTH_EMAIL` to the unique email of an existing bootstrap user. This bypass is rejected outside the
+`development` environment and never creates accounts or Team roles.
+
 ```bash
 pnpm --filter open-tag start team member list
 pnpm --filter open-tag start team invitation show

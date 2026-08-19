@@ -10,6 +10,25 @@ function setDocumentCookie(value: string): void {
 }
 
 describe("BrowserApi", () => {
+  it("loads strict browser provider availability without retrying as an authenticated request", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            providers: [
+              { id: "google", enabled: false, startUrl: null },
+              { id: "dev", enabled: true, startUrl: "/api/v1/auth/dev/callback" },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    await expect(new BrowserApi(fetchImpl).authProviders()).resolves.toMatchObject({
+      providers: [{ id: "google" }, { id: "dev", enabled: true }],
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it("binds the default fetch implementation to the browser global", async () => {
     const fetchImpl = vi.fn<typeof fetch>(
       async () =>

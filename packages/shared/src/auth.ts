@@ -56,7 +56,7 @@ export const AuthProvidersResponseSchema = z
     providers: z.array(
       z
         .object({
-          id: z.literal("google"),
+          id: z.enum(["google", "dev"]),
           enabled: z.boolean(),
           startUrl: z.string().min(1).nullable(),
         })

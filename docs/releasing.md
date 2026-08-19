@@ -61,9 +61,10 @@ Production publishing is intentionally stricter:
 - the version must be `0.0.2` or newer and absent from npm; and
 - the `v*` tag must be created through the protected release-tag ruleset.
 
-The same tag publishes the npm CLI and the GHCR server image. The image carries full-commit, SemVer, and `latest` tags,
-and includes the OpenTag Apache-2.0 license at `/app/LICENSE`. Creating a production tag is an irreversible release action
-and requires an explicit release decision; testing the workflow is not authorization to create one.
+The same tag publishes the npm CLI and the GHCR server image. The image carries full-commit and SemVer tags, and takes
+over `latest` unless a higher release is already published. It is the image already built for that commit rather than a
+rebuild, and includes the OpenTag Apache-2.0 license at `/app/LICENSE`. Creating a production tag is an irreversible
+release action and requires an explicit release decision; testing the workflow is not authorization to create one.
 
 ## Contributor smoke
 

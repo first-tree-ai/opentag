@@ -8,12 +8,17 @@ export function registerComputerRoutes(
   app: FastifyInstance,
   authService: UserAuthService,
   computerService: ComputerService,
+  publicOrigin?: string,
 ): void {
-  app.get(HTTP_PATHS.meComputers, { preHandler: createUserAuthPreHandler(authService) }, async (request, reply) => {
-    const userId = request.authContext?.me.user.id;
-    if (!userId) {
-      throw new Error("Authenticated user context is missing");
-    }
-    return reply.code(200).send(ListComputersResponseSchema.parse(await computerService.listForUser(userId)));
-  });
+  app.get(
+    HTTP_PATHS.meComputers,
+    { preHandler: createUserAuthPreHandler(authService, { publicOrigin }) },
+    async (request, reply) => {
+      const userId = request.authContext?.me.user.id;
+      if (!userId) {
+        throw new Error("Authenticated user context is missing");
+      }
+      return reply.code(200).send(ListComputersResponseSchema.parse(await computerService.listForUser(userId)));
+    },
+  );
 }

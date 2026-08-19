@@ -200,7 +200,7 @@ describe("Agent persistence and authorization", () => {
 
       await revoker`
         update memberships
-        set left_at = now()
+        set status = 'left', updated_at = now()
         where team_id = ${value.bootstrap.teamId} and user_id = ${value.bootstrap.userId}
       `;
       releaseTableLock?.();
@@ -258,10 +258,28 @@ describe("Agent persistence and authorization", () => {
         .returning();
       if (!otherTeam) throw new Error("Other Team fixture was not created");
       const outsider = await createUser(value.database, otherTeam.id, "outsider@example.com");
+      const outsiderComputer = await createComputer(value.database, outsider.id);
       await expect(value.service.getById(outsider.id, created.id)).rejects.toMatchObject({
         code: "RESOURCE_NOT_FOUND",
         statusCode: 404,
       });
+      await expect(
+        value.service.updateById(outsider.id, created.id, {
+          displayName: "Hidden",
+          expectedRevision: 2,
+        }),
+      ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
+      await expect(value.service.deleteById(outsider.id, created.id)).rejects.toMatchObject({
+        code: "RESOURCE_NOT_FOUND",
+        statusCode: 404,
+      });
+      await expect(
+        value.service.createForTeam(
+          outsider.id,
+          value.bootstrap.teamId,
+          createInput(outsiderComputer.id, "outsider-agent"),
+        ),
+      ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
 
       await expect(value.service.deleteById(member.id, created.id)).rejects.toMatchObject({
         code: "AGENT_FORBIDDEN",

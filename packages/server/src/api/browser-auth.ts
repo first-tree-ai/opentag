@@ -1,0 +1,127 @@
+import { AuthProvidersResponseSchema, HTTP_PATHS } from "@opentag/shared";
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import { z } from "zod";
+import {
+  BROWSER_COOKIE_NAMES,
+  clearBrowserSessionCookies,
+  clearOAuthContextCookie,
+  parseCookies,
+  requireBrowserMutationSecurity,
+  requireRefreshCookie,
+  setBrowserSessionCookies,
+  setOAuthContextCookie,
+} from "../services/auth/browser-cookies.js";
+import { AuthServiceError } from "../services/auth/errors.js";
+import type { GoogleBrowserAuthService, UserAuthService } from "../services/auth/index.js";
+import { parseRequest } from "./request-validation.js";
+
+const StartQuerySchema = z.object({ next: z.string().max(1024).optional() }).strict();
+const CallbackQuerySchema = z
+  .object({ code: z.string().min(1).max(4096), state: z.string().min(1).max(4096) })
+  .strict();
+
+export interface BrowserAuthRoutesOptions {
+  google?: GoogleBrowserAuthService;
+  publicOrigin: string;
+  refreshTokenTtlSeconds: number;
+  secureCookies: boolean;
+}
+
+class RouteRateLimiter {
+  readonly #entries = new Map<string, { count: number; resetAt: number }>();
+  constructor(
+    readonly limit = 20,
+    readonly windowMs = 5 * 60 * 1000,
+  ) {}
+
+  check(key: string): void {
+    const now = Date.now();
+    const current = this.#entries.get(key);
+    if (!current || current.resetAt <= now) {
+      this.#entries.set(key, { count: 1, resetAt: now + this.windowMs });
+      return;
+    }
+    current.count += 1;
+    if (current.count > this.limit) {
+      throw new AuthServiceError("RATE_LIMITED", "rate_limit", "Too many browser sign-in attempts", 429);
+    }
+  }
+}
+
+function audit(request: FastifyRequest) {
+  const userAgent = request.headers["user-agent"];
+  return { ip: request.ip.slice(0, 255), ...(userAgent ? { userAgent: userAgent.slice(0, 1024) } : {}) };
+}
+
+export function registerBrowserAuthRoutes(
+  app: FastifyInstance,
+  authService: UserAuthService,
+  options: BrowserAuthRoutesOptions,
+): void {
+  const limiter = new RouteRateLimiter();
+
+  app.get(HTTP_PATHS.authProviders, async (_request, reply) =>
+    reply.code(200).send(
+      AuthProvidersResponseSchema.parse({
+        providers: [
+          {
+            id: "google",
+            enabled: Boolean(options.google),
+            startUrl: options.google ? HTTP_PATHS.authGoogleStart : null,
+          },
+        ],
+      }),
+    ),
+  );
+
+  app.get(HTTP_PATHS.authGoogleStart, async (request, reply) => {
+    limiter.check(`${request.ip}:start`);
+    if (!options.google) {
+      throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);
+    }
+    const { next } = parseRequest(StartQuerySchema, request.query);
+    const result = await options.google.start(next);
+    setOAuthContextCookie(reply, result.context, options.secureCookies);
+    return reply.redirect(result.authorizationUrl, 302);
+  });
+
+  app.get(HTTP_PATHS.authGoogleCallback, async (request, reply) => {
+    limiter.check(`${request.ip}:callback`);
+    if (!options.google) {
+      throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);
+    }
+    const { code, state } = parseRequest(CallbackQuerySchema, request.query);
+    const context = parseCookies(request.headers.cookie)[BROWSER_COOKIE_NAMES.oauthContext];
+    if (!context) {
+      throw new AuthServiceError(
+        "AUTH_OAUTH_FAILED",
+        "credential",
+        "The browser sign-in flow is invalid or expired",
+        401,
+      );
+    }
+    const result = await options.google.callback(code, state, context, audit(request));
+    clearOAuthContextCookie(reply, options.secureCookies);
+    setBrowserSessionCookies(reply, result.tokens, {
+      refreshTtlSeconds: options.refreshTokenTtlSeconds,
+      secure: options.secureCookies,
+    });
+    return reply.redirect(result.next, 302);
+  });
+
+  app.post(HTTP_PATHS.authBrowserRefresh, async (request, reply) => {
+    requireBrowserMutationSecurity(request, options.publicOrigin);
+    const tokens = await authService.refresh(requireRefreshCookie(request));
+    setBrowserSessionCookies(reply, tokens, {
+      refreshTtlSeconds: options.refreshTokenTtlSeconds,
+      secure: options.secureCookies,
+    });
+    return reply.code(204).send();
+  });
+
+  app.post(HTTP_PATHS.authBrowserLogout, async (request, reply) => {
+    requireBrowserMutationSecurity(request, options.publicOrigin);
+    clearBrowserSessionCookies(reply, options.secureCookies);
+    return reply.code(204).send();
+  });
+}

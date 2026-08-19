@@ -11,6 +11,9 @@ const EXPECTED_ROOT_EXPORTS = [
   "formatAgentCreated",
   "formatAgentList",
   "formatComputerList",
+  "formatTeamInvitation",
+  "formatTeamMember",
+  "formatTeamMembers",
   "listComputers",
   "resolveServerUrl",
   "runAgentCreate",
@@ -21,6 +24,13 @@ const EXPECTED_ROOT_EXPORTS = [
   "runDaemon",
   "runDoctor",
   "runLogin",
+  "runTeamInvitationRotate",
+  "runTeamInvitationShow",
+  "runTeamLeave",
+  "runTeamMemberList",
+  "runTeamMemberRemove",
+  "runTeamMemberRestore",
+  "runTeamMemberRole",
   "selectComputer",
   "selectTeam",
   "type DaemonRunOptions",
@@ -28,6 +38,7 @@ const EXPECTED_ROOT_EXPORTS = [
   "type DoctorResult",
   "type LoginOptions",
   "type LoginResult",
+  "type TeamSelectionOptions",
 ];
 
 describe("CLI package public surface", () => {

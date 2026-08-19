@@ -7,8 +7,10 @@ import {
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
-import type { DatabaseClient } from "../../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agents, computers, memberships, users } from "../../db/schema/index.js";
+import { AuthServiceError } from "../auth/index.js";
+import { TeamMembershipService } from "../teams/index.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
 
 type AgentRow = typeof agents.$inferSelect;
@@ -53,11 +55,22 @@ function isAgentNameConflict(error: unknown): boolean {
 }
 
 export class AgentService {
+  readonly #afterMembershipLocked?: () => Promise<void>;
   readonly #database: DatabaseClient;
+  readonly #membershipService: TeamMembershipService;
   readonly #now: () => Date;
 
-  constructor(database: DatabaseClient, options: { now?: () => Date } = {}) {
+  constructor(
+    database: DatabaseClient,
+    options: {
+      afterMembershipLocked?: () => Promise<void>;
+      membershipService?: TeamMembershipService;
+      now?: () => Date;
+    } = {},
+  ) {
+    this.#afterMembershipLocked = options.afterMembershipLocked;
     this.#database = database;
+    this.#membershipService = options.membershipService ?? new TeamMembershipService(database, { now: options.now });
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -65,7 +78,8 @@ export class AgentService {
     const input = CreateAgentRequestSchema.parse(rawInput);
     try {
       return await this.#database.transaction(async (transaction) => {
-        await this.#requireTeamMembership(transaction, callerUserId, teamId);
+        await this.#requireTeamMembershipForMutation(transaction, callerUserId, teamId);
+        await this.#afterMembershipLocked?.();
         const [computer] = await transaction
           .select({ id: computers.id })
           .from(computers)
@@ -120,7 +134,7 @@ export class AgentService {
         and(
           eq(memberships.teamId, teamId),
           eq(memberships.userId, callerUserId),
-          isNull(memberships.leftAt),
+          eq(memberships.status, "active"),
           isNull(users.suspendedAt),
         ),
       )
@@ -136,7 +150,7 @@ export class AgentService {
   async updateById(callerUserId: string, agentId: string, rawInput: UpdateAgentRequest): Promise<Agent> {
     const input = UpdateAgentRequestSchema.parse(rawInput);
     return this.#database.transaction(async (transaction) => {
-      const scope = await this.#resolveAgentScope(transaction, callerUserId, agentId, false);
+      const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId, false);
       this.#requireManagePermission(scope);
       const [updated] = await transaction
         .update(agents)
@@ -162,11 +176,8 @@ export class AgentService {
 
   async deleteById(callerUserId: string, agentId: string): Promise<void> {
     await this.#database.transaction(async (transaction) => {
-      const [row] = await transaction.select().from(agents).where(eq(agents.id, agentId)).limit(1).for("update");
-      if (!row) throw resourceNotFound();
-      const role = await this.#requireTeamMembership(transaction, callerUserId, row.teamId);
-      const scope = { agent: row, canManage: row.managerUserId === callerUserId || role === "admin" };
-      if (row.deletedAt) {
+      const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId, true);
+      if (scope.agent.deletedAt) {
         if (scope.canManage) return;
         throw resourceNotFound();
       }
@@ -178,6 +189,29 @@ export class AgentService {
         .set({ deletedAt: now, updatedAt: now, revision: sql`${agents.revision} + 1` })
         .where(and(eq(agents.id, agentId), isNull(agents.deletedAt)));
     });
+  }
+
+  async #lockAgentScopeForMutation(
+    transaction: DatabaseTransaction,
+    callerUserId: string,
+    agentId: string,
+    includeDeleted: boolean,
+  ): Promise<AgentScope> {
+    const [candidate] = await transaction
+      .select({ teamId: agents.teamId })
+      .from(agents)
+      .where(and(eq(agents.id, agentId), ...(includeDeleted ? [] : [isNull(agents.deletedAt)])))
+      .limit(1);
+    if (!candidate) throw resourceNotFound();
+    const role = await this.#requireTeamMembershipForMutation(transaction, callerUserId, candidate.teamId);
+    const [agent] = await transaction
+      .select()
+      .from(agents)
+      .where(and(eq(agents.id, agentId), ...(includeDeleted ? [] : [isNull(agents.deletedAt)])))
+      .limit(1)
+      .for("update");
+    if (!agent) throw resourceNotFound();
+    return { agent, canManage: agent.managerUserId === callerUserId || role === "admin" };
   }
 
   async #requireTeamMembership(
@@ -193,13 +227,26 @@ export class AgentService {
         and(
           eq(memberships.teamId, teamId),
           eq(memberships.userId, callerUserId),
-          isNull(memberships.leftAt),
+          eq(memberships.status, "active"),
           isNull(users.suspendedAt),
         ),
       )
       .limit(1);
     if (!membership) throw resourceNotFound();
     return membership.role;
+  }
+
+  async #requireTeamMembershipForMutation(
+    transaction: DatabaseTransaction,
+    callerUserId: string,
+    teamId: string,
+  ): Promise<"admin" | "member"> {
+    try {
+      return await this.#membershipService.requireActiveMembershipForMutation(transaction, callerUserId, teamId);
+    } catch (error) {
+      if (error instanceof AuthServiceError && error.statusCode === 404) throw resourceNotFound();
+      throw error;
+    }
   }
 
   async #resolveAgentScope(

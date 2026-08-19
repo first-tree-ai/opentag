@@ -7,16 +7,17 @@ currently **pre-alpha**: its product workflows are still under development and a
 
 This repository currently provides the engineering foundation and first control-plane slice for OpenTag:
 
-- a TypeScript monorepo with CLI, client, server, and shared workspaces;
+- a TypeScript monorepo with CLI, Web, client, server, and shared workspaces;
 - a Fastify server with health, readiness, REST, and Computer WebSocket endpoints;
 - a schema-validating client health check;
-- PostgreSQL migrations and bootstrap authentication for the first user and team;
+- provider-neutral account identities, Google browser sign-in, and PostgreSQL migrations;
 - one-time connect-code login with sliding stateless refresh JWTs;
+- explicit Team membership, role, leave/remove/restore, and seven-day invitation lifecycles;
 - user-owned Computer registration and presence;
 - Team-owned Agent registry with immutable Computer/provider binding and revision fencing; and
-- `opentag-dev doctor`, `login`, `daemon run`, `computer list`, and `agent` commands.
+- a same-origin, read-only Admin Web plus `team`, `agent`, `computer`, and daemon CLI commands.
 
-Agent execution, messaging integrations, and session runtimes are not implemented yet.
+Agent execution, Feishu/Slack integrations, IM persistence, and session runtimes are not implemented yet.
 
 ## Quick start
 
@@ -28,6 +29,8 @@ pnpm install
 docker compose up -d postgres
 export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
 export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
+export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
+export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
 pnpm build
 pnpm --filter @opentag/server start
 ```
@@ -59,13 +62,24 @@ pnpm --filter open-tag start agent list
 
 This records the Agent identity and Computer binding only; it does not start a Codex or Claude Code turn.
 
+Configure `OPENTAG_GOOGLE_CLIENT_ID` and `OPENTAG_GOOGLE_CLIENT_SECRET` to enable Google sign-in, then open
+`http://127.0.0.1:8000/admin/`. Team admins can inspect current members, Agents, referenced Computers, the current
+invitation, and timestamped diagnostics. Membership and invitation changes remain explicit CLI operations:
+
+```bash
+pnpm --filter open-tag start team member list
+pnpm --filter open-tag start team invitation show
+pnpm --filter open-tag start team invitation rotate
+```
+
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full local workflow.
 
 ## Project status
 
 OpenTag is being built in small, validated vertical slices. Public APIs and package boundaries may change before the
 first stable release. The current code establishes database bootstrap, user authentication, the local Computer
-connection, and the Agent registry; agent execution and messaging remain future vertical slices.
+connection, the Agent registry, account/Team lifecycle, and read-only Admin Web; agent execution and messaging remain
+future vertical slices.
 
 ## Documentation
 

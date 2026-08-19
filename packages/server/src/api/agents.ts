@@ -26,8 +26,9 @@ export function registerAgentRoutes(
   app: FastifyInstance,
   authService: UserAuthService,
   agentService: AgentService,
+  publicOrigin?: string,
 ): void {
-  const preHandler = createUserAuthPreHandler(authService);
+  const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
 
   app.post(TEAM_AGENTS_TEMPLATE, { preHandler }, async (request, reply) => {
     const { teamId } = parseRequest(TeamParamsSchema, request.params);

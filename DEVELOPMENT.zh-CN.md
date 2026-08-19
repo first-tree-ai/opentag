@@ -52,6 +52,8 @@ migration。
 docker compose up -d postgres
 export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
 export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
+export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
+export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
 pnpm build
 pnpm --filter @opentag/server start
 ```
@@ -139,6 +141,30 @@ bootstrap email 是账号资料，不是邮箱密码凭据。当前 connect code
 无关的 token 颁发边界。未来 Google 或 OIDC identity resolver 可以接入这个边界，无需改变 JWT claims 或 team
 权限模型；每次鉴权始终从 PostgreSQL 读取有效 membership。
 
+## Google 登录、Team membership 与 Admin Web
+
+创建 Google Web OAuth client，并将 callback 配置为
+`http://127.0.0.1:8000/api/v1/auth/google/callback`，然后设置 `OPENTAG_GOOGLE_CLIENT_ID` 与
+`OPENTAG_GOOGLE_CLIENT_SECRET`。Server 会在监听前校验 Google 配置；生产环境的 `OPENTAG_PUBLIC_URL` 必须
+使用 HTTPS。浏览器 access/refresh JWT 只保存在 HttpOnly cookie 中，浏览器 mutation 还必须同时通过同源检查
+和可读 double-submit CSRF cookie 校验。
+
+打开 `/admin/` 可使用只读 Team 管理界面。membership 与邀请变更使用 CLI：
+
+```bash
+pnpm --filter open-tag start team member list --team example
+pnpm --filter open-tag start team member role <user-id> --role admin --team example
+pnpm --filter open-tag start team member remove <user-id> --team example
+pnpm --filter open-tag start team member restore <user-id> --role member --team example
+pnpm --filter open-tag start team leave --team example
+pnpm --filter open-tag start team invitation show --team example
+pnpm --filter open-tag start team invitation rotate --team example
+```
+
+邀请明文只在授权的 `show`/`rotate` 响应中恢复；PostgreSQL 保存 SHA-256 查询 hash 和 AES-256-GCM 密文。
+使用 `openssl rand -base64 32` 生成 `OPENTAG_ENCRYPTION_KEY`；若直接更换密钥而不轮换已有邀请，旧邀请会按
+fail-closed 原则拒绝读取。
+
 ## 环境变量
 
 仅在需要本地覆盖时复制 `.env.example`。当前进程不会自动加载环境文件。
@@ -148,8 +174,12 @@ bootstrap email 是账号资料，不是邮箱密码凭据。当前 connect code
 | `OPENTAG_HOST` | `127.0.0.1` | Server 监听地址 |
 | `OPENTAG_PORT` | `8000` | Server 监听端口 |
 | `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor 目标地址 |
+| `OPENTAG_PUBLIC_URL` | 无 | 浏览器 callback 和邀请链接使用的必需 Server 公共 origin |
 | `OPENTAG_DATABASE_URL` | 无 | 必需的 PostgreSQL 连接地址 |
 | `OPENTAG_JWT_SECRET` | 无 | 必需的 access token 签名 secret，至少 32 个字符 |
+| `OPENTAG_ENCRYPTION_KEY` | 无 | 必需的 canonical base64 编码 32-byte 应用层加密密钥 |
+| `OPENTAG_GOOGLE_CLIENT_ID` | 无 | 可选 Google OIDC client id，必须与 secret 同时配置 |
+| `OPENTAG_GOOGLE_CLIENT_SECRET` | 无 | 可选 Google OIDC client secret，必须与 client id 同时配置 |
 | `OPENTAG_AUTO_MIGRATE` | `true` | 监听前执行已入库的 migration |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | access token 有效期 |
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | refresh JWT 有效期 |

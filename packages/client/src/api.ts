@@ -13,12 +13,30 @@ import {
   ListAgentsResponseSchema,
   type ListComputersResponse,
   ListComputersResponseSchema,
+  type ListTeamComputersResponse,
+  ListTeamComputersResponseSchema,
+  type ListTeamMembersResponse,
+  ListTeamMembersResponseSchema,
   type MeResponse,
   MeResponseSchema,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
+  type RestoreTeamMemberRequest,
+  type TeamInvitation,
+  TeamInvitationSchema,
+  type TeamMember,
+  TeamMemberSchema,
   teamAgentsPath,
+  teamComputersPath,
+  teamInvitationPath,
+  teamInvitationRotatePath,
+  teamLeavePath,
+  teamMemberPath,
+  teamMemberRemovePath,
+  teamMemberRestorePath,
+  teamMembersPath,
   type UpdateAgentRequest,
+  type UpdateTeamMemberRequest,
 } from "@opentag/shared";
 
 interface RuntimeSchema<T> {
@@ -70,6 +88,71 @@ export class OpenTagApi {
 
   listComputers(accessToken: string): Promise<ListComputersResponse> {
     return this.#request(HTTP_PATHS.meComputers, ListComputersResponseSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  listTeamMembers(accessToken: string, teamId: string): Promise<ListTeamMembersResponse> {
+    return this.#request(teamMembersPath(teamId), ListTeamMembersResponseSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  updateTeamMember(
+    accessToken: string,
+    teamId: string,
+    userId: string,
+    input: UpdateTeamMemberRequest,
+  ): Promise<TeamMember> {
+    return this.#request(teamMemberPath(teamId, userId), TeamMemberSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+    });
+  }
+
+  removeTeamMember(accessToken: string, teamId: string, userId: string): Promise<void> {
+    return this.#requestNoContent(teamMemberRemovePath(teamId, userId), {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  restoreTeamMember(
+    accessToken: string,
+    teamId: string,
+    userId: string,
+    input: RestoreTeamMemberRequest,
+  ): Promise<TeamMember> {
+    return this.#request(teamMemberRestorePath(teamId, userId), TeamMemberSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+    });
+  }
+
+  leaveTeam(accessToken: string, teamId: string): Promise<void> {
+    return this.#requestNoContent(teamLeavePath(teamId), {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  getTeamInvitation(accessToken: string, teamId: string): Promise<TeamInvitation> {
+    return this.#request(teamInvitationPath(teamId), TeamInvitationSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  rotateTeamInvitation(accessToken: string, teamId: string): Promise<TeamInvitation> {
+    return this.#request(teamInvitationRotatePath(teamId), TeamInvitationSchema, {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  listTeamComputers(accessToken: string, teamId: string): Promise<ListTeamComputersResponse> {
+    return this.#request(teamComputersPath(teamId), ListTeamComputersResponseSchema, {
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }

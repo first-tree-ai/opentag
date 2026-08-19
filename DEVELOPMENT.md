@@ -52,6 +52,8 @@ the server listens.
 docker compose up -d postgres
 export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
 export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
+export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
+export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
 pnpm build
 pnpm --filter @opentag/server start
 ```
@@ -140,6 +142,30 @@ The bootstrap email is account profile data, not an email/password credential. T
 stable user ID and then uses the provider-neutral token issuer. Future Google or OIDC identity resolvers can join at that
 boundary without changing JWT claims or team authorization; active memberships are always loaded from PostgreSQL.
 
+## Google sign-in, Team membership, and Admin Web
+
+Create a Google Web OAuth client whose callback is
+`http://127.0.0.1:8000/api/v1/auth/google/callback`, then set `OPENTAG_GOOGLE_CLIENT_ID` and
+`OPENTAG_GOOGLE_CLIENT_SECRET`. The Google configuration is validated before the server listens; production requires an
+HTTPS `OPENTAG_PUBLIC_URL`. Browser access and refresh JWTs stay in HttpOnly cookies, while browser mutations require a
+same-origin request and the readable double-submit CSRF cookie.
+
+Open `/admin/` for the read-only Team view. Use the CLI for membership and invitation mutations:
+
+```bash
+pnpm --filter open-tag start team member list --team example
+pnpm --filter open-tag start team member role <user-id> --role admin --team example
+pnpm --filter open-tag start team member remove <user-id> --team example
+pnpm --filter open-tag start team member restore <user-id> --role member --team example
+pnpm --filter open-tag start team leave --team example
+pnpm --filter open-tag start team invitation show --team example
+pnpm --filter open-tag start team invitation rotate --team example
+```
+
+Invitation plaintext is recovered only for an authorized `show`/`rotate` response. PostgreSQL stores its SHA-256 lookup
+hash and AES-256-GCM ciphertext. Generate `OPENTAG_ENCRYPTION_KEY` with `openssl rand -base64 32`; changing the key
+without rotating existing invitations makes them intentionally fail closed.
+
 ## Environment variables
 
 Copy `.env.example` only when you need local overrides. Environment files are not loaded automatically by the current
@@ -150,8 +176,12 @@ processes.
 | `OPENTAG_HOST` | `127.0.0.1` | Server listen host |
 | `OPENTAG_PORT` | `8000` | Server listen port |
 | `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor target |
+| `OPENTAG_PUBLIC_URL` | none | Required public Server origin used for browser callbacks and invitation links |
 | `OPENTAG_DATABASE_URL` | none | Required PostgreSQL connection URL |
 | `OPENTAG_JWT_SECRET` | none | Required access-token signing secret; at least 32 characters |
+| `OPENTAG_ENCRYPTION_KEY` | none | Required canonical base64-encoded 32-byte application encryption key |
+| `OPENTAG_GOOGLE_CLIENT_ID` | none | Optional Google OIDC client id; requires the matching secret |
+| `OPENTAG_GOOGLE_CLIENT_SECRET` | none | Optional Google OIDC client secret; requires the matching client id |
 | `OPENTAG_AUTO_MIGRATE` | `true` | Run checked-in migrations before listening |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | Access-token lifetime |
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-JWT lifetime |

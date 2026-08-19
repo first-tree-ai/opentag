@@ -235,6 +235,8 @@ jobs:
           docker run --detach --name opentag-server-ci --network opentag-ci --publish 18000:8000
           --env OPENTAG_DATABASE_URL=postgresql://opentag:opentag@opentag-postgres-ci:5432/opentag
           --env OPENTAG_JWT_SECRET=ci-only-secret-that-is-at-least-32-characters
+          --env OPENTAG_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+          --env OPENTAG_PUBLIC_URL=https://localhost:18000
           opentag-server:ci
 
       - name: Wait for readiness endpoint
@@ -256,6 +258,14 @@ jobs:
 
       - name: Smoke production administration entrypoints and Computer runtime
         run: |
+          curl --fail --silent http://127.0.0.1:18000/admin/ | grep -q "OpenTag Admin"
+          node -e '
+            const response = await fetch("http://127.0.0.1:18000/api/v1/not-a-route");
+            const body = await response.text();
+            if (response.status !== 404 || body.includes("OpenTag Admin")) {
+              throw new Error("Admin SPA fallback captured an API route");
+            }
+          '
           docker exec opentag-server-ci node packages/server/dist/db/migrate-cli.mjs
           bootstrap=$(docker exec \
             --env OPENTAG_BOOTSTRAP_EMAIL=admin@example.com \

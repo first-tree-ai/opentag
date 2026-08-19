@@ -2,7 +2,9 @@ import type { MeMembership, MeResponse } from "@opentag/shared";
 
 export function selectTeam(me: MeResponse, requestedTeamName?: string): MeMembership {
   if (requestedTeamName) {
-    const selected = me.memberships.find((membership) => membership.teamName === requestedTeamName);
+    const selected = me.memberships.find(
+      (membership) => membership.teamName === requestedTeamName || membership.teamId === requestedTeamName,
+    );
     if (!selected) throw new Error(`Team "${requestedTeamName}" is not available to the current user`);
     return selected;
   }

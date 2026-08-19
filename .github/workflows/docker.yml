@@ -12,10 +12,10 @@ permissions:
   packages: write
 
 concurrency:
-  # Every run publishes an immutable commit-SHA image that deployments pin, so no run may be
-  # cancelled by a later push. The group is keyed on the revision because GitHub also cancels a
-  # pending run once a newer run queues into the same group, which would drop the image of a
-  # commit that landed between two other pushes.
+  # Every run publishes a commit-SHA image, so no run may be cancelled by a later push. The group is
+  # keyed on the revision because GitHub also cancels a pending run once a newer run queues into the
+  # same group, which would drop the image of a commit that landed between two other pushes. Runs
+  # therefore overlap, and the mutable `edge` tag is moved by a separate serialised job below.
   group: ${{ github.workflow }}-${{ github.ref }}-${{ github.sha }}
   cancel-in-progress: false
 
@@ -24,6 +24,9 @@ jobs:
     name: Publish GHCR Image
     if: github.repository == 'first-tree-ai/opentag'
     runs-on: ubuntu-latest
+    outputs:
+      image: ghcr.io/${{ github.repository }}
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - name: Check out pushed revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -61,6 +64,21 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Reject an already published release coordinate
+        if: github.ref_type == 'tag'
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          # A release coordinate must resolve to one digest forever. Re-running this workflow for an
+          # existing tag would rebuild the image and overwrite that coordinate with a new digest, so
+          # the run fails instead. Deleting the package version is the deliberate way to republish.
+          RELEASE_VERSION="${TAG_NAME#v}"
+          if docker buildx imagetools inspect "$IMAGE:$RELEASE_VERSION" >/dev/null 2>&1; then
+            echo "$IMAGE:$RELEASE_VERSION is already published and must not be overwritten" >&2
+            exit 1
+          fi
+
       - name: Resolve image metadata
         id: metadata
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
@@ -68,13 +86,19 @@ jobs:
           DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
         with:
           images: ghcr.io/${{ github.repository }}
+          # `latest` is emitted explicitly on the tag path only, so the automatic flavour that would
+          # also attach it to any SemVer build is disabled.
+          flavor: latest=false
+          # The commit-SHA coordinate is published by the `main` build alone. A release tag always
+          # points at a commit already on `main`, so re-emitting it here would only overwrite an
+          # existing immutable coordinate with a second digest.
           tags: |
-            type=raw,value=${{ github.sha }}
-            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=${{ github.sha }},enable=${{ github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}},enable=${{ github.ref_type == 'tag' }}
             type=raw,value=latest,enable=${{ github.ref_type == 'tag' }}
 
       - name: Build and publish image
+        id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -86,3 +110,65 @@ jobs:
           sbom: true
           cache-from: type=gha,scope=server-image
           cache-to: ${{ github.ref_type == 'branch' && 'type=gha,mode=max,scope=server-image' || '' }}
+
+      - name: Summarise published coordinates
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+          TAGS: ${{ steps.metadata.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          # Tags are pointers and can be republished; the digest is the only byte-for-byte pin.
+          {
+            echo "### Published image"
+            echo
+            echo "| Coordinate | Value |"
+            echo "| --- | --- |"
+            printf "| Digest | \`%s@%s\` |\n" "$IMAGE" "$DIGEST"
+            echo "$TAGS" | while IFS= read -r tag; do
+              [ -n "$tag" ] && printf "| Tag | \`%s\` |\n" "$tag"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  promote-edge:
+    name: Promote Edge Tag
+    needs: publish
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # Builds for consecutive commits overlap, so an older build can finish after a newer one. This
+    # job is serialised and re-checks the tip immediately before moving the tag, which is what keeps
+    # `edge` from being dragged backwards onto a superseded commit.
+    concurrency:
+      group: ${{ github.workflow }}-edge
+      cancel-in-progress: false
+    steps:
+      - name: Check whether this revision still leads main
+        id: tip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVISION: ${{ github.sha }}
+        run: |
+          TIP=$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)
+          if [ "$TIP" = "$REVISION" ]; then
+            echo "promote=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "promote=false" >> "$GITHUB_OUTPUT"
+            echo "Leaving edge alone: main has advanced from $REVISION to $TIP" >&2
+          fi
+
+      - name: Log in to GHCR
+        if: steps.tip.outputs.promote == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Point edge at this build
+        if: steps.tip.outputs.promote == 'true'
+        env:
+          IMAGE: ${{ needs.publish.outputs.image }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
+        run: |
+          # Retagging by digest republishes the exact manifest that was just built rather than
+          # rebuilding it, so `edge` and the commit-SHA coordinate always resolve to one image.
+          docker buildx imagetools create --tag "$IMAGE:edge" "$IMAGE@$DIGEST"

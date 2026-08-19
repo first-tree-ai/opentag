@@ -78,8 +78,7 @@ pnpm --filter open-tag start team invitation show
 pnpm --filter open-tag start team invitation rotate
 ```
 
-完整本地工作流请参阅 [DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)；运行已发布的 Server 镜像请参阅
-[docs/zh-CN/deploying.md](./docs/zh-CN/deploying.md)。
+完整本地工作流请参阅 [DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)。
 
 ## 项目状态
 
@@ -90,7 +89,6 @@ Admin Web；Agent 执行与即时通信仍属于后续纵向切片。
 ## 文档
 
 - [开发指南](./DEVELOPMENT.zh-CN.md)
-- [部署指南](./docs/zh-CN/deploying.md)
 - [贡献指南](./CONTRIBUTING.zh-CN.md)
 - [发布指南](./docs/zh-CN/releasing.md)
 - [安全政策](./SECURITY.zh-CN.md)

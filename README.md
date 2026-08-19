@@ -77,8 +77,7 @@ pnpm --filter open-tag start team invitation show
 pnpm --filter open-tag start team invitation rotate
 ```
 
-See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full local workflow, and [docs/deploying.md](./docs/deploying.md) for
-running the published server image.
+See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full local workflow.
 
 ## Project status
 
@@ -90,7 +89,6 @@ future vertical slices.
 ## Documentation
 
 - [Development guide](./DEVELOPMENT.md)
-- [Deployment guide](./docs/deploying.md)
 - [Contributing guide](./CONTRIBUTING.md)
 - [Release guide](./docs/releasing.md)
 - [Security policy](./SECURITY.md)

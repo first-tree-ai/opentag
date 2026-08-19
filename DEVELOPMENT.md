@@ -82,9 +82,7 @@ docker compose down
 
 The service exposes port `5432` and stores data in the `opentag-postgres-data` named volume.
 The production server image does not bundle or start PostgreSQL. Set `OPENTAG_DATABASE_URL` to a separately managed
-PostgreSQL instance when deploying it; the Compose service above is only a local development convenience. A separate
-`docker-compose.prod.yml` runs the published image next to its own PostgreSQL service; see
-[docs/deploying.md](./docs/deploying.md).
+PostgreSQL instance when deploying it; the Compose service above is only a local development convenience.
 
 To bootstrap an empty installation, set the required bootstrap fields and run the one-time admin command. It migrates an
 empty database before creating the initial user, team, admin membership, and connect code.
@@ -218,13 +216,6 @@ processes.
 
 If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm
 the server is running and that the configured URL points to its base address.
-
-## Deployment
-
-Deployments run the published `ghcr.io/first-tree-ai/opentag` image, not a source checkout. The image serves the API,
-the Computer WebSocket endpoint, and the Admin Web on one port, requires an HTTPS `OPENTAG_PUBLIC_URL` behind a TLS
-reverse proxy, and contains no CLI. See [docs/deploying.md](./docs/deploying.md) for image tag selection, the runtime
-environment contract, `docker-compose.prod.yml`, migrations, first-administrator bootstrap, and upgrades.
 
 ## Releases
 

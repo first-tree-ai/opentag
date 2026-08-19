@@ -1,6 +1,6 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "globalPassThroughEnv": ["GITHUB_OUTPUT"],
+  "globalPassThroughEnv": ["GITHUB_OUTPUT", "GITHUB_TOKEN", "MAIN_COMMITS", "RELEASE_TAGS"],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

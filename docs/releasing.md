@@ -34,11 +34,17 @@ identity only in its ephemeral checkout by calling `scripts/prepare-cli-release.
 After successful `main` CI, the npm workflow computes the next patch and publishes:
 
 ~~~text
-X.Y.(Z+1)-staging.<github_run_number>.<github_run_attempt>
+X.Y.(Z+1)-staging.<release_sequence>.<github_run_attempt>
 ~~~
 
-It checks the registry before publishing. An absent coordinate may be published; an existing coordinate is accepted only
-when its `gitHead` matches the release commit. A registry failure or a coordinate owned by another commit fails closed.
+The first prerelease component is a registry-backed release sequence, not a GitHub workflow run number. Publishing jobs
+are serialized, read the highest published sequence for the target release line, and increment it by one. A new release
+line starts at sequence `1`. A retry for the same commit reuses its existing coordinate, while a stale run whose commit is
+no longer current `main` fails before publishing.
+
+The workflow checks the registry before publishing. An absent coordinate may be published; an existing coordinate is
+accepted only when its `gitHead` matches the release commit. A registry failure, unsupported published version, stale
+revision, or coordinate owned by another commit fails closed.
 
 If the first run fails because npm trusted publishing is not configured, configure the publisher above and manually
 dispatch the workflow from `main`. Do not add a token. After publishing, verify package metadata and install the exact

@@ -27,6 +27,23 @@ const connectedComputer = {
   lastSeenAt: "2030-01-01T00:00:03.000Z",
 };
 
+const ownTeamComputer = {
+  ...connectedComputer,
+  ownerDisplayName: "Ada",
+  observedAt: "2030-01-01T00:00:04.000Z",
+  agentIds: [],
+};
+
+const teammateComputer = {
+  ...ownTeamComputer,
+  id: "33333333-3333-4333-8333-333333333333",
+  ownerUserId: "22222222-2222-4222-8222-222222222222",
+  ownerDisplayName: "Grace",
+  displayName: "Grace's Linux",
+  platform: "linux",
+  arch: "x64",
+};
+
 afterEach(() => vi.useRealTimers());
 
 describe("Admin Web", () => {
@@ -118,10 +135,12 @@ describe("Admin Web", () => {
     vi.mocked(fetch).mockImplementation(async (input) => {
       const url = String(input);
       if (url === "/api/v1/me") return response(me("admin"));
-      if (url === `/api/v1/teams/${teamId}/computers`) return response({ computers: [] });
+      if (url === `/api/v1/teams/${teamId}/computers`) {
+        return response({ computers: [ownTeamComputer, teammateComputer] });
+      }
       if (url === "/api/v1/me/computers") {
         ownComputerReads += 1;
-        return response({ computers: ownComputerReads === 1 ? [] : [connectedComputer] });
+        return response({ computers: ownComputerReads <= 2 ? [] : [connectedComputer] });
       }
       if (url === "/api/v1/me/connect-codes") {
         return response(
@@ -137,6 +156,8 @@ describe("Admin Web", () => {
     });
 
     render(<App />);
+    expect(await screen.findByRole("cell", { name: "Grace's Linux" })).toBeTruthy();
+    expect(screen.queryByRole("cell", { name: "Ada's Mac" })).toBeNull();
     const connectButton = await screen.findByRole("button", { name: "Connect computer" });
     vi.useFakeTimers();
     await act(async () => {
@@ -156,7 +177,9 @@ describe("Admin Web", () => {
       await Promise.resolve();
     });
     expect(screen.getByRole("status").textContent).toContain("Ada's Mac connected");
-    expect(ownComputerReads).toBe(2);
+    vi.useRealTimers();
+    expect(await screen.findByRole("cell", { name: "Ada's Mac" })).toBeTruthy();
+    expect(ownComputerReads).toBe(4);
   });
 
   it("ignores a reconnect before the Server-issued command boundary", async () => {
@@ -174,8 +197,8 @@ describe("Admin Web", () => {
       if (url === `/api/v1/teams/${teamId}/computers`) return response({ computers: [] });
       if (url === "/api/v1/me/computers") {
         ownComputerReads += 1;
-        if (ownComputerReads === 1) return response({ computers: [baselineComputer] });
-        if (ownComputerReads === 2) return response({ computers: [preIssueReconnect] });
+        if (ownComputerReads <= 2) return response({ computers: [baselineComputer] });
+        if (ownComputerReads === 3) return response({ computers: [preIssueReconnect] });
         return response({ computers: [connectedComputer] });
       }
       if (url === "/api/v1/me/connect-codes") {
@@ -267,7 +290,7 @@ describe("Admin Web", () => {
       if (url === `/api/v1/teams/${teamId}/computers`) return response({ computers: [] });
       if (url === "/api/v1/me/computers") {
         baselineReads += 1;
-        if (baselineReads === 1) return oldBaseline;
+        if (baselineReads === 2) return oldBaseline;
         return response({ computers: [] });
       }
       if (url === "/api/v1/me/connect-codes") {
@@ -285,10 +308,13 @@ describe("Admin Web", () => {
     });
 
     render(<App />);
+    expect(await screen.findByText("No computers connected to your account.")).toBeTruthy();
+    expect(await screen.findByText("No other active Team members have connected computers.")).toBeTruthy();
     fireEvent.click(await screen.findByRole("button", { name: "Connect computer" }));
     fireEvent.click(screen.getByRole("button", { name: "Close" }));
     fireEvent.click(screen.getByRole("button", { name: "Connect computer" }));
     expect(await screen.findByText(/login current_code/)).toBeTruthy();
+    expect(baselineReads).toBe(3);
     resolveOldBaseline?.(response({ computers: [] }));
     await act(async () => Promise.resolve());
     expect(issueCount).toBe(1);

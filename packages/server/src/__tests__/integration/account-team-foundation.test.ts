@@ -157,6 +157,102 @@ describe("account identity and Team foundation persistence", () => {
     }
   });
 
+  it("lists every Computer owned by an active Team member independently of Agent binding", async () => {
+    const value = await fixture();
+    try {
+      const [activeMember, removedMember, suspendedMember] = await value.database
+        .insert(users)
+        .values([
+          { email: "active-computer@example.com", displayName: "Active Member" },
+          { email: "removed-computer@example.com", displayName: "Removed Member" },
+          { email: "suspended-computer@example.com", displayName: "Suspended Member", suspendedAt: now },
+        ])
+        .returning();
+      if (!activeMember || !removedMember || !suspendedMember) throw new Error("User fixtures were not created");
+      await value.database.insert(memberships).values([
+        { teamId: value.bootstrap.teamId, userId: activeMember.id, role: "member", status: "active" },
+        { teamId: value.bootstrap.teamId, userId: removedMember.id, role: "member", status: "removed" },
+        { teamId: value.bootstrap.teamId, userId: suspendedMember.id, role: "member", status: "active" },
+      ]);
+
+      const adminComputerId = crypto.randomUUID();
+      const activeComputerId = crypto.randomUUID();
+      const removedComputerId = crypto.randomUUID();
+      const suspendedComputerId = crypto.randomUUID();
+      await value.database.insert(computers).values([
+        {
+          id: adminComputerId,
+          ownerUserId: value.bootstrap.userId,
+          displayName: "admin-unbound",
+          platform: "linux",
+          arch: "x64",
+          clientVersion: "0.0.1",
+          currentInstanceId: crypto.randomUUID(),
+          connectedAt: now,
+          lastSeenAt: now,
+        },
+        {
+          id: activeComputerId,
+          ownerUserId: activeMember.id,
+          displayName: "active-bound",
+          platform: "darwin",
+          arch: "arm64",
+          clientVersion: "0.0.1",
+          currentInstanceId: crypto.randomUUID(),
+          connectedAt: now,
+          lastSeenAt: now,
+        },
+        {
+          id: removedComputerId,
+          ownerUserId: removedMember.id,
+          displayName: "removed-unbound",
+          platform: "win32",
+          arch: "x64",
+          clientVersion: "0.0.1",
+          lastSeenAt: now,
+        },
+        {
+          id: suspendedComputerId,
+          ownerUserId: suspendedMember.id,
+          displayName: "suspended-unbound",
+          platform: "linux",
+          arch: "x64",
+          clientVersion: "0.0.1",
+          lastSeenAt: now,
+        },
+      ]);
+      const [agent] = await value.database
+        .insert(agents)
+        .values({
+          teamId: value.bootstrap.teamId,
+          managerUserId: activeMember.id,
+          computerId: activeComputerId,
+          name: "active-computer-agent",
+          displayName: "Active Computer Agent",
+          runtimeProvider: "codex",
+        })
+        .returning();
+      if (!agent) throw new Error("Agent fixture was not created");
+
+      const result = await value.teamService.listComputers(value.bootstrap.userId, value.bootstrap.teamId);
+      expect(result.computers.map((computer) => computer.id)).toEqual([activeComputerId, adminComputerId]);
+      expect(result.computers.find((computer) => computer.id === adminComputerId)).toMatchObject({
+        ownerUserId: value.bootstrap.userId,
+        connectionStatus: "online",
+        agentIds: [],
+      });
+      expect(result.computers.find((computer) => computer.id === activeComputerId)).toMatchObject({
+        ownerUserId: activeMember.id,
+        connectionStatus: "online",
+        agentIds: [agent.id],
+      });
+      expect(result.computers.map((computer) => computer.id)).not.toContain(removedComputerId);
+      expect(result.computers.map((computer) => computer.id)).not.toContain(suspendedComputerId);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("joins an invited Team without creating a personal Team and rotates bearer links", async () => {
     const value = await fixture();
     try {

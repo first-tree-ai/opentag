@@ -160,6 +160,15 @@ nav a.active {
 .panel {
   margin-top: 1rem;
 }
+.computer-section + .computer-section {
+  margin-top: 2rem;
+}
+.computer-section h2 {
+  margin-bottom: 0.35rem;
+}
+.computer-section > p {
+  margin-top: 0;
+}
 code {
   display: inline-block;
   max-width: 100%;

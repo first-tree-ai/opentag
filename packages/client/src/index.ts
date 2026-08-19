@@ -63,6 +63,12 @@ export {
   ServerHealthResponseError,
 } from "./health.js";
 export {
+  type ClientLogBindings,
+  type ClientLogger,
+  configureClientLoggerForService,
+  createLogger,
+} from "./observability/logger.js";
+export {
   buildOpenTagRuntimeContext,
   CODEX_V0_APP_SERVER_ARGS,
   CODEX_V0_ITEM_LIMIT,

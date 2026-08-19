@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@opentag/shared": "workspace:*",
+    "pino": "^10.3.1",
     "ws": "^8.21.3"
   },
   "devDependencies": {

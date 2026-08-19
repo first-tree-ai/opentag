@@ -98,6 +98,7 @@ describe("systemd service backend", () => {
     });
     const info = await backend.installAndStart();
     expect(info).toMatchObject({ pid: 321, state: "active" });
+    expect(info.logHint).toBe("/tmp/opentag home/logs/client.log (fallback: journalctl --user -u opentag.service -f)");
     expect(info.detail).toContain("enable lingering manually");
     expect(calls).toEqual(
       expect.arrayContaining([
@@ -488,7 +489,11 @@ describe("launchd service backend", () => {
       uid: 501,
       userHome,
     });
-    await expect(backend.installAndStart()).resolves.toMatchObject({ pid: 77, state: "active" });
+    await expect(backend.installAndStart()).resolves.toMatchObject({
+      logHint: `${join(home, "logs", "client.log")} (fallback: ${join(home, "logs", "daemon.stdout.log")} / ${join(home, "logs", "daemon.stderr.log")})`,
+      pid: 77,
+      state: "active",
+    });
     const bootstrapIndex = calls.findIndex((value) => value.startsWith("bootstrap "));
     const evictionPrints = calls.slice(0, bootstrapIndex).filter((value) => value === "print gui/501/opentag");
     expect(bootstrapIndex).toBeGreaterThan(0);

@@ -6,6 +6,9 @@ import definitions from "./channel-config.json" with { type: "json" };
 export const ChannelNameSchema = z.enum(["dev", "staging", "prod"]);
 export type ChannelName = z.infer<typeof ChannelNameSchema>;
 
+export const ServiceIdSchema = z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
+export type ServiceId = z.infer<typeof ServiceIdSchema>;
+
 export interface ChannelConfig {
   binName: string;
   channel: ChannelName;
@@ -13,7 +16,7 @@ export interface ChannelConfig {
   defaultServerUrl?: string;
   displayName: string;
   packageName: string;
-  serviceId: string;
+  serviceId: ServiceId;
 }
 
 const ChannelDefinitionSchema = z
@@ -23,7 +26,7 @@ const ChannelDefinitionSchema = z
     defaultServerUrl: z.string().url().optional(),
     displayName: z.string().min(1),
     packageName: z.string().min(1),
-    serviceId: z.string().min(1),
+    serviceId: ServiceIdSchema,
   })
   .strict();
 

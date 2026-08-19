@@ -1,5 +1,5 @@
 import type { IntegrationDiagnostics, IntegrationSummary, SlackBindingActivation } from "@opentag/shared";
-import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -196,12 +196,20 @@ export class IntegrationService {
     };
   }
 
-  async listFeishuConnectionIds(limit = 20): Promise<string[]> {
+  async listFeishuConnectionIds(afterId: string | undefined, limit = 100): Promise<string[]> {
     const rows = await this.#database
       .select({ integrationId: integrations.id })
       .from(integrations)
       .innerJoin(agents, eq(agents.id, integrations.agentId))
-      .where(and(eq(integrations.provider, "feishu"), eq(integrations.status, "active"), isNull(agents.deletedAt)))
+      .where(
+        and(
+          eq(integrations.provider, "feishu"),
+          eq(integrations.status, "active"),
+          isNull(agents.deletedAt),
+          ...(afterId ? [gt(integrations.id, afterId)] : []),
+        ),
+      )
+      .orderBy(asc(integrations.id))
       .limit(limit);
     return rows.map((row) => row.integrationId);
   }

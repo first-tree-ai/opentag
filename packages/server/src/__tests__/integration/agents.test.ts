@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import postgres from "postgres";
@@ -7,6 +8,7 @@ import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
 import { agents, computers, memberships, teams, users } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
+import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../services/runtime-config/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 let container: StartedPostgreSqlContainer;
@@ -96,6 +98,13 @@ describe("Agent persistence and authorization", () => {
       `;
       expect(enumValues.map(({ enumlabel }) => enumlabel)).toEqual(["codex", "claude-code"]);
 
+      const [sequence] = await value.sql<{ max_value: string; min_value: string }[]>`
+        select min_value::text, max_value::text
+        from pg_sequences
+        where schemaname = 'public' and sequencename = 'runtime_config_revision_sequence'
+      `;
+      expect(sequence).toEqual({ min_value: "1", max_value: String(Number.MAX_SAFE_INTEGER) });
+
       const constraints = await value.sql<{ conname: string; definition: string }[]>`
         select conname, pg_get_constraintdef(oid) as definition
         from pg_constraint
@@ -130,6 +139,22 @@ describe("Agent persistence and authorization", () => {
       expect(activeNameIndex?.indexdef).toContain("UNIQUE INDEX");
       expect(activeNameIndex?.indexdef).toContain("lower(name)");
       expect(activeNameIndex?.indexdef).toContain("WHERE (deleted_at IS NULL)");
+
+      const runtimeConfigConstraints = await value.sql<{ conname: string; definition: string }[]>`
+        select conname, pg_get_constraintdef(oid) as definition
+        from pg_constraint
+        where conrelid = 'agent_runtime_configs'::regclass
+      `;
+      expect(runtimeConfigConstraints).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ conname: "agent_runtime_configs_revision_safe_positive" }),
+          expect.objectContaining({ conname: "agent_runtime_configs_max_duration_valid" }),
+          expect.objectContaining({
+            conname: "agent_runtime_configs_agent_id_agents_id_fk",
+            definition: expect.stringContaining("ON DELETE CASCADE"),
+          }),
+        ]),
+      );
     } finally {
       await value.sql.end();
     }
@@ -152,9 +177,13 @@ describe("Agent persistence and authorization", () => {
         managerUserId: value.bootstrap.userId,
         computerId: computer.id,
         revision: 1,
+        runtimeConfig: DEFAULT_AGENT_RUNTIME_CONFIG,
       });
       expect((await value.service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).agents).toEqual([
-        created,
+        expect.objectContaining({
+          id: created.id,
+          runtimeConfigRevision: created.runtimeConfig.revision,
+        }),
       ]);
       await expect(value.service.getById(value.bootstrap.userId, created.id)).resolves.toEqual(created);
     } finally {
@@ -327,6 +356,64 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
+  it("updates runtime config atomically and advances only semantic runtime revisions", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const created = await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, {
+        ...createInput(computer.id),
+        runtimeConfig: {
+          allowedTools: ["opentag_message_send", "opentag_message_react"],
+          instructions: "Custom instructions",
+          maxDurationMs: 30_000,
+          model: "gpt-5.6",
+          reasoningEffort: "high",
+        },
+      });
+      expect(created.runtimeConfig).toMatchObject({
+        allowedTools: ["opentag_message_react", "opentag_message_send"],
+        instructions: "Custom instructions",
+        maxDurationMs: 30_000,
+        model: "gpt-5.6",
+        reasoningEffort: "high",
+      });
+      const initialRuntimeRevision = created.runtimeConfig.revision;
+
+      const profileOnly = await value.service.updateById(value.bootstrap.userId, created.id, {
+        displayName: "Profile only",
+        expectedRevision: 1,
+      });
+      expect(profileOnly).toMatchObject({ revision: 2, runtimeConfig: { revision: initialRuntimeRevision } });
+
+      const sameConfig = await value.service.updateById(value.bootstrap.userId, created.id, {
+        expectedRevision: 2,
+        runtimeConfig: { allowedTools: ["opentag_message_send", "opentag_message_react"] },
+      });
+      expect(sameConfig).toMatchObject({ revision: 3, runtimeConfig: { revision: initialRuntimeRevision } });
+
+      const cleared = await value.service.updateById(value.bootstrap.userId, created.id, {
+        expectedRevision: 3,
+        runtimeConfig: { maxDurationMs: null, model: null, reasoningEffort: null },
+      });
+      expect(cleared.runtimeConfig.revision).toBeGreaterThan(initialRuntimeRevision);
+      expect(cleared.runtimeConfig).toMatchObject({ maxDurationMs: null, model: null, reasoningEffort: null });
+      const secondAgent = await value.service.createForTeam(
+        value.bootstrap.userId,
+        value.bootstrap.teamId,
+        createInput(computer.id, "second-agent"),
+      );
+      expect(secondAgent.runtimeConfig.revision).toBeGreaterThan(cleared.runtimeConfig.revision);
+      await expect(
+        value.service.updateById(value.bootstrap.userId, created.id, {
+          expectedRevision: 3,
+          runtimeConfig: { instructions: "stale" },
+        }),
+      ).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT", statusCode: 409 });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("soft-deletes idempotently and permits active name reuse without reviving the old UUID", async () => {
     const value = await fixture();
     try {
@@ -352,10 +439,70 @@ describe("Agent persistence and authorization", () => {
       );
       expect(replacement.id).not.toBe(created.id);
       expect((await value.service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).agents).toEqual([
-        replacement,
+        expect.objectContaining({ id: replacement.id, runtimeConfigRevision: replacement.runtimeConfig.revision }),
       ]);
     } finally {
       await value.sql.end();
+    }
+  });
+
+  it("backfills runtime config for Agents created before the runtime config migration", async () => {
+    const rawSql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+    try {
+      for (const migration of [
+        "0000_strong_thunderbolt_ross.sql",
+        "0001_living_franklin_richards.sql",
+        "0002_sticky_crystal.sql",
+        "0003_noisy_husk.sql",
+      ]) {
+        const contents = await readFile(new URL(`../../../drizzle/${migration}`, import.meta.url), "utf8");
+        for (const statement of contents.split("--> statement-breakpoint")) {
+          if (statement.trim()) await rawSql.unsafe(statement);
+        }
+      }
+      const [user] = await rawSql<{ id: string }[]>`
+        insert into users (email, display_name) values ('legacy@example.com', 'Legacy') returning id
+      `;
+      const [team] = await rawSql<{ id: string }[]>`
+        insert into teams (name, display_name) values ('legacy', 'Legacy') returning id
+      `;
+      if (!user || !team) throw new Error("Legacy fixture authority was not created");
+      const computerId = crypto.randomUUID();
+      await rawSql`
+        insert into computers (id, owner_user_id, display_name, platform, arch, client_version)
+        values (${computerId}, ${user.id}, 'legacy', 'linux', 'x64', '0.0.1')
+      `;
+      const [legacyAgent] = await rawSql<{ id: string }[]>`
+        insert into agents (team_id, manager_user_id, computer_id, name, display_name, runtime_provider)
+        values (${team.id}, ${user.id}, ${computerId}, 'legacy', 'Legacy', 'codex')
+        returning id
+      `;
+      if (!legacyAgent) throw new Error("Legacy Agent fixture was not created");
+
+      const migration = await readFile(new URL("../../../drizzle/0004_sad_thunderbolt.sql", import.meta.url), "utf8");
+      for (const statement of migration.split("--> statement-breakpoint")) {
+        if (statement.trim()) await rawSql.unsafe(statement);
+      }
+      const [backfilled] = await rawSql<
+        {
+          agent_id: string;
+          allowed_tools: string[];
+          instructions: string;
+          revision: string;
+        }[]
+      >`
+        select agent_id, revision::text, instructions, allowed_tools
+        from agent_runtime_configs
+        where agent_id = ${legacyAgent.id}
+      `;
+      expect(backfilled).toEqual({
+        agent_id: legacyAgent.id,
+        revision: "1",
+        instructions: DEFAULT_AGENT_RUNTIME_CONFIG.instructions,
+        allowed_tools: DEFAULT_AGENT_RUNTIME_CONFIG.allowedTools,
+      });
+    } finally {
+      await rawSql.end();
     }
   });
 

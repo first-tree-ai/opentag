@@ -6,6 +6,7 @@ export interface DaemonEnvironmentResult {
   appliedKeys: string[];
   diagnostics: string[];
   env: NodeJS.ProcessEnv;
+  malformedLineNumbers: number[];
 }
 
 export async function loadDaemonEnvironment(
@@ -25,7 +26,7 @@ export async function loadDaemonEnvironment(
     content = await readFile(path, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { appliedKeys: [], diagnostics: [], env: { ...baseEnvironment } };
+      return { appliedKeys: [], diagnostics: [], env: { ...baseEnvironment }, malformedLineNumbers: [] };
     }
     throw error;
   }
@@ -33,6 +34,7 @@ export async function loadDaemonEnvironment(
   const env = { ...baseEnvironment };
   const appliedKeys: string[] = [];
   const diagnostics: string[] = [];
+  const malformedLineNumbers: number[] = [];
   const lines = content.split(/\r?\n/u);
   for (const [index, line] of lines.entries()) {
     const trimmed = line.trim();
@@ -40,36 +42,36 @@ export async function loadDaemonEnvironment(
     const match = trimmed.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/u);
     if (!match) {
       diagnostics.push(`Ignored malformed daemon.env line ${index + 1}`);
+      malformedLineNumbers.push(index + 1);
       continue;
     }
     const key = match[1];
     if (!key) {
       diagnostics.push(`Ignored malformed daemon.env line ${index + 1}`);
+      malformedLineNumbers.push(index + 1);
       continue;
     }
     const parsed = parseEnvironmentValue(match[2] ?? "");
     if (parsed === undefined) {
-      diagnostics.push(`Ignored malformed daemon.env value for ${key} on line ${index + 1}`);
+      diagnostics.push(`Ignored malformed daemon.env line ${index + 1}`);
+      malformedLineNumbers.push(index + 1);
       continue;
     }
     if (env[key]) continue;
     env[key] = parsed;
     appliedKeys.push(key);
   }
-  return { appliedKeys, diagnostics, env };
+  return { appliedKeys, diagnostics, env, malformedLineNumbers };
 }
 
 export async function applyDaemonEnvironment(
   home: string,
   environment: NodeJS.ProcessEnv = process.env,
-  log: (message: string) => void = console.log,
 ): Promise<DaemonEnvironmentResult> {
   const result = await loadDaemonEnvironment(home, environment);
   for (const [key, value] of Object.entries(result.env)) {
     if (value !== undefined) environment[key] = value;
   }
-  for (const diagnostic of result.diagnostics) log(diagnostic);
-  if (result.appliedKeys.length > 0) log(`Applied daemon.env keys: ${result.appliedKeys.sort().join(", ")}`);
   return result;
 }
 

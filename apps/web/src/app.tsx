@@ -1,6 +1,6 @@
-import type { FeishuSetupAttempt, IntegrationDiagnostics, MeMembership } from "@opentag/shared/browser";
+import type { Computer, FeishuSetupAttempt, IntegrationDiagnostics, MeMembership } from "@opentag/shared/browser";
 import QRCode from "qrcode";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "./api.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
@@ -140,7 +140,7 @@ function AdminApp() {
         const membership = value.memberships.find((item) => item.teamId === decodeURIComponent(teamId));
         if (!membership) return <div className="notice error">This Team is not available to your account.</div>;
         if (membership.role !== "admin") return <Forbidden membership={membership} />;
-        return <TeamShell membership={membership} />;
+        return <TeamShell membership={membership} viewerUserId={value.user.id} />;
       }}
     </Resource>
   );
@@ -155,6 +155,7 @@ function TeamSelector({ memberships, displayName }: { memberships: MeMembership[
         <p>
           Select a Team. The selection changes only this page; the server checks your current role on every request.
         </p>
+        <ConnectComputerAction />
       </header>
       <section className="card-grid">
         {memberships.map((membership) => (
@@ -169,6 +170,18 @@ function TeamSelector({ memberships, displayName }: { memberships: MeMembership[
   );
 }
 
+function ConnectComputerAction({ onConnected }: { onConnected?: (computer: Computer) => void } = {}) {
+  const [showConnect, setShowConnect] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setShowConnect(true)}>
+        Connect computer
+      </button>
+      {showConnect ? <ConnectComputerDialog onClose={() => setShowConnect(false)} onConnected={onConnected} /> : null}
+    </>
+  );
+}
+
 function Forbidden({ membership }: { membership: MeMembership }) {
   return (
     <main className="center-card">
@@ -180,7 +193,7 @@ function Forbidden({ membership }: { membership: MeMembership }) {
   );
 }
 
-function TeamShell({ membership }: { membership: MeMembership }) {
+function TeamShell({ membership, viewerUserId }: { membership: MeMembership; viewerUserId: string }) {
   const section = window.location.pathname.split("/")[4] || "overview";
   const base = `/admin/teams/${membership.teamId}`;
   return (
@@ -209,13 +222,21 @@ function TeamShell({ membership }: { membership: MeMembership }) {
         </nav>
       </aside>
       <main className="content">
-        <TeamPage section={section} membership={membership} />
+        <TeamPage section={section} membership={membership} viewerUserId={viewerUserId} />
       </main>
     </div>
   );
 }
 
-function TeamPage({ section, membership }: { section: string; membership: MeMembership }) {
+function TeamPage({
+  section,
+  membership,
+  viewerUserId,
+}: {
+  section: string;
+  membership: MeMembership;
+  viewerUserId: string;
+}) {
   if (section === "members") return <MembersPage teamId={membership.teamId} />;
   if (section === "agents") {
     const agentId = /^\/admin\/teams\/[^/]+\/agents\/([^/]+)$/.exec(window.location.pathname)?.[1];
@@ -225,7 +246,7 @@ function TeamPage({ section, membership }: { section: string; membership: MeMemb
       <AgentsPage teamId={membership.teamId} />
     );
   }
-  if (section === "computers") return <ComputersPage teamId={membership.teamId} />;
+  if (section === "computers") return <ComputersPage teamId={membership.teamId} viewerUserId={viewerUserId} />;
   if (section === "diagnostics") return <DiagnosticsPage />;
   return <OverviewPage membership={membership} />;
 }
@@ -312,7 +333,7 @@ function AgentsPage({ teamId }: { teamId: string }) {
                   <span className="status-dot" />
                   <strong>{agent.displayName}</strong>
                   <small>
-                    {agent.runtimeProvider} · {agent.receiveMode}
+                    {agent.runtimeProvider} · {agent.receiveMode} · runtime {agent.runtimeConfigRevision}
                   </small>
                 </a>
               ))}
@@ -533,28 +554,232 @@ function feishuSetupStatus(attempt: FeishuSetupAttempt): string {
   return details[attempt.errorCode ?? ""] ?? "Feishu setup could not be completed. Your existing Bot was not changed.";
 }
 
-function ComputersPage({ teamId }: { teamId: string }) {
-  const state = useResource(() => browserApi.computers(teamId), teamId);
+function ComputersPage({ teamId, viewerUserId }: { teamId: string; viewerUserId: string }) {
+  const [ownComputersRevision, setOwnComputersRevision] = useState(0);
+  const ownComputers = useResource(() => browserApi.ownComputers(), `own-computers:${ownComputersRevision}`);
+  const teamComputers = useResource(() => browserApi.computers(teamId), `team-computers:${teamId}`);
+  const refreshOwnComputers = useCallback(() => setOwnComputersRevision((revision) => revision + 1), []);
   return (
     <>
-      <PageHeader title="Computers" subtitle="Only Computers referenced by active Team Agents" />
-      <Resource state={state}>
-        {(value) => (
-          <Table
-            headers={["Computer", "Owner", "Platform", "Connection snapshot", "Last seen", "Observed"]}
-            rows={value.computers.map((computer) => [
-              computer.displayName,
-              computer.ownerDisplayName,
-              `${computer.platform}/${computer.arch} · ${computer.clientVersion}`,
-              computer.connectionStatus,
-              formatDate(computer.lastSeenAt),
-              formatDate(computer.observedAt),
-            ])}
-          />
-        )}
-      </Resource>
+      <div className="page-heading-row">
+        <PageHeader title="Computers" subtitle="Your connections and this Team's member computers" />
+        <ConnectComputerAction onConnected={refreshOwnComputers} />
+      </div>
+      <section aria-labelledby="your-computers-title" className="computer-section">
+        <h2 id="your-computers-title">Your computers</h2>
+        <p className="muted">All computers connected to your account, whether or not an Agent uses them yet.</p>
+        <Resource state={ownComputers}>
+          {(value) => (
+            <Table
+              emptyMessage="No computers connected to your account."
+              headers={["Computer", "Platform", "Connection", "Last seen"]}
+              rows={value.computers.map((computer) => [
+                computer.displayName,
+                `${computer.platform}/${computer.arch} · ${computer.clientVersion}`,
+                computer.connectionStatus,
+                formatDate(computer.lastSeenAt),
+              ])}
+            />
+          )}
+        </Resource>
+      </section>
+      <section aria-labelledby="team-computers-title" className="computer-section">
+        <h2 id="team-computers-title">Team computers</h2>
+        <p className="muted">Computers owned by other active Team members; Agent bindings are shown separately.</p>
+        <Resource state={teamComputers}>
+          {(value) => (
+            <Table
+              emptyMessage="No other active Team members have connected computers."
+              headers={["Computer", "Owner", "Platform", "Connection snapshot", "Agents", "Last seen", "Observed"]}
+              rows={value.computers
+                .filter((computer) => computer.ownerUserId !== viewerUserId)
+                .map((computer) => [
+                  computer.displayName,
+                  computer.ownerDisplayName,
+                  `${computer.platform}/${computer.arch} · ${computer.clientVersion}`,
+                  computer.connectionStatus,
+                  String(computer.agentIds.length),
+                  formatDate(computer.lastSeenAt),
+                  formatDate(computer.observedAt),
+                ])}
+            />
+          )}
+        </Resource>
+      </section>
     </>
   );
+}
+
+type ConnectDialogState =
+  | { kind: "loading" }
+  | { kind: "error"; message: string }
+  | { kind: "ready"; bootstrapCommand: string; expiresAtMs: number; issuedAtMs: number }
+  | { kind: "expired" }
+  | { kind: "success"; computer: Computer };
+
+function ConnectComputerDialog({
+  onClose,
+  onConnected,
+}: {
+  onClose: () => void;
+  onConnected?: (computer: Computer) => void;
+}) {
+  const [state, setState] = useState<ConnectDialogState>({ kind: "loading" });
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
+  const [remainingSeconds, setRemainingSeconds] = useState(0);
+  const generation = useRef(0);
+  const baseline = useRef(new Map<string, string | null>());
+
+  const mint = useCallback(async () => {
+    const currentGeneration = ++generation.current;
+    setState({ kind: "loading" });
+    setCopyStatus("idle");
+    try {
+      const existing = await browserApi.ownComputers();
+      if (generation.current !== currentGeneration) return;
+      const issued = await browserApi.issueConnectCode();
+      if (generation.current !== currentGeneration) return;
+      baseline.current = new Map(existing.computers.map((computer) => [computer.id, computer.connectedAt]));
+      setRemainingSeconds(issued.expiresIn);
+      setState({
+        kind: "ready",
+        bootstrapCommand: issued.bootstrapCommand,
+        expiresAtMs: Date.now() + issued.expiresIn * 1000,
+        issuedAtMs: Date.parse(issued.issuedAt),
+      });
+    } catch (error) {
+      if (generation.current !== currentGeneration) return;
+      setState({
+        kind: "error",
+        message: error instanceof Error ? error.message : "The connection command could not be generated",
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    void mint();
+    return () => {
+      generation.current += 1;
+    };
+  }, [mint]);
+
+  useEffect(() => {
+    if (state.kind !== "ready") return;
+    const currentGeneration = generation.current;
+    const updateRemaining = () => {
+      if (generation.current !== currentGeneration) return;
+      const next = Math.max(0, Math.ceil((state.expiresAtMs - Date.now()) / 1000));
+      setRemainingSeconds(next);
+      if (next === 0) setState({ kind: "expired" });
+    };
+    updateRemaining();
+    const timer = window.setInterval(updateRemaining, 1000);
+    return () => window.clearInterval(timer);
+  }, [state]);
+
+  useEffect(() => {
+    if (state.kind !== "ready") return;
+    const currentGeneration = generation.current;
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const current = await browserApi.ownComputers();
+        if (generation.current !== currentGeneration) return;
+        const connected = current.computers.find(
+          (computer) =>
+            computer.connectionStatus === "online" &&
+            computer.connectedAt !== null &&
+            Date.parse(computer.connectedAt) >= state.issuedAtMs &&
+            baseline.current.get(computer.id) !== computer.connectedAt,
+        );
+        if (connected) {
+          onConnected?.(connected);
+          setState({ kind: "success", computer: connected });
+        }
+      } catch {
+        // A transient poll failure does not invalidate the already-issued command.
+      } finally {
+        polling = false;
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 2000);
+    return () => window.clearInterval(timer);
+  }, [onConnected, state]);
+
+  async function copyCommand(command: string) {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("error");
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section aria-labelledby="connect-computer-title" aria-modal="true" className="dialog" role="dialog">
+        <div className="dialog-title-row">
+          <div>
+            <span className="eyebrow">New connection</span>
+            <h2 id="connect-computer-title">Connect computer</h2>
+          </div>
+          <button aria-label="Close" className="icon-button" type="button" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <p>Run this command in a terminal on the computer you want OpenTag to use.</p>
+        {state.kind === "loading" ? <div className="notice">Generating a short-lived command…</div> : null}
+        {state.kind === "error" ? (
+          <div className="notice error">
+            <p>{state.message}</p>
+            <button type="button" onClick={() => void mint()}>
+              Try again
+            </button>
+          </div>
+        ) : null}
+        {state.kind === "ready" ? (
+          <>
+            <pre className="command-block">
+              <code>{state.bootstrapCommand}</code>
+            </pre>
+            <div className="dialog-actions">
+              <button type="button" onClick={() => void copyCommand(state.bootstrapCommand)}>
+                {copyStatus === "copied" ? "Copied" : "Copy command"}
+              </button>
+              <span className={copyStatus === "error" ? "copy-error" : "muted"}>
+                {copyStatus === "error"
+                  ? "Copy failed. Select the command manually."
+                  : `Expires in ${formatDuration(remainingSeconds)}`}
+              </span>
+            </div>
+            <p className="muted">Waiting for this computer to connect…</p>
+          </>
+        ) : null}
+        {state.kind === "expired" ? (
+          <div className="notice">
+            <p>This command has expired.</p>
+            <button type="button" onClick={() => void mint()}>
+              Generate new command
+            </button>
+          </div>
+        ) : null}
+        {state.kind === "success" ? (
+          <div className="notice success" role="status">
+            <strong>{state.computer.displayName} connected.</strong>
+            <p>You can close this window. The daemon is running on the computer.</p>
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
+function formatDuration(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
 function DiagnosticsPage() {
@@ -600,8 +825,16 @@ function Metric({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-function Table({ headers, rows }: { headers: string[]; rows: string[][] }) {
-  if (rows.length === 0) return <div className="notice">No records in this snapshot.</div>;
+function Table({
+  headers,
+  rows,
+  emptyMessage = "No records in this snapshot.",
+}: {
+  headers: string[];
+  rows: string[][];
+  emptyMessage?: string;
+}) {
+  if (rows.length === 0) return <div className="notice">{emptyMessage}</div>;
   return (
     <div className="table-wrap">
       <table>

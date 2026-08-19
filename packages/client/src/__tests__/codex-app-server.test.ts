@@ -44,6 +44,28 @@ describe("CodexAppServerProcess", () => {
     await process.close();
   });
 
+  it("delegates server requests and writes exactly one explicit response for interactive runtimes", async () => {
+    const process = await appServer("normal");
+    await process.initialize("0.0.1");
+    const requestReceived = new Promise<{ id: number | string; method: string }>((resolve) => {
+      const unsubscribe = process.subscribeServerRequests((request) => {
+        unsubscribe();
+        resolve(request);
+      });
+    });
+
+    const approval = process.request("fixture/approval", {});
+    const request = await requestReceived;
+    expect(request).toMatchObject({ id: "approval-1", method: "item/commandExecution/requestApproval" });
+    await process.respondServerRequest(request.id, { decision: "accept" });
+
+    await expect(approval).resolves.toEqual({ decision: "accept" });
+    await expect(process.respondServerRequest(request.id, { decision: "accept" })).rejects.toMatchObject({
+      code: "protocol",
+    });
+    await process.close();
+  });
+
   it("D-06 rejects unknown server requests", async () => {
     const process = await appServer("normal");
     await process.initialize("0.0.1");

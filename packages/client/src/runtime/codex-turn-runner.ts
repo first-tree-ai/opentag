@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import type { TurnFailureReason, TurnReportHashInput, TurnReportRequest } from "@opentag/shared";
+import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { type CodexAdapter, CodexTurnError, type CodexTurnOutcome } from "../providers/codex/adapter.js";
 import { CodexAppServerError } from "../providers/codex/app-server-wire.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
@@ -16,7 +17,7 @@ export interface CodexTurnRunnerOptions {
   bindingStore: SessionBindingStore;
   connection: Pick<RuntimeConnection, "send">;
   custody: Pick<TurnCustodyOwner, "markReporting" | "recordResult">;
-  log?: (message: string) => void;
+  logger?: ClientLogger;
   now?: () => number;
   reportOwner: TurnReportOwner;
   toolHost?: RuntimeToolHost;
@@ -42,7 +43,7 @@ export class CodexTurnRunner {
   readonly #bindingStore: SessionBindingStore;
   readonly #connection: Pick<RuntimeConnection, "send">;
   readonly #custody: Pick<TurnCustodyOwner, "markReporting" | "recordResult">;
-  readonly #log?: (message: string) => void;
+  readonly #logger: ClientLogger;
   readonly #now: () => number;
   readonly #reportOwner: TurnReportOwner;
   readonly #toolHost?: RuntimeToolHost;
@@ -56,7 +57,7 @@ export class CodexTurnRunner {
     this.#bindingStore = options.bindingStore;
     this.#connection = options.connection;
     this.#custody = options.custody;
-    this.#log = options.log;
+    this.#logger = options.logger ?? createLogger("turn");
     this.#now = options.now ?? Date.now;
     this.#reportOwner = options.reportOwner;
     this.#toolHost = options.toolHost;
@@ -90,6 +91,14 @@ export class CodexTurnRunner {
   }
 
   async #run(owner: LiveTurnOwner, shutdownSignal: AbortSignal): Promise<void> {
+    const startedAt = this.#now();
+    const fields = {
+      agentId: owner.request.agentId,
+      deliveryId: owner.request.deliveryId,
+      sessionId: owner.request.sessionId,
+      turnId: owner.turnId,
+    };
+    this.#logger.info(fields, "Turn started");
     const timeout = new AbortController();
     const timeoutMs = turnTimeoutMs(owner, this.#now());
     const timer = setTimeout(() => timeout.abort("turn_timeout"), timeoutMs);
@@ -159,16 +168,33 @@ export class CodexTurnRunner {
               ...(result.usage ? { usage: result.usage } : {}),
             };
     } catch (error) {
-      if (error instanceof CodexTurnError && error.cause instanceof CodexAppServerError) {
-        this.#log?.(`Turn ${owner.turnId} failed at the Codex boundary (${error.cause.code})`);
-      }
       completion = completionForError(error, signal.reason);
+      const failureFields = {
+        ...fields,
+        durationMs: Math.max(0, this.#now() - startedAt),
+        errorReason: completion.errorReason,
+        outcome: completion.outcome,
+        ...(error instanceof CodexTurnError && error.cause instanceof CodexAppServerError
+          ? { providerCode: error.cause.code }
+          : {}),
+      };
+      if (error instanceof CodexTurnError || signal.aborted) {
+        this.#logger.warn(failureFields, "Turn failed");
+      } else {
+        this.#logger.error(failureFields, "Turn failed unexpectedly");
+      }
       trace.turnCompleted(completion.outcome);
     } finally {
       clearTimeout(timer);
     }
 
     const traceSummary = await trace.finish();
+    if (completion.outcome === "completed") {
+      this.#logger.info(
+        { ...fields, durationMs: Math.max(0, this.#now() - startedAt), outcome: completion.outcome },
+        "Turn completed",
+      );
+    }
     const reportInput: TurnReportHashInput = {
       deliveryId: owner.request.deliveryId,
       turnId: owner.turnId,
@@ -187,7 +213,7 @@ export class CodexTurnRunner {
       report = this.#reportOwner.create(reportInput);
       await this.#custody.markReporting(owner.turnId, report);
     } catch {
-      this.#log?.(`Turn ${owner.turnId} could not enter the reporting phase`);
+      this.#logger.warn(fields, "Turn could not enter the reporting phase");
       return;
     }
     void this.#reportOwner

@@ -20,6 +20,7 @@ import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
 import {
+  agentRuntimeConfigs,
   agents,
   computers,
   imMessageDeliveries,
@@ -1000,6 +1001,125 @@ describe("IM Integration persistence", () => {
     }
   });
 
+  it("includes unmentioned messages in mention-only history and stale-reply fencing", async () => {
+    const value = await fixture();
+    try {
+      await value.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, value.agent.id));
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        userId: value.bootstrap.userId,
+      });
+      const worker = new ImDeliveryWorker({
+        database: value.database,
+        registry: runtime.registry,
+        domain: runtime.domain,
+      });
+      const inbox = new ImMessageInbox(value.database);
+      const directA = await inbox.ingest(
+        value.integrationId,
+        1,
+        revisionEvent({
+          providerEventId: "mention-only-a",
+          externalMessageId: "message-a",
+          operation: "created",
+          occurredAt: "2026-08-19T00:00:01.000Z",
+          revisionKey: "1",
+        }),
+      );
+      await worker.runOnce();
+      expect(directA.deliveryIds).toHaveLength(1);
+
+      const interveningEvent = revisionEvent({
+        providerEventId: "mention-only-b",
+        externalMessageId: "message-b",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:02.000Z",
+        revisionKey: "1",
+      });
+      interveningEvent.mentions = [];
+      interveningEvent.message.content = {
+        version: 1,
+        fallbackText: "intervening",
+        blocks: [{ type: "text", text: "intervening" }],
+        truncated: false,
+      };
+      const intervening = await inbox.ingest(value.integrationId, 1, interveningEvent);
+      expect(intervening.deliveryIds).toEqual([]);
+
+      const [session] = await value.database.select().from(sessions).where(eq(sessions.channelId, "C1")).limit(1);
+      if (!session || !directA.messageId || !intervening.messageId)
+        throw new Error("Mention-only fixture is incomplete");
+      let providerWrites = 0;
+      const outbound = new OutboundMessageService(value.database, async () => ({
+        provider: "slack" as const,
+        validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
+        normalizeInbound: () => [],
+        send: async () => {
+          providerWrites += 1;
+          return { ok: true as const, externalMessageId: "unused", occurredAt: new Date() };
+        },
+        react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
+        fetchResource: async () => ({ stream: Readable.from(Buffer.alloc(0)) }),
+      }));
+      await expect(
+        outbound.execute({
+          requestId: crypto.randomUUID(),
+          sessionId: session.id,
+          agentId: value.agent.id,
+          computerId: value.computer.id,
+          computerInstanceId: instanceId,
+          placementGeneration: 1,
+          expectedLatestImMessageId: directA.messageId,
+          operation: "send",
+          content: {
+            version: 1,
+            fallbackText: "stale answer",
+            blocks: [{ type: "text", text: "stale answer" }],
+            truncated: false,
+          },
+        }),
+      ).rejects.toThrow("OUTBOUND_LATEST_MESSAGE_STALE");
+      expect(providerWrites).toBe(0);
+
+      const directC = await inbox.ingest(
+        value.integrationId,
+        1,
+        revisionEvent({
+          providerEventId: "mention-only-c",
+          externalMessageId: "message-c",
+          operation: "created",
+          occurredAt: "2026-08-19T00:00:03.000Z",
+          revisionKey: "1",
+        }),
+      );
+      expect(directC.deliveryIds).toHaveLength(1);
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(0) })
+        .where(eq(imMessageDeliveries.id, directC.deliveryIds[0] as string));
+      await worker.runOnce();
+      const deliveredC = runtime.frames.find(
+        (frame) =>
+          (frame as { type?: string; deliveryId?: string }).type === "im:deliver" &&
+          (frame as { deliveryId?: string }).deliveryId === directC.deliveryIds[0],
+      ) as DirectImMessageDeliveryRequest | undefined;
+      expect(deliveredC).toBeDefined();
+      expect(deliveredC?.content.history).toEqual([
+        { imMessageId: intervening.messageId, occurredAt: "2026-08-19T00:00:02.000Z", text: "intervening" },
+      ]);
+      runtime.domain.close();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("inherits thread scope for a Feishu recall and targets the existing thread Session", async () => {
     const value = await fixture();
     try {
@@ -1122,7 +1242,7 @@ describe("IM Integration persistence", () => {
           type: "im:deliver",
           attention: "direct",
           runtime: expect.objectContaining({
-            allowedTools: ["opentag_message_send", "opentag_message_reply", "opentag_message_react"],
+            allowedTools: ["opentag_message_react", "opentag_message_reply", "opentag_message_send"],
           }),
         }),
       ]);
@@ -1428,9 +1548,9 @@ describe("IM Integration persistence", () => {
       first.domain.close();
 
       await value.database
-        .update(agents)
+        .update(agentRuntimeConfigs)
         .set({ revision: firstFrame.runtime.revision.agent.sequence + 1 })
-        .where(eq(agents.id, value.agent.id));
+        .where(eq(agentRuntimeConfigs.agentId, value.agent.id));
       await value.database
         .update(sessions)
         .set({ revision: firstFrame.runtime.revision.session.sequence + 1 })
@@ -3098,6 +3218,47 @@ describe("IM Integration persistence", () => {
       ).resolves.toBeUndefined();
     } finally {
       await manager.stop();
+      await value.sql.end();
+    }
+  });
+
+  it("pages through every active Feishu connection candidate", async () => {
+    const value = await fixture();
+    try {
+      const createdAgents = await value.database
+        .insert(agents)
+        .values(
+          Array.from({ length: 101 }, (_, index) => ({
+            teamId: value.bootstrap.teamId,
+            managerUserId: value.bootstrap.userId,
+            computerId: value.computer.id,
+            name: `feishu-${String(index).padStart(3, "0")}`,
+            displayName: `Feishu ${index}`,
+            runtimeProvider: "codex" as const,
+          })),
+        )
+        .returning({ id: agents.id });
+      await value.database.insert(integrations).values(
+        createdAgents.map((agent, index) => ({
+          agentId: agent.id,
+          provider: "feishu" as const,
+          status: "active" as const,
+          externalAppId: `cli_page_${String(index).padStart(3, "0")}`,
+          externalBotId: `ou_page_${index}`,
+          credentialSchemaVersion: 1,
+          credentialGeneration: 1,
+          encryptedCredential: "test-only",
+          grantedCapabilities: [],
+          activatedAt: new Date(),
+        })),
+      );
+
+      const first = await value.integrationService.listFeishuConnectionIds(undefined, 100);
+      const second = await value.integrationService.listFeishuConnectionIds(first.at(-1), 100);
+      expect(first).toHaveLength(100);
+      expect(second).toHaveLength(1);
+      expect(new Set([...first, ...second]).size).toBe(101);
+    } finally {
       await value.sql.end();
     }
   });

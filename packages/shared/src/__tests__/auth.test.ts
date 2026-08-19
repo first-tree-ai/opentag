@@ -3,6 +3,7 @@ import {
   AuthProvidersResponseSchema,
   ConnectCodeExchangeRequestSchema,
   ConnectCodeExchangeResponseSchema,
+  ConnectCodeIssueResponseSchema,
   MeResponseSchema,
   RefreshTokenRequestSchema,
   TeamNameSchema,
@@ -27,6 +28,16 @@ describe("auth contracts", () => {
         expiresIn: 900,
       }),
     ).toEqual({ accessToken: "access", refreshToken: "refresh", tokenType: "Bearer", expiresIn: 900 });
+  });
+
+  it("accepts only the server-authored connect command contract", () => {
+    const response = {
+      bootstrapCommand: "npm i -g open-tag && opentag login code --server https://opentag.example.com",
+      expiresIn: 900,
+      issuedAt: "2030-01-01T00:00:00.000Z",
+    };
+    expect(ConnectCodeIssueResponseSchema.parse(response)).toEqual(response);
+    expect(() => ConnectCodeIssueResponseSchema.parse({ ...response, code: "plaintext" })).toThrow();
   });
 
   it("rejects unexpected fields on every request", () => {

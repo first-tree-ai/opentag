@@ -29,6 +29,7 @@ export const HTTP_PATHS = {
   computerRuntimeWebSocket: `${API_V1_PREFIX}/computer/ws`,
   me: `${API_V1_PREFIX}/me`,
   meComputers: `${API_V1_PREFIX}/me/computers`,
+  meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
   teamAgents: TEAM_AGENTS_TEMPLATE,
 } as const;
 

@@ -6,6 +6,8 @@ import {
   agentByIdPath,
   agentFeishuSetupAttemptsPath,
   agentIntegrationPath,
+  type ConnectCodeIssueResponse,
+  ConnectCodeIssueResponseSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
   feishuSetupAttemptPath,
@@ -21,7 +23,10 @@ import {
   integrationDisablePath,
   invitationPreviewPath,
   invitationRedeemPath,
+  type ListAgentsResponse,
   ListAgentsResponseSchema,
+  type ListComputersResponse,
+  ListComputersResponseSchema,
   type ListTeamComputersResponse,
   ListTeamComputersResponseSchema,
   type ListTeamMembersResponse,
@@ -65,7 +70,7 @@ export class BrowserApi {
     return this.request(teamMembersPath(teamId), ListTeamMembersResponseSchema);
   }
 
-  agents(teamId: string): Promise<{ agents: Agent[] }> {
+  agents(teamId: string): Promise<ListAgentsResponse> {
     return this.request(teamAgentsPath(teamId), ListAgentsResponseSchema);
   }
 
@@ -105,6 +110,17 @@ export class BrowserApi {
 
   computers(teamId: string): Promise<ListTeamComputersResponse> {
     return this.request(teamComputersPath(teamId), ListTeamComputersResponseSchema);
+  }
+
+  ownComputers(): Promise<ListComputersResponse> {
+    return this.request(HTTP_PATHS.meComputers, ListComputersResponseSchema);
+  }
+
+  issueConnectCode(): Promise<ConnectCodeIssueResponse> {
+    return this.request(HTTP_PATHS.meConnectCodes, ConnectCodeIssueResponseSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
   }
 
   invitation(teamId: string): Promise<TeamInvitation> {

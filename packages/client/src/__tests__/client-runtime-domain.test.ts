@@ -7,6 +7,7 @@ import { WebSocketServer } from "ws";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
 import { ClientRuntime } from "../runtime/client-runtime.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
+import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((close) => close())));
@@ -102,7 +103,9 @@ describe("ClientRuntime domain dispatch", () => {
     const sendError = new Error("socket unavailable");
     const connection = new FailingResultConnection(computerId, request, sendError);
     const onReconcileResultSendFailed = vi.fn();
+    const logs: RecordedLog[] = [];
     const runtime = new ClientRuntime(connection as unknown as RuntimeConnection, {
+      logger: recordingLogger(logs, { computerId, instanceId: "instance-1" }),
       onReconcileResultSendFailed,
       prepareReconcileResult: (_request, result) => result,
     });
@@ -117,6 +120,19 @@ describe("ClientRuntime domain dispatch", () => {
       }),
       sendError,
     );
+    expect(logs).toContainEqual(
+      expect.objectContaining({
+        fields: expect.objectContaining({
+          agentId: "agent-1",
+          instanceId: "instance-1",
+          requestId: request.requestId,
+          sessionId: "session-1",
+        }),
+        level: "warn",
+        message: "Session reconcile result send failed",
+      }),
+    );
+    expect(JSON.stringify(logs)).not.toContain(sendError.message);
   });
 });
 

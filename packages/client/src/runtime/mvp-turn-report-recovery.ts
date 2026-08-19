@@ -4,13 +4,14 @@ import {
   type SessionReconcileResult,
   type TurnReportRequest,
 } from "@opentag/shared";
+import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
 import type { SessionReconciler } from "./session-reconciler.js";
 import type { TurnReportOwner } from "./turn-report-owner.js";
 
 export interface MvpTurnReportRecoveryOptions {
   bindingStore: Pick<SessionBindingStore, "read" | "recordResult">;
-  log?: (message: string) => void;
+  logger?: ClientLogger;
   maxActiveReplays?: number;
   maxPreparedBatches?: number;
   reconciler: Pick<SessionReconciler, "clearRecovery" | "withAgentLock">;
@@ -43,7 +44,7 @@ interface ReplayQueue {
 // Turn storage replaces this reconcile manifest and replay queue after MVP.
 export class MvpTurnReportRecovery {
   readonly #bindingStore: MvpTurnReportRecoveryOptions["bindingStore"];
-  readonly #log?: (message: string) => void;
+  readonly #logger: ClientLogger;
   readonly #maxActiveReplays: number;
   readonly #maxPreparedBatches: number;
   readonly #reconciler: MvpTurnReportRecoveryOptions["reconciler"];
@@ -54,7 +55,7 @@ export class MvpTurnReportRecovery {
 
   constructor(options: MvpTurnReportRecoveryOptions) {
     this.#bindingStore = options.bindingStore;
-    this.#log = options.log;
+    this.#logger = options.logger ?? createLogger("report-recovery");
     this.#maxActiveReplays = options.maxActiveReplays ?? 10;
     this.#maxPreparedBatches = options.maxPreparedBatches ?? 256;
     this.#reconciler = options.reconciler;
@@ -109,7 +110,10 @@ export class MvpTurnReportRecovery {
       running: false,
     };
     if (queue.agentId !== batch.agentId) {
-      this.#log?.(`MVP Turn Report replay for Session ${batch.sessionId} has a conflicting Agent owner`);
+      this.#logger.warn(
+        { agentId: batch.agentId, sessionId: batch.sessionId },
+        "Turn Report replay has a conflicting Agent owner",
+      );
       return;
     }
     if (!this.#queues.has(batch.sessionId)) this.#queues.set(batch.sessionId, queue);
@@ -156,6 +160,7 @@ export class MvpTurnReportRecovery {
   }
 
   async #runQueue(sessionId: string, queue: ReplayQueue): Promise<boolean> {
+    this.#logger.info({ agentId: queue.agentId, sessionId }, "Turn Report replay started");
     try {
       while (queue.references.length > 0) {
         const reference = queue.references[0];
@@ -185,15 +190,19 @@ export class MvpTurnReportRecovery {
           )
           .then(() => "recorded" as const);
         if ((await Promise.race([submitted, terminal])) === "terminal") {
-          this.#log?.(`MVP Turn Report replay for Session ${sessionId} reached a terminal Server status`);
+          this.#logger.warn(
+            { agentId: queue.agentId, sessionId, turnId: report.turnId },
+            "Turn Report replay reached a terminal Server status",
+          );
           return false;
         }
         queue.references.shift();
         queue.keys.delete(reportKey(reference));
       }
+      this.#logger.info({ agentId: queue.agentId, sessionId }, "Turn Report replay completed");
       return true;
     } catch {
-      this.#log?.(`MVP Turn Report replay for Session ${sessionId} remains pending`);
+      this.#logger.warn({ agentId: queue.agentId, sessionId }, "Turn Report replay remains pending");
       return false;
     }
   }

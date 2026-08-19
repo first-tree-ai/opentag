@@ -288,7 +288,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
     return {
       currentHome: options.home,
       definitionPath: plistPath,
-      logHint: `${stdoutPath} / ${stderrPath}`,
+      logHint: `${join(options.home, "logs", "client.log")} (fallback: ${stdoutPath} / ${stderrPath})`,
       platform: "launchd",
       serviceId: options.serviceId,
       state,

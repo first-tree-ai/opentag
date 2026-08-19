@@ -4,6 +4,7 @@ import { createInterface } from "node:readline";
 const scenario = process.env.CODEX_FIXTURE_SCENARIO ?? "normal";
 let pendingApproval;
 let pendingHostedTool;
+let threadSequence = 0;
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
@@ -38,6 +39,42 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (message.method === "fixture/echo") {
     send({ id: message.id, result: message.params });
+    return;
+  }
+  if (message.method === "thread/start") {
+    threadSequence += 1;
+    send({ id: message.id, result: { thread: { id: `thread-${threadSequence}` } } });
+    return;
+  }
+  if (message.method === "thread/resume") {
+    send({ id: message.id, result: { thread: { id: message.params.threadId } } });
+    return;
+  }
+  if (message.method === "turn/start") {
+    const turn = { id: "turn-fixture", status: "inProgress", items: [] };
+    send({ id: message.id, result: { turn } });
+    queueMicrotask(() => {
+      send({ method: "turn/started", params: { threadId: message.params.threadId, turn } });
+      send({
+        method: "turn/completed",
+        params: {
+          threadId: message.params.threadId,
+          turn: {
+            id: turn.id,
+            status: "completed",
+            items: [{ id: "message-fixture", type: "agentMessage", phase: "final_answer", text: "fixture answer" }],
+          },
+        },
+      });
+    });
+    return;
+  }
+  if (message.method === "turn/steer") {
+    send({ id: message.id, result: { turnId: message.params.expectedTurnId } });
+    return;
+  }
+  if (message.method === "turn/interrupt") {
+    send({ id: message.id, result: {} });
     return;
   }
   if (message.method === "fixture/approval") {

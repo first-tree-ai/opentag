@@ -1,4 +1,5 @@
 import websocket from "@fastify/websocket";
+import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, ServerHealthSchema } from "@opentag/shared";
 import Fastify, { type FastifyLoggerOptions } from "fastify";
 import { registerAdminWeb } from "./admin-web.js";
@@ -9,14 +10,14 @@ import { registerComputerRoutes } from "./api/computers.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
 import { registerIntegrationRoutes } from "./api/integrations.js";
 import { registerInvitationRoutes } from "./api/invitations.js";
-import { registerMeRoute } from "./api/me.js";
+import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerTeamRoutes } from "./api/teams.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { type AgentService, AgentServiceError } from "./services/agents/index.js";
-import { AuthServiceError, type UserAuthService } from "./services/auth/index.js";
+import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
 import type { ComputerService } from "./services/computers/index.js";
 import type { ImResourceService } from "./services/im/index.js";
 import type { FeishuSetupService } from "./services/integrations/feishu/index.js";
@@ -29,6 +30,11 @@ export interface CreateAppOptions {
   adminWebRoot?: string;
   agentService?: AgentService;
   computerService?: ComputerService;
+  connectCode?: {
+    issuer: ConnectCodeIssuer;
+    environment: ChannelName;
+    publicUrl: string;
+  };
   browserAuth?: BrowserAuthRoutesOptions;
   invitationService?: InvitationService;
   integrationService?: IntegrationService;
@@ -105,7 +111,16 @@ export function createApp(options: CreateAppOptions = {}) {
     const authService = options.authService;
     const publicOrigin = options.browserAuth?.publicOrigin;
     registerAuthRoutes(app, authService);
-    registerMeRoute(app, authService, publicOrigin);
+    registerMeRoutes(app, authService, {
+      ...(options.connectCode
+        ? {
+            connectCodeIssuer: options.connectCode.issuer,
+            environment: options.connectCode.environment,
+            publicUrl: options.connectCode.publicUrl,
+          }
+        : {}),
+      publicOrigin,
+    });
     if (options.browserAuth) registerBrowserAuthRoutes(app, authService, options.browserAuth);
     if (options.agentService) {
       registerAgentRoutes(app, authService, options.agentService, publicOrigin);

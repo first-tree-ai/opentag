@@ -16,6 +16,14 @@ export const ConnectCodeExchangeRequestSchema = z
 
 export const ConnectCodeExchangeResponseSchema = z.object(TokenResponseFields).strict();
 
+export const ConnectCodeIssueResponseSchema = z
+  .object({
+    bootstrapCommand: z.string().min(1),
+    expiresIn: z.number().int().positive(),
+    issuedAt: z.string().datetime(),
+  })
+  .strict();
+
 export const RefreshTokenRequestSchema = z
   .object({
     refreshToken: z.string().min(1).max(4096),
@@ -67,6 +75,7 @@ export const AuthProvidersResponseSchema = z
 
 export type ConnectCodeExchangeRequest = z.infer<typeof ConnectCodeExchangeRequestSchema>;
 export type ConnectCodeExchangeResponse = z.infer<typeof ConnectCodeExchangeResponseSchema>;
+export type ConnectCodeIssueResponse = z.infer<typeof ConnectCodeIssueResponseSchema>;
 export type RefreshTokenRequest = z.infer<typeof RefreshTokenRequestSchema>;
 export type RefreshTokenResponse = z.infer<typeof RefreshTokenResponseSchema>;
 export type MembershipRole = z.infer<typeof MembershipRoleSchema>;

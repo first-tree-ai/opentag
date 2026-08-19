@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
   AgentNameSchema,
+  AgentRuntimeConfigSchema,
   AgentSchema,
+  AgentSummarySchema,
   CreateAgentRequestSchema,
   ListAgentsResponseSchema,
   UpdateAgentRequestSchema,
 } from "../agent.js";
 import { AGENT_BY_ID_TEMPLATE, agentByIdPath, TEAM_AGENTS_TEMPLATE, teamAgentsPath } from "../http-paths.js";
+import { OPENTAG_PLATFORM_INSTRUCTIONS, RUNTIME_INSTRUCTIONS_MAX_BYTES } from "../runtime-config.js";
 
 const agent = {
   id: "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
@@ -18,6 +21,14 @@ const agent = {
   runtimeProvider: "codex",
   receiveMode: "all_message",
   revision: 1,
+  runtimeConfig: {
+    revision: 1,
+    model: null,
+    reasoningEffort: null,
+    instructions: "Follow the managed workspace instructions.",
+    allowedTools: ["opentag_message_react", "opentag_message_reply", "opentag_message_send"],
+    maxDurationMs: null,
+  },
   createdAt: "2026-08-19T00:00:00.000Z",
   updatedAt: "2026-08-19T00:00:00.000Z",
 };
@@ -31,16 +42,43 @@ describe("Agent contracts", () => {
         displayName: " Code Reviewer ",
         runtimeProvider: "claude-code",
         computerId: agent.computerId,
+        runtimeConfig: {
+          allowedTools: ["opentag_message_send", "opentag_message_react"],
+          model: "claude-sonnet",
+        },
       }),
     ).toEqual({
       name: "code-reviewer",
       displayName: "Code Reviewer",
       runtimeProvider: "claude-code",
       computerId: agent.computerId,
+      runtimeConfig: {
+        allowedTools: ["opentag_message_react", "opentag_message_send"],
+        model: "claude-sonnet",
+      },
     });
     expect(UpdateAgentRequestSchema.parse({ expectedRevision: 1, displayName: " Reviewer " })).toEqual({
       expectedRevision: 1,
       displayName: "Reviewer",
+    });
+    expect(
+      UpdateAgentRequestSchema.parse({
+        expectedRevision: 1,
+        runtimeConfig: {
+          allowedTools: ["opentag_message_send", "opentag_message_reply"],
+          maxDurationMs: null,
+          model: null,
+          reasoningEffort: null,
+        },
+      }),
+    ).toEqual({
+      expectedRevision: 1,
+      runtimeConfig: {
+        allowedTools: ["opentag_message_reply", "opentag_message_send"],
+        maxDurationMs: null,
+        model: null,
+        reasoningEffort: null,
+      },
     });
   });
 
@@ -57,12 +95,82 @@ describe("Agent contracts", () => {
         runtimeProvider: "codex",
       }),
     ).toThrow();
+    expect(() => UpdateAgentRequestSchema.parse({ expectedRevision: 1 })).toThrow();
+    expect(() => UpdateAgentRequestSchema.parse({ expectedRevision: 1, runtimeConfig: {} })).toThrow();
   });
 
   it("validates strict Agent response projections", () => {
     expect(AgentSchema.parse(agent)).toEqual(agent);
-    expect(ListAgentsResponseSchema.parse({ agents: [agent] })).toEqual({ agents: [agent] });
+    const { runtimeConfig: _, ...base } = agent;
+    const summary = { ...base, runtimeConfigRevision: agent.runtimeConfig.revision };
+    expect(AgentSummarySchema.parse(summary)).toEqual(summary);
+    expect(ListAgentsResponseSchema.parse({ agents: [summary] })).toEqual({ agents: [summary] });
     expect(() => AgentSchema.parse({ ...agent, deletedAt: null })).toThrow();
+    expect(() =>
+      AgentRuntimeConfigSchema.parse({
+        ...agent.runtimeConfig,
+        allowedTools: ["opentag_message_send", "opentag_message_react"],
+      }),
+    ).toThrow();
+  });
+
+  it("enforces runtime config UTF-8, tool, and duration boundaries", () => {
+    expect(() =>
+      CreateAgentRequestSchema.parse({
+        computerId: agent.computerId,
+        displayName: agent.displayName,
+        name: agent.name,
+        runtimeProvider: agent.runtimeProvider,
+        runtimeConfig: { instructions: "界".repeat(8_193) },
+      }),
+    ).toThrow();
+    expect(() =>
+      UpdateAgentRequestSchema.parse({
+        expectedRevision: 1,
+        runtimeConfig: { allowedTools: ["opentag_message_send", "opentag_message_send"] },
+      }),
+    ).toThrow();
+    expect(() =>
+      UpdateAgentRequestSchema.parse({
+        expectedRevision: 1,
+        runtimeConfig: { allowedTools: ["unknown_tool"] },
+      }),
+    ).toThrow();
+    expect(() =>
+      UpdateAgentRequestSchema.parse({ expectedRevision: 1, runtimeConfig: { maxDurationMs: 0 } }),
+    ).toThrow();
+    expect(
+      UpdateAgentRequestSchema.parse({ expectedRevision: 1, runtimeConfig: { maxDurationMs: 86_400_000 } }),
+    ).toMatchObject({ runtimeConfig: { maxDurationMs: 86_400_000 } });
+    expect(() =>
+      UpdateAgentRequestSchema.parse({ expectedRevision: 1, runtimeConfig: { maxDurationMs: 86_400_001 } }),
+    ).toThrow();
+  });
+
+  it("reserves the shared platform instruction budget on create and update", () => {
+    const encoder = new TextEncoder();
+    const agentBudget = RUNTIME_INSTRUCTIONS_MAX_BYTES - encoder.encode(OPENTAG_PLATFORM_INSTRUCTIONS).byteLength;
+    const exactAscii = "a".repeat(agentBudget);
+    const exactUtf8 = "界".repeat(Math.floor(agentBudget / 3)) + "a".repeat(agentBudget % 3);
+    const createInput = {
+      computerId: agent.computerId,
+      displayName: agent.displayName,
+      name: agent.name,
+      runtimeProvider: agent.runtimeProvider,
+    };
+
+    expect(
+      CreateAgentRequestSchema.parse({ ...createInput, runtimeConfig: { instructions: exactAscii } }),
+    ).toMatchObject({ runtimeConfig: { instructions: exactAscii } });
+    expect(() =>
+      CreateAgentRequestSchema.parse({ ...createInput, runtimeConfig: { instructions: `${exactAscii}a` } }),
+    ).toThrow("combined 24 KiB limit");
+    expect(
+      UpdateAgentRequestSchema.parse({ expectedRevision: 1, runtimeConfig: { instructions: exactUtf8 } }),
+    ).toMatchObject({ runtimeConfig: { instructions: exactUtf8 } });
+    expect(() =>
+      UpdateAgentRequestSchema.parse({ expectedRevision: 1, runtimeConfig: { instructions: `${exactUtf8}a` } }),
+    ).toThrow("combined 24 KiB limit");
   });
 
   it("shares route templates and encoded path builders", () => {

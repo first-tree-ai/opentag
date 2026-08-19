@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
+import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((close) => close())));
@@ -393,7 +394,7 @@ describe("RuntimeConnection", () => {
         } else if (frame.type === "test:result") receiveBusinessResult?.(frame);
       });
     });
-    const logs: string[] = [];
+    const logs: RecordedLog[] = [];
     const received: Record<string, unknown>[] = [];
     const states: string[] = [];
     const connection = new RuntimeConnection({
@@ -402,7 +403,7 @@ describe("RuntimeConnection", () => {
       computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
       displayName: "workstation",
       instanceId: randomUUID(),
-      log: (message) => logs.push(message),
+      logger: recordingLogger(logs),
       parseBusinessFrame: (value) => {
         if (!value || typeof value !== "object" || (value as Record<string, unknown>).type !== "test:event") {
           return undefined;
@@ -426,7 +427,11 @@ describe("RuntimeConnection", () => {
     await vi.waitFor(() => expect(received).toEqual([{ type: "test:event", value: 1 }]));
     await connection.send({ type: "test:result", ok: true }, { priority: "result" });
     await expect(businessResult).resolves.toMatchObject({ type: "test:result", ok: true });
-    await vi.waitFor(() => expect(logs).toContain("A runtime business frame listener failed"));
+    await vi.waitFor(() =>
+      expect(logs).toContainEqual(
+        expect.objectContaining({ level: "warn", message: "Runtime business frame listener failed" }),
+      ),
+    );
     connection.stop();
     await running;
 

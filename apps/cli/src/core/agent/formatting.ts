@@ -16,6 +16,7 @@ export function formatAgentList(response: ListAgentsResponse): string {
         agent.runtimeProvider,
         agent.computerId,
         `revision=${agent.revision}`,
+        `runtimeConfigRevision=${agent.runtimeConfigRevision}`,
       ].join("\t"),
     )
     .join("\n");
@@ -32,5 +33,11 @@ export function formatAgent(agent: Agent): string {
     `runtimeProvider\t${agent.runtimeProvider}`,
     `receiveMode\t${agent.receiveMode}`,
     `revision\t${agent.revision}`,
+    `runtimeConfig.revision\t${agent.runtimeConfig.revision}`,
+    `runtimeConfig.model\t${agent.runtimeConfig.model ?? ""}`,
+    `runtimeConfig.reasoningEffort\t${agent.runtimeConfig.reasoningEffort ?? ""}`,
+    `runtimeConfig.instructions\t${JSON.stringify(agent.runtimeConfig.instructions)}`,
+    `runtimeConfig.allowedTools\t${agent.runtimeConfig.allowedTools.join(",")}`,
+    `runtimeConfig.maxDurationMs\t${agent.runtimeConfig.maxDurationMs ?? ""}`,
   ].join("\n");
 }

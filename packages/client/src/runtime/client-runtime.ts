@@ -8,6 +8,7 @@ import {
   SessionReconcileResultSchema,
   type TurnReportResult,
 } from "@opentag/shared";
+import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import { SessionReconciler } from "./session-reconciler.js";
 
@@ -17,6 +18,7 @@ export interface DeliveryDecision {
 }
 
 export interface ClientRuntimeOptions {
+  logger?: ClientLogger;
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
   handleTurnReportResult?(result: TurnReportResult): Promise<void> | void;
   onReconcileResultSendFailed?(
@@ -36,12 +38,14 @@ export class ClientRuntime {
   readonly reconciler: SessionReconciler;
   readonly #connection: RuntimeConnection;
   readonly #options: ClientRuntimeOptions;
+  readonly #logger: ClientLogger;
   readonly #abort = new AbortController();
   #unsubscribe?: () => void;
 
   constructor(connection: RuntimeConnection, options: ClientRuntimeOptions = {}) {
     this.#connection = connection;
     this.#options = options;
+    this.#logger = options.logger ?? createLogger("client-runtime");
     this.reconciler = options.reconciler ?? new SessionReconciler({ computerId: connection.computerId });
   }
 
@@ -65,6 +69,13 @@ export class ClientRuntime {
     if (!parsed.success || this.#abort.signal.aborted) return;
     const frame = parsed.data;
     if (frame.type === "session:reconcile") {
+      const fields = {
+        agentId: frame.agentId,
+        placementGeneration: frame.placementGeneration,
+        requestId: frame.requestId,
+        sessionId: frame.sessionId,
+      };
+      this.#logger.debug(fields, "Session reconcile received");
       const reconciled = await this.reconciler.reconcile(frame);
       const result = SessionReconcileResultSchema.parse(
         (await this.#options.prepareReconcileResult?.(frame, reconciled)) ?? reconciled,
@@ -72,13 +83,23 @@ export class ClientRuntime {
       try {
         await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
       } catch (error) {
+        this.#logger.warn({ ...fields, status: result.status }, "Session reconcile result send failed");
         await this.#options.onReconcileResultSendFailed?.(frame, result, error);
         throw error;
       }
+      this.#logger.debug({ ...fields, reason: result.reason, status: result.status }, "Session reconcile completed");
       await this.#options.onReconciled?.(frame, result);
       return;
     }
     if (frame.type === "im:deliver") {
+      const fields = {
+        agentId: frame.agentId,
+        deliveryId: frame.deliveryId,
+        placementGeneration: frame.placementGeneration,
+        requestId: frame.requestId,
+        sessionId: frame.sessionId,
+      };
+      this.#logger.debug(fields, "IM delivery received");
       const reason = this.reconciler.checkDelivery(frame);
       const decision = reason
         ? { result: rejectedDelivery(frame, reason) }
@@ -87,6 +108,9 @@ export class ClientRuntime {
           });
       const result = ImMessageDeliveryResultSchema.parse(decision.result);
       await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
+      const resultFields = { ...fields, reason: result.reason, status: result.status };
+      if (result.status === "accepted") this.#logger.debug(resultFields, "IM delivery accepted");
+      else this.#logger.warn(resultFields, "IM delivery rejected");
       if (result.status === "accepted") await decision.onAcceptedSent?.();
       return;
     }

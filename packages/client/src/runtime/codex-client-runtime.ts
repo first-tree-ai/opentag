@@ -13,6 +13,7 @@ import {
 } from "@opentag/shared";
 import type { OpenTagApi } from "../api.js";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
+import { type ClientLogger, createLogger } from "../observability/logger.js";
 import {
   CODEX_V0_APP_SERVER_ARGS,
   CodexAdapter,
@@ -44,7 +45,7 @@ export interface CreateCodexClientRuntimeOptions {
   codexHome?: string;
   environment?: NodeJS.ProcessEnv;
   home: string;
-  log?: (message: string) => void;
+  logger?: ClientLogger;
   probe?: (command: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal) => Promise<void>;
   signal?: AbortSignal;
   capabilityRefreshIntervalMs?: number;
@@ -138,6 +139,7 @@ export async function createCodexClientRuntime(
   connection: RuntimeConnection,
   options: CreateCodexClientRuntimeOptions,
 ): Promise<CodexClientRuntime> {
+  const moduleLogger = (module: string) => options.logger?.child({ module }) ?? createLogger(module);
   const sourceEnvironment = options.environment ?? process.env;
   options.signal?.throwIfAborted();
   const defaultHome = sourceEnvironment.HOME ?? homedir();
@@ -189,7 +191,7 @@ export async function createCodexClientRuntime(
   });
   const mvpReportRecovery = new MvpTurnReportRecovery({
     bindingStore,
-    log: options.log,
+    logger: moduleLogger("report-recovery"),
     reconciler,
     reportOwner,
   });
@@ -224,13 +226,14 @@ export async function createCodexClientRuntime(
     bindingStore,
     connection,
     custody,
-    log: options.log,
+    logger: moduleLogger("turn"),
     reportOwner,
     toolHost,
     resourceFetcher,
     workspace,
   });
   const runtime = new ClientRuntime(connection, {
+    logger: moduleLogger("client-runtime"),
     reconciler,
     handleDelivery: (request) => custody.accept(request),
     handleTurnReportResult: async (result) => {

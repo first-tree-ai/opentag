@@ -42,7 +42,7 @@ COPY LICENSE /app/LICENSE
 RUN addgroup -S opentag && adduser -S -G opentag opentag
 
 ENV NODE_ENV=production
-ENV OPENTAG_ENV=production
+ENV OPENTAG_ENV=prod
 ENV OPENTAG_HOST=0.0.0.0
 ENV OPENTAG_PORT=8000
 

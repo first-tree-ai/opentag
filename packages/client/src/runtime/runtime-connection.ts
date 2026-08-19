@@ -14,6 +14,7 @@ import {
 import WebSocket, { type RawData } from "ws";
 import { OpenTagApiError } from "../api.js";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
+import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { ComputerIdentity } from "./computer-identity.js";
 
 const SERVER_CONTROL_FRAME_TYPES = new Set([
@@ -86,7 +87,7 @@ export interface RuntimeConnectionOptions {
   handshakeTimeoutMs?: number;
   instanceId: string;
   jitter?: () => number;
-  log?: (message: string) => void;
+  logger?: ClientLogger;
   now?: () => number;
   parseBusinessFrame?: (value: unknown) => RuntimeBusinessFrame | undefined;
   platform: "darwin" | "linux" | "win32";
@@ -130,6 +131,7 @@ const defaultQueueLimits: RuntimeQueueLimits = {
 
 export class RuntimeConnection {
   readonly #options: RuntimeConnectionOptions;
+  readonly #logger: ClientLogger;
   readonly #scheduler: RuntimeScheduler;
   readonly #now: () => number;
   readonly #queueLimits: RuntimeQueueLimits;
@@ -150,6 +152,10 @@ export class RuntimeConnection {
 
   constructor(options: RuntimeConnectionOptions) {
     this.#options = options;
+    this.#logger = (options.logger ?? createLogger("connection")).child({
+      computerId: options.computer.computerId,
+      instanceId: options.instanceId,
+    });
     this.#scheduler = options.scheduler ?? defaultScheduler;
     this.#now = options.now ?? Date.now;
     this.#queueLimits = { ...defaultQueueLimits, ...options.queueLimits };
@@ -242,23 +248,41 @@ export class RuntimeConnection {
       while (!this.#stopped) {
         try {
           this.#setState("connecting");
+          this.#logger.debug({ attempt: attempt + 1, state: "connecting" }, "Runtime connection attempt started");
           await this.#connectOnce(() => {
             attempt = 0;
           });
         } catch (error) {
           if (this.#stopped || isAbortError(error)) break;
-          if (error instanceof RuntimeConnectionError && error.fatal) throw error;
+          if (error instanceof RuntimeConnectionError && error.fatal) {
+            this.#logger.error(
+              { attempt: attempt + 1, category: "protocol", state: this.#state },
+              "Runtime connection was rejected",
+            );
+            throw error;
+          }
           if (error instanceof OpenTagApiError && !["transient", "rate_limit"].includes(error.category)) {
+            this.#logger.error(
+              { attempt: attempt + 1, category: error.category, state: this.#state },
+              "Runtime authentication failed",
+            );
             throw new RuntimeConnectionError(`${error.message}; run login again`, true);
           }
           if (error instanceof Error && error.message.includes("not logged in")) {
+            this.#logger.error(
+              { attempt: attempt + 1, category: "credential", state: this.#state },
+              "Runtime authentication failed",
+            );
             throw new RuntimeConnectionError(`${error.message}; run login first`, true);
           }
           attempt += 1;
           const maximum = Math.min(30_000, 1_000 * 2 ** Math.min(attempt - 1, 5));
           const jitter = Math.min(1, Math.max(0, this.#options.jitter?.() ?? Math.random()));
           const delay = Math.floor(maximum * jitter);
-          this.#options.log?.(`Runtime connection lost; retrying in ${delay}ms`);
+          this.#logger.warn(
+            { attempt, category: connectionErrorCategory(error), delayMs: delay, state: this.#state },
+            "Runtime connection lost; retry scheduled",
+          );
           try {
             await this.#waitForRetry(delay);
           } catch (retryError) {
@@ -500,7 +524,7 @@ export class RuntimeConnection {
           this.#setState("registered");
           this.#resolveRegisteredWaiters();
           onRegistered();
-          this.#options.log?.(`Computer ${this.#options.computer.computerId} connected`);
+          this.#logger.info({ state: "registered" }, "Runtime connection registered");
           armSilence();
           scheduleHeartbeat();
           const remaining = Date.parse(serverTokenExpiresAt ?? lease.expiresAt) - this.#now();
@@ -711,13 +735,14 @@ export class RuntimeConnection {
     for (const listener of this.#businessListeners) {
       Promise.resolve()
         .then(() => listener(frame))
-        .catch(() => this.#options.log?.("A runtime business frame listener failed"));
+        .catch(() => this.#logger.warn({ category: "listener" }, "Runtime business frame listener failed"));
     }
   }
 
   #setState(state: RuntimeConnectionState): void {
     if (this.#state === state) return;
     this.#state = state;
+    this.#logger.debug({ state }, "Runtime connection state changed");
     for (const listener of this.#stateListeners) this.#notifyStateListener(listener, state);
   }
 
@@ -725,7 +750,7 @@ export class RuntimeConnection {
     try {
       listener(state);
     } catch {
-      this.#options.log?.("A runtime connection state listener failed");
+      this.#logger.warn({ category: "listener", state }, "Runtime connection state listener failed");
     }
   }
 
@@ -760,6 +785,13 @@ export class RuntimeConnection {
       signal.addEventListener("abort", onAbort, { once: true });
     });
   }
+}
+
+function connectionErrorCategory(error: unknown): string {
+  if (error instanceof OpenTagApiError) return error.category;
+  if (error instanceof RuntimeConnectionError) return error.fatal ? "protocol" : "transport";
+  if (error instanceof RuntimeSendError) return error.code;
+  return "unexpected";
 }
 
 function rawDataBuffer(data: RawData): Buffer {

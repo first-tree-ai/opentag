@@ -3,15 +3,16 @@ import {
   type DirectImMessageDeliveryRequest,
   DirectImMessageDeliveryRequestSchema,
   type EffectiveRuntimeSnapshot,
-  OPENTAG_MESSAGE_TOOLS,
+  OPENTAG_PLATFORM_INSTRUCTIONS,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_IM_HISTORY_MAX_BYTES,
   RUNTIME_MAX_FRAME_BYTES,
   runtimeFrameByteLength,
 } from "@opentag/shared";
-import { and, asc, desc, eq, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import {
+  agentRuntimeConfigs,
   agents,
   computers,
   imMessageDeliveries,
@@ -178,6 +179,7 @@ export class ImDeliveryWorker {
         placement: sessionPlacements,
         integration: integrations,
         agent: agents,
+        runtimeConfig: agentRuntimeConfigs,
         computer: computers,
       })
       .from(imMessageDeliveries)
@@ -186,6 +188,7 @@ export class ImDeliveryWorker {
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
       .innerJoin(agents, eq(agents.id, integrations.agentId))
+      .innerJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
       .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(
         and(
@@ -219,7 +222,7 @@ export class ImDeliveryWorker {
       : undefined;
     const runtime =
       persistedRequest?.runtime ??
-      runtimeSnapshot(row.agent.id, row.agent.revision, row.session.id, row.session.revision);
+      runtimeSnapshot(row.agent.id, row.runtimeConfig, row.session.id, row.session.revision);
     try {
       const reconcile = await this.#domain.requestReconcile(row.placement.computerId, instanceId, {
         type: "session:reconcile",
@@ -263,7 +266,7 @@ export class ImDeliveryWorker {
       const resources = row.message.content.resources ?? [];
       const history =
         row.agent.receiveMode === "mention_only" && row.delivery.attention === "direct"
-          ? await this.#history(row.session.id, row.message.occurredAt, row.message.id)
+          ? await this.#history(row.session, row.message.occurredAt, row.message.providerRevisionKey, row.message.id)
           : { items: [], truncated: false };
       const request: DirectImMessageDeliveryRequest = {
         type: "im:deliver",
@@ -321,6 +324,7 @@ export class ImDeliveryWorker {
         placement: sessionPlacements,
         integration: integrations,
         agent: agents,
+        runtimeConfig: agentRuntimeConfigs,
         computer: computers,
       })
       .from(imMessageDeliveries)
@@ -328,6 +332,7 @@ export class ImDeliveryWorker {
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
       .innerJoin(agents, eq(agents.id, integrations.agentId))
+      .innerJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
       .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(
         and(
@@ -359,7 +364,7 @@ export class ImDeliveryWorker {
         agentId: row.agent.id,
         placementGeneration: row.placement.generation,
         desired: "ready",
-        runtime: runtimeSnapshot(row.agent.id, row.agent.revision, row.session.id, row.session.revision),
+        runtime: runtimeSnapshot(row.agent.id, row.runtimeConfig, row.session.id, row.session.revision),
       });
     } catch {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RECOVERY_FAILED");
@@ -410,25 +415,47 @@ export class ImDeliveryWorker {
   }
 
   async #history(
-    sessionId: string,
+    session: typeof sessions.$inferSelect,
     occurredAt: Date,
+    providerRevisionKey: string,
     messageId: string,
   ): Promise<{
     items: Array<{ imMessageId: string; occurredAt: string; text: string }>;
     truncated: boolean;
   }> {
-    const rows = await this.#database
-      .select({ id: imMessages.id, occurredAt: imMessages.occurredAt, content: imMessages.content })
+    const [lastAccepted] = await this.#database
+      .select({
+        id: imMessages.id,
+        occurredAt: imMessages.occurredAt,
+        providerRevisionKey: imMessages.providerRevisionKey,
+      })
       .from(imMessageDeliveries)
       .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
       .where(
         and(
-          eq(imMessageDeliveries.sessionId, sessionId),
+          eq(imMessageDeliveries.sessionId, session.id),
           eq(imMessageDeliveries.state, "accepted"),
-          sql`(${imMessages.occurredAt}, ${imMessages.id}) < (${occurredAt}, ${messageId})`,
+          messageBefore(occurredAt, providerRevisionKey, messageId),
         ),
       )
-      .orderBy(desc(imMessages.occurredAt), desc(imMessages.id))
+      .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
+      .limit(1);
+    const rows = await this.#database
+      .select({ id: imMessages.id, occurredAt: imMessages.occurredAt, content: imMessages.content })
+      .from(imMessages)
+      .where(
+        and(
+          eq(imMessages.integrationId, session.integrationId),
+          eq(imMessages.channelId, session.channelId),
+          eq(imMessages.direction, "inbound"),
+          ...(session.kind === "thread" && session.threadKey ? [eq(imMessages.threadKey, session.threadKey)] : []),
+          messageBefore(occurredAt, providerRevisionKey, messageId),
+          ...(lastAccepted
+            ? [messageAfter(lastAccepted.occurredAt, lastAccepted.providerRevisionKey, lastAccepted.id)]
+            : []),
+        ),
+      )
+      .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
       .limit(101);
     const selected = rows.slice(0, 100);
     const items: Array<{ imMessageId: string; occurredAt: string; text: string }> = [];
@@ -452,26 +479,54 @@ export class ImDeliveryWorker {
   }
 }
 
+function messageBefore(occurredAt: Date, providerRevisionKey: string, messageId: string) {
+  return or(
+    lt(imMessages.occurredAt, occurredAt),
+    and(
+      eq(imMessages.occurredAt, occurredAt),
+      or(
+        lt(imMessages.providerRevisionKey, providerRevisionKey),
+        and(eq(imMessages.providerRevisionKey, providerRevisionKey), lt(imMessages.id, messageId)),
+      ),
+    ),
+  );
+}
+
+function messageAfter(occurredAt: Date, providerRevisionKey: string, messageId: string) {
+  return or(
+    gt(imMessages.occurredAt, occurredAt),
+    and(
+      eq(imMessages.occurredAt, occurredAt),
+      or(
+        gt(imMessages.providerRevisionKey, providerRevisionKey),
+        and(eq(imMessages.providerRevisionKey, providerRevisionKey), gt(imMessages.id, messageId)),
+      ),
+    ),
+  );
+}
+
 function runtimeSnapshot(
   agentId: string,
-  agentRevision: number,
+  config: typeof agentRuntimeConfigs.$inferSelect,
   sessionId: string,
   sessionRevision: number,
 ): EffectiveRuntimeSnapshot {
   return {
     revision: {
-      agent: { sequence: agentRevision, id: agentId },
+      agent: { sequence: config.revision, id: agentId },
       session: { sequence: sessionRevision, id: sessionId },
     },
     agentId,
     provider: "codex",
+    ...(config.model ? { model: config.model } : {}),
+    ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
     instructions: {
-      platform:
-        "You run inside OpenTag. IM output is never sent automatically. Use an opentag_message_* tool only when you intend to write to the current IM conversation.",
-      agent: "Act as the configured OpenTag Agent and follow the managed workspace instructions.",
+      platform: OPENTAG_PLATFORM_INSTRUCTIONS,
+      agent: config.instructions,
     },
-    allowedTools: [...OPENTAG_MESSAGE_TOOLS],
+    allowedTools: config.allowedTools,
     execution: { approvalPolicy: "never", networkAccess: false },
+    ...(config.maxDurationMs ? { budget: { maxDurationMs: config.maxDurationMs } } : {}),
     workspace: { workspaceId: agentId, mode: "empty_on_create", sharing: "agent" },
   };
 }

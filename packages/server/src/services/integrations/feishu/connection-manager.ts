@@ -9,6 +9,7 @@ import type { FeishuBindingActivation } from "./setup-service.js";
 
 const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_MAINTENANCE_MS = 10_000;
+const CONNECTION_SCAN_PAGE_SIZE = 100;
 
 interface OwnedChannel {
   adapter: FeishuAdapter;
@@ -255,15 +256,20 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       await owned.adapter.channel.disconnect().catch(() => this.#onDiagnostic("FEISHU_CONNECTION_DISCONNECT_FAILED"));
     }
 
-    const candidates = await this.#integrations.listFeishuConnectionIds();
-    for (const integrationId of candidates) {
-      if (this.#owned.has(integrationId)) continue;
-      const epoch = await this.#claim(integrationId, false);
-      if (epoch === undefined) continue;
-      await this.#connectClaimed(integrationId, epoch).catch(async (error) => {
-        await this.#integrations.recordDiagnosticError(integrationId, diagnosticCode(error));
-        await this.#release(integrationId, epoch);
-      });
+    let afterId: string | undefined;
+    while (!this.#stopped) {
+      const candidates = await this.#integrations.listFeishuConnectionIds(afterId, CONNECTION_SCAN_PAGE_SIZE);
+      for (const integrationId of candidates) {
+        if (this.#owned.has(integrationId)) continue;
+        const epoch = await this.#claim(integrationId, false);
+        if (epoch === undefined) continue;
+        await this.#connectClaimed(integrationId, epoch).catch(async (error) => {
+          await this.#integrations.recordDiagnosticError(integrationId, diagnosticCode(error));
+          await this.#release(integrationId, epoch);
+        });
+      }
+      if (candidates.length < CONNECTION_SCAN_PAGE_SIZE) break;
+      afterId = candidates.at(-1);
     }
   }
 

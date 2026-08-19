@@ -9,6 +9,20 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const noticePath = resolve(projectRoot, "apps/cli/THIRD_PARTY_NOTICES");
 const bundledPackages = [
   { name: "commander", consumerManifest: "apps/cli/package.json" },
+  {
+    name: "pino",
+    consumerManifest: "packages/client/package.json",
+    bundledDependencies: [
+      "@pinojs/redact",
+      "atomic-sleep",
+      "on-exit-leak-free",
+      "pino-std-serializers",
+      "quick-format-unescaped",
+      "safe-stable-stringify",
+      "sonic-boom",
+      "thread-stream",
+    ],
+  },
   { name: "ws", consumerManifest: "apps/cli/package.json" },
   { name: "zod", consumerManifest: "packages/shared/package.json" },
 ];
@@ -58,14 +72,22 @@ export async function generateThirdPartyNotices() {
   for (const bundledPackage of bundledPackages) {
     const consumerPath = resolve(projectRoot, bundledPackage.consumerManifest);
     const packageRequire = createRequire(pathToFileURL(consumerPath));
-    const { manifest, manifestPath } = await findPackageManifest(packageRequire, bundledPackage.name);
-    const license = await readLicense(dirname(manifestPath));
-    sections.push(
-      `## ${manifest.name}@${manifest.version}\n\nSource: ${repositoryUrl(manifest.repository)}\nLicense: ${manifest.license}\n\n${license}`,
-    );
+    const rootPackage = await findPackageManifest(packageRequire, bundledPackage.name);
+    await appendNotice(sections, rootPackage);
+    const dependencyRequire = createRequire(pathToFileURL(rootPackage.manifestPath));
+    for (const dependency of bundledPackage.bundledDependencies ?? []) {
+      await appendNotice(sections, await findPackageManifest(dependencyRequire, dependency));
+    }
   }
 
   return `OpenTag Third-Party Notices\n\nThis distribution includes source code from the following packages.\n\n${sections.join("\n\n---\n\n")}\n`;
+}
+
+async function appendNotice(sections, { manifest, manifestPath }) {
+  const license = await readLicense(dirname(manifestPath));
+  sections.push(
+    `## ${manifest.name}@${manifest.version}\n\nSource: ${repositoryUrl(manifest.repository)}\nLicense: ${manifest.license}\n\n${license}`,
+  );
 }
 
 async function main() {

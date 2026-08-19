@@ -18,6 +18,12 @@ export interface CodexAppServerMessage {
   [key: string]: unknown;
 }
 
+export interface CodexAppServerRequest {
+  readonly id: number | string;
+  readonly method: string;
+  readonly params: unknown;
+}
+
 export interface CodexSpawnOptions {
   args?: string[];
   command?: string;
@@ -65,6 +71,11 @@ export interface CodexDynamicToolResult {
 
 export type CodexDynamicToolHandler = (call: CodexDynamicToolCall) => Promise<CodexDynamicToolResult>;
 
+export interface InteractiveCodexAppServerClient extends CodexAppServerClient {
+  rejectServerRequest(id: number | string, code: number, message: string): Promise<void>;
+  respondServerRequest(id: number | string, result: unknown): Promise<void>;
+  subscribeServerRequests(listener: (request: CodexAppServerRequest) => void): () => void;
+}
 interface PendingRequest {
   reject(error: Error): void;
   resolve(value: unknown): void;
@@ -74,13 +85,16 @@ interface PendingRequest {
 const defaultSpawn = (command: string, args: readonly string[], options: CodexProcessSpawnOptions) =>
   spawnWatchedProcess(command, args, options);
 
-export class CodexAppServerProcess implements CodexAppServerClient {
+export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   readonly #child: ChildProcessWithoutNullStreams;
   readonly #expectedCodexHome?: string;
   readonly #maxLineBytes: number;
   readonly #requestTimeoutMs: number;
   readonly #pending = new Map<number, PendingRequest>();
   readonly #listeners = new Set<(message: CodexAppServerMessage) => void>();
+  readonly #serverRequestListeners = new Set<(request: CodexAppServerRequest) => void>();
+  readonly #pendingServerRequests = new Set<number | string>();
+  readonly #respondingServerRequests = new Set<number | string>();
   readonly #exit: Promise<void>;
   #resolveExit: (() => void) | undefined;
   #buffer = Buffer.alloc(0);
@@ -142,6 +156,19 @@ export class CodexAppServerProcess implements CodexAppServerClient {
     this.#dynamicToolHandler = handler;
   }
 
+  subscribeServerRequests(listener: (request: CodexAppServerRequest) => void): () => void {
+    this.#serverRequestListeners.add(listener);
+    return () => this.#serverRequestListeners.delete(listener);
+  }
+
+  async respondServerRequest(id: number | string, result: unknown): Promise<void> {
+    await this.#writeServerResponse(id, { id, result });
+  }
+
+  async rejectServerRequest(id: number | string, code: number, message: string): Promise<void> {
+    await this.#writeServerResponse(id, { id, error: { code, message } });
+  }
+
   async initialize(clientVersion: string, signal?: AbortSignal): Promise<void> {
     const response = await this.request(
       "initialize",
@@ -199,9 +226,7 @@ export class CodexAppServerProcess implements CodexAppServerClient {
       signal?.addEventListener("abort", onAbort, { once: true });
       void this.#write({ id, method, params }).catch((error: unknown) => {
         const pending = this.#pending.get(id);
-        pending?.reject(
-          error instanceof Error ? error : new CodexAppServerError("write", "Codex request write failed"),
-        );
+        pending?.reject(error as Error);
       });
     });
   }
@@ -211,7 +236,7 @@ export class CodexAppServerProcess implements CodexAppServerClient {
   }
 
   async interrupt(threadId: string, turnId: string): Promise<void> {
-    await this.request("turn/interrupt", { threadId, turnId }, AbortSignal.timeout(500)).catch(() => undefined);
+    await this.request("turn/interrupt", { threadId, turnId }, AbortSignal.timeout(2_000));
   }
 
   async close(graceMs = 1_000): Promise<void> {
@@ -220,6 +245,8 @@ export class CodexAppServerProcess implements CodexAppServerClient {
     this.#closed = true;
     const closingError = new CodexAppServerError("aborted", "Codex App Server is closing");
     for (const pending of [...this.#pending.values()]) pending.reject(closingError);
+    this.#pendingServerRequests.clear();
+    this.#respondingServerRequests.clear();
     this.#child.stdin.end();
     signalWatchedProcess(this.#child, "SIGTERM");
     if (await settlesWithin(this.#exit, graceMs)) return;
@@ -242,6 +269,19 @@ export class CodexAppServerProcess implements CodexAppServerClient {
         error ? reject(new CodexAppServerError("write", "Codex request could not be written")) : resolve();
       });
     });
+  }
+
+  async #writeServerResponse(id: number | string, message: unknown): Promise<void> {
+    if (!this.#pendingServerRequests.has(id) || this.#respondingServerRequests.has(id)) {
+      throw new CodexAppServerError("protocol", "Codex server request is unknown or already resolved");
+    }
+    this.#respondingServerRequests.add(id);
+    try {
+      await this.#write(message);
+      this.#pendingServerRequests.delete(id);
+    } finally {
+      this.#respondingServerRequests.delete(id);
+    }
   }
 
   #onStdout(chunk: Buffer): void {
@@ -287,13 +327,33 @@ export class CodexAppServerProcess implements CodexAppServerClient {
         return;
       }
       if (message.error !== undefined) {
-        pending.reject(new CodexAppServerError("protocol", "Codex returned a request error"));
+        const error = isRecord(message.error) ? message.error : undefined;
+        const detail = typeof error?.message === "string" ? `: ${error.message}` : "";
+        pending.reject(new CodexAppServerError("protocol", `Codex returned a request error${detail}`));
       } else {
         pending.resolve(message.result);
       }
       return;
     }
     if ((typeof message.id === "number" || typeof message.id === "string") && typeof message.method === "string") {
+      if (this.#serverRequestListeners.size > 0) {
+        if (this.#pendingServerRequests.has(message.id)) {
+          this.#fail(new CodexAppServerError("protocol", "Codex emitted a duplicate server request ID"));
+          return;
+        }
+        this.#pendingServerRequests.add(message.id);
+        const request = { id: message.id, method: message.method, params: message.params };
+        for (const listener of this.#serverRequestListeners) {
+          try {
+            listener(request);
+          } catch {
+            this.#pendingServerRequests.delete(message.id);
+            this.#fail(new CodexAppServerError("protocol", "A Codex server request listener failed"));
+            return;
+          }
+        }
+        return;
+      }
       void this.#handleServerRequest(message.id, message.method, message.params);
       return;
     }
@@ -352,6 +412,8 @@ export class CodexAppServerProcess implements CodexAppServerClient {
     if (this.#failure) return;
     this.#failure = error;
     for (const pending of [...this.#pending.values()]) pending.reject(error);
+    this.#pendingServerRequests.clear();
+    this.#respondingServerRequests.clear();
     for (const listener of this.#listeners) {
       try {
         listener({ method: "opentag/processError", params: { error } });

@@ -220,14 +220,22 @@ export class TeamMembershipService {
     });
   }
 
+  /**
+   * Lists every Computer owned by an active, non-suspended Team member.
+   * Agent bindings decorate the Computer projection; they do not determine membership in it.
+   */
   async listComputers(callerUserId: string, teamId: string): Promise<ListTeamComputersResponse> {
     await this.requireActiveMembership(this.#database, callerUserId, teamId, "admin");
     const rows = await this.#database
       .select({ agentId: agents.id, computer: computers, ownerDisplayName: users.displayName })
-      .from(agents)
-      .innerJoin(computers, eq(computers.id, agents.computerId))
-      .innerJoin(users, eq(users.id, computers.ownerUserId))
-      .where(and(eq(agents.teamId, teamId), isNull(agents.deletedAt)))
+      .from(memberships)
+      .innerJoin(users, eq(users.id, memberships.userId))
+      .innerJoin(computers, eq(computers.ownerUserId, memberships.userId))
+      .leftJoin(
+        agents,
+        and(eq(agents.teamId, memberships.teamId), eq(agents.computerId, computers.id), isNull(agents.deletedAt)),
+      )
+      .where(and(eq(memberships.teamId, teamId), eq(memberships.status, "active"), isNull(users.suspendedAt)))
       .orderBy(asc(computers.displayName), asc(computers.id), asc(agents.id));
     const observedAt = this.#now();
     const cutoff = observedAt.getTime() - this.#presenceTimeoutMs;
@@ -235,7 +243,7 @@ export class TeamMembershipService {
     for (const row of rows) {
       const existing = byId.get(row.computer.id);
       if (existing) {
-        existing.agentIds.push(row.agentId);
+        if (row.agentId) existing.agentIds.push(row.agentId);
         continue;
       }
       byId.set(row.computer.id, {
@@ -251,7 +259,7 @@ export class TeamMembershipService {
         connectedAt: row.computer.connectedAt?.toISOString() ?? null,
         lastSeenAt: row.computer.lastSeenAt.toISOString(),
         observedAt: observedAt.toISOString(),
-        agentIds: [row.agentId],
+        agentIds: row.agentId ? [row.agentId] : [],
       });
     }
     return { computers: [...byId.values()] };

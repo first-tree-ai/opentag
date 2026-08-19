@@ -280,7 +280,7 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
     return {
       currentHome: options.home,
       definitionPath: unitPath,
-      logHint: `journalctl --user -u ${identity.systemdUnitName} -f`,
+      logHint: `${join(options.home, "logs", "client.log")} (fallback: journalctl --user -u ${identity.systemdUnitName} -f)`,
       platform: "systemd",
       serviceId: options.serviceId,
       state,

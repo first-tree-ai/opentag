@@ -135,6 +135,12 @@ nav a.active {
 .page-header {
   margin-bottom: 2rem;
 }
+.page-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
 .page-header h1 {
   font-size: clamp(2rem, 4vw, 3.4rem);
 }
@@ -154,6 +160,15 @@ nav a.active {
 .panel {
   margin-top: 1rem;
 }
+.computer-section + .computer-section {
+  margin-top: 2rem;
+}
+.computer-section h2 {
+  margin-bottom: 0.35rem;
+}
+.computer-section > p {
+  margin-top: 0;
+}
 code {
   display: inline-block;
   max-width: 100%;
@@ -161,6 +176,70 @@ code {
   background: #eef2ec;
   border-radius: 7px;
   overflow-wrap: anywhere;
+}
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(14, 23, 20, 0.58);
+}
+.dialog {
+  width: min(680px, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+  padding: 1.75rem;
+  background: white;
+  border: 1px solid #dce3da;
+  border-radius: 22px;
+  box-shadow: 0 25px 70px rgba(14, 23, 20, 0.28);
+}
+.dialog h2 {
+  margin: 0.25rem 0 0;
+  font-family: Georgia, serif;
+  font-size: 2rem;
+  font-weight: 500;
+}
+.dialog-title-row,
+.dialog-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.icon-button {
+  width: 2.4rem;
+  height: 2.4rem;
+  padding: 0;
+  background: #eef2ec;
+  color: #164c3a;
+  font-size: 1.5rem;
+}
+.command-block {
+  margin: 1.25rem 0;
+  padding: 1rem;
+  overflow: auto;
+  background: #0f1c18;
+  border-radius: 12px;
+  color: #e9f1ed;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.command-block code {
+  display: inline;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+.copy-error {
+  color: #9c3329;
+}
+.success {
+  border-color: #a9d4bf;
+  background: #edf8f2;
+  color: #14513a;
 }
 .table-wrap {
   background: white;
@@ -204,6 +283,11 @@ th {
   .content {
     padding: 2rem 1rem;
   }
+  .page-heading-row,
+  .dialog-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -219,6 +303,10 @@ th {
     background: #17231f;
     border-color: #2c3b35;
   }
+  .dialog {
+    background: #17231f;
+    border-color: #2c3b35;
+  }
   code {
     background: #0f1c18;
   }
@@ -230,5 +318,9 @@ th {
   th,
   td {
     border-color: #2c3b35;
+  }
+  .success {
+    background: #163127;
+    color: #ccebdc;
   }
 }

@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { access, mkdir, rename, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -42,10 +43,18 @@ export class ImResourceFetcher {
         continue;
       }
       const filename = safeFilename(resource.filename ?? `${resource.ordinal}.${resource.kind}`);
-      const directory = resolve(workspace, ".opentag", "im-resources");
+      const directory = resolve(workspace, ".opentag", "im-resources", request.deliveryId);
       const target = join(directory, `${resource.imMessageId}-${resource.ordinal}-${filename}`);
+      const temporary = join(directory, `.${resource.imMessageId}-${resource.ordinal}-${randomUUID()}.tmp`);
       try {
         await mkdir(directory, { recursive: true, mode: 0o700 });
+        try {
+          await access(target);
+          lines.push(`- ${resourceLabel}: ${target}`);
+          continue;
+        } catch {
+          // A complete target is published only after a private temporary download succeeds.
+        }
         const lease = await this.#tokens.getAccessTokenLease();
         const response = await this.#api.openImResource(lease.accessToken, resource.imMessageId, resource.ordinal, {
           sessionId: request.sessionId,
@@ -64,11 +73,12 @@ export class ImResourceFetcher {
         await pipeline(
           Readable.fromWeb(response.body),
           limiter,
-          createWriteStream(target, { flags: "wx", mode: 0o600 }),
+          createWriteStream(temporary, { flags: "wx", mode: 0o600 }),
         );
+        await rename(temporary, target);
         lines.push(`- ${resourceLabel}: ${target}`);
       } catch {
-        await rm(target, { force: true }).catch(() => undefined);
+        await rm(temporary, { force: true }).catch(() => undefined);
         lines.push(`- ${resourceLabel}: unavailable (download failed)`);
       }
     }

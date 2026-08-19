@@ -1,12 +1,11 @@
 import { createHash } from "node:crypto";
 import { ImContentV1Schema, type ProviderWriteResult } from "@opentag/shared";
-import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient } from "../../db/client.js";
 import {
   agents,
   computers,
-  imMessageDeliveries,
   imMessages,
   imOutboundRequests,
   integrations,
@@ -134,16 +133,14 @@ export class OutboundMessageService {
       const [latest] = await transaction
         .select({ id: imMessages.id })
         .from(imMessages)
-        .innerJoin(
-          imMessageDeliveries,
-          and(eq(imMessageDeliveries.messageId, imMessages.id), eq(imMessageDeliveries.sessionId, scope.session.id)),
-        )
         .where(
           and(
             eq(imMessages.integrationId, scope.integration.id),
             eq(imMessages.channelId, scope.session.channelId),
             eq(imMessages.direction, "inbound"),
-            inArray(imMessageDeliveries.state, ["pending", "accepted"]),
+            ...(scope.session.kind === "thread" && scope.session.threadKey
+              ? [eq(imMessages.threadKey, scope.session.threadKey)]
+              : []),
           ),
         )
         .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
@@ -155,19 +152,14 @@ export class OutboundMessageService {
         ? await transaction
             .select({ message: imMessages })
             .from(imMessages)
-            .innerJoin(
-              imMessageDeliveries,
-              and(
-                eq(imMessageDeliveries.messageId, imMessages.id),
-                eq(imMessageDeliveries.sessionId, scope.session.id),
-              ),
-            )
             .where(
               and(
                 eq(imMessages.id, targetId),
                 eq(imMessages.integrationId, scope.integration.id),
                 eq(imMessages.channelId, scope.session.channelId),
-                inArray(imMessageDeliveries.state, ["pending", "accepted"]),
+                ...(scope.session.kind === "thread" && scope.session.threadKey
+                  ? [eq(imMessages.threadKey, scope.session.threadKey)]
+                  : []),
               ),
             )
             .limit(1)

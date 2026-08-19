@@ -6,12 +6,18 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+const COMMAND_OUTPUT_LIMIT_BYTES = 16 * 1024 * 1024;
+
 function run(command, arguments_, options = {}) {
   const result = spawnSync(command, arguments_, {
     cwd: options.cwd,
     encoding: "utf8",
     env: { ...process.env, ...options.env },
+    maxBuffer: options.maxBuffer ?? COMMAND_OUTPUT_LIMIT_BYTES,
   });
+  if (result.error) {
+    throw new Error(`${command} ${arguments_.join(" ")} failed: ${result.error.message}`);
+  }
   if (result.status !== (options.expectedStatus ?? 0)) {
     throw new Error(
       `${command} ${arguments_.join(" ")} exited with ${result.status}\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,

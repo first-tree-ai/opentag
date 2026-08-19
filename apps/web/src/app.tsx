@@ -1,5 +1,5 @@
-import type { MeMembership } from "@opentag/shared/browser";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import type { Computer, MeMembership } from "@opentag/shared/browser";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "./api.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
@@ -154,6 +154,7 @@ function TeamSelector({ memberships, displayName }: { memberships: MeMembership[
         <p>
           Select a Team. The selection changes only this page; the server checks your current role on every request.
         </p>
+        <ConnectComputerAction />
       </header>
       <section className="card-grid">
         {memberships.map((membership) => (
@@ -165,6 +166,18 @@ function TeamSelector({ memberships, displayName }: { memberships: MeMembership[
         ))}
       </section>
     </main>
+  );
+}
+
+function ConnectComputerAction() {
+  const [showConnect, setShowConnect] = useState(false);
+  return (
+    <>
+      <button type="button" onClick={() => setShowConnect(true)}>
+        Connect computer
+      </button>
+      {showConnect ? <ConnectComputerDialog onClose={() => setShowConnect(false)} /> : null}
+    </>
   );
 }
 
@@ -315,7 +328,10 @@ function ComputersPage({ teamId }: { teamId: string }) {
   const state = useResource(() => browserApi.computers(teamId), teamId);
   return (
     <>
-      <PageHeader title="Computers" subtitle="Only Computers referenced by active Team Agents" />
+      <div className="page-heading-row">
+        <PageHeader title="Computers" subtitle="Only Computers referenced by active Team Agents" />
+        <ConnectComputerAction />
+      </div>
       <Resource state={state}>
         {(value) => (
           <Table
@@ -333,6 +349,169 @@ function ComputersPage({ teamId }: { teamId: string }) {
       </Resource>
     </>
   );
+}
+
+type ConnectDialogState =
+  | { kind: "loading" }
+  | { kind: "error"; message: string }
+  | { kind: "ready"; bootstrapCommand: string; expiresAtMs: number; issuedAtMs: number }
+  | { kind: "expired" }
+  | { kind: "success"; computer: Computer };
+
+function ConnectComputerDialog({ onClose }: { onClose: () => void }) {
+  const [state, setState] = useState<ConnectDialogState>({ kind: "loading" });
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "error">("idle");
+  const [remainingSeconds, setRemainingSeconds] = useState(0);
+  const generation = useRef(0);
+  const baseline = useRef(new Map<string, string | null>());
+
+  const mint = useCallback(async () => {
+    const currentGeneration = ++generation.current;
+    setState({ kind: "loading" });
+    setCopyStatus("idle");
+    try {
+      const existing = await browserApi.ownComputers();
+      if (generation.current !== currentGeneration) return;
+      const issued = await browserApi.issueConnectCode();
+      if (generation.current !== currentGeneration) return;
+      baseline.current = new Map(existing.computers.map((computer) => [computer.id, computer.connectedAt]));
+      setRemainingSeconds(issued.expiresIn);
+      setState({
+        kind: "ready",
+        bootstrapCommand: issued.bootstrapCommand,
+        expiresAtMs: Date.now() + issued.expiresIn * 1000,
+        issuedAtMs: Date.parse(issued.issuedAt),
+      });
+    } catch (error) {
+      if (generation.current !== currentGeneration) return;
+      setState({
+        kind: "error",
+        message: error instanceof Error ? error.message : "The connection command could not be generated",
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    void mint();
+    return () => {
+      generation.current += 1;
+    };
+  }, [mint]);
+
+  useEffect(() => {
+    if (state.kind !== "ready") return;
+    const currentGeneration = generation.current;
+    const updateRemaining = () => {
+      if (generation.current !== currentGeneration) return;
+      const next = Math.max(0, Math.ceil((state.expiresAtMs - Date.now()) / 1000));
+      setRemainingSeconds(next);
+      if (next === 0) setState({ kind: "expired" });
+    };
+    updateRemaining();
+    const timer = window.setInterval(updateRemaining, 1000);
+    return () => window.clearInterval(timer);
+  }, [state]);
+
+  useEffect(() => {
+    if (state.kind !== "ready") return;
+    const currentGeneration = generation.current;
+    let polling = false;
+    const poll = async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const current = await browserApi.ownComputers();
+        if (generation.current !== currentGeneration) return;
+        const connected = current.computers.find(
+          (computer) =>
+            computer.connectionStatus === "online" &&
+            computer.connectedAt !== null &&
+            Date.parse(computer.connectedAt) >= state.issuedAtMs &&
+            baseline.current.get(computer.id) !== computer.connectedAt,
+        );
+        if (connected) setState({ kind: "success", computer: connected });
+      } catch {
+        // A transient poll failure does not invalidate the already-issued command.
+      } finally {
+        polling = false;
+      }
+    };
+    const timer = window.setInterval(() => void poll(), 2000);
+    return () => window.clearInterval(timer);
+  }, [state]);
+
+  async function copyCommand(command: string) {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("error");
+    }
+  }
+
+  return (
+    <div className="dialog-backdrop" role="presentation">
+      <section aria-labelledby="connect-computer-title" aria-modal="true" className="dialog" role="dialog">
+        <div className="dialog-title-row">
+          <div>
+            <span className="eyebrow">New connection</span>
+            <h2 id="connect-computer-title">Connect computer</h2>
+          </div>
+          <button aria-label="Close" className="icon-button" type="button" onClick={onClose}>
+            ×
+          </button>
+        </div>
+        <p>Run this command in a terminal on the computer you want OpenTag to use.</p>
+        {state.kind === "loading" ? <div className="notice">Generating a short-lived command…</div> : null}
+        {state.kind === "error" ? (
+          <div className="notice error">
+            <p>{state.message}</p>
+            <button type="button" onClick={() => void mint()}>
+              Try again
+            </button>
+          </div>
+        ) : null}
+        {state.kind === "ready" ? (
+          <>
+            <pre className="command-block">
+              <code>{state.bootstrapCommand}</code>
+            </pre>
+            <div className="dialog-actions">
+              <button type="button" onClick={() => void copyCommand(state.bootstrapCommand)}>
+                {copyStatus === "copied" ? "Copied" : "Copy command"}
+              </button>
+              <span className={copyStatus === "error" ? "copy-error" : "muted"}>
+                {copyStatus === "error"
+                  ? "Copy failed. Select the command manually."
+                  : `Expires in ${formatDuration(remainingSeconds)}`}
+              </span>
+            </div>
+            <p className="muted">Waiting for this computer to connect…</p>
+          </>
+        ) : null}
+        {state.kind === "expired" ? (
+          <div className="notice">
+            <p>This command has expired.</p>
+            <button type="button" onClick={() => void mint()}>
+              Generate new command
+            </button>
+          </div>
+        ) : null}
+        {state.kind === "success" ? (
+          <div className="notice success" role="status">
+            <strong>{state.computer.displayName} connected.</strong>
+            <p>You can close this window. The daemon is running on the computer.</p>
+          </div>
+        ) : null}
+      </section>
+    </div>
+  );
+}
+
+function formatDuration(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}:${String(remainder).padStart(2, "0")}`;
 }
 
 function DiagnosticsPage() {

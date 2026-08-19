@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseDatabaseConfig, parseServerConfig } from "../config.js";
+import { isHostedEnvironment, parseDatabaseConfig, parseServerConfig, serverEnvironmentSummary } from "../config.js";
 
 const required = {
   OPENTAG_DATABASE_URL: "postgresql://opentag:opentag@localhost:5432/opentag",
@@ -13,6 +13,7 @@ describe("parseServerConfig", () => {
     expect(parseServerConfig(required)).toMatchObject({
       accessTokenTtlSeconds: 900,
       autoMigrate: true,
+      environment: "dev",
       host: "127.0.0.1",
       publicUrl: "http://localhost:8000",
       port: 8000,
@@ -27,9 +28,9 @@ describe("parseServerConfig", () => {
         ...required,
         OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
         OPENTAG_DEV_AUTH_EMAIL: " ADMIN@Example.com ",
-        OPENTAG_ENV: "development",
+        OPENTAG_ENV: "dev",
       }),
-    ).toMatchObject({ devAuth: { email: "admin@example.com" }, environment: "development" });
+    ).toMatchObject({ devAuth: { email: "admin@example.com" }, environment: "dev" });
 
     for (const invalid of [
       { OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true", OPENTAG_DEV_AUTH_EMAIL: "admin@example.com" },
@@ -38,24 +39,25 @@ describe("parseServerConfig", () => {
       {
         OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
         OPENTAG_DEV_AUTH_EMAIL: "admin@example.com",
-        OPENTAG_ENV: "test",
+        OPENTAG_ENV: "staging",
+        OPENTAG_PUBLIC_URL: "https://dev.example.com",
       },
       {
         OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
         OPENTAG_DEV_AUTH_EMAIL: "admin@example.com",
-        OPENTAG_ENV: "production",
+        OPENTAG_ENV: "prod",
         OPENTAG_PUBLIC_URL: "https://localhost:8000",
       },
       {
         OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
         OPENTAG_DEV_AUTH_EMAIL: "admin@example.com",
-        OPENTAG_ENV: "development",
+        OPENTAG_ENV: "dev",
         OPENTAG_HOST: "0.0.0.0",
       },
       {
         OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
         OPENTAG_DEV_AUTH_EMAIL: "admin@example.com",
-        OPENTAG_ENV: "development",
+        OPENTAG_ENV: "dev",
         OPENTAG_PUBLIC_URL: "http://192.0.2.10:8000",
       },
     ]) {
@@ -63,22 +65,47 @@ describe("parseServerConfig", () => {
     }
   });
 
-  it("requires complete Google configuration and HTTPS in production", () => {
+  it("requires complete Google configuration and HTTPS in hosted environments", () => {
+    expect(isHostedEnvironment("dev")).toBe(false);
+    expect(isHostedEnvironment("staging")).toBe(true);
+    expect(isHostedEnvironment("prod")).toBe(true);
     expect(() => parseServerConfig({ ...required, OPENTAG_GOOGLE_CLIENT_ID: "client" })).toThrow();
-    expect(() => parseServerConfig({ ...required, OPENTAG_ENV: "production" })).toThrow();
-    expect(
-      parseServerConfig({
-        ...required,
-        OPENTAG_ENV: "production",
-        OPENTAG_PUBLIC_URL: "https://opentag.example.com",
-        OPENTAG_GOOGLE_CLIENT_ID: "client",
-        OPENTAG_GOOGLE_CLIENT_SECRET: "secret",
-      }),
-    ).toMatchObject({
-      environment: "production",
-      google: { clientId: "client", clientSecret: "secret" },
-      publicUrl: "https://opentag.example.com",
+    for (const environment of ["staging", "prod"] as const) {
+      expect(() => parseServerConfig({ ...required, OPENTAG_ENV: environment })).toThrow();
+      expect(
+        parseServerConfig({
+          ...required,
+          OPENTAG_ENV: environment,
+          OPENTAG_PUBLIC_URL: environment === "staging" ? "https://dev.example.com" : "https://opentag.example.com",
+          OPENTAG_GOOGLE_CLIENT_ID: "client",
+          OPENTAG_GOOGLE_CLIENT_SECRET: "secret",
+        }),
+      ).toMatchObject({
+        environment,
+        google: { clientId: "client", clientSecret: "secret" },
+      });
+    }
+  });
+
+  it("uses OPENTAG_ENV as the channel source without interpreting the hostname", () => {
+    const config = parseServerConfig({
+      ...required,
+      OPENTAG_ENV: "staging",
+      OPENTAG_PUBLIC_URL: "https://dev.example.com",
     });
+    expect(serverEnvironmentSummary(config)).toEqual({
+      binName: "opentag-staging",
+      channel: "staging",
+      environment: "staging",
+      packageName: "open-tag-staging",
+      publicUrl: "https://dev.example.com",
+    });
+  });
+
+  it("rejects legacy or parallel environment values", () => {
+    for (const environment of ["development", "production", "test"]) {
+      expect(() => parseServerConfig({ ...required, OPENTAG_ENV: environment })).toThrow();
+    }
   });
 
   it("rejects invalid ports, secrets, and database protocols", () => {

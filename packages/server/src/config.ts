@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
+import { type ChannelConfig, type ChannelName, ChannelNameSchema, getChannelConfig } from "@opentag/shared";
 import { z } from "zod";
 
 const booleanString = (defaultValue: "true" | "false") =>
@@ -44,13 +45,17 @@ const EncryptionKeySchema = z
     return new Uint8Array(decoded);
   });
 
+export function isHostedEnvironment(environment: ChannelName): boolean {
+  return environment !== "dev";
+}
+
 const ServerEnvironmentSchema = z
   .object({
     OPENTAG_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
     OPENTAG_AUTO_MIGRATE: booleanString("true"),
     OPENTAG_DATABASE_URL: DatabaseUrlSchema,
     OPENTAG_ENCRYPTION_KEY: EncryptionKeySchema,
-    OPENTAG_ENV: z.enum(["development", "production", "test"]).default("development"),
+    OPENTAG_ENV: ChannelNameSchema.default("dev"),
     OPENTAG_ENV_EXPLICIT: z.boolean(),
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: booleanString("false"),
     OPENTAG_DEV_AUTH_EMAIL: z.string().trim().toLowerCase().email().optional(),
@@ -71,8 +76,8 @@ const ServerEnvironmentSchema = z
     if (Boolean(value.OPENTAG_GOOGLE_CLIENT_ID) !== Boolean(value.OPENTAG_GOOGLE_CLIENT_SECRET)) {
       context.addIssue({ code: "custom", message: "Google client id and secret must be configured together" });
     }
-    if (value.OPENTAG_ENV === "production" && !value.OPENTAG_PUBLIC_URL.startsWith("https://")) {
-      context.addIssue({ code: "custom", message: "OPENTAG_PUBLIC_URL must use HTTPS in production" });
+    if (isHostedEnvironment(value.OPENTAG_ENV) && !value.OPENTAG_PUBLIC_URL.startsWith("https://")) {
+      context.addIssue({ code: "custom", message: "OPENTAG_PUBLIC_URL must use HTTPS in hosted environments" });
     }
     const devAuthConfigured = value.OPENTAG_DEV_AUTH_BYPASS_ENABLED || Boolean(value.OPENTAG_DEV_AUTH_EMAIL);
     if (devAuthConfigured) {
@@ -82,10 +87,10 @@ const ServerEnvironmentSchema = z
           message: "OPENTAG_DEV_AUTH_BYPASS_ENABLED and OPENTAG_DEV_AUTH_EMAIL must be configured together",
         });
       }
-      if (!value.OPENTAG_ENV_EXPLICIT || value.OPENTAG_ENV !== "development") {
+      if (!value.OPENTAG_ENV_EXPLICIT || value.OPENTAG_ENV !== "dev") {
         context.addIssue({
           code: "custom",
-          message: "Development authentication bypass requires OPENTAG_ENV=development",
+          message: "Development authentication bypass requires OPENTAG_ENV=dev",
         });
       }
       if (!isLoopbackHostname(value.OPENTAG_HOST) || !isLoopbackHostname(new URL(value.OPENTAG_PUBLIC_URL).hostname)) {
@@ -107,7 +112,8 @@ export interface ServerConfig {
   autoMigrate: boolean;
   databaseUrl: string;
   encryptionKey: Uint8Array;
-  environment: "development" | "production" | "test";
+  channel: ChannelConfig;
+  environment: ChannelName;
   devAuth?: { email: string };
   google?: { clientId: string; clientSecret: string };
   host: string;
@@ -121,6 +127,16 @@ export interface ServerConfig {
 export interface DatabaseConfig {
   databaseUrl: string;
   migrationsDirectory: string;
+}
+
+export function serverEnvironmentSummary(config: ServerConfig) {
+  return {
+    binName: config.channel.binName,
+    channel: config.channel.channel,
+    environment: config.environment,
+    packageName: config.channel.packageName,
+    publicUrl: config.publicUrl,
+  };
 }
 
 export function parseDatabaseConfig(environment: NodeJS.ProcessEnv): DatabaseConfig {
@@ -152,6 +168,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
   return {
     accessTokenTtlSeconds: parsed.OPENTAG_ACCESS_TOKEN_TTL_SECONDS,
     autoMigrate: parsed.OPENTAG_AUTO_MIGRATE,
+    channel: getChannelConfig(parsed.OPENTAG_ENV),
     databaseUrl: parsed.OPENTAG_DATABASE_URL,
     encryptionKey: parsed.OPENTAG_ENCRYPTION_KEY,
     environment: parsed.OPENTAG_ENV,

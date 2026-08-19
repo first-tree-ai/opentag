@@ -2,6 +2,8 @@ import {
   type Agent,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
+  type ConnectCodeIssueResponse,
+  ConnectCodeIssueResponseSchema,
   HTTP_PATHS,
   type InvitationPreview,
   InvitationPreviewSchema,
@@ -9,6 +11,8 @@ import {
   invitationPreviewPath,
   invitationRedeemPath,
   ListAgentsResponseSchema,
+  type ListComputersResponse,
+  ListComputersResponseSchema,
   type ListTeamComputersResponse,
   ListTeamComputersResponseSchema,
   type ListTeamMembersResponse,
@@ -58,6 +62,17 @@ export class BrowserApi {
 
   computers(teamId: string): Promise<ListTeamComputersResponse> {
     return this.request(teamComputersPath(teamId), ListTeamComputersResponseSchema);
+  }
+
+  ownComputers(): Promise<ListComputersResponse> {
+    return this.request(HTTP_PATHS.meComputers, ListComputersResponseSchema);
+  }
+
+  issueConnectCode(): Promise<ConnectCodeIssueResponse> {
+    return this.request(HTTP_PATHS.meConnectCodes, ConnectCodeIssueResponseSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
   }
 
   invitation(teamId: string): Promise<TeamInvitation> {

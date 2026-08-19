@@ -18,10 +18,11 @@ describe("daemon service commands", () => {
     const daemon = program.commands.find((command) => command.name() === "daemon");
     expect(daemon).toBeDefined();
     const visible = daemon?.commands
-      .filter((command) => command.name() !== "service-run")
+      .filter((command) => !["ensure-service", "service-run"].includes(command.name()))
       .map((command) => command.name());
     expect(visible).toEqual(["install", "start", "stop", "restart", "status", "uninstall"]);
     expect(daemon?.helpInformation()).not.toContain("service-run");
+    expect(daemon?.helpInformation()).not.toContain("ensure-service");
     expect(daemon?.helpInformation()).not.toMatch(/^\s+run\b/mu);
   });
 

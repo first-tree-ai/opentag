@@ -19,6 +19,7 @@ import {
   AuthServiceError,
   type AuthTokenProvider,
   AuthTokenService,
+  ConnectCodeService,
   hashSecret,
 } from "../../services/auth/index.js";
 
@@ -289,6 +290,55 @@ describe("authentication persistence", () => {
       await expect(fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode)).rejects.toMatchObject({
         code: "AUTH_CODE_CONSUMED",
       });
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("issues user-scoped connect codes with the shared 15-minute, single-use invariants", async () => {
+    const now = new Date("2026-08-18T00:00:00.000Z");
+    const fixture = await createAuthFixture(now);
+    try {
+      const issuer = new ConnectCodeService(fixture.database, { now: () => now });
+      const issued = await issuer.issueForUser(fixture.bootstrap.userId);
+      expect(issued).toMatchObject({
+        expiresAt: new Date("2026-08-18T00:15:00.000Z"),
+        expiresIn: 900,
+        issuedAt: now,
+      });
+      const [stored] = await fixture.database
+        .select()
+        .from(connectCodes)
+        .where(eq(connectCodes.codeHash, hashSecret(issued.code)));
+      expect(stored).toMatchObject({
+        codeHash: hashSecret(issued.code),
+        userId: fixture.bootstrap.userId,
+        issuerUserId: fixture.bootstrap.userId,
+        consumedAt: null,
+      });
+      expect(stored?.codeHash).not.toBe(issued.code);
+
+      await expect(fixture.auth.exchangeConnectCode(issued.code)).resolves.toMatchObject({ tokenType: "Bearer" });
+      await expect(fixture.auth.exchangeConnectCode(issued.code)).rejects.toMatchObject({ code: "AUTH_CODE_CONSUMED" });
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("refuses to mint a connect code after the user loses every active membership", async () => {
+    const fixture = await createAuthFixture();
+    try {
+      await fixture.database
+        .update(memberships)
+        .set({ status: "left", updatedAt: new Date() })
+        .where(eq(memberships.userId, fixture.bootstrap.userId));
+      const before = await fixture.database.select().from(connectCodes);
+      await expect(
+        new ConnectCodeService(fixture.database).issueForUser(fixture.bootstrap.userId),
+      ).rejects.toMatchObject({
+        code: "AUTH_MEMBERSHIP_REQUIRED",
+      });
+      expect(await fixture.database.select().from(connectCodes)).toHaveLength(before.length);
     } finally {
       await fixture.sql.end();
     }

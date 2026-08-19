@@ -23,6 +23,8 @@ export {
   ConnectCodeExchangeRequestSchema,
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
+  type ConnectCodeIssueResponse,
+  ConnectCodeIssueResponseSchema,
   type MeMembership,
   MeMembershipSchema,
   type MembershipRole,

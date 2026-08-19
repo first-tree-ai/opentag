@@ -35,7 +35,7 @@ export class ApiError extends Error {
 }
 
 export class BrowserApi {
-  constructor(readonly fetchImpl: typeof fetch = fetch) {}
+  constructor(readonly fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {}
 
   me(): Promise<MeResponse> {
     return this.request("/api/v1/me", MeResponseSchema);

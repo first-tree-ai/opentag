@@ -10,6 +10,27 @@ function setDocumentCookie(value: string): void {
 }
 
 describe("BrowserApi", () => {
+  it("binds the default fetch implementation to the browser global", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            user: {
+              id: "498ee47d-16dc-4798-8e20-3608a2973dcf",
+              email: "admin@example.com",
+              displayName: "Admin",
+            },
+            memberships: [],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchImpl);
+
+    await expect(new BrowserApi().me()).resolves.toMatchObject({ user: { email: "admin@example.com" } });
+    expect(fetchImpl.mock.contexts).toEqual([globalThis]);
+  });
+
   it("rebuilds mutation CSRF headers after refreshing an expired access token", async () => {
     setDocumentCookie("opentag_csrf=old-token; Path=/");
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {

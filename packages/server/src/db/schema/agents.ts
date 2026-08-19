@@ -4,6 +4,7 @@ import { memberships, teams, users } from "./auth.js";
 import { computers } from "./computers.js";
 
 export const agentRuntimeProvider = pgEnum("agent_runtime_provider", ["codex", "claude-code"]);
+export const agentReceiveMode = pgEnum("agent_receive_mode", ["all_message", "mention_only"]);
 
 export const agents = pgTable(
   "agents",
@@ -21,6 +22,7 @@ export const agents = pgTable(
     name: text("name").notNull(),
     displayName: text("display_name").notNull(),
     runtimeProvider: agentRuntimeProvider("runtime_provider").notNull(),
+    receiveMode: agentReceiveMode("receive_mode").notNull().default("all_message"),
     revision: integer("revision").notNull().default(1),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

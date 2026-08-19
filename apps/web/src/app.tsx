@@ -1,4 +1,5 @@
-import type { Computer, MeMembership } from "@opentag/shared/browser";
+import type { Computer, FeishuSetupAttempt, IntegrationDiagnostics, MeMembership } from "@opentag/shared/browser";
+import QRCode from "qrcode";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "./api.js";
 
@@ -237,7 +238,14 @@ function TeamPage({
   viewerUserId: string;
 }) {
   if (section === "members") return <MembersPage teamId={membership.teamId} />;
-  if (section === "agents") return <AgentsPage teamId={membership.teamId} />;
+  if (section === "agents") {
+    const agentId = /^\/admin\/teams\/[^/]+\/agents\/([^/]+)$/.exec(window.location.pathname)?.[1];
+    return agentId ? (
+      <AgentDetailPage teamId={membership.teamId} agentId={decodeURIComponent(agentId)} />
+    ) : (
+      <AgentsPage teamId={membership.teamId} />
+    );
+  }
   if (section === "computers") return <ComputersPage teamId={membership.teamId} viewerUserId={viewerUserId} />;
   if (section === "diagnostics") return <DiagnosticsPage />;
   return <OverviewPage membership={membership} />;
@@ -315,22 +323,235 @@ function AgentsPage({ teamId }: { teamId: string }) {
     <>
       <PageHeader title="Agents" subtitle="Team-owned Agent registry" />
       <Resource state={state}>
-        {(value) => (
-          <Table
-            headers={["Name", "Provider", "Manager", "Computer", "Revision", "Runtime config"]}
-            rows={value.agents.map((agent) => [
-              agent.displayName,
-              agent.runtimeProvider,
-              agent.managerUserId,
-              agent.computerId,
-              String(agent.revision),
-              String(agent.runtimeConfigRevision),
-            ])}
-          />
-        )}
+        {(value) =>
+          value.agents.length === 0 ? (
+            <div className="notice">No records in this snapshot.</div>
+          ) : (
+            <section className="card-grid">
+              {value.agents.map((agent) => (
+                <a className="team-card" href={`/admin/teams/${teamId}/agents/${agent.id}`} key={agent.id}>
+                  <span className="status-dot" />
+                  <strong>{agent.displayName}</strong>
+                  <small>
+                    {agent.runtimeProvider} · {agent.receiveMode} · runtime {agent.runtimeConfigRevision}
+                  </small>
+                </a>
+              ))}
+            </section>
+          )
+        }
       </Resource>
     </>
   );
+}
+
+function AgentDetailPage({ teamId, agentId }: { teamId: string; agentId: string }) {
+  const agent = useResource(() => browserApi.agent(agentId), agentId);
+  const [integration, setIntegration] = useState<Awaited<ReturnType<typeof browserApi.integration>>>();
+  const [loadedIntegration, setLoadedIntegration] = useState(false);
+  const [attempt, setAttempt] = useState<FeishuSetupAttempt>();
+  const [error, setError] = useState<string>();
+  const [qrDataUrl, setQrDataUrl] = useState<string>();
+  const [diagnostics, setDiagnostics] = useState<IntegrationDiagnostics>();
+
+  useEffect(() => {
+    let active = true;
+    browserApi.integration(agentId).then(
+      (value) => {
+        if (!active) return;
+        setIntegration(value);
+        setLoadedIntegration(true);
+      },
+      (caught: unknown) => active && setError(caught instanceof Error ? caught.message : String(caught)),
+    );
+    return () => {
+      active = false;
+    };
+  }, [agentId]);
+
+  useEffect(() => {
+    if (!integration) {
+      setDiagnostics(undefined);
+      return;
+    }
+    let active = true;
+    browserApi.integrationDiagnostics(integration.integration.id).then(
+      (value) => active && setDiagnostics(value),
+      (caught: unknown) => active && setError(caught instanceof Error ? caught.message : String(caught)),
+    );
+    return () => {
+      active = false;
+    };
+  }, [integration]);
+
+  useEffect(() => {
+    if (!loadedIntegration || integration || attempt || error) return;
+    browserApi
+      .createFeishuSetupAttempt(agentId)
+      .then(setAttempt, (caught: unknown) => setError(caught instanceof Error ? caught.message : String(caught)));
+  }, [agentId, attempt, error, integration, loadedIntegration]);
+
+  useEffect(() => {
+    if (!attempt?.qrUrl) {
+      setQrDataUrl(undefined);
+      return;
+    }
+    let active = true;
+    QRCode.toDataURL(attempt.qrUrl, { errorCorrectionLevel: "M", margin: 1, width: 280 }).then(
+      (value) => active && setQrDataUrl(value),
+    );
+    return () => {
+      active = false;
+    };
+  }, [attempt?.qrUrl]);
+
+  useEffect(() => {
+    if (!attempt || !["awaiting_user", "validating"].includes(attempt.state)) return;
+    const timer = window.setTimeout(() => {
+      browserApi.feishuSetupAttempt(attempt.id).then(
+        async (next) => {
+          setAttempt(next);
+          if (next.state === "succeeded") {
+            setIntegration(await browserApi.integration(agentId));
+            setAttempt(undefined);
+          }
+        },
+        (caught: unknown) => setError(caught instanceof Error ? caught.message : String(caught)),
+      );
+    }, 750);
+    return () => window.clearTimeout(timer);
+  }, [agentId, attempt]);
+
+  function retry() {
+    setError(undefined);
+    setAttempt(undefined);
+    setLoadedIntegration(true);
+  }
+
+  function reauthorize() {
+    setError(undefined);
+    setAttempt(undefined);
+    browserApi
+      .createFeishuSetupAttempt(agentId, "reauthorize")
+      .then(setAttempt, (caught: unknown) => setError(caught instanceof Error ? caught.message : String(caught)));
+  }
+
+  function disable() {
+    if (!integration) return;
+    browserApi.disableIntegration(integration.integration.id).then(
+      async () => setIntegration(await browserApi.integration(agentId)),
+      (caught: unknown) => setError(caught instanceof Error ? caught.message : String(caught)),
+    );
+  }
+
+  const setupStatus = attempt ? feishuSetupStatus(attempt) : "Preparing a secure Feishu QR code…";
+
+  return (
+    <>
+      <a href={`/admin/teams/${teamId}/agents`}>← Agents</a>
+      <Resource state={agent}>
+        {(value) => (
+          <PageHeader
+            title={value.displayName}
+            subtitle={`${value.runtimeProvider} · ${value.receiveMode} · revision ${value.revision}`}
+          />
+        )}
+      </Resource>
+      {error ? (
+        <section className="panel">
+          <div className="notice error">{error}</div>
+          <button className="button" type="button" onClick={retry}>
+            Try again
+          </button>
+        </section>
+      ) : integration && !attempt ? (
+        <section className="panel">
+          <h2>{integration.integration.provider === "feishu" ? "Feishu Bot" : "Slack Bot"}</h2>
+          <p>
+            {integration.integration.disabledAt
+              ? "Disabled"
+              : integration.reauthorizationRequired
+                ? "Reauthorization required"
+                : diagnostics === undefined
+                  ? "Checking readiness"
+                  : !diagnostics.runtimeToolAvailable
+                    ? "Provider connected; runtime message tool unavailable — not ready"
+                    : diagnostics.ready
+                      ? "Ready"
+                      : "Validating"}{" "}
+            {" as "}
+            {integration.identity.provider === "feishu"
+              ? integration.identity.botOpenId
+              : integration.identity.botUserId}
+            .
+          </p>
+          <p className="muted">
+            Credential generation {integration.credentialGeneration} · Last inbound{" "}
+            {integration.lastInboundAt ? formatDate(integration.lastInboundAt) : "not observed"}
+          </p>
+          <p className="muted">
+            {diagnostics?.connection
+              ? `Channel ${diagnostics.connection.state} (observed ${formatDate(diagnostics.connection.observedAt)})`
+              : "Connection observation not available"}
+          </p>
+          <p className="muted">Granted capabilities: {integration.grantedCapabilities.join(", ")}</p>
+          {integration.integration.provider === "feishu" ? (
+            <>
+              <p>
+                {integration.integration.disabledAt
+                  ? "Reauthorize to reconnect this Bot. Existing message history remains available."
+                  : diagnostics?.ready
+                    ? "Message the Bot directly, or add it to a group and mention its exact Feishu identity."
+                    : "OpenTag will show working guidance only after the provider and controlled runtime message tool are ready."}
+              </p>
+              <div className="actions">
+                <button className="button" type="button" onClick={reauthorize}>
+                  Reauthorize
+                </button>
+                <button className="button secondary" type="button" onClick={disable}>
+                  Disable
+                </button>
+              </div>
+            </>
+          ) : null}
+        </section>
+      ) : (
+        <section className="panel">
+          <h2>Connect Feishu</h2>
+          <p>
+            Scan once in Feishu. OpenTag creates the App, requests the visible permissions, and connects the Bot
+            automatically.
+          </p>
+          {qrDataUrl ? (
+            <img src={qrDataUrl} width="280" height="280" alt="Scan with Feishu to create this Agent Bot" />
+          ) : null}
+          <p className="muted">{setupStatus}</p>
+          {attempt && ["failed", "expired", "canceled"].includes(attempt.state) ? (
+            <button className="button" type="button" onClick={retry}>
+              Scan again
+            </button>
+          ) : null}
+        </section>
+      )}
+    </>
+  );
+}
+
+function feishuSetupStatus(attempt: FeishuSetupAttempt): string {
+  if (attempt.state === "awaiting_user") return "Waiting for visible Feishu consent…";
+  if (attempt.state === "validating") return "Validating permissions, Bot identity, and Channel reachability…";
+  if (attempt.state === "succeeded") return "Feishu Bot is ready.";
+  const details: Record<string, string> = {
+    FEISHU_SETUP_CANCELED: "The Feishu setup was canceled. You can scan again here.",
+    FEISHU_SETUP_DENIED: "Feishu consent was declined. Review the visible permissions and scan again.",
+    FEISHU_SETUP_EXPIRED: "The QR code expired. Generate a fresh code here.",
+    FEISHU_SETUP_OWNER_RESTARTED: "The setup owner restarted. Your existing Bot was not changed; scan again here.",
+    FEISHU_SCOPE_REAUTH_REQUIRED:
+      "Feishu has not granted every requested permission yet. Approve the visible permissions and scan again here.",
+    FEISHU_SCOPE_VALIDATION_FAILED:
+      "OpenTag could not verify the granted Feishu permissions. Check the connection and retry here.",
+  };
+  return details[attempt.errorCode ?? ""] ?? "Feishu setup could not be completed. Your existing Bot was not changed.";
 }
 
 function ComputersPage({ teamId, viewerUserId }: { teamId: string; viewerUserId: string }) {

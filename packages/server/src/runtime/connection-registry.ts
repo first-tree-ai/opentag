@@ -1,4 +1,9 @@
-import { RUNTIME_MAX_FRAME_BYTES, runtimeFrameByteLength } from "@opentag/shared";
+import {
+  RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+  RUNTIME_MAX_FRAME_BYTES,
+  type RuntimeClientCapabilities,
+  runtimeFrameByteLength,
+} from "@opentag/shared";
 import WebSocket from "ws";
 
 export class RuntimeRegistrySendError extends Error {
@@ -12,6 +17,8 @@ export class RuntimeRegistrySendError extends Error {
 }
 
 export interface RuntimeConnectionEntry {
+  capabilities?: RuntimeClientCapabilities;
+  capabilitiesUpdatedAt?: number;
   computerId: string;
   instanceId: string;
   lastHeartbeatAt: number;
@@ -55,6 +62,20 @@ export class ConnectionRegistry {
     return this.#entries.get(computerId)?.instanceId;
   }
 
+  supports(
+    computerId: string,
+    instanceId: string,
+    capability: keyof RuntimeClientCapabilities,
+    now = Date.now(),
+  ): boolean {
+    const current = this.#entries.get(computerId);
+    return (
+      current?.instanceId === instanceId &&
+      now - (current.capabilitiesUpdatedAt ?? Number.NEGATIVE_INFINITY) <= RUNTIME_CLIENT_CAPABILITY_TTL_MS &&
+      current.capabilities?.[capability] === 1
+    );
+  }
+
   async send(computerId: string, instanceId: string, frame: unknown): Promise<void> {
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId) {
@@ -88,12 +109,22 @@ export class ConnectionRegistry {
     });
   }
 
-  touch(computerId: string, instanceId: string, socket: WebSocket, now = Date.now()): boolean {
+  touch(
+    computerId: string,
+    instanceId: string,
+    socket: WebSocket,
+    now = Date.now(),
+    capabilities?: RuntimeClientCapabilities,
+  ): boolean {
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId || current.socket !== socket) {
       return false;
     }
     current.lastHeartbeatAt = now;
+    if (capabilities) {
+      current.capabilities = { ...capabilities };
+      current.capabilitiesUpdatedAt = now;
+    }
     return true;
   }
 

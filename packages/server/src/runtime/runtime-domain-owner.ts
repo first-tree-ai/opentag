@@ -7,14 +7,18 @@ import {
   type DirectImMessageDeliveryRequest,
   hashTuple,
   type ImMessageDeliveryResult,
-  RUNTIME_MVP_RETAINED_REPORT_LIMIT,
+  type RuntimeImToolRequest,
+  type RuntimeImToolResult,
   type SessionReconcileRequest,
   type SessionReconcileResult,
   type TurnReportRequest,
   type TurnReportResult,
 } from "@opentag/shared";
 import type { ConnectionRegistry } from "./connection-registry.js";
+import type { AcceptedDeliveryRecord, RecordedTurnRecord, RuntimeCustodyStore } from "./runtime-custody-store.js";
 import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-session.js";
+
+export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custody-store.js";
 
 export class RuntimeDomainConflictError extends Error {
   constructor(message: string) {
@@ -33,6 +37,7 @@ export class RuntimeDomainRequestError extends Error {
 export interface RuntimeDomainOwnerOptions {
   maxPendingRequests?: number;
   onTrace?(batch: AgentTraceBatch, context: RuntimeBusinessContext): Promise<void> | void;
+  onImToolRequest?(request: RuntimeImToolRequest, context: RuntimeBusinessContext): Promise<RuntimeImToolResult>;
   requestTimeoutMs?: number;
 }
 
@@ -75,62 +80,30 @@ interface CompletedRequest {
   result: SessionReconcileResult | ImMessageDeliveryResult;
 }
 
-export interface AcceptedDeliveryRecord {
-  agentId: string;
+interface StartingDelivery {
   computerId: string;
-  deliveryId: string;
-  inputHash: string;
+  hash: string;
   instanceId: string;
-  placementGeneration: number;
-  sessionId: string;
-  turnId: string;
-}
-
-export interface RecordedTurnRecord {
-  computerId: string;
-  instanceId: string;
-  report: TurnReportRequest;
-  resultHash: string;
-}
-
-interface RecoveredTurnClaim {
-  agentId: string;
-  computerId: string;
-  deliveryId: string;
-  instanceId: string;
-  placementGeneration: number;
-  resultHash: string;
-  sessionId: string;
-  turnId: string;
-}
-
-interface ReconciledSessionClaim {
-  agentId: string;
-  computerId: string;
-  instanceId: string;
-  placementGeneration: number;
-  sessionId: string;
+  promise: Promise<ImMessageDeliveryResult>;
 }
 
 export class RuntimeDomainOwner {
   readonly #registry: ConnectionRegistry;
+  readonly #custody: RuntimeCustodyStore;
   readonly #options: Required<Pick<RuntimeDomainOwnerOptions, "maxPendingRequests" | "requestTimeoutMs">> &
-    Pick<RuntimeDomainOwnerOptions, "onTrace">;
+    Pick<RuntimeDomainOwnerOptions, "onImToolRequest" | "onTrace">;
   readonly #pending = new Map<string, PendingRequest>();
+  readonly #startingDeliveries = new Map<string, StartingDelivery>();
   readonly #expiredDeliveries = new Map<string, ExpiredDelivery>();
   readonly #completed = new Map<string, CompletedRequest>();
-  readonly #deliveries = new Map<string, AcceptedDeliveryRecord>();
-  // MVP-only recovery bridge. Durable Server-side Turn ownership will replace
-  // these reconciliation claims and the Client replay protocol after MVP.
-  readonly #reconciledSessions = new Map<string, ReconciledSessionClaim>();
-  readonly #recoveredTurns = new Map<string, RecoveredTurnClaim>();
-  readonly #turns = new Map<string, RecordedTurnRecord>();
 
-  constructor(registry: ConnectionRegistry, options: RuntimeDomainOwnerOptions = {}) {
+  constructor(registry: ConnectionRegistry, custody: RuntimeCustodyStore, options: RuntimeDomainOwnerOptions = {}) {
     this.#registry = registry;
+    this.#custody = custody;
     this.#options = {
       maxPendingRequests: options.maxPendingRequests ?? 1024,
       onTrace: options.onTrace,
+      onImToolRequest: options.onImToolRequest,
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
     };
     if (!Number.isSafeInteger(this.#options.maxPendingRequests) || this.#options.maxPendingRequests < 1) {
@@ -141,12 +114,12 @@ export class RuntimeDomainOwner {
     }
   }
 
-  getDelivery(deliveryId: string): AcceptedDeliveryRecord | undefined {
-    return this.#deliveries.get(deliveryId);
+  getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {
+    return this.#custody.getDelivery(deliveryId);
   }
 
-  getTurn(turnId: string): RecordedTurnRecord | undefined {
-    return this.#turns.get(turnId);
+  getTurn(turnId: string): Promise<RecordedTurnRecord | undefined> {
+    return this.#custody.getTurn(turnId);
   }
 
   close(): void {
@@ -155,10 +128,9 @@ export class RuntimeDomainOwner {
       pending.reject(new RuntimeDomainRequestError("The runtime domain owner stopped"));
     }
     this.#pending.clear();
+    this.#startingDeliveries.clear();
     this.#expiredDeliveries.clear();
     this.#completed.clear();
-    this.#reconciledSessions.clear();
-    this.#recoveredTurns.clear();
   }
 
   requestReconcile(
@@ -181,16 +153,62 @@ export class RuntimeDomainOwner {
     request: DirectImMessageDeliveryRequest,
   ): Promise<ImMessageDeliveryResult> {
     const inputHash = computeDirectInputHash(request);
-    const existing = this.#deliveries.get(request.deliveryId);
-    if (existing && existing.inputHash !== inputHash) {
-      throw new RuntimeDomainConflictError("The delivery ID is already bound to different input");
+    const requestHash = hashTuple([request.deliveryId, inputHash]);
+    const starting = this.#startingDeliveries.get(request.requestId);
+    if (starting) {
+      if (starting.hash !== requestHash || starting.computerId !== computerId || starting.instanceId !== instanceId) {
+        throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
+      }
+      return starting.promise;
+    }
+    if (
+      this.#pending.has(request.requestId) ||
+      this.#completed.has(request.requestId) ||
+      this.#expiredDeliveries.has(request.requestId)
+    ) {
+      return this.#request(
+        "delivery",
+        computerId,
+        instanceId,
+        request,
+        requestHash,
+        inputHash,
+      ) as Promise<ImMessageDeliveryResult>;
+    }
+    const promise = this.#startDelivery(computerId, instanceId, request, requestHash, inputHash);
+    const owner = { computerId, hash: requestHash, instanceId, promise };
+    this.#startingDeliveries.set(request.requestId, owner);
+    void promise.then(
+      () => {
+        if (this.#startingDeliveries.get(request.requestId) === owner)
+          this.#startingDeliveries.delete(request.requestId);
+      },
+      () => {
+        if (this.#startingDeliveries.get(request.requestId) === owner)
+          this.#startingDeliveries.delete(request.requestId);
+      },
+    );
+    return promise;
+  }
+
+  async #startDelivery(
+    computerId: string,
+    instanceId: string,
+    request: DirectImMessageDeliveryRequest,
+    requestHash: string,
+    inputHash: string,
+  ): Promise<ImMessageDeliveryResult> {
+    const dispatch = await this.#custody.beginDeliveryDispatch(request, inputHash, { computerId, instanceId });
+    if (dispatch === "conflict") throw new RuntimeDomainConflictError("The delivery dispatch conflicts");
+    if (dispatch === "stale_generation") {
+      throw new RuntimeDomainRequestError("The delivery dispatch placement is stale");
     }
     return this.#request(
       "delivery",
       computerId,
       instanceId,
       request,
-      hashTuple([request.deliveryId, inputHash]),
+      requestHash,
       inputHash,
     ) as Promise<ImMessageDeliveryResult>;
   }
@@ -209,8 +227,8 @@ export class RuntimeDomainOwner {
       },
       laneKey: (frame) => domainLaneKey(frame as ClientRuntimeBusinessFrame),
       handle: (frame, context) => this.handle(frame as ClientRuntimeBusinessFrame, context),
-      failureResult: () => undefined,
-      overloadResult: () => undefined,
+      failureResult: (frame) => runtimeFailureResult(frame, "IM_TOOL_TRANSIENT_FAILURE"),
+      overloadResult: (frame) => runtimeFailureResult(frame, "IM_TOOL_SERVER_BUSY"),
       maxConcurrent: 32,
       maxQueuedPerKey: 32,
       maxQueuedTotal: 1024,
@@ -220,7 +238,7 @@ export class RuntimeDomainOwner {
   async handle(
     frame: ClientRuntimeBusinessFrame,
     context: RuntimeBusinessContext,
-  ): Promise<TurnReportResult | undefined> {
+  ): Promise<TurnReportResult | RuntimeImToolResult | undefined> {
     if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
       if (frame.type === "turn:report") {
         return {
@@ -234,15 +252,15 @@ export class RuntimeDomainOwner {
       return undefined;
     }
     if (frame.type === "session:reconcile:result") {
-      this.#completeRequest("reconcile", frame.requestId, frame, context);
+      await this.#completeRequest("reconcile", frame.requestId, frame, context);
       return undefined;
     }
     if (frame.type === "im:deliver:result") {
-      this.#completeDelivery(frame, context);
+      await this.#completeDelivery(frame, context);
       return undefined;
     }
     if (frame.type === "agent:trace") {
-      const delivery = [...this.#deliveries.values()].find((record) => record.turnId === frame.turnId);
+      const delivery = await this.#custody.getDeliveryByTurn(frame.turnId);
       if (
         delivery &&
         delivery.computerId === context.computerId &&
@@ -253,6 +271,10 @@ export class RuntimeDomainOwner {
         await this.#options.onTrace?.(frame, context);
       }
       return undefined;
+    }
+    if (frame.type === "im:tool") {
+      if (!this.#options.onImToolRequest) return toolFailureResult(frame, "IM_TOOL_UNAVAILABLE");
+      return this.#options.onImToolRequest(frame, context);
     }
     return this.#recordTurn(frame, context);
   }
@@ -350,12 +372,12 @@ export class RuntimeDomainOwner {
     return promise;
   }
 
-  #completeRequest(
+  async #completeRequest(
     kind: "reconcile",
     requestId: string,
     result: SessionReconcileResult,
     context: RuntimeBusinessContext,
-  ): void {
+  ): Promise<void> {
     const pending = this.#pending.get(requestId);
     if (!pending || pending.kind !== kind) return;
     if (!this.#matchesContext(pending, context)) return;
@@ -366,13 +388,12 @@ export class RuntimeDomainOwner {
       return;
     }
     if (result.status !== "rejected") {
-      this.#rememberReconciledSession(pending);
-      for (const claim of result.retainedReports ?? []) this.#rememberRecoveredTurn(pending, claim);
+      await this.#custody.claimRetainedReports(pending.request, result.retainedReports ?? [], context);
     }
     this.#settle(pending, result);
   }
 
-  #completeDelivery(result: ImMessageDeliveryResult, context: RuntimeBusinessContext): void {
+  async #completeDelivery(result: ImMessageDeliveryResult, context: RuntimeBusinessContext): Promise<void> {
     const pending = this.#pending.get(result.requestId);
     const expired = this.#expiredDeliveries.get(result.requestId);
     const attempt = pending?.kind === "delivery" ? pending : expired;
@@ -386,18 +407,14 @@ export class RuntimeDomainOwner {
     }
     if (result.status === "accepted") {
       if (!result.turnId) return;
-      const current = this.#deliveries.get(result.deliveryId);
-      if (current && (current.inputHash !== attempt.inputHash || current.turnId !== result.turnId)) return;
-      this.#deliveries.set(result.deliveryId, {
-        agentId: attempt.request.agentId,
-        computerId: attempt.computerId,
-        deliveryId: result.deliveryId,
-        inputHash: attempt.inputHash,
-        instanceId: attempt.instanceId,
-        placementGeneration: result.placementGeneration,
-        sessionId: result.sessionId,
-        turnId: result.turnId,
-      });
+      const custody = await this.#custody.acceptDelivery(attempt.request, attempt.inputHash, result.turnId, context);
+      if (custody === "conflict") throw new RuntimeDomainConflictError("The delivery custody conflicts");
+      if (custody === "stale_generation") {
+        if (pending?.kind === "delivery") {
+          this.#settle(pending, { ...result, status: "rejected", turnId: undefined, reason: "target_mismatch" });
+        }
+        return;
+      }
     }
     if (pending?.kind === "delivery") {
       this.#settle(pending, result);
@@ -408,45 +425,19 @@ export class RuntimeDomainOwner {
     this.#rememberCompleted(expired, result);
   }
 
-  #recordTurn(report: TurnReportRequest, context: RuntimeBusinessContext): TurnReportResult | undefined {
+  async #recordTurn(report: TurnReportRequest, context: RuntimeBusinessContext): Promise<TurnReportResult | undefined> {
     const base = {
       type: "turn:report:result" as const,
       requestId: report.requestId,
       turnId: report.turnId,
       resultHash: report.resultHash,
     };
-    const recovered = this.#recoveredTurns.get(report.turnId);
-    const currentRecovered =
-      recovered && this.#matchesContext(recovered, context) && recoveredClaimMatchesReport(recovered, report)
-        ? recovered
-        : undefined;
-    const recorded = this.#turns.get(report.turnId);
-    if (recorded) {
-      const sameTurn =
-        recorded.computerId === context.computerId &&
-        recorded.report.deliveryId === report.deliveryId &&
-        recorded.report.sessionId === report.sessionId &&
-        recorded.report.agentId === report.agentId &&
-        recorded.report.placementGeneration === report.placementGeneration &&
-        recorded.resultHash === report.resultHash;
-      if (!sameTurn) return { ...base, status: "conflict" };
-      if (recorded.instanceId !== context.instanceId) {
-        if (!currentRecovered) {
-          return this.#hasCurrentReconciliation(report.sessionId, context)
-            ? { ...base, status: "conflict" }
-            : undefined;
-        }
-        this.#turns.set(report.turnId, { ...recorded, instanceId: context.instanceId });
-      }
-      if (currentRecovered) this.#recoveredTurns.delete(report.turnId);
-      return { ...base, status: "already_recorded" };
-    }
-
-    let delivery = this.#deliveries.get(report.deliveryId);
     const attempt = this.#matchingDeliveryAttempt(report, context);
-    if (!delivery && !recovered && attempt) {
-      this.#completeDelivery(
-        {
+    if (attempt) {
+      const accepted = await this.#custody.acceptDelivery(attempt.request, attempt.inputHash, report.turnId, context);
+      if (accepted === "conflict" || accepted === "stale_generation") return { ...base, status: accepted };
+      if ("promise" in attempt && this.#pending.get(attempt.request.requestId) === attempt) {
+        this.#settle(attempt, {
           type: "im:deliver:result",
           requestId: attempt.request.requestId,
           deliveryId: attempt.request.deliveryId,
@@ -454,45 +445,11 @@ export class RuntimeDomainOwner {
           placementGeneration: attempt.request.placementGeneration,
           status: "accepted",
           turnId: report.turnId,
-        },
-        context,
-      );
-      delivery = this.#deliveries.get(report.deliveryId);
-    }
-    const owner = currentRecovered ?? delivery ?? recovered;
-    if (!owner) {
-      const reconciled = this.#reconciledSessions.get(report.sessionId);
-      if (!reconciled || !this.#matchesContext(reconciled, context)) return undefined;
-      if (reconciled.agentId !== report.agentId) return { ...base, status: "conflict" };
-      if (report.placementGeneration > reconciled.placementGeneration) {
-        return { ...base, status: "stale_generation" };
+        });
       }
-      return { ...base, status: "conflict" };
     }
-    if (
-      owner.deliveryId !== report.deliveryId ||
-      owner.computerId !== context.computerId ||
-      owner.turnId !== report.turnId ||
-      owner.sessionId !== report.sessionId ||
-      owner.agentId !== report.agentId
-    ) {
-      return { ...base, status: "conflict" };
-    }
-    if (owner.placementGeneration !== report.placementGeneration) {
-      return { ...base, status: "stale_generation" };
-    }
-    if ("resultHash" in owner && owner.resultHash !== report.resultHash) return { ...base, status: "conflict" };
-    if (owner.instanceId !== context.instanceId) {
-      return this.#hasCurrentReconciliation(report.sessionId, context) ? { ...base, status: "conflict" } : undefined;
-    }
-    this.#turns.set(report.turnId, {
-      computerId: context.computerId,
-      instanceId: context.instanceId,
-      report,
-      resultHash: report.resultHash,
-    });
-    this.#recoveredTurns.delete(report.turnId);
-    return { ...base, status: "recorded" };
+    const status = await this.#custody.recordTurn(report, context);
+    return status ? { ...base, status } : undefined;
   }
 
   #matchingDeliveryAttempt(
@@ -514,62 +471,11 @@ export class RuntimeDomainOwner {
     return undefined;
   }
 
-  #rememberRecoveredTurn(
-    pending: PendingReconcile,
-    retained: NonNullable<SessionReconcileResult["retainedReports"]>[number],
-  ): void {
-    const current = this.#recoveredTurns.get(retained.turnId);
-    const claim: RecoveredTurnClaim = {
-      agentId: pending.request.agentId,
-      computerId: pending.computerId,
-      deliveryId: retained.deliveryId,
-      instanceId: pending.instanceId,
-      placementGeneration: retained.placementGeneration,
-      resultHash: retained.resultHash,
-      sessionId: pending.request.sessionId,
-      turnId: retained.turnId,
-    };
-    const delivery =
-      this.#deliveries.get(claim.deliveryId) ??
-      [...this.#deliveries.values()].find((candidate) => candidate.turnId === claim.turnId);
-    if (delivery && !deliveryMatchesRecoveredClaim(delivery, claim)) return;
-    const recorded = this.#turns.get(claim.turnId);
-    if (recorded && !recordedTurnMatchesRecoveredClaim(recorded, claim)) return;
-    if (current && !sameRecoveredTurnIdentity(current, claim)) return;
-    this.#recoveredTurns.set(retained.turnId, claim);
-    const limit = this.#options.maxPendingRequests * RUNTIME_MVP_RETAINED_REPORT_LIMIT;
-    while (this.#recoveredTurns.size > limit) {
-      const oldest = this.#recoveredTurns.keys().next().value;
-      if (oldest === undefined) break;
-      this.#recoveredTurns.delete(oldest);
-    }
-  }
-
-  #rememberReconciledSession(pending: PendingReconcile): void {
-    this.#reconciledSessions.set(pending.request.sessionId, {
-      agentId: pending.request.agentId,
-      computerId: pending.computerId,
-      instanceId: pending.instanceId,
-      placementGeneration: pending.request.placementGeneration,
-      sessionId: pending.request.sessionId,
-    });
-    while (this.#reconciledSessions.size > this.#options.maxPendingRequests) {
-      const oldest = this.#reconciledSessions.keys().next().value;
-      if (oldest === undefined) break;
-      this.#reconciledSessions.delete(oldest);
-    }
-  }
-
   #matchesContext(
     request: Pick<PendingRequest | ExpiredDelivery, "computerId" | "instanceId">,
     context: RuntimeBusinessContext,
   ): boolean {
     return request.computerId === context.computerId && request.instanceId === context.instanceId;
-  }
-
-  #hasCurrentReconciliation(sessionId: string, context: RuntimeBusinessContext): boolean {
-    const reconciled = this.#reconciledSessions.get(sessionId);
-    return Boolean(reconciled && this.#matchesContext(reconciled, context));
   }
 
   #settle(pending: PendingRequest, result: SessionReconcileResult | ImMessageDeliveryResult): void {
@@ -615,54 +521,19 @@ export class RuntimeDomainOwner {
   }
 }
 
+function runtimeFailureResult(frame: unknown, code: string): RuntimeImToolResult | undefined {
+  const parsed = ClientRuntimeBusinessFrameSchema.safeParse(frame);
+  return parsed.success && parsed.data.type === "im:tool" ? toolFailureResult(parsed.data, code) : undefined;
+}
+
 function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   if (frame.type === "session:reconcile:result") return `request:${frame.requestId}`;
   if (frame.type === "im:deliver:result" || frame.type === "turn:report") return `delivery:${frame.deliveryId}`;
+  if (frame.type === "im:tool") return `session:${frame.sessionId}`;
   return `turn:${frame.turnId}`;
 }
 
-function sameRecoveredTurnIdentity(left: RecoveredTurnClaim, right: RecoveredTurnClaim): boolean {
-  return (
-    left.agentId === right.agentId &&
-    left.computerId === right.computerId &&
-    left.deliveryId === right.deliveryId &&
-    left.placementGeneration === right.placementGeneration &&
-    left.resultHash === right.resultHash &&
-    left.sessionId === right.sessionId &&
-    left.turnId === right.turnId
-  );
-}
-
-function recoveredClaimMatchesReport(claim: RecoveredTurnClaim, report: TurnReportRequest): boolean {
-  return (
-    claim.agentId === report.agentId &&
-    claim.deliveryId === report.deliveryId &&
-    claim.placementGeneration === report.placementGeneration &&
-    claim.resultHash === report.resultHash &&
-    claim.sessionId === report.sessionId &&
-    claim.turnId === report.turnId
-  );
-}
-
-function deliveryMatchesRecoveredClaim(delivery: AcceptedDeliveryRecord, claim: RecoveredTurnClaim): boolean {
-  return (
-    delivery.agentId === claim.agentId &&
-    delivery.computerId === claim.computerId &&
-    delivery.deliveryId === claim.deliveryId &&
-    delivery.placementGeneration === claim.placementGeneration &&
-    delivery.sessionId === claim.sessionId &&
-    delivery.turnId === claim.turnId
-  );
-}
-
-function recordedTurnMatchesRecoveredClaim(recorded: RecordedTurnRecord, claim: RecoveredTurnClaim): boolean {
-  return (
-    recorded.computerId === claim.computerId &&
-    recorded.report.agentId === claim.agentId &&
-    recorded.report.deliveryId === claim.deliveryId &&
-    recorded.report.placementGeneration === claim.placementGeneration &&
-    recorded.report.sessionId === claim.sessionId &&
-    recorded.report.turnId === claim.turnId &&
-    recorded.resultHash === claim.resultHash
-  );
+function toolFailureResult(frame: ClientRuntimeBusinessFrame, code: string): RuntimeImToolResult | undefined {
+  if (frame.type !== "im:tool") return undefined;
+  return { type: "im:tool:result", requestId: frame.requestId, state: "transient_failed", code };
 }

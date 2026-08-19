@@ -114,6 +114,7 @@ export class ClientRuntime {
       if (result.status === "accepted") await decision.onAcceptedSent?.();
       return;
     }
+    if (frame.type === "im:tool:result") return;
     await this.#options.handleTurnReportResult?.(frame);
   }
 }

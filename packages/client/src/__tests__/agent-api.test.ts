@@ -12,6 +12,7 @@ const agent = {
   name: "code-reviewer",
   displayName: "Code Reviewer",
   runtimeProvider: "codex",
+  receiveMode: "all_message",
   revision: 1,
   runtimeConfig: {
     revision: 1,
@@ -109,5 +110,55 @@ describe("OpenTagApi Agent methods", () => {
       code: "SERVICE_UNAVAILABLE",
       category: "transient",
     });
+  });
+
+  it("uses typed Integration setup, diagnostics, and disable contracts", async () => {
+    const integrationId = "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0";
+    const attemptId = "f645f26d-9184-4f2f-98a1-4ee83ae6a603";
+    const attempt = {
+      id: attemptId,
+      agentId,
+      intent: "create",
+      state: "awaiting_user",
+      qrUrl: "https://open.feishu.cn/qr/example",
+      expiresAt: "2026-08-19T01:00:00.000Z",
+      errorCode: null,
+      completedAt: null,
+      createdAt: "2026-08-19T00:00:00.000Z",
+    };
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(jsonResponse(attempt, 201))
+      .mockResolvedValueOnce(jsonResponse(attempt))
+      .mockResolvedValueOnce(
+        jsonResponse({
+          integrationId,
+          provider: "feishu",
+          ready: false,
+          runtimeToolAvailable: false,
+          credentialGeneration: 1,
+          reauthorizationRequired: false,
+          connection: null,
+          lastInboundAt: null,
+          lastOutboundAt: null,
+          lastErrorCode: null,
+        }),
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
+    await expect(api.getAgentIntegration("access", agentId)).resolves.toBeUndefined();
+    await api.createFeishuSetupAttempt("access", agentId);
+    await api.getFeishuSetupAttempt("access", attemptId);
+    await api.getIntegrationDiagnostics("access", integrationId);
+    await api.disableIntegration("access", integrationId);
+    expect(fetchImpl.mock.calls.map(([url, init]) => [new URL(url).pathname, init?.method ?? "GET"])).toEqual([
+      [`/api/v1/agents/${agentId}/integration`, "GET"],
+      [`/api/v1/agents/${agentId}/integrations/feishu/setup-attempts`, "POST"],
+      [`/api/v1/integrations/feishu/setup-attempts/${attemptId}`, "GET"],
+      [`/api/v1/integrations/${integrationId}/diagnostics`, "GET"],
+      [`/api/v1/integrations/${integrationId}/disable`, "POST"],
+    ]);
+    expect(fetchImpl.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ intent: "create" }));
   });
 });

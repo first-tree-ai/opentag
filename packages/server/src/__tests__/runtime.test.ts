@@ -76,7 +76,10 @@ describe("Computer runtime WebSocket", () => {
     };
     socket.send(JSON.stringify(register));
     expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
-    expect(computers.register).toHaveBeenCalledWith(me.user.id, register);
+    expect(computers.register).toHaveBeenCalledWith(me.user.id, {
+      ...register,
+      capabilities: { imMessageTool: 0 },
+    });
     expect(JSON.stringify(register)).not.toContain("team");
 
     const heartbeat = {

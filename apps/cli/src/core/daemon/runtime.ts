@@ -123,7 +123,8 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
       }
       signal.throwIfAborted();
       if (!credentials) throw new DaemonRuntimeConfigurationError("OpenTag is not logged in; run login first");
-      const tokenProvider = new AccessTokenProvider({ home });
+      const api = new OpenTagApi(credentials.serverUrl);
+      const tokenProvider = new AccessTokenProvider({ home, api });
       let lease: Awaited<ReturnType<AccessTokenProvider["getAccessTokenLease"]>>;
       try {
         lease = await tokenProvider.getAccessTokenLease();
@@ -138,7 +139,7 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
       signal.throwIfAborted();
       let me: Awaited<ReturnType<OpenTagApi["me"]>>;
       try {
-        me = await new OpenTagApi(credentials.serverUrl).me(lease.accessToken);
+        me = await api.me(lease.accessToken);
       } catch (error) {
         if (error instanceof OpenTagApiError && error.category === "credential") {
           throw new DaemonRuntimeConfigurationError("OpenTag credentials are no longer valid; run login again", {
@@ -175,6 +176,8 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
         clientVersion: CLI_VERSION,
         logger: runtimeLogger,
         signal,
+        api,
+        tokenProvider,
       });
       void connection.whenRegistered(signal).then(
         () => runtimeLogger.info({}, "Daemon is ready"),

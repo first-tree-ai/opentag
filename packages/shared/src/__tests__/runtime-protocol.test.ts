@@ -13,7 +13,7 @@ describe("runtime protocol", () => {
       ServerRuntimeFrameSchema.parse({
         type: "server:welcome",
         protocolVersion: RUNTIME_PROTOCOL_VERSION,
-        capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1 },
+        capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
         heartbeatIntervalMs: 30_000,
         heartbeatTimeoutMs: 90_000,
       }),
@@ -29,7 +29,13 @@ describe("runtime protocol", () => {
       arch: "x64",
       clientVersion: "0.0.1",
     };
-    expect(ClientRuntimeFrameSchema.parse(register)).toEqual(register);
+    expect(ClientRuntimeFrameSchema.parse(register)).toEqual({
+      ...register,
+      capabilities: { imMessageTool: 0 },
+    });
+    expect(ClientRuntimeFrameSchema.parse({ ...register, capabilities: { imMessageTool: 1 } })).toMatchObject({
+      capabilities: { imMessageTool: 1 },
+    });
     expect(() => ClientRuntimeFrameSchema.parse({ ...register, teamId: crypto.randomUUID() })).toThrow();
     expect(
       ClientRuntimeFrameSchema.parse({
@@ -46,7 +52,7 @@ describe("runtime protocol", () => {
       ServerRuntimeFrameSchema.parse({
         type: "server:welcome",
         protocolVersion: 2,
-        capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1 },
+        capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
         heartbeatIntervalMs: 1,
         heartbeatTimeoutMs: 2,
       }),

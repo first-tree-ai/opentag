@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ReceiveModeSchema } from "./integration.js";
 import {
   OPENTAG_MESSAGE_TOOLS,
   OPENTAG_PLATFORM_INSTRUCTIONS,
@@ -96,6 +97,7 @@ const AgentBaseSchema = z
     name: AgentNameSchema,
     displayName: AgentDisplayNameSchema,
     runtimeProvider: AgentRuntimeProviderSchema,
+    receiveMode: ReceiveModeSchema,
     revision: z.number().int().min(1),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
@@ -124,12 +126,14 @@ export const UpdateAgentRequestSchema = z
   .object({
     expectedRevision: z.number().int().min(1),
     displayName: AgentDisplayNameSchema.optional(),
+    receiveMode: ReceiveModeSchema.optional(),
     runtimeConfig: UpdateAgentRuntimeConfigSchema.optional(),
   })
   .strict()
-  .refine((value) => value.displayName !== undefined || value.runtimeConfig !== undefined, {
-    message: "At least one Agent field must be updated",
-  });
+  .refine(
+    (value) => value.displayName !== undefined || value.receiveMode !== undefined || value.runtimeConfig !== undefined,
+    { message: "At least one Agent field must be updated" },
+  );
 
 export const ListAgentsResponseSchema = z
   .object({

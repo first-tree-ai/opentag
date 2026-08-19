@@ -33,6 +33,7 @@ const agent: Agent = {
   name: "code-reviewer",
   displayName: "Code Reviewer",
   runtimeProvider: "codex" as const,
+  receiveMode: "all_message" as const,
   revision: 1,
   runtimeConfig: {
     revision: 1,
@@ -57,6 +58,12 @@ function api() {
     getAgent: vi.fn().mockResolvedValue(agent),
     updateAgent: vi.fn().mockResolvedValue({ ...agent, displayName: "Reviewer", revision: 2 }),
     deleteAgent: vi.fn().mockResolvedValue(undefined),
+    getAgentIntegration: vi.fn().mockResolvedValue(undefined),
+    createFeishuSetupAttempt: vi.fn(),
+    getFeishuSetupAttempt: vi.fn(),
+    cancelFeishuSetupAttempt: vi.fn(),
+    getIntegrationDiagnostics: vi.fn(),
+    disableIntegration: vi.fn(),
   };
 }
 

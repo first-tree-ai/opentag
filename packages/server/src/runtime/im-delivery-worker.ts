@@ -1,0 +1,549 @@
+import { randomUUID } from "node:crypto";
+import {
+  type DirectImMessageDeliveryRequest,
+  DirectImMessageDeliveryRequestSchema,
+  type EffectiveRuntimeSnapshot,
+  OPENTAG_PLATFORM_INSTRUCTIONS,
+  RUNTIME_DIRECT_TEXT_MAX_BYTES,
+  RUNTIME_IM_HISTORY_MAX_BYTES,
+  RUNTIME_MAX_FRAME_BYTES,
+  runtimeFrameByteLength,
+} from "@opentag/shared";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
+import type { DatabaseClient } from "../db/client.js";
+import {
+  agentRuntimeConfigs,
+  agents,
+  computers,
+  imMessageDeliveries,
+  imMessages,
+  integrations,
+  sessionPlacements,
+  sessions,
+} from "../db/schema/index.js";
+import type { ConnectionRegistry } from "./connection-registry.js";
+import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
+
+const DEFAULT_INTERVAL_MS = 500;
+const RETRY_DELAY_MS = 2_000;
+
+export class ImDeliveryWorker {
+  readonly #database: DatabaseClient;
+  readonly #domain: RuntimeDomainOwner;
+  readonly #registry: ConnectionRegistry;
+  readonly #intervalMs: number;
+  readonly #onDiagnostic: (code: string) => void;
+  #timer?: ReturnType<typeof setInterval>;
+  #running = false;
+
+  constructor(input: {
+    database: DatabaseClient;
+    domain: RuntimeDomainOwner;
+    registry: ConnectionRegistry;
+    intervalMs?: number;
+    onDiagnostic?: (code: string) => void;
+  }) {
+    this.#database = input.database;
+    this.#domain = input.domain;
+    this.#registry = input.registry;
+    this.#intervalMs = input.intervalMs ?? DEFAULT_INTERVAL_MS;
+    this.#onDiagnostic = input.onDiagnostic ?? (() => undefined);
+  }
+
+  start(): void {
+    if (this.#timer) return;
+    this.#schedule();
+    this.#timer = setInterval(() => this.#schedule(), this.#intervalMs);
+    this.#timer.unref();
+  }
+
+  stop(): void {
+    if (this.#timer) clearInterval(this.#timer);
+    this.#timer = undefined;
+  }
+
+  async runOnce(): Promise<void> {
+    if (this.#running) return;
+    this.#running = true;
+    try {
+      const claimed = await this.#claim();
+      if (claimed) {
+        if (claimed.kind === "pending") await this.#deliver(claimed.id);
+        else await this.#recover(claimed.id);
+      }
+    } finally {
+      this.#running = false;
+    }
+  }
+
+  #schedule(): void {
+    void this.runOnce().catch(() => this.#onDiagnostic("IM_DELIVERY_WORKER_SCHEDULING_FAILED"));
+  }
+
+  async #claim(): Promise<{ id: string; kind: "pending" | "recovery" } | undefined> {
+    return this.#database.transaction(async (transaction) => {
+      const now = new Date();
+      await transaction
+        .update(imMessageDeliveries)
+        .set({ state: "expired", reason: "ttl" })
+        .where(
+          and(
+            eq(imMessageDeliveries.state, "pending"),
+            isNull(imMessageDeliveries.reason),
+            lte(imMessageDeliveries.expiresAt, now),
+          ),
+        );
+      const [row] = await transaction
+        .select({
+          id: imMessageDeliveries.id,
+          state: imMessageDeliveries.state,
+          deliveryGeneration: imMessageDeliveries.placementGeneration,
+          dispatchRequestId: imMessageDeliveries.dispatchRequestId,
+          dispatchPayload: imMessageDeliveries.dispatchPayload,
+          generation: sessionPlacements.generation,
+        })
+        .from(imMessageDeliveries)
+        .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
+        .where(
+          or(
+            and(
+              eq(imMessageDeliveries.state, "pending"),
+              isNull(imMessageDeliveries.reason),
+              lte(imMessageDeliveries.nextAttemptAt, now),
+              sql`${imMessageDeliveries.expiresAt} > now()`,
+            ),
+            and(
+              eq(imMessageDeliveries.state, "expired"),
+              isNotNull(imMessageDeliveries.dispatchRequestId),
+              lte(imMessageDeliveries.nextAttemptAt, now),
+            ),
+            and(
+              eq(imMessageDeliveries.state, "accepted"),
+              isNull(imMessageDeliveries.reportedAt),
+              lte(imMessageDeliveries.nextAttemptAt, now),
+            ),
+          ),
+        )
+        .orderBy(asc(imMessageDeliveries.nextAttemptAt), asc(imMessageDeliveries.id))
+        .limit(1)
+        .for("update", { of: imMessageDeliveries, skipLocked: true });
+      if (!row) return undefined;
+      if (row.state === "accepted") {
+        await transaction
+          .update(imMessageDeliveries)
+          .set({
+            attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
+            nextAttemptAt: new Date(now.getTime() + RETRY_DELAY_MS),
+            lastErrorCode: null,
+          })
+          .where(and(eq(imMessageDeliveries.id, row.id), eq(imMessageDeliveries.state, "accepted")));
+        return { id: row.id, kind: "recovery" as const };
+      }
+      const persistedRequest = row.dispatchPayload
+        ? DirectImMessageDeliveryRequestSchema.safeParse(row.dispatchPayload)
+        : undefined;
+      const staleCorrelation =
+        row.dispatchRequestId !== null &&
+        (row.deliveryGeneration !== row.generation ||
+          !persistedRequest?.success ||
+          persistedRequest.data.placementGeneration !== row.generation);
+      if (staleCorrelation) {
+        await transaction
+          .update(imMessageDeliveries)
+          .set({
+            nextAttemptAt: new Date(now.getTime() + RETRY_DELAY_MS),
+            lastErrorCode: "IM_DELIVERY_PLACEMENT_STALE",
+          })
+          .where(eq(imMessageDeliveries.id, row.id));
+        return undefined;
+      }
+      await transaction
+        .update(imMessageDeliveries)
+        .set({
+          attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
+          ...(row.state === "pending" ? { placementGeneration: row.generation } : {}),
+          nextAttemptAt: new Date(now.getTime() + RETRY_DELAY_MS),
+          lastErrorCode: null,
+        })
+        .where(eq(imMessageDeliveries.id, row.id));
+      return { id: row.id, kind: "pending" as const };
+    });
+  }
+
+  async #deliver(deliveryId: string): Promise<void> {
+    const [row] = await this.#database
+      .select({
+        delivery: imMessageDeliveries,
+        message: imMessages,
+        session: sessions,
+        placement: sessionPlacements,
+        integration: integrations,
+        agent: agents,
+        runtimeConfig: agentRuntimeConfigs,
+        computer: computers,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
+      .innerJoin(agents, eq(agents.id, integrations.agentId))
+      .innerJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+      .where(
+        and(
+          eq(imMessageDeliveries.id, deliveryId),
+          or(
+            and(eq(imMessageDeliveries.state, "pending"), isNull(imMessageDeliveries.reason)),
+            and(eq(imMessageDeliveries.state, "expired"), isNotNull(imMessageDeliveries.dispatchRequestId)),
+          ),
+          isNull(sessions.endedAt),
+          eq(integrations.status, "active"),
+          isNull(agents.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!row) return;
+    if (row.delivery.placementGeneration !== row.placement.generation) {
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_PLACEMENT_STALE");
+      return;
+    }
+    const instanceId = this.#registry.currentInstanceId(row.placement.computerId);
+    if (!instanceId || row.computer.currentInstanceId !== instanceId) {
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_UNAVAILABLE");
+      return;
+    }
+    if (row.agent.runtimeProvider !== "codex") {
+      await this.#reject(deliveryId, "configuration_unsupported");
+      return;
+    }
+    const persistedRequest = row.delivery.dispatchPayload
+      ? DirectImMessageDeliveryRequestSchema.parse(row.delivery.dispatchPayload)
+      : undefined;
+    const runtime =
+      persistedRequest?.runtime ??
+      runtimeSnapshot(row.agent.id, row.runtimeConfig, row.session.id, row.session.revision);
+    try {
+      const reconcile = await this.#domain.requestReconcile(row.placement.computerId, instanceId, {
+        type: "session:reconcile",
+        requestId: randomUUID(),
+        computerId: row.placement.computerId,
+        sessionId: row.session.id,
+        agentId: row.agent.id,
+        placementGeneration: row.placement.generation,
+        desired: "ready",
+        runtime,
+      });
+      const [currentDelivery] = await this.#database
+        .select({ state: imMessageDeliveries.state })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId))
+        .limit(1);
+      if (!currentDelivery || currentDelivery.state === "accepted" || currentDelivery.state === "terminal_rejected") {
+        return;
+      }
+      if (reconcile.status !== "ready") {
+        await this.#recordFailure(
+          deliveryId,
+          reconcile.status === "rejected" ? "IM_DELIVERY_RECONCILE_REJECTED" : "IM_DELIVERY_RECONCILE_NOT_READY",
+        );
+        return;
+      }
+      if (reconcile.retainedReports?.some((claim) => claim.deliveryId === deliveryId)) {
+        await this.#recordFailure(deliveryId, "IM_DELIVERY_RETAINED_CUSTODY_CONFLICT");
+        return;
+      }
+      if (currentDelivery.state === "expired") {
+        if (persistedRequest) {
+          await this.#releaseDispatch(deliveryId, persistedRequest.requestId, "IM_DELIVERY_EXPIRED");
+        }
+        return;
+      }
+      if (persistedRequest) {
+        await this.#releaseDispatch(deliveryId, persistedRequest.requestId, "IM_DELIVERY_RECONCILED_NO_CUSTODY");
+        return;
+      }
+      const resources = row.message.content.resources ?? [];
+      const history =
+        row.agent.receiveMode === "mention_only" && row.delivery.attention === "direct"
+          ? await this.#history(row.session, row.message.occurredAt, row.message.providerRevisionKey, row.message.id)
+          : { items: [], truncated: false };
+      const request: DirectImMessageDeliveryRequest = {
+        type: "im:deliver",
+        requestId: randomUUID(),
+        deliveryId: row.delivery.id,
+        imMessageId: row.message.id,
+        sessionId: row.session.id,
+        agentId: row.agent.id,
+        placementGeneration: row.placement.generation,
+        attention: row.delivery.attention,
+        content: {
+          kind: "text",
+          text: truncateUtf8(
+            row.message.operation === "deleted" ? "[deleted]" : row.message.content.fallbackText,
+            RUNTIME_DIRECT_TEXT_MAX_BYTES,
+          ),
+          ...(history.items.length > 0 ? { history: history.items, historyTruncated: history.truncated } : {}),
+          ...(resources.length > 0
+            ? {
+                resources: resources.map((resource, index) => ({
+                  imMessageId: row.message.id,
+                  ordinal: resource.ordinal ?? index,
+                  kind: resource.kind,
+                  ...(resource.filename ? { filename: resource.filename } : {}),
+                  ...(resource.mediaType ? { mediaType: resource.mediaType } : {}),
+                  ...(resource.sizeBytes !== null ? { sizeBytes: resource.sizeBytes } : {}),
+                  availability: resource.availability ?? "available",
+                })),
+              }
+            : {}),
+        },
+        runtime,
+        deadlineAt: row.delivery.expiresAt.toISOString(),
+      };
+      fitDeliveryFrame(request);
+      const result = await this.#domain.requestDelivery(row.placement.computerId, instanceId, request);
+      if (
+        result.status === "rejected" &&
+        ["configuration_unsupported", "invalid_input"].includes(result.reason ?? "")
+      ) {
+        await this.#reject(deliveryId, result.reason ?? "terminal_rejected");
+      } else if (result.status === "rejected") {
+        await this.#releaseDispatch(deliveryId, request.requestId, "IM_DELIVERY_RUNTIME_REJECTED");
+      }
+    } catch {
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_FAILED");
+    }
+  }
+
+  async #recover(deliveryId: string): Promise<void> {
+    const [row] = await this.#database
+      .select({
+        delivery: imMessageDeliveries,
+        session: sessions,
+        placement: sessionPlacements,
+        integration: integrations,
+        agent: agents,
+        runtimeConfig: agentRuntimeConfigs,
+        computer: computers,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
+      .innerJoin(agents, eq(agents.id, integrations.agentId))
+      .innerJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+      .where(
+        and(
+          eq(imMessageDeliveries.id, deliveryId),
+          eq(imMessageDeliveries.state, "accepted"),
+          isNull(imMessageDeliveries.reportedAt),
+          isNull(sessions.endedAt),
+          eq(integrations.status, "active"),
+          isNull(agents.deletedAt),
+        ),
+      )
+      .limit(1);
+    if (!row) return;
+    if (row.delivery.placementGeneration !== row.placement.generation) {
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_PLACEMENT_STALE");
+      return;
+    }
+    const instanceId = this.#registry.currentInstanceId(row.placement.computerId);
+    if (!instanceId || row.computer.currentInstanceId !== instanceId) {
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_UNAVAILABLE");
+      return;
+    }
+    try {
+      await this.#domain.requestReconcile(row.placement.computerId, instanceId, {
+        type: "session:reconcile",
+        requestId: randomUUID(),
+        computerId: row.placement.computerId,
+        sessionId: row.session.id,
+        agentId: row.agent.id,
+        placementGeneration: row.placement.generation,
+        desired: "ready",
+        runtime: runtimeSnapshot(row.agent.id, row.runtimeConfig, row.session.id, row.session.revision),
+      });
+    } catch {
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_RECOVERY_FAILED");
+    }
+  }
+
+  async #recordFailure(deliveryId: string, code: string): Promise<void> {
+    const bounded = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/.test(code) ? code : "IM_DELIVERY_FAILED";
+    await this.#database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode: bounded })
+      .where(
+        and(
+          eq(imMessageDeliveries.id, deliveryId),
+          sql`${imMessageDeliveries.state} in ('pending', 'accepted', 'expired')`,
+        ),
+      );
+    this.#onDiagnostic(bounded);
+  }
+
+  async #releaseDispatch(deliveryId: string, requestId: string, code: string): Promise<void> {
+    const bounded = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/.test(code) ? code : "IM_DELIVERY_FAILED";
+    await this.#database
+      .update(imMessageDeliveries)
+      .set({ dispatchRequestId: null, dispatchInputHash: null, dispatchPayload: null, lastErrorCode: bounded })
+      .where(
+        and(
+          eq(imMessageDeliveries.id, deliveryId),
+          inArray(imMessageDeliveries.state, ["pending", "expired"]),
+          eq(imMessageDeliveries.dispatchRequestId, requestId),
+        ),
+      );
+    this.#onDiagnostic(bounded);
+  }
+
+  async #reject(deliveryId: string, reason: string): Promise<void> {
+    await this.#database
+      .update(imMessageDeliveries)
+      .set({
+        state: "terminal_rejected",
+        dispatchRequestId: null,
+        dispatchInputHash: null,
+        dispatchPayload: null,
+        reason: reason.slice(0, 120),
+        lastErrorCode: "IM_DELIVERY_TERMINAL",
+      })
+      .where(and(eq(imMessageDeliveries.id, deliveryId), eq(imMessageDeliveries.state, "pending")));
+  }
+
+  async #history(
+    session: typeof sessions.$inferSelect,
+    occurredAt: Date,
+    providerRevisionKey: string,
+    messageId: string,
+  ): Promise<{
+    items: Array<{ imMessageId: string; occurredAt: string; text: string }>;
+    truncated: boolean;
+  }> {
+    const [lastAccepted] = await this.#database
+      .select({
+        id: imMessages.id,
+        occurredAt: imMessages.occurredAt,
+        providerRevisionKey: imMessages.providerRevisionKey,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+      .where(
+        and(
+          eq(imMessageDeliveries.sessionId, session.id),
+          eq(imMessageDeliveries.state, "accepted"),
+          messageBefore(occurredAt, providerRevisionKey, messageId),
+        ),
+      )
+      .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
+      .limit(1);
+    const rows = await this.#database
+      .select({ id: imMessages.id, occurredAt: imMessages.occurredAt, content: imMessages.content })
+      .from(imMessages)
+      .where(
+        and(
+          eq(imMessages.integrationId, session.integrationId),
+          eq(imMessages.channelId, session.channelId),
+          eq(imMessages.direction, "inbound"),
+          ...(session.kind === "thread" && session.threadKey ? [eq(imMessages.threadKey, session.threadKey)] : []),
+          messageBefore(occurredAt, providerRevisionKey, messageId),
+          ...(lastAccepted
+            ? [messageAfter(lastAccepted.occurredAt, lastAccepted.providerRevisionKey, lastAccepted.id)]
+            : []),
+        ),
+      )
+      .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
+      .limit(101);
+    const selected = rows.slice(0, 100);
+    const items: Array<{ imMessageId: string; occurredAt: string; text: string }> = [];
+    let bytes = 2;
+    let truncated = rows.length > selected.length;
+    for (const row of selected) {
+      const item = {
+        imMessageId: row.id,
+        occurredAt: row.occurredAt.toISOString(),
+        text: truncateUtf8(row.content.fallbackText, RUNTIME_DIRECT_TEXT_MAX_BYTES),
+      };
+      const itemBytes = Buffer.byteLength(JSON.stringify(item), "utf8") + (items.length > 0 ? 1 : 0);
+      if (bytes + itemBytes > RUNTIME_IM_HISTORY_MAX_BYTES) {
+        truncated = true;
+        break;
+      }
+      items.push(item);
+      bytes += itemBytes;
+    }
+    return { items: items.reverse(), truncated };
+  }
+}
+
+function messageBefore(occurredAt: Date, providerRevisionKey: string, messageId: string) {
+  return or(
+    lt(imMessages.occurredAt, occurredAt),
+    and(
+      eq(imMessages.occurredAt, occurredAt),
+      or(
+        lt(imMessages.providerRevisionKey, providerRevisionKey),
+        and(eq(imMessages.providerRevisionKey, providerRevisionKey), lt(imMessages.id, messageId)),
+      ),
+    ),
+  );
+}
+
+function messageAfter(occurredAt: Date, providerRevisionKey: string, messageId: string) {
+  return or(
+    gt(imMessages.occurredAt, occurredAt),
+    and(
+      eq(imMessages.occurredAt, occurredAt),
+      or(
+        gt(imMessages.providerRevisionKey, providerRevisionKey),
+        and(eq(imMessages.providerRevisionKey, providerRevisionKey), gt(imMessages.id, messageId)),
+      ),
+    ),
+  );
+}
+
+function runtimeSnapshot(
+  agentId: string,
+  config: typeof agentRuntimeConfigs.$inferSelect,
+  sessionId: string,
+  sessionRevision: number,
+): EffectiveRuntimeSnapshot {
+  return {
+    revision: {
+      agent: { sequence: config.revision, id: agentId },
+      session: { sequence: sessionRevision, id: sessionId },
+    },
+    agentId,
+    provider: "codex",
+    ...(config.model ? { model: config.model } : {}),
+    ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
+    instructions: {
+      platform: OPENTAG_PLATFORM_INSTRUCTIONS,
+      agent: config.instructions,
+    },
+    allowedTools: config.allowedTools,
+    execution: { approvalPolicy: "never", networkAccess: false },
+    ...(config.maxDurationMs ? { budget: { maxDurationMs: config.maxDurationMs } } : {}),
+    workspace: { workspaceId: agentId, mode: "empty_on_create", sharing: "agent" },
+  };
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  const encoded = Buffer.from(value, "utf8");
+  return encoded.byteLength <= maxBytes ? value : encoded.subarray(0, maxBytes).toString("utf8");
+}
+
+function fitDeliveryFrame(request: DirectImMessageDeliveryRequest): void {
+  const fits = () => runtimeFrameByteLength(JSON.stringify(request)) <= RUNTIME_MAX_FRAME_BYTES;
+  while (!fits() && request.content.history && request.content.history.length > 0) {
+    request.content.history.shift();
+    request.content.historyTruncated = true;
+  }
+  while (!fits() && request.content.resources && request.content.resources.length > 0) {
+    request.content.resources.pop();
+  }
+  if (!fits()) throw new Error("IM_DELIVERY_FRAME_TOO_LARGE");
+}

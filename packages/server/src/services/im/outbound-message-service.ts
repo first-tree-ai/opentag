@@ -1,0 +1,379 @@
+import { createHash } from "node:crypto";
+import { ImContentV1Schema, type ProviderWriteResult } from "@opentag/shared";
+import { and, desc, eq, isNull, ne, sql } from "drizzle-orm";
+import { z } from "zod";
+import type { DatabaseClient } from "../../db/client.js";
+import {
+  agents,
+  computers,
+  imMessages,
+  imOutboundRequests,
+  integrations,
+  sessionPlacements,
+  sessions,
+} from "../../db/schema/index.js";
+import type { ImProviderAdapter } from "../integrations/index.js";
+import { ProviderAdapterResolutionError } from "../integrations/provider-adapter-resolver.js";
+
+const OutboundRequestSchema = z
+  .object({
+    requestId: z.string().uuid(),
+    sessionId: z.string().uuid(),
+    agentId: z.string().uuid(),
+    computerId: z.string().uuid(),
+    computerInstanceId: z.string().uuid(),
+    placementGeneration: z.number().int().min(1),
+    expectedLatestImMessageId: z.string().uuid(),
+    operation: z.enum(["send", "reply", "react"]),
+    content: ImContentV1Schema.optional(),
+    replyToImMessageId: z.string().uuid().optional(),
+    targetImMessageId: z.string().uuid().optional(),
+    emoji: z.string().min(1).max(128).optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if (value.operation === "react") {
+      if (!value.targetImMessageId) {
+        context.addIssue({ code: "custom", path: ["targetImMessageId"], message: "A reaction target is required" });
+      }
+      if (!value.emoji) context.addIssue({ code: "custom", path: ["emoji"], message: "A reaction emoji is required" });
+      return;
+    }
+    if (!value.content || value.content.fallbackText.trim().length === 0) {
+      context.addIssue({ code: "custom", path: ["content"], message: "Outbound text content is required" });
+    }
+    if (value.operation === "reply" && !value.replyToImMessageId) {
+      context.addIssue({ code: "custom", path: ["replyToImMessageId"], message: "A reply target is required" });
+    }
+  });
+
+export type OutboundRequest = z.infer<typeof OutboundRequestSchema>;
+
+export interface OutboundResult {
+  state: "succeeded" | "deterministic_failed" | "credential_failed" | "transient_failed" | "unknown";
+  code?: string;
+  providerMessageId?: string;
+  retryAfterSeconds?: number;
+}
+
+export class OutboundMessageService {
+  readonly #database: DatabaseClient;
+  readonly #now: () => Date;
+  readonly #resolveAdapter: (integrationId: string, generation: number) => Promise<ImProviderAdapter<unknown>>;
+
+  constructor(
+    database: DatabaseClient,
+    resolveAdapter: (integrationId: string, generation: number) => Promise<ImProviderAdapter<unknown>>,
+    options: { now?: () => Date } = {},
+  ) {
+    this.#database = database;
+    this.#resolveAdapter = resolveAdapter;
+    this.#now = options.now ?? (() => new Date());
+  }
+
+  async execute(rawInput: OutboundRequest): Promise<OutboundResult> {
+    const input = OutboundRequestSchema.parse(rawInput);
+    const normalizedPayload = stableOutboundIntent(input);
+    const payloadHash = createHash("sha256").update(JSON.stringify(normalizedPayload)).digest("hex");
+
+    const prepared = await this.#database.transaction(async (transaction) => {
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`im-outbound:${input.requestId}`}, 0))`,
+      );
+      const [scope] = await transaction
+        .select({
+          session: sessions,
+          placement: sessionPlacements,
+          integration: {
+            id: integrations.id,
+            provider: integrations.provider,
+            status: integrations.status,
+            credentialGeneration: integrations.credentialGeneration,
+            grantedCapabilities: integrations.grantedCapabilities,
+            externalBotId: integrations.externalBotId,
+          },
+          agentId: agents.id,
+          currentInstanceId: computers.currentInstanceId,
+        })
+        .from(sessions)
+        .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+        .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+        .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
+        .innerJoin(agents, eq(agents.id, integrations.agentId))
+        .where(
+          and(
+            eq(sessions.id, input.sessionId),
+            isNull(sessions.endedAt),
+            ne(integrations.status, "disabled"),
+            isNull(agents.deletedAt),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (!scope || scope.session.kind === "internal") throw new Error("OUTBOUND_SESSION_UNAUTHORIZED");
+      if (scope.agentId !== input.agentId) throw new Error("OUTBOUND_SESSION_UNAUTHORIZED");
+      if (
+        scope.placement.computerId !== input.computerId ||
+        scope.placement.generation !== input.placementGeneration ||
+        scope.currentInstanceId !== input.computerInstanceId
+      ) {
+        throw new Error("OUTBOUND_PLACEMENT_STALE");
+      }
+      const [existing] = await transaction
+        .select()
+        .from(imOutboundRequests)
+        .where(eq(imOutboundRequests.requestId, input.requestId))
+        .limit(1);
+      if (existing) {
+        if (existing.payloadHash !== payloadHash) throw new Error("OUTBOUND_REQUEST_CONFLICT");
+        return { existing } as const;
+      }
+      if (scope.integration.status !== "active") throw new Error("OUTBOUND_INTEGRATION_NOT_ACTIVE");
+
+      const [latest] = await transaction
+        .select({ id: imMessages.id })
+        .from(imMessages)
+        .where(
+          and(
+            eq(imMessages.integrationId, scope.integration.id),
+            eq(imMessages.channelId, scope.session.channelId),
+            eq(imMessages.direction, "inbound"),
+            ...(scope.session.kind === "thread" && scope.session.threadKey
+              ? [eq(imMessages.threadKey, scope.session.threadKey)]
+              : []),
+          ),
+        )
+        .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
+        .limit(1);
+      if (!latest || latest.id !== input.expectedLatestImMessageId) throw new Error("OUTBOUND_LATEST_MESSAGE_STALE");
+
+      const targetId = input.operation === "react" ? input.targetImMessageId : input.replyToImMessageId;
+      const [target] = targetId
+        ? await transaction
+            .select({ message: imMessages })
+            .from(imMessages)
+            .where(
+              and(
+                eq(imMessages.id, targetId),
+                eq(imMessages.integrationId, scope.integration.id),
+                eq(imMessages.channelId, scope.session.channelId),
+                ...(scope.session.kind === "thread" && scope.session.threadKey
+                  ? [eq(imMessages.threadKey, scope.session.threadKey)]
+                  : []),
+              ),
+            )
+            .limit(1)
+        : [];
+      if (targetId && !target) throw new Error("OUTBOUND_TARGET_INVALID");
+      if (target) {
+        const [currentTarget] = await transaction
+          .select({ operation: imMessages.operation })
+          .from(imMessages)
+          .where(
+            and(
+              eq(imMessages.integrationId, target.message.integrationId),
+              eq(imMessages.channelId, target.message.channelId),
+              eq(imMessages.externalMessageId, target.message.externalMessageId),
+            ),
+          )
+          .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
+          .limit(1);
+        if (!currentTarget || currentTarget.operation === "deleted") throw new Error("OUTBOUND_TARGET_INVALID");
+      }
+      if (input.operation === "react") {
+        const requiredScope =
+          scope.integration.provider === "slack" ? "reactions:write" : "im:message.reactions:write_only";
+        if (!scope.integration.grantedCapabilities.includes(requiredScope)) {
+          throw new Error("OUTBOUND_CAPABILITY_MISSING");
+        }
+      }
+
+      const [request] = await transaction
+        .insert(imOutboundRequests)
+        .values({
+          requestId: input.requestId,
+          sessionId: input.sessionId,
+          expectedLatestImMessageId: input.expectedLatestImMessageId,
+          admittedCredentialGeneration: scope.integration.credentialGeneration,
+          operation: input.operation,
+          payloadHash,
+          normalizedPayload,
+          state: "prepared",
+          createdAt: this.#now(),
+        })
+        .returning();
+      if (!request) throw new Error("Outbound request insert did not return a row");
+      return { request, scope, targetExternalId: target?.message.externalMessageId } as const;
+    });
+
+    if ("existing" in prepared && prepared.existing) {
+      return prepared.existing.state === "prepared"
+        ? this.#awaitExisting(prepared.existing.requestId)
+        : this.#existingResult(prepared.existing);
+    }
+    const { request, scope, targetExternalId } = prepared;
+    let providerResult: ProviderWriteResult;
+    try {
+      const adapter = await this.#resolveAdapter(scope.integration.id, request.admittedCredentialGeneration).catch(
+        (error: unknown) => {
+          const code =
+            error instanceof ProviderAdapterResolutionError && error.code === "INTEGRATION_GENERATION_STALE"
+              ? "generation_stale"
+              : "provider_unavailable";
+          return { resolutionFailure: { ok: false as const, category: "transient" as const, code } };
+        },
+      );
+      if ("resolutionFailure" in adapter) {
+        providerResult = adapter.resolutionFailure;
+      } else if (input.operation === "react") {
+        providerResult = await adapter.react({
+          conversationExternalId: scope.session.channelId,
+          messageExternalId: targetExternalId as string,
+          emoji: input.emoji as string,
+        });
+      } else {
+        providerResult = await adapter.send({
+          requestId: input.requestId,
+          conversationExternalId: scope.session.channelId,
+          fallbackText: input.content?.fallbackText ?? "",
+          threadKey: scope.session.threadKey ?? undefined,
+          replyToExternalId: targetExternalId,
+        });
+      }
+    } catch {
+      providerResult = { ok: false, category: "unknown", code: "provider_unavailable" };
+    }
+
+    const mapped = this.#mapProviderResult(providerResult);
+    await this.#database.transaction(async (transaction) => {
+      const [finalized] = await transaction
+        .update(imOutboundRequests)
+        .set({
+          state: mapped.state,
+          providerMessageId: mapped.providerMessageId ?? null,
+          resultCode: mapped.code ?? null,
+          retryAfterSeconds: mapped.retryAfterSeconds ?? null,
+          completedAt: this.#now(),
+        })
+        .where(and(eq(imOutboundRequests.requestId, request.requestId), eq(imOutboundRequests.state, "prepared")))
+        .returning({ requestId: imOutboundRequests.requestId });
+      if (!finalized) return;
+      if (!providerResult.ok) {
+        if (mapped.state === "credential_failed") {
+          await transaction
+            .update(integrations)
+            .set({
+              status: "reauthorization_required",
+              lastErrorCode: mapped.code ?? "provider_unknown",
+              updatedAt: this.#now(),
+            })
+            .where(
+              and(
+                eq(integrations.id, scope.integration.id),
+                eq(integrations.status, "active"),
+                eq(integrations.credentialGeneration, request.admittedCredentialGeneration),
+              ),
+            );
+        }
+        return;
+      }
+      if (input.operation === "react") return;
+      await transaction.insert(imMessages).values({
+        integrationId: scope.integration.id,
+        providerEventId: null,
+        channelId: scope.session.channelId,
+        externalMessageId: providerResult.externalMessageId,
+        providerRevisionKey: `outbound:${input.requestId}`,
+        operation: "created",
+        direction: "outbound",
+        threadKey: scope.session.threadKey,
+        replyToExternalId: targetExternalId ?? null,
+        authorKind: "bot",
+        authorExternalId: scope.integration.externalBotId ?? "unknown",
+        content: input.content as NonNullable<typeof input.content>,
+        occurredAt: providerResult.occurredAt,
+        receivedAt: this.#now(),
+      });
+    });
+    return mapped;
+  }
+
+  #existingResult(row: typeof imOutboundRequests.$inferSelect): OutboundResult {
+    if (row.state === "prepared") return { state: "unknown", code: "OUTBOUND_RESULT_UNKNOWN" };
+    return {
+      state: row.state,
+      code: row.resultCode ?? undefined,
+      providerMessageId: row.providerMessageId ?? undefined,
+      retryAfterSeconds: row.retryAfterSeconds ?? undefined,
+    };
+  }
+
+  async #awaitExisting(requestId: string): Promise<OutboundResult> {
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      const [row] = await this.#database
+        .select()
+        .from(imOutboundRequests)
+        .where(eq(imOutboundRequests.requestId, requestId))
+        .limit(1);
+      if (row && row.state !== "prepared") return this.#existingResult(row);
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+    return { state: "unknown", code: "OUTBOUND_RESULT_UNKNOWN" };
+  }
+
+  #mapProviderResult(result: ProviderWriteResult): OutboundResult {
+    if (result.ok) return { state: "succeeded", providerMessageId: result.externalMessageId };
+    const state =
+      result.category === "credential"
+        ? "credential_failed"
+        : result.category === "transient" || result.category === "rate_limited"
+          ? "transient_failed"
+          : result.category === "unknown"
+            ? "unknown"
+            : "deterministic_failed";
+    return { state, code: boundedProviderCode(result.code), retryAfterSeconds: result.retryAfterSeconds };
+  }
+}
+
+function boundedProviderCode(code: string): string {
+  return PROVIDER_RESULT_CODES.has(code) ? code : "provider_unknown";
+}
+
+const PROVIDER_RESULT_CODES = new Set([
+  "account_inactive",
+  "channel_not_found",
+  "feishu_unknown",
+  "feishu_api_error",
+  "feishu_invalid_request",
+  "feishu_invalid_target",
+  "feishu_permission_denied",
+  "feishu_rate_limited",
+  "format_error",
+  "generation_stale",
+  "invalid_auth",
+  "invalid_blocks",
+  "missing_scope",
+  "not_connected",
+  "not_in_channel",
+  "permission_denied",
+  "provider_unavailable",
+  "ratelimited",
+  "slack_unknown",
+  "ssrf_blocked",
+  "target_revoked",
+  "token_revoked",
+]);
+
+function stableOutboundIntent(input: OutboundRequest): Record<string, unknown> {
+  return {
+    sessionId: input.sessionId,
+    agentId: input.agentId,
+    expectedLatestImMessageId: input.expectedLatestImMessageId,
+    operation: input.operation,
+    ...(input.content ? { content: input.content } : {}),
+    ...(input.replyToImMessageId ? { replyToImMessageId: input.replyToImMessageId } : {}),
+    ...(input.targetImMessageId ? { targetImMessageId: input.targetImMessageId } : {}),
+    ...(input.emoji ? { emoji: input.emoji } : {}),
+  };
+}

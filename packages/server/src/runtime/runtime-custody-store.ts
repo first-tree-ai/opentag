@@ -1,0 +1,394 @@
+import type {
+  DirectImMessageDeliveryRequest,
+  SessionReconcileRequest,
+  SessionReconcileResult,
+  TurnReportRequest,
+  TurnReportResult,
+} from "@opentag/shared";
+import { and, eq, inArray, isNull } from "drizzle-orm";
+import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
+import {
+  agents,
+  imMessageDeliveries,
+  imMessages,
+  integrations,
+  sessionPlacements,
+  sessions,
+} from "../db/schema/index.js";
+import type { RuntimeBusinessContext } from "./runtime-session.js";
+
+export interface AcceptedDeliveryRecord {
+  agentId: string;
+  computerId: string;
+  deliveryId: string;
+  inputHash: string;
+  instanceId: string;
+  placementGeneration: number;
+  sessionId: string;
+  turnId: string;
+}
+
+export interface RecordedTurnRecord {
+  computerId: string;
+  instanceId: string;
+  report: TurnReportRequest;
+  resultHash: string;
+}
+
+export type DeliveryCustodyStatus = "accepted" | "already_accepted" | "conflict" | "stale_generation";
+export type DeliveryDispatchStatus = "dispatched" | "already_dispatched" | "conflict" | "stale_generation";
+
+export interface DeliveryDispatchContext {
+  computerId: string;
+  instanceId: string;
+}
+
+export interface RuntimeCustodyStore {
+  beginDeliveryDispatch(
+    request: DirectImMessageDeliveryRequest,
+    inputHash: string,
+    context: DeliveryDispatchContext,
+  ): Promise<DeliveryDispatchStatus>;
+  acceptDelivery(
+    request: DirectImMessageDeliveryRequest,
+    inputHash: string,
+    turnId: string,
+    context: RuntimeBusinessContext,
+  ): Promise<DeliveryCustodyStatus>;
+  claimRetainedReports(
+    request: SessionReconcileRequest,
+    claims: NonNullable<SessionReconcileResult["retainedReports"]>,
+    context: RuntimeBusinessContext,
+  ): Promise<void>;
+  getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined>;
+  getDeliveryByTurn(turnId: string): Promise<AcceptedDeliveryRecord | undefined>;
+  getTurn(turnId: string): Promise<RecordedTurnRecord | undefined>;
+  recordTurn(
+    report: TurnReportRequest,
+    context: RuntimeBusinessContext,
+  ): Promise<TurnReportResult["status"] | undefined>;
+}
+
+interface DeliveryScope {
+  delivery: typeof imMessageDeliveries.$inferSelect;
+  message: typeof imMessages.$inferSelect;
+  placement: typeof sessionPlacements.$inferSelect;
+  session: typeof sessions.$inferSelect;
+  agentId: string;
+}
+
+export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
+  readonly #database: DatabaseClient;
+  readonly #now: () => Date;
+
+  constructor(database: DatabaseClient, options: { now?: () => Date } = {}) {
+    this.#database = database;
+    this.#now = options.now ?? (() => new Date());
+  }
+
+  async beginDeliveryDispatch(
+    request: DirectImMessageDeliveryRequest,
+    inputHash: string,
+    context: DeliveryDispatchContext,
+  ): Promise<DeliveryDispatchStatus> {
+    return this.#database.transaction(async (transaction) => {
+      const scope = await this.#deliveryScope(transaction, request.deliveryId);
+      if (!scope || !deliveryRequestMatches(scope, request)) return "conflict";
+      if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
+      if (scope.delivery.state !== "pending") return "conflict";
+      if (scope.delivery.dispatchRequestId !== null) {
+        return scope.delivery.dispatchRequestId === request.requestId && scope.delivery.dispatchInputHash === inputHash
+          ? "already_dispatched"
+          : "conflict";
+      }
+      const [dispatched] = await transaction
+        .update(imMessageDeliveries)
+        .set({ dispatchRequestId: request.requestId, dispatchInputHash: inputHash, dispatchPayload: request })
+        .where(
+          and(
+            eq(imMessageDeliveries.id, request.deliveryId),
+            eq(imMessageDeliveries.state, "pending"),
+            isNull(imMessageDeliveries.dispatchRequestId),
+          ),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      return dispatched ? "dispatched" : "conflict";
+    });
+  }
+
+  async acceptDelivery(
+    request: DirectImMessageDeliveryRequest,
+    inputHash: string,
+    turnId: string,
+    context: RuntimeBusinessContext,
+  ): Promise<DeliveryCustodyStatus> {
+    return this.#database.transaction(async (transaction) => {
+      const scope = await this.#deliveryScope(transaction, request.deliveryId);
+      if (!scope || !deliveryRequestMatches(scope, request)) return "conflict";
+      if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
+      if (scope.delivery.dispatchRequestId !== request.requestId || scope.delivery.dispatchInputHash !== inputHash) {
+        return "conflict";
+      }
+      if (scope.delivery.state === "accepted") {
+        return scope.delivery.inputHash === inputHash && scope.delivery.turnId === turnId
+          ? "already_accepted"
+          : "conflict";
+      }
+      if (scope.delivery.state !== "pending" && scope.delivery.state !== "expired") return "conflict";
+      const [accepted] = await transaction
+        .update(imMessageDeliveries)
+        .set({
+          state: "accepted",
+          dispatchPayload: null,
+          placementGeneration: request.placementGeneration,
+          inputHash,
+          turnId,
+          reportOwnerInstanceId: context.instanceId,
+          acceptedAt: this.#now(),
+          reason: null,
+          lastErrorCode: null,
+        })
+        .where(
+          and(
+            eq(imMessageDeliveries.id, request.deliveryId),
+            inArray(imMessageDeliveries.state, ["pending", "expired"]),
+            eq(imMessageDeliveries.dispatchRequestId, request.requestId),
+            eq(imMessageDeliveries.dispatchInputHash, inputHash),
+          ),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      return accepted ? "accepted" : "conflict";
+    });
+  }
+
+  async claimRetainedReports(
+    request: SessionReconcileRequest,
+    claims: NonNullable<SessionReconcileResult["retainedReports"]>,
+    context: RuntimeBusinessContext,
+  ): Promise<void> {
+    await this.#database.transaction(async (transaction) => {
+      const [placement] = await transaction
+        .select()
+        .from(sessionPlacements)
+        .innerJoin(sessions, eq(sessions.id, sessionPlacements.sessionId))
+        .where(
+          and(
+            eq(sessionPlacements.sessionId, request.sessionId),
+            eq(sessionPlacements.computerId, context.computerId),
+            eq(sessionPlacements.generation, request.placementGeneration),
+            isNull(sessions.endedAt),
+          ),
+        )
+        .limit(1)
+        .for("update");
+      if (!placement) return;
+      for (const claim of claims) {
+        const scope = await this.#deliveryScope(transaction, claim.deliveryId);
+        if (
+          !scope ||
+          scope.delivery.sessionId !== request.sessionId ||
+          scope.agentId !== request.agentId ||
+          scope.delivery.placementGeneration !== claim.placementGeneration ||
+          !placementMatches(scope, context.computerId, request.placementGeneration) ||
+          scope.delivery.dispatchRequestId !== claim.dispatchRequestId ||
+          scope.delivery.dispatchInputHash !== claim.inputHash ||
+          (scope.delivery.resultHash !== null && scope.delivery.resultHash !== claim.resultHash)
+        ) {
+          continue;
+        }
+        if (scope.delivery.state === "pending" || scope.delivery.state === "expired") {
+          await transaction
+            .update(imMessageDeliveries)
+            .set({
+              state: "accepted",
+              dispatchPayload: null,
+              inputHash: claim.inputHash,
+              turnId: claim.turnId,
+              reportOwnerInstanceId: context.instanceId,
+              resultHash: claim.resultHash,
+              acceptedAt: this.#now(),
+              reason: null,
+              lastErrorCode: null,
+            })
+            .where(
+              and(
+                eq(imMessageDeliveries.id, claim.deliveryId),
+                inArray(imMessageDeliveries.state, ["pending", "expired"]),
+                eq(imMessageDeliveries.dispatchRequestId, claim.dispatchRequestId),
+                eq(imMessageDeliveries.dispatchInputHash, claim.inputHash),
+              ),
+            );
+          continue;
+        }
+        if (scope.delivery.state !== "accepted" || scope.delivery.turnId !== claim.turnId) continue;
+        await transaction
+          .update(imMessageDeliveries)
+          .set({ reportOwnerInstanceId: context.instanceId, resultHash: claim.resultHash })
+          .where(eq(imMessageDeliveries.id, claim.deliveryId));
+      }
+    });
+  }
+
+  async getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {
+    const [row] = await this.#database
+      .select({
+        delivery: imMessageDeliveries,
+        placement: sessionPlacements,
+        agentId: agents.id,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
+      .innerJoin(agents, eq(agents.id, integrations.agentId))
+      .where(eq(imMessageDeliveries.id, deliveryId))
+      .limit(1);
+    return row ? acceptedRecord(row.delivery, row.placement.computerId, row.agentId) : undefined;
+  }
+
+  async getDeliveryByTurn(turnId: string): Promise<AcceptedDeliveryRecord | undefined> {
+    const [row] = await this.#database
+      .select({ id: imMessageDeliveries.id })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.turnId, turnId))
+      .limit(1);
+    return row ? this.getDelivery(row.id) : undefined;
+  }
+
+  async getTurn(turnId: string): Promise<RecordedTurnRecord | undefined> {
+    const [row] = await this.#database
+      .select({
+        report: imMessageDeliveries.turnReport,
+        resultHash: imMessageDeliveries.resultHash,
+        instanceId: imMessageDeliveries.reportOwnerInstanceId,
+        computerId: sessionPlacements.computerId,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
+      .where(eq(imMessageDeliveries.turnId, turnId))
+      .limit(1);
+    return row?.report && row.resultHash && row.instanceId
+      ? { computerId: row.computerId, instanceId: row.instanceId, report: row.report, resultHash: row.resultHash }
+      : undefined;
+  }
+
+  async recordTurn(
+    report: TurnReportRequest,
+    context: RuntimeBusinessContext,
+  ): Promise<TurnReportResult["status"] | undefined> {
+    return this.#database.transaction(async (transaction) => {
+      const scope = await this.#deliveryScope(transaction, report.deliveryId);
+      if (!scope) return undefined;
+      if (
+        scope.delivery.turnId !== report.turnId ||
+        scope.delivery.sessionId !== report.sessionId ||
+        scope.agentId !== report.agentId
+      ) {
+        return "conflict";
+      }
+      if (!placementMatches(scope, context.computerId, report.placementGeneration)) return "stale_generation";
+      if (scope.delivery.turnReport) {
+        return scope.delivery.resultHash === report.resultHash && sameReport(scope.delivery.turnReport, report)
+          ? "already_recorded"
+          : "conflict";
+      }
+      if (
+        scope.delivery.state !== "accepted" ||
+        scope.delivery.reportOwnerInstanceId !== context.instanceId ||
+        (scope.delivery.resultHash !== null && scope.delivery.resultHash !== report.resultHash)
+      ) {
+        return undefined;
+      }
+      await transaction
+        .update(imMessageDeliveries)
+        .set({ resultHash: report.resultHash, turnReport: report, reportedAt: this.#now(), lastErrorCode: null })
+        .where(eq(imMessageDeliveries.id, report.deliveryId));
+      return "recorded";
+    });
+  }
+
+  async #deliveryScope(transaction: DatabaseTransaction, deliveryId: string): Promise<DeliveryScope | undefined> {
+    const [identity] = await transaction
+      .select({ sessionId: imMessageDeliveries.sessionId })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deliveryId))
+      .limit(1);
+    if (!identity) return undefined;
+    const [placement] = await transaction
+      .select({ sessionId: sessionPlacements.sessionId })
+      .from(sessionPlacements)
+      .where(eq(sessionPlacements.sessionId, identity.sessionId))
+      .limit(1)
+      .for("update");
+    if (!placement) return undefined;
+    const [scope] = await transaction
+      .select({
+        delivery: imMessageDeliveries,
+        message: imMessages,
+        placement: sessionPlacements,
+        session: sessions,
+        agentId: agents.id,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
+      .innerJoin(agents, eq(agents.id, integrations.agentId))
+      .where(eq(imMessageDeliveries.id, deliveryId))
+      .limit(1)
+      .for("update", { of: imMessageDeliveries });
+    return scope;
+  }
+}
+
+function acceptedRecord(
+  delivery: typeof imMessageDeliveries.$inferSelect,
+  computerId: string,
+  agentId: string,
+): AcceptedDeliveryRecord | undefined {
+  return delivery.state === "accepted" && delivery.inputHash && delivery.turnId && delivery.reportOwnerInstanceId
+    ? {
+        agentId,
+        computerId,
+        deliveryId: delivery.id,
+        inputHash: delivery.inputHash,
+        instanceId: delivery.reportOwnerInstanceId,
+        placementGeneration: delivery.placementGeneration,
+        sessionId: delivery.sessionId,
+        turnId: delivery.turnId,
+      }
+    : undefined;
+}
+
+function deliveryRequestMatches(scope: DeliveryScope, request: DirectImMessageDeliveryRequest): boolean {
+  return (
+    scope.delivery.id === request.deliveryId &&
+    scope.delivery.sessionId === request.sessionId &&
+    scope.message.id === request.imMessageId &&
+    scope.agentId === request.agentId
+  );
+}
+
+function placementMatches(
+  scope: { delivery: typeof imMessageDeliveries.$inferSelect; placement: typeof sessionPlacements.$inferSelect },
+  computerId: string,
+  placementGeneration: number,
+): boolean {
+  return (
+    scope.delivery.placementGeneration === placementGeneration &&
+    scope.placement.computerId === computerId &&
+    scope.placement.generation === placementGeneration
+  );
+}
+
+function sameReport(left: TurnReportRequest, right: TurnReportRequest): boolean {
+  return (
+    left.turnId === right.turnId &&
+    left.deliveryId === right.deliveryId &&
+    left.sessionId === right.sessionId &&
+    left.agentId === right.agentId &&
+    left.placementGeneration === right.placementGeneration &&
+    left.resultHash === right.resultHash
+  );
+}

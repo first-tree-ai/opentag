@@ -12,7 +12,7 @@ import {
 } from "@opentag/shared";
 import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agentRuntimeConfigs, agents, computers, memberships, users } from "../../db/schema/index.js";
+import { agentRuntimeConfigs, agents, computers, integrations, memberships, users } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import { TeamMembershipService } from "../teams/index.js";
@@ -47,6 +47,7 @@ function toAgent(row: AgentRow, runtimeConfig: AgentRuntimeConfigRow): Agent {
     name: row.name,
     displayName: row.displayName,
     runtimeProvider: row.runtimeProvider,
+    receiveMode: row.receiveMode,
     revision: row.revision,
     runtimeConfig: toRuntimeConfig(runtimeConfig),
     createdAt: row.createdAt.toISOString(),
@@ -63,6 +64,7 @@ function toAgentSummary(row: AgentRow, runtimeConfigRevision: number): AgentSumm
     name: row.name,
     displayName: row.displayName,
     runtimeProvider: row.runtimeProvider,
+    receiveMode: row.receiveMode,
     revision: row.revision,
     runtimeConfigRevision,
     createdAt: row.createdAt.toISOString(),
@@ -222,6 +224,27 @@ export class AgentService {
           409,
         );
       }
+      if (input.receiveMode === "all_message") {
+        const [integration] = await transaction
+          .select({ provider: integrations.provider, capabilities: integrations.grantedCapabilities })
+          .from(integrations)
+          .where(and(eq(integrations.agentId, agentId), isNull(integrations.disabledAt)))
+          .limit(1);
+        const required =
+          integration?.provider === "feishu"
+            ? ["im:message.group_msg"]
+            : integration?.provider === "slack"
+              ? ["channels:history", "groups:history", "mpim:history"]
+              : [];
+        if (integration && required.some((capability) => !integration.capabilities.includes(capability))) {
+          throw new AgentServiceError(
+            "INTEGRATION_SCOPE_REAUTH_REQUIRED",
+            "deterministic",
+            "The Integration must be reauthorized before enabling all-message receive mode",
+            409,
+          );
+        }
+      }
       const currentRuntimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
       const currentRuntimeProjection = toRuntimeConfig(currentRuntimeConfig);
       const nextRuntimeConfig = resolveAgentRuntimeConfig({
@@ -243,6 +266,7 @@ export class AgentService {
         .update(agents)
         .set({
           displayName: input.displayName ?? scope.agent.displayName,
+          receiveMode: input.receiveMode ?? scope.agent.receiveMode,
           revision: sql`${agents.revision} + 1`,
           updatedAt: now,
         })

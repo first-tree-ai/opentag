@@ -4,7 +4,9 @@ import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { type CodexAdapter, CodexTurnError, type CodexTurnOutcome } from "../providers/codex/adapter.js";
 import { CodexAppServerError } from "../providers/codex/app-server-wire.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
+import type { ImResourceFetcher } from "./im-resource-fetcher.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
+import type { RuntimeToolHost } from "./runtime-tool-host.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
 import { TurnTraceBuffer } from "./trace-buffer.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "./turn-custody-owner.js";
@@ -18,6 +20,8 @@ export interface CodexTurnRunnerOptions {
   logger?: ClientLogger;
   now?: () => number;
   reportOwner: TurnReportOwner;
+  toolHost?: RuntimeToolHost;
+  resourceFetcher?: ImResourceFetcher;
   workspace: AgentWorkspaceManager;
 }
 
@@ -42,6 +46,8 @@ export class CodexTurnRunner {
   readonly #logger: ClientLogger;
   readonly #now: () => number;
   readonly #reportOwner: TurnReportOwner;
+  readonly #toolHost?: RuntimeToolHost;
+  readonly #resourceFetcher?: ImResourceFetcher;
   readonly #workspace: AgentWorkspaceManager;
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
@@ -54,6 +60,8 @@ export class CodexTurnRunner {
     this.#logger = options.logger ?? createLogger("turn");
     this.#now = options.now ?? Date.now;
     this.#reportOwner = options.reportOwner;
+    this.#toolHost = options.toolHost;
+    this.#resourceFetcher = options.resourceFetcher;
     this.#workspace = options.workspace;
   }
 
@@ -114,6 +122,7 @@ export class CodexTurnRunner {
       const binding = await this.#bindingStore.read(owner.request.agentId, owner.request.sessionId);
       if (!binding) throw new Error("The Session binding disappeared before provider start");
       const cwd = await this.#workspace.cwd(owner.request.agentId);
+      const supplementalContext = await this.#resourceFetcher?.fetchForTurn(owner.request, cwd);
       const result = await this.#adapter.runTurn({
         request: owner.request,
         cwd,
@@ -121,6 +130,7 @@ export class CodexTurnRunner {
         providerThreadId: binding.providerThreadId,
         signal,
         trace,
+        ...(supplementalContext ? { supplementalContext } : {}),
         onThreadReady: async (providerThreadId) => {
           await this.#bindingStore.updateUnresolved(
             owner.request.agentId,
@@ -139,6 +149,9 @@ export class CodexTurnRunner {
             { providerTurnId },
           );
         },
+        onDynamicToolCall: this.#toolHost
+          ? (call) => this.#toolHost?.execute(owner.request, call, signal) as ReturnType<RuntimeToolHost["execute"]>
+          : undefined,
       });
       completion =
         result.outcome === "completed"

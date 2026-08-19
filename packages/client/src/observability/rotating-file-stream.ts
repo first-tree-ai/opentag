@@ -1,8 +1,10 @@
+import type { Stats } from "node:fs";
 import {
-  chmodSync,
   closeSync,
-  existsSync,
+  constants,
+  fchmodSync,
   fstatSync,
+  lstatSync,
   mkdirSync,
   openSync,
   renameSync,
@@ -23,22 +25,22 @@ export interface RotatingFileStreamOptions {
 }
 
 export interface RotatingFileOperations {
-  chmod(path: string, mode: number): void;
   close(fileDescriptor: number): void;
-  exists(path: string): boolean;
-  fileSize(fileDescriptor: number): number;
+  fileStatus(fileDescriptor: number): Stats;
+  fchmod(fileDescriptor: number, mode: number): void;
+  lstat(path: string): Stats;
   makeDirectory(path: string, mode: number): void;
-  open(path: string, flags: string, mode: number): number;
+  open(path: string, flags: number, mode: number): number;
   rename(from: string, to: string): void;
   unlink(path: string): void;
   write(fileDescriptor: number, buffer: Buffer, offset: number, length: number): number;
 }
 
 const defaultOperations: RotatingFileOperations = {
-  chmod: chmodSync,
   close: closeSync,
-  exists: existsSync,
-  fileSize: (fileDescriptor) => fstatSync(fileDescriptor).size,
+  fileStatus: fstatSync,
+  fchmod: fchmodSync,
+  lstat: lstatSync,
   makeDirectory: (path, mode) => mkdirSync(path, { recursive: true, mode }),
   open: openSync,
   rename: renameSync,
@@ -100,13 +102,8 @@ export class RotatingFileStream {
 
   #open(): void {
     try {
-      const directoryExisted = this.#operations.exists(this.directory);
-      this.#operations.makeDirectory(this.directory, 0o700);
-      if (!directoryExisted) this.#operations.chmod(this.directory, 0o700);
-      const fileExisted = this.#operations.exists(this.path);
-      this.#fileDescriptor = this.#operations.open(this.path, "a", 0o600);
-      if (!fileExisted) this.#operations.chmod(this.path, 0o600);
-      this.#bytes = this.#operations.fileSize(this.#fileDescriptor);
+      this.#ensurePrivateDirectory();
+      this.#openLogFile();
     } catch {
       this.#failover();
     }
@@ -119,9 +116,54 @@ export class RotatingFileStream {
       this.#renameIfPresent(`${this.path}.${index}`, `${this.path}.${index + 1}`);
     }
     this.#renameIfPresent(this.path, `${this.path}.1`);
-    this.#fileDescriptor = this.#operations.open(this.path, "a", 0o600);
-    this.#operations.chmod(this.path, 0o600);
-    this.#bytes = 0;
+    this.#openLogFile();
+  }
+
+  #ensurePrivateDirectory(): void {
+    this.#operations.makeDirectory(this.directory, 0o700);
+    const pathStatus = this.#operations.lstat(this.directory);
+    if (!pathStatus.isDirectory() || pathStatus.isSymbolicLink()) {
+      throw new Error("Client log directory must be a real directory");
+    }
+    const fileDescriptor = this.#operations.open(
+      this.directory,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+      0o700,
+    );
+    try {
+      const openedStatus = this.#operations.fileStatus(fileDescriptor);
+      if (!openedStatus.isDirectory()) throw new Error("Client log directory changed during open");
+      this.#operations.fchmod(fileDescriptor, 0o700);
+    } finally {
+      this.#operations.close(fileDescriptor);
+    }
+  }
+
+  #openLogFile(): void {
+    try {
+      const pathStatus = this.#operations.lstat(this.path);
+      if (!pathStatus.isFile() || pathStatus.isSymbolicLink()) {
+        throw new Error("Client log path must be a regular file");
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+
+    const fileDescriptor = this.#operations.open(
+      this.path,
+      constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      const openedStatus = this.#operations.fileStatus(fileDescriptor);
+      if (!openedStatus.isFile()) throw new Error("Client log path changed during open");
+      this.#operations.fchmod(fileDescriptor, 0o600);
+      this.#fileDescriptor = fileDescriptor;
+      this.#bytes = openedStatus.size;
+    } catch (error) {
+      this.#operations.close(fileDescriptor);
+      throw error;
+    }
   }
 
   #renameIfPresent(from: string, to: string): void {

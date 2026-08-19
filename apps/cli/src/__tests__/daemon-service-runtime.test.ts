@@ -84,7 +84,7 @@ describe("daemon service runtime", () => {
           category: "ownership",
           instanceId: expect.any(String),
         }),
-        message: "Daemon ownership prevented startup; inspect daemon status",
+        message: "Daemon is already running; inspect daemon status",
       }),
     );
   });

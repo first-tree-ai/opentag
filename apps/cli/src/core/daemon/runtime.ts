@@ -229,7 +229,11 @@ function daemonOperatorMessage(error: unknown): string {
   if (error instanceof DaemonRuntimeConfigurationError) {
     return "Daemon configuration is invalid; run login or inspect daemon status";
   }
-  if (error instanceof DaemonOwnerStartupError) return "Daemon ownership prevented startup; inspect daemon status";
+  if (error instanceof DaemonOwnerStartupError) {
+    return error.code === "BUSY"
+      ? "Daemon is already running; inspect daemon status"
+      : "Daemon ownership prevented startup; inspect daemon status";
+  }
   if (error instanceof RuntimeConnectionError) return "Daemon connection was rejected; run login again";
   return "Daemon service configuration prevented startup; inspect daemon status";
 }

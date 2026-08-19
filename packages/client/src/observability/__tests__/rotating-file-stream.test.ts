@@ -1,5 +1,5 @@
 import { writeSync } from "node:fs";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -38,6 +38,67 @@ describe("RotatingFileStream", () => {
       fallbackWrite: (chunk) => fallback.push(chunk),
     });
     expect(() => stream.write("safe\n")).not.toThrow();
+    expect(fallback).toEqual(["safe\n"]);
+  });
+
+  it("normalizes permissions on a pre-existing directory and log file", async () => {
+    const root = await temporaryDirectory();
+    const directory = join(root, "logs");
+    const path = join(directory, "client.log");
+    await mkdir(directory, { mode: 0o777 });
+    await writeFile(path, "existing\n", { mode: 0o666 });
+    await chmod(directory, 0o777);
+    await chmod(path, 0o666);
+
+    const stream = new RotatingFileStream(directory);
+    stream.write("new\n");
+    stream.close();
+
+    expect((await stat(directory)).mode & 0o777).toBe(0o700);
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+    expect(await readFile(path, "utf8")).toBe("existing\nnew\n");
+  });
+
+  it("rejects a symlinked log directory without touching its target", async () => {
+    const root = await temporaryDirectory();
+    const target = join(root, "target");
+    const directory = join(root, "logs");
+    await mkdir(target);
+    await symlink(target, directory, "dir");
+    const fallback: string[] = [];
+
+    const stream = new RotatingFileStream(directory, { fallbackWrite: (chunk) => fallback.push(chunk) });
+    stream.write("safe\n");
+
+    expect(fallback).toEqual(["safe\n"]);
+    await expect(readFile(join(target, "client.log"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a symlinked log file without touching its target", async () => {
+    const root = await temporaryDirectory();
+    const directory = join(root, "logs");
+    const target = join(root, "target.log");
+    await mkdir(directory);
+    await writeFile(target, "unchanged\n");
+    await symlink(target, join(directory, "client.log"));
+    const fallback: string[] = [];
+
+    const stream = new RotatingFileStream(directory, { fallbackWrite: (chunk) => fallback.push(chunk) });
+    stream.write("safe\n");
+
+    expect(fallback).toEqual(["safe\n"]);
+    expect(await readFile(target, "utf8")).toBe("unchanged\n");
+  });
+
+  it("rejects a non-regular log path", async () => {
+    const root = await temporaryDirectory();
+    const directory = join(root, "logs");
+    await mkdir(join(directory, "client.log"), { recursive: true });
+    const fallback: string[] = [];
+
+    const stream = new RotatingFileStream(directory, { fallbackWrite: (chunk) => fallback.push(chunk) });
+    stream.write("safe\n");
+
     expect(fallback).toEqual(["safe\n"]);
   });
 

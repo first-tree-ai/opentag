@@ -13,8 +13,8 @@ import type {
   AgentRuntimeCapabilities,
   AgentRuntimeEvent,
   AgentRuntimeEventSink,
+  AgentRuntimeLifecycleState,
   AgentRuntimeManifest,
-  AgentRuntimeState,
   AgentSteerRequest,
 } from "./types.js";
 import {
@@ -36,9 +36,11 @@ export interface BaseAgentRuntimeOptions {
 interface RunRecord {
   readonly request: AgentPromptRequest;
   readonly controller: AbortController;
+  readonly executionFailure: Promise<never>;
+  readonly failExecution: (error: Error) => void;
   readonly promise: Promise<AgentRunResult>;
   readonly resolve: (result: AgentRunResult) => void;
-  state: "queued" | "active" | "settled";
+  state: "queued" | "active" | "settling" | "settled";
   admissionEvent?: Promise<void>;
   signalCleanup?: () => void;
   abortPromise?: Promise<void>;
@@ -57,7 +59,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
   readonly #knownRunIds = new Set<string>();
   readonly #interactions = new Map<string, OutstandingInteraction>();
   readonly #idleWaiters = new Set<() => void>();
-  #phase: AgentRuntimeState["phase"] = "idle";
+  #phase: AgentRuntimeLifecycleState["phase"] = "idle";
   #active?: RunRecord;
   #binding?: AgentRuntimeBinding;
   #dispatchTail: Promise<void> = Promise.resolve();
@@ -71,11 +73,11 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     this.#eventSink = options.eventSink;
     if (options.binding) {
       assertBinding(options.binding, options.manifest);
-      this.#binding = options.binding;
+      this.#binding = snapshotBinding(options.binding);
     }
   }
 
-  get state(): Readonly<AgentRuntimeState> {
+  get state(): Readonly<AgentRuntimeLifecycleState> {
     return Object.freeze({
       phase: this.#phase,
       ...(this.#active ? { activeRunId: this.#active.request.runId } : {}),
@@ -108,7 +110,11 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     }
     const record = this.#admit(request, "queued");
     this.#queued.push(record);
-    record.admissionEvent = this.#dispatch({ type: "run_queued", runId: request.runId, position: this.#queued.length });
+    record.admissionEvent = this.#dispatch({
+      type: "run_queued",
+      runId: record.request.runId,
+      position: this.#queued.length,
+    });
     void record.admissionEvent.catch(() => undefined);
     return record.promise;
   }
@@ -123,12 +129,13 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     }
     assertIdentifier(request.expectedRunId, "expectedRunId");
     assertAgentInput(request.input);
-    const active = this.#requireActive(request.expectedRunId);
-    await this.steerProvider(request);
+    const snapshot = immutableSnapshot(request);
+    const active = this.#requireActive(snapshot.expectedRunId);
+    await this.steerProvider(snapshot);
     if (active.state !== "active" || this.#active !== active) {
       throw new AgentRuntimeError("run_mismatch", "the active run completed before steer was accepted");
     }
-    await this.#dispatch({ type: "input_accepted", runId: active.request.runId, input: request.input });
+    await this.#dispatch({ type: "input_accepted", runId: active.request.runId, input: snapshot.input });
   }
 
   async respond(response: AgentInteractionResponse): Promise<void> {
@@ -142,20 +149,21 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     assertIdentifier(response.expectedRunId, "expectedRunId");
     assertIdentifier(response.requestId, "requestId");
     if (response.value !== undefined) assertJsonValue(response.value, "interaction.value");
-    const active = this.#requireActive(response.expectedRunId);
-    const interaction = this.#interactions.get(response.requestId);
-    if (!interaction || interaction.kind !== response.kind) {
+    const snapshot = immutableSnapshot(response);
+    const active = this.#requireActive(snapshot.expectedRunId);
+    const interaction = this.#interactions.get(snapshot.requestId);
+    if (!interaction || interaction.kind !== snapshot.kind) {
       throw new AgentRuntimeError("interaction_not_found", "the interaction is unknown, expired, or has another kind");
     }
-    await this.respondProvider(response);
-    if (active.state !== "active" || this.#active !== active || !this.#interactions.delete(response.requestId)) {
+    await this.respondProvider(snapshot);
+    if (active.state !== "active" || this.#active !== active || !this.#interactions.delete(snapshot.requestId)) {
       throw new AgentRuntimeError("interaction_not_found", "the interaction expired before the response was accepted");
     }
     const event = this.#dispatch({
       type: "interaction_resolved",
       runId: active.request.runId,
-      requestId: response.requestId,
-      decision: response.decision,
+      requestId: snapshot.requestId,
+      decision: snapshot.decision,
     });
     void event.catch(() => undefined);
   }
@@ -208,29 +216,37 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
   }
 
   #admit(request: AgentPromptRequest, state: RunRecord["state"]): RunRecord {
-    if (this.#knownRunIds.has(request.runId)) {
+    const snapshot = snapshotPromptRequest(request);
+    if (this.#knownRunIds.has(snapshot.runId)) {
       throw new AgentRuntimeError("duplicate_run_id", "runId is already active or queued");
     }
     let resolveResult!: (result: AgentRunResult) => void;
+    let failExecution!: (error: Error) => void;
     const promise = new Promise<AgentRunResult>((resolve) => {
       resolveResult = resolve;
     });
+    const executionFailure = new Promise<never>((_resolve, reject) => {
+      failExecution = reject;
+    });
+    void executionFailure.catch(() => undefined);
     const record: RunRecord = {
-      request,
+      request: snapshot,
       controller: new AbortController(),
+      executionFailure,
+      failExecution,
       promise,
       resolve: resolveResult,
       state,
     };
-    this.#knownRunIds.add(request.runId);
-    if (request.signal) {
+    this.#knownRunIds.add(snapshot.runId);
+    if (snapshot.signal) {
       const onAbort = () => {
         if (record.state === "queued") void this.#cancelQueued(record, "run signal aborted");
         else if (record.state === "active")
           void this.#requestAbort(record, "run signal aborted").catch(() => undefined);
       };
-      request.signal.addEventListener("abort", onAbort, { once: true });
-      record.signalCleanup = () => request.signal?.removeEventListener("abort", onAbort);
+      snapshot.signal.addEventListener("abort", onAbort, { once: true });
+      record.signalCleanup = () => snapshot.signal?.removeEventListener("abort", onAbort);
     }
     return record;
   }
@@ -242,11 +258,13 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     let result: AgentRunResult;
     try {
       await this.#dispatch({ type: "run_started", runId: record.request.runId });
-      const providerResult = await this.executeRun(record.request, this.#context(record));
+      const providerExecution = Promise.resolve().then(() => this.executeRun(record.request, this.#context(record)));
+      const providerResult = await Promise.race([providerExecution, record.executionFailure]);
       result = this.#providerResult(record.request.runId, providerResult);
     } catch (error) {
       result = this.#resultForThrownError(record, error);
     }
+    record.state = "settling";
     this.#interactions.clear();
     if (!this.#sinkFailure) {
       try {
@@ -278,8 +296,9 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
         assertCurrent();
         assertBinding(binding, this.manifest);
         if (sameBinding(this.#binding, binding)) return;
-        this.#binding = binding;
-        await this.#dispatch({ type: "binding_changed", binding, runId: record.request.runId });
+        const snapshot = snapshotBinding(binding);
+        this.#binding = snapshot;
+        await this.#dispatch({ type: "binding_changed", binding: snapshot, runId: record.request.runId });
       },
       requestInteraction: async (request: AgentInteractionRequest) => {
         assertCurrent();
@@ -319,7 +338,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
         : result.status === "aborted"
           ? { code: "run_aborted" as const, message: "provider run was interrupted" }
           : undefined);
-    return {
+    return immutableSnapshot({
       runId,
       status: result.status,
       output: result.output ?? [],
@@ -327,22 +346,22 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       ...(this.#binding ? { binding: this.#binding } : {}),
       ...(error ? { error } : {}),
       ...(result.diagnostics !== undefined ? { providerDiagnostics: result.diagnostics } : {}),
-    };
+    });
   }
 
   #resultForThrownError(record: RunRecord, error: unknown): AgentRunResult {
     if (this.#sinkFailure) return this.#eventDeliveryFailure(record.request.runId);
     if (record.controller.signal.aborted) {
-      return {
+      return immutableSnapshot({
         runId: record.request.runId,
         status: "aborted",
         output: [],
         ...(this.#binding ? { binding: this.#binding } : {}),
         error: { code: "run_aborted", message: "run was interrupted" },
-      };
+      });
     }
     const providerError = error instanceof AgentProviderError ? error : undefined;
-    return {
+    return immutableSnapshot({
       runId: record.request.runId,
       status: "failed",
       output: [],
@@ -351,11 +370,11 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
         code: providerError?.code ?? "provider_error",
         message: providerError?.message ?? (error instanceof Error ? error.message : "provider run failed"),
       },
-    };
+    });
   }
 
   #eventDeliveryFailure(runId: string, previous?: AgentRunResult): AgentRunResult {
-    return {
+    return immutableSnapshot({
       runId,
       status: "failed",
       output: previous?.output ?? [],
@@ -363,7 +382,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       ...(this.#binding ? { binding: this.#binding } : {}),
       error: { code: "event_delivery_failed", message: "the ordered event sink rejected an event" },
       ...(previous?.providerDiagnostics !== undefined ? { providerDiagnostics: previous.providerDiagnostics } : {}),
-    };
+    });
   }
 
   #terminalEvent(result: AgentRunResult): AgentRuntimeEvent {
@@ -381,8 +400,9 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
   #settle(record: RunRecord, result: AgentRunResult): void {
     record.state = "settled";
     record.signalCleanup?.();
+    record.signalCleanup = undefined;
     this.#knownRunIds.delete(record.request.runId);
-    record.resolve(result);
+    record.resolve(immutableSnapshot(result));
   }
 
   #finishActive(): void {
@@ -401,7 +421,10 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
 
   async #cancelQueued(record: RunRecord, message: string): Promise<void> {
     const index = this.#queued.indexOf(record);
+    /* v8 ignore next -- queue claims detach this listener; the guard defends a stale callback already in flight. */
+    if (record.state !== "queued" || index < 0) return;
     this.#queued.splice(index, 1);
+    this.#claimQueued(record);
     let result: AgentRunResult = {
       runId: record.request.runId,
       status: "cancelled",
@@ -425,10 +448,26 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
 
   #requestAbort(record: RunRecord, reason: string): Promise<void> {
     if (record.abortPromise) return record.abortPromise;
-    record.abortPromise = this.abortProvider({ expectedRunId: record.request.runId, reason }).then(() => {
-      if (!record.controller.signal.aborted) record.controller.abort(reason);
-    });
+    record.abortPromise = this.abortProvider({ expectedRunId: record.request.runId, reason }).then(
+      () => {
+        if (!record.controller.signal.aborted) record.controller.abort(reason);
+      },
+      (error: unknown) => {
+        this.#failAbort(record, error);
+        throw error;
+      },
+    );
     return record.abortPromise;
+  }
+
+  #failAbort(record: RunRecord, error: unknown): void {
+    if (record.state !== "active" || this.#active !== record) return;
+    record.failExecution(
+      new AgentProviderError("provider_error", "provider interrupt failed", {
+        cause: error,
+      }),
+    );
+    this.closeForProviderFailure();
   }
 
   #requireActive(expectedRunId: string): RunRecord {
@@ -447,9 +486,10 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
 
   #dispatch(event: AgentRuntimeEvent): Promise<void> {
     if (this.#sinkFailure) return Promise.reject(this.#sinkFailure);
+    const snapshot = immutableSnapshot(event);
     const delivery = this.#dispatchTail.then(async () => {
       if (this.#sinkFailure) throw this.#sinkFailure;
-      await this.#eventSink(event);
+      await this.#eventSink(snapshot);
     });
     this.#dispatchTail = delivery.catch((error: unknown) => {
       this.#breakEventSink(error instanceof Error ? error : new Error("event sink rejected an event"));
@@ -480,6 +520,8 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
   async #closeInternal(): Promise<void> {
     this.#phase = "closing";
     const active = this.#active;
+    const queued = this.#queued.splice(0);
+    for (const record of queued) this.#claimQueued(record);
     if (active && !this.#providerFailureClosing && !active.controller.signal.aborted) {
       active.controller.abort("runtime closing");
     }
@@ -491,7 +533,6 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     const providerClosing = this.closeProvider().catch((error: unknown) => {
       closeError = error;
     });
-    const queued = this.#queued.splice(0);
     let queueSinkHealthy = !this.#sinkFailure;
     for (const record of queued) {
       let result: AgentRunResult = {
@@ -541,4 +582,33 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     for (const resolve of this.#idleWaiters) resolve();
     this.#idleWaiters.clear();
   }
+
+  #claimQueued(record: RunRecord): void {
+    record.state = "settling";
+    record.signalCleanup?.();
+    record.signalCleanup = undefined;
+  }
+}
+
+function snapshotPromptRequest(request: AgentPromptRequest): AgentPromptRequest {
+  return Object.freeze({
+    runId: request.runId,
+    input: immutableSnapshot(request.input),
+    ...(request.configuration ? { configuration: immutableSnapshot(request.configuration) } : {}),
+    ...(request.signal ? { signal: request.signal } : {}),
+  });
+}
+
+function snapshotBinding(binding: AgentRuntimeBinding): AgentRuntimeBinding {
+  return immutableSnapshot(binding);
+}
+
+function immutableSnapshot<T>(value: T): T {
+  if (Array.isArray(value)) return Object.freeze(value.map((item) => immutableSnapshot(item))) as T;
+  if (value !== null && typeof value === "object") {
+    return Object.freeze(
+      Object.fromEntries(Object.entries(value).map(([key, item]) => [key, immutableSnapshot(item)])),
+    ) as T;
+  }
+  return value;
 }

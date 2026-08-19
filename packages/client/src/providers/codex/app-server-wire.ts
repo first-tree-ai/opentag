@@ -78,6 +78,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   readonly #listeners = new Set<(message: CodexAppServerMessage) => void>();
   readonly #serverRequestListeners = new Set<(request: CodexAppServerRequest) => void>();
   readonly #pendingServerRequests = new Set<number | string>();
+  readonly #respondingServerRequests = new Set<number | string>();
   readonly #exit: Promise<void>;
   #resolveExit: (() => void) | undefined;
   #buffer = Buffer.alloc(0);
@@ -140,17 +141,11 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   }
 
   async respondServerRequest(id: number | string, result: unknown): Promise<void> {
-    if (!this.#pendingServerRequests.delete(id)) {
-      throw new CodexAppServerError("protocol", "Codex server request is unknown or already resolved");
-    }
-    await this.#write({ id, result });
+    await this.#writeServerResponse(id, { id, result });
   }
 
   async rejectServerRequest(id: number | string, code: number, message: string): Promise<void> {
-    if (!this.#pendingServerRequests.delete(id)) {
-      throw new CodexAppServerError("protocol", "Codex server request is unknown or already resolved");
-    }
-    await this.#write({ id, error: { code, message } });
+    await this.#writeServerResponse(id, { id, error: { code, message } });
   }
 
   async initialize(clientVersion: string, signal?: AbortSignal): Promise<void> {
@@ -230,6 +225,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     const closingError = new CodexAppServerError("aborted", "Codex App Server is closing");
     for (const pending of [...this.#pending.values()]) pending.reject(closingError);
     this.#pendingServerRequests.clear();
+    this.#respondingServerRequests.clear();
     this.#child.stdin.end();
     signalWatchedProcess(this.#child, "SIGTERM");
     if (await settlesWithin(this.#exit, graceMs)) return;
@@ -252,6 +248,19 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         error ? reject(new CodexAppServerError("write", "Codex request could not be written")) : resolve();
       });
     });
+  }
+
+  async #writeServerResponse(id: number | string, message: unknown): Promise<void> {
+    if (!this.#pendingServerRequests.has(id) || this.#respondingServerRequests.has(id)) {
+      throw new CodexAppServerError("protocol", "Codex server request is unknown or already resolved");
+    }
+    this.#respondingServerRequests.add(id);
+    try {
+      await this.#write(message);
+      this.#pendingServerRequests.delete(id);
+    } finally {
+      this.#respondingServerRequests.delete(id);
+    }
   }
 
   #onStdout(chunk: Buffer): void {
@@ -361,6 +370,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     this.#failure = error;
     for (const pending of [...this.#pending.values()]) pending.reject(error);
     this.#pendingServerRequests.clear();
+    this.#respondingServerRequests.clear();
     for (const listener of this.#listeners) {
       try {
         listener({ method: "opentag/processError", params: { error } });

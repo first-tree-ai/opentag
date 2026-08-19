@@ -114,7 +114,12 @@ describe("BaseAgentRuntime exhaustive behavior", () => {
     expect(Object.isFrozen(runtime.manifest)).toBe(true);
     expect(Object.isFrozen(runtime.capabilities)).toBe(true);
     expect(Object.isFrozen(runtime.state)).toBe(true);
-    expect(runtime.binding).toBe(binding);
+    expect(runtime.binding).toEqual(binding);
+    expect(runtime.binding).not.toBe(binding);
+    expect(Object.isFrozen(runtime.binding)).toBe(true);
+    expect(Object.isFrozen(runtime.binding?.payload)).toBe(true);
+    (binding.payload as { threadId: string }).threadId = "caller-mutated";
+    expect(runtime.binding).toEqual(testBinding("thread-1"));
     expect(
       () =>
         new HarnessRuntime({
@@ -131,6 +136,67 @@ describe("BaseAgentRuntime exhaustive behavior", () => {
     });
     await expect(runtime.respond(approval("closed", "approval"))).rejects.toMatchObject({ code: "closed" });
     await expect(runtime.abort({ expectedRunId: "closed" })).rejects.toMatchObject({ code: "closed" });
+  });
+
+  it("snapshots admitted requests, binding updates, events, and terminal results", async () => {
+    const release = deferred<void>();
+    const events: AgentRuntimeEvent[] = [];
+    const updatedBinding = testBinding("thread-updated");
+    let providerRequest: AgentPromptRequest | undefined;
+    const runtime = new HarnessRuntime({
+      eventSink: (event) => {
+        events.push(event);
+      },
+      execute: async (request, context) => {
+        providerRequest = request;
+        await context.updateBinding(updatedBinding);
+        (updatedBinding.payload as { threadId: string }).threadId = "provider-mutated";
+        await release.promise;
+        return { status: "completed", output: [{ type: "text", text: request.input.items[0]?.text ?? "" }] };
+      },
+    });
+    const request = {
+      runId: "stable-run",
+      input: { items: [{ type: "text" as const, text: "stable-input" }] },
+      configuration: { model: "stable-model", provider: { mode: "stable" } },
+    };
+
+    const run = runtime.prompt(request);
+    request.runId = "caller-mutated";
+    const firstItem = request.input.items[0];
+    if (!firstItem) throw new Error("missing request item");
+    firstItem.text = "caller-mutated";
+    request.configuration.model = "caller-mutated";
+    request.configuration.provider.mode = "caller-mutated";
+    await vi.waitFor(() => expect(providerRequest).toBeDefined());
+
+    expect(providerRequest).toEqual({
+      runId: "stable-run",
+      input: { items: [{ type: "text", text: "stable-input" }] },
+      configuration: { model: "stable-model", provider: { mode: "stable" } },
+    });
+    expect(Object.isFrozen(providerRequest)).toBe(true);
+    expect(Object.isFrozen(providerRequest?.input.items)).toBe(true);
+    expect(runtime.binding).toEqual(testBinding("thread-updated"));
+    const bindingEvent = events.find((event) => event.type === "binding_changed");
+    if (bindingEvent?.type !== "binding_changed") throw new Error("missing binding event");
+    expect(Object.isFrozen(bindingEvent)).toBe(true);
+    expect(Object.isFrozen(bindingEvent.binding.payload)).toBe(true);
+    expect(() => {
+      (bindingEvent.binding.payload as { threadId: string }).threadId = "observer-mutated";
+    }).toThrow(TypeError);
+
+    release.resolve();
+    const result = await run;
+    expect(result).toMatchObject({
+      runId: "stable-run",
+      status: "completed",
+      output: [{ text: "stable-input" }],
+      binding: testBinding("thread-updated"),
+    });
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(Object.isFrozen(result.output)).toBe(true);
+    await runtime.close();
   });
 
   it("maps all Provider result and thrown-error forms to typed terminal results", async () => {
@@ -400,6 +466,57 @@ describe("BaseAgentRuntime exhaustive behavior", () => {
     executeGate.resolve();
     await expect(run).resolves.toMatchObject({ status: "completed" });
     await abortRuntime.close();
+  });
+
+  it("fails and closes an active Run when caller-signal Provider interruption fails", async () => {
+    const started = deferred<void>();
+    const controller = new AbortController();
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = new HarnessRuntime({
+      abort: async () => {
+        throw new Error("interrupt unavailable");
+      },
+      eventSink: (event) => {
+        events.push(event);
+      },
+      execute: async () => {
+        started.resolve();
+        return new Promise<AgentProviderRunResult>(() => undefined);
+      },
+    });
+    const run = runtime.prompt({ ...prompt("signal-abort-failure"), signal: controller.signal });
+    await started.promise;
+
+    controller.abort();
+
+    await expect(run).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_error", message: "provider interrupt failed" },
+    });
+    await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
+    expect(events.filter((event) => event.type === "run_failed")).toHaveLength(1);
+    expect(runtime.aborts).toHaveLength(1);
+    await runtime.close();
+  });
+
+  it("keeps an already claimed Provider result when a late interrupt rejects", async () => {
+    const abortGate = deferred<void>();
+    const finish = deferred<void>();
+    const runtime = new HarnessRuntime({
+      abort: async () => abortGate.promise,
+      execute: async () => {
+        await finish.promise;
+        return { status: "completed" };
+      },
+    });
+    const run = runtime.prompt(prompt("late-abort-failure"));
+    const abort = runtime.abort({ expectedRunId: "late-abort-failure" });
+    finish.resolve();
+    await expect(run).resolves.toMatchObject({ status: "completed" });
+    abortGate.reject(new Error("late interrupt failure"));
+    await expect(abort).rejects.toThrow("late interrupt failure");
+    expect(runtime.state.phase).toBe("idle");
+    await runtime.close();
   });
 
   it("fails closed when queued admission or concurrent event delivery rejects with a non-Error", async () => {

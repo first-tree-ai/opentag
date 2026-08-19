@@ -229,9 +229,11 @@ describe("BaseAgentRuntime contract", () => {
       },
     });
     const active = runtime.prompt(prompt("run-1", "one"));
-    const queued = runtime.followUp(prompt("run-2", "two"));
+    const queuedController = new AbortController();
+    const queued = runtime.followUp({ ...prompt("run-2", "two"), signal: queuedController.signal });
 
     const closing = runtime.close();
+    queuedController.abort();
     await expect(active).resolves.toMatchObject({ status: "aborted" });
     await expect(queued).resolves.toMatchObject({ status: "cancelled", error: { code: "runtime_closed" } });
     await closing;
@@ -241,6 +243,7 @@ describe("BaseAgentRuntime contract", () => {
     expect(runtime.providerCloses).toBe(1);
     expect(runtime.state).toEqual({ phase: "closed", queuedRunCount: 0 });
     expect(events.at(-1)?.type).toBe("runtime_closed");
+    expect(events.filter((event) => event.type === "run_cancelled" && event.runId === "run-2")).toHaveLength(1);
   });
 
   it("fences steer and abort against a stale run id", async () => {

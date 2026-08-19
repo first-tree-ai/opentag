@@ -29,12 +29,12 @@ export {
   type AgentRuntimeEvent,
   type AgentRuntimeEventSink,
   type AgentRuntimeFactory,
+  type AgentRuntimeLifecycleState,
   type AgentRuntimeManifest,
   type AgentRuntimePolicy,
   type AgentRuntimeProbeIssue,
   type AgentRuntimeProbeRequest,
   type AgentRuntimeProbeResult,
-  type AgentRuntimeState,
   type AgentRuntimeWorkspace,
   type AgentSteerRequest,
   type AgentTextInputItem,
@@ -166,7 +166,7 @@ export {
   type UnresolvedTurnPhase,
 } from "./runtime/session-binding-store.js";
 export {
-  type AgentRuntimeState as SessionReconcilerAgentRuntimeState,
+  type AgentRuntimeState,
   type RuntimeLocalPolicy,
   type RuntimePreparation,
   type SessionActivity,

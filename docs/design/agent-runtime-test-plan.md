@@ -21,12 +21,13 @@ The coverage gate requires 100% statements, branches, functions, and lines for
 that exact source set. Coverage is a floor, not the acceptance criterion by
 itself: protocol behavior and a live local Codex session are tested separately.
 
-There are no file-level or broad range exclusions. Four local V8 annotations in
+There are no file-level or broad range exclusions. Five local V8 annotations in
 the Codex implementation document non-executable invariant branches: one
-synthetic `finally` branch reported by V8, and three defensive guards already
-fenced by Base admission plus the serial Provider envelope queue. Their normal
-and failure semantics are exercised at the public boundary; the annotations do
-not omit a supported Provider outcome.
+synthetic `finally` branch reported by V8, three defensive Codex guards already
+fenced by Base admission plus the serial Provider envelope queue, and one stale
+queued-signal callback guard fenced by synchronous queue ownership and listener
+detachment. Their normal and failure semantics are exercised at the public
+boundary; the annotations do not omit a supported Provider outcome.
 
 ## Local Codex Artifact Boundary
 
@@ -124,8 +125,8 @@ failure; it is never converted into a skipped success.
 
 ## Latest Local Execution
 
-On 2026-08-19 the final scoped suite passed 75 tests with 100% statements,
+On 2026-08-19 the final scoped suite passed 79 tests with 100% statements,
 branches, functions, and lines. The live test passed against `codex-cli 0.144.1`:
 both create and resumed Runs completed, the opaque binding was preserved, and
-each Run produced 16 ordered events. The full monorepo quality commands also
-passed after the live run.
+each Run produced 16 ordered events. The monorepo formatting, build, and
+type-check commands also passed after the live run.

@@ -20,7 +20,7 @@ export interface AgentRuntimeCapabilities {
   readonly interactions: "supported" | "unsupported";
 }
 
-export interface AgentRuntimeState {
+export interface AgentRuntimeLifecycleState {
   readonly phase: "idle" | "running" | "closing" | "closed";
   readonly activeRunId?: AgentRunId;
   readonly queuedRunCount: number;
@@ -243,7 +243,7 @@ export interface AgentProviderRunContext {
 export interface AgentRuntime {
   readonly manifest: AgentRuntimeManifest;
   readonly capabilities: AgentRuntimeCapabilities;
-  readonly state: Readonly<AgentRuntimeState>;
+  readonly state: Readonly<AgentRuntimeLifecycleState>;
   readonly binding: AgentRuntimeBinding | undefined;
 
   prompt(request: AgentPromptRequest): Promise<AgentRunResult>;

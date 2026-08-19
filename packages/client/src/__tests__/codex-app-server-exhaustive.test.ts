@@ -215,6 +215,43 @@ describe("CodexAppServerProcess exhaustive behavior", () => {
     await listenerProcess.close();
   });
 
+  it("retains interactive request ownership across response write failures", async () => {
+    const child = new FakeChild();
+    const process = processWith(child);
+    process.subscribeServerRequests(() => undefined);
+
+    child.send({ id: "response-retry", method: "item/tool/requestUserInput", params: {} });
+    child.failWrites = true;
+    await expect(process.respondServerRequest("response-retry", { answer: "first" })).rejects.toMatchObject({
+      code: "write",
+    });
+    child.failWrites = false;
+    await process.respondServerRequest("response-retry", { answer: "retry" });
+    expect(child.messages.at(-1)).toEqual({ id: "response-retry", result: { answer: "retry" } });
+
+    child.send({ id: "rejection-retry", method: "item/tool/requestUserInput", params: {} });
+    child.failWrites = true;
+    await expect(process.rejectServerRequest("rejection-retry", -32000, "first")).rejects.toMatchObject({
+      code: "write",
+    });
+    child.failWrites = false;
+    await process.rejectServerRequest("rejection-retry", -32000, "retry");
+    expect(child.messages.at(-1)).toEqual({
+      id: "rejection-retry",
+      error: { code: -32000, message: "retry" },
+    });
+
+    child.send({ id: "in-flight", method: "item/tool/requestUserInput", params: {} });
+    child.holdWrites = true;
+    const first = process.respondServerRequest("in-flight", { answer: "only" });
+    await expect(process.respondServerRequest("in-flight", { answer: "duplicate" })).rejects.toMatchObject({
+      code: "protocol",
+    });
+    child.releaseWrites();
+    await first;
+    await process.close();
+  });
+
   it("handles unattended file approvals, questions, and unsupported requests", async () => {
     const child = new FakeChild();
     const process = processWith(child);
@@ -309,7 +346,9 @@ class FakeChild extends EventEmitter {
   readonly #options: Required<Pick<FakeChildOptions, "exitOnEnd">> & Pick<FakeChildOptions, "exitOnSignal">;
   #buffer = "";
   #exited = false;
+  readonly #heldWrites: Array<() => void> = [];
   failWrites = false;
+  holdWrites = false;
   handle?: (message: Record<string, unknown>) => void;
 
   constructor(options: FakeChildOptions = {}) {
@@ -319,6 +358,13 @@ class FakeChild extends EventEmitter {
     this.stdin.write = ((chunk: string | Uint8Array, callback?: (error?: Error | null) => void) => {
       if (this.failWrites) {
         queueMicrotask(() => callback?.(new Error("write failed")));
+        return false;
+      }
+      if (this.holdWrites) {
+        this.#heldWrites.push(() => {
+          originalWrite(chunk);
+          callback?.(null);
+        });
         return false;
       }
       const result = originalWrite(chunk);
@@ -339,6 +385,11 @@ class FakeChild extends EventEmitter {
     this.kills.push(signal);
     if (this.#options.exitOnSignal === signal) queueMicrotask(() => this.exit());
     return true;
+  }
+
+  releaseWrites(): void {
+    this.holdWrites = false;
+    for (const write of this.#heldWrites.splice(0)) write();
   }
 
   exit(): void {

@@ -156,15 +156,15 @@ boundary without changing JWT claims or team authorization; active memberships a
 
 Create a Google Web OAuth client whose callback is
 `http://127.0.0.1:8000/api/v1/auth/google/callback`, then set `OPENTAG_GOOGLE_CLIENT_ID` and
-`OPENTAG_GOOGLE_CLIENT_SECRET`. The Google configuration is validated before the server listens; production requires an
-HTTPS `OPENTAG_PUBLIC_URL`. Browser access and refresh JWTs stay in HttpOnly cookies, while browser mutations require a
+`OPENTAG_GOOGLE_CLIENT_SECRET`. The Google configuration is validated before the server listens; `staging` and `prod`
+require an HTTPS `OPENTAG_PUBLIC_URL`. Browser access and refresh JWTs stay in HttpOnly cookies, while browser mutations require a
 same-origin request and the readable double-submit CSRF cookie.
 
 For loopback-only development without Google credentials, explicitly enable the development bypass and select one
 existing bootstrap user:
 
 ```bash
-export OPENTAG_ENV=development
+export OPENTAG_ENV=dev
 export OPENTAG_DEV_AUTH_BYPASS_ENABLED=true
 export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 ```
@@ -172,10 +172,19 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 Both `OPENTAG_HOST` and `OPENTAG_PUBLIC_URL` must remain loopback addresses. The login page then shows
 `Dev: bypass Google`. The callback resolves exactly one existing user by case-insensitive email and issues the normal
 browser session; it never creates a user or Team and still rejects suspended users or users without an active
-membership. Missing or duplicate email matches fail closed. The server refuses this configuration in `test` and
-`production`.
+membership. Missing or duplicate email matches fail closed. The server refuses this configuration in `staging` and
+`prod`.
 
-Open `/admin/` for the read-only Team view. Use the CLI for membership and invitation mutations:
+`OPENTAG_ENV` is the only OpenTag environment and release-channel selector. `dev` selects local development behavior and
+the `opentag-dev` binary, `staging` selects `open-tag-staging` / `opentag-staging`, and `prod` selects
+`open-tag` / `opentag`. `NODE_ENV` may still be `production` in hosted Node.js processes, but it does not select OpenTag
+packages or product security behavior. The server logs the resolved environment, public URL, package, and binary at
+startup; it never infers the environment from the hostname.
+
+Open `/admin/` for the Team view. On **Computers**, **Connect computer** mints a 15-minute, single-use code and copies the
+server-authored install/login command. The page polls the current user's Computer list until the new daemon handshake
+arrives. The Web never selects the npm package, binary, or Server URL itself. Use the CLI for membership and invitation
+mutations:
 
 ```bash
 pnpm --filter open-tag start team member list --team example
@@ -202,6 +211,7 @@ processes.
 | `OPENTAG_PORT` | `8000` | Server listen port |
 | `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor target |
 | `OPENTAG_PUBLIC_URL` | none | Required public Server origin used for browser callbacks and invitation links |
+| `OPENTAG_ENV` | `dev` | OpenTag environment/channel: `dev`, `staging`, or `prod`; hosted values require HTTPS |
 | `OPENTAG_DATABASE_URL` | none | Required PostgreSQL connection URL |
 | `OPENTAG_JWT_SECRET` | none | Required access-token signing secret; at least 32 characters |
 | `OPENTAG_ENCRYPTION_KEY` | none | Required canonical base64-encoded 32-byte application encryption key |

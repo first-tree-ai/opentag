@@ -4,6 +4,15 @@ export {
   type ResolvedUserTokenIssuer,
   type UserAuthService,
 } from "./auth-service.js";
+export {
+  buildConnectBootstrapCommand,
+  CONNECT_CODE_TTL_SECONDS,
+  type ConnectCodeIssuer,
+  ConnectCodeService,
+  type ConnectCodeServiceOptions,
+  type IssuedConnectCode,
+  issueConnectCodeInTransaction,
+} from "./connect-code-service.js";
 export { DevBrowserAuthService, type DevBrowserTokenIssuer } from "./dev-browser-auth.js";
 export { AuthServiceError } from "./errors.js";
 export {

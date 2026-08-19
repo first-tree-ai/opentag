@@ -2,17 +2,13 @@ import { TeamNameSchema } from "@opentag/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient } from "../db/client.js";
-import { connectCodes, teams, users } from "../db/schema/index.js";
-import { generateSecret, hashSecret } from "../services/auth/security.js";
+import { teams, users } from "../db/schema/index.js";
+import { CONNECT_CODE_TTL_SECONDS, issueConnectCodeInTransaction } from "../services/auth/index.js";
 import { TeamMembershipService } from "../services/teams/index.js";
 
 export const BootstrapAdminInputSchema = z
   .object({
-    connectCodeTtlSeconds: z
-      .number()
-      .int()
-      .positive()
-      .default(15 * 60),
+    connectCodeTtlSeconds: z.number().int().positive().default(CONNECT_CODE_TTL_SECONDS),
     displayName: z.string().trim().min(1),
     email: z.string().trim().toLowerCase().email(),
     teamDisplayName: z.string().trim().min(1),
@@ -35,8 +31,6 @@ export async function bootstrapInitialAdmin(
   now = new Date(),
 ): Promise<BootstrapAdminResult> {
   const validated = BootstrapAdminInputSchema.parse(input);
-  const connectCode = generateSecret(24);
-  const expiresAt = new Date(now.getTime() + validated.connectCodeTtlSeconds * 1000);
   const membershipService = new TeamMembershipService(database, { now: () => now });
 
   return database.transaction(async (transaction) => {
@@ -59,13 +53,16 @@ export async function bootstrapInitialAdmin(
     }
 
     await membershipService.bootstrapAdminInTransaction(transaction, user.id, team.id);
-    await transaction.insert(connectCodes).values({
-      codeHash: hashSecret(connectCode),
-      userId: user.id,
-      issuerUserId: user.id,
-      expiresAt,
-    });
+    const issued = await issueConnectCodeInTransaction(
+      transaction,
+      {
+        issuerUserId: user.id,
+        ttlSeconds: validated.connectCodeTtlSeconds,
+        userId: user.id,
+      },
+      now,
+    );
 
-    return { connectCode, expiresAt, teamId: team.id, userId: user.id };
+    return { connectCode: issued.code, expiresAt: issued.expiresAt, teamId: team.id, userId: user.id };
   });
 }

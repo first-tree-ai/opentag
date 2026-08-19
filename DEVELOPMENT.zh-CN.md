@@ -155,14 +155,14 @@ bootstrap email 是账号资料，不是邮箱密码凭据。当前 connect code
 
 创建 Google Web OAuth client，并将 callback 配置为
 `http://127.0.0.1:8000/api/v1/auth/google/callback`，然后设置 `OPENTAG_GOOGLE_CLIENT_ID` 与
-`OPENTAG_GOOGLE_CLIENT_SECRET`。Server 会在监听前校验 Google 配置；生产环境的 `OPENTAG_PUBLIC_URL` 必须
-使用 HTTPS。浏览器 access/refresh JWT 只保存在 HttpOnly cookie 中，浏览器 mutation 还必须同时通过同源检查
+`OPENTAG_GOOGLE_CLIENT_SECRET`。Server 会在监听前校验 Google 配置；`staging` 和 `prod` 环境的
+`OPENTAG_PUBLIC_URL` 必须使用 HTTPS。浏览器 access/refresh JWT 只保存在 HttpOnly cookie 中，浏览器 mutation 还必须同时通过同源检查
 和可读 double-submit CSRF cookie 校验。
 
 若本地 loopback 开发环境没有 Google 凭据，可显式启用开发 bypass，并指定一个已有 bootstrap 用户：
 
 ```bash
-export OPENTAG_ENV=development
+export OPENTAG_ENV=dev
 export OPENTAG_DEV_AUTH_BYPASS_ENABLED=true
 export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 ```
@@ -170,9 +170,16 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 `OPENTAG_HOST` 与 `OPENTAG_PUBLIC_URL` 都必须保持为 loopback 地址。登录页随后会显示
 `Dev: bypass Google`。callback 会按不区分大小写的 email 精确解析唯一一个已有用户并签发正常浏览器 session；
 它不会创建用户或 Team，且仍会拒绝 suspended 用户或没有 active membership 的用户。email 不存在或有重复匹配时
-会 fail closed。Server 会在 `test` 和 `production` 环境拒绝这组配置。
+会 fail closed。Server 会在 `staging` 和 `prod` 环境拒绝这组配置。
 
-打开 `/admin/` 可使用只读 Team 管理界面。membership 与邀请变更使用 CLI：
+`OPENTAG_ENV` 是 OpenTag 唯一的环境与发布 channel 选择器。`dev` 对应本地开发行为与 `opentag-dev` binary，
+`staging` 对应 `open-tag-staging` / `opentag-staging`，`prod` 对应 `open-tag` / `opentag`。托管 Node.js 进程的
+`NODE_ENV` 仍可设为 `production`，但它不负责选择 OpenTag package，也不决定产品安全行为。Server 启动时会记录
+解析后的环境、public URL、package 和 binary，且绝不从 hostname 推断环境。
+
+打开 `/admin/` 可使用 Team 管理界面。在 **Computers** 中点击 **Connect computer** 会签发一个 15 分钟、仅可使用
+一次的 code，并复制由 Server 生成的安装/login 命令。页面会轮询当前用户的 Computer 列表，直到新的 daemon
+握手到达；Web 本身不会选择 npm package、binary 或 Server URL。membership 与邀请变更使用 CLI：
 
 ```bash
 pnpm --filter open-tag start team member list --team example
@@ -198,6 +205,7 @@ fail-closed 原则拒绝读取。
 | `OPENTAG_PORT` | `8000` | Server 监听端口 |
 | `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor 目标地址 |
 | `OPENTAG_PUBLIC_URL` | 无 | 浏览器 callback 和邀请链接使用的必需 Server 公共 origin |
+| `OPENTAG_ENV` | `dev` | OpenTag 环境/channel：`dev`、`staging` 或 `prod`；托管值要求 HTTPS |
 | `OPENTAG_DATABASE_URL` | 无 | 必需的 PostgreSQL 连接地址 |
 | `OPENTAG_JWT_SECRET` | 无 | 必需的 access token 签名 secret，至少 32 个字符 |
 | `OPENTAG_ENCRYPTION_KEY` | 无 | 必需的 canonical base64 编码 32-byte 应用层加密密钥 |

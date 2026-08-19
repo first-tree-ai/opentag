@@ -1,12 +1,43 @@
-import { HTTP_PATHS, MeResponseSchema } from "@opentag/shared";
+import { type ChannelName, ConnectCodeIssueResponseSchema, HTTP_PATHS, MeResponseSchema } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
 import { createUserAuthPreHandler } from "../plugins/user-auth.js";
-import type { UserAuthService } from "../services/auth/index.js";
+import { buildConnectBootstrapCommand, type ConnectCodeIssuer, type UserAuthService } from "../services/auth/index.js";
 
-export function registerMeRoute(app: FastifyInstance, authService: UserAuthService, publicOrigin?: string): void {
-  app.get(
-    HTTP_PATHS.me,
-    { preHandler: createUserAuthPreHandler(authService, { publicOrigin }) },
-    async (request, reply) => reply.code(200).send(MeResponseSchema.parse(request.authContext?.me)),
+export interface MeRoutesOptions {
+  connectCodeIssuer?: ConnectCodeIssuer;
+  environment?: ChannelName;
+  publicOrigin?: string;
+  publicUrl?: string;
+}
+
+export function registerMeRoutes(
+  app: FastifyInstance,
+  authService: UserAuthService,
+  options: MeRoutesOptions = {},
+): void {
+  const preHandler = createUserAuthPreHandler(authService, { publicOrigin: options.publicOrigin });
+  app.get(HTTP_PATHS.me, { preHandler }, async (request, reply) =>
+    reply.code(200).send(MeResponseSchema.parse(request.authContext?.me)),
   );
+
+  if (options.connectCodeIssuer && options.environment && options.publicUrl) {
+    const connectCodeIssuer = options.connectCodeIssuer;
+    const environment = options.environment;
+    const publicUrl = options.publicUrl;
+    app.post(HTTP_PATHS.meConnectCodes, { preHandler }, async (request, reply) => {
+      const userId = request.authContext?.me.user.id;
+      if (!userId) throw new Error("Authenticated user context is missing");
+      const issued = await connectCodeIssuer.issueForUser(userId);
+      return reply
+        .header("Cache-Control", "no-store")
+        .code(201)
+        .send(
+          ConnectCodeIssueResponseSchema.parse({
+            bootstrapCommand: buildConnectBootstrapCommand({ code: issued.code, environment, publicUrl }),
+            expiresIn: issued.expiresIn,
+            issuedAt: issued.issuedAt.toISOString(),
+          }),
+        );
+    });
+  }
 }

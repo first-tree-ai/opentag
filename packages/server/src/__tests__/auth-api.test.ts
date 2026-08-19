@@ -1,7 +1,7 @@
 import { HTTP_PATHS } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
-import type { UserAuthService } from "../services/auth/index.js";
+import type { ConnectCodeIssuer, UserAuthService } from "../services/auth/index.js";
 
 const apps: ReturnType<typeof createApp>[] = [];
 
@@ -123,5 +123,80 @@ describe("auth HTTP API", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ memberships: [{ teamName: "example", role: "admin" }] });
     expect(authService.getAuthenticatedUser).toHaveBeenCalledWith("access");
+  });
+
+  it("issues a server-authored connect command only for the authenticated user", async () => {
+    const authService = createAuthService();
+    const issuer: ConnectCodeIssuer = {
+      issueForUser: vi.fn().mockResolvedValue({
+        code: "short_lived_code",
+        expiresAt: new Date("2030-01-01T00:15:00.000Z"),
+        expiresIn: 900,
+        issuedAt: new Date("2030-01-01T00:00:00.000Z"),
+      }),
+    };
+    const app = createApp({
+      authService,
+      connectCode: { environment: "staging", issuer, publicUrl: "https://dev.example.com" },
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.meConnectCodes,
+      headers: { authorization: "Bearer access" },
+      payload: { userId: "8cd6fa43-63ba-4c87-bcd7-0225179421af" },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual({
+      bootstrapCommand:
+        "npm i -g open-tag-staging && opentag-staging login short_lived_code --server https://dev.example.com",
+      expiresIn: 900,
+      issuedAt: "2030-01-01T00:00:00.000Z",
+    });
+    expect(issuer.issueForUser).toHaveBeenCalledWith("53e2babe-e4ac-4e2c-b7d1-d092d5a4568e");
+  });
+
+  it("requires same-origin CSRF for browser connect-code issuance", async () => {
+    const authService = createAuthService();
+    const issuer: ConnectCodeIssuer = {
+      issueForUser: vi.fn().mockResolvedValue({
+        code: "short_lived_code",
+        expiresAt: new Date("2030-01-01T00:15:00.000Z"),
+        expiresIn: 900,
+        issuedAt: new Date("2030-01-01T00:00:00.000Z"),
+      }),
+    };
+    const app = createApp({
+      authService,
+      browserAuth: {
+        publicOrigin: "https://dev.example.com",
+        refreshTokenTtlSeconds: 3600,
+        secureCookies: true,
+      },
+      connectCode: { environment: "staging", issuer, publicUrl: "https://dev.example.com" },
+    });
+    apps.push(app);
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.meConnectCodes,
+      headers: { cookie: "opentag_access=access; opentag_csrf=csrf" },
+    });
+    expect(rejected.statusCode).toBe(403);
+    expect(issuer.issueForUser).not.toHaveBeenCalled();
+
+    const accepted = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.meConnectCodes,
+      headers: {
+        cookie: "opentag_access=access; opentag_csrf=csrf",
+        origin: "https://dev.example.com",
+        "x-opentag-csrf": "csrf",
+      },
+    });
+    expect(accepted.statusCode).toBe(201);
+    expect(issuer.issueForUser).toHaveBeenCalledOnce();
   });
 });

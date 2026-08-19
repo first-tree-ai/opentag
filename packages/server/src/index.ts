@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 import { defaultAdminWebRoot } from "./admin-web.js";
 import { createApp } from "./app.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
-import { parseServerConfig } from "./config.js";
+import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
 import { AgentService } from "./services/agents/index.js";
@@ -10,6 +10,7 @@ import {
   AuthIdentityService,
   AuthService,
   AuthTokenService,
+  ConnectCodeService,
   DefaultGoogleIdentityClient,
   DevBrowserAuthService,
   formatStartupError,
@@ -25,7 +26,14 @@ import { TeamMembershipService } from "./services/teams/index.js";
 export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
 export { createApp } from "./app.js";
 export { BootstrapReadiness } from "./bootstrap-readiness.js";
-export { type DatabaseConfig, parseDatabaseConfig, parseServerConfig, type ServerConfig } from "./config.js";
+export {
+  type DatabaseConfig,
+  isHostedEnvironment,
+  parseDatabaseConfig,
+  parseServerConfig,
+  type ServerConfig,
+  serverEnvironmentSummary,
+} from "./config.js";
 export { createDatabaseClient, type DatabaseClient } from "./db/client.js";
 export {
   MigrationVerificationError,
@@ -63,6 +71,7 @@ export async function startServer(): Promise<void> {
       database,
       new AuthTokenService(config.jwtSecret, config.accessTokenTtlSeconds, config.refreshTokenTtlSeconds),
     );
+    const connectCodeService = new ConnectCodeService(database);
     const computerService = new ComputerService(database, authService);
     const teamService = new TeamMembershipService(database);
     const agentService = new AgentService(database, { membershipService: teamService });
@@ -97,7 +106,12 @@ export async function startServer(): Promise<void> {
         google,
         publicOrigin: config.publicUrl,
         refreshTokenTtlSeconds: config.refreshTokenTtlSeconds,
-        secureCookies: config.environment === "production",
+        secureCookies: isHostedEnvironment(config.environment),
+      },
+      connectCode: {
+        environment: config.environment,
+        issuer: connectCodeService,
+        publicUrl: config.publicUrl,
       },
       computerService,
       invitationService,
@@ -105,6 +119,7 @@ export async function startServer(): Promise<void> {
       teamService,
     });
     app.addHook("onClose", async () => sql.end());
+    app.log.info(serverEnvironmentSummary(config), "Resolved OpenTag environment");
     readiness.complete("application");
     await app.listen({ host: config.host, port: config.port });
     readiness.complete("listen");

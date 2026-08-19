@@ -5,6 +5,7 @@ import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
 import { registerDaemonCommand } from "../commands/daemon/index.js";
 import { executeDaemonServiceCommand } from "../commands/daemon/shared.js";
+import { channelConfig } from "../core/channel/config.js";
 import { acquireDaemonOwner } from "../core/daemon/ownership.js";
 import { runDaemonServiceEntry } from "../core/daemon/runtime.js";
 import { createDaemonServiceManager, type DaemonServiceManager } from "../core/daemon/service/index.js";
@@ -97,7 +98,12 @@ describe("daemon service commands", () => {
     const userHome = await mkdtemp(join(tmpdir(), "opentag-service-user-"));
     const owner = await acquireDaemonOwner(home, "foreground-instance");
     const runner = {
-      run: vi.fn(async () => ({ code: 0, stderr: "", stdout: "", timedOut: false })),
+      run: vi.fn(async (_program: string, args: readonly string[]) => ({
+        code: 0,
+        stderr: "",
+        stdout: args.includes("LoadState") ? "not-found" : "",
+        timedOut: false,
+      })),
     } satisfies ServiceRunner;
     try {
       const manager = await createDaemonServiceManager({
@@ -110,7 +116,11 @@ describe("daemon service commands", () => {
         username: "test",
       });
       await expect(manager.start()).rejects.toThrow("outside the expected systemd service state");
-      expect(runner.run).not.toHaveBeenCalled();
+      expect(runner.run).not.toHaveBeenCalledWith(
+        "systemctl",
+        ["--user", "start", `${channelConfig.serviceId}.service`],
+        expect.any(Object),
+      );
     } finally {
       await owner.release();
       await rm(home, { recursive: true, force: true });

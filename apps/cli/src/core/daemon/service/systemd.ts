@@ -83,7 +83,33 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
 
   const status = async (): Promise<DaemonServiceInfo> => {
     const definition = await readRegularFile(unitPath);
-    if (definition === undefined) return info("not-installed", { drifted: true });
+    if (definition === undefined) {
+      const orphaned = await options.runner.run(
+        systemctl,
+        ["--user", "show", identity.systemdUnitName, "--property", "LoadState", "--value"],
+        { timeoutMs: SYSTEMD_TIMEOUT_MS },
+      );
+      if (orphaned.timedOut) {
+        return info("unknown", {
+          detail: "systemctl could not verify whether a definition-less service target is loaded",
+          drifted: true,
+        });
+      }
+      const loadState = orphaned.stdout.trim();
+      if (orphaned.code === 0 && loadState === "not-found") {
+        return info("not-installed", { drifted: true });
+      }
+      if (orphaned.code === 0) {
+        return info("unknown", {
+          detail: `systemd still has the service target loaded (${loadState || "unknown state"}) even though its unit definition is missing`,
+          drifted: true,
+        });
+      }
+      return info("unknown", {
+        detail: orphaned.stderr || orphaned.stdout || `systemctl exited with code ${orphaned.code}`,
+        drifted: true,
+      });
+    }
     const configuredHome = extractSystemdHome(definition);
     if (!configuredHome) {
       return info("unknown", {

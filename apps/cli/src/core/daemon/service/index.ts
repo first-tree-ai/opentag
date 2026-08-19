@@ -6,6 +6,8 @@ import { inspectDaemonOwner } from "../ownership.js";
 import { createLaunchdBackend } from "./launchd.js";
 import {
   acquireServiceOperationLease,
+  acquireServiceTargetLease,
+  canonicalizeServiceHome,
   defaultServiceRunner,
   preflightHomeDirectory,
   resolveCliInvocation,
@@ -48,9 +50,9 @@ export async function createDaemonServiceManager(
   options: CreateDaemonServiceManagerOptions = {},
 ): Promise<DaemonServiceManager> {
   const platform = options.platform ?? process.platform;
-  const home = resolve(options.home ?? resolveOpenTagHome(options.env ?? process.env));
+  const home = await canonicalizeServiceHome(resolve(options.home ?? resolveOpenTagHome(options.env ?? process.env)));
   const runner = options.runner ?? defaultServiceRunner;
-  const userHome = options.userHome ?? homedir();
+  const userHome = await canonicalizeServiceHome(resolve(options.userHome ?? homedir()));
   const invocation =
     options.invocation ??
     (platform === "darwin" || platform === "linux"
@@ -77,14 +79,23 @@ export async function createDaemonServiceManager(
     mutation: DaemonServiceMutation,
     operation: () => Promise<DaemonServiceInfo>,
   ): Promise<DaemonServiceInfo> => {
-    const lease = await acquireServiceOperationLease(home);
+    const targetLease = await acquireServiceTargetLease(userHome, channelConfig.serviceId);
+    let lease: Awaited<ReturnType<typeof acquireServiceOperationLease>> | undefined;
     try {
-      await assertOwnerConsistency(await backend.status(), home, mutation);
+      lease = await acquireServiceOperationLease(home);
+      const before = await backend.status();
+      await assertConfiguredHome(before, home);
+      await assertOwnerConsistency(before, home, mutation);
       const current = await attachOwner(await operation(), home);
+      await assertMutationHomePostcondition(mutation, current, home);
       if (mutation === "stop") assertStopPostcondition(current);
       return current;
     } finally {
-      await lease.release();
+      try {
+        await lease?.release();
+      } finally {
+        await targetLease.release();
+      }
     }
   };
 
@@ -111,6 +122,32 @@ export async function createDaemonServiceManager(
     status,
     uninstall: () => mutate("uninstall", () => backend.uninstall()),
   };
+}
+
+async function assertMutationHomePostcondition(
+  mutation: DaemonServiceMutation,
+  info: DaemonServiceInfo,
+  requestedHome: string,
+): Promise<void> {
+  if (mutation === "uninstall" && info.state === "not-installed") return;
+  await assertConfiguredHome(info, requestedHome);
+}
+
+async function assertConfiguredHome(info: DaemonServiceInfo, requestedHome: string): Promise<void> {
+  if (info.state === "not-installed") return;
+  if (!info.configuredHome) {
+    throw new DaemonServiceError(
+      "CONFIGURATION",
+      `The installed ${info.platform} service does not expose a verifiable OPENTAG_HOME; refusing mutation`,
+    );
+  }
+  const configuredHome = await canonicalizeServiceHome(info.configuredHome);
+  if (configuredHome !== requestedHome) {
+    throw new DaemonServiceError(
+      "CONFIGURATION",
+      `The installed ${info.platform} service belongs to a different OpenTag home (${configuredHome}); use that OPENTAG_HOME`,
+    );
+  }
 }
 
 export function formatDaemonServiceInfo(info: DaemonServiceInfo): string {

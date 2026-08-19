@@ -2,8 +2,13 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, chmod, lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
-import { acquireProcessFileLease, ProcessLeaseBusyError } from "../process-lease.js";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  acquireProcessFileLease,
+  ProcessLeaseBusyError,
+  ProcessLeaseMalformedError,
+  ProcessLeaseUnverifiableError,
+} from "../process-lease.js";
 import {
   type CommandResult,
   DaemonServiceError,
@@ -14,10 +19,12 @@ import {
 
 const COMMAND_TIMEOUT_MS = 15_000;
 const SERVICE_OPERATION_FILE = "service-operation.json";
+const SERVICE_TARGET_DIRECTORY = ".opentag-service-targets";
 
 interface ServiceOperationRecord {
   operationId: string;
   pid: number;
+  processStartId: string;
   startedAt: string;
 }
 
@@ -187,19 +194,49 @@ export async function runRequired(
 }
 
 export async function acquireServiceOperationLease(home: string): Promise<ServiceOperationLease> {
+  return acquireMappedOperationLease(home, SERVICE_OPERATION_FILE, "Another daemon service operation");
+}
+
+export async function acquireServiceTargetLease(userHome: string, serviceId: string): Promise<ServiceOperationLease> {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(serviceId)) {
+    throw new DaemonServiceError("CONFIGURATION", "The daemon service ID is invalid");
+  }
+  return acquireMappedOperationLease(
+    join(userHome, SERVICE_TARGET_DIRECTORY),
+    `${serviceId}.json`,
+    `Another ${serviceId} service-target operation`,
+  );
+}
+
+async function acquireMappedOperationLease(
+  directory: string,
+  fileName: string,
+  busyLabel: string,
+): Promise<ServiceOperationLease> {
   try {
-    const lease = await acquireProcessFileLease<ServiceOperationRecord>(home, {
-      createRecord: () => ({ operationId: randomUUID(), pid: process.pid, startedAt: new Date().toISOString() }),
-      fileName: SERVICE_OPERATION_FILE,
+    const lease = await acquireProcessFileLease<ServiceOperationRecord>(directory, {
+      createRecord: (processStartId) => ({
+        operationId: randomUUID(),
+        pid: process.pid,
+        processStartId,
+        startedAt: new Date().toISOString(),
+      }),
+      fileName,
       getId: (record) => record.operationId,
       parseRecord: parseServiceOperation,
     });
     return { release: lease.release };
   } catch (error) {
     if (error instanceof ProcessLeaseBusyError) {
-      throw new DaemonServiceError("BUSY", `Another daemon service operation is already running (pid ${error.pid})`, {
+      throw new DaemonServiceError("BUSY", `${busyLabel} is already running (pid ${error.pid})`, {
         cause: error,
       });
+    }
+    if (error instanceof ProcessLeaseMalformedError) {
+      throw new DaemonServiceError("CONFIGURATION", error.message, { cause: error });
+    }
+    if (error instanceof ProcessLeaseUnverifiableError) {
+      throw new DaemonServiceError("CONFIGURATION", error.message, { cause: error });
     }
     throw error;
   }
@@ -257,6 +294,32 @@ export async function preflightHomeDirectory(home: string): Promise<void> {
   }
 }
 
+export async function canonicalizeServiceHome(path: string): Promise<string> {
+  if (!isAbsolute(path)) {
+    throw new DaemonServiceError("CONFIGURATION", "The OpenTag home path must be absolute");
+  }
+  const missingSegments: string[] = [];
+  let current = resolve(path);
+  for (;;) {
+    try {
+      const canonicalParent = await realpath(current);
+      return resolve(canonicalParent, ...missingSegments);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw new DaemonServiceError("CONFIGURATION", `Cannot canonicalize the OpenTag home path: ${path}`, {
+          cause: error,
+        });
+      }
+      const parent = dirname(current);
+      if (parent === current) {
+        throw new DaemonServiceError("CONFIGURATION", `Cannot canonicalize the OpenTag home path: ${path}`);
+      }
+      missingSegments.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
 export function sleep(milliseconds: number): Promise<void> {
   return new Promise((complete) => setTimeout(complete, milliseconds));
 }
@@ -270,6 +333,9 @@ function parseServiceOperation(value: unknown): ServiceOperationRecord {
     typeof record.operationId !== "string" ||
     typeof record.pid !== "number" ||
     !Number.isInteger(record.pid) ||
+    record.pid <= 0 ||
+    typeof record.processStartId !== "string" ||
+    record.processStartId.length === 0 ||
     typeof record.startedAt !== "string"
   ) {
     throw new Error("The service operation lease is malformed");

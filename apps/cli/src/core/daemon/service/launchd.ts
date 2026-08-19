@@ -108,7 +108,27 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
 
   const status = async (): Promise<DaemonServiceInfo> => {
     const plist = await readRegularFile(plistPath);
-    if (plist === undefined) return info("not-installed", { drifted: true });
+    if (plist === undefined) {
+      const orphaned = await options.runner.run(launchctl, ["print", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
+      if (orphaned.timedOut) {
+        return info("unknown", {
+          detail: "launchctl could not verify whether a definition-less service target is loaded",
+          drifted: true,
+        });
+      }
+      if (orphaned.code === 0) {
+        return info("unknown", {
+          detail: "launchd still has the service target loaded even though its plist definition is missing",
+          drifted: true,
+        });
+      }
+      return isManagerNotLoaded(orphaned)
+        ? info("not-installed", { drifted: true })
+        : info("unknown", {
+            detail: orphaned.stderr || orphaned.stdout || `launchctl exited with code ${orphaned.code}`,
+            drifted: true,
+          });
+    }
     const wrapper = await readRegularFile(wrapperPath);
     const configuredHome = extractLaunchdHome(plist);
     if (!configuredHome) {

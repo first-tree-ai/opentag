@@ -36,6 +36,7 @@ describe("daemon owner inspection", () => {
         instanceId: "stale-instance",
         ownerId: "stale-owner",
         pid: 2_147_483_647,
+        processStartId: "dead-process",
         startedAt: new Date(0).toISOString(),
       })}\n`,
       { mode: 0o600 },
@@ -49,6 +50,25 @@ describe("daemon owner inspection", () => {
   it("fails closed on malformed owner records", async () => {
     const home = await temporaryDirectory();
     await writeFile(join(home, "daemon-owner.json"), "{}\n", { mode: 0o600 });
+    await expect(inspectDaemonOwner(home)).rejects.toThrow("malformed");
+  });
+
+  it.each([
+    ["a non-positive PID", { pid: 0, processStartId: "process-start" }],
+    ["an empty process start identity", { pid: process.pid, processStartId: "" }],
+  ])("rejects %s in an owner record", async (_label, invalid) => {
+    const home = await temporaryDirectory();
+    await writeFile(
+      join(home, "daemon-owner.json"),
+      `${JSON.stringify({
+        home,
+        instanceId: "instance",
+        ownerId: "owner",
+        startedAt: new Date(0).toISOString(),
+        ...invalid,
+      })}\n`,
+      { mode: 0o600 },
+    );
     await expect(inspectDaemonOwner(home)).rejects.toThrow("malformed");
   });
 });

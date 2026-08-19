@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeCredentialsAtomically } from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { channelConfig } from "../core/channel/config.js";
 import { acquireDaemonOwner } from "../core/daemon/ownership.js";
@@ -80,6 +81,7 @@ describe("systemd service backend", () => {
       calls.push(`${program} ${args.join(" ")}`);
       if (program === "loginctl") return result(1, "", "permission denied");
       if (args.includes("show-environment")) return result(0, "", "");
+      if (args.includes("LoadState")) return result(0, "not-found", "");
       if (args.includes("is-active")) return active ? result(0, "active", "") : result(3, "inactive", "");
       if (args.includes("start")) active = true;
       if (args.includes("MainPID")) return result(0, "321", "");
@@ -214,6 +216,165 @@ describe("systemd service backend", () => {
       await setup.owner.release();
     }
   });
+
+  it.each(["installAndStart", "start", "stop", "restart", "uninstall"] as const)(
+    "refuses %s when the installed service belongs to a different canonical home",
+    async (mutation) => {
+      const userHome = await temporaryDirectory("opentag-systemd-");
+      const configuredHome = await temporaryDirectory("opentag-configured-home-");
+      const requestedHome = await temporaryDirectory("opentag-requested-home-");
+      const invocation = { args: [], program: "/usr/bin/opentag" };
+      const unitPath = join(userHome, ".config", "systemd", "user", `${channelConfig.serviceId}.service`);
+      await writeFileWithParents(
+        unitPath,
+        renderSystemdUnit({
+          home: configuredHome,
+          invocation,
+          path: buildServicePath(invocation, "linux"),
+          serviceId: channelConfig.serviceId,
+        }),
+      );
+      await writeCredentialsAtomically(
+        {
+          accessToken: "access-token",
+          accessTokenExpiresAt: "2030-01-01T00:00:00.000Z",
+          refreshToken: "refresh-token",
+          serverUrl: "https://example.com",
+        },
+        requestedHome,
+      );
+      const runner = fakeRunner((_, args) => {
+        if (args.includes("is-active")) return result(3, "inactive", "");
+        return result(0, "", "");
+      });
+      const manager = await createDaemonServiceManager({
+        home: requestedHome,
+        invocation,
+        platform: "linux",
+        runner,
+        uid: 1000,
+        userHome,
+        username: "test",
+      });
+
+      await expect(manager[mutation]()).rejects.toThrow("belongs to a different OpenTag home");
+      const managerMutations = runner.run.mock.calls.filter(([, args]) =>
+        args.some((argument) => ["daemon-reload", "disable", "enable", "restart", "start", "stop"].includes(argument)),
+      );
+      expect(managerMutations).toEqual([]);
+    },
+  );
+
+  it("serializes concurrent first installs across homes for one channel target", async () => {
+    const userHome = await temporaryDirectory("opentag-systemd-");
+    const firstHome = await temporaryDirectory("opentag-first-home-");
+    const secondHome = await temporaryDirectory("opentag-second-home-");
+    const invocation = { args: [], program: "/usr/bin/opentag" };
+    for (const home of [firstHome, secondHome]) {
+      await writeCredentialsAtomically(
+        {
+          accessToken: "access-token",
+          accessTokenExpiresAt: "2030-01-01T00:00:00.000Z",
+          refreshToken: "refresh-token",
+          serverUrl: "https://example.com",
+        },
+        home,
+      );
+    }
+    let active = false;
+    let releaseReload: (() => void) | undefined;
+    let reloadStarted: (() => void) | undefined;
+    const reloadReached = new Promise<void>((resolve) => {
+      reloadStarted = resolve;
+    });
+    const reloadBarrier = new Promise<void>((resolve) => {
+      releaseReload = resolve;
+    });
+    let blockedReload = false;
+    const runner = {
+      run: vi.fn(async (_program: string, args: readonly string[]) => {
+        if (args.includes("show-environment")) return result(0, "", "");
+        if (args.includes("LoadState")) return result(0, "not-found", "");
+        if (args.includes("daemon-reload") && !blockedReload) {
+          blockedReload = true;
+          reloadStarted?.();
+          await reloadBarrier;
+        }
+        if (args.includes("start")) active = true;
+        if (args.includes("is-active")) return active ? result(0, "active", "") : result(3, "inactive", "");
+        if (args.includes("MainPID")) return result(0, "321", "");
+        if (_program === "loginctl") return result(0, "", "");
+        return result(0, "", "");
+      }),
+    } satisfies ServiceRunner;
+    const first = await createDaemonServiceManager({
+      home: firstHome,
+      invocation,
+      platform: "linux",
+      runner,
+      uid: 1000,
+      userHome,
+      username: "test",
+    });
+    const second = await createDaemonServiceManager({
+      home: secondHome,
+      invocation,
+      platform: "linux",
+      runner,
+      uid: 1000,
+      userHome,
+      username: "test",
+    });
+
+    const winner = first.installAndStart();
+    await reloadReached;
+    await expect(second.installAndStart()).rejects.toThrow("service-target operation is already running");
+    releaseReload?.();
+    await expect(winner).resolves.toMatchObject({ configuredHome: firstHome, state: "active" });
+
+    const unitPath = join(userHome, ".config", "systemd", "user", `${channelConfig.serviceId}.service`);
+    expect(await readFile(unitPath, "utf8")).toContain(`OPENTAG_HOME=${firstHome}`);
+    await expect(second.installAndStart()).rejects.toThrow("belongs to a different OpenTag home");
+  });
+
+  it.each(["installAndStart", "stop"] as const)(
+    "refuses %s when systemd retains a loaded target without a definition",
+    async (mutation) => {
+      const userHome = await temporaryDirectory("opentag-systemd-");
+      const home = await temporaryDirectory("opentag-systemd-home-");
+      const invocation = { args: [], program: "/usr/bin/opentag" };
+      await writeCredentialsAtomically(
+        {
+          accessToken: "access-token",
+          accessTokenExpiresAt: "2030-01-01T00:00:00.000Z",
+          refreshToken: "refresh-token",
+          serverUrl: "https://example.com",
+        },
+        home,
+      );
+      const runner = fakeRunner((_, args) => {
+        if (args.includes("show-environment")) return result(0, "", "");
+        if (args.includes("LoadState")) return result(0, "loaded", "");
+        return result(0, "", "");
+      });
+      const manager = await createDaemonServiceManager({
+        home,
+        invocation,
+        platform: "linux",
+        runner,
+        uid: 1000,
+        userHome,
+        username: "test",
+      });
+
+      await expect(manager[mutation]()).rejects.toThrow("does not expose a verifiable OPENTAG_HOME");
+      expect(runner.run).not.toHaveBeenCalledWith(
+        "systemctl",
+        expect.arrayContaining([expect.stringMatching(/^(?:daemon-reload|disable|enable|start|stop)$/u)]),
+        expect.any(Object),
+      );
+    },
+  );
 });
 
 describe("launchd service backend", () => {
@@ -384,6 +545,44 @@ describe("launchd service backend", () => {
     await expect(backend.uninstall()).rejects.toThrow("permission denied");
     expect(await readFile(plist, "utf8")).toBe("definition");
   });
+
+  it.each(["installAndStart", "stop"] as const)(
+    "refuses %s when launchd retains a loaded target without a plist",
+    async (mutation) => {
+      const userHome = await temporaryDirectory("opentag-launchd-");
+      const home = join(userHome, ".opentag");
+      const invocation = { args: [], program: "/usr/local/bin/opentag" };
+      await writeCredentialsAtomically(
+        {
+          accessToken: "access-token",
+          accessTokenExpiresAt: "2030-01-01T00:00:00.000Z",
+          refreshToken: "refresh-token",
+          serverUrl: "https://example.com",
+        },
+        home,
+      );
+      const runner = fakeRunner((_, args) => {
+        if (args[0] === "print" && args[1] === "gui/501") return result(0, "domain", "");
+        if (args[0] === "print") return result(0, "state = waiting", "");
+        return result(0, "", "");
+      });
+      const manager = await createDaemonServiceManager({
+        home,
+        invocation,
+        platform: "darwin",
+        runner,
+        uid: 501,
+        userHome,
+      });
+
+      await expect(manager[mutation]()).rejects.toThrow("does not expose a verifiable OPENTAG_HOME");
+      expect(runner.run).not.toHaveBeenCalledWith(
+        "launchctl",
+        expect.arrayContaining([expect.stringMatching(/^(?:bootstrap|bootout|enable|kickstart)$/u)]),
+        expect.any(Object),
+      );
+    },
+  );
 });
 
 function result(code: number, stdout: string, stderr: string): CommandResult {

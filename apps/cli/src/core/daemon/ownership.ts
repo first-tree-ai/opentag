@@ -6,6 +6,7 @@ import {
   ProcessLeaseBusyError,
   type ProcessLeaseInspection,
   ProcessLeaseMalformedError,
+  ProcessLeaseUnverifiableError,
 } from "./process-lease.js";
 
 export interface DaemonOwner {
@@ -13,6 +14,7 @@ export interface DaemonOwner {
   instanceId: string;
   ownerId: string;
   pid: number;
+  processStartId: string;
   startedAt: string;
 }
 
@@ -25,7 +27,7 @@ export class DaemonOwnerStartupError extends Error {
   override readonly name = "DaemonOwnerStartupError";
 
   constructor(
-    readonly code: "BUSY" | "MALFORMED",
+    readonly code: "BUSY" | "MALFORMED" | "UNVERIFIABLE",
     message: string,
     options?: ErrorOptions,
   ) {
@@ -39,11 +41,12 @@ export async function acquireDaemonOwner(home: string, instanceId: string): Prom
   let lease: ProcessFileLease<DaemonOwner>;
   try {
     lease = await acquireProcessFileLease(home, {
-      createRecord: () => ({
+      createRecord: (processStartId) => ({
         home,
         instanceId,
         ownerId: randomUUID(),
         pid: process.pid,
+        processStartId,
         startedAt: new Date().toISOString(),
       }),
       fileName: OWNER_FILE_NAME,
@@ -92,6 +95,9 @@ function parseOwner(value: unknown): DaemonOwner {
     typeof record.ownerId !== "string" ||
     typeof record.pid !== "number" ||
     !Number.isInteger(record.pid) ||
+    record.pid <= 0 ||
+    typeof record.processStartId !== "string" ||
+    record.processStartId.length === 0 ||
     typeof record.startedAt !== "string"
   ) {
     throw new Error("The daemon owner record is malformed; refusing automatic recovery");
@@ -108,6 +114,9 @@ function normalizeOwnerError(error: unknown): Error {
         cause: error,
       },
     );
+  }
+  if (error instanceof ProcessLeaseUnverifiableError) {
+    return new DaemonOwnerStartupError("UNVERIFIABLE", error.message, { cause: error });
   }
   return error instanceof Error ? error : new Error(String(error));
 }

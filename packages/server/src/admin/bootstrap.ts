@@ -2,8 +2,9 @@ import { TeamNameSchema } from "@opentag/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient } from "../db/client.js";
-import { connectCodes, memberships, teams, users } from "../db/schema/index.js";
+import { connectCodes, teams, users } from "../db/schema/index.js";
 import { generateSecret, hashSecret } from "../services/auth/security.js";
+import { TeamMembershipService } from "../services/teams/index.js";
 
 export const BootstrapAdminInputSchema = z
   .object({
@@ -36,6 +37,7 @@ export async function bootstrapInitialAdmin(
   const validated = BootstrapAdminInputSchema.parse(input);
   const connectCode = generateSecret(24);
   const expiresAt = new Date(now.getTime() + validated.connectCodeTtlSeconds * 1000);
+  const membershipService = new TeamMembershipService(database, { now: () => now });
 
   return database.transaction(async (transaction) => {
     await transaction.execute(sql`select pg_advisory_xact_lock(8621303412)`);
@@ -56,7 +58,7 @@ export async function bootstrapInitialAdmin(
       throw new Error("Failed to create the initial account");
     }
 
-    await transaction.insert(memberships).values({ teamId: team.id, userId: user.id, role: "admin" });
+    await membershipService.bootstrapAdminInTransaction(transaction, user.id, team.id);
     await transaction.insert(connectCodes).values({
       codeHash: hashSecret(connectCode),
       userId: user.id,

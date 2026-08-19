@@ -25,6 +25,8 @@ export const RefreshTokenRequestSchema = z
 export const RefreshTokenResponseSchema = z.object(TokenResponseFields).strict();
 
 export const MembershipRoleSchema = z.enum(["admin", "member"]);
+export const MembershipStatusSchema = z.enum(["active", "left", "removed"]);
+export const AuthIdentityProviderSchema = z.enum(["google", "github", "oidc"]);
 export const TeamNameSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/);
 
 export const MeMembershipSchema = z
@@ -49,11 +51,28 @@ export const MeResponseSchema = z
   })
   .strict();
 
+export const AuthProvidersResponseSchema = z
+  .object({
+    providers: z.array(
+      z
+        .object({
+          id: z.literal("google"),
+          enabled: z.boolean(),
+          startUrl: z.string().min(1).nullable(),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+
 export type ConnectCodeExchangeRequest = z.infer<typeof ConnectCodeExchangeRequestSchema>;
 export type ConnectCodeExchangeResponse = z.infer<typeof ConnectCodeExchangeResponseSchema>;
 export type RefreshTokenRequest = z.infer<typeof RefreshTokenRequestSchema>;
 export type RefreshTokenResponse = z.infer<typeof RefreshTokenResponseSchema>;
 export type MembershipRole = z.infer<typeof MembershipRoleSchema>;
+export type MembershipStatus = z.infer<typeof MembershipStatusSchema>;
+export type AuthIdentityProvider = z.infer<typeof AuthIdentityProviderSchema>;
 export type TeamName = z.infer<typeof TeamNameSchema>;
 export type MeMembership = z.infer<typeof MeMembershipSchema>;
 export type MeResponse = z.infer<typeof MeResponseSchema>;
+export type AuthProvidersResponse = z.infer<typeof AuthProvidersResponseSchema>;

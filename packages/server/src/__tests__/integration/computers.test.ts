@@ -141,7 +141,7 @@ describe("Computer persistence", () => {
       await value.service.register(value.bootstrap.userId, registerFrame(computerId, instanceId));
       await value.database
         .update(memberships)
-        .set({ leftAt: new Date() })
+        .set({ status: "left", updatedAt: new Date() })
         .where(eq(memberships.userId, value.bootstrap.userId));
       await expect(value.service.heartbeat(value.bootstrap.userId, computerId, instanceId)).rejects.toMatchObject({
         code: "AUTH_MEMBERSHIP_REQUIRED",
@@ -169,7 +169,7 @@ describe("Computer persistence", () => {
       await value.service.register(value.bootstrap.userId, registerFrame(computerId, instanceId));
       await value.database
         .update(memberships)
-        .set({ leftAt: new Date() })
+        .set({ status: "left", updatedAt: new Date() })
         .where(eq(memberships.teamId, value.bootstrap.teamId));
 
       await expect(value.service.heartbeat(value.bootstrap.userId, computerId, instanceId)).resolves.toBe(true);

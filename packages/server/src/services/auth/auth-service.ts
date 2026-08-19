@@ -77,7 +77,7 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
       const [membership] = await transaction
         .select({ teamId: memberships.teamId })
         .from(memberships)
-        .where(and(eq(memberships.userId, user.id), isNull(memberships.leftAt)))
+        .where(and(eq(memberships.userId, user.id), eq(memberships.status, "active")))
         .limit(1);
       if (!membership) {
         throw new AuthServiceError(
@@ -139,7 +139,7 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
       })
       .from(memberships)
       .innerJoin(teams, eq(memberships.teamId, teams.id))
-      .where(and(eq(memberships.userId, userId), isNull(memberships.leftAt)));
+      .where(and(eq(memberships.userId, userId), eq(memberships.status, "active")));
     if (activeMemberships.length === 0) {
       throw new AuthServiceError(
         "AUTH_MEMBERSHIP_REQUIRED",

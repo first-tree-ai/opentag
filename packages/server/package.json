@@ -24,6 +24,7 @@
     "test:integration": "vitest run src/__tests__/integration --maxWorkers=1"
   },
   "dependencies": {
+    "@fastify/static": "^8.2.0",
     "@fastify/websocket": "^11.3.0",
     "@opentag/shared": "workspace:*",
     "drizzle-orm": "^0.45.2",

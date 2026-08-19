@@ -8,16 +8,17 @@ OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与
 
 当前仓库提供 OpenTag 的工程底座和首个控制面纵向切片：
 
-- 包含 CLI、Client、Server 和 Shared 的 TypeScript monorepo；
+- 包含 CLI、Web、Client、Server 和 Shared 的 TypeScript monorepo；
 - 带健康、就绪、REST 与 Computer WebSocket 端点的 Fastify Server；
 - 会校验 schema 的 Client 健康检查；
-- PostgreSQL migration，以及首个用户和 team 的 bootstrap 认证；
+- 与 provider 无关的账号身份、Google 浏览器登录和 PostgreSQL migration；
 - 使用滑动续期无状态 refresh JWT 的一次性 connect code 登录；
+- 显式 Team membership、角色、离开/移除/恢复和七天邀请链接生命周期；
 - 用户所有的 Computer 注册与在线状态；
 - Team 所有的 Agent Registry、不可变 Computer/provider 绑定与 revision fencing；
-- `opentag-dev doctor`、`login`、daemon 服务管理、`computer list` 和 `agent` 命令。
+- 同源只读 Admin Web，以及 `doctor`、`login`、`team`、`agent`、`computer` 和 daemon 服务管理命令。
 
-仓库尚未实现 Agent 执行、即时通信集成或 Session Runtime。
+仓库尚未实现 Agent 执行、飞书/Slack 集成、IM 持久化或 Session Runtime。
 
 ## 快速开始
 
@@ -29,6 +30,8 @@ pnpm install
 docker compose up -d postgres
 export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
 export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
+export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
+export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
 pnpm build
 pnpm --filter @opentag/server start
 ```
@@ -61,12 +64,23 @@ pnpm --filter open-tag start agent list
 
 这只会记录 Agent identity 和 Computer binding，不会启动 Codex 或 Claude Code turn。
 
+配置 `OPENTAG_GOOGLE_CLIENT_ID` 和 `OPENTAG_GOOGLE_CLIENT_SECRET` 后即可启用 Google 登录，然后打开
+`http://127.0.0.1:8000/admin/`。Team admin 可以查看当前成员、Agent、实际被引用的 Computer、当前邀请链接和
+带时间戳的诊断快照。membership 与邀请变更仍通过显式 CLI 操作完成：
+
+```bash
+pnpm --filter open-tag start team member list
+pnpm --filter open-tag start team invitation show
+pnpm --filter open-tag start team invitation rotate
+```
+
 完整本地工作流请参阅 [DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)。
 
 ## 项目状态
 
 OpenTag 正通过小型、可验证的纵向切片逐步构建。首个稳定版本发布前，公开 API 和 package 边界可能变化。
-当前代码已建立数据库 bootstrap、用户认证、本地 Computer 连接与 Agent Registry；Agent 执行与即时通信仍属于后续纵向切片。
+当前代码已建立数据库 bootstrap、用户认证、本地 Computer 连接、Agent Registry、账号/Team 生命周期和只读
+Admin Web；Agent 执行与即时通信仍属于后续纵向切片。
 
 ## 文档
 

@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import {
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_VERSION,
-  RuntimeFrameEnvelopeSchema,
   type RuntimeClientCapabilities,
+  RuntimeFrameEnvelopeSchema,
   runtimeFrameByteLength,
   runtimeWebSocketUrl,
   ServerRuntimeBusinessFrameSchema,

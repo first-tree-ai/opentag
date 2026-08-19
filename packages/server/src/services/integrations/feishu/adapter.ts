@@ -44,7 +44,6 @@ interface RawFeishuMessageEvent {
     root_id?: string;
     parent_id?: string;
     create_time: string;
-    update_time?: string;
     chat_id: string;
     thread_id?: string;
     chat_type: string;
@@ -190,12 +189,12 @@ function rawReceiveToNormalized(raw: RawFeishuMessageEvent): NormalizedMessage {
     rootId: raw.message.root_id,
     threadId: raw.message.thread_id,
     replyToMessageId: raw.message.parent_id,
-    createTime: Number(raw.message.update_time ?? raw.message.create_time),
+    createTime: Number(raw.message.create_time),
     raw: {
       event_id: raw.event_id,
       tenant_key: raw.tenant_key,
       event: { sender: { sender_type: raw.sender.sender_type, tenant_key: raw.sender.tenant_key } },
-      opentagOperation: raw.message.update_time ? "edited" : "created",
+      opentagOperation: "created",
     } satisfies FeishuRawEnvelope,
   };
 }
@@ -278,9 +277,10 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
 export function mapFeishuError(error: unknown): ProviderWriteResult {
   if (!(error instanceof LarkChannelError)) return { ok: false, category: "unknown", code: "feishu_unknown" };
   if (error.code === "rate_limited") return { ok: false, category: "rate_limited", code: error.code };
-  if (error.code === "permission_denied" || error.code === "not_connected") {
+  if (error.code === "permission_denied") {
     return { ok: false, category: "credential", code: error.code };
   }
+  if (error.code === "not_connected") return { ok: false, category: "transient", code: error.code };
   if (["format_error", "target_revoked", "ssrf_blocked"].includes(error.code)) {
     return { ok: false, category: "deterministic", code: error.code };
   }

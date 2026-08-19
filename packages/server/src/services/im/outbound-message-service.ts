@@ -245,7 +245,19 @@ export class OutboundMessageService {
           completedAt: this.#now(),
         })
         .where(and(eq(imOutboundRequests.id, request.id), eq(imOutboundRequests.state, "prepared")));
-      if (!providerResult.ok) return;
+      if (!providerResult.ok) {
+        if (mapped.state === "credential_failed") {
+          await transaction
+            .update(integrations)
+            .set({
+              reauthorizationRequired: true,
+              lastErrorCode: mapped.code ?? "provider_unknown",
+              updatedAt: this.#now(),
+            })
+            .where(eq(integrations.id, scope.integration.id));
+        }
+        return;
+      }
       const authorExternalId = await this.#botExternalId(transaction, scope.integration.id, scope.integration.provider);
       await transaction
         .insert(imMessages)

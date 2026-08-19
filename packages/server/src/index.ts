@@ -53,6 +53,7 @@ export {
   type RuntimeConnectionEntry,
   RuntimeRegistrySendError,
 } from "./runtime/connection-registry.js";
+export { PostgresRuntimeCustodyStore, type RuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 export {
   type AcceptedDeliveryRecord,
   type RecordedTurnRecord,
@@ -61,7 +62,6 @@ export {
   type RuntimeDomainOwnerOptions,
   RuntimeDomainRequestError,
 } from "./runtime/runtime-domain-owner.js";
-export { PostgresRuntimeCustodyStore, type RuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 export { AgentService, AgentServiceError } from "./services/agents/index.js";
 export { AuthService, AuthServiceError, AuthTokenService } from "./services/auth/index.js";
 export { ComputerService } from "./services/computers/index.js";
@@ -107,9 +107,7 @@ export async function startServer(): Promise<void> {
           .limit(1);
         const currentInstanceId = agent ? registry.currentInstanceId(agent.computerId) : undefined;
         return Boolean(
-          agent &&
-            currentInstanceId &&
-            registry.supports(agent.computerId, currentInstanceId, "imMessageTool"),
+          agent && currentInstanceId && registry.supports(agent.computerId, currentInstanceId, "imMessageTool"),
         );
       },
     });

@@ -9,8 +9,8 @@ import { computeRuntimeSnapshotHashes, type InputRejectReason, OPENTAG_MESSAGE_T
 import type { OpenTagApi } from "../api.js";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
 import {
-  CodexAdapter,
   CODEX_V0_APP_SERVER_ARGS,
+  CodexAdapter,
   CodexLocalPolicy,
   codexDynamicToolSpecs,
   codexProviderEnvironment,
@@ -120,7 +120,7 @@ export async function createCodexClientRuntime(
     configuredCommand: processOptions.command,
     environment,
     process: processOptions,
-    probe: options.probe ?? probeCodex,
+    probe: options.probe ?? probeCodexRuntime,
     signal: options.signal,
     sourceEnvironment,
   });
@@ -276,7 +276,11 @@ async function resolveExecutable(command: string, environment: NodeJS.ProcessEnv
   throw new Error("A compatible Codex executable is unavailable");
 }
 
-async function probeCodex(command: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<void> {
+export async function probeCodexRuntime(
+  command: string,
+  environment: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<void> {
   const common = { env: environment, timeout: 5_000, maxBuffer: 64 * 1024, windowsHide: true, signal };
   const version = await execFileAsync(command, ["--version"], common);
   assertCompatibleCodexVersion(version.stdout);

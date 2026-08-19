@@ -1,10 +1,11 @@
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
-import type { NormalizedInboundImEvent } from "@opentag/shared";
+import { computeTurnResultHash, type NormalizedInboundImEvent, type TurnReportRequest } from "@opentag/shared";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import WebSocket from "ws";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
@@ -20,7 +21,10 @@ import {
   sessionPlacements,
   sessions,
 } from "../../db/schema/index.js";
+import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
+import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
+import { RuntimeDomainOwner } from "../../runtime/runtime-domain-owner.js";
 import { AgentService } from "../../services/agents/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import { ImMessageInbox, ImResourceService, OutboundMessageService } from "../../services/im/index.js";
@@ -55,6 +59,27 @@ beforeEach(async () => {
     await sql.end();
   }
 });
+
+async function validatingFeishuAttempt(
+  database: ReturnType<typeof createDatabaseClient>["database"],
+  agentId: string,
+  ownerInstanceId: string,
+  intent: "create" | "reauthorize" | "replace",
+): Promise<string> {
+  const [attempt] = await database
+    .insert(feishuSetupAttempts)
+    .values({
+      agentId,
+      intent,
+      state: "validating",
+      ownerInstanceId,
+      encryptedQrContext: "test-only",
+      expiresAt: new Date(Date.now() + 60_000),
+    })
+    .returning({ id: feishuSetupAttempts.id });
+  if (!attempt) throw new Error("Feishu setup attempt fixture was not created");
+  return attempt.id;
+}
 
 async function fixture() {
   await migrateDatabase(databaseUrl, migrationsFolder);
@@ -146,6 +171,100 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+async function respondingRuntime(input: {
+  database: ReturnType<typeof createDatabaseClient>["database"];
+  computerId: string;
+  deliveryGate?: Promise<void>;
+  instanceId: string;
+  reconcileResult?: (frame: Record<string, unknown>) => Record<string, unknown>;
+  userId: string;
+}) {
+  const frames: unknown[] = [];
+  const registry = new ConnectionRegistry();
+  const context = {
+    computerId: input.computerId,
+    instanceId: input.instanceId,
+    signal: new AbortController().signal,
+    userId: input.userId,
+  };
+  let domain!: RuntimeDomainOwner;
+  const socket = {
+    readyState: WebSocket.OPEN,
+    close: vi.fn(),
+    terminate: vi.fn(),
+    send: vi.fn((serialized: string, callback: (error?: Error) => void) => {
+      const frame = JSON.parse(serialized) as Record<string, unknown>;
+      frames.push(frame);
+      callback();
+      queueMicrotask(() => {
+        if (frame.type === "session:reconcile") {
+          void domain.handle(
+            (input.reconcileResult?.(frame) ?? {
+              type: "session:reconcile:result",
+              requestId: frame.requestId,
+              sessionId: frame.sessionId,
+              placementGeneration: frame.placementGeneration,
+              status: "ready",
+            }) as never,
+            context,
+          );
+        } else if (frame.type === "im:deliver") {
+          void (async () => {
+            await input.deliveryGate;
+            await domain.handle(
+              {
+                type: "im:deliver:result",
+                requestId: frame.requestId,
+                deliveryId: frame.deliveryId,
+                sessionId: frame.sessionId,
+                placementGeneration: frame.placementGeneration,
+                status: "accepted",
+                turnId: `turn-${String(frame.deliveryId)}`,
+              } as never,
+              context,
+            );
+          })();
+        }
+      });
+    }),
+  } as unknown as WebSocket;
+  await registry.register(
+    {
+      capabilities: { imMessageTool: 1 },
+      computerId: input.computerId,
+      instanceId: input.instanceId,
+      lastHeartbeatAt: Date.now(),
+      socket,
+      userId: input.userId,
+    },
+    async () => undefined,
+  );
+  domain = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(input.database));
+  return { context, domain, frames, registry };
+}
+
+function turnReportFor(input: {
+  agentId: string;
+  deliveryId: string;
+  placementGeneration: number;
+  sessionId: string;
+  turnId: string;
+}): TurnReportRequest {
+  const body = {
+    deliveryId: input.deliveryId,
+    turnId: input.turnId,
+    sessionId: input.sessionId,
+    agentId: input.agentId,
+    placementGeneration: input.placementGeneration,
+    outcome: "completed" as const,
+    executionEffects: "completed" as const,
+    finalText: "done",
+    usage: { inputTokens: 1, outputTokens: 1 },
+    traceSummary: { lastSequence: 1, droppedEvents: 0 },
+  };
+  return { type: "turn:report", requestId: crypto.randomUUID(), ...body, resultHash: computeTurnResultHash(body) };
 }
 
 function inbound(
@@ -245,27 +364,203 @@ describe("IM Integration persistence", () => {
       expect((await value.database.select().from(imMessageDeliveries))[0]?.state).toBe("pending");
 
       await value.database.update(imMessageDeliveries).set({ nextAttemptAt: new Date(0) });
-      const recoveredDomain = {
-        requestReconcile: vi.fn().mockResolvedValue({ status: "ready" }),
-        requestDelivery: vi.fn().mockResolvedValue({ status: "accepted", turnId: crypto.randomUUID() }),
-      };
+      const recovered = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        userId: value.bootstrap.userId,
+      });
       await new ImDeliveryWorker({
         database: value.database,
-        registry: registry as never,
-        domain: recoveredDomain as never,
+        registry: recovered.registry,
+        domain: recovered.domain,
       }).runOnce();
       expect((await value.database.select().from(imMessageDeliveries))[0]).toMatchObject({ state: "accepted" });
-      expect(recoveredDomain.requestDelivery).toHaveBeenCalledWith(
-        value.computer.id,
-        instanceId,
+      expect(recovered.frames).toEqual([
+        expect.objectContaining({ type: "session:reconcile" }),
         expect.objectContaining({
+          type: "im:deliver",
           imMessageRevision: 1,
           attention: "direct",
           runtime: expect.objectContaining({
             allowedTools: ["opentag_message_send", "opentag_message_reply", "opentag_message_react"],
           }),
         }),
-      );
+      ]);
+      recovered.domain.close();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("recovers accepted custody and retained Turn reports across rebuilt Server owners", async () => {
+    const value = await fixture();
+    const owners: RuntimeDomainOwner[] = [];
+    try {
+      const firstInstanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: firstInstanceId })
+        .where(eq(computers.id, value.computer.id));
+      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-custody-restart"));
+      const first = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId: firstInstanceId,
+        userId: value.bootstrap.userId,
+      });
+      owners.push(first.domain);
+      await new ImDeliveryWorker({
+        database: value.database,
+        registry: first.registry,
+        domain: first.domain,
+      }).runOnce();
+      const [accepted] = await value.database.select().from(imMessageDeliveries);
+      if (!accepted?.turnId) throw new Error("Accepted delivery fixture was not persisted");
+      const report = turnReportFor({
+        agentId: value.agent.id,
+        deliveryId: accepted.id,
+        placementGeneration: accepted.placementGeneration,
+        sessionId: accepted.sessionId,
+        turnId: accepted.turnId,
+      });
+      first.domain.close();
+
+      const secondInstanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: secondInstanceId })
+        .where(eq(computers.id, value.computer.id));
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(0) })
+        .where(eq(imMessageDeliveries.id, accepted.id));
+      const second = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId: secondInstanceId,
+        userId: value.bootstrap.userId,
+        reconcileResult: (frame) => ({
+          type: "session:reconcile:result",
+          requestId: frame.requestId,
+          sessionId: frame.sessionId,
+          placementGeneration: frame.placementGeneration,
+          status: "recovery_required",
+          reason: "unresolved_turn",
+          turn: { deliveryId: report.deliveryId, turnId: report.turnId },
+          retainedReports: [
+            {
+              deliveryId: report.deliveryId,
+              turnId: report.turnId,
+              placementGeneration: report.placementGeneration,
+              resultHash: report.resultHash,
+            },
+          ],
+        }),
+      });
+      owners.push(second.domain);
+      await new ImDeliveryWorker({
+        database: value.database,
+        registry: second.registry,
+        domain: second.domain,
+      }).runOnce();
+      expect(await second.domain.getDelivery(accepted.id)).toMatchObject({ instanceId: secondInstanceId });
+      await expect(second.domain.handle(report, second.context)).resolves.toMatchObject({ status: "recorded" });
+      expect(await second.domain.getTurn(report.turnId)).toMatchObject({ resultHash: report.resultHash });
+      second.domain.close();
+
+      const thirdInstanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: thirdInstanceId })
+        .where(eq(computers.id, value.computer.id));
+      const third = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId: thirdInstanceId,
+        userId: value.bootstrap.userId,
+      });
+      owners.push(third.domain);
+      await expect(
+        third.domain.handle({ ...report, requestId: crypto.randomUUID() }, third.context),
+      ).resolves.toMatchObject({ status: "already_recorded" });
+    } finally {
+      for (const owner of owners) owner.close();
+      await value.sql.end();
+    }
+  });
+
+  it("binds a pending delivery to a moved placement before send", async () => {
+    const value = await fixture();
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-move-before-send"));
+      const [session] = await value.database.select().from(sessions);
+      if (!session) throw new Error("Session fixture was not created");
+      await new SessionService(value.database).movePlacement(session.id, value.computer.id);
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        userId: value.bootstrap.userId,
+      });
+      await new ImDeliveryWorker({
+        database: value.database,
+        registry: runtime.registry,
+        domain: runtime.domain,
+      }).runOnce();
+      expect(runtime.frames).toEqual([
+        expect.objectContaining({ type: "session:reconcile", placementGeneration: 2 }),
+        expect.objectContaining({ type: "im:deliver", placementGeneration: 2 }),
+      ]);
+      expect((await value.database.select().from(imMessageDeliveries))[0]).toMatchObject({
+        state: "accepted",
+        placementGeneration: 2,
+      });
+      runtime.domain.close();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("rejects an old delivery result when placement moves while awaiting acceptance", async () => {
+    const value = await fixture();
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-move-awaiting"));
+      const [session] = await value.database.select().from(sessions);
+      if (!session) throw new Error("Session fixture was not created");
+      const gate = deferred<void>();
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        deliveryGate: gate.promise,
+        instanceId,
+        userId: value.bootstrap.userId,
+      });
+      const run = new ImDeliveryWorker({
+        database: value.database,
+        registry: runtime.registry,
+        domain: runtime.domain,
+      }).runOnce();
+      await expect.poll(() => runtime.frames.length).toBe(2);
+      await new SessionService(value.database).movePlacement(session.id, value.computer.id);
+      gate.resolve();
+      await run;
+      expect((await value.database.select().from(imMessageDeliveries))[0]).toMatchObject({
+        state: "pending",
+        acceptedAt: null,
+        lastErrorCode: "IM_DELIVERY_RUNTIME_REJECTED",
+      });
+      runtime.domain.close();
     } finally {
       await value.sql.end();
     }
@@ -480,6 +775,59 @@ describe("IM Integration persistence", () => {
     }
   });
 
+  it("marks the Integration reauthorization-required in the credential failure transaction", async () => {
+    const value = await fixture();
+    try {
+      const computerInstanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: computerInstanceId })
+        .where(eq(computers.id, value.computer.id));
+      const admitted = await new ImMessageInbox(value.database).ingest(
+        value.integrationId,
+        1,
+        inbound("Ev-credential-failed"),
+      );
+      const [session] = await value.database.select().from(sessions);
+      if (!session || !admitted.messageId) throw new Error("Outbound fixture was not created");
+      const outbound = new OutboundMessageService(value.database, async () => ({
+        provider: "slack" as const,
+        validateBinding: async () => ({ externalAppId: "A1", externalTenantId: "T1", externalBotId: "U_BOT" }),
+        normalizeInbound: () => [],
+        send: async () => ({ ok: false as const, category: "credential" as const, code: "invalid_auth" }),
+        react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
+        fetchResource: async () => ({ stream: Readable.from(Buffer.alloc(0)) }),
+      }));
+      await expect(
+        outbound.execute({
+          requestId: crypto.randomUUID(),
+          sessionId: session.id,
+          agentId: value.agent.id,
+          computerId: value.computer.id,
+          computerInstanceId,
+          placementGeneration: 1,
+          expectedLatestImMessageId: admitted.messageId,
+          operation: "send",
+          content: {
+            version: 1,
+            fallbackText: "answer",
+            blocks: [{ type: "text", text: "answer" }],
+            truncated: false,
+          },
+        }),
+      ).resolves.toEqual({ state: "credential_failed", code: "invalid_auth", retryAfterSeconds: undefined });
+      expect((await value.database.select().from(integrations))[0]).toMatchObject({
+        reauthorizationRequired: true,
+        lastErrorCode: "invalid_auth",
+      });
+      await expect(
+        value.integrationService.diagnostics(value.bootstrap.userId, value.integrationId),
+      ).resolves.toMatchObject({ ready: false, reauthorizationRequired: true, lastErrorCode: "invalid_auth" });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("reuses one Feishu QR attempt and activates only after candidate validation", async () => {
     const value = await unboundFixture();
     try {
@@ -571,14 +919,15 @@ describe("IM Integration persistence", () => {
 
   it("does not persist a Feishu binding when the tenant grant omits a requested scope", async () => {
     const value = await unboundFixture();
+    const instanceId = crypto.randomUUID();
     const manager = new FeishuConnectionManager({
       database: value.database,
       inbox: new ImMessageInbox(value.database),
-      instanceId: crypto.randomUUID(),
+      instanceId,
       integrations: value.integrationService,
       createAdapter: () =>
         ({
-          channel: { disconnect: async () => undefined },
+          channel: { on: () => undefined, disconnect: async () => undefined },
           validateBinding: async () => ({
             externalAppId: "cli_missing_scope",
             externalTenantId: "tenant",
@@ -589,8 +938,11 @@ describe("IM Integration persistence", () => {
       maintenanceMs: 1_000_000,
     });
     try {
+      const attemptId = await validatingFeishuAttempt(value.database, value.agent.id, instanceId, "create");
       await expect(
-        manager.activate({
+        manager.activateAtomicAttempt({
+          attemptId,
+          ownerInstanceId: instanceId,
           agentId: value.agent.id,
           appId: "cli_missing_scope",
           appSecret: "secret",
@@ -700,7 +1052,10 @@ describe("IM Integration persistence", () => {
     });
     try {
       first.start();
-      await first.activate({
+      const firstAttemptId = await validatingFeishuAttempt(value.database, value.agent.id, firstInstanceId, "create");
+      await first.activateAtomicAttempt({
+        attemptId: firstAttemptId,
+        ownerInstanceId: firstInstanceId,
         agentId: value.agent.id,
         appId: "cli_lease",
         appSecret: "secret",
@@ -716,7 +1071,15 @@ describe("IM Integration persistence", () => {
       expect(initial).toMatchObject({ holderInstanceId: firstInstanceId, fencingEpoch: 1 });
       if (!initial) throw new Error("Lease fixture was not created");
       second.start();
-      await second.activate({
+      const secondAttemptId = await validatingFeishuAttempt(
+        value.database,
+        value.agent.id,
+        secondInstanceId,
+        "reauthorize",
+      );
+      await second.activateAtomicAttempt({
+        attemptId: secondAttemptId,
+        ownerInstanceId: secondInstanceId,
         agentId: value.agent.id,
         appId: "cli_lease",
         appSecret: "secret-rotated",

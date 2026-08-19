@@ -109,9 +109,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       tenantKey: null,
       tenantBrand: input.tenantBrand,
     });
-    let handoff:
-      | { integrationId: string; epoch: number; generation: number; appId: string }
-      | undefined;
+    let handoff: { integrationId: string; epoch: number; generation: number; appId: string } | undefined;
     const detachHandlers = this.#attachHandlers(candidate, () => handoff);
     try {
       const identity = await candidate.validateBinding();
@@ -343,9 +341,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
 
   #attachHandlers(
     adapter: FeishuAdapter,
-    resolveHandoff: () =>
-      | { integrationId: string; epoch: number; generation: number; appId: string }
-      | undefined,
+    resolveHandoff: () => { integrationId: string; epoch: number; generation: number; appId: string } | undefined,
   ): (() => void) | undefined {
     return adapter.channel.on({
       message: async (message: NormalizedMessage) => {

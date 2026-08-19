@@ -123,6 +123,18 @@ describe("Feishu adapter", () => {
     });
     await expect(invokePinnedWs(failing, rawMessage("ev-fail-ack", "om-fail-ack", "2"))).resolves.toBe(500);
   });
+
+  it("does not invent an edit operation from the receive payload update_time field", async () => {
+    const raw = rawMessage("ev-update-time", "om-update-time", "1");
+    Object.assign(raw.event.message, { update_time: "2" });
+    let received: NormalizedMessage | undefined;
+    const dispatcher = createReliableFeishuDispatcher((message) => {
+      received = message;
+    });
+    await dispatcher.invoke(raw, { needCheck: false });
+    expect((received?.raw as { opentagOperation?: string } | undefined)?.opentagOperation).toBe("created");
+    expect(received?.createTime).toBe(1);
+  });
 });
 
 async function invokePinnedWs(dispatcher: EventDispatcher, body: unknown): Promise<number> {

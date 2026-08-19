@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   computeDirectInputHash,
   type DirectImMessageDeliveryRequest,
@@ -13,11 +14,12 @@ import {
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
-import { createCodexClientRuntime, resolveCodexHome } from "../runtime/codex-client-runtime.js";
+import { createCodexClientRuntime, probeCodexRuntime, resolveCodexHome } from "../runtime/codex-client-runtime.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 
 const directories: string[] = [];
 const cleanup: Array<() => Promise<void>> = [];
+const readinessCli = fileURLToPath(new URL("./fixtures/codex-readiness-cli.mjs", import.meta.url));
 
 afterEach(async () => {
   await Promise.all(cleanup.splice(0).map((close) => close()));
@@ -25,7 +27,7 @@ afterEach(async () => {
 });
 
 describe("createCodexClientRuntime", () => {
-  it("D-01 defers provider probing until delivery preflight", async () => {
+  it("D-01 verifies the hosted message tool before advertising runtime readiness", async () => {
     const home = await temporaryDirectory("opentag-client-home-");
     const codexHome = resolve(home, "not-created-yet", "codex-home");
     const probe = vi.fn<(command: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal) => Promise<void>>(
@@ -46,7 +48,8 @@ describe("createCodexClientRuntime", () => {
       probe,
     });
 
-    expect(probe).not.toHaveBeenCalled();
+    expect(probe).toHaveBeenCalledOnce();
+    expect(runtime.messageToolAvailable).toBe(true);
     const runtimeSnapshot = snapshot();
     const reconcile = reconcileRequest(connection.computerId, runtimeSnapshot);
     await expect(runtime.reconciler.reconcile(reconcile)).resolves.toMatchObject({ status: "ready" });
@@ -75,6 +78,7 @@ describe("createCodexClientRuntime", () => {
     });
 
     expect(probe).not.toHaveBeenCalled();
+    expect(runtime.messageToolAvailable).toBe(false);
     const runtimeSnapshot = snapshot();
     await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, runtimeSnapshot));
     await expect(runtime.custody.accept(delivery(runtimeSnapshot))).resolves.toMatchObject({
@@ -87,6 +91,16 @@ describe("createCodexClientRuntime", () => {
 
   it("uses HOME when CODEX_HOME is absent", () => {
     expect(resolveCodexHome({ HOME: "/provider-home" })).toBe(resolve("/provider-home/.codex"));
+  });
+
+  it("validates the production version, login, App Server, and hosted dynamic-tool contract", async () => {
+    const home = await temporaryDirectory("opentag-readiness-home-");
+    const codexHome = await temporaryDirectory("opentag-readiness-codex-");
+    const environment = { HOME: home, CODEX_HOME: codexHome, PATH: process.env.PATH };
+    await expect(probeCodexRuntime(readinessCli, environment)).resolves.toBeUndefined();
+    await expect(
+      probeCodexRuntime(readinessCli, { ...environment, CODEX_FIXTURE_VERSION: "codex-cli 0.146.0" }),
+    ).rejects.toThrow("Codex 0.147.0 or newer is required");
   });
 
   it("replays durable reports after restart and rearms an uncertain manifest handoff", async () => {

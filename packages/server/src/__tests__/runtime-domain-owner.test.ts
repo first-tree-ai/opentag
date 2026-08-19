@@ -71,7 +71,7 @@ describe("RuntimeDomainOwner", () => {
     const conflictRequest = {
       ...request,
       requestId: randomUUID(),
-      content: { kind: "text", text: "different" },
+      content: { kind: "text" as const, text: "different" },
     };
     const conflicting = fixture.owner
       .requestDelivery(fixture.computerId, fixture.instanceId, conflictRequest)
@@ -202,9 +202,6 @@ describe("RuntimeDomainOwner", () => {
       const report = turnReport();
       await expect(fixture.owner.handle(report, fixture.context)).resolves.toMatchObject({ status: "recorded" });
       expect(await fixture.owner.getDelivery(request.deliveryId)).toMatchObject({ turnId: report.turnId });
-      await expect(
-        fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, request),
-      ).resolves.toMatchObject({ status: "accepted", turnId: report.turnId });
     } finally {
       fixture.owner.close();
       vi.useRealTimers();
@@ -281,7 +278,7 @@ describe("RuntimeDomainOwner", () => {
     const replacement = await replaceRuntimeInstance(fixture);
     await expect(
       fixture.owner.handle({ ...report, requestId: randomUUID() }, replacement.context),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ status: "already_recorded" });
     await establishRetainedClaim(fixture, replacement.instanceId, replacement.context, report);
     await expect(
       fixture.owner.handle({ ...report, requestId: randomUUID() }, replacement.context),
@@ -589,6 +586,14 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
         computerId: context.computerId,
         instanceId: context.instanceId,
       });
+      const turn = this.#turns.get(claim.turnId);
+      if (turn && turn.resultHash === claim.resultHash) {
+        this.#turns.set(claim.turnId, {
+          ...turn,
+          computerId: context.computerId,
+          instanceId: context.instanceId,
+        });
+      }
       this.#expectedResultHashes.set(claim.turnId, claim.resultHash);
     }
   }

@@ -1,8 +1,4 @@
-import {
-  RUNTIME_MAX_FRAME_BYTES,
-  type RuntimeClientCapabilities,
-  runtimeFrameByteLength,
-} from "@opentag/shared";
+import { RUNTIME_MAX_FRAME_BYTES, type RuntimeClientCapabilities, runtimeFrameByteLength } from "@opentag/shared";
 import WebSocket from "ws";
 
 export class RuntimeRegistrySendError extends Error {
@@ -60,11 +56,7 @@ export class ConnectionRegistry {
     return this.#entries.get(computerId)?.instanceId;
   }
 
-  supports(
-    computerId: string,
-    instanceId: string,
-    capability: keyof RuntimeClientCapabilities,
-  ): boolean {
+  supports(computerId: string, instanceId: string, capability: keyof RuntimeClientCapabilities): boolean {
     const current = this.#entries.get(computerId);
     return current?.instanceId === instanceId && current.capabilities?.[capability] === 1;
   }

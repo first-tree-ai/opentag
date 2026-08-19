@@ -29,7 +29,13 @@ describe("runtime protocol", () => {
       arch: "x64",
       clientVersion: "0.0.1",
     };
-    expect(ClientRuntimeFrameSchema.parse(register)).toEqual(register);
+    expect(ClientRuntimeFrameSchema.parse(register)).toEqual({
+      ...register,
+      capabilities: { imMessageTool: 0 },
+    });
+    expect(ClientRuntimeFrameSchema.parse({ ...register, capabilities: { imMessageTool: 1 } })).toMatchObject({
+      capabilities: { imMessageTool: 1 },
+    });
     expect(() => ClientRuntimeFrameSchema.parse({ ...register, teamId: crypto.randomUUID() })).toThrow();
     expect(
       ClientRuntimeFrameSchema.parse({

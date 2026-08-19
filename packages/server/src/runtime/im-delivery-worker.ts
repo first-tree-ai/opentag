@@ -323,12 +323,7 @@ export class ImDeliveryWorker {
     await this.#database
       .update(imMessageDeliveries)
       .set({ lastErrorCode: bounded })
-      .where(
-        and(
-          eq(imMessageDeliveries.id, deliveryId),
-          sql`${imMessageDeliveries.state} in ('pending', 'accepted')`,
-        ),
-      );
+      .where(and(eq(imMessageDeliveries.id, deliveryId), sql`${imMessageDeliveries.state} in ('pending', 'accepted')`));
     this.#onDiagnostic(bounded);
   }
 

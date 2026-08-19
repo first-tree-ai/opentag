@@ -70,6 +70,39 @@ describe("ConnectionRegistry", () => {
     expect(stale.close).toHaveBeenCalledWith(1001, "Server shutting down");
     expect(fresh.close).toHaveBeenCalledWith(1001, "Server shutting down");
   });
+
+  it("advertises message-tool readiness only for the verified current instance", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const firstInstanceId = randomUUID();
+    await registry.register(
+      {
+        capabilities: { imMessageTool: 0 },
+        computerId,
+        instanceId: firstInstanceId,
+        lastHeartbeatAt: 1,
+        socket: socket(),
+        userId: randomUUID(),
+      },
+      async () => undefined,
+    );
+    expect(registry.supports(computerId, firstInstanceId, "imMessageTool")).toBe(false);
+
+    const verifiedInstanceId = randomUUID();
+    await registry.register(
+      {
+        capabilities: { imMessageTool: 1 },
+        computerId,
+        instanceId: verifiedInstanceId,
+        lastHeartbeatAt: 2,
+        socket: socket(),
+        userId: randomUUID(),
+      },
+      async () => undefined,
+    );
+    expect(registry.supports(computerId, firstInstanceId, "imMessageTool")).toBe(false);
+    expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool")).toBe(true);
+  });
 });
 
 function socket(): WebSocket {

@@ -119,9 +119,7 @@ export const imMessageDeliveries = pgTable(
       table.sessionId,
     ),
     index("im_message_deliveries_pending_idx").on(table.state, table.nextAttemptAt),
-    uniqueIndex("im_message_deliveries_turn_id_unique")
-      .on(table.turnId)
-      .where(sql`${table.turnId} is not null`),
+    uniqueIndex("im_message_deliveries_turn_id_unique").on(table.turnId).where(sql`${table.turnId} is not null`),
     check("im_message_deliveries_revision_positive", sql`${table.messageRevision} >= 1`),
     check(
       "im_message_deliveries_custody_shape",
@@ -130,7 +128,7 @@ export const imMessageDeliveries = pgTable(
     ),
     check(
       "im_message_deliveries_report_shape",
-      sql`(${table.reportedAt} is null and ${table.turnReport} is null and ${table.resultHash} is null)
+      sql`(${table.reportedAt} is null and ${table.turnReport} is null)
         or (${table.reportedAt} is not null and ${table.turnReport} is not null and ${table.resultHash} is not null)`,
     ),
   ],

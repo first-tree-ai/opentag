@@ -15,11 +15,7 @@ import {
   type TurnReportResult,
 } from "@opentag/shared";
 import type { ConnectionRegistry } from "./connection-registry.js";
-import type {
-  AcceptedDeliveryRecord,
-  RecordedTurnRecord,
-  RuntimeCustodyStore,
-} from "./runtime-custody-store.js";
+import type { AcceptedDeliveryRecord, RecordedTurnRecord, RuntimeCustodyStore } from "./runtime-custody-store.js";
 import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-session.js";
 
 export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custody-store.js";
@@ -381,7 +377,7 @@ export class RuntimeDomainOwner {
     if (attempt) {
       const accepted = await this.#custody.acceptDelivery(attempt.request, attempt.inputHash, report.turnId, context);
       if (accepted === "conflict" || accepted === "stale_generation") return { ...base, status: accepted };
-      if (attempt.kind === "delivery" && this.#pending.get(attempt.request.requestId) === attempt) {
+      if ("promise" in attempt && this.#pending.get(attempt.request.requestId) === attempt) {
         this.#settle(attempt, {
           type: "im:deliver:result",
           requestId: attempt.request.requestId,

@@ -134,8 +134,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       for (const claim of claims) {
         const scope = await this.#deliveryScope(transaction, claim.deliveryId);
         if (
-          !scope ||
-          scope.delivery.state !== "accepted" ||
+          scope?.delivery.state !== "accepted" ||
           scope.delivery.turnId !== claim.turnId ||
           scope.delivery.sessionId !== request.sessionId ||
           scope.agentId !== request.agentId ||
@@ -274,10 +273,7 @@ function acceptedRecord(
     : undefined;
 }
 
-function deliveryRequestMatches(
-  scope: DeliveryScope,
-  request: DirectImMessageDeliveryRequest,
-): boolean {
+function deliveryRequestMatches(scope: DeliveryScope, request: DirectImMessageDeliveryRequest): boolean {
   return (
     scope.delivery.id === request.deliveryId &&
     scope.delivery.sessionId === request.sessionId &&

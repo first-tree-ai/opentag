@@ -237,6 +237,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   }
 
   #enqueue(envelope: CodexEnvelope): void {
+    this.#claimTerminalAtIngress(envelope);
     const next = this.#eventTail.then(async () => {
       if (!this.#context) return;
       if (this.#buffering) {
@@ -286,9 +287,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       return;
     }
     if (method === "turn/completed") {
-      const turn = parseTurn(params?.turn, "turn/completed");
-      this.#assertTurn(turn.id);
-      if (turn.status === "inProgress") throw protocolError("turn/completed carried an active turn");
+      const turn = this.#parseCompletedTurn(params);
       context.claimTerminal();
       this.#terminal?.resolve(turn);
       return;
@@ -469,6 +468,30 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     /* v8 ignore next -- #enqueue drops envelopes before a Run context exists. */
     if (!this.#context) throw protocolError("Codex event arrived without an active run");
     return this.#context;
+  }
+
+  #claimTerminalAtIngress(envelope: CodexEnvelope): void {
+    if (
+      envelope.type !== "notification" ||
+      envelope.message.method !== "turn/completed" ||
+      this.#buffering ||
+      !this.#context
+    ) {
+      return;
+    }
+    try {
+      this.#parseCompletedTurn(record(envelope.message.params));
+      this.#context.claimTerminal();
+    } catch {
+      // The serial event queue preserves the authoritative fail-closed error path.
+    }
+  }
+
+  #parseCompletedTurn(params: Record<string, unknown> | undefined): ParsedTurn {
+    const turn = parseTurn(params?.turn, "turn/completed");
+    this.#assertTurn(turn.id);
+    if (turn.status === "inProgress") throw protocolError("turn/completed carried an active turn");
+    return turn;
   }
 
   #failProvider(error: Error): void {

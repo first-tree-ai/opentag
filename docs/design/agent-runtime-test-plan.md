@@ -75,7 +75,7 @@ A scripted interactive App Server client verifies:
 - workspace, sandbox, network, approval, model, effort, and Provider config mapping;
 - fail-closed rejection of policy combinations Codex cannot enforce;
 - ordered message, tool, usage, warning, Provider extension, and terminal events;
-- terminal notification precedence over a late interrupt rejection while trailing events drain;
+- terminal ingress precedence over a following interrupt rejection while prior event delivery is blocked;
 - approval, permissions, structured question, and MCP elicitation responses;
 - foreign Thread/Turn events, duplicate requests, malformed data, and process failure;
 - probe outcomes, credential discovery, process environment allow-listing, and cleanup.

@@ -496,7 +496,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
   });
 
-  it("keeps a received Codex terminal when an in-flight interrupt rejects while event delivery drains", async () => {
+  it("claims a Codex terminal at ingress before a following interrupt error while a prior event is blocked", async () => {
     const interruptResponse = deferred<void>();
     const releaseWarning = deferred<void>();
     const client = new ManualCodexClient({ interruptResponse: interruptResponse.promise });
@@ -504,23 +504,22 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     const runtime = await factory(client).create(
       createRequest(async (event) => {
         events.push(event);
-        if (event.type === "provider_warning" && event.message === "after terminal") {
+        if (event.type === "provider_warning" && event.message === "before terminal") {
           await releaseWarning.promise;
         }
       }),
     );
     const run = runtime.prompt({ runId: "terminal-before-interrupt-error", input: input("finish") });
     await client.called("turn/start");
-    const aborting = runtime.abort({ expectedRunId: "terminal-before-interrupt-error" });
-    await vi.waitFor(() => expect(client.interrupts).toHaveLength(1));
-
-    client.complete();
-    client.emit({ method: "warning", params: { message: "after terminal" } });
+    client.emit({ method: "warning", params: { message: "before terminal" } });
     await vi.waitFor(() =>
-      expect(events.some((event) => event.type === "provider_warning" && event.message === "after terminal")).toBe(
+      expect(events.some((event) => event.type === "provider_warning" && event.message === "before terminal")).toBe(
         true,
       ),
     );
+    const aborting = runtime.abort({ expectedRunId: "terminal-before-interrupt-error" });
+    await vi.waitFor(() => expect(client.interrupts).toHaveLength(1));
+    client.complete();
     interruptResponse.reject(new Error("turn is already terminal"));
 
     await expect(aborting).rejects.toThrow("turn is already terminal");

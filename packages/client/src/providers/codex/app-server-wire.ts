@@ -1,5 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { signalWatchedProcess, spawnWatchedProcess } from "./process-owner.js";
+import { signalWatchedProcess, spawnWatchedProcess } from "../process-owner.js";
 
 export const CODEX_APP_SERVER_MAX_LINE_BYTES = 1024 * 1024;
 export const CODEX_APP_SERVER_REQUEST_TIMEOUT_MS = 60_000;

@@ -160,6 +160,21 @@ Create a Google Web OAuth client whose callback is
 HTTPS `OPENTAG_PUBLIC_URL`. Browser access and refresh JWTs stay in HttpOnly cookies, while browser mutations require a
 same-origin request and the readable double-submit CSRF cookie.
 
+For loopback-only development without Google credentials, explicitly enable the development bypass and select one
+existing bootstrap user:
+
+```bash
+export OPENTAG_ENV=development
+export OPENTAG_DEV_AUTH_BYPASS_ENABLED=true
+export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
+```
+
+Both `OPENTAG_HOST` and `OPENTAG_PUBLIC_URL` must remain loopback addresses. The login page then shows
+`Dev: bypass Google`. The callback resolves exactly one existing user by case-insensitive email and issues the normal
+browser session; it never creates a user or Team and still rejects suspended users or users without an active
+membership. Missing or duplicate email matches fail closed. The server refuses this configuration in `test` and
+`production`.
+
 Open `/admin/` for the read-only Team view. Use the CLI for membership and invitation mutations:
 
 ```bash
@@ -192,6 +207,8 @@ processes.
 | `OPENTAG_ENCRYPTION_KEY` | none | Required canonical base64-encoded 32-byte application encryption key |
 | `OPENTAG_GOOGLE_CLIENT_ID` | none | Optional Google OIDC client id; requires the matching secret |
 | `OPENTAG_GOOGLE_CLIENT_SECRET` | none | Optional Google OIDC client secret; requires the matching client id |
+| `OPENTAG_DEV_AUTH_BYPASS_ENABLED` | `false` | Explicitly enable loopback-only development sign-in; requires the configured email |
+| `OPENTAG_DEV_AUTH_EMAIL` | none | Existing unique bootstrap user selected by the development bypass |
 | `OPENTAG_AUTO_MIGRATE` | `true` | Run checked-in migrations before listening |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | Access-token lifetime |
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-JWT lifetime |

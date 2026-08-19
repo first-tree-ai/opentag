@@ -4,6 +4,7 @@ export {
   type ResolvedUserTokenIssuer,
   type UserAuthService,
 } from "./auth-service.js";
+export { DevBrowserAuthService, type DevBrowserTokenIssuer } from "./dev-browser-auth.js";
 export { AuthServiceError } from "./errors.js";
 export {
   type GoogleAuthCallbackResult,

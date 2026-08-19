@@ -1,10 +1,12 @@
+import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
-const BooleanStringSchema = z
-  .enum(["true", "false"])
-  .default("true")
-  .transform((value) => value === "true");
+const booleanString = (defaultValue: "true" | "false") =>
+  z
+    .enum(["true", "false"])
+    .default(defaultValue)
+    .transform((value) => value === "true");
 
 const DatabaseUrlSchema = z
   .string()
@@ -45,10 +47,13 @@ const EncryptionKeySchema = z
 const ServerEnvironmentSchema = z
   .object({
     OPENTAG_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
-    OPENTAG_AUTO_MIGRATE: BooleanStringSchema,
+    OPENTAG_AUTO_MIGRATE: booleanString("true"),
     OPENTAG_DATABASE_URL: DatabaseUrlSchema,
     OPENTAG_ENCRYPTION_KEY: EncryptionKeySchema,
     OPENTAG_ENV: z.enum(["development", "production", "test"]).default("development"),
+    OPENTAG_ENV_EXPLICIT: z.boolean(),
+    OPENTAG_DEV_AUTH_BYPASS_ENABLED: booleanString("false"),
+    OPENTAG_DEV_AUTH_EMAIL: z.string().trim().toLowerCase().email().optional(),
     OPENTAG_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
     OPENTAG_HOST: z.string().min(1).default("127.0.0.1"),
@@ -69,7 +74,33 @@ const ServerEnvironmentSchema = z
     if (value.OPENTAG_ENV === "production" && !value.OPENTAG_PUBLIC_URL.startsWith("https://")) {
       context.addIssue({ code: "custom", message: "OPENTAG_PUBLIC_URL must use HTTPS in production" });
     }
+    const devAuthConfigured = value.OPENTAG_DEV_AUTH_BYPASS_ENABLED || Boolean(value.OPENTAG_DEV_AUTH_EMAIL);
+    if (devAuthConfigured) {
+      if (!value.OPENTAG_DEV_AUTH_BYPASS_ENABLED || !value.OPENTAG_DEV_AUTH_EMAIL) {
+        context.addIssue({
+          code: "custom",
+          message: "OPENTAG_DEV_AUTH_BYPASS_ENABLED and OPENTAG_DEV_AUTH_EMAIL must be configured together",
+        });
+      }
+      if (!value.OPENTAG_ENV_EXPLICIT || value.OPENTAG_ENV !== "development") {
+        context.addIssue({
+          code: "custom",
+          message: "Development authentication bypass requires OPENTAG_ENV=development",
+        });
+      }
+      if (!isLoopbackHostname(value.OPENTAG_HOST) || !isLoopbackHostname(new URL(value.OPENTAG_PUBLIC_URL).hostname)) {
+        context.addIssue({
+          code: "custom",
+          message: "Development authentication bypass requires loopback OPENTAG_HOST and OPENTAG_PUBLIC_URL",
+        });
+      }
+    }
   });
+
+function isLoopbackHostname(value: string): boolean {
+  const hostname = value.toLowerCase().replace(/^\[|\]$/g, "");
+  return hostname === "localhost" || hostname === "::1" || (isIP(hostname) === 4 && hostname.startsWith("127."));
+}
 
 export interface ServerConfig {
   accessTokenTtlSeconds: number;
@@ -77,6 +108,7 @@ export interface ServerConfig {
   databaseUrl: string;
   encryptionKey: Uint8Array;
   environment: "development" | "production" | "test";
+  devAuth?: { email: string };
   google?: { clientId: string; clientSecret: string };
   host: string;
   jwtSecret: string;
@@ -105,6 +137,9 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_DATABASE_URL: environment.OPENTAG_DATABASE_URL,
     OPENTAG_ENCRYPTION_KEY: environment.OPENTAG_ENCRYPTION_KEY,
     OPENTAG_ENV: environment.OPENTAG_ENV,
+    OPENTAG_ENV_EXPLICIT: environment.OPENTAG_ENV !== undefined,
+    OPENTAG_DEV_AUTH_BYPASS_ENABLED: environment.OPENTAG_DEV_AUTH_BYPASS_ENABLED,
+    OPENTAG_DEV_AUTH_EMAIL: environment.OPENTAG_DEV_AUTH_EMAIL,
     OPENTAG_GOOGLE_CLIENT_ID: environment.OPENTAG_GOOGLE_CLIENT_ID,
     OPENTAG_GOOGLE_CLIENT_SECRET: environment.OPENTAG_GOOGLE_CLIENT_SECRET,
     OPENTAG_HOST: environment.OPENTAG_HOST,
@@ -120,6 +155,9 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     databaseUrl: parsed.OPENTAG_DATABASE_URL,
     encryptionKey: parsed.OPENTAG_ENCRYPTION_KEY,
     environment: parsed.OPENTAG_ENV,
+    ...(parsed.OPENTAG_DEV_AUTH_BYPASS_ENABLED && parsed.OPENTAG_DEV_AUTH_EMAIL
+      ? { devAuth: { email: parsed.OPENTAG_DEV_AUTH_EMAIL } }
+      : {}),
     ...(parsed.OPENTAG_GOOGLE_CLIENT_ID && parsed.OPENTAG_GOOGLE_CLIENT_SECRET
       ? { google: { clientId: parsed.OPENTAG_GOOGLE_CLIENT_ID, clientSecret: parsed.OPENTAG_GOOGLE_CLIENT_SECRET } }
       : {}),

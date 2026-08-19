@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AuthProvidersResponseSchema,
   ConnectCodeExchangeRequestSchema,
   ConnectCodeExchangeResponseSchema,
   MeResponseSchema,
@@ -59,5 +60,19 @@ describe("auth contracts", () => {
 
     expect(MeResponseSchema.parse(response)).toEqual(response);
     expect(() => MeResponseSchema.parse({ ...response, state: "active" })).toThrow();
+  });
+
+  it("publishes Google and local-development browser provider availability", () => {
+    expect(
+      AuthProvidersResponseSchema.parse({
+        providers: [
+          { id: "google", enabled: false, startUrl: null },
+          { id: "dev", enabled: true, startUrl: "/api/v1/auth/dev/callback" },
+        ],
+      }),
+    ).toMatchObject({ providers: [{ id: "google" }, { id: "dev" }] });
+    expect(() =>
+      AuthProvidersResponseSchema.parse({ providers: [{ id: "password", enabled: true, startUrl: "/login" }] }),
+    ).toThrow();
   });
 });

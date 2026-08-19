@@ -8,7 +8,13 @@ import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
 import { agents, authIdentities, computers, memberships, teams, users } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
-import { AuthIdentityService, PostAuthenticationService } from "../../services/auth/index.js";
+import {
+  AuthIdentityService,
+  AuthService,
+  AuthTokenService,
+  DevBrowserAuthService,
+  PostAuthenticationService,
+} from "../../services/auth/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import { InvitationService } from "../../services/invitations/index.js";
 import { TeamMembershipService } from "../../services/teams/index.js";
@@ -76,6 +82,41 @@ function google(subject: string, email = "same@example.com") {
 }
 
 describe("account identity and Team foundation persistence", () => {
+  it("signs in exactly one existing development user and preserves live account authorization", async () => {
+    const value = await fixture();
+    try {
+      const auth = new AuthService(
+        value.database,
+        new AuthTokenService("development-auth-secret-at-least-32-characters", 900, 3600),
+      );
+      const dev = new DevBrowserAuthService(value.database, auth, "ADMIN@EXAMPLE.COM");
+      const tokens = await dev.signIn();
+      await expect(auth.getAuthenticatedUser(tokens.accessToken)).resolves.toMatchObject({
+        me: { user: { id: value.bootstrap.userId, email: "admin@example.com" } },
+      });
+
+      const [unassigned] = await value.database
+        .insert(users)
+        .values({ email: "unassigned@example.com", displayName: "Unassigned" })
+        .returning();
+      if (!unassigned) throw new Error("Unassigned user fixture was not created");
+      await expect(new DevBrowserAuthService(value.database, auth, unassigned.email).signIn()).rejects.toMatchObject({
+        code: "AUTH_MEMBERSHIP_REQUIRED",
+      });
+
+      await value.database.update(users).set({ suspendedAt: now }).where(eq(users.id, value.bootstrap.userId));
+      await expect(dev.signIn()).rejects.toMatchObject({ code: "AUTH_USER_SUSPENDED" });
+      await value.database.update(users).set({ suspendedAt: null }).where(eq(users.id, value.bootstrap.userId));
+      await value.database.insert(users).values({ email: "Admin@Example.com", displayName: "Duplicate" });
+      await expect(dev.signIn()).rejects.toMatchObject({ code: "AUTH_DEV_USER_UNAVAILABLE" });
+      await expect(
+        new DevBrowserAuthService(value.database, auth, "missing@example.com").signIn(),
+      ).rejects.toMatchObject({ code: "AUTH_DEV_USER_UNAVAILABLE" });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("uses provider identity rather than email as the global account key", async () => {
     const value = await fixture();
     try {

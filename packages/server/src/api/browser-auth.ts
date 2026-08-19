@@ -1,3 +1,4 @@
+import { isIP } from "node:net";
 import { AuthProvidersResponseSchema, HTTP_PATHS } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -12,7 +13,8 @@ import {
   setOAuthContextCookie,
 } from "../services/auth/browser-cookies.js";
 import { AuthServiceError } from "../services/auth/errors.js";
-import type { GoogleBrowserAuthService, UserAuthService } from "../services/auth/index.js";
+import type { DevBrowserAuthService, GoogleBrowserAuthService, UserAuthService } from "../services/auth/index.js";
+import { validateOAuthNext } from "../services/auth/index.js";
 import { parseRequest } from "./request-validation.js";
 
 const StartQuerySchema = z.object({ next: z.string().max(1024).optional() }).strict();
@@ -21,10 +23,24 @@ const CallbackQuerySchema = z
   .strict();
 
 export interface BrowserAuthRoutesOptions {
+  dev?: DevBrowserAuthService;
   google?: GoogleBrowserAuthService;
   publicOrigin: string;
   refreshTokenTtlSeconds: number;
   secureCookies: boolean;
+}
+
+function isLoopbackAddress(value: string): boolean {
+  const address =
+    value
+      .toLowerCase()
+      .replace(/^\[|\]$/g, "")
+      .split("%", 1)[0] ?? value;
+  if (address === "localhost") return true;
+  if (address === "::1") return true;
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(address)?.[1];
+  const ipv4 = mapped ?? address;
+  return isIP(ipv4) === 4 && ipv4.startsWith("127.");
 }
 
 class RouteRateLimiter {
@@ -60,8 +76,9 @@ export function registerBrowserAuthRoutes(
 ): void {
   const limiter = new RouteRateLimiter();
 
-  app.get(HTTP_PATHS.authProviders, async (_request, reply) =>
-    reply.code(200).send(
+  app.get(HTTP_PATHS.authProviders, async (request, reply) => {
+    const devAvailable = Boolean(options.dev) && isLoopbackAddress(request.ip) && isLoopbackAddress(request.hostname);
+    return reply.code(200).send(
       AuthProvidersResponseSchema.parse({
         providers: [
           {
@@ -69,10 +86,35 @@ export function registerBrowserAuthRoutes(
             enabled: Boolean(options.google),
             startUrl: options.google ? HTTP_PATHS.authGoogleStart : null,
           },
+          {
+            id: "dev",
+            enabled: devAvailable,
+            startUrl: devAvailable ? HTTP_PATHS.authDevCallback : null,
+          },
         ],
       }),
-    ),
-  );
+    );
+  });
+
+  app.get(HTTP_PATHS.authDevCallback, async (request, reply) => {
+    limiter.check(`${request.ip}:dev`);
+    if (!options.dev || !isLoopbackAddress(request.ip) || !isLoopbackAddress(request.hostname)) {
+      throw new AuthServiceError(
+        "AUTH_PROVIDER_DISABLED",
+        "deterministic",
+        "Development sign-in is not available",
+        404,
+      );
+    }
+    const { next } = parseRequest(StartQuerySchema, request.query);
+    const destination = validateOAuthNext(next);
+    const tokens = await options.dev.signIn();
+    setBrowserSessionCookies(reply, tokens, {
+      refreshTtlSeconds: options.refreshTokenTtlSeconds,
+      secure: options.secureCookies,
+    });
+    return reply.redirect(destination, 302);
+  });
 
   app.get(HTTP_PATHS.authGoogleStart, async (request, reply) => {
     limiter.check(`${request.ip}:start`);

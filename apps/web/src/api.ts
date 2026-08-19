@@ -1,5 +1,8 @@
 import {
   type Agent,
+  type AuthProvidersResponse,
+  AuthProvidersResponseSchema,
+  HTTP_PATHS,
   type InvitationPreview,
   InvitationPreviewSchema,
   InvitationRedemptionResponseSchema,
@@ -39,6 +42,10 @@ export class BrowserApi {
 
   me(): Promise<MeResponse> {
     return this.request("/api/v1/me", MeResponseSchema);
+  }
+
+  authProviders(): Promise<AuthProvidersResponse> {
+    return this.request(HTTP_PATHS.authProviders, AuthProvidersResponseSchema, undefined, false);
   }
 
   members(teamId: string): Promise<ListTeamMembersResponse> {

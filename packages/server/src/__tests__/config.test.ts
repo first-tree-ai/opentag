@@ -18,6 +18,49 @@ describe("parseServerConfig", () => {
       port: 8000,
       refreshTokenTtlSeconds: 2_592_000,
     });
+    expect(parseServerConfig(required).devAuth).toBeUndefined();
+  });
+
+  it("enables development sign-in only with an explicit existing-user email and loopback server", () => {
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
+        OPENTAG_DEV_AUTH_EMAIL: " ADMIN@Example.com ",
+        OPENTAG_ENV: "development",
+      }),
+    ).toMatchObject({ devAuth: { email: "admin@example.com" }, environment: "development" });
+
+    for (const invalid of [
+      { OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true", OPENTAG_DEV_AUTH_EMAIL: "admin@example.com" },
+      { OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true" },
+      { OPENTAG_DEV_AUTH_EMAIL: "admin@example.com" },
+      {
+        OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
+        OPENTAG_DEV_AUTH_EMAIL: "admin@example.com",
+        OPENTAG_ENV: "test",
+      },
+      {
+        OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
+        OPENTAG_DEV_AUTH_EMAIL: "admin@example.com",
+        OPENTAG_ENV: "production",
+        OPENTAG_PUBLIC_URL: "https://localhost:8000",
+      },
+      {
+        OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
+        OPENTAG_DEV_AUTH_EMAIL: "admin@example.com",
+        OPENTAG_ENV: "development",
+        OPENTAG_HOST: "0.0.0.0",
+      },
+      {
+        OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
+        OPENTAG_DEV_AUTH_EMAIL: "admin@example.com",
+        OPENTAG_ENV: "development",
+        OPENTAG_PUBLIC_URL: "http://192.0.2.10:8000",
+      },
+    ]) {
+      expect(() => parseServerConfig({ ...required, ...invalid })).toThrow();
+    }
   });
 
   it("requires complete Google configuration and HTTPS in production", () => {

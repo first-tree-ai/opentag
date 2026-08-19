@@ -1,0 +1,955 @@
+import { execFile } from "node:child_process";
+import { access } from "node:fs/promises";
+import { isAbsolute, join } from "node:path";
+import { promisify } from "node:util";
+import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
+import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
+import {
+  AGENT_RUNTIME_CONTRACT_VERSION,
+  type AgentAbortRequest,
+  type AgentApprovalResponse,
+  type AgentInteractionRequest,
+  type AgentInteractionResponse,
+  type AgentPromptRequest,
+  type AgentProviderRunContext,
+  type AgentProviderRunResult,
+  type AgentQuestionResponse,
+  type AgentRunConfiguration,
+  type AgentRuntimeBinding,
+  type AgentRuntimeEventSink,
+  type AgentRuntimeFactory,
+  type AgentRuntimeManifest,
+  type AgentRuntimePolicy,
+  type AgentRuntimeProbeRequest,
+  type AgentRuntimeProbeResult,
+  type AgentRuntimeWorkspace,
+  type AgentSteerRequest,
+  type CreateAgentRuntimeRequest,
+  type JsonValue,
+  type ResumeAgentRuntimeRequest,
+} from "../../agent-runtime/types.js";
+import { assertBinding, assertJsonValue } from "../../agent-runtime/validation.js";
+import {
+  type CodexAppServerMessage,
+  CodexAppServerProcess,
+  type CodexAppServerRequest,
+  type CodexSpawnOptions,
+  type InteractiveCodexAppServerClient,
+} from "./app-server-wire.js";
+
+const execFileAsync = promisify(execFile);
+const CODEX_BINDING_SCHEMA_VERSION = 1;
+const CODEX_PROVIDER_ID = "codex";
+const CODEX_APP_SERVER_ARGS = ["app-server"] as const;
+const CODEX_REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
+const TOOL_ITEM_TYPES = new Set([
+  "collabToolCall",
+  "commandExecution",
+  "dynamicToolCall",
+  "fileChange",
+  "imageView",
+  "mcpToolCall",
+  "webSearch",
+]);
+
+export const CODEX_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
+  providerId: CODEX_PROVIDER_ID,
+  displayName: "Codex",
+  contractVersion: AGENT_RUNTIME_CONTRACT_VERSION,
+  bindingSchemaVersion: CODEX_BINDING_SCHEMA_VERSION,
+});
+
+interface CodexProviderConfiguration {
+  readonly personality?: string;
+  readonly serviceName?: string;
+  readonly summary?: string;
+}
+
+interface CodexRuntimeOptions {
+  readonly client: InteractiveCodexAppServerClient;
+  readonly threadId: string;
+  readonly eventSink: AgentRuntimeEventSink;
+  readonly binding: AgentRuntimeBinding;
+  readonly workspace: AgentRuntimeWorkspace;
+  readonly policy: AgentRuntimePolicy;
+  readonly configuration?: AgentRunConfiguration;
+}
+
+export interface CodexAgentRuntimeFactoryOptions {
+  readonly clientVersion: string;
+  readonly createClient?: (cwd: string) => InteractiveCodexAppServerClient;
+  readonly process?: Omit<CodexSpawnOptions, "cwd" | "env"> & { readonly env?: NodeJS.ProcessEnv };
+  readonly probeRunner?: () => Promise<{
+    readonly appServer: boolean;
+    readonly credential: boolean;
+    readonly version: string;
+  }>;
+}
+
+interface Deferred<T> {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (error: Error) => void;
+}
+
+type CodexEnvelope =
+  | { readonly type: "notification"; readonly message: CodexAppServerMessage }
+  | { readonly type: "request"; readonly request: CodexAppServerRequest };
+
+interface ParsedTurn {
+  readonly error?: string;
+  readonly id: string;
+  readonly items: readonly Record<string, unknown>[];
+  readonly status: "completed" | "failed" | "inProgress" | "interrupted";
+}
+
+export class CodexAgentRuntime extends BaseAgentRuntime {
+  readonly #client: InteractiveCodexAppServerClient;
+  readonly #threadId: string;
+  readonly #workspace: AgentRuntimeWorkspace;
+  readonly #policy: AgentRuntimePolicy;
+  readonly #configuration?: AgentRunConfiguration;
+  readonly #unsubscribeNotifications: () => void;
+  readonly #unsubscribeRequests: () => void;
+  readonly #wireInteractions = new Map<string, CodexAppServerRequest>();
+  readonly #completedMessages = new Map<string, { readonly phase?: string; readonly text: string }>();
+  #eventTail: Promise<void> = Promise.resolve();
+  #buffering = false;
+  #buffered: CodexEnvelope[] = [];
+  #context?: AgentProviderRunContext;
+  #providerTurnId?: string;
+  #turnIdReady?: Deferred<string>;
+  #terminal?: Deferred<ParsedTurn>;
+  #latestUsage?: { readonly inputTokens?: number; readonly cachedInputTokens?: number; readonly outputTokens?: number };
+  #providerFailure?: Error;
+
+  constructor(options: CodexRuntimeOptions) {
+    super({
+      manifest: CODEX_AGENT_RUNTIME_MANIFEST,
+      capabilities: { steer: "supported", interactions: "supported" },
+      eventSink: options.eventSink,
+      binding: options.binding,
+    });
+    this.#client = options.client;
+    this.#threadId = options.threadId;
+    this.#workspace = options.workspace;
+    this.#policy = options.policy;
+    this.#configuration = options.configuration;
+    this.#unsubscribeNotifications = this.#client.subscribe((message) => {
+      this.#enqueue({ type: "notification", message });
+    });
+    this.#unsubscribeRequests = this.#client.subscribeServerRequests((request) => {
+      this.#enqueue({ type: "request", request });
+    });
+  }
+
+  protected async executeRun(
+    request: AgentPromptRequest,
+    context: AgentProviderRunContext,
+  ): Promise<AgentProviderRunResult> {
+    this.#context = context;
+    this.#providerTurnId = undefined;
+    this.#providerFailure = undefined;
+    this.#latestUsage = undefined;
+    this.#completedMessages.clear();
+    this.#wireInteractions.clear();
+    this.#buffered = [];
+    this.#buffering = true;
+    this.#turnIdReady = deferred<string>();
+    this.#terminal = deferred<ParsedTurn>();
+    void this.#turnIdReady.promise.catch(() => undefined);
+    void this.#terminal.promise.catch(() => undefined);
+
+    try {
+      const response = await this.#client.request("turn/start", this.#turnStartParams(request));
+      const started = parseTurnResponse(response, "turn/start");
+      if (started.status !== "inProgress") throw protocolError("turn/start returned a terminal turn");
+      this.#providerTurnId = started.id;
+      this.#turnIdReady.resolve(started.id);
+      this.#buffering = false;
+      const buffered = this.#buffered.splice(0);
+      for (const envelope of buffered) this.#enqueue(envelope);
+      await this.#eventTail;
+      if (this.#providerFailure) throw this.#providerFailure;
+      const terminal = await this.#terminal.promise;
+      await this.#eventTail;
+      if (this.#providerFailure) throw this.#providerFailure;
+      return this.#runResult(terminal);
+    } catch (error) {
+      const failure = error instanceof Error ? error : new Error("Codex run failed");
+      this.#turnIdReady.reject(failure);
+      throw failure;
+      /* v8 ignore next -- finally is mandatory cleanup; V8 reports a synthetic branch for its closing token. */
+    } finally {
+      this.#buffering = false;
+      this.#buffered = [];
+      this.#context = undefined;
+      this.#providerTurnId = undefined;
+      this.#turnIdReady = undefined;
+      this.#terminal = undefined;
+      this.#wireInteractions.clear();
+    }
+  }
+
+  protected async steerProvider(request: AgentSteerRequest): Promise<void> {
+    const turnId = await this.#activeTurnId();
+    const response = requireRecord(
+      await this.#client.request("turn/steer", {
+        threadId: this.#threadId,
+        input: codexInput(request.input.items),
+        expectedTurnId: turnId,
+      }),
+      "turn/steer returned an invalid response",
+    );
+    if (requireString(response.turnId, "turn/steer returned no turnId") !== turnId) {
+      throw protocolError("turn/steer accepted another turn");
+    }
+  }
+
+  protected async respondProvider(response: AgentInteractionResponse): Promise<void> {
+    const request = this.#wireInteractions.get(response.requestId);
+    /* v8 ignore next -- Base and the serial Codex envelope queue fence this map with the public interaction. */
+    if (!request) throw new AgentRuntimeError("interaction_not_found", "Codex interaction is no longer pending");
+    const result = codexInteractionResult(request.method, response);
+    await this.#client.respondServerRequest(request.id, result);
+    this.#wireInteractions.delete(response.requestId);
+  }
+
+  protected async abortProvider(request: AgentAbortRequest): Promise<void> {
+    const turnId = await this.#activeTurnId();
+    /* v8 ignore next 3 -- Base validates expectedRunId before entering the Provider hook. */
+    if (request.expectedRunId !== this.#context?.runId) {
+      throw new AgentRuntimeError("run_mismatch", "abort no longer belongs to the active Codex turn");
+    }
+    await this.#client.interrupt(this.#threadId, turnId);
+  }
+
+  protected async closeProvider(): Promise<void> {
+    if (this.#context) {
+      const failure = new AgentProviderError("provider_error", "Codex runtime is closing");
+      this.#providerFailure ??= failure;
+      this.#terminal?.reject(failure);
+      this.#turnIdReady?.reject(failure);
+    }
+    this.#unsubscribeRequests();
+    this.#unsubscribeNotifications();
+    await this.#client.close();
+  }
+
+  #enqueue(envelope: CodexEnvelope): void {
+    const next = this.#eventTail.then(async () => {
+      if (!this.#context) return;
+      if (this.#buffering) {
+        this.#buffered.push(envelope);
+        return;
+      }
+      if (envelope.type === "notification") await this.#handleNotification(envelope.message);
+      else await this.#handleServerRequest(envelope.request);
+    });
+    this.#eventTail = next.catch((error: unknown) => {
+      this.#failProvider(error instanceof Error ? error : protocolError("Codex event processing failed"));
+    });
+  }
+
+  async #handleNotification(message: CodexAppServerMessage): Promise<void> {
+    const method = message.method;
+    if (method === "opentag/processError") {
+      const params = record(message.params);
+      throw params?.error instanceof Error
+        ? params.error
+        : new AgentProviderError("provider_error", "Codex process failed");
+    }
+    if (typeof method !== "string") throw protocolError("Codex emitted a notification without a method");
+    const context = this.#requireContext();
+    const params = record(message.params);
+
+    if (method === "warning" || method === "configWarning") {
+      const text = requireString(params?.message ?? params?.summary, `${method} has no message`);
+      await context.emit({ type: "provider_warning", code: method, message: text });
+      return;
+    }
+    if (method === "serverRequest/resolved") {
+      const wireId = params?.requestId;
+      const interactionId = this.#interactionIdForWireId(wireId);
+      if (!interactionId) return;
+      this.#wireInteractions.delete(interactionId);
+      await context.resolveInteraction(interactionId, "expired");
+      return;
+    }
+    if (method === "thread/closed") {
+      if (params?.threadId !== undefined && params.threadId !== this.#threadId) return;
+      throw new AgentProviderError("provider_error", "Codex thread closed during an active run");
+    }
+    if (method === "turn/started") {
+      const turn = parseTurn(params?.turn, "turn/started");
+      this.#assertTurn(turn.id);
+      return;
+    }
+    if (method === "turn/completed") {
+      const turn = parseTurn(params?.turn, "turn/completed");
+      this.#assertTurn(turn.id);
+      if (turn.status === "inProgress") throw protocolError("turn/completed carried an active turn");
+      this.#terminal?.resolve(turn);
+      return;
+    }
+    if (method === "thread/tokenUsage/updated") {
+      if (params?.turnId !== undefined && params.turnId !== this.#providerTurnId) return;
+      const usage = parseUsage(params?.tokenUsage);
+      this.#latestUsage = usage;
+      await context.emit({ type: "usage_updated", usage });
+      return;
+    }
+    if (method === "item/agentMessage/delta") {
+      this.#assertNotificationTurn(params);
+      await context.emit({
+        type: "message_delta",
+        messageId: requireString(params?.itemId, "agent message delta has no itemId"),
+        delta: requireString(params?.delta, "agent message delta has no text", true),
+      });
+      return;
+    }
+    if (method === "item/commandExecution/outputDelta") {
+      this.#assertNotificationTurn(params);
+      await context.emit({
+        type: "tool_updated",
+        toolCallId: requireString(params?.itemId, "command output delta has no itemId"),
+        update: { delta: requireString(params?.delta, "command output delta has no text", true) },
+      });
+      return;
+    }
+    if (method === "item/started" || method === "item/completed") {
+      this.#assertNotificationTurn(params);
+      const item = requireRecord(params?.item, `${method} has no item`);
+      await this.#handleItem(method, item);
+      return;
+    }
+    if (method === "error") {
+      const error = record(params?.error);
+      await context.emit({
+        type: "provider_warning",
+        code: "codex_turn_error",
+        message: typeof error?.message === "string" ? error.message : "Codex reported a turn error",
+      });
+      return;
+    }
+    if (method === "turn/plan/updated" || method === "turn/diff/updated" || method.startsWith("model/")) {
+      await context.emit({
+        type: "provider_event",
+        providerId: CODEX_PROVIDER_ID,
+        schemaVersion: 1,
+        payload: { method, params: toJsonValue(params ?? {}) },
+      });
+    }
+  }
+
+  async #handleItem(method: "item/completed" | "item/started", item: Record<string, unknown>): Promise<void> {
+    const context = this.#requireContext();
+    const id = requireString(item.id, `${method} item has no id`);
+    const type = requireString(item.type, `${method} item has no type`);
+    if (type === "agentMessage") {
+      if (method === "item/started") {
+        await context.emit({ type: "message_started", messageId: id });
+        return;
+      }
+      const text = requireString(item.text, "completed agent message has no text", true);
+      const phase = typeof item.phase === "string" ? item.phase : undefined;
+      this.#completedMessages.set(id, { text, ...(phase ? { phase } : {}) });
+      await context.emit({ type: "message_completed", messageId: id, text });
+      return;
+    }
+    if (!TOOL_ITEM_TYPES.has(type)) return;
+    const name = toolName(item, type);
+    if (method === "item/started") {
+      await context.emit({ type: "tool_started", toolCallId: id, name, input: toJsonValue(item) });
+      return;
+    }
+    const status = item.status === "declined" ? "declined" : item.status === "failed" ? "failed" : "completed";
+    await context.emit({
+      type: "tool_completed",
+      toolCallId: id,
+      name,
+      status,
+      output: toJsonValue(item),
+    });
+  }
+
+  async #handleServerRequest(request: CodexAppServerRequest): Promise<void> {
+    const context = this.#requireContext();
+    const params = requireRecord(request.params, `${request.method} has invalid params`);
+    if (params.threadId !== undefined && params.threadId !== this.#threadId) {
+      throw protocolError("Codex server request belongs to another thread");
+    }
+    if (params.turnId !== undefined && params.turnId !== this.#providerTurnId) {
+      throw protocolError("Codex server request belongs to another turn");
+    }
+    const interaction = codexInteractionRequest(request, params);
+    if (!interaction) {
+      await this.#client.rejectServerRequest(request.id, -32601, "Unsupported Codex server request");
+      throw protocolError(`Codex requested an unsupported method: ${request.method}`);
+    }
+    const requestId = interaction.requestId;
+    if (this.#wireInteractions.has(requestId)) throw protocolError("Codex reused a pending server request ID");
+    this.#wireInteractions.set(requestId, request);
+    try {
+      await context.requestInteraction(interaction);
+    } catch (error) {
+      this.#wireInteractions.delete(requestId);
+      await this.#client
+        .rejectServerRequest(request.id, -32000, "OpenTag could not deliver the interaction")
+        .catch(() => undefined);
+      throw error;
+    }
+  }
+
+  #turnStartParams(request: AgentPromptRequest): Record<string, unknown> {
+    const configuration = mergeConfiguration(this.#configuration, request.configuration);
+    const provider = parseProviderConfiguration(configuration?.provider);
+    return {
+      threadId: this.#threadId,
+      input: codexInput(request.input.items),
+      cwd: this.#workspace.cwd,
+      approvalPolicy: codexApprovalPolicy(this.#policy.approvals),
+      sandboxPolicy: codexSandboxPolicy(this.#workspace, this.#policy),
+      ...(configuration?.model ? { model: configuration.model } : {}),
+      ...(configuration?.reasoningEffort ? { effort: configuration.reasoningEffort } : {}),
+      ...(provider.personality ? { personality: provider.personality } : {}),
+      ...(provider.summary ? { summary: provider.summary } : {}),
+    };
+  }
+
+  #runResult(turn: ParsedTurn): AgentProviderRunResult {
+    const finalText = selectFinalText(turn.items, this.#completedMessages);
+    const output = finalText === undefined ? [] : [{ type: "text" as const, text: finalText }];
+    const diagnostics: JsonValue = { providerThreadId: this.#threadId, providerTurnId: turn.id };
+    if (turn.status === "completed") {
+      return {
+        status: "completed",
+        output,
+        ...(this.#latestUsage ? { usage: this.#latestUsage } : {}),
+        diagnostics,
+      };
+    }
+    if (turn.status === "interrupted") {
+      return {
+        status: "aborted",
+        output,
+        ...(this.#latestUsage ? { usage: this.#latestUsage } : {}),
+        error: { code: "run_aborted", message: "Codex turn was interrupted" },
+        diagnostics,
+      };
+    }
+    return {
+      status: "failed",
+      output,
+      ...(this.#latestUsage ? { usage: this.#latestUsage } : {}),
+      error: { code: "provider_error", message: turn.error ?? "Codex turn failed" },
+      diagnostics,
+    };
+  }
+
+  async #activeTurnId(): Promise<string> {
+    if (this.#providerTurnId) return this.#providerTurnId;
+    if (!this.#turnIdReady) throw new AgentRuntimeError("run_mismatch", "there is no active Codex turn");
+    return this.#turnIdReady.promise;
+  }
+
+  #assertNotificationTurn(params: Record<string, unknown> | undefined): void {
+    if (params?.threadId !== undefined && params.threadId !== this.#threadId) {
+      throw protocolError("Codex notification belongs to another thread");
+    }
+    if (params?.turnId !== this.#providerTurnId) throw protocolError("Codex notification belongs to another turn");
+  }
+
+  #assertTurn(turnId: string): void {
+    if (turnId !== this.#providerTurnId) throw protocolError("Codex turn identity changed during a run");
+  }
+
+  #requireContext(): AgentProviderRunContext {
+    /* v8 ignore next -- #enqueue drops envelopes before a Run context exists. */
+    if (!this.#context) throw protocolError("Codex event arrived without an active run");
+    return this.#context;
+  }
+
+  #failProvider(error: Error): void {
+    if (this.#providerFailure) return;
+    this.#providerFailure = error;
+    this.#terminal?.reject(error);
+    this.#turnIdReady?.reject(error);
+    this.closeForProviderFailure();
+  }
+
+  #interactionIdForWireId(wireId: unknown): string | undefined {
+    for (const [interactionId, request] of this.#wireInteractions) {
+      if (request.id === wireId) return interactionId;
+    }
+    return undefined;
+  }
+}
+
+export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
+  readonly manifest = CODEX_AGENT_RUNTIME_MANIFEST;
+  readonly #clientVersion: string;
+  readonly #createClient: (cwd: string) => InteractiveCodexAppServerClient;
+  readonly #probeRunner: () => Promise<{
+    readonly appServer: boolean;
+    readonly credential: boolean;
+    readonly version: string;
+  }>;
+
+  constructor(options: CodexAgentRuntimeFactoryOptions) {
+    this.#clientVersion = options.clientVersion;
+    const environment = options.process?.env ?? codexAgentRuntimeEnvironment();
+    const command = options.process?.command ?? "codex";
+    this.#createClient =
+      options.createClient ??
+      ((cwd) =>
+        new CodexAppServerProcess({
+          command,
+          args: options.process?.args ?? [...CODEX_APP_SERVER_ARGS],
+          cwd,
+          env: environment,
+          expectedCodexHome: options.process?.expectedCodexHome,
+          maxLineBytes: options.process?.maxLineBytes,
+          requestTimeoutMs: options.process?.requestTimeoutMs,
+          spawnProcess: options.process?.spawnProcess,
+        }));
+    this.#probeRunner =
+      options.probeRunner ?? (() => probeCodex(command, environment, options.process?.expectedCodexHome));
+  }
+
+  async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
+    const issues: AgentRuntimeProbeResult["issues"][number][] = [];
+    try {
+      validateConfiguration(request.configuration);
+    } catch (error) {
+      issues.push({
+        code: "configuration_invalid",
+        message: (error as Error).message,
+      });
+    }
+    let version: string | undefined;
+    try {
+      const result = await this.#probeRunner();
+      version = result.version;
+      if (!result.appServer) issues.push({ code: "version_incompatible", message: "Codex App Server is unavailable" });
+      if (!result.credential) issues.push({ code: "credential_missing", message: "Codex credentials were not found" });
+    } catch {
+      issues.push({ code: "artifact_missing", message: "Codex CLI could not be executed" });
+    }
+    return { ready: issues.length === 0, ...(version ? { version } : {}), issues };
+  }
+
+  create(request: CreateAgentRuntimeRequest): Promise<CodexAgentRuntime> {
+    return this.#open(request, "create");
+  }
+
+  resume(request: ResumeAgentRuntimeRequest): Promise<CodexAgentRuntime> {
+    return this.#open(request, "resume");
+  }
+
+  async #open(
+    request: CreateAgentRuntimeRequest | ResumeAgentRuntimeRequest,
+    mode: "create" | "resume",
+  ): Promise<CodexAgentRuntime> {
+    validateFactoryRequest(request);
+    validateConfiguration(request.configuration);
+    const providerConfiguration = parseProviderConfiguration(request.configuration?.provider);
+    const binding = mode === "resume" && "binding" in request ? request.binding : undefined;
+    if (binding) assertBinding(binding, this.manifest);
+    const expectedThreadId = binding ? parseCodexBinding(binding) : undefined;
+    const client = this.#createClient(request.workspace.cwd);
+    try {
+      await client.initialize(this.#clientVersion);
+      const method = mode === "create" ? "thread/start" : "thread/resume";
+      const response = requireRecord(
+        await client.request(method, {
+          ...(expectedThreadId ? { threadId: expectedThreadId } : {}),
+          cwd: request.workspace.cwd,
+          approvalPolicy: codexApprovalPolicy(request.policy.approvals),
+          sandbox: codexSandboxMode(request.policy.fileSystem),
+          ...(request.configuration?.model ? { model: request.configuration.model } : {}),
+          ...(providerConfiguration.personality ? { personality: providerConfiguration.personality } : {}),
+          ...(providerConfiguration.serviceName ? { serviceName: providerConfiguration.serviceName } : {}),
+        }),
+        `${method} returned an invalid response`,
+      );
+      const thread = requireRecord(response.thread, `${method} returned no thread`);
+      const threadId = requireString(thread.id, `${method} returned no thread id`);
+      if (expectedThreadId && threadId !== expectedThreadId)
+        throw protocolError("thread/resume restored another thread");
+      const runtimeBinding: AgentRuntimeBinding = {
+        providerId: CODEX_PROVIDER_ID,
+        schemaVersion: CODEX_BINDING_SCHEMA_VERSION,
+        payload: { threadId },
+      };
+      assertBinding(runtimeBinding, this.manifest);
+      await request.eventSink({ type: "binding_changed", binding: runtimeBinding });
+      return new CodexAgentRuntime({
+        client,
+        threadId,
+        eventSink: request.eventSink,
+        binding: runtimeBinding,
+        workspace: request.workspace,
+        policy: request.policy,
+        configuration: request.configuration,
+      });
+    } catch (error) {
+      await client.close().catch(() => undefined);
+      if (error instanceof AgentRuntimeError) throw error;
+      throw new AgentRuntimeError(mode === "create" ? "create_failed" : "resume_failed", `Codex ${mode} failed`, {
+        cause: error,
+      });
+    }
+  }
+}
+
+export function codexAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const keys = [
+    "CODEX_HOME",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LOGNAME",
+    "OPENAI_API_KEY",
+    "PATH",
+    "PATHEXT",
+    "SHELL",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "SystemRoot",
+    "TMPDIR",
+    "USER",
+    "WINDIR",
+  ] as const;
+  const environment: NodeJS.ProcessEnv = {};
+  for (const key of keys) {
+    if (source[key] !== undefined) environment[key] = source[key];
+  }
+  return environment;
+}
+
+async function probeCodex(
+  command: string,
+  environment: NodeJS.ProcessEnv,
+  expectedCodexHome?: string,
+): Promise<{ readonly appServer: boolean; readonly credential: boolean; readonly version: string }> {
+  const execution = { encoding: "utf8" as const, env: environment, timeout: 5_000, windowsHide: true };
+  const versionResult = await execFileAsync(command, ["--version"], execution);
+  const version = versionResult.stdout.trim();
+  if (!version) throw new Error("Codex CLI returned no version");
+  await execFileAsync(command, ["app-server", "--help"], execution);
+  const codexHome =
+    expectedCodexHome ?? environment.CODEX_HOME ?? (environment.HOME ? join(environment.HOME, ".codex") : undefined);
+  const credential =
+    Boolean(environment.OPENAI_API_KEY) || (codexHome ? await fileExists(join(codexHome, "auth.json")) : false);
+  return { appServer: true, credential, version };
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
+  if (!request || typeof request !== "object" || typeof request.eventSink !== "function") {
+    throw new AgentRuntimeError("configuration_invalid", "eventSink is required");
+  }
+  if (!request.workspace || !isAbsolute(request.workspace.cwd)) {
+    throw new AgentRuntimeError("configuration_invalid", "workspace.cwd must be absolute");
+  }
+  for (const root of request.workspace.writableRoots ?? []) {
+    if (!isAbsolute(root)) throw new AgentRuntimeError("configuration_invalid", "writable roots must be absolute");
+  }
+  if (request.policy.tools.mode !== "provider-default") {
+    throw new AgentRuntimeError(
+      "configuration_invalid",
+      "Codex does not implement the common tool allow-list contract",
+    );
+  }
+  if (request.policy.fileSystem === "read-only" && (request.workspace.writableRoots?.length ?? 0) > 0) {
+    throw new AgentRuntimeError("configuration_invalid", "read-only policy cannot have writable roots");
+  }
+  if (request.policy.fileSystem === "read-only" && request.policy.network === "enabled") {
+    throw new AgentRuntimeError(
+      "configuration_invalid",
+      "Codex cannot guarantee read-only filesystem with enabled network",
+    );
+  }
+  if (request.policy.fileSystem === "unrestricted" && request.policy.network === "disabled") {
+    throw new AgentRuntimeError(
+      "configuration_invalid",
+      "Codex cannot restrict network in unrestricted filesystem mode",
+    );
+  }
+}
+
+function validateConfiguration(configuration: AgentRunConfiguration | undefined): void {
+  if (!configuration) return;
+  if (configuration.model !== undefined && configuration.model.trim().length === 0) {
+    throw new AgentRuntimeError("configuration_invalid", "model must be non-empty");
+  }
+  if (configuration.reasoningEffort && !CODEX_REASONING_EFFORTS.has(configuration.reasoningEffort)) {
+    throw new AgentRuntimeError("configuration_invalid", "Codex reasoning effort is unsupported");
+  }
+  parseProviderConfiguration(configuration.provider);
+}
+
+function parseProviderConfiguration(value: JsonValue | undefined): CodexProviderConfiguration {
+  if (value === undefined) return {};
+  assertJsonValue(value, "configuration.provider");
+  const object = record(value);
+  if (!object) throw new AgentRuntimeError("configuration_invalid", "Codex provider configuration must be an object");
+  const allowed = new Set(["personality", "serviceName", "summary"]);
+  for (const key of Object.keys(object)) {
+    if (!allowed.has(key))
+      throw new AgentRuntimeError("configuration_invalid", `unknown Codex configuration field: ${key}`);
+  }
+  const result: { personality?: string; serviceName?: string; summary?: string } = {};
+  for (const key of allowed) {
+    const item = object[key];
+    if (item === undefined) continue;
+    if (typeof item !== "string" || item.trim().length === 0) {
+      throw new AgentRuntimeError("configuration_invalid", `Codex configuration ${key} must be non-empty`);
+    }
+    result[key as keyof CodexProviderConfiguration] = item;
+  }
+  return result;
+}
+
+function parseCodexBinding(binding: AgentRuntimeBinding): string {
+  const payload = record(binding.payload);
+  if (!payload) throw new AgentRuntimeError("binding_incompatible", "Codex binding payload is invalid");
+  const threadId = payload.threadId;
+  if (typeof threadId !== "string" || threadId.length === 0 || Buffer.byteLength(threadId, "utf8") > 1024 * 1024) {
+    throw new AgentRuntimeError("binding_incompatible", "Codex binding has no valid threadId");
+  }
+  return threadId;
+}
+
+function mergeConfiguration(
+  base: AgentRunConfiguration | undefined,
+  override: AgentRunConfiguration | undefined,
+): AgentRunConfiguration | undefined {
+  if (!base) {
+    validateConfiguration(override);
+    return override;
+  }
+  if (!override) return base;
+  const provider = {
+    ...parseProviderConfiguration(base.provider),
+    ...parseProviderConfiguration(override.provider),
+  };
+  const merged: AgentRunConfiguration = {
+    ...base,
+    ...override,
+    provider,
+  };
+  validateConfiguration(merged);
+  return merged;
+}
+
+function codexInput(items: readonly { readonly type: "text"; readonly text: string }[]): Array<Record<string, string>> {
+  return items.map((item) => ({ type: "text", text: item.text }));
+}
+
+function codexApprovalPolicy(policy: AgentRuntimePolicy["approvals"]): string {
+  if (policy === "on-request") return "onRequest";
+  if (policy === "unless-trusted") return "unlessTrusted";
+  return "never";
+}
+
+function codexSandboxMode(mode: AgentRuntimePolicy["fileSystem"]): string {
+  if (mode === "read-only") return "read-only";
+  if (mode === "workspace-write") return "workspace-write";
+  return "danger-full-access";
+}
+
+function codexSandboxPolicy(workspace: AgentRuntimeWorkspace, policy: AgentRuntimePolicy): Record<string, unknown> {
+  if (policy.fileSystem === "read-only") return { type: "readOnly" };
+  if (policy.fileSystem === "unrestricted") return { type: "dangerFullAccess" };
+  return {
+    type: "workspaceWrite",
+    writableRoots: [...(workspace.writableRoots ?? [workspace.cwd])],
+    networkAccess: policy.network === "enabled",
+  };
+}
+
+function codexInteractionRequest(
+  request: CodexAppServerRequest,
+  params: Record<string, unknown>,
+): AgentInteractionRequest | undefined {
+  const requestId = wireInteractionId(request.id);
+  const details = toJsonValue(params);
+  if (
+    request.method === "item/commandExecution/requestApproval" ||
+    request.method === "item/fileChange/requestApproval" ||
+    request.method === "item/permissions/requestApproval"
+  ) {
+    return {
+      requestId,
+      kind: "approval",
+      title: request.method === "item/fileChange/requestApproval" ? "Approve file changes" : "Approve tool action",
+      ...(typeof params.reason === "string" ? { message: params.reason } : {}),
+      details,
+    };
+  }
+  if (request.method === "item/tool/requestUserInput" || request.method === "mcpServer/elicitation/request") {
+    const message = typeof params.message === "string" ? params.message : undefined;
+    return {
+      requestId,
+      kind: "question",
+      title: "Codex needs input",
+      ...(message ? { message } : {}),
+      details,
+    };
+  }
+  return undefined;
+}
+
+function codexInteractionResult(method: string, response: AgentInteractionResponse): unknown {
+  if (response.kind === "approval") return codexApprovalResult(method, response);
+  return codexQuestionResult(method, response);
+}
+
+function codexApprovalResult(method: string, response: AgentApprovalResponse): unknown {
+  if (method === "item/permissions/requestApproval") {
+    if (response.decision !== "accept") return { permissions: [], scope: "turn" };
+    const value = record(response.value);
+    const permissions = Array.isArray(value?.permissions) ? value.permissions : [];
+    return { permissions, scope: response.scope === "runtime" ? "session" : "turn" };
+  }
+  const decision =
+    response.decision === "accept" ? (response.scope === "runtime" ? "acceptForSession" : "accept") : response.decision;
+  return { decision };
+}
+
+function codexQuestionResult(method: string, response: AgentQuestionResponse): unknown {
+  if (method === "mcpServer/elicitation/request") {
+    return response.decision === "answer"
+      ? { action: "accept", content: response.value ?? null }
+      : { action: "cancel", content: null };
+  }
+  return { answers: response.decision === "answer" ? (response.value ?? {}) : {} };
+}
+
+function parseTurnResponse(value: unknown, source: string): ParsedTurn {
+  const response = requireRecord(value, `${source} returned an invalid response`);
+  return parseTurn(response.turn, source);
+}
+
+function parseTurn(value: unknown, source: string): ParsedTurn {
+  const turn = requireRecord(value, `${source} has no turn`);
+  const id = requireString(turn.id, `${source} turn has no id`);
+  const status = turn.status;
+  if (status !== "completed" && status !== "failed" && status !== "inProgress" && status !== "interrupted") {
+    throw protocolError(`${source} turn has an invalid status`);
+  }
+  const items = Array.isArray(turn.items)
+    ? turn.items.map((item) => requireRecord(item, `${source} has an invalid item`))
+    : [];
+  const error = record(turn.error);
+  return {
+    id,
+    status,
+    items,
+    ...(typeof error?.message === "string" ? { error: error.message } : {}),
+  };
+}
+
+function parseUsage(value: unknown): {
+  readonly inputTokens?: number;
+  readonly cachedInputTokens?: number;
+  readonly outputTokens?: number;
+} {
+  const tokenUsage = requireRecord(value, "token usage is invalid");
+  const source = record(tokenUsage.last) ?? record(tokenUsage.total) ?? tokenUsage;
+  const usage: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } = {};
+  if (isNonNegativeNumber(source.inputTokens)) usage.inputTokens = source.inputTokens;
+  if (isNonNegativeNumber(source.cachedInputTokens)) usage.cachedInputTokens = source.cachedInputTokens;
+  if (isNonNegativeNumber(source.outputTokens)) usage.outputTokens = source.outputTokens;
+  return usage;
+}
+
+function selectFinalText(
+  terminalItems: readonly Record<string, unknown>[],
+  completed: ReadonlyMap<string, { readonly phase?: string; readonly text: string }>,
+): string | undefined {
+  const messages = new Map(completed);
+  for (const item of terminalItems) {
+    if (item.type !== "agentMessage" || typeof item.id !== "string" || typeof item.text !== "string") continue;
+    messages.set(item.id, {
+      text: item.text,
+      ...(typeof item.phase === "string" ? { phase: item.phase } : {}),
+    });
+  }
+  let fallback: string | undefined;
+  for (const message of messages.values()) {
+    if (message.phase === "final_answer") return message.text;
+    if (message.phase !== "commentary") fallback = message.text;
+  }
+  return fallback;
+}
+
+function toolName(item: Record<string, unknown>, type: string): string {
+  if (type === "mcpToolCall") {
+    const server = typeof item.server === "string" ? item.server : "mcp";
+    const tool = typeof item.tool === "string" ? item.tool : "tool";
+    return `${server}/${tool}`;
+  }
+  if (type === "dynamicToolCall" && typeof item.tool === "string") return item.tool;
+  return type;
+}
+
+function wireInteractionId(id: number | string): string {
+  return `${typeof id}:${String(id)}`;
+}
+
+function toJsonValue(value: unknown): JsonValue {
+  assertJsonValue(value, "Codex event payload");
+  return value as JsonValue;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolveValue!: (value: T) => void;
+  let rejectValue!: (error: Error) => void;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolveValue = resolve;
+    rejectValue = reject;
+  });
+  return { promise, resolve: resolveValue, reject: rejectValue };
+}
+
+function protocolError(message: string): AgentProviderError {
+  return new AgentProviderError("provider_protocol_error", message);
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function requireRecord(value: unknown, message: string): Record<string, unknown> {
+  const result = record(value);
+  if (!result) throw protocolError(message);
+  return result;
+}
+
+function requireString(value: unknown, message: string, allowEmpty = false): string {
+  if (
+    typeof value !== "string" ||
+    (!allowEmpty && value.length === 0) ||
+    Buffer.byteLength(value, "utf8") > 1024 * 1024
+  ) {
+    throw protocolError(message);
+  }
+  return value;
+}
+
+function isNonNegativeNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}

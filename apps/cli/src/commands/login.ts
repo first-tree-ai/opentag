@@ -1,7 +1,7 @@
 import { resolveOpenTagHome } from "@opentag/client";
 import type { Command } from "commander";
-import { channelConfig } from "../core/channel.js";
-import { runLogin } from "../core/login.js";
+import { runLogin } from "../core/auth/login.js";
+import { channelConfig } from "../core/channel/config.js";
 
 interface LoginCommandOptions {
   home?: string;

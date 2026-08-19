@@ -1,6 +1,6 @@
 import { ServerHealthConfigurationError, ServerHealthNetworkError } from "@opentag/client";
 import { describe, expect, it, vi } from "vitest";
-import { resolveServerUrl, runDoctor } from "../core/doctor.js";
+import { resolveServerUrl, runDoctor } from "../core/diagnostics/doctor.js";
 
 describe("resolveServerUrl", () => {
   it("prefers the command option over the environment", () => {

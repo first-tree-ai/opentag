@@ -1,7 +1,7 @@
 # OpenTag 开发指南
 
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-08-18
+> Last synced with: 2026-08-19
 
 ## 前置要求
 
@@ -108,6 +108,31 @@ pnpm --filter open-tag start computer list
 daemon 会复用 home 中的稳定 Computer ID，每次启动创建新的进程 instance，并连接
 `/api/v1/computer/ws`。Ctrl+C 会干净退出；同一个 home 的第二个 daemon 会被拒绝。CLI 使用
 `/api/v1/auth/...` 与 `/api/v1/me/...`；`/healthz` 和 `/readyz` 继续作为无版本部署探针。
+
+## 管理 Agent 配置
+
+Agent 属于 Team，并在创建时固定绑定到 manager 自己拥有的一台 Computer。当前用户只有一个 Team 和一台
+Computer 时，两者会自动选择：
+
+```bash
+pnpm --filter open-tag start agent create \
+  --name code-reviewer \
+  --display-name "Code Reviewer" \
+  --provider codex
+pnpm --filter open-tag start agent list
+```
+
+存在多个选项时，使用 `--team <canonical-name>` 或 `--computer <uuid>`。Computer 离线时仍可选择，因为 online
+presence 不是 Agent 配置状态。可以查看或修改可变的展示名称：
+
+```bash
+pnpm --filter open-tag start agent show <agent-id>
+pnpm --filter open-tag start agent update <agent-id> --display-name "Reviewer"
+pnpm --filter open-tag start agent delete <agent-id>
+```
+
+更新使用 revision compare-and-swap，不会自动覆盖并发变更。删除是 Server 端软删除，对 Agent manager 或 Team
+admin 幂等。`claude-code` 是允许的配置值，但其 runtime adapter 以及所有 Session/Turn delivery 仍属于后续工作。
 
 这四个 `OPENTAG_BOOTSTRAP_*` 值仅作为一次性命令的输入，运行中的 Server 不会读取它们。
 bootstrap email 是账号资料，不是邮箱密码凭据。当前 connect code 流程先解析稳定的 user ID，再进入与 provider

@@ -4,6 +4,7 @@ import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { parseServerConfig } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
+import { AgentService } from "./services/agents/index.js";
 import { AuthService, AuthTokenService, formatStartupError } from "./services/auth/index.js";
 import { ComputerService } from "./services/computers/index.js";
 
@@ -18,6 +19,7 @@ export {
   verifyDatabaseMigrations,
   withMigrationLock,
 } from "./db/migrate.js";
+export { AgentService, AgentServiceError } from "./services/agents/index.js";
 export { AuthService, AuthServiceError, AuthTokenService } from "./services/auth/index.js";
 export { ComputerService } from "./services/computers/index.js";
 
@@ -43,7 +45,8 @@ export async function startServer(): Promise<void> {
       new AuthTokenService(config.jwtSecret, config.accessTokenTtlSeconds, config.refreshTokenTtlSeconds),
     );
     const computerService = new ComputerService(database, authService);
-    app = createApp({ authService, computerService, readiness });
+    const agentService = new AgentService(database);
+    app = createApp({ agentService, authService, computerService, readiness });
     app.addHook("onClose", async () => sql.end());
     readiness.complete("application");
     await app.listen({ host: config.host, port: config.port });

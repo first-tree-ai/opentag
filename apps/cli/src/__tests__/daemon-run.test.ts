@@ -26,7 +26,7 @@ vi.mock("@opentag/client", async (importOriginal) => {
   };
 });
 
-import { runDaemon, runDaemonLifecycle } from "../core/daemon-run.js";
+import { runDaemon, runDaemonLifecycle } from "../core/daemon/runtime.js";
 
 const directories: string[] = [];
 afterEach(async () => {

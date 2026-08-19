@@ -15,7 +15,7 @@ export interface DaemonOwnerLease {
   release(): Promise<void>;
 }
 
-const FILE_NAME = "daemon-owner.json";
+const OWNER_FILE_NAME = "daemon-owner.json";
 
 export async function acquireDaemonOwner(home: string, instanceId: string): Promise<DaemonOwnerLease> {
   await mkdir(home, { recursive: true, mode: 0o700 });
@@ -23,7 +23,7 @@ export async function acquireDaemonOwner(home: string, instanceId: string): Prom
   if (!homeStatus.isDirectory() || homeStatus.isSymbolicLink()) {
     throw new Error("The OpenTag home must be a real directory");
   }
-  const path = join(home, FILE_NAME);
+  const path = join(home, OWNER_FILE_NAME);
   const owner: DaemonOwner = {
     home,
     instanceId,

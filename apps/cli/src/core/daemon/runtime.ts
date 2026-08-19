@@ -9,8 +9,8 @@ import {
   resolveComputerIdentity,
   resolveOpenTagHome,
 } from "@opentag/client";
-import { CLI_VERSION } from "../build-info.js";
-import { acquireDaemonOwner } from "./daemon-owner.js";
+import { CLI_VERSION } from "../../build-info.js";
+import { acquireDaemonOwner } from "./ownership.js";
 
 export interface DaemonRunOptions {
   home?: string;

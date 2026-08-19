@@ -1,5 +1,5 @@
 import type { Command } from "commander";
-import { runDoctor } from "../core/doctor.js";
+import { runDoctor } from "../core/diagnostics/doctor.js";
 
 interface DoctorCommandOptions {
   serverUrl?: string;

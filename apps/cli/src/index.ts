@@ -1,13 +1,17 @@
 export { CHANNEL, CLI_PACKAGE_NAME, CLI_VERSION } from "./build-info.js";
 export { createProgram } from "./cli/program.js";
-export { formatAgentCreated, runAgentCreate, selectComputer } from "./core/agent-create.js";
-export { runAgentDelete } from "./core/agent-delete.js";
-export { formatAgentList, runAgentList } from "./core/agent-list.js";
-export { formatAgent, runAgentShow } from "./core/agent-show.js";
-export { runAgentUpdate } from "./core/agent-update.js";
-export { channelConfig } from "./core/channel.js";
-export { formatComputerList, listComputers } from "./core/computer-list.js";
-export { type DaemonRunOptions, runDaemon } from "./core/daemon-run.js";
-export { type DoctorOptions, type DoctorResult, resolveServerUrl, runDoctor } from "./core/doctor.js";
-export { type LoginOptions, type LoginResult, runLogin } from "./core/login.js";
-export { selectTeam } from "./core/team-selection.js";
+export { formatAgent, formatAgentCreated, formatAgentList } from "./core/agent/formatting.js";
+export {
+  runAgentCreate,
+  runAgentDelete,
+  runAgentUpdate,
+  selectComputer,
+} from "./core/agent/mutations.js";
+export { runAgentList, runAgentShow } from "./core/agent/queries.js";
+export { type LoginOptions, type LoginResult, runLogin } from "./core/auth/login.js";
+export { channelConfig } from "./core/channel/config.js";
+export { formatComputerList } from "./core/computer/formatting.js";
+export { listComputers } from "./core/computer/queries.js";
+export { type DaemonRunOptions, runDaemon } from "./core/daemon/runtime.js";
+export { type DoctorOptions, type DoctorResult, resolveServerUrl, runDoctor } from "./core/diagnostics/doctor.js";
+export { selectTeam } from "./core/selection/team.js";

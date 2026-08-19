@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { credentialsPath, readCredentials, resolveComputerIdentity } from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { runLogin } from "../core/login.js";
+import { runLogin } from "../core/auth/login.js";
 
 const temporaryDirectories: string[] = [];
 

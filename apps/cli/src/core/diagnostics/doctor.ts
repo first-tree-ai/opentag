@@ -6,7 +6,7 @@ import {
   ServerHealthResponseError,
 } from "@opentag/client";
 import type { ServerHealth } from "@opentag/shared";
-import { channelConfig } from "./channel.js";
+import { channelConfig } from "../channel/config.js";
 
 export type HealthChecker = (serverUrl: string) => Promise<ServerHealth>;
 

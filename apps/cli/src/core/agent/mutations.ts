@@ -1,7 +1,7 @@
 import type { Agent, Computer, ListComputersResponse } from "@opentag/shared";
 import { CreateAgentRequestSchema } from "@opentag/shared";
-import { type AgentCommandDependencies, resolveAgentCommandContext } from "./agent-context.js";
-import { selectTeam } from "./team-selection.js";
+import { selectTeam } from "../selection/team.js";
+import { type AgentCommandDependencies, resolveAgentCommandContext } from "./context.js";
 
 export interface AgentCreateOptions extends AgentCommandDependencies {
   computerId?: string;
@@ -14,6 +14,10 @@ export interface AgentCreateOptions extends AgentCommandDependencies {
 export interface AgentCreateResult {
   agent: Agent;
   warning?: string;
+}
+
+export interface AgentUpdateOptions extends AgentCommandDependencies {
+  displayName: string;
 }
 
 export function selectComputer(response: ListComputersResponse, requestedComputerId?: string): Computer {
@@ -51,6 +55,17 @@ export async function runAgentCreate(options: AgentCreateOptions): Promise<Agent
   };
 }
 
-export function formatAgentCreated(result: AgentCreateResult): string {
-  return `Created Agent ${result.agent.id} (${result.agent.name}) on Computer ${result.agent.computerId}`;
+export async function runAgentUpdate(agentId: string, options: AgentUpdateOptions): Promise<Agent> {
+  const { api, accessToken } = await resolveAgentCommandContext(options);
+  const current = await api.getAgent(accessToken, agentId);
+  return api.updateAgent(accessToken, agentId, {
+    displayName: options.displayName,
+    expectedRevision: current.revision,
+  });
+}
+
+export async function runAgentDelete(agentId: string, options: AgentCommandDependencies = {}): Promise<string> {
+  const { api, accessToken } = await resolveAgentCommandContext(options);
+  await api.deleteAgent(accessToken, agentId);
+  return `Deleted Agent ${agentId}`;
 }

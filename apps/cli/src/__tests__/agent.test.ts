@@ -1,10 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { formatAgentCreated, runAgentCreate, selectComputer } from "../core/agent-create.js";
-import { runAgentDelete } from "../core/agent-delete.js";
-import { formatAgentList, runAgentList } from "../core/agent-list.js";
-import { formatAgent, runAgentShow } from "../core/agent-show.js";
-import { runAgentUpdate } from "../core/agent-update.js";
-import { selectTeam } from "../core/team-selection.js";
+import { formatAgent, formatAgentCreated, formatAgentList } from "../core/agent/formatting.js";
+import { runAgentCreate, runAgentDelete, runAgentUpdate, selectComputer } from "../core/agent/mutations.js";
+import { runAgentList, runAgentShow } from "../core/agent/queries.js";
+import { selectTeam } from "../core/selection/team.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";

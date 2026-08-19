@@ -291,8 +291,8 @@ jobs:
           }
           trap cleanup_runtime EXIT
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs \
-            login "$connect_code" --server http://127.0.0.1:18000
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs daemon run >"$daemon_log" 2>&1 &
+            login "$connect_code" --server http://127.0.0.1:18000 --no-start
+          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs daemon service-run >"$daemon_log" 2>&1 &
           daemon_pid=$!
 
           for attempt in $(seq 1 30); do
@@ -305,11 +305,10 @@ jobs:
             fi
             sleep 1
           done
-          if OPENTAG_HOME="$runtime_home" timeout 5s node apps/cli/dist/cli/index.mjs daemon run >"$runtime_home/second.log" 2>&1; then
-            echo "A second daemon unexpectedly acquired the same home" >&2
-            exit 1
-          fi
+          OPENTAG_HOME="$runtime_home" timeout 5s node apps/cli/dist/cli/index.mjs daemon service-run \
+            >"$runtime_home/second.log" 2>&1
           grep -q "already running" "$runtime_home/second.log"
+          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list | grep -q $'\tonline\t'
           computer_id=$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).computerId" \
             "$runtime_home/computer.json")
 
@@ -334,7 +333,7 @@ jobs:
           unset daemon_pid
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list | grep -q $'\toffline\t'
 
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs daemon run >"$daemon_log" 2>&1 &
+          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs daemon service-run >"$daemon_log" 2>&1 &
           daemon_pid=$!
           for attempt in $(seq 1 30); do
             if list=$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list) && \

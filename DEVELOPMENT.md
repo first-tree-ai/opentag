@@ -100,16 +100,26 @@ The source checkout is the `dev` channel. It exposes the `opentag-dev` binary wh
 `~/.opentag-dev`; staging and production builds use `opentag-staging` / `~/.opentag-staging` and `opentag` /
 `~/.opentag`. An explicit `OPENTAG_HOME` overrides the channel default.
 
-After login, start the foreground daemon and inspect the user-owned Computer from another terminal:
+Login installs and starts the user service on Linux and macOS. Inspect it and the user-owned Computer from another terminal:
 
 ```bash
-pnpm --filter open-tag start daemon run
+pnpm --filter open-tag start daemon status
 pnpm --filter open-tag start computer list
 ```
 
-The daemon reuses the stable Computer ID stored in its home, creates a new process instance on every start, and connects
-to `/api/v1/computer/ws`. Ctrl+C performs a clean shutdown; a second daemon using the same home is rejected. The CLI
-uses `/api/v1/auth/...` and `/api/v1/me/...`; `/healthz` and `/readyz` remain unversioned deployment probes.
+The daemon reuses the stable Computer ID stored in its home, creates a new process instance on every service start, and
+connects to `/api/v1/computer/ws`. Manage it with `daemon install/start/stop/restart/status/uninstall`. `uninstall`
+preserves credentials and Computer identity. Use `login --no-start` for credential-only setup; Windows services are not
+supported in v0.1. Linux logs are available through `journalctl --user -u opentag-dev.service`; macOS logs are under the
+channel home's `logs` directory. Optional `${OPENTAG_HOME}/daemon.env` must be a private regular file (mode `0600`) and
+can provide service-only environment values without overriding pinned service settings. The CLI uses `/api/v1/auth/...`
+and `/api/v1/me/...`; `/healthz` and `/readyz` remain unversioned deployment probes.
+
+The dev service definition is `~/.config/systemd/user/opentag-dev.service` on Linux or
+`~/Library/LaunchAgents/opentag-dev.plist` on macOS; the macOS wrapper is `${OPENTAG_HOME}/service/opentag-dev`.
+Staging and production replace the suffix with their channel `serviceId` (`opentag-staging` or `opentag`). If login saves
+credentials but service installation fails, fix the reported manager issue and run `opentag-dev daemon install`; do not
+request another connect code.
 
 ## Manage Agent configurations
 

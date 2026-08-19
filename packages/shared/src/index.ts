@@ -38,7 +38,14 @@ export {
   type TeamName,
   TeamNameSchema,
 } from "./auth.js";
-export { type ChannelConfig, type ChannelName, ChannelNameSchema, getChannelConfig } from "./channel.js";
+export {
+  type ChannelConfig,
+  type ChannelName,
+  ChannelNameSchema,
+  getChannelConfig,
+  type ServiceId,
+  ServiceIdSchema,
+} from "./channel.js";
 export {
   type Computer,
   type ComputerConnectionStatus,

@@ -15,7 +15,7 @@ This repository currently provides the engineering foundation and first control-
 - explicit Team membership, role, leave/remove/restore, and seven-day invitation lifecycles;
 - user-owned Computer registration and presence;
 - Team-owned Agent registry with immutable Computer/provider binding and revision fencing; and
-- a same-origin, read-only Admin Web plus `team`, `agent`, `computer`, and daemon CLI commands.
+- a same-origin, read-only Admin Web plus `doctor`, `login`, `team`, `agent`, `computer`, and daemon service management commands.
 
 Agent execution, Feishu/Slack integrations, IM persistence, and session runtimes are not implemented yet.
 
@@ -35,7 +35,7 @@ pnpm build
 pnpm --filter @opentag/server start
 ```
 
-In another terminal, bootstrap and log in once, then start the foreground daemon:
+In another terminal, bootstrap and log in once. Login installs and starts the per-user daemon service on Linux and macOS:
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
@@ -44,11 +44,12 @@ export OPENTAG_BOOTSTRAP_TEAM_NAME=example
 export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 pnpm --filter open-tag start login <connect-code>
-pnpm --filter open-tag start daemon run
+pnpm --filter open-tag start daemon status
 ```
 
-In a third terminal, `pnpm --filter open-tag start computer list` shows the Computer as online. Stop the foreground
-daemon with Ctrl+C and list again to see it offline.
+`pnpm --filter open-tag start computer list` shows the Computer as online. Use `daemon stop`, `start`, `restart`,
+`status`, and `uninstall` for lifecycle management. Pass `login --no-start` when only credentials should be stored.
+Daemon services are not supported on Windows in v0.1.
 
 With the daemon registered, create and inspect an Agent configuration:
 

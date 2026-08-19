@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { computeRuntimeSnapshotHashes, type InputRejectReason } from "@opentag/shared";
+import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { CodexAdapter, CodexLocalPolicy, codexProviderEnvironment } from "../providers/codex/adapter.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
@@ -27,7 +28,7 @@ export interface CreateCodexClientRuntimeOptions {
   codexHome?: string;
   environment?: NodeJS.ProcessEnv;
   home: string;
-  log?: (message: string) => void;
+  logger?: ClientLogger;
   probe?: (command: string, environment: NodeJS.ProcessEnv, signal?: AbortSignal) => Promise<void>;
   signal?: AbortSignal;
 }
@@ -81,6 +82,7 @@ export async function createCodexClientRuntime(
   connection: RuntimeConnection,
   options: CreateCodexClientRuntimeOptions,
 ): Promise<CodexClientRuntime> {
+  const moduleLogger = (module: string) => options.logger?.child({ module }) ?? createLogger(module);
   const sourceEnvironment = options.environment ?? process.env;
   options.signal?.throwIfAborted();
   const defaultHome = sourceEnvironment.HOME ?? homedir();
@@ -115,7 +117,7 @@ export async function createCodexClientRuntime(
   const reportOwner = new TurnReportOwner({ connection });
   const mvpReportRecovery = new MvpTurnReportRecovery({
     bindingStore,
-    log: options.log,
+    logger: moduleLogger("report-recovery"),
     reconciler,
     reportOwner,
   });
@@ -150,11 +152,12 @@ export async function createCodexClientRuntime(
     bindingStore,
     connection,
     custody,
-    log: options.log,
+    logger: moduleLogger("turn"),
     reportOwner,
     workspace,
   });
   const runtime = new ClientRuntime(connection, {
+    logger: moduleLogger("client-runtime"),
     reconciler,
     handleDelivery: (request) => custody.accept(request),
     handleTurnReportResult: async (result) => {

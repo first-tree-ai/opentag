@@ -18,6 +18,7 @@ import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import { TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
 import { TurnReportOwner } from "../runtime/turn-report-owner.js";
+import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 const directories: string[] = [];
 
@@ -32,7 +33,24 @@ describe("Codex Client Turn vertical", () => {
     await first.onAcceptedSent?.();
     const firstReport = await fixture.waitForReport(0);
 
-    expect(fixture.logs).toEqual([]);
+    expect(fixture.logs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fields: expect.objectContaining({
+            agentId: "agent-1",
+            computerId: expect.any(String),
+            instanceId: "instance-1",
+            sessionId: "session-1",
+            turnId: expect.any(String),
+          }),
+          level: "info",
+          message: "Turn started",
+        }),
+        expect.objectContaining({ level: "info", message: "Turn completed" }),
+      ]),
+    );
+    const started = fixture.logs.find((entry) => entry.message === "Turn started");
+    expect(started?.fields.instanceId).not.toBe(started?.fields.agentId);
     expect(firstReport.errorReason).toBeUndefined();
     expect(firstReport).toMatchObject({
       deliveryId: "delivery-1",
@@ -109,7 +127,7 @@ async function runtimeFixture(terminalGate: Promise<void> = Promise.resolve()) {
   const connection = new FakeConnection();
   const reportOwner = new TurnReportOwner({ connection });
   const clients: ScriptedTurnClient[] = [];
-  const logs: string[] = [];
+  const logs: RecordedLog[] = [];
   const adapter = new CodexAdapter({
     clientVersion: "0.0.1",
     createClient: (cwd) => {
@@ -138,7 +156,7 @@ async function runtimeFixture(terminalGate: Promise<void> = Promise.resolve()) {
     custody,
     reportOwner,
     workspace,
-    log: (message) => logs.push(message),
+    logger: recordingLogger(logs, { computerId, instanceId: "instance-1" }),
   });
   const reconcile: SessionReconcileRequest = {
     type: "session:reconcile",

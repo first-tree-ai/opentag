@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ClientLogBindings, ClientLogger } from "@opentag/client";
 import { Command } from "commander";
 import { describe, expect, it, vi } from "vitest";
 import { registerDaemonCommand } from "../commands/daemon/index.js";
@@ -45,32 +46,40 @@ describe("daemon service commands", () => {
   });
 
   it("treats deterministic service configuration failures as clean service exits", async () => {
-    const messages: string[] = [];
+    const messages: Array<{ fields: ClientLogBindings; message: string }> = [];
     const home = await mkdtemp(join(tmpdir(), "opentag-service-entry-"));
     try {
       const exitCode = await runDaemonServiceEntry({
         home,
-        log: (message) => messages.push(message),
+        logger: recordingLogger(messages),
       });
       expect(exitCode).toBe(0);
-      expect(messages.join(" ")).toContain("not logged in");
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          fields: expect.objectContaining({ category: "configuration", instanceId: expect.any(String) }),
+        }),
+      );
     } finally {
       await rm(home, { recursive: true, force: true });
     }
   });
 
   it("treats a live daemon owner conflict as a clean service exit", async () => {
-    const messages: string[] = [];
+    const messages: Array<{ fields: ClientLogBindings; message: string }> = [];
     const home = await mkdtemp(join(tmpdir(), "opentag-service-owner-busy-"));
     const owner = await acquireDaemonOwner(home, "existing-instance");
     try {
       await expect(
         runDaemonServiceEntry({
           home,
-          log: (message) => messages.push(message),
+          logger: recordingLogger(messages),
         }),
       ).resolves.toBe(0);
-      expect(messages.join(" ")).toContain("already running");
+      expect(messages).toContainEqual(
+        expect.objectContaining({
+          fields: expect.objectContaining({ category: "ownership", instanceId: expect.any(String) }),
+        }),
+      );
     } finally {
       await owner.release();
       await rm(home, { recursive: true, force: true });
@@ -78,17 +87,19 @@ describe("daemon service commands", () => {
   });
 
   it("treats a malformed daemon owner as a clean service exit", async () => {
-    const messages: string[] = [];
+    const messages: Array<{ fields: ClientLogBindings; message: string }> = [];
     const home = await mkdtemp(join(tmpdir(), "opentag-service-owner-malformed-"));
     try {
       await writeFile(join(home, "daemon-owner.json"), "{}\n", { mode: 0o600 });
       await expect(
         runDaemonServiceEntry({
           home,
-          log: (message) => messages.push(message),
+          logger: recordingLogger(messages),
         }),
       ).resolves.toBe(0);
-      expect(messages.join(" ")).toContain("malformed");
+      expect(messages).toContainEqual(
+        expect.objectContaining({ fields: expect.objectContaining({ category: "ownership" }) }),
+      );
     } finally {
       await rm(home, { recursive: true, force: true });
     }
@@ -148,5 +159,20 @@ function fakeManager(state: "active" | "inactive"): DaemonServiceManager {
     status: vi.fn(async () => info),
     stop: vi.fn(async () => ({ ...info, state: "inactive" as const })),
     uninstall: vi.fn(async () => ({ ...info, state: "not-installed" as const })),
+  };
+}
+
+function recordingLogger(
+  entries: Array<{ fields: ClientLogBindings; message: string }>,
+  bindings: ClientLogBindings = {},
+): ClientLogger {
+  const record = (fields: ClientLogBindings, message: string) =>
+    entries.push({ fields: { ...bindings, ...fields }, message });
+  return {
+    child: (childBindings) => recordingLogger(entries, { ...bindings, ...childBindings }),
+    debug: record,
+    error: record,
+    info: record,
+    warn: record,
   };
 }

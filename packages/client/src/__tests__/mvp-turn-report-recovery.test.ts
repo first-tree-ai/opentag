@@ -7,6 +7,7 @@ import {
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { MvpTurnReportRecovery, type MvpTurnReportRecoveryOptions } from "../runtime/mvp-turn-report-recovery.js";
+import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 describe("MvpTurnReportRecovery", () => {
   it("bounds active replay work and lazily reloads full reports from durable bindings", async () => {
@@ -25,8 +26,10 @@ describe("MvpTurnReportRecovery", () => {
     const submit = vi.fn((report: TurnReportRequest) =>
       report.sessionId === first.sessionId ? firstPending : Promise.resolve(),
     );
+    const logs: RecordedLog[] = [];
     const recovery = new MvpTurnReportRecovery({
       bindingStore: { read, recordResult } as unknown as MvpTurnReportRecoveryOptions["bindingStore"],
+      logger: recordingLogger(logs),
       maxActiveReplays: 1,
       reconciler: {
         clearRecovery: vi.fn(),
@@ -55,6 +58,17 @@ describe("MvpTurnReportRecovery", () => {
     expect(submit).toHaveBeenLastCalledWith(reloadedSecond, expect.any(Function), {
       onTerminal: expect.any(Function),
     });
+    await vi.waitFor(() =>
+      expect(logs.filter((entry) => entry.message === "Turn Report replay completed")).toHaveLength(2),
+    );
+    expect(logs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          fields: expect.objectContaining({ agentId: "agent-1", sessionId: "session-1" }),
+          message: "Turn Report replay started",
+        }),
+      ]),
+    );
   });
 
   it("releases an active replay slot when the Server returns a terminal Report status", async () => {
@@ -90,7 +104,6 @@ describe("MvpTurnReportRecovery", () => {
 
     await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
     expect(submit.mock.calls[1]?.[0]).toEqual(second);
-
     rearmTerminal.mockClear();
     const retryRequest = reconcileRequest(first.agentId, first.sessionId);
     const retryResult = await recovery.prepare(retryRequest, recoveryRequired(retryRequest, first));

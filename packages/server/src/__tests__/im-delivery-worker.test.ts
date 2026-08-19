@@ -8,6 +8,7 @@ describe("ImDeliveryWorker diagnostics", () => {
       transaction: vi.fn().mockRejectedValue(new Error("secret provider response must not escape")),
     };
     const worker = new ImDeliveryWorker({
+      assembler: { assembleForSession: vi.fn() },
       database: database as never,
       domain: {} as never,
       registry: {} as never,

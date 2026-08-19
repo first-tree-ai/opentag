@@ -1,16 +1,24 @@
 import {
+  type Agent,
+  AgentSchema,
+  agentByIdPath,
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
+  type CreateAgentRequest,
   type ErrorCategory,
   type ErrorCode,
   ErrorEnvelopeSchema,
   HTTP_PATHS,
+  type ListAgentsResponse,
+  ListAgentsResponseSchema,
   type ListComputersResponse,
   ListComputersResponseSchema,
   type MeResponse,
   MeResponseSchema,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
+  teamAgentsPath,
+  type UpdateAgentRequest,
 } from "@opentag/shared";
 
 interface RuntimeSchema<T> {
@@ -66,42 +74,85 @@ export class OpenTagApi {
     });
   }
 
+  createAgent(accessToken: string, teamId: string, input: CreateAgentRequest): Promise<Agent> {
+    return this.#request(teamAgentsPath(teamId), AgentSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+    });
+  }
+
+  listAgents(accessToken: string, teamId: string): Promise<ListAgentsResponse> {
+    return this.#request(teamAgentsPath(teamId), ListAgentsResponseSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  getAgent(accessToken: string, agentId: string): Promise<Agent> {
+    return this.#request(agentByIdPath(agentId), AgentSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  updateAgent(accessToken: string, agentId: string, input: UpdateAgentRequest): Promise<Agent> {
+    return this.#request(agentByIdPath(agentId), AgentSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+    });
+  }
+
+  deleteAgent(accessToken: string, agentId: string): Promise<void> {
+    return this.#requestNoContent(agentByIdPath(agentId), {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
   async #request<T>(path: string, schema: RuntimeSchema<T>, init: RequestInit): Promise<T> {
-    let response: Response;
-    try {
-      response = await this.#fetch(new URL(path, this.#baseUrl), init);
-    } catch {
-      throw new OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server is unavailable");
-    }
+    const response = await this.#fetchResponse(path, init);
     const body = await response.json().catch(() => undefined);
     if (!response.ok) {
-      const parsed = ErrorEnvelopeSchema.safeParse(body);
-      if (parsed.success) {
-        throw new OpenTagApiError(
-          parsed.data.error.code,
-          parsed.data.error.category,
-          parsed.data.error.message,
-          response.status,
-        );
-      }
-      if (response.status === 429) {
-        throw new OpenTagApiError("RATE_LIMITED", "rate_limit", "The OpenTag server rate limit was reached", 429);
-      }
-      if (response.status >= 500) {
-        throw new OpenTagApiError(
-          "SERVICE_UNAVAILABLE",
-          "transient",
-          "The OpenTag server is unavailable",
-          response.status,
-        );
-      }
-      throw new OpenTagApiError("AUTH_INVALID_TOKEN", "credential", "Authentication failed", response.status);
+      this.#throwResponseError(response.status, body);
     }
     const parsed = schema.safeParse(body);
     if (!parsed.success) {
       throw new OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server returned an invalid response");
     }
     return parsed.data;
+  }
+
+  async #requestNoContent(path: string, init: RequestInit): Promise<void> {
+    const response = await this.#fetchResponse(path, init);
+    if (!response.ok) {
+      const body = await response.json().catch(() => undefined);
+      this.#throwResponseError(response.status, body);
+    }
+    if (response.status !== 204) {
+      throw new OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server returned an invalid response");
+    }
+  }
+
+  async #fetchResponse(path: string, init: RequestInit): Promise<Response> {
+    try {
+      return await this.#fetch(new URL(path, this.#baseUrl), init);
+    } catch {
+      throw new OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server is unavailable");
+    }
+  }
+
+  #throwResponseError(status: number, body: unknown): never {
+    const parsed = ErrorEnvelopeSchema.safeParse(body);
+    if (parsed.success) {
+      throw new OpenTagApiError(parsed.data.error.code, parsed.data.error.category, parsed.data.error.message, status);
+    }
+    if (status === 429) {
+      throw new OpenTagApiError("RATE_LIMITED", "rate_limit", "The OpenTag server rate limit was reached", 429);
+    }
+    if (status >= 500) {
+      throw new OpenTagApiError("SERVICE_UNAVAILABLE", "transient", "The OpenTag server is unavailable", status);
+    }
+    throw new OpenTagApiError("AUTH_INVALID_TOKEN", "credential", "Authentication failed", status);
   }
 }
 

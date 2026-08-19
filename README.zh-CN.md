@@ -1,7 +1,7 @@
 # OpenTag
 
 > Canonical source: [README.md](./README.md)
-> Last synced with: 2026-08-18
+> Last synced with: 2026-08-19
 
 OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与 AI 编码 Agent。项目目前处于 **pre-alpha**
 阶段：产品工作流仍在开发中，尚不适合生产使用。
@@ -14,9 +14,10 @@ OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与
 - PostgreSQL migration，以及首个用户和 team 的 bootstrap 认证；
 - 使用滑动续期无状态 refresh JWT 的一次性 connect code 登录；
 - 用户所有的 Computer 注册与在线状态；
-- `opentag-dev doctor`、`login`、`daemon run` 和 `computer list` 命令。
+- Team 所有的 Agent Registry、不可变 Computer/provider 绑定与 revision fencing；
+- `opentag-dev doctor`、`login`、`daemon run`、`computer list` 和 `agent` 命令。
 
-仓库尚未实现即时通信集成、Agent Provider 或 Session Runtime。
+仓库尚未实现 Agent 执行、即时通信集成或 Session Runtime。
 
 ## 快速开始
 
@@ -47,12 +48,24 @@ pnpm --filter open-tag start daemon run
 在第三个终端运行 `pnpm --filter open-tag start computer list`，可以看到 Computer 为 online。按 Ctrl+C 停止
 前台 daemon 后再次查询，应显示 offline。
 
+daemon 注册后，可以创建并查看 Agent 配置：
+
+```bash
+pnpm --filter open-tag start agent create \
+  --name code-reviewer \
+  --display-name "Code Reviewer" \
+  --provider codex
+pnpm --filter open-tag start agent list
+```
+
+这只会记录 Agent identity 和 Computer binding，不会启动 Codex 或 Claude Code turn。
+
 完整本地工作流请参阅 [DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)。
 
 ## 项目状态
 
 OpenTag 正通过小型、可验证的纵向切片逐步构建。首个稳定版本发布前，公开 API 和 package 边界可能变化。
-当前代码已建立数据库 bootstrap、用户认证与本地 Computer 连接；Agent 执行与即时通信仍属于后续纵向切片。
+当前代码已建立数据库 bootstrap、用户认证、本地 Computer 连接与 Agent Registry；Agent 执行与即时通信仍属于后续纵向切片。
 
 ## 文档
 

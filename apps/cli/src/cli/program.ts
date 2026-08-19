@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { CLI_VERSION } from "../build-info.js";
+import { registerAgentCommand } from "../commands/agent.js";
 import { registerComputerCommand } from "../commands/computer.js";
 import { registerDaemonCommand } from "../commands/daemon.js";
 import { registerDoctorCommand } from "../commands/doctor.js";
@@ -14,6 +15,7 @@ export function createProgram(): Command {
     .version(CLI_VERSION)
     .showHelpAfterError();
   registerComputerCommand(program);
+  registerAgentCommand(program);
   registerDaemonCommand(program);
   registerDoctorCommand(program);
   registerLoginCommand(program);

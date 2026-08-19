@@ -12,10 +12,11 @@ This repository currently provides the engineering foundation and first control-
 - a schema-validating client health check;
 - PostgreSQL migrations and bootstrap authentication for the first user and team;
 - one-time connect-code login with sliding stateless refresh JWTs;
-- user-owned Computer registration and presence; and
-- `opentag-dev doctor`, `login`, `daemon run`, and `computer list` commands.
+- user-owned Computer registration and presence;
+- Team-owned Agent registry with immutable Computer/provider binding and revision fencing; and
+- `opentag-dev doctor`, `login`, `daemon run`, `computer list`, and `agent` commands.
 
-Messaging integrations, agent providers, and session runtimes are not implemented yet.
+Agent execution, messaging integrations, and session runtimes are not implemented yet.
 
 ## Quick start
 
@@ -46,13 +47,25 @@ pnpm --filter open-tag start daemon run
 In a third terminal, `pnpm --filter open-tag start computer list` shows the Computer as online. Stop the foreground
 daemon with Ctrl+C and list again to see it offline.
 
+With the daemon registered, create and inspect an Agent configuration:
+
+```bash
+pnpm --filter open-tag start agent create \
+  --name code-reviewer \
+  --display-name "Code Reviewer" \
+  --provider codex
+pnpm --filter open-tag start agent list
+```
+
+This records the Agent identity and Computer binding only; it does not start a Codex or Claude Code turn.
+
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full local workflow.
 
 ## Project status
 
 OpenTag is being built in small, validated vertical slices. Public APIs and package boundaries may change before the
-first stable release. The current code establishes database bootstrap, user authentication, and the local Computer
-connection; agent execution and messaging remain future vertical slices.
+first stable release. The current code establishes database bootstrap, user authentication, the local Computer
+connection, and the Agent registry; agent execution and messaging remain future vertical slices.
 
 ## Documentation
 

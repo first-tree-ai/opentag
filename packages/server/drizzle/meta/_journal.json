@@ -15,6 +15,13 @@
       "when": 1787047719822,
       "tag": "0001_living_franklin_richards",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787105005893,
+      "tag": "0002_sticky_crystal",
+      "breakpoints": true
     }
   ]
 }

@@ -5,6 +5,7 @@ import {
   ServerRuntimeBusinessFrameSchema,
   type SessionReconcileRequest,
   type SessionReconcileResult,
+  SessionReconcileResultSchema,
   type TurnReportResult,
 } from "@opentag/shared";
 import type { RuntimeConnection } from "./runtime-connection.js";
@@ -19,6 +20,10 @@ export interface ClientRuntimeOptions {
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
   handleTurnReportResult?(result: TurnReportResult): Promise<void> | void;
   onReconciled?(request: SessionReconcileRequest, result: SessionReconcileResult): Promise<void> | void;
+  prepareReconcileResult?(
+    request: SessionReconcileRequest,
+    result: SessionReconcileResult,
+  ): Promise<SessionReconcileResult> | SessionReconcileResult;
   reconciler?: SessionReconciler;
 }
 
@@ -55,7 +60,10 @@ export class ClientRuntime {
     if (!parsed.success || this.#abort.signal.aborted) return;
     const frame = parsed.data;
     if (frame.type === "session:reconcile") {
-      const result = await this.reconciler.reconcile(frame);
+      const reconciled = await this.reconciler.reconcile(frame);
+      const result = SessionReconcileResultSchema.parse(
+        (await this.#options.prepareReconcileResult?.(frame, reconciled)) ?? reconciled,
+      );
       await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
       await this.#options.onReconciled?.(frame, result);
       return;

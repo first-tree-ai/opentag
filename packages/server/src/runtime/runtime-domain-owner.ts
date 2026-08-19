@@ -7,6 +7,7 @@ import {
   type DirectImMessageDeliveryRequest,
   hashTuple,
   type ImMessageDeliveryResult,
+  RUNTIME_MVP_RETAINED_REPORT_LIMIT,
   type SessionReconcileRequest,
   type SessionReconcileResult,
   type TurnReportRequest,
@@ -86,6 +87,8 @@ export interface AcceptedDeliveryRecord {
 }
 
 export interface RecordedTurnRecord {
+  computerId: string;
+  instanceId: string;
   report: TurnReportRequest;
   resultHash: string;
 }
@@ -96,8 +99,17 @@ interface RecoveredTurnClaim {
   deliveryId: string;
   instanceId: string;
   placementGeneration: number;
+  resultHash: string;
   sessionId: string;
   turnId: string;
+}
+
+interface ReconciledSessionClaim {
+  agentId: string;
+  computerId: string;
+  instanceId: string;
+  placementGeneration: number;
+  sessionId: string;
 }
 
 export class RuntimeDomainOwner {
@@ -108,6 +120,9 @@ export class RuntimeDomainOwner {
   readonly #expiredDeliveries = new Map<string, ExpiredDelivery>();
   readonly #completed = new Map<string, CompletedRequest>();
   readonly #deliveries = new Map<string, AcceptedDeliveryRecord>();
+  // MVP-only recovery bridge. Durable Server-side Turn ownership will replace
+  // these reconciliation claims and the Client replay protocol after MVP.
+  readonly #reconciledSessions = new Map<string, ReconciledSessionClaim>();
   readonly #recoveredTurns = new Map<string, RecoveredTurnClaim>();
   readonly #turns = new Map<string, RecordedTurnRecord>();
 
@@ -142,6 +157,7 @@ export class RuntimeDomainOwner {
     this.#pending.clear();
     this.#expiredDeliveries.clear();
     this.#completed.clear();
+    this.#reconciledSessions.clear();
     this.#recoveredTurns.clear();
   }
 
@@ -349,7 +365,10 @@ export class RuntimeDomainOwner {
     ) {
       return;
     }
-    if (result.turn) this.#rememberRecoveredTurn(pending, result.turn);
+    if (result.status !== "rejected") {
+      this.#rememberReconciledSession(pending);
+      for (const claim of result.retainedReports ?? []) this.#rememberRecoveredTurn(pending, claim);
+    }
     this.#settle(pending, result);
   }
 
@@ -396,12 +415,48 @@ export class RuntimeDomainOwner {
       turnId: report.turnId,
       resultHash: report.resultHash,
     };
-    const delivery = this.#deliveries.get(report.deliveryId);
+    const recorded = this.#turns.get(report.turnId);
+    if (recorded) {
+      const sameOwner =
+        recorded.computerId === context.computerId &&
+        recorded.instanceId === context.instanceId &&
+        recorded.report.deliveryId === report.deliveryId &&
+        recorded.report.sessionId === report.sessionId &&
+        recorded.report.agentId === report.agentId &&
+        recorded.report.placementGeneration === report.placementGeneration;
+      if (!sameOwner) return { ...base, status: "conflict" };
+      return { ...base, status: recorded.resultHash === report.resultHash ? "already_recorded" : "conflict" };
+    }
+
+    let delivery = this.#deliveries.get(report.deliveryId);
     const recovered = this.#recoveredTurns.get(report.turnId);
-    if (!delivery && !recovered && this.#hasDeliveryAttempt(report, context)) return undefined;
+    const attempt = this.#matchingDeliveryAttempt(report, context);
+    if (!delivery && !recovered && attempt) {
+      this.#completeDelivery(
+        {
+          type: "im:deliver:result",
+          requestId: attempt.request.requestId,
+          deliveryId: attempt.request.deliveryId,
+          sessionId: attempt.request.sessionId,
+          placementGeneration: attempt.request.placementGeneration,
+          status: "accepted",
+          turnId: report.turnId,
+        },
+        context,
+      );
+      delivery = this.#deliveries.get(report.deliveryId);
+    }
     const owner = delivery ?? recovered;
+    if (!owner) {
+      const reconciled = this.#reconciledSessions.get(report.sessionId);
+      if (!reconciled || !this.#matchesContext(reconciled, context)) return undefined;
+      if (reconciled.agentId !== report.agentId) return { ...base, status: "conflict" };
+      if (report.placementGeneration > reconciled.placementGeneration) {
+        return { ...base, status: "stale_generation" };
+      }
+      return { ...base, status: "conflict" };
+    }
     if (
-      !owner ||
       owner.deliveryId !== report.deliveryId ||
       owner.computerId !== context.computerId ||
       owner.instanceId !== context.instanceId ||
@@ -414,15 +469,21 @@ export class RuntimeDomainOwner {
     if (owner.placementGeneration !== report.placementGeneration) {
       return { ...base, status: "stale_generation" };
     }
-    const recorded = this.#turns.get(report.turnId);
-    if (recorded) {
-      return { ...base, status: recorded.resultHash === report.resultHash ? "already_recorded" : "conflict" };
-    }
-    this.#turns.set(report.turnId, { report, resultHash: report.resultHash });
+    if ("resultHash" in owner && owner.resultHash !== report.resultHash) return { ...base, status: "conflict" };
+    this.#turns.set(report.turnId, {
+      computerId: context.computerId,
+      instanceId: context.instanceId,
+      report,
+      resultHash: report.resultHash,
+    });
+    this.#recoveredTurns.delete(report.turnId);
     return { ...base, status: "recorded" };
   }
 
-  #hasDeliveryAttempt(report: TurnReportRequest, context: RuntimeBusinessContext): boolean {
+  #matchingDeliveryAttempt(
+    report: TurnReportRequest,
+    context: RuntimeBusinessContext,
+  ): PendingDelivery | ExpiredDelivery | undefined {
     for (const attempt of [...this.#pending.values(), ...this.#expiredDeliveries.values()]) {
       if (
         attempt.kind === "delivery" &&
@@ -432,29 +493,49 @@ export class RuntimeDomainOwner {
         attempt.request.placementGeneration === report.placementGeneration &&
         this.#matchesContext(attempt, context)
       ) {
-        return true;
+        return attempt;
       }
     }
-    return false;
+    return undefined;
   }
 
-  #rememberRecoveredTurn(pending: PendingReconcile, turn: { deliveryId: string; turnId: string }): void {
-    const current = this.#recoveredTurns.get(turn.turnId);
+  #rememberRecoveredTurn(
+    pending: PendingReconcile,
+    retained: NonNullable<SessionReconcileResult["retainedReports"]>[number],
+  ): void {
+    const current = this.#recoveredTurns.get(retained.turnId);
     const claim: RecoveredTurnClaim = {
       agentId: pending.request.agentId,
       computerId: pending.computerId,
-      deliveryId: turn.deliveryId,
+      deliveryId: retained.deliveryId,
       instanceId: pending.instanceId,
-      placementGeneration: pending.request.placementGeneration,
+      placementGeneration: retained.placementGeneration,
+      resultHash: retained.resultHash,
       sessionId: pending.request.sessionId,
-      turnId: turn.turnId,
+      turnId: retained.turnId,
     };
     if (current && !sameRecoveredTurn(current, claim)) return;
-    this.#recoveredTurns.set(turn.turnId, claim);
-    while (this.#recoveredTurns.size > this.#options.maxPendingRequests) {
+    this.#recoveredTurns.set(retained.turnId, claim);
+    const limit = this.#options.maxPendingRequests * RUNTIME_MVP_RETAINED_REPORT_LIMIT;
+    while (this.#recoveredTurns.size > limit) {
       const oldest = this.#recoveredTurns.keys().next().value;
       if (oldest === undefined) break;
       this.#recoveredTurns.delete(oldest);
+    }
+  }
+
+  #rememberReconciledSession(pending: PendingReconcile): void {
+    this.#reconciledSessions.set(pending.request.sessionId, {
+      agentId: pending.request.agentId,
+      computerId: pending.computerId,
+      instanceId: pending.instanceId,
+      placementGeneration: pending.request.placementGeneration,
+      sessionId: pending.request.sessionId,
+    });
+    while (this.#reconciledSessions.size > this.#options.maxPendingRequests) {
+      const oldest = this.#reconciledSessions.keys().next().value;
+      if (oldest === undefined) break;
+      this.#reconciledSessions.delete(oldest);
     }
   }
 
@@ -521,6 +602,7 @@ function sameRecoveredTurn(left: RecoveredTurnClaim, right: RecoveredTurnClaim):
     left.deliveryId === right.deliveryId &&
     left.instanceId === right.instanceId &&
     left.placementGeneration === right.placementGeneration &&
+    left.resultHash === right.resultHash &&
     left.sessionId === right.sessionId &&
     left.turnId === right.turnId
   );

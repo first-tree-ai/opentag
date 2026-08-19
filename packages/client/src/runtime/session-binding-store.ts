@@ -262,10 +262,13 @@ export class SessionBindingStore {
       RuntimeSha256Schema.parse(resultHash);
       const path = sessionBindingPath(this.#home, agentId, sessionId);
       const binding = await this.#requireBinding(agentId, sessionId);
+      const alreadyRecorded = binding.recentRecordedInputs.find((entry) => entry.turnId === turnId);
+      if (alreadyRecorded) {
+        if (alreadyRecorded.resultHash === resultHash) return binding;
+        throw new SessionBindingConflictError("conflict", "The recorded result hash cannot be replaced");
+      }
       const unresolved = binding.unresolvedTurn;
       if (!unresolved) {
-        const recorded = binding.recentRecordedInputs.find((entry) => entry.turnId === turnId);
-        if (recorded?.resultHash === resultHash) return binding;
         throw new SessionBindingConflictError("conflict", "The recorded result does not match the Session binding");
       }
       if (unresolved.turnId !== turnId || unresolved.resultHash !== resultHash) {

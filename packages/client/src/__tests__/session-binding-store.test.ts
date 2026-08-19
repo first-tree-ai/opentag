@@ -109,6 +109,12 @@ describe("SessionBindingStore", () => {
     await expect(reopened.recordResult("agent-1", "session-1", report.turnId, report.resultHash)).resolves.toEqual(
       recorded,
     );
+
+    const active = delivery(fixture.runtime, 2);
+    await reopened.recordAccepted(active, computeDirectInputHash(active), "turn-2");
+    await expect(
+      reopened.recordResult("agent-1", "session-1", report.turnId, report.resultHash),
+    ).resolves.toMatchObject({ unresolvedTurn: { turnId: "turn-2" } });
   });
 
   it("C-16 fails closed when a binding JSON file is corrupted", async () => {

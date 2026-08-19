@@ -336,10 +336,14 @@ export class SessionReconciler {
       workspaceId: snapshot.workspace.workspaceId,
     });
     if (preparedSession?.unresolvedTurn) {
-      this.setRecovery(request.sessionId, preparedSession.unresolvedTurn);
+      const recovery = {
+        deliveryId: preparedSession.unresolvedTurn.deliveryId,
+        turnId: preparedSession.unresolvedTurn.turnId,
+      };
+      this.setRecovery(request.sessionId, recovery);
       return {
         ...this.#result(request, "recovery_required", "unresolved_turn"),
-        turn: preparedSession.unresolvedTurn,
+        turn: recovery,
       };
     }
     return this.#result(request, "ready");

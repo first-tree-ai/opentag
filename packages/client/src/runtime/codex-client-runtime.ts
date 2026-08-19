@@ -11,6 +11,7 @@ import { RuntimeStorageError } from "../storage/durable-file.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime } from "./client-runtime.js";
 import { CodexTurnRunner } from "./codex-turn-runner.js";
+import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import { SessionBindingStore } from "./session-binding-store.js";
 import { SessionReconciler } from "./session-reconciler.js";
@@ -112,6 +113,12 @@ export async function createCodexClientRuntime(
     localPolicy,
   });
   const reportOwner = new TurnReportOwner({ connection });
+  const mvpReportRecovery = new MvpTurnReportRecovery({
+    bindingStore,
+    log: options.log,
+    reconciler,
+    reportOwner,
+  });
   const adapter =
     options.adapter ??
     new CodexAdapter({
@@ -153,24 +160,8 @@ export async function createCodexClientRuntime(
     handleTurnReportResult: async (result) => {
       await reportOwner.handleResult(result);
     },
-    onReconciled: async (request) => {
-      try {
-        const binding = await bindingStore.read(request.agentId, request.sessionId);
-        const unresolved = binding?.unresolvedTurn;
-        if (unresolved?.phase !== "reporting" || !unresolved.report) return;
-        const report = unresolved.report;
-        void reportOwner
-          .submit(report, () =>
-            reconciler.withAgentLock(request.agentId, async () => {
-              await bindingStore.recordResult(request.agentId, request.sessionId, report.turnId, report.resultHash);
-              reconciler.clearRecovery(request.sessionId, report.turnId);
-            }),
-          )
-          .catch(() => options.log?.(`Durable Turn Report ${report.turnId} remains pending`));
-      } catch {
-        options.log?.(`The durable Turn Report for Session ${request.sessionId} could not be resumed`);
-      }
-    },
+    prepareReconcileResult: (request, result) => mvpReportRecovery.prepare(request, result),
+    onReconciled: (request) => mvpReportRecovery.afterReconciled(request),
   });
   return new CodexClientRuntime(runtime, { bindingStore, custody, reconciler, reportOwner, runner, workspace });
 }

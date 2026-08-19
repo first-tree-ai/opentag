@@ -8,6 +8,8 @@ export const RUNTIME_INSTRUCTIONS_MAX_BYTES = 24 * 1024;
 export const RUNTIME_FINAL_TEXT_MAX_BYTES = 48 * 1024;
 export const RUNTIME_TRACE_EVENT_MAX_BYTES = 16 * 1024;
 export const RUNTIME_TRACE_BATCH_MAX_EVENTS = 64;
+// MVP recovery bridge. Post-MVP, authoritative Turn results move to durable Server ownership.
+export const RUNTIME_MVP_RETAINED_REPORT_LIMIT = 65;
 
 const utf8 = new TextEncoder();
 const opaqueIdPattern = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
@@ -183,6 +185,15 @@ const ReconcileTurnSchema = z
   })
   .strict();
 
+export const RetainedTurnReportClaimSchema = z
+  .object({
+    deliveryId: RuntimeOpaqueIdSchema,
+    turnId: RuntimeOpaqueIdSchema,
+    placementGeneration: RuntimeSequenceSchema,
+    resultHash: RuntimeSha256Schema,
+  })
+  .strict();
+
 export const SessionReconcileResultSchema = z
   .object({
     type: z.literal("session:reconcile:result"),
@@ -192,6 +203,8 @@ export const SessionReconcileResultSchema = z
     status: z.enum(["ready", "stopped", "running", "reporting", "busy", "recovery_required", "rejected"]),
     reason: byteString(256, "Reconcile reason exceeds the 256-byte limit", 1).optional(),
     turn: ReconcileTurnSchema.optional(),
+    // MVP-only recovery manifest. Durable Server-side Turn ownership replaces it after MVP.
+    retainedReports: z.array(RetainedTurnReportClaimSchema).max(RUNTIME_MVP_RETAINED_REPORT_LIMIT).optional(),
   })
   .strict()
   .superRefine((frame, context) => {
@@ -210,6 +223,38 @@ export const SessionReconcileResultSchema = z
         path: ["reason"],
         message: "Successful reconcile results cannot include a reason",
       });
+    }
+    if (frame.status === "rejected" && frame.retainedReports) {
+      context.addIssue({
+        code: "custom",
+        path: ["retainedReports"],
+        message: "Rejected reconciliation cannot establish retained Turn Report claims",
+      });
+    }
+    if (frame.retainedReports) {
+      const turnIds = new Set(frame.retainedReports.map((claim) => claim.turnId));
+      if (turnIds.size !== frame.retainedReports.length) {
+        context.addIssue({
+          code: "custom",
+          path: ["retainedReports"],
+          message: "Retained Turn Report claims must have unique Turn IDs",
+        });
+      }
+      const deliveryIds = new Set(frame.retainedReports.map((claim) => claim.deliveryId));
+      if (deliveryIds.size !== frame.retainedReports.length) {
+        context.addIssue({
+          code: "custom",
+          path: ["retainedReports"],
+          message: "Retained Turn Report claims must have unique delivery IDs",
+        });
+      }
+      if (frame.retainedReports.some((claim) => claim.placementGeneration > frame.placementGeneration)) {
+        context.addIssue({
+          code: "custom",
+          path: ["retainedReports"],
+          message: "Retained Turn Report claims cannot be from a future placement generation",
+        });
+      }
     }
   });
 
@@ -381,6 +426,7 @@ export type InputRejectReason = z.infer<typeof InputRejectReasonSchema>;
 export type TurnFailureReason = z.infer<typeof TurnFailureReasonSchema>;
 export type SessionReconcileRequest = z.infer<typeof SessionReconcileRequestSchema>;
 export type SessionReconcileResult = z.infer<typeof SessionReconcileResultSchema>;
+export type RetainedTurnReportClaim = z.infer<typeof RetainedTurnReportClaimSchema>;
 export type DirectImMessageDeliveryRequest = z.infer<typeof DirectImMessageDeliveryRequestSchema>;
 export type ImMessageDeliveryResult = z.infer<typeof ImMessageDeliveryResultSchema>;
 export type AgentTraceEvent = z.infer<typeof AgentTraceEventSchema>;

@@ -76,6 +76,20 @@ describe("RuntimeDomainOwner", () => {
     const request = deliveryRequest();
     const report = turnReport();
 
+    await expect(fixture.owner.handle(report, fixture.context)).resolves.toBeUndefined();
+    const reconcile = reconcileRequest(fixture.computerId);
+    const reconciled = fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, reconcile);
+    await fixture.owner.handle(
+      {
+        type: "session:reconcile:result",
+        requestId: reconcile.requestId,
+        sessionId: reconcile.sessionId,
+        placementGeneration: reconcile.placementGeneration,
+        status: "ready",
+      },
+      fixture.context,
+    );
+    await reconciled;
     await expect(fixture.owner.handle(report, fixture.context)).resolves.toMatchObject({ status: "conflict" });
     const delivery = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, request);
     await fixture.owner.handle(acceptedResult(request), fixture.context);
@@ -162,12 +176,34 @@ describe("RuntimeDomainOwner", () => {
     }
   });
 
-  it("drops transient scheduler failures and serializes acceptance with its report by delivery", async () => {
+  it("uses a report to promote an expired delivery attempt without an external redelivery", async () => {
+    vi.useFakeTimers();
+    const fixture = await ownerFixture(10);
+    try {
+      const request = deliveryRequest();
+      const timedOut = fixture.owner
+        .requestDelivery(fixture.computerId, fixture.instanceId, request)
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(timedOut).resolves.toBeInstanceOf(Error);
+
+      const report = turnReport();
+      await expect(fixture.owner.handle(report, fixture.context)).resolves.toMatchObject({ status: "recorded" });
+      expect(fixture.owner.getDelivery(request.deliveryId)).toMatchObject({ turnId: report.turnId });
+      await expect(
+        fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, request),
+      ).resolves.toMatchObject({ status: "accepted", turnId: report.turnId });
+    } finally {
+      fixture.owner.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("uses a matching report to recover an accepted result dropped by scheduler overload", async () => {
     const fixture = await ownerFixture();
     const request = deliveryRequest();
     const report = turnReport();
     const pending = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, request);
-    await expect(fixture.owner.handle(report, fixture.context)).resolves.toBeUndefined();
 
     const business = fixture.owner.businessOptions();
     expect(business.failureResult(report as never)).toBeUndefined();
@@ -175,14 +211,16 @@ describe("RuntimeDomainOwner", () => {
     expect(business.laneKey(acceptedResult(request) as never)).toBe(`delivery:${request.deliveryId}`);
     expect(business.laneKey(report as never)).toBe(`delivery:${request.deliveryId}`);
 
-    await fixture.owner.handle(acceptedResult(request), fixture.context);
-    await pending;
     await expect(fixture.owner.handle(report, fixture.context)).resolves.toMatchObject({ status: "recorded" });
+    await expect(pending).resolves.toMatchObject({ status: "accepted", turnId: report.turnId });
+    expect(fixture.owner.getDelivery(request.deliveryId)).toMatchObject({ turnId: report.turnId });
   });
 
   it("accepts a durable reporting recovery claimed by reconciliation", async () => {
     const fixture = await ownerFixture();
     const request = reconcileRequest(fixture.computerId);
+    const report = turnReport();
+    await expect(fixture.owner.handle(report, fixture.context)).resolves.toBeUndefined();
     const pending = fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request);
     await fixture.owner.handle(
       {
@@ -193,11 +231,27 @@ describe("RuntimeDomainOwner", () => {
         status: "recovery_required",
         reason: "unresolved_turn",
         turn: { deliveryId: "delivery-1", turnId: "turn-1" },
+        retainedReports: [
+          {
+            deliveryId: report.deliveryId,
+            turnId: report.turnId,
+            placementGeneration: report.placementGeneration,
+            resultHash: report.resultHash,
+          },
+        ],
       },
       fixture.context,
     );
     await expect(pending).resolves.toMatchObject({ status: "recovery_required" });
-    await expect(fixture.owner.handle(turnReport(), fixture.context)).resolves.toMatchObject({ status: "recorded" });
+    const conflictingBody = { ...report, finalText: "different recovered result" };
+    const conflicting = {
+      ...conflictingBody,
+      requestId: randomUUID(),
+      resultHash: computeTurnResultHash(conflictingBody),
+    };
+    await expect(fixture.owner.handle(conflicting, fixture.context)).resolves.toMatchObject({ status: "conflict" });
+    expect(fixture.owner.getTurn(report.turnId)).toBeUndefined();
+    await expect(fixture.owner.handle(report, fixture.context)).resolves.toMatchObject({ status: "recorded" });
   });
 });
 

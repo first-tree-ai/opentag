@@ -32,6 +32,7 @@ describe("runtime domain contract", () => {
       runtime,
     } as const;
     expect(ServerRuntimeBusinessFrameSchema.parse(reconcile)).toEqual(reconcile);
+    const report = turnReport();
     expect(
       ClientRuntimeBusinessFrameSchema.parse({
         type: "session:reconcile:result",
@@ -39,8 +40,16 @@ describe("runtime domain contract", () => {
         sessionId: reconcile.sessionId,
         placementGeneration: 1,
         status: "ready",
+        retainedReports: [
+          {
+            deliveryId: report.deliveryId,
+            turnId: report.turnId,
+            placementGeneration: report.placementGeneration,
+            resultHash: report.resultHash,
+          },
+        ],
       }),
-    ).toMatchObject({ status: "ready" });
+    ).toMatchObject({ status: "ready", retainedReports: [{ turnId: report.turnId }] });
 
     const delivery = directDelivery(runtime);
     expect(ServerRuntimeBusinessFrameSchema.parse(delivery)).toEqual(delivery);
@@ -67,7 +76,6 @@ describe("runtime domain contract", () => {
       }),
     ).toMatchObject({ type: "agent:trace" });
 
-    const report = turnReport();
     expect(ClientRuntimeBusinessFrameSchema.parse(report)).toEqual(report);
     expect(
       ServerRuntimeBusinessFrameSchema.parse({
@@ -125,6 +133,41 @@ describe("runtime domain contract", () => {
       }),
     ).toThrow();
     const report = turnReport();
+    expect(() =>
+      SessionReconcileResultSchema.parse({
+        type: "session:reconcile:result",
+        requestId: randomUUID(),
+        sessionId: report.sessionId,
+        placementGeneration: report.placementGeneration,
+        status: "rejected",
+        reason: "configuration_conflict",
+        retainedReports: [
+          {
+            deliveryId: report.deliveryId,
+            turnId: report.turnId,
+            placementGeneration: report.placementGeneration,
+            resultHash: report.resultHash,
+          },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      SessionReconcileResultSchema.parse({
+        type: "session:reconcile:result",
+        requestId: randomUUID(),
+        sessionId: report.sessionId,
+        placementGeneration: report.placementGeneration,
+        status: "ready",
+        retainedReports: [
+          {
+            deliveryId: report.deliveryId,
+            turnId: report.turnId,
+            placementGeneration: report.placementGeneration + 1,
+            resultHash: report.resultHash,
+          },
+        ],
+      }),
+    ).toThrow();
     expect(() => TurnReportRequestSchema.parse({ ...report, outcome: "failed", errorReason: undefined })).toThrow();
   });
 

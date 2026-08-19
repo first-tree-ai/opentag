@@ -81,6 +81,10 @@ export class TurnReportOwner {
       if (existing.report.requestId !== report.requestId || existing.report.resultHash !== report.resultHash) {
         return Promise.reject(new Error("A different Turn Report already owns this Turn"));
       }
+      if (this.#connection.state === "registered" && !existing.serverStatus) {
+        if (existing.sending) existing.resendRequested = true;
+        else this.#send(existing);
+      }
       return existing.promise;
     }
     if (this.#pending.size >= this.#maxPending) {

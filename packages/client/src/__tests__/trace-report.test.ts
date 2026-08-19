@@ -58,7 +58,7 @@ describe("TurnTraceBuffer", () => {
 });
 
 describe("TurnReportOwner", () => {
-  it("D-17/D-19 keeps one immutable Report and resends it after registration", async () => {
+  it("D-17/D-19 resends one immutable Report after registration and reconciliation wake-up", async () => {
     const connection = new FakeConnection("stopped");
     const owner = new TurnReportOwner({ connection, id: () => REPORT_REQUEST_ID });
     const report = owner.create(reportInput());
@@ -72,6 +72,9 @@ describe("TurnReportOwner", () => {
     connection.setState("registered");
     await vi.waitFor(() => expect(connection.sent).toHaveLength(2));
     expect(connection.sent[0]?.frame).toEqual(connection.sent[1]?.frame);
+    expect(owner.submit(report, confirm)).toBe(recorded);
+    await vi.waitFor(() => expect(connection.sent).toHaveLength(3));
+    expect(connection.sent[2]?.frame).toEqual(report);
 
     await owner.handleResult({
       type: "turn:report:result",

@@ -89,7 +89,7 @@ describe("createCodexClientRuntime", () => {
     expect(resolveCodexHome({ HOME: "/provider-home" })).toBe(resolve("/provider-home/.codex"));
   });
 
-  it("resumes a complete durable report after the client process restarts", async () => {
+  it("replays unresolved and acknowledged durable reports after the client process restarts", async () => {
     const home = await temporaryDirectory("opentag-client-home-");
     const codexHome = resolve(home, "codex-home");
     const seedConnection = runtimeConnection();
@@ -103,31 +103,71 @@ describe("createCodexClientRuntime", () => {
     });
     const runtimeSnapshot = snapshot();
     await seed.reconciler.reconcile(reconcileRequest(seedConnection.computerId, runtimeSnapshot));
-    const input = delivery(runtimeSnapshot);
-    const report = seed.reportOwner.create({
-      deliveryId: input.deliveryId,
-      turnId: "turn-recovered",
-      sessionId: input.sessionId,
-      agentId: input.agentId,
-      placementGeneration: input.placementGeneration,
+    const recordedInput = delivery(runtimeSnapshot);
+    const recordedReport = seed.reportOwner.create({
+      deliveryId: recordedInput.deliveryId,
+      turnId: "turn-recorded",
+      sessionId: recordedInput.sessionId,
+      agentId: recordedInput.agentId,
+      placementGeneration: recordedInput.placementGeneration,
       outcome: "completed",
       executionEffects: "completed",
-      finalText: "recovered result",
+      finalText: "previously acknowledged result",
       traceSummary: { lastSequence: 2, droppedEvents: 0 },
     });
-    await seed.bindingStore.recordAccepted(input, computeDirectInputHash(input), report.turnId);
-    await seed.bindingStore.updateUnresolved(input.agentId, input.sessionId, report.turnId, "reporting", {
-      report,
-      resultHash: report.resultHash,
+    await seed.bindingStore.recordAccepted(recordedInput, computeDirectInputHash(recordedInput), recordedReport.turnId);
+    await seed.bindingStore.updateUnresolved(
+      recordedInput.agentId,
+      recordedInput.sessionId,
+      recordedReport.turnId,
+      "reporting",
+      { report: recordedReport, resultHash: recordedReport.resultHash },
+    );
+    await seed.bindingStore.recordResult(
+      recordedInput.agentId,
+      recordedInput.sessionId,
+      recordedReport.turnId,
+      recordedReport.resultHash,
+    );
+
+    const unresolvedInput = {
+      ...recordedInput,
+      requestId: randomUUID(),
+      deliveryId: "delivery-unresolved",
+      imMessageId: "message-unresolved",
+    };
+    const unresolvedReport = seed.reportOwner.create({
+      deliveryId: unresolvedInput.deliveryId,
+      turnId: "turn-unresolved",
+      sessionId: unresolvedInput.sessionId,
+      agentId: unresolvedInput.agentId,
+      placementGeneration: unresolvedInput.placementGeneration,
+      outcome: "completed",
+      executionEffects: "completed",
+      finalText: "unresolved result",
+      traceSummary: { lastSequence: 3, droppedEvents: 0 },
     });
+    await seed.bindingStore.recordAccepted(
+      unresolvedInput,
+      computeDirectInputHash(unresolvedInput),
+      unresolvedReport.turnId,
+    );
+    await seed.bindingStore.updateUnresolved(
+      unresolvedInput.agentId,
+      unresolvedInput.sessionId,
+      unresolvedReport.turnId,
+      "reporting",
+      { report: unresolvedReport, resultHash: unresolvedReport.resultHash },
+    );
     seed.stop();
     seed.reportOwner.stop();
 
     const server = await runtimeServer();
     cleanup.push(server.close);
     const connection = runtimeConnection(server.url);
-    let receivedReport: TurnReportRequest | undefined;
+    const receivedReports: TurnReportRequest[] = [];
     let reconcileStatus: unknown;
+    let retainedReports: unknown;
     server.wss.on("connection", (socket) => {
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
@@ -159,10 +199,12 @@ describe("createCodexClientRuntime", () => {
         }
         if (frame.type === "session:reconcile:result") {
           reconcileStatus = frame.status;
+          retainedReports = frame.retainedReports;
           return;
         }
         if (frame.type === "turn:report") {
-          receivedReport = frame as unknown as TurnReportRequest;
+          const receivedReport = frame as unknown as TurnReportRequest;
+          receivedReports.push(receivedReport);
           socket.send(
             JSON.stringify({
               type: "turn:report:result",
@@ -184,14 +226,33 @@ describe("createCodexClientRuntime", () => {
       probe: async () => undefined,
     });
     const running = recovered.run();
-    await vi.waitFor(() => expect(receivedReport).toEqual(report));
-    expect(reconcileStatus).toBe("recovery_required");
+    await vi.waitFor(() => expect(reconcileStatus).toBe("recovery_required"));
+    await vi.waitFor(() =>
+      expect(retainedReports).toEqual([
+        {
+          deliveryId: unresolvedReport.deliveryId,
+          turnId: unresolvedReport.turnId,
+          placementGeneration: unresolvedReport.placementGeneration,
+          resultHash: unresolvedReport.resultHash,
+        },
+        {
+          deliveryId: recordedReport.deliveryId,
+          turnId: recordedReport.turnId,
+          placementGeneration: recordedReport.placementGeneration,
+          resultHash: recordedReport.resultHash,
+        },
+      ]),
+    );
+    await vi.waitFor(() => expect(receivedReports).toEqual([unresolvedReport, recordedReport]));
     await vi.waitFor(async () => {
-      expect((await recovered.bindingStore.read(input.agentId, input.sessionId))?.unresolvedTurn).toBeUndefined();
+      expect(
+        (await recovered.bindingStore.read(unresolvedInput.agentId, unresolvedInput.sessionId))?.unresolvedTurn,
+      ).toBeUndefined();
     });
-    expect(
-      (await recovered.bindingStore.read(input.agentId, input.sessionId))?.recentRecordedInputs.at(-1)?.report,
-    ).toEqual(report);
+    const recorded = (
+      await recovered.bindingStore.read(unresolvedInput.agentId, unresolvedInput.sessionId)
+    )?.recentRecordedInputs.map((entry) => entry.report);
+    expect(recorded).toEqual([recordedReport, unresolvedReport]);
     recovered.stop();
     await running;
   });

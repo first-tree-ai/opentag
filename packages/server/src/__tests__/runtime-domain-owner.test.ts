@@ -141,9 +141,67 @@ describe("RuntimeDomainOwner", () => {
     fixture.owner.close();
     await expect(oldPending).resolves.toBeInstanceOf(Error);
   });
+
+  it("keeps a timed-out delivery correlation long enough to accept a late custody result", async () => {
+    vi.useFakeTimers();
+    const fixture = await ownerFixture(10);
+    try {
+      const request = deliveryRequest();
+      const timedOut = fixture.owner
+        .requestDelivery(fixture.computerId, fixture.instanceId, request)
+        .catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(10);
+      await expect(timedOut).resolves.toBeInstanceOf(Error);
+
+      await fixture.owner.handle(acceptedResult(request), fixture.context);
+      expect(fixture.owner.getDelivery(request.deliveryId)).toMatchObject({ turnId: "turn-1" });
+      await expect(fixture.owner.handle(turnReport(), fixture.context)).resolves.toMatchObject({ status: "recorded" });
+    } finally {
+      fixture.owner.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops transient scheduler failures and serializes acceptance with its report by delivery", async () => {
+    const fixture = await ownerFixture();
+    const request = deliveryRequest();
+    const report = turnReport();
+    const pending = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, request);
+    await expect(fixture.owner.handle(report, fixture.context)).resolves.toBeUndefined();
+
+    const business = fixture.owner.businessOptions();
+    expect(business.failureResult(report as never)).toBeUndefined();
+    expect(business.overloadResult(report as never)).toBeUndefined();
+    expect(business.laneKey(acceptedResult(request) as never)).toBe(`delivery:${request.deliveryId}`);
+    expect(business.laneKey(report as never)).toBe(`delivery:${request.deliveryId}`);
+
+    await fixture.owner.handle(acceptedResult(request), fixture.context);
+    await pending;
+    await expect(fixture.owner.handle(report, fixture.context)).resolves.toMatchObject({ status: "recorded" });
+  });
+
+  it("accepts a durable reporting recovery claimed by reconciliation", async () => {
+    const fixture = await ownerFixture();
+    const request = reconcileRequest(fixture.computerId);
+    const pending = fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request);
+    await fixture.owner.handle(
+      {
+        type: "session:reconcile:result",
+        requestId: request.requestId,
+        sessionId: request.sessionId,
+        placementGeneration: request.placementGeneration,
+        status: "recovery_required",
+        reason: "unresolved_turn",
+        turn: { deliveryId: "delivery-1", turnId: "turn-1" },
+      },
+      fixture.context,
+    );
+    await expect(pending).resolves.toMatchObject({ status: "recovery_required" });
+    await expect(fixture.owner.handle(turnReport(), fixture.context)).resolves.toMatchObject({ status: "recorded" });
+  });
 });
 
-async function ownerFixture() {
+async function ownerFixture(requestTimeoutMs = 1_000) {
   const registry = new ConnectionRegistry();
   const computerId = randomUUID();
   const instanceId = randomUUID();
@@ -159,7 +217,7 @@ async function ownerFixture() {
     },
     async () => undefined,
   );
-  const owner = new RuntimeDomainOwner(registry, { requestTimeoutMs: 1_000 });
+  const owner = new RuntimeDomainOwner(registry, { requestTimeoutMs });
   const context: RuntimeBusinessContext = {
     computerId,
     instanceId,

@@ -1,19 +1,26 @@
 import { randomUUID } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import type {
-  DirectImMessageDeliveryRequest,
-  EffectiveRuntimeSnapshot,
-  SessionReconcileRequest,
+import {
+  computeDirectInputHash,
+  type DirectImMessageDeliveryRequest,
+  type EffectiveRuntimeSnapshot,
+  type SessionReconcileRequest,
+  type TurnReportRequest,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { WebSocketServer } from "ws";
 import { createCodexClientRuntime, resolveCodexHome } from "../runtime/codex-client-runtime.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 
 const directories: string[] = [];
+const cleanup: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
+  await Promise.all(cleanup.splice(0).map((close) => close()));
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
@@ -81,16 +88,123 @@ describe("createCodexClientRuntime", () => {
   it("uses HOME when CODEX_HOME is absent", () => {
     expect(resolveCodexHome({ HOME: "/provider-home" })).toBe(resolve("/provider-home/.codex"));
   });
+
+  it("resumes a complete durable report after the client process restarts", async () => {
+    const home = await temporaryDirectory("opentag-client-home-");
+    const codexHome = resolve(home, "codex-home");
+    const seedConnection = runtimeConnection();
+    const seed = await createCodexClientRuntime(seedConnection, {
+      home,
+      clientVersion: "0.0.1",
+      codexHome,
+      codexCommand: process.execPath,
+      environment: { HOME: home, PATH: process.env.PATH },
+      probe: async () => undefined,
+    });
+    const runtimeSnapshot = snapshot();
+    await seed.reconciler.reconcile(reconcileRequest(seedConnection.computerId, runtimeSnapshot));
+    const input = delivery(runtimeSnapshot);
+    const report = seed.reportOwner.create({
+      deliveryId: input.deliveryId,
+      turnId: "turn-recovered",
+      sessionId: input.sessionId,
+      agentId: input.agentId,
+      placementGeneration: input.placementGeneration,
+      outcome: "completed",
+      executionEffects: "completed",
+      finalText: "recovered result",
+      traceSummary: { lastSequence: 2, droppedEvents: 0 },
+    });
+    await seed.bindingStore.recordAccepted(input, computeDirectInputHash(input), report.turnId);
+    await seed.bindingStore.updateUnresolved(input.agentId, input.sessionId, report.turnId, "reporting", {
+      report,
+      resultHash: report.resultHash,
+    });
+    seed.stop();
+    seed.reportOwner.stop();
+
+    const server = await runtimeServer();
+    cleanup.push(server.close);
+    const connection = runtimeConnection(server.url);
+    let receivedReport: TurnReportRequest | undefined;
+    let reconcileStatus: unknown;
+    server.wss.on("connection", (socket) => {
+      socket.on("message", (data) => {
+        const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (frame.type === "auth") {
+          socket.send(
+            JSON.stringify({
+              type: "auth:result",
+              requestId: frame.requestId,
+              ok: true,
+              userId: randomUUID(),
+              tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+            }),
+          );
+          socket.send(
+            JSON.stringify({
+              type: "server:welcome",
+              protocolVersion: 1,
+              capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1 },
+              heartbeatIntervalMs: 1_000,
+              heartbeatTimeoutMs: 2_000,
+            }),
+          );
+          return;
+        }
+        if (frame.type === "computer:register") {
+          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          socket.send(JSON.stringify(reconcileRequest(connection.computerId, runtimeSnapshot)));
+          return;
+        }
+        if (frame.type === "session:reconcile:result") {
+          reconcileStatus = frame.status;
+          return;
+        }
+        if (frame.type === "turn:report") {
+          receivedReport = frame as unknown as TurnReportRequest;
+          socket.send(
+            JSON.stringify({
+              type: "turn:report:result",
+              requestId: receivedReport.requestId,
+              turnId: receivedReport.turnId,
+              status: "recorded",
+              resultHash: receivedReport.resultHash,
+            }),
+          );
+        }
+      });
+    });
+    const recovered = await createCodexClientRuntime(connection, {
+      home,
+      clientVersion: "0.0.1",
+      codexHome,
+      codexCommand: process.execPath,
+      environment: { HOME: home, PATH: process.env.PATH },
+      probe: async () => undefined,
+    });
+    const running = recovered.run();
+    await vi.waitFor(() => expect(receivedReport).toEqual(report));
+    expect(reconcileStatus).toBe("recovery_required");
+    await vi.waitFor(async () => {
+      expect((await recovered.bindingStore.read(input.agentId, input.sessionId))?.unresolvedTurn).toBeUndefined();
+    });
+    expect(
+      (await recovered.bindingStore.read(input.agentId, input.sessionId))?.recentRecordedInputs.at(-1)?.report,
+    ).toEqual(report);
+    recovered.stop();
+    await running;
+  });
 });
 
-function runtimeConnection(): RuntimeConnection {
+function runtimeConnection(serverUrl = "http://127.0.0.1:3000"): RuntimeConnection {
   return new RuntimeConnection({
     arch: "arm64",
     clientVersion: "0.0.1",
     computer: {
       version: 1,
       computerId: randomUUID(),
-      serverUrl: "http://127.0.0.1:3000",
+      serverUrl,
       userId: randomUUID(),
     },
     displayName: "test",
@@ -103,6 +217,24 @@ function runtimeConnection(): RuntimeConnection {
       }),
     },
   });
+}
+
+async function runtimeServer(): Promise<{ close(): Promise<void>; url: string; wss: WebSocketServer }> {
+  const http = createServer();
+  const wss = new WebSocketServer({ server: http });
+  await new Promise<void>((resolveListen) => http.listen(0, "127.0.0.1", resolveListen));
+  const address = http.address() as AddressInfo;
+  return {
+    wss,
+    url: `http://127.0.0.1:${address.port}`,
+    close: async () => {
+      for (const client of wss.clients) client.terminate();
+      await new Promise<void>((resolveClose) => wss.close(() => resolveClose()));
+      await new Promise<void>((resolveClose, reject) =>
+        http.close((error) => (error ? reject(error) : resolveClose())),
+      );
+    },
+  };
 }
 
 async function temporaryDirectory(prefix: string): Promise<string> {

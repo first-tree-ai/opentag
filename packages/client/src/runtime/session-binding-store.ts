@@ -5,6 +5,8 @@ import {
   RuntimeSha256Schema,
   type RuntimeSnapshotHashes,
   type SessionReconcileRequest,
+  type TurnReportRequest,
+  TurnReportRequestSchema,
 } from "@opentag/shared";
 import {
   ensurePrivateDirectory,
@@ -22,6 +24,7 @@ export type UnresolvedTurnPhase = "accepted" | "starting" | "running" | "reporti
 export interface RecordedInput {
   deliveryId: string;
   inputHash: string;
+  report?: TurnReportRequest;
   resultHash: string;
   turnId: string;
 }
@@ -33,6 +36,7 @@ export interface UnresolvedTurn {
   turnId: string;
   phase: UnresolvedTurnPhase;
   providerTurnId?: string;
+  report?: TurnReportRequest;
   resultHash?: string;
 }
 
@@ -209,7 +213,12 @@ export class SessionBindingStore {
     sessionId: string,
     turnId: string,
     phase: UnresolvedTurnPhase,
-    fields: { providerThreadId?: string; providerTurnId?: string; resultHash?: string } = {},
+    fields: {
+      providerThreadId?: string;
+      providerTurnId?: string;
+      report?: TurnReportRequest;
+      resultHash?: string;
+    } = {},
   ): Promise<LocalSessionBinding> {
     return this.#withSessionLock(sessionId, async () => {
       const path = sessionBindingPath(this.#home, agentId, sessionId);
@@ -221,6 +230,17 @@ export class SessionBindingStore {
       if (phaseOrder(phase) < phaseOrder(unresolved.phase)) {
         throw new SessionBindingConflictError("conflict", "The unresolved turn phase cannot move backwards");
       }
+      const report = fields.report ? TurnReportRequestSchema.parse(fields.report) : undefined;
+      if (report) this.#validateReport(binding, unresolved, report);
+      if (report && fields.resultHash !== undefined && fields.resultHash !== report.resultHash) {
+        throw new SessionBindingConflictError("conflict", "The Turn Report result hash does not match the update");
+      }
+      if (unresolved.report && report && unresolved.report.requestId !== report.requestId) {
+        throw new SessionBindingConflictError("conflict", "The immutable Turn Report cannot be replaced");
+      }
+      if (unresolved.report && fields.resultHash && unresolved.report.resultHash !== fields.resultHash) {
+        throw new SessionBindingConflictError("conflict", "The Turn Report result hash cannot be replaced");
+      }
       const updated: LocalSessionBinding = {
         ...binding,
         ...(fields.providerThreadId ? { providerThreadId: fields.providerThreadId } : {}),
@@ -228,6 +248,7 @@ export class SessionBindingStore {
           ...unresolved,
           phase,
           ...(fields.providerTurnId ? { providerTurnId: fields.providerTurnId } : {}),
+          ...(report ? { report } : {}),
           ...(fields.resultHash ? { resultHash: fields.resultHash } : {}),
         },
       };
@@ -242,12 +263,18 @@ export class SessionBindingStore {
       const path = sessionBindingPath(this.#home, agentId, sessionId);
       const binding = await this.#requireBinding(agentId, sessionId);
       const unresolved = binding.unresolvedTurn;
-      if (!unresolved || unresolved.turnId !== turnId || unresolved.resultHash !== resultHash) {
+      if (!unresolved) {
+        const recorded = binding.recentRecordedInputs.find((entry) => entry.turnId === turnId);
+        if (recorded?.resultHash === resultHash) return binding;
+        throw new SessionBindingConflictError("conflict", "The recorded result does not match the Session binding");
+      }
+      if (unresolved.turnId !== turnId || unresolved.resultHash !== resultHash) {
         throw new SessionBindingConflictError("conflict", "The recorded result does not match the unresolved turn");
       }
       const recorded: RecordedInput = {
         deliveryId: unresolved.deliveryId,
         inputHash: unresolved.inputHash,
+        ...(unresolved.report ? { report: unresolved.report } : {}),
         resultHash,
         turnId,
       };
@@ -290,6 +317,20 @@ export class SessionBindingStore {
       binding.providerHomeIdentity !== this.#providerHomeIdentity
     ) {
       throw new SessionBindingConflictError("conflict", "The delivery does not match the Session binding");
+    }
+  }
+
+  #validateReport(binding: LocalSessionBinding, unresolved: UnresolvedTurn, report: TurnReportRequest): void {
+    if (
+      report.requestId.length === 0 ||
+      report.deliveryId !== unresolved.deliveryId ||
+      report.turnId !== unresolved.turnId ||
+      report.sessionId !== binding.sessionId ||
+      report.agentId !== binding.agentId ||
+      report.placementGeneration !== binding.placementGeneration ||
+      (unresolved.resultHash !== undefined && unresolved.resultHash !== report.resultHash)
+    ) {
+      throw new SessionBindingConflictError("conflict", "The Turn Report does not match the unresolved custody");
     }
   }
 
@@ -348,11 +389,21 @@ function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
   ) {
     throw new RuntimeStorageError("invalid", "Session binding values are invalid");
   }
-  const recentRecordedInputs = value.recentRecordedInputs.map(parseRecordedInput);
+  const recentRecordedInputs = value.recentRecordedInputs.map((entry) =>
+    parseRecordedInput(entry, value.sessionId as string, value.agentId as string, value.placementGeneration as number),
+  );
   if (recentRecordedInputs.length > SESSION_RECORDED_INPUT_LIMIT) {
     throw new RuntimeStorageError("invalid", "Session binding has too many recorded inputs");
   }
-  const unresolvedTurn = value.unresolvedTurn === undefined ? undefined : parseUnresolvedTurn(value.unresolvedTurn);
+  const unresolvedTurn =
+    value.unresolvedTurn === undefined
+      ? undefined
+      : parseUnresolvedTurn(
+          value.unresolvedTurn,
+          value.sessionId as string,
+          value.agentId as string,
+          value.placementGeneration as number,
+        );
   return {
     schemaVersion: SESSION_BINDING_SCHEMA_VERSION,
     sessionId: value.sessionId,
@@ -371,10 +422,15 @@ function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
   };
 }
 
-function parseRecordedInput(value: unknown): RecordedInput {
+function parseRecordedInput(
+  value: unknown,
+  sessionId: string,
+  agentId: string,
+  placementGeneration: number,
+): RecordedInput {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["deliveryId", "inputHash", "turnId", "resultHash"]) ||
+    !hasOnlyKeys(value, ["deliveryId", "inputHash", "turnId", "resultHash", "report"]) ||
     !isString(value.deliveryId) ||
     !RuntimeSha256Schema.safeParse(value.inputHash).success ||
     !isString(value.turnId) ||
@@ -382,13 +438,45 @@ function parseRecordedInput(value: unknown): RecordedInput {
   ) {
     throw new RuntimeStorageError("invalid", "Recorded input is invalid");
   }
-  return value as unknown as RecordedInput;
+  const report = value.report === undefined ? undefined : TurnReportRequestSchema.parse(value.report);
+  if (
+    report &&
+    (report.deliveryId !== value.deliveryId ||
+      report.turnId !== value.turnId ||
+      report.sessionId !== sessionId ||
+      report.agentId !== agentId ||
+      report.placementGeneration !== placementGeneration ||
+      report.resultHash !== value.resultHash)
+  ) {
+    throw new RuntimeStorageError("invalid", "Recorded Turn Report identity is invalid");
+  }
+  return {
+    deliveryId: value.deliveryId,
+    inputHash: value.inputHash as string,
+    ...(report ? { report } : {}),
+    resultHash: value.resultHash as string,
+    turnId: value.turnId,
+  };
 }
 
-function parseUnresolvedTurn(value: unknown): UnresolvedTurn {
+function parseUnresolvedTurn(
+  value: unknown,
+  sessionId: string,
+  agentId: string,
+  placementGeneration: number,
+): UnresolvedTurn {
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["requestId", "deliveryId", "inputHash", "turnId", "phase", "providerTurnId", "resultHash"]) ||
+    !hasOnlyKeys(value, [
+      "requestId",
+      "deliveryId",
+      "inputHash",
+      "turnId",
+      "phase",
+      "providerTurnId",
+      "report",
+      "resultHash",
+    ]) ||
     !isString(value.requestId) ||
     !isString(value.deliveryId) ||
     !RuntimeSha256Schema.safeParse(value.inputHash).success ||
@@ -399,7 +487,28 @@ function parseUnresolvedTurn(value: unknown): UnresolvedTurn {
   ) {
     throw new RuntimeStorageError("invalid", "Unresolved turn is invalid");
   }
-  return value as unknown as UnresolvedTurn;
+  const report = value.report === undefined ? undefined : TurnReportRequestSchema.parse(value.report);
+  if (
+    report &&
+    (report.deliveryId !== value.deliveryId ||
+      report.turnId !== value.turnId ||
+      report.sessionId !== sessionId ||
+      report.agentId !== agentId ||
+      report.placementGeneration !== placementGeneration ||
+      report.resultHash !== value.resultHash)
+  ) {
+    throw new RuntimeStorageError("invalid", "Unresolved Turn Report identity is invalid");
+  }
+  return {
+    requestId: value.requestId,
+    deliveryId: value.deliveryId,
+    inputHash: value.inputHash as string,
+    turnId: value.turnId,
+    phase: value.phase,
+    ...(value.providerTurnId ? { providerTurnId: value.providerTurnId } : {}),
+    ...(report ? { report } : {}),
+    ...(value.resultHash ? { resultHash: value.resultHash as string } : {}),
+  };
 }
 
 function phaseOrder(phase: UnresolvedTurnPhase): number {

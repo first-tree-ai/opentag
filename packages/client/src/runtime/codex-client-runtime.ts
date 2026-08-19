@@ -153,6 +153,24 @@ export async function createCodexClientRuntime(
     handleTurnReportResult: async (result) => {
       await reportOwner.handleResult(result);
     },
+    onReconciled: async (request) => {
+      try {
+        const binding = await bindingStore.read(request.agentId, request.sessionId);
+        const unresolved = binding?.unresolvedTurn;
+        if (unresolved?.phase !== "reporting" || !unresolved.report) return;
+        const report = unresolved.report;
+        void reportOwner
+          .submit(report, () =>
+            reconciler.withAgentLock(request.agentId, async () => {
+              await bindingStore.recordResult(request.agentId, request.sessionId, report.turnId, report.resultHash);
+              reconciler.clearRecovery(request.sessionId, report.turnId);
+            }),
+          )
+          .catch(() => options.log?.(`Durable Turn Report ${report.turnId} remains pending`));
+      } catch {
+        options.log?.(`The durable Turn Report for Session ${request.sessionId} could not be resumed`);
+      }
+    },
   });
   return new CodexClientRuntime(runtime, { bindingStore, custody, reconciler, reportOwner, runner, workspace });
 }

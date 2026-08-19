@@ -172,7 +172,7 @@ export class CodexTurnRunner {
     let report: TurnReportRequest;
     try {
       report = this.#reportOwner.create(reportInput);
-      await this.#custody.markReporting(owner.turnId, report.resultHash);
+      await this.#custody.markReporting(owner.turnId, report);
     } catch {
       this.#log?.(`Turn ${owner.turnId} could not enter the reporting phase`);
       return;

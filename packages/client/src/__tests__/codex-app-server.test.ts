@@ -69,6 +69,25 @@ describe("CodexAppServerProcess", () => {
     await process.close();
     await vi.waitFor(() => expect(processExists(pid)).toBe(false));
   });
+
+  it("D-11 tears down descendants when the direct provider exits unexpectedly", async () => {
+    const process = await appServer("process-tree-exit");
+    const descendant = new Promise<number>((resolve) => {
+      const unsubscribe = process.subscribe((message) => {
+        if (message.method !== "fixture/processTree") return;
+        const pid = (message.params as { pid?: unknown }).pid;
+        if (typeof pid !== "number") return;
+        unsubscribe();
+        resolve(pid);
+      });
+    });
+    const failure = processFailure(process);
+    await process.initialize("0.0.1");
+    const pid = await descendant;
+    await expect(failure).resolves.toBeInstanceOf(CodexAppServerError);
+    await vi.waitFor(() => expect(processExists(pid)).toBe(false), { timeout: 3_000 });
+    await process.close().catch(() => undefined);
+  });
 });
 
 async function appServer(

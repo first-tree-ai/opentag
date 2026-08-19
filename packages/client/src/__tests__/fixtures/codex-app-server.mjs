@@ -26,9 +26,12 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     else if (scenario === "truncated") {
       process.stdout.write('{"method":"fixture/truncated"');
       process.exit(0);
-    } else if (scenario === "process-tree") {
+    } else if (scenario === "process-tree" || scenario === "process-tree-exit") {
       const descendant = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1000)"], { stdio: "ignore" });
-      send({ method: "fixture/processTree", params: { pid: descendant.pid } });
+      const message = `${JSON.stringify({ method: "fixture/processTree", params: { pid: descendant.pid } })}\n`;
+      process.stdout.write(message, () => {
+        if (scenario === "process-tree-exit") setTimeout(() => process.exit(23), 10);
+      });
     } else send({ method: "fixture/initialized", params: {} });
     return;
   }

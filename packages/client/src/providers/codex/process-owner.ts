@@ -31,7 +31,7 @@ const stop = (signal = "SIGTERM") => {
       try { process.kill(-process.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
     }
     process.exit(1);
-  }, 1000);
+  }, 500);
   timer.unref();
 };
 process.once("SIGINT", () => stop("SIGINT"));
@@ -41,8 +41,8 @@ process.stdin.once("end", () => stop());
 process.stdin.once("error", () => stop());
 child.stdout.pipe(process.stdout);
 child.stderr.pipe(process.stderr);
-child.once("error", () => process.exit(1));
-child.once("exit", (code) => process.exit(code ?? 1));
+child.once("error", () => stop());
+child.once("exit", () => stop());
 `;
 
 export function spawnWatchedProcess(

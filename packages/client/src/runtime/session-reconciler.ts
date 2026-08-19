@@ -132,7 +132,7 @@ export class SessionReconciler {
       return Promise.resolve(this.#result(request, "rejected", "request_conflict"));
     }
 
-    const result = this.#withAgentLock(request.agentId, () => this.#reconcileLocked(request));
+    const result = this.withAgentLock(request.agentId, () => this.#reconcileLocked(request));
     this.#requests.set(request.requestId, { payloadHash, result });
     this.#trimRequests();
     return result;
@@ -180,6 +180,22 @@ export class SessionReconciler {
       return "session_binding_conflict";
     }
     return this.#localPolicy?.validate(input.runtime);
+  }
+
+  async withAgentLock<T>(agentId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.#agentTails.get(agentId) ?? Promise.resolve();
+    let release: (() => void) | undefined;
+    const tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#agentTails.set(agentId, tail);
+    await previous;
+    try {
+      return await task();
+    } finally {
+      release?.();
+      if (this.#agentTails.get(agentId) === tail) this.#agentTails.delete(agentId);
+    }
   }
 
   async #reconcileLocked(request: SessionReconcileRequest): Promise<SessionReconcileResult> {
@@ -349,22 +365,6 @@ export class SessionReconciler {
       if (this.#sessions.get(sessionId)?.agentId === agentId) return true;
     }
     return false;
-  }
-
-  async #withAgentLock<T>(agentId: string, task: () => Promise<T>): Promise<T> {
-    const previous = this.#agentTails.get(agentId) ?? Promise.resolve();
-    let release: (() => void) | undefined;
-    const tail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    this.#agentTails.set(agentId, tail);
-    await previous;
-    try {
-      return await task();
-    } finally {
-      release?.();
-      if (this.#agentTails.get(agentId) === tail) this.#agentTails.delete(agentId);
-    }
   }
 
   #trimRequests(): void {

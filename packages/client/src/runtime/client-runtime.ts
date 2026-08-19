@@ -3,6 +3,8 @@ import {
   type ImMessageDeliveryResult,
   ImMessageDeliveryResultSchema,
   ServerRuntimeBusinessFrameSchema,
+  type SessionReconcileRequest,
+  type SessionReconcileResult,
   type TurnReportResult,
 } from "@opentag/shared";
 import type { RuntimeConnection } from "./runtime-connection.js";
@@ -16,6 +18,7 @@ export interface DeliveryDecision {
 export interface ClientRuntimeOptions {
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
   handleTurnReportResult?(result: TurnReportResult): Promise<void> | void;
+  onReconciled?(request: SessionReconcileRequest, result: SessionReconcileResult): Promise<void> | void;
   reconciler?: SessionReconciler;
 }
 
@@ -54,6 +57,7 @@ export class ClientRuntime {
     if (frame.type === "session:reconcile") {
       const result = await this.reconciler.reconcile(frame);
       await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
+      await this.#options.onReconciled?.(frame, result);
       return;
     }
     if (frame.type === "im:deliver") {

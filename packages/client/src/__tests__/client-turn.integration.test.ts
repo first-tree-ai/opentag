@@ -45,13 +45,15 @@ describe("Codex Client Turn vertical", () => {
     expect(fixture.clients[0]?.methods).not.toContain("thread/resume");
     expect(await fixture.store.read("agent-1", "session-1")).toMatchObject({
       providerThreadId: "thread-1",
-      unresolvedTurn: { phase: "reporting", resultHash: firstReport.resultHash },
+      unresolvedTurn: { phase: "reporting", report: firstReport, resultHash: firstReport.resultHash },
     });
     expect(fixture.custody.admission.snapshot().client).toBe(1);
 
     await fixture.record(firstReport);
     await vi.waitFor(() => expect(fixture.custody.admission.snapshot().client).toBe(0));
-    expect((await fixture.store.read("agent-1", "session-1"))?.unresolvedTurn).toBeUndefined();
+    const firstRecorded = await fixture.store.read("agent-1", "session-1");
+    expect(firstRecorded?.unresolvedTurn).toBeUndefined();
+    expect(firstRecorded?.recentRecordedInputs.at(-1)?.report).toEqual(firstReport);
 
     const second = await fixture.custody.accept(delivery(fixture.runtime, "delivery-2", "second"));
     await second.onAcceptedSent?.();
@@ -64,7 +66,9 @@ describe("Codex Client Turn vertical", () => {
 
     await fixture.record(secondReport);
     await vi.waitFor(() => expect(fixture.custody.admission.snapshot().client).toBe(0));
-    expect((await fixture.store.read("agent-1", "session-1"))?.recentRecordedInputs).toHaveLength(2);
+    const recorded = (await fixture.store.read("agent-1", "session-1"))?.recentRecordedInputs;
+    expect(recorded).toHaveLength(2);
+    expect(recorded?.at(-1)?.report).toEqual(secondReport);
   });
 
   it("D-19/D-26 keeps the Provider alive across a mid-turn socket outage and reports after reconnect", async () => {

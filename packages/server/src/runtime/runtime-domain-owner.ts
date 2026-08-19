@@ -57,6 +57,15 @@ interface PendingDelivery extends PendingBase<DirectImMessageDeliveryRequest, Im
 
 type PendingRequest = PendingReconcile | PendingDelivery;
 
+interface ExpiredDelivery {
+  computerId: string;
+  hash: string;
+  inputHash: string;
+  instanceId: string;
+  kind: "delivery";
+  request: DirectImMessageDeliveryRequest;
+}
+
 interface CompletedRequest {
   computerId: string;
   hash: string;
@@ -81,13 +90,25 @@ export interface RecordedTurnRecord {
   resultHash: string;
 }
 
+interface RecoveredTurnClaim {
+  agentId: string;
+  computerId: string;
+  deliveryId: string;
+  instanceId: string;
+  placementGeneration: number;
+  sessionId: string;
+  turnId: string;
+}
+
 export class RuntimeDomainOwner {
   readonly #registry: ConnectionRegistry;
   readonly #options: Required<Pick<RuntimeDomainOwnerOptions, "maxPendingRequests" | "requestTimeoutMs">> &
     Pick<RuntimeDomainOwnerOptions, "onTrace">;
   readonly #pending = new Map<string, PendingRequest>();
+  readonly #expiredDeliveries = new Map<string, ExpiredDelivery>();
   readonly #completed = new Map<string, CompletedRequest>();
   readonly #deliveries = new Map<string, AcceptedDeliveryRecord>();
+  readonly #recoveredTurns = new Map<string, RecoveredTurnClaim>();
   readonly #turns = new Map<string, RecordedTurnRecord>();
 
   constructor(registry: ConnectionRegistry, options: RuntimeDomainOwnerOptions = {}) {
@@ -119,7 +140,9 @@ export class RuntimeDomainOwner {
       pending.reject(new RuntimeDomainRequestError("The runtime domain owner stopped"));
     }
     this.#pending.clear();
+    this.#expiredDeliveries.clear();
     this.#completed.clear();
+    this.#recoveredTurns.clear();
   }
 
   requestReconcile(
@@ -170,8 +193,8 @@ export class RuntimeDomainOwner {
       },
       laneKey: (frame) => domainLaneKey(frame as ClientRuntimeBusinessFrame),
       handle: (frame, context) => this.handle(frame as ClientRuntimeBusinessFrame, context),
-      failureResult: (frame) => failureResult(frame as ClientRuntimeBusinessFrame),
-      overloadResult: (frame) => failureResult(frame as ClientRuntimeBusinessFrame),
+      failureResult: () => undefined,
+      overloadResult: () => undefined,
       maxConcurrent: 32,
       maxQueuedPerKey: 32,
       maxQueuedTotal: 1024,
@@ -250,9 +273,21 @@ export class RuntimeDomainOwner {
       }
       return Promise.resolve(completed.result);
     }
+    const expired = this.#expiredDeliveries.get(request.requestId);
+    if (expired) {
+      if (
+        kind !== "delivery" ||
+        expired.hash !== hash ||
+        expired.computerId !== computerId ||
+        expired.instanceId !== instanceId
+      ) {
+        throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
+      }
+    }
     if (this.#pending.size >= this.#options.maxPendingRequests) {
       throw new RuntimeDomainRequestError("The runtime request owner is full");
     }
+    if (expired) this.#expiredDeliveries.delete(request.requestId);
 
     let resolvePromise: (result: SessionReconcileResult | ImMessageDeliveryResult) => void = () => undefined;
     let rejectPromise: (error: Error) => void = () => undefined;
@@ -263,6 +298,7 @@ export class RuntimeDomainOwner {
     const timer = setTimeout(() => {
       if (this.#pending.get(request.requestId)?.promise !== promise) return;
       this.#pending.delete(request.requestId);
+      if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
       rejectPromise(new RuntimeDomainRequestError("The runtime domain request timed out"));
     }, this.#options.requestTimeoutMs);
     timer.unref();
@@ -290,6 +326,7 @@ export class RuntimeDomainOwner {
       if (this.#pending.get(request.requestId) !== pending) return;
       this.#pending.delete(request.requestId);
       clearTimeout(timer);
+      if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
       pending.reject(
         error instanceof Error ? error : new RuntimeDomainRequestError("The runtime request could not be sent"),
       );
@@ -312,38 +349,47 @@ export class RuntimeDomainOwner {
     ) {
       return;
     }
+    if (result.turn) this.#rememberRecoveredTurn(pending, result.turn);
     this.#settle(pending, result);
   }
 
   #completeDelivery(result: ImMessageDeliveryResult, context: RuntimeBusinessContext): void {
     const pending = this.#pending.get(result.requestId);
-    if (pending?.kind !== "delivery" || !this.#matchesContext(pending, context)) return;
+    const expired = this.#expiredDeliveries.get(result.requestId);
+    const attempt = pending?.kind === "delivery" ? pending : expired;
+    if (!attempt || !this.#matchesContext(attempt, context)) return;
     if (
-      result.deliveryId !== pending.request.deliveryId ||
-      result.sessionId !== pending.request.sessionId ||
-      result.placementGeneration !== pending.request.placementGeneration
+      result.deliveryId !== attempt.request.deliveryId ||
+      result.sessionId !== attempt.request.sessionId ||
+      result.placementGeneration !== attempt.request.placementGeneration
     ) {
       return;
     }
     if (result.status === "accepted") {
       if (!result.turnId) return;
       const current = this.#deliveries.get(result.deliveryId);
-      if (current && (current.inputHash !== pending.inputHash || current.turnId !== result.turnId)) return;
+      if (current && (current.inputHash !== attempt.inputHash || current.turnId !== result.turnId)) return;
       this.#deliveries.set(result.deliveryId, {
-        agentId: pending.request.agentId,
-        computerId: pending.computerId,
+        agentId: attempt.request.agentId,
+        computerId: attempt.computerId,
         deliveryId: result.deliveryId,
-        inputHash: pending.inputHash,
-        instanceId: pending.instanceId,
+        inputHash: attempt.inputHash,
+        instanceId: attempt.instanceId,
         placementGeneration: result.placementGeneration,
         sessionId: result.sessionId,
         turnId: result.turnId,
       });
     }
-    this.#settle(pending, result);
+    if (pending?.kind === "delivery") {
+      this.#settle(pending, result);
+      return;
+    }
+    if (!expired) return;
+    this.#expiredDeliveries.delete(result.requestId);
+    this.#rememberCompleted(expired, result);
   }
 
-  #recordTurn(report: TurnReportRequest, context: RuntimeBusinessContext): TurnReportResult {
+  #recordTurn(report: TurnReportRequest, context: RuntimeBusinessContext): TurnReportResult | undefined {
     const base = {
       type: "turn:report:result" as const,
       requestId: report.requestId,
@@ -351,17 +397,21 @@ export class RuntimeDomainOwner {
       resultHash: report.resultHash,
     };
     const delivery = this.#deliveries.get(report.deliveryId);
+    const recovered = this.#recoveredTurns.get(report.turnId);
+    if (!delivery && !recovered && this.#hasDeliveryAttempt(report, context)) return undefined;
+    const owner = delivery ?? recovered;
     if (
-      !delivery ||
-      delivery.computerId !== context.computerId ||
-      delivery.instanceId !== context.instanceId ||
-      delivery.turnId !== report.turnId ||
-      delivery.sessionId !== report.sessionId ||
-      delivery.agentId !== report.agentId
+      !owner ||
+      owner.deliveryId !== report.deliveryId ||
+      owner.computerId !== context.computerId ||
+      owner.instanceId !== context.instanceId ||
+      owner.turnId !== report.turnId ||
+      owner.sessionId !== report.sessionId ||
+      owner.agentId !== report.agentId
     ) {
       return { ...base, status: "conflict" };
     }
-    if (delivery.placementGeneration !== report.placementGeneration) {
+    if (owner.placementGeneration !== report.placementGeneration) {
       return { ...base, status: "stale_generation" };
     }
     const recorded = this.#turns.get(report.turnId);
@@ -372,19 +422,66 @@ export class RuntimeDomainOwner {
     return { ...base, status: "recorded" };
   }
 
-  #matchesContext(pending: PendingRequest, context: RuntimeBusinessContext): boolean {
-    return pending.computerId === context.computerId && pending.instanceId === context.instanceId;
+  #hasDeliveryAttempt(report: TurnReportRequest, context: RuntimeBusinessContext): boolean {
+    for (const attempt of [...this.#pending.values(), ...this.#expiredDeliveries.values()]) {
+      if (
+        attempt.kind === "delivery" &&
+        attempt.request.deliveryId === report.deliveryId &&
+        attempt.request.sessionId === report.sessionId &&
+        attempt.request.agentId === report.agentId &&
+        attempt.request.placementGeneration === report.placementGeneration &&
+        this.#matchesContext(attempt, context)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  #rememberRecoveredTurn(pending: PendingReconcile, turn: { deliveryId: string; turnId: string }): void {
+    const current = this.#recoveredTurns.get(turn.turnId);
+    const claim: RecoveredTurnClaim = {
+      agentId: pending.request.agentId,
+      computerId: pending.computerId,
+      deliveryId: turn.deliveryId,
+      instanceId: pending.instanceId,
+      placementGeneration: pending.request.placementGeneration,
+      sessionId: pending.request.sessionId,
+      turnId: turn.turnId,
+    };
+    if (current && !sameRecoveredTurn(current, claim)) return;
+    this.#recoveredTurns.set(turn.turnId, claim);
+    while (this.#recoveredTurns.size > this.#options.maxPendingRequests) {
+      const oldest = this.#recoveredTurns.keys().next().value;
+      if (oldest === undefined) break;
+      this.#recoveredTurns.delete(oldest);
+    }
+  }
+
+  #matchesContext(
+    request: Pick<PendingRequest | ExpiredDelivery, "computerId" | "instanceId">,
+    context: RuntimeBusinessContext,
+  ): boolean {
+    return request.computerId === context.computerId && request.instanceId === context.instanceId;
   }
 
   #settle(pending: PendingRequest, result: SessionReconcileResult | ImMessageDeliveryResult): void {
     if (this.#pending.get(pending.request.requestId) !== pending) return;
     this.#pending.delete(pending.request.requestId);
     clearTimeout(pending.timer);
-    this.#completed.set(pending.request.requestId, {
-      computerId: pending.computerId,
-      hash: pending.hash,
-      instanceId: pending.instanceId,
-      kind: pending.kind,
+    this.#rememberCompleted(pending, result);
+    pending.resolve(result as never);
+  }
+
+  #rememberCompleted(
+    request: Pick<PendingRequest | ExpiredDelivery, "computerId" | "hash" | "instanceId" | "kind" | "request">,
+    result: SessionReconcileResult | ImMessageDeliveryResult,
+  ): void {
+    this.#completed.set(request.request.requestId, {
+      computerId: request.computerId,
+      hash: request.hash,
+      instanceId: request.instanceId,
+      kind: request.kind,
       result,
     });
     while (this.#completed.size > this.#options.maxPendingRequests) {
@@ -392,24 +489,39 @@ export class RuntimeDomainOwner {
       if (oldest === undefined) break;
       this.#completed.delete(oldest);
     }
-    pending.resolve(result as never);
+  }
+
+  #rememberExpiredDelivery(pending: PendingDelivery): void {
+    this.#expiredDeliveries.set(pending.request.requestId, {
+      computerId: pending.computerId,
+      hash: pending.hash,
+      inputHash: pending.inputHash,
+      instanceId: pending.instanceId,
+      kind: "delivery",
+      request: pending.request,
+    });
+    while (this.#expiredDeliveries.size > this.#options.maxPendingRequests) {
+      const oldest = this.#expiredDeliveries.keys().next().value;
+      if (oldest === undefined) break;
+      this.#expiredDeliveries.delete(oldest);
+    }
   }
 }
 
 function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
-  if (frame.type === "session:reconcile:result" || frame.type === "im:deliver:result") {
-    return `request:${frame.requestId}`;
-  }
+  if (frame.type === "session:reconcile:result") return `request:${frame.requestId}`;
+  if (frame.type === "im:deliver:result" || frame.type === "turn:report") return `delivery:${frame.deliveryId}`;
   return `turn:${frame.turnId}`;
 }
 
-function failureResult(frame: ClientRuntimeBusinessFrame): TurnReportResult | undefined {
-  if (frame.type !== "turn:report") return undefined;
-  return {
-    type: "turn:report:result",
-    requestId: frame.requestId,
-    turnId: frame.turnId,
-    status: "conflict",
-    resultHash: frame.resultHash,
-  };
+function sameRecoveredTurn(left: RecoveredTurnClaim, right: RecoveredTurnClaim): boolean {
+  return (
+    left.agentId === right.agentId &&
+    left.computerId === right.computerId &&
+    left.deliveryId === right.deliveryId &&
+    left.instanceId === right.instanceId &&
+    left.placementGeneration === right.placementGeneration &&
+    left.sessionId === right.sessionId &&
+    left.turnId === right.turnId
+  );
 }

@@ -5,7 +5,8 @@ import {
   hashTuple,
   type ImMessageDeliveryResult,
   type InputRejectReason,
-  RuntimeSha256Schema,
+  type TurnReportRequest,
+  TurnReportRequestSchema,
 } from "@opentag/shared";
 import { AdmissionController, type AdmissionReservation } from "./admission-controller.js";
 import type { DeliveryDecision } from "./client-runtime.js";
@@ -110,7 +111,7 @@ export class TurnCustodyOwner {
       turnId,
       started: false,
     } as OwnedDelivery;
-    const decision = this.#prepare(owner);
+    const decision = this.#reconciler.withAgentLock(request.agentId, () => this.#prepare(owner));
     owner.decision = decision;
     this.#deliveries.set(request.deliveryId, owner);
     this.#turns.set(turnId, owner);
@@ -118,27 +119,33 @@ export class TurnCustodyOwner {
     return decision;
   }
 
-  async markReporting(turnId: string, resultHash: string): Promise<void> {
-    RuntimeSha256Schema.parse(resultHash);
+  async markReporting(turnId: string, reportInput: TurnReportRequest): Promise<void> {
+    const report = TurnReportRequestSchema.parse(reportInput);
     const owner = this.#requireTurn(turnId);
-    if (owner.reservation.phase === "active") owner.reservation.markReporting();
-    await this.#bindingStore.updateUnresolved(owner.request.agentId, owner.request.sessionId, turnId, "reporting", {
-      resultHash,
-    });
-    this.#reconciler.setActivity(owner.request.sessionId, {
-      phase: "reporting",
-      deliveryId: owner.request.deliveryId,
-      turnId,
+    assertMatchingReport(owner, report);
+    await this.#reconciler.withAgentLock(owner.request.agentId, async () => {
+      if (owner.reservation.phase === "active") owner.reservation.markReporting();
+      await this.#bindingStore.updateUnresolved(owner.request.agentId, owner.request.sessionId, turnId, "reporting", {
+        report,
+        resultHash: report.resultHash,
+      });
+      this.#reconciler.setActivity(owner.request.sessionId, {
+        phase: "reporting",
+        deliveryId: owner.request.deliveryId,
+        turnId,
+      });
     });
   }
 
   async recordResult(turnId: string, resultHash: string): Promise<void> {
     const owner = this.#requireTurn(turnId);
-    await this.#bindingStore.recordResult(owner.request.agentId, owner.request.sessionId, turnId, resultHash);
-    owner.reservation.release();
-    this.#reconciler.clearActivity(owner.request.sessionId, turnId);
-    this.#deliveries.delete(owner.request.deliveryId);
-    this.#turns.delete(turnId);
+    await this.#reconciler.withAgentLock(owner.request.agentId, async () => {
+      await this.#bindingStore.recordResult(owner.request.agentId, owner.request.sessionId, turnId, resultHash);
+      owner.reservation.release();
+      this.#reconciler.clearActivity(owner.request.sessionId, turnId);
+      this.#deliveries.delete(owner.request.deliveryId);
+      this.#turns.delete(turnId);
+    });
   }
 
   getTurn(turnId: string): LiveTurnOwner | undefined {
@@ -147,6 +154,11 @@ export class TurnCustodyOwner {
 
   async #prepare(owner: OwnedDelivery): Promise<DeliveryDecision> {
     try {
+      const deliveryReason = this.#reconciler.checkDelivery(owner.request);
+      if (deliveryReason) {
+        this.#discard(owner);
+        return { result: rejected(owner.request, deliveryReason) };
+      }
       const preflightReason = await this.#preflight?.(owner.request);
       if (preflightReason) {
         this.#discard(owner);
@@ -161,6 +173,11 @@ export class TurnCustodyOwner {
         this.#discard(owner);
         return { result: rejected(owner.request, "session_recovery_required") };
       }
+      this.#reconciler.setActivity(owner.request.sessionId, {
+        phase: "running",
+        deliveryId: owner.request.deliveryId,
+        turnId: owner.turnId,
+      });
       return {
         result: accepted(owner.request, owner.turnId),
         onAcceptedSent: async () => {
@@ -234,4 +251,16 @@ function mapStorageError(error: unknown): InputRejectReason {
     return "session_binding_conflict";
   }
   return "provider_unavailable";
+}
+
+function assertMatchingReport(owner: LiveTurnOwner, report: TurnReportRequest): void {
+  if (
+    report.turnId !== owner.turnId ||
+    report.deliveryId !== owner.request.deliveryId ||
+    report.sessionId !== owner.request.sessionId ||
+    report.agentId !== owner.request.agentId ||
+    report.placementGeneration !== owner.request.placementGeneration
+  ) {
+    throw new Error("The Turn Report does not match its live custody owner");
+  }
 }

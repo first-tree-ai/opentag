@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   computeDirectInputHash,
+  computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
   type SessionReconcileRequest,
+  type TurnReportRequest,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
@@ -87,6 +89,28 @@ describe("SessionBindingStore", () => {
     });
   });
 
+  it("keeps the immutable full Turn Report durable before and after acknowledgement", async () => {
+    const fixture = await bindingFixture();
+    const request = delivery(fixture.runtime, 1);
+    const report = turnReport(request, "turn-1");
+    await fixture.store.recordAccepted(request, computeDirectInputHash(request), report.turnId);
+    await fixture.store.updateUnresolved("agent-1", "session-1", report.turnId, "reporting", {
+      report,
+      resultHash: report.resultHash,
+    });
+
+    const reopened = new SessionBindingStore({ home: fixture.home, providerHomeIdentity: fixture.homeIdentity });
+    expect((await reopened.read("agent-1", "session-1"))?.unresolvedTurn?.report).toEqual(report);
+    await reopened.recordResult("agent-1", "session-1", report.turnId, report.resultHash);
+
+    const recorded = await reopened.read("agent-1", "session-1");
+    expect(recorded?.unresolvedTurn).toBeUndefined();
+    expect(recorded?.recentRecordedInputs.at(-1)?.report).toEqual(report);
+    await expect(reopened.recordResult("agent-1", "session-1", report.turnId, report.resultHash)).resolves.toEqual(
+      recorded,
+    );
+  });
+
   it("C-16 fails closed when a binding JSON file is corrupted", async () => {
     const fixture = await bindingFixture();
     await writeFile(sessionBindingPath(fixture.home, "agent-1", "session-1"), "{not-json", "utf8");
@@ -149,4 +173,19 @@ function delivery(runtime: EffectiveRuntimeSnapshot, index: number): DirectImMes
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function turnReport(request: DirectImMessageDeliveryRequest, turnId: string): TurnReportRequest {
+  const body = {
+    deliveryId: request.deliveryId,
+    turnId,
+    sessionId: request.sessionId,
+    agentId: request.agentId,
+    placementGeneration: request.placementGeneration,
+    outcome: "completed" as const,
+    executionEffects: "completed" as const,
+    finalText: "durable result",
+    traceSummary: { lastSequence: 2, droppedEvents: 0 },
+  };
+  return { type: "turn:report", requestId: randomUUID(), ...body, resultHash: computeTurnResultHash(body) };
 }

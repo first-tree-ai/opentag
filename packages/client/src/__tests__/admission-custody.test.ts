@@ -7,6 +7,7 @@ import type {
   EffectiveRuntimeSnapshot,
   SessionReconcileRequest,
 } from "@opentag/shared";
+import { computeTurnResultHash } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdmissionController } from "../runtime/admission-controller.js";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
@@ -78,8 +79,24 @@ describe("TurnCustodyOwner", () => {
     });
     const decision = await owner.accept(delivery(fixture.runtime, "delivery-1", randomUUID()));
     await decision.onAcceptedSent?.();
-    const resultHash = sha256("result");
-    await owner.markReporting("turn-1", resultHash);
+    const reportBody = {
+      deliveryId: "delivery-1",
+      turnId: "turn-1",
+      sessionId: "session-1",
+      agentId: "agent-1",
+      placementGeneration: 1,
+      outcome: "completed" as const,
+      executionEffects: "completed" as const,
+      finalText: "done",
+      traceSummary: { lastSequence: 1, droppedEvents: 0 },
+    };
+    const resultHash = computeTurnResultHash(reportBody);
+    await owner.markReporting("turn-1", {
+      type: "turn:report",
+      requestId: randomUUID(),
+      ...reportBody,
+      resultHash,
+    });
     expect(owner.admission.get("session-1")?.phase).toBe("reporting");
     expect(owner.admission.reserve("session-1", "agent-1")).toEqual({ accepted: false, reason: "session_busy" });
     await expect(owner.recordResult("turn-1", sha256("wrong"))).rejects.toThrow(/does not match/);
@@ -152,6 +169,49 @@ describe("TurnCustodyOwner", () => {
       result: { status: "rejected", reason: "turn_expired" },
     });
     expect(owner.admission.snapshot().client).toBe(0);
+  });
+
+  it("serializes accepted custody with Agent configuration reconciliation", async () => {
+    const fixture = await custodyFixture();
+    let enterPreflight: (() => void) | undefined;
+    let releasePreflight: (() => void) | undefined;
+    const preflightEntered = new Promise<void>((resolve) => {
+      enterPreflight = resolve;
+    });
+    const preflightGate = new Promise<void>((resolve) => {
+      releasePreflight = resolve;
+    });
+    const owner = new TurnCustodyOwner({
+      bindingStore: fixture.store,
+      id: () => "turn-1",
+      preflight: async () => {
+        enterPreflight?.();
+        await preflightGate;
+        return undefined;
+      },
+      reconciler: fixture.reconciler,
+    });
+
+    const accepted = owner.accept(delivery(fixture.runtime, "delivery-1", randomUUID()));
+    await preflightEntered;
+    const upgradedRuntime: EffectiveRuntimeSnapshot = {
+      ...fixture.runtime,
+      revision: {
+        agent: { sequence: 2, id: "agent-revision-2" },
+        session: fixture.runtime.revision.session,
+      },
+      instructions: { ...fixture.runtime.instructions, agent: "upgraded agent" },
+    };
+    const upgraded = fixture.reconciler.reconcile({
+      ...fixture.reconcile,
+      requestId: randomUUID(),
+      runtime: upgradedRuntime,
+    });
+    releasePreflight?.();
+
+    await expect(accepted).resolves.toMatchObject({ result: { status: "accepted", turnId: "turn-1" } });
+    await expect(upgraded).resolves.toMatchObject({ status: "busy", reason: "agent_configuration_busy" });
+    expect(fixture.reconciler.getAgent("agent-1")?.revisionSequence).toBe(1);
   });
 });
 

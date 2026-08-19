@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeCredentialsAtomically } from "@opentag/client";
@@ -107,6 +107,57 @@ describe("systemd service backend", () => {
         "loginctl enable-linger test",
       ]),
     );
+  });
+
+  it("renders the service with the newly installed binary before a stale PATH shim", async () => {
+    const root = await temporaryDirectory("opentag-systemd-path-");
+    const userHome = join(root, "user");
+    const home = join(root, "home");
+    const installedBin = join(root, "installed-bin");
+    const staleBin = join(root, "stale-bin");
+    const installedCli = join(installedBin, channelConfig.binName);
+    const staleCli = join(staleBin, channelConfig.binName);
+    await Promise.all([
+      writeFileWithParents(installedCli, "#!/usr/bin/env node\n"),
+      writeFileWithParents(staleCli, "#!/usr/bin/env node\n"),
+    ]);
+    await Promise.all([chmod(installedCli, 0o755), chmod(staleCli, 0o755)]);
+    await writeCredentialsAtomically(
+      {
+        accessToken: "access-token",
+        accessTokenExpiresAt: "2030-01-01T00:00:00.000Z",
+        refreshToken: "refresh-token",
+        serverUrl: "https://example.com",
+      },
+      home,
+    );
+    let active = false;
+    const runner = fakeRunner((program, args) => {
+      if (program === "loginctl") return result(0, "", "");
+      if (args.includes("show-environment")) return result(0, "", "");
+      if (args.includes("LoadState")) return result(0, "not-found", "");
+      if (args.includes("is-active")) return active ? result(0, "active", "") : result(3, "inactive", "");
+      if (args.includes("start")) active = true;
+      if (args.includes("MainPID")) return result(0, "321", "");
+      return result(0, "", "");
+    });
+    const manager = await createDaemonServiceManager({
+      env: { PATH: `${installedBin}:${staleBin}` },
+      home,
+      platform: "linux",
+      runner,
+      uid: 1000,
+      userHome,
+      username: "test",
+    });
+
+    await expect(manager.installAndStart()).resolves.toMatchObject({ state: "active" });
+    const unit = await readFile(
+      join(userHome, ".config", "systemd", "user", `${channelConfig.serviceId}.service`),
+      "utf8",
+    );
+    expect(unit).toContain(`ExecStart="${installedCli}" "daemon" "service-run"`);
+    expect(unit).not.toContain(staleCli);
   });
 
   it.each([

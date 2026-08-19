@@ -94,7 +94,7 @@ describe("BrowserApi", () => {
       expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("connect-csrf");
       return new Response(
         JSON.stringify({
-          bootstrapCommand: "opentag-dev login code --server http://127.0.0.1:8000",
+          bootstrapCommand: `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login code --server http://127.0.0.1:8000`,
           expiresIn: 900,
           issuedAt: "2030-01-01T00:00:00.000Z",
         }),

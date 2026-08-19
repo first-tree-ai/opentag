@@ -181,7 +181,7 @@ describe("Admin Web", () => {
       if (url === "/api/v1/me/connect-codes") {
         return response(
           {
-            bootstrapCommand: "opentag-dev login boundary_code --server http://127.0.0.1:8000",
+            bootstrapCommand: `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login boundary_code --server http://127.0.0.1:8000`,
             expiresIn: 900,
             issuedAt: "2030-01-01T00:00:02.000Z",
           },
@@ -227,7 +227,7 @@ describe("Admin Web", () => {
         issueCount += 1;
         return response(
           {
-            bootstrapCommand: `opentag-dev login code_${issueCount} --server http://127.0.0.1:8000`,
+            bootstrapCommand: `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login code_${issueCount} --server http://127.0.0.1:8000`,
             expiresIn: issueCount === 1 ? 1 : 900,
             issuedAt: "2030-01-01T00:00:02.000Z",
           },
@@ -274,7 +274,7 @@ describe("Admin Web", () => {
         issueCount += 1;
         return response(
           {
-            bootstrapCommand: "opentag-dev login current_code --server http://127.0.0.1:8000",
+            bootstrapCommand: `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login current_code --server http://127.0.0.1:8000`,
             expiresIn: 900,
             issuedAt: "2030-01-01T00:00:02.000Z",
           },

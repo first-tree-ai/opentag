@@ -93,18 +93,24 @@ export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
 export OPENTAG_BOOTSTRAP_TEAM_NAME=example
 export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
-pnpm --filter open-tag start login <connect-code>
+./scripts/dev-install.sh
+export PATH="$HOME/.local/bin${PATH:+:$PATH}"
+opentag-dev login <connect-code> --server http://127.0.0.1:8000
 ```
 
-源码 checkout 属于 `dev` channel。打包后暴露 `opentag-dev` binary，默认使用 `~/.opentag-dev`；staging 与
+源码 checkout 属于 `dev` channel。`scripts/dev-install.sh` 会构建完整 workspace，将 channel config 指定的 dev
+binary 链接到 `~/.local/bin/opentag-dev`，执行验证，并在已有凭据时修复 daemon service。首次安装没有凭据，
+因此 service 安装会明确延后到独立的 `login`；installer 不消费 connect code，职责与发布 installer 保持一致。
+同时应把 `~/.local/bin` 放在 `PATH` 最前，避免 service reconciliation 选中旧的 `opentag-dev` shim。dev
+channel 默认使用 `~/.opentag-dev`；staging 与
 production build 分别使用 `opentag-staging` / `~/.opentag-staging` 和 `opentag` / `~/.opentag`。显式设置
 `OPENTAG_HOME` 会覆盖 channel 默认值。
 
 Linux/macOS 上登录会安装并启动用户服务。在另一个终端检查服务和当前用户所有的 Computer：
 
 ```bash
-pnpm --filter open-tag start daemon status
-pnpm --filter open-tag start computer list
+opentag-dev daemon status
+opentag-dev computer list
 ```
 
 daemon 会复用 home 中的稳定 Computer ID，每次服务启动创建新的进程 instance，并连接
@@ -118,8 +124,8 @@ Linux 日志通过 `journalctl --user -u opentag-dev.service` 查看，macOS 日
 dev 服务定义在 Linux 上位于 `~/.config/systemd/user/opentag-dev.service`，在 macOS 上位于
 `~/Library/LaunchAgents/opentag-dev.plist`；macOS wrapper 位于 `${OPENTAG_HOME}/service/opentag-dev`。
 staging 与 production 使用各自的 channel `serviceId`（`opentag-staging` 或 `opentag`）替换后缀。如果登录已
-保存凭据但服务安装失败，修复提示的 manager 问题后运行 `opentag-dev daemon install`，不需要申请新的
-connect code。
+保存凭据但服务安装失败，修复提示的 manager 问题后运行
+`opentag-dev daemon install`，不需要申请新的 connect code。
 
 ## 管理 Agent 配置
 

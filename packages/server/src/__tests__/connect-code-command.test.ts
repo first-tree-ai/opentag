@@ -3,7 +3,10 @@ import { buildConnectBootstrapCommand } from "../services/auth/index.js";
 
 describe("buildConnectBootstrapCommand", () => {
   it.each([
-    ["dev", "opentag-dev login code_123 --server http://127.0.0.1:8000"],
+    [
+      "dev",
+      `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login code_123 --server http://127.0.0.1:8000`,
+    ],
     ["staging", "npm i -g open-tag-staging && opentag-staging login code_123 --server https://dev.example.com"],
     ["prod", "npm i -g open-tag && opentag login code_123 --server https://opentag.example.com"],
   ] as const)("builds the %s command from the shared channel config", (environment, expected) => {
@@ -32,5 +35,17 @@ describe("buildConnectBootstrapCommand", () => {
       "npm i -g open-tag-staging && opentag-staging login 'code'\\''; echo injected' --server https://dev.example.com",
     );
     expect(command.slice(0, command.indexOf("&&"))).not.toContain("code");
+  });
+
+  it("keeps a dev code only in the forwarded login arguments", () => {
+    const command = buildConnectBootstrapCommand({
+      code: "code'; echo injected",
+      environment: "dev",
+      publicUrl: "http://127.0.0.1:8000",
+    });
+    expect(command).toBe(
+      `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login 'code'\\''; echo injected' --server http://127.0.0.1:8000`,
+    );
+    expect(command.slice(0, command.indexOf("login"))).not.toContain("code");
   });
 });

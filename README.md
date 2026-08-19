@@ -43,11 +43,16 @@ export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
 export OPENTAG_BOOTSTRAP_TEAM_NAME=example
 export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
-pnpm --filter open-tag start login <connect-code>
-pnpm --filter open-tag start daemon status
+./scripts/dev-install.sh
+export PATH="$HOME/.local/bin${PATH:+:$PATH}"
+opentag-dev login <connect-code> --server http://127.0.0.1:8000
+opentag-dev daemon status
 ```
 
-`pnpm --filter open-tag start computer list` shows the Computer as online. Use `daemon stop`, `start`, `restart`,
+The dev installer builds and links the CLI, then installs, starts, or repairs the daemon service when credentials already
+exist. On a first install it safely defers service setup to the separate `login`, which creates credentials and installs
+the service. Keeping `~/.local/bin` first in `PATH` also ensures service definitions use this checkout's newly built CLI
+instead of an older shim. `opentag-dev computer list` shows the Computer as online. Use `daemon stop`, `start`, `restart`,
 `status`, and `uninstall` for lifecycle management. Pass `login --no-start` when only credentials should be stored.
 Daemon services are not supported on Windows in v0.1.
 
@@ -65,8 +70,9 @@ This records the Agent identity and Computer binding only; it does not start a C
 
 Configure `OPENTAG_GOOGLE_CLIENT_ID` and `OPENTAG_GOOGLE_CLIENT_SECRET` to enable Google sign-in, then open
 `http://127.0.0.1:8000/admin/`. Team admins can inspect current members, Agents, referenced Computers, the current
-invitation, and timestamped diagnostics, and can generate a short-lived Computer install/login command from the
-Computers page. Membership and invitation changes remain explicit CLI operations:
+invitation, and timestamped diagnostics. Every active member can generate a short-lived Computer install/login command
+from the user-scoped admin landing page; admins also have the same action on the Computers page. Membership and
+invitation changes remain explicit CLI operations:
 
 For loopback development without Google credentials, set `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true` and
 `OPENTAG_DEV_AUTH_EMAIL` to the unique email of an existing bootstrap user. This bypass is rejected outside the

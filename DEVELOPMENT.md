@@ -93,18 +93,24 @@ export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
 export OPENTAG_BOOTSTRAP_TEAM_NAME=example
 export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
-pnpm --filter open-tag start login <connect-code>
+./scripts/dev-install.sh
+export PATH="$HOME/.local/bin${PATH:+:$PATH}"
+opentag-dev login <connect-code> --server http://127.0.0.1:8000
 ```
 
-The source checkout is the `dev` channel. It exposes the `opentag-dev` binary when packed and defaults to
+The source checkout is the `dev` channel. `scripts/dev-install.sh` builds the complete workspace, links the configured
+dev binary to `~/.local/bin/opentag-dev`, verifies it, and reconciles an existing credentialed daemon service. A first
+install has no credentials, so service setup is deliberately deferred to the separate `login`; this matches the
+published installer boundary without making the installer consume a connect code. Keep `~/.local/bin` first in `PATH`
+so service reconciliation cannot select an older `opentag-dev` shim. The dev channel defaults to
 `~/.opentag-dev`; staging and production builds use `opentag-staging` / `~/.opentag-staging` and `opentag` /
 `~/.opentag`. An explicit `OPENTAG_HOME` overrides the channel default.
 
 Login installs and starts the user service on Linux and macOS. Inspect it and the user-owned Computer from another terminal:
 
 ```bash
-pnpm --filter open-tag start daemon status
-pnpm --filter open-tag start computer list
+opentag-dev daemon status
+opentag-dev computer list
 ```
 
 The daemon reuses the stable Computer ID stored in its home, creates a new process instance on every service start, and
@@ -118,8 +124,8 @@ and `/api/v1/me/...`; `/healthz` and `/readyz` remain unversioned deployment pro
 The dev service definition is `~/.config/systemd/user/opentag-dev.service` on Linux or
 `~/Library/LaunchAgents/opentag-dev.plist` on macOS; the macOS wrapper is `${OPENTAG_HOME}/service/opentag-dev`.
 Staging and production replace the suffix with their channel `serviceId` (`opentag-staging` or `opentag`). If login saves
-credentials but service installation fails, fix the reported manager issue and run `opentag-dev daemon install`; do not
-request another connect code.
+credentials but service installation fails, fix the reported manager issue and run
+`opentag-dev daemon install`; do not request another connect code.
 
 ## Manage Agent configurations
 

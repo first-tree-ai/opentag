@@ -44,11 +44,16 @@ export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
 export OPENTAG_BOOTSTRAP_TEAM_NAME=example
 export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
-pnpm --filter open-tag start login <connect-code>
-pnpm --filter open-tag start daemon status
+./scripts/dev-install.sh
+export PATH="$HOME/.local/bin${PATH:+:$PATH}"
+opentag-dev login <connect-code> --server http://127.0.0.1:8000
+opentag-dev daemon status
 ```
 
-运行 `pnpm --filter open-tag start computer list` 可以看到 Computer 为 online。使用 `daemon stop`、`start`、
+dev installer 会构建并链接 CLI；已有凭据时还会安装、启动或修复 daemon service。首次安装没有凭据时，service
+安装会安全地延后到独立的 `login`，由 `login` 创建凭据并安装 service。将 `~/.local/bin` 放在 `PATH` 最前，
+还能保证 service definition 使用当前 checkout 刚构建的 CLI，而非旧 shim。运行 `opentag-dev computer list`
+可以看到 Computer 为 online。使用 `daemon stop`、`start`、
 `restart`、`status` 与 `uninstall` 管理生命周期。只需保存凭据时使用 `login --no-start`。v0.1 不支持
 Windows daemon 服务。
 
@@ -66,7 +71,8 @@ pnpm --filter open-tag start agent list
 
 配置 `OPENTAG_GOOGLE_CLIENT_ID` 和 `OPENTAG_GOOGLE_CLIENT_SECRET` 后即可启用 Google 登录，然后打开
 `http://127.0.0.1:8000/admin/`。Team admin 可以查看当前成员、Agent、实际被引用的 Computer、当前邀请链接和
-带时间戳的诊断快照，也可以在 Computers 页面生成短期有效的 Computer 安装/login 命令。membership 与邀请变更仍通过显式 CLI 操作完成：
+带时间戳的诊断快照。每个 active member 都可以从用户级 admin 首页生成短期有效的 Computer 安装/login
+命令，admin 也可以从 Computers 页面执行同一操作。membership 与邀请变更仍通过显式 CLI 操作完成：
 
 若 loopback 开发环境没有 Google 凭据，可设置 `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true`，并将
 `OPENTAG_DEV_AUTH_EMAIL` 设为已有 bootstrap 用户的唯一 email。该 bypass 在 `dev` 以外的环境会被拒绝，

@@ -17,6 +17,7 @@ import {
   quotePosix,
   quoteSystemdEnvironment,
   quoteSystemdToken,
+  resolveCliInvocation,
   runRequired,
   writeFileAtomically,
 } from "../core/daemon/service/shared.js";
@@ -55,6 +56,30 @@ describe("daemon service primitives", () => {
     await mkdir(actual);
     await symlink(actual, alias);
     await expect(canonicalizeServiceHome(alias)).resolves.toBe(actual);
+  });
+
+  it("resolves the freshly installed dev binary before a stale PATH shim", async () => {
+    const root = await temporaryDirectory("opentag-invocation-path-");
+    const installedBin = join(root, "installed-bin");
+    const staleBin = join(root, "stale-bin");
+    const currentDist = join(root, "current-dist.mjs");
+    const staleDist = join(root, "stale-dist.mjs");
+    await Promise.all([mkdir(installedBin), mkdir(staleBin)]);
+    await Promise.all([
+      writeFile(currentDist, "#!/usr/bin/env node\n", { mode: 0o755 }),
+      writeFile(staleDist, "#!/usr/bin/env node\n", { mode: 0o755 }),
+    ]);
+    await Promise.all([
+      symlink(currentDist, join(installedBin, "opentag-dev")),
+      symlink(staleDist, join(staleBin, "opentag-dev")),
+    ]);
+
+    await expect(
+      resolveCliInvocation({
+        binName: "opentag-dev",
+        env: { PATH: `${installedBin}:${staleBin}` },
+      }),
+    ).resolves.toEqual({ args: [], program: currentDist });
   });
 
   it("atomically replaces files and leaves no temporary files", async () => {

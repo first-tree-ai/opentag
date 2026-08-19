@@ -1,4 +1,15 @@
-import type WebSocket from "ws";
+import { RUNTIME_MAX_FRAME_BYTES, runtimeFrameByteLength } from "@opentag/shared";
+import WebSocket from "ws";
+
+export class RuntimeRegistrySendError extends Error {
+  constructor(
+    readonly code: "frame_too_large" | "instance_replaced" | "unavailable",
+    message: string,
+  ) {
+    super(message);
+    this.name = "RuntimeRegistrySendError";
+  }
+}
 
 export interface RuntimeConnectionEntry {
   computerId: string;
@@ -42,6 +53,39 @@ export class ConnectionRegistry {
 
   currentInstanceId(computerId: string): string | undefined {
     return this.#entries.get(computerId)?.instanceId;
+  }
+
+  async send(computerId: string, instanceId: string, frame: unknown): Promise<void> {
+    const current = this.#entries.get(computerId);
+    if (!current || current.instanceId !== instanceId) {
+      throw new RuntimeRegistrySendError("instance_replaced", "The Computer instance is not current");
+    }
+    if (current.socket.readyState !== WebSocket.OPEN) {
+      throw new RuntimeRegistrySendError("unavailable", "The Computer runtime socket is unavailable");
+    }
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(frame);
+    } catch {
+      throw new RuntimeRegistrySendError("frame_too_large", "The runtime frame cannot be serialized");
+    }
+    if (runtimeFrameByteLength(serialized) > RUNTIME_MAX_FRAME_BYTES) {
+      throw new RuntimeRegistrySendError("frame_too_large", "The runtime frame is too large");
+    }
+    const socket = current.socket;
+    await new Promise<void>((resolve, reject) => {
+      socket.send(serialized, (error) => {
+        if (error) {
+          reject(new RuntimeRegistrySendError("unavailable", "The runtime frame could not be sent"));
+          return;
+        }
+        if (!this.isCurrent(computerId, instanceId, socket)) {
+          reject(new RuntimeRegistrySendError("instance_replaced", "The Computer instance was replaced during send"));
+          return;
+        }
+        resolve();
+      });
+    });
   }
 
   touch(computerId: string, instanceId: string, socket: WebSocket, now = Date.now()): boolean {

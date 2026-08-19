@@ -15,7 +15,8 @@
   "scripts": {
     "build": "tsdown src/index.ts --format esm --dts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --maxWorkers=1"
+    "test": "vitest run --maxWorkers=1",
+    "test:smoke:codex": "tsx src/smoke/codex-smoke.ts"
   },
   "dependencies": {
     "@opentag/shared": "workspace:*",

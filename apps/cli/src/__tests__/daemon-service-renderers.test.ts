@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeCredentialsAtomically } from "@opentag/client";
@@ -320,6 +320,7 @@ describe("systemd service backend", () => {
     const userHome = await temporaryDirectory("opentag-systemd-");
     const firstHome = await temporaryDirectory("opentag-first-home-");
     const secondHome = await temporaryDirectory("opentag-second-home-");
+    const canonicalFirstHome = await realpath(firstHome);
     const invocation = { args: [], program: "/usr/bin/opentag" };
     for (const home of [firstHome, secondHome]) {
       await writeCredentialsAtomically(
@@ -381,10 +382,10 @@ describe("systemd service backend", () => {
     await reloadReached;
     await expect(second.installAndStart()).rejects.toThrow("service-target operation is already running");
     releaseReload?.();
-    await expect(winner).resolves.toMatchObject({ configuredHome: firstHome, state: "active" });
+    await expect(winner).resolves.toMatchObject({ configuredHome: canonicalFirstHome, state: "active" });
 
     const unitPath = join(userHome, ".config", "systemd", "user", `${channelConfig.serviceId}.service`);
-    expect(await readFile(unitPath, "utf8")).toContain(`OPENTAG_HOME=${firstHome}`);
+    expect(await readFile(unitPath, "utf8")).toContain(`OPENTAG_HOME=${canonicalFirstHome}`);
     await expect(second.installAndStart()).rejects.toThrow("belongs to a different OpenTag home");
   });
 

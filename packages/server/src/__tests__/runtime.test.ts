@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setImmediate as waitImmediate } from "node:timers/promises";
 import { HTTP_PATHS, ServerRuntimeFrameSchema } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
@@ -49,12 +50,19 @@ describe("Computer runtime WebSocket", () => {
     apps.push(app);
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
     const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
-    const welcome = await nextFrame(socket);
-    expect(welcome.type).toBe("server:welcome");
+    const frames = frameQueue(socket);
+    await opened(socket);
+    let receivedBeforeAuth = false;
+    socket.once("message", () => {
+      receivedBeforeAuth = true;
+    });
+    await waitImmediate();
+    expect(receivedBeforeAuth).toBe(false);
 
     const authRequestId = randomUUID();
-    socket.send(JSON.stringify({ type: "auth", requestId: authRequestId, accessToken: "access" }));
-    expect(await nextFrame(socket)).toMatchObject({ type: "auth:result", requestId: authRequestId, ok: true });
+    socket.send(JSON.stringify({ type: "auth", requestId: authRequestId, protocolVersion: 1, accessToken: "access" }));
+    expect(await frames.next()).toMatchObject({ type: "auth:result", requestId: authRequestId, ok: true });
+    expect(await frames.next()).toMatchObject({ type: "server:welcome", protocolVersion: 1 });
 
     const register = {
       type: "computer:register",
@@ -67,7 +75,7 @@ describe("Computer runtime WebSocket", () => {
       clientVersion: "0.0.1",
     };
     socket.send(JSON.stringify(register));
-    expect(await nextFrame(socket)).toMatchObject({ type: "computer:register:result", ok: true });
+    expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
     expect(computers.register).toHaveBeenCalledWith(me.user.id, register);
     expect(JSON.stringify(register)).not.toContain("team");
 
@@ -78,14 +86,14 @@ describe("Computer runtime WebSocket", () => {
       instanceId: register.instanceId,
     };
     socket.send(JSON.stringify(heartbeat));
-    expect(await nextFrame(socket)).toMatchObject({
+    expect(await frames.next()).toMatchObject({
       type: "heartbeat:result",
       requestId: heartbeat.requestId,
       ok: true,
     });
     socket.close();
     await new Promise((resolve) => socket.once("close", resolve));
-    expect(computers.disconnect).toHaveBeenCalledWith(register.computerId, register.instanceId);
+    await vi.waitFor(() => expect(computers.disconnect).toHaveBeenCalledWith(register.computerId, register.instanceId));
   });
 
   it("rejects registration before authentication", async () => {
@@ -97,7 +105,7 @@ describe("Computer runtime WebSocket", () => {
     apps.push(app);
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
     const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
-    await nextFrame(socket);
+    await opened(socket);
     socket.send(
       JSON.stringify({
         type: "computer:register",
@@ -122,7 +130,6 @@ describe("Computer runtime WebSocket", () => {
     apps.push(app);
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
     const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
-    await nextFrame(socket);
     expect(await nextFrame(socket)).toMatchObject({ type: "error", code: "RUNTIME_AUTH_TIMEOUT" });
     await expect(closeCode(socket)).resolves.toBe(4408);
   });
@@ -137,10 +144,7 @@ describe("Computer runtime WebSocket", () => {
     apps.push(app);
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
     const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
-    await nextFrame(socket);
-    const authRequestId = randomUUID();
-    socket.send(JSON.stringify({ type: "auth", requestId: authRequestId, accessToken: "access" }));
-    await nextFrame(socket);
+    await authenticate(socket);
     const computerId = randomUUID();
     const instanceId = randomUUID();
     socket.send(
@@ -221,11 +225,18 @@ describe("Computer runtime WebSocket", () => {
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
     const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
     const frames = frameQueue(socket);
-    await frames.next();
+    await opened(socket);
     const closed = closeCode(socket);
-    socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), accessToken: "first" }));
+    socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), protocolVersion: 1, accessToken: "first" }));
     for (let index = 0; index < 100; index += 1) {
-      socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), accessToken: `flood-${index}` }));
+      socket.send(
+        JSON.stringify({
+          type: "auth",
+          requestId: randomUUID(),
+          protocolVersion: 1,
+          accessToken: `flood-${index}`,
+        }),
+      );
     }
     await vi.waitFor(() => expect(auth.getAuthenticatedUser).toHaveBeenCalledTimes(1));
     expect(await frames.next()).toMatchObject({ type: "error", code: "PROTOCOL_ERROR" });
@@ -315,12 +326,159 @@ describe("Computer runtime WebSocket", () => {
     expect(persistedInstanceId).toBeUndefined();
     expect(registry.currentInstanceId(computerId)).toBeUndefined();
   });
+
+  it("rejects unsupported auth versions before authenticating", async () => {
+    const auth = authService();
+    const app = createApp({ authService: auth, computerService: computerService() as unknown as ComputerService });
+    apps.push(app);
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+    await opened(socket);
+    const requestId = randomUUID();
+    socket.send(JSON.stringify({ type: "auth", requestId, protocolVersion: 2, accessToken: "access" }));
+
+    expect(await nextFrame(socket)).toMatchObject({
+      type: "error",
+      requestId,
+      code: "PROTOCOL_VERSION_UNSUPPORTED",
+    });
+    await expect(closeCode(socket)).resolves.toBe(4400);
+    expect(auth.getAuthenticatedUser).not.toHaveBeenCalled();
+  });
+
+  it("rejects binary frames before JSON decoding", async () => {
+    const auth = authService();
+    const app = createApp({ authService: auth, computerService: computerService() as unknown as ComputerService });
+    apps.push(app);
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+    await opened(socket);
+    socket.send(
+      Buffer.from(JSON.stringify({ type: "auth", requestId: randomUUID(), protocolVersion: 1, accessToken: "access" })),
+      { binary: true },
+    );
+
+    expect(await nextFrame(socket)).toMatchObject({ type: "error", code: "PROTOCOL_ERROR" });
+    await expect(closeCode(socket)).resolves.toBe(4400);
+    expect(auth.getAuthenticatedUser).not.toHaveBeenCalled();
+  });
+
+  it("keeps heartbeat independent from slow keyed business work and isolates handler failures", async () => {
+    const computers = computerService();
+    let releaseSlow: (() => void) | undefined;
+    let markSlowStarted: (() => void) | undefined;
+    const slow = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const slowStarted = new Promise<void>((resolve) => {
+      markSlowStarted = resolve;
+    });
+    const app = createApp({
+      authService: authService(),
+      computerService: computers as unknown as ComputerService,
+      runtime: {
+        business: {
+          parse: (value) => businessFrame(value),
+          laneKey: (frame) => String(frame.key),
+          handle: async (frame) => {
+            if (frame.key === "slow") {
+              markSlowStarted?.();
+              await slow;
+            }
+            if (frame.key === "fail") throw new Error("expected handler failure");
+            return { type: "test:result", requestId: frame.requestId, status: "ok" };
+          },
+          overloadResult: (frame) => ({ type: "test:result", requestId: frame.requestId, status: "busy" }),
+          failureResult: (frame) => ({ type: "test:result", requestId: frame.requestId, status: "failed" }),
+          maxConcurrent: 2,
+        },
+      },
+    });
+    apps.push(app);
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+    const frames = rawFrameQueue(socket);
+    await authenticateRaw(socket, frames);
+    const register = registerFrame(randomUUID(), randomUUID());
+    socket.send(JSON.stringify(register));
+    expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
+
+    const slowRequestId = randomUUID();
+    socket.send(JSON.stringify({ type: "test:work", requestId: slowRequestId, key: "slow" }));
+    await slowStarted;
+    const heartbeatRequestId = randomUUID();
+    socket.send(
+      JSON.stringify({
+        type: "heartbeat",
+        requestId: heartbeatRequestId,
+        computerId: register.computerId,
+        instanceId: register.instanceId,
+      }),
+    );
+    expect(await frames.next()).toMatchObject({ type: "heartbeat:result", requestId: heartbeatRequestId, ok: true });
+    releaseSlow?.();
+    expect(await frames.next()).toMatchObject({ type: "test:result", requestId: slowRequestId, status: "ok" });
+
+    const failedRequestId = randomUUID();
+    socket.send(JSON.stringify({ type: "test:work", requestId: failedRequestId, key: "fail" }));
+    expect(await frames.next()).toMatchObject({ type: "test:result", requestId: failedRequestId, status: "failed" });
+    expect(socket.readyState).toBe(WebSocket.OPEN);
+    socket.close();
+  });
 });
 
 async function authenticate(socket: WebSocket, frames = frameQueue(socket)): Promise<void> {
-  await frames.next();
-  socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), accessToken: "access" }));
+  await opened(socket);
+  socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), protocolVersion: 1, accessToken: "access" }));
   expect(await frames.next()).toMatchObject({ type: "auth:result", ok: true });
+  expect(await frames.next()).toMatchObject({ type: "server:welcome", protocolVersion: 1 });
+}
+
+function opened(socket: WebSocket): Promise<void> {
+  if (socket.readyState === WebSocket.OPEN) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    socket.once("open", resolve);
+    socket.once("error", reject);
+  });
+}
+
+async function authenticateRaw(socket: WebSocket, frames: { next(): Promise<Record<string, unknown>> }): Promise<void> {
+  await opened(socket);
+  socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), protocolVersion: 1, accessToken: "access" }));
+  expect(await frames.next()).toMatchObject({ type: "auth:result", ok: true });
+  expect(await frames.next()).toMatchObject({ type: "server:welcome", protocolVersion: 1 });
+}
+
+function businessFrame(value: unknown): (Record<string, unknown> & { type: string }) | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (
+    record.type !== "test:work" ||
+    typeof record.requestId !== "string" ||
+    typeof record.key !== "string" ||
+    Object.keys(record).length !== 3
+  ) {
+    return undefined;
+  }
+  return record as Record<string, unknown> & { type: string };
+}
+
+function rawFrameQueue(socket: WebSocket): { next(): Promise<Record<string, unknown>> } {
+  const buffered: Array<Record<string, unknown>> = [];
+  const waiting: Array<(frame: Record<string, unknown>) => void> = [];
+  socket.on("message", (data) => {
+    const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+    const resolve = waiting.shift();
+    if (resolve) resolve(frame);
+    else buffered.push(frame);
+  });
+  return {
+    next: async () => {
+      const frame = buffered.shift();
+      if (frame) return frame;
+      return new Promise<Record<string, unknown>>((resolve) => waiting.push(resolve));
+    },
+  };
 }
 
 function registerFrame(computerId: string, instanceId: string) {

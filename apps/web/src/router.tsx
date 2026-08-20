@@ -1150,6 +1150,7 @@ function AgentCreationContent({
                 ref={firstFieldRef}
                 name="displayName"
                 placeholder="Research Assistant"
+                disabled={submitting}
                 required
               />
               <span className="field-hint" id="new-agent-display-name-hint">
@@ -1166,6 +1167,7 @@ function AgentCreationContent({
                   name="name"
                   pattern="[a-z0-9][a-z0-9-]*"
                   placeholder="research-assistant"
+                  disabled={submitting}
                   required
                 />
               </span>
@@ -1176,14 +1178,14 @@ function AgentCreationContent({
             <div className="agent-create-grid">
               <div className="agent-create-field">
                 <label htmlFor="new-agent-provider">Provider</label>
-                <select id="new-agent-provider" name="runtimeProvider">
+                <select id="new-agent-provider" name="runtimeProvider" disabled={submitting}>
                   <option value="codex">Codex</option>
                   <option value="claude-code">Claude Code</option>
                 </select>
               </div>
               <div className="agent-create-field">
                 <label htmlFor="new-agent-computer">Computer</label>
-                <select id="new-agent-computer" name="computerId" required>
+                <select id="new-agent-computer" name="computerId" disabled={submitting} required>
                   {value.computers.map((computer: Computer) => (
                     <option value={computer.id} key={computer.id}>
                       {computer.displayName}

@@ -522,7 +522,11 @@ describe("OpenTag Web App Shell", () => {
           ),
       ).toHaveLength(1),
     );
-    await waitFor(() => expect(within(dialog).getByLabelText("Display name")).toBe(document.activeElement));
+    await waitFor(() => expect(dialog).toBe(document.activeElement));
+    expect((within(dialog).getByLabelText("Display name") as HTMLInputElement).disabled).toBe(true);
+    expect((within(dialog).getByLabelText("Agent name") as HTMLInputElement).disabled).toBe(true);
+    expect((within(dialog).getByLabelText("Provider") as HTMLSelectElement).disabled).toBe(true);
+    expect((within(dialog).getByLabelText("Computer") as HTMLSelectElement).disabled).toBe(true);
     expect(within(dialog).getByRole("button", { name: "Creating…" }).hasAttribute("disabled")).toBe(true);
     expect(within(dialog).getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(true);
     expect(within(dialog).getByRole("button", { name: "Close new Agent dialog" }).hasAttribute("disabled")).toBe(true);

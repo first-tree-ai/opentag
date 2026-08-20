@@ -15,7 +15,6 @@ export interface FeishuBindingActivation {
     appId: string;
     appSecret: string;
     teamBrand?: "feishu" | "lark";
-    requestedScopes: string[];
   }): Promise<VerifiedFeishuBinding>;
 }
 
@@ -31,6 +30,7 @@ function errorCode(error: unknown): string {
     if (error.code === "access_denied") return "FEISHU_SETUP_DENIED";
     if (error.code === "expired_token") return "FEISHU_SETUP_EXPIRED";
     if (error.code === "abort") return "FEISHU_SETUP_CANCELED";
+    if (/^FEISHU_[A-Z0-9_]+$/.test(error.code)) return error.code.slice(0, 120);
   }
   if (error instanceof Error && /^FEISHU_[A-Z0-9_]+$/.test(error.message)) return error.message.slice(0, 120);
   return "FEISHU_SETUP_FAILED";
@@ -310,7 +310,6 @@ export class FeishuSetupService {
         appId: result.appId,
         appSecret: result.appSecret,
         teamBrand: result.teamBrand,
-        requestedScopes: result.requestedScopes,
       });
     } catch (error) {
       const code = errorCode(error);

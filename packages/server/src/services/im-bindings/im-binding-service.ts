@@ -4,6 +4,7 @@ import type {
   ImBindingSummary,
   SlackBindingActivation,
 } from "@opentag/shared";
+import { FEISHU_REQUIRED_TENANT_SCOPES, hasRequiredFeishuTenantScopes } from "@opentag/shared";
 import { and, asc, desc, eq, gt, isNull, ne, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
@@ -84,6 +85,32 @@ export class ImBindingServiceError extends Error {
   }
 }
 
+function isFeishuAppBindingConflict(error: unknown): boolean {
+  let current = error;
+  const visited = new Set<unknown>();
+  while (typeof current === "object" && current !== null && !visited.has(current)) {
+    visited.add(current);
+    if (
+      "code" in current &&
+      current.code === "23505" &&
+      "constraint_name" in current &&
+      current.constraint_name === "im_bindings_feishu_app_current_unique"
+    ) {
+      return true;
+    }
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return false;
+}
+
+function needsFeishuScopeUpdate(
+  status: "provisioning" | "active" | "reauthorization_required" | "error" | "disabled",
+  provider: "feishu" | "slack",
+  scopes: readonly string[],
+): boolean {
+  return status === "active" && provider === "feishu" && !hasRequiredFeishuTenantScopes(scopes);
+}
+
 export class ImBindingService {
   readonly #afterMutationAuthorityLocked: (() => Promise<void> | void) | undefined;
   readonly #cipher: ApplicationCipher;
@@ -145,21 +172,32 @@ export class ImBindingService {
       appSecret: input.appSecret,
       grantedScopes: [...new Set(input.grantedScopes)].sort(),
     });
-    return this.#activate(
-      {
-        agentId: input.agentId,
-        provider: "feishu",
-        identity: {
-          appId: input.appId,
-          teamId: input.teamId,
-          enterpriseId: null,
-          botId: input.botOpenId,
-          teamBrand: input.teamBrand ?? null,
+    try {
+      return await this.#activate(
+        {
+          agentId: input.agentId,
+          provider: "feishu",
+          identity: {
+            appId: input.appId,
+            teamId: input.teamId,
+            enterpriseId: null,
+            botId: input.botOpenId,
+            teamBrand: input.teamBrand ?? null,
+          },
+          credential,
         },
-        credential,
-      },
-      transaction,
-    );
+        transaction,
+      );
+    } catch (error) {
+      if (isFeishuAppBindingConflict(error)) {
+        throw new ImBindingServiceError(
+          "FEISHU_APP_ALREADY_BOUND",
+          409,
+          "The selected Feishu App is already bound to another Agent",
+        );
+      }
+      throw error;
+    }
   }
 
   async findSlackIngressBinding(appId: string, teamId: string): Promise<SlackIngressBinding | undefined> {
@@ -274,6 +312,7 @@ export class ImBindingService {
         observedAt: imBindings.observedAt,
         activatedAt: imBindings.activatedAt,
         receiveMode: agents.receiveMode,
+        grantedCapabilities: imBindings.grantedCapabilities,
       })
       .from(imBindings)
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
@@ -281,11 +320,14 @@ export class ImBindingService {
       .limit(1);
     if (!row) return undefined;
     const activity = await this.#activity(row.id);
+    const reauthorizationRequired =
+      row.bindingState === "reauthorization_required" ||
+      needsFeishuScopeUpdate(row.bindingState, row.provider, row.grantedCapabilities);
     return {
       id: row.id,
       agentId: row.agentId,
       provider: row.provider,
-      bindingState: row.bindingState,
+      bindingState: reauthorizationRequired ? "reauthorization_required" : row.bindingState,
       bot: { displayName: row.botDisplayName, avatarUrl: row.botAvatarUrl },
       receiveMode: row.receiveMode,
       ...activity,
@@ -305,11 +347,14 @@ export class ImBindingService {
     const binding = row.imBinding;
     if (!binding.externalAppId || !binding.externalBotId || binding.credentialGeneration < 1) return undefined;
     const activity = await this.#activity(binding.id);
+    const reauthorizationRequired =
+      binding.status === "reauthorization_required" ||
+      needsFeishuScopeUpdate(binding.status, binding.provider, binding.grantedCapabilities);
     const summary: ImBindingSummary = {
       id: binding.id,
       agentId: binding.agentId,
       provider: binding.provider,
-      bindingState: binding.status,
+      bindingState: reauthorizationRequired ? "reauthorization_required" : binding.status,
       bot: { displayName: binding.botDisplayName, avatarUrl: binding.botAvatarUrl },
       receiveMode: row.receiveMode,
       ...activity,
@@ -335,8 +380,9 @@ export class ImBindingService {
             },
       credentialGeneration: binding.credentialGeneration,
       grantedCapabilities: binding.grantedCapabilities,
-      reauthorizationRequired: binding.status === "reauthorization_required",
-      lastErrorCode: binding.lastErrorCode,
+      reauthorizationRequired,
+      lastErrorCode:
+        reauthorizationRequired && binding.status === "active" ? "FEISHU_SCOPE_REAUTH_REQUIRED" : binding.lastErrorCode,
     };
   }
 
@@ -374,6 +420,7 @@ export class ImBindingService {
         observedConnectedAt: imBindings.observedConnectedAt,
         observedAt: imBindings.observedAt,
         lastErrorCode: imBindings.lastErrorCode,
+        grantedCapabilities: imBindings.grantedCapabilities,
       })
       .from(imBindings)
       .where(eq(imBindings.id, imBindingId))
@@ -382,6 +429,9 @@ export class ImBindingService {
     await this.assertCanManage(callerUserId, imBinding.agentId);
     const now = this.#now();
     const runtimeToolAvailable = await this.#runtimeReady(imBinding.agentId);
+    const reauthorizationRequired =
+      imBinding.status === "reauthorization_required" ||
+      needsFeishuScopeUpdate(imBinding.status, imBinding.provider, imBinding.grantedCapabilities);
     const activity = await this.#activity(imBindingId);
     const connection =
       imBinding.provider === "feishu" && imBinding.observedAt
@@ -400,14 +450,18 @@ export class ImBindingService {
       provider: imBinding.provider,
       ready:
         imBinding.status === "active" &&
+        !reauthorizationRequired &&
         runtimeToolAvailable &&
         (imBinding.provider === "slack" || connection?.state === "connected"),
       runtimeToolAvailable,
       credentialGeneration: Math.max(1, imBinding.credentialGeneration),
-      reauthorizationRequired: imBinding.status === "reauthorization_required",
+      reauthorizationRequired,
       connection,
       ...activity,
-      lastErrorCode: imBinding.lastErrorCode,
+      lastErrorCode:
+        reauthorizationRequired && imBinding.status === "active"
+          ? "FEISHU_SCOPE_REAUTH_REQUIRED"
+          : imBinding.lastErrorCode,
     };
   }
 
@@ -539,16 +593,33 @@ export class ImBindingService {
           "The Agent already has a different IM provider",
         );
       }
+      if (input.provider === "feishu") {
+        const [conflicting] = await transaction
+          .select({ id: imBindings.id })
+          .from(imBindings)
+          .where(
+            and(
+              eq(imBindings.provider, "feishu"),
+              eq(imBindings.externalAppId, input.identity.appId),
+              ne(imBindings.agentId, input.agentId),
+              ne(imBindings.status, "disabled"),
+            ),
+          )
+          .limit(1);
+        if (conflicting) {
+          throw new ImBindingServiceError(
+            "FEISHU_APP_ALREADY_BOUND",
+            409,
+            "The selected Feishu App is already bound to another Agent",
+          );
+        }
+      }
       const requiredCapabilities =
         input.provider === "feishu"
-          ? ["im:message:send_as_bot", "im:message.p2p_msg:readonly", "im:message.group_at_msg:readonly"]
+          ? [...FEISHU_REQUIRED_TENANT_SCOPES]
           : ["chat:write", "app_mentions:read", "im:history"];
-      if (agent.receiveMode === "all_message") {
-        requiredCapabilities.push(
-          ...(input.provider === "feishu"
-            ? ["im:message.group_msg"]
-            : ["channels:history", "groups:history", "mpim:history"]),
-        );
+      if (input.provider === "slack" && agent.receiveMode === "all_message") {
+        requiredCapabilities.push("channels:history", "groups:history", "mpim:history");
       }
       const missing = requiredCapabilities.filter((capability) => !input.credential.grantedScopes.includes(capability));
       if (missing.length > 0) {
@@ -566,10 +637,27 @@ export class ImBindingService {
         current.externalTeamId
           ? { ...input, identity: { ...input.identity, teamId: current.externalTeamId } }
           : input;
+      const sameProviderApp = current?.externalAppId === activationInput.identity.appId;
+      if (
+        current &&
+        current.status !== "provisioning" &&
+        input.provider === "feishu" &&
+        sameProviderApp &&
+        (current.externalTeamId !== activationInput.identity.teamId ||
+          current.externalBotId !== activationInput.identity.botId)
+      ) {
+        throw new ImBindingServiceError(
+          "FEISHU_BINDING_IDENTITY_MISMATCH",
+          409,
+          "The authorized Feishu Bot identity does not match the current App binding",
+        );
+      }
       const sameIdentity =
-        current?.externalAppId === activationInput.identity.appId &&
-        current.externalTeamId === activationInput.identity.teamId &&
-        current.externalBotId === activationInput.identity.botId;
+        input.provider === "feishu"
+          ? sameProviderApp
+          : sameProviderApp &&
+            current?.externalTeamId === activationInput.identity.teamId &&
+            current.externalBotId === activationInput.identity.botId;
       if (current && current.status !== "provisioning" && !sameIdentity) {
         await this.#disableInTransaction(transaction, current.id, now);
         const [created] = await transaction

@@ -1,4 +1,5 @@
 import { registerApp } from "@larksuiteoapi/node-sdk";
+import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
 
 export interface FeishuAppProfile {
   name: string;
@@ -10,7 +11,6 @@ export interface FeishuRegistrationResult {
   appId: string;
   appSecret: string;
   teamBrand?: "feishu" | "lark";
-  requestedScopes: string[];
 }
 
 export interface FeishuRegistration {
@@ -26,20 +26,6 @@ export interface FeishuRegistrationGateway {
     existingAppId?: string;
     receiveMode: "all_message" | "mention_only";
   }): FeishuRegistration;
-}
-
-export const FEISHU_MESSAGE_BASE_SCOPES = [
-  "im:message:send_as_bot",
-  "im:message.p2p_msg:readonly",
-  "im:message.group_at_msg:readonly",
-  "im:message:readonly",
-  "contact:user.id:readonly",
-  "im:resource",
-  "im:message.reactions:write_only",
-];
-
-export function feishuMessageScopes(receiveMode: "all_message" | "mention_only"): string[] {
-  return [...FEISHU_MESSAGE_BASE_SCOPES, ...(receiveMode === "all_message" ? ["im:message.group_msg"] : [])];
 }
 
 export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGateway {
@@ -62,11 +48,10 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
       resolveQr = resolve;
       rejectQr = reject;
     });
-    const requestedScopes = feishuMessageScopes(input.receiveMode);
     const result = this.#registerApp({
       ...(input.intent === "reauthorize" && input.existingAppId
         ? { appId: input.existingAppId }
-        : { createOnly: true }),
+        : { createOnly: false }),
       signal: controller.signal,
       source: "opentag",
       appPreset: {
@@ -76,7 +61,7 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
       },
       addons: {
         preset: true,
-        scopes: { tenant: requestedScopes },
+        scopes: { tenant: [...FEISHU_REQUIRED_TENANT_SCOPES] },
         events: { items: { tenant: ["im.message.receive_v1", "im.message.recalled_v1"] } },
       },
       onQRCodeReady: ({ url, expireIn }) => {
@@ -87,7 +72,6 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
         appId: credentials.client_id,
         appSecret: credentials.client_secret,
         teamBrand: credentials.user_info?.tenant_brand,
-        requestedScopes,
       }))
       .catch((error) => {
         rejectQr(error);

@@ -1,35 +1,20 @@
 import type { registerApp } from "@larksuiteoapi/node-sdk";
+import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 
-import { DefaultFeishuRegistrationGateway, feishuMessageScopes } from "../services/im-bindings/feishu/registration.js";
+import { DefaultFeishuRegistrationGateway } from "../services/im-bindings/feishu/registration.js";
 
 interface RegistrationOptions {
   appId?: string;
   createOnly?: boolean;
   signal: AbortSignal;
   appPreset: { name: string; desc: string };
-  addons: { preset: boolean; scopes: { tenant: string[] }; events: { items: { tenant: string[] } } };
+  addons: { preset: boolean; scopes: { tenant: string[]; user?: string[] }; events: { items: { tenant: string[] } } };
   onQRCodeReady(input: { url: string; expireIn: number }): void;
 }
 
 describe("Feishu registration", () => {
-  it("requests only the message, resource, and reaction capabilities used by OpenTag", () => {
-    expect(feishuMessageScopes("mention_only")).toEqual([
-      "im:message:send_as_bot",
-      "im:message.p2p_msg:readonly",
-      "im:message.group_at_msg:readonly",
-      "im:message:readonly",
-      "contact:user.id:readonly",
-      "im:resource",
-      "im:message.reactions:write_only",
-    ]);
-    expect(feishuMessageScopes("all_message")).toEqual([
-      ...feishuMessageScopes("mention_only"),
-      "im:message.group_msg",
-    ]);
-  });
-
-  it("prefills a create-only Personal Agent consent flow", async () => {
+  it.each(["create", "replace"] as const)("allows an existing or new App for %s", async (intent) => {
     const register = vi.fn(async (rawOptions: unknown) => {
       const options = rawOptions as RegistrationOptions;
       options.onQRCodeReady({ url: "https://open.feishu.cn/qr/create", expireIn: 60 });
@@ -37,7 +22,7 @@ describe("Feishu registration", () => {
     });
     const registration = new DefaultFeishuRegistrationGateway(register as typeof registerApp).start({
       profile: { name: "Assistant", description: "OpenTag Agent: Assistant" },
-      intent: "create",
+      intent,
       receiveMode: "all_message",
     });
     await expect(registration.qrReady).resolves.toMatchObject({ url: "https://open.feishu.cn/qr/create" });
@@ -45,19 +30,19 @@ describe("Feishu registration", () => {
       appId: "cli_new",
       appSecret: "secret",
       teamBrand: "feishu",
-      requestedScopes: feishuMessageScopes("all_message"),
     });
     const options = register.mock.calls[0]?.[0] as RegistrationOptions;
     expect(options).toMatchObject({
-      createOnly: true,
+      createOnly: false,
       appPreset: { name: "Assistant", desc: "OpenTag Agent: Assistant" },
       addons: {
         preset: true,
-        scopes: { tenant: feishuMessageScopes("all_message") },
+        scopes: { tenant: FEISHU_REQUIRED_TENANT_SCOPES },
         events: { items: { tenant: ["im.message.receive_v1", "im.message.recalled_v1"] } },
       },
     });
     expect(options.appId).toBeUndefined();
+    expect(options.addons.scopes.user).toBeUndefined();
   });
 
   it("pins reauthorization to the existing App and forwards cancellation", async () => {
@@ -81,7 +66,7 @@ describe("Feishu registration", () => {
     const options = register.mock.calls[0]?.[0] as RegistrationOptions;
     expect(options.appId).toBe("cli_existing");
     expect(options.createOnly).toBeUndefined();
-    expect(options.addons.scopes.tenant).toEqual(feishuMessageScopes("mention_only"));
+    expect(options.addons.scopes.tenant).toEqual(FEISHU_REQUIRED_TENANT_SCOPES);
     registration.abort();
     await expect(registration.result).rejects.toMatchObject({ code: "abort" });
   });

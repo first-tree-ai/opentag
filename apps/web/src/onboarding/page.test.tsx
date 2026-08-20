@@ -6,6 +6,7 @@ import type {
   ImBindingHandoffStatus,
   MeMembership,
   TeamComputerSummary,
+  TeamMemberSummary,
   UserProfile,
 } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -98,15 +99,22 @@ function installFacts({
   agents = [],
   computers = [],
   handoff,
+  members = [],
 }: {
   agents?: AgentSummary[];
   computers?: TeamComputerSummary[];
   handoff?: ImBindingHandoffStatus;
+  members?: TeamMemberSummary[];
 } = {}) {
   vi.spyOn(browserApi, "computers").mockResolvedValue({ computers });
   vi.spyOn(browserApi, "agents").mockResolvedValue({ agents });
   vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(handoff);
+  vi.spyOn(browserApi, "members").mockResolvedValue({ members });
   vi.spyOn(browserApi, "logout").mockResolvedValue();
+}
+
+function teamAdmin(displayName: string, id: string): TeamMemberSummary {
+  return { userId: id, displayName, role: "admin" };
 }
 
 function renderPage({
@@ -269,6 +277,50 @@ describe("OnboardingPage", () => {
     expect(screen.getByText("Read only")).toBeTruthy();
     expect(screen.getByText(/A Team admin can complete this action/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Feishu/ })).toBeNull();
+  });
+
+  it.each([
+    [["Ada"], "Ada can complete this action."],
+    [["Ada", "Grace"], "Ada or Grace can complete this action."],
+    [["Ada", "Grace", "Linus"], "Ada, Grace, or 1 more Team admin can complete this action."],
+    [["Ada", "Grace", "Linus", "Ken"], "Ada, Grace, or 2 more Team admins can complete this action."],
+  ])("names the admins a member can ask", async (names, expected) => {
+    installFacts({
+      agents: [agent],
+      computers: [computerA],
+      members: [
+        ...names.map((name, index) => teamAdmin(name, `0000000${index}-0000-4000-8000-00000000000${index}`)),
+        { userId, displayName: "Ada Member", role: "member" },
+      ],
+    });
+    renderPage({
+      membership: member,
+      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]),
+    });
+
+    expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
+    expect(screen.getByText(`${expected} Your factual progress will update here.`)).toBeTruthy();
+  });
+
+  it("keeps a member's facts readable when the member list is unavailable", async () => {
+    installFacts({ agents: [agent], computers: [computerA] });
+    vi.spyOn(browserApi, "members").mockRejectedValue(new Error("Members unavailable"));
+    renderPage({
+      membership: member,
+      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]),
+    });
+
+    expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
+    expect(screen.getByText(/A Team admin can complete this action/)).toBeTruthy();
+  });
+
+  it("does not ask for the member list when the viewer manages the Team", async () => {
+    installFacts({ agents: [agent], computers: [computerA] });
+    const members = vi.spyOn(browserApi, "members");
+    renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]) });
+
+    expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
+    expect(members).not.toHaveBeenCalled();
   });
 
   it("keeps OpenTag editable and waits for the explicit Agent creation action", async () => {

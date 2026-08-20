@@ -27,7 +27,7 @@ import {
 import { ApplicationCipher } from "../../services/crypto.js";
 import { InvitationService } from "../../services/invitations/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../services/runtime-config/index.js";
-import { TeamMembershipService } from "../../services/teams/index.js";
+import { TEAM_MEMBERSHIP_LIMIT, TeamMembershipService } from "../../services/teams/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 const now = new Date("2026-08-19T00:00:00.000Z");
@@ -190,6 +190,29 @@ describe("account identity and Team foundation persistence", () => {
       ).rejects.toMatchObject({ code: "TEAM_NAME_CONFLICT", statusCode: 409 });
       expect(await value.database.select().from(teams)).toHaveLength(1);
       expect(await value.database.select().from(memberships).where(eq(memberships.userId, userId))).toHaveLength(0);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("stops one account from creating Teams without bound", async () => {
+    const value = await fixture();
+    try {
+      const userId = await value.identities.resolveOrCreate(google("solo", "solo@example.com"));
+      for (let index = 0; index < TEAM_MEMBERSHIP_LIMIT; index += 1) {
+        await value.teamService.createTeam(userId, { name: `team-${index}`, displayName: `Team ${index}` });
+      }
+      await expect(
+        value.teamService.createTeam(userId, { name: "one-too-many", displayName: "One Too Many" }),
+      ).rejects.toMatchObject({ code: "TEAM_LIMIT_REACHED", statusCode: 409 });
+      // The rejected name stays free, so a bounded account cannot squat the global namespace on the way out.
+      expect(await value.database.select().from(teams).where(eq(teams.name, "one-too-many"))).toHaveLength(0);
+      expect(
+        await value.database
+          .select()
+          .from(memberships)
+          .where(and(eq(memberships.userId, userId), eq(memberships.status, "active"))),
+      ).toHaveLength(TEAM_MEMBERSHIP_LIMIT);
     } finally {
       await value.sql.end();
     }

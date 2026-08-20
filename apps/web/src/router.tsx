@@ -181,6 +181,15 @@ function toTeamHandle(displayName: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+/**
+ * Canonical names are ASCII, so derivation drops anything else. Latin accents survive as their base letter,
+ * but other scripts leave nothing behind: the suggestion silently empties or keeps only an ASCII fragment,
+ * which the user has to be told rather than left to notice.
+ */
+function dropsCharactersFromHandle(displayName: string): boolean {
+  return /[^\p{ASCII}]/u.test(displayName.normalize("NFKD").replace(/\p{M}/gu, ""));
+}
+
 function NewTeamPage() {
   const navigate = useNavigate();
   const [displayName, setDisplayName] = useState("");
@@ -236,11 +245,19 @@ function NewTeamPage() {
             maxLength={64}
             value={name}
             onChange={(event) => {
-              setNameEdited(true);
-              setName(event.currentTarget.value);
+              const value = event.currentTarget.value;
+              // Emptying the field hands control back to the display name instead of latching it off.
+              setNameEdited(value.length > 0);
+              setName(value);
             }}
           />
         </label>
+        {displayName && dropsCharactersFromHandle(displayName) ? (
+          <p className="notice" role="status">
+            A canonical name can only use lowercase letters, digits and hyphens, so the suggestion above leaves out the
+            rest of “{displayName}”. Write the name you want teammates to type in the CLI.
+          </p>
+        ) : null}
         <p className="muted">
           Lowercase letters, digits and hyphens. This is the CLI --team selector and must be unique across OpenTag; Team
           Admins can change it later.

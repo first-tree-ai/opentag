@@ -22,6 +22,14 @@ import { AuthServiceError } from "../auth/index.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
+/**
+ * Caps how many Teams one user may hold at once. Team creation is self-serve and canonical names are a
+ * global namespace, so without a ceiling one account could squat every short name. The cap counts active
+ * memberships rather than authored Teams because every membership is re-read on each authenticated
+ * request, and that read is what an unbounded count would make expensive.
+ */
+export const TEAM_MEMBERSHIP_LIMIT = 50;
+
 function isTeamNameConflict(error: unknown): boolean {
   let current = error;
   const visited = new Set<unknown>();
@@ -184,6 +192,19 @@ export class TeamMembershipService {
         if (!user) throw new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "The token is invalid", 401);
         if (user.suspendedAt) {
           throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
+        }
+        // The caller's user row is locked above, so concurrent creations by this user cannot both pass.
+        const held = await transaction
+          .select({ teamId: memberships.teamId })
+          .from(memberships)
+          .where(and(eq(memberships.userId, callerUserId), eq(memberships.status, "active")));
+        if (held.length >= TEAM_MEMBERSHIP_LIMIT) {
+          throw new AuthServiceError(
+            "TEAM_LIMIT_REACHED",
+            "deterministic",
+            `A user can hold at most ${TEAM_MEMBERSHIP_LIMIT} active Team memberships`,
+            409,
+          );
         }
         const now = this.#now();
         const [team] = await transaction

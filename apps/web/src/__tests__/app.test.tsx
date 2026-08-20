@@ -337,6 +337,38 @@ describe("OpenTag Web App Shell", () => {
     expect((screen.getByLabelText("Canonical name") as HTMLInputElement).value).toBe("ft");
   });
 
+  it("resumes deriving the canonical name after the user empties the field", async () => {
+    installApi("admin", { teamless: true });
+    window.history.replaceState({}, "", "/teams/new");
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText("Display name"), { target: { value: "First Tree" } });
+    fireEvent.change(screen.getByLabelText("Canonical name"), { target: { value: "ft" } });
+    fireEvent.change(screen.getByLabelText("Canonical name"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "First Tree AI" } });
+    expect((screen.getByLabelText("Canonical name") as HTMLInputElement).value).toBe("first-tree-ai");
+  });
+
+  it.each([
+    ["示例团队", ""],
+    ["OpenTag 中文团队", "opentag"],
+  ])("says which characters the canonical name drops for %s", async (displayName, derived) => {
+    installApi("admin", { teamless: true });
+    window.history.replaceState({}, "", "/teams/new");
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText("Display name"), { target: { value: displayName } });
+    expect((screen.getByLabelText("Canonical name") as HTMLInputElement).value).toBe(derived);
+    expect(await screen.findByText(new RegExp(`leaves out the rest of “${displayName}”`))).toBeTruthy();
+  });
+
+  it("keeps quiet when the display name maps cleanly onto a canonical name", async () => {
+    installApi("admin", { teamless: true });
+    window.history.replaceState({}, "", "/teams/new");
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText("Display name"), { target: { value: "Café Ops" } });
+    expect((screen.getByLabelText("Canonical name") as HTMLInputElement).value).toBe("cafe-ops");
+    expect(screen.queryByText(/leaves out the rest of/)).toBeNull();
+  });
+
   it("lets an existing member create a second Team and offers both in the picker", async () => {
     installApi("admin");
     render(<App />);

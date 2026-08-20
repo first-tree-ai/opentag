@@ -166,6 +166,28 @@ describe("Team and invitation HTTP APIs", () => {
     });
   });
 
+  it("maps an exhausted Team allowance to 409 with its own code", async () => {
+    const { app, team } = testApp();
+    team.createTeam.mockRejectedValueOnce(
+      new AuthServiceError(
+        "TEAM_LIMIT_REACHED",
+        "deterministic",
+        "A user can hold at most 50 active Team memberships",
+        409,
+      ),
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.teams,
+      headers: { authorization: "Bearer access" },
+      payload: { name: "one-too-many", displayName: "One Too Many" },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: { code: "TEAM_LIMIT_REACHED", message: "A user can hold at most 50 active Team memberships" },
+    });
+  });
+
   it("rejects unauthenticated and malformed Team creation without reaching the service", async () => {
     const { app, team } = testApp();
     expect(

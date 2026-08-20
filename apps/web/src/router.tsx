@@ -40,6 +40,7 @@ import { ApiError, browserApi } from "./api.js";
 import { ComputerSetup } from "./computer-setup.js";
 import { CreateTeamForm } from "./create-team-form.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
+import { OnboardingPage } from "./onboarding/page.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
 
@@ -334,7 +335,7 @@ export function AppRouter() {
       <Route path="/invites/:token" element={<InvitePage />} />
       <Route path="/teams/new" element={<NewTeamPage />} />
       <Route element={<AuthenticatedTeamGate />}>
-        <Route path="/onboarding" element={<OnboardingPage />} />
+        <Route path="/onboarding" element={<OnboardingRoute />} />
         <Route element={<AppShell />}>
           <Route index element={<Navigate replace to="/agents" />} />
           <Route path="/agents" element={<AgentsPage />} />
@@ -517,7 +518,17 @@ function AuthenticatedTeamGate() {
       {(me) => {
         const stored = readTeamPreference();
         const membership = me.memberships.find((item: MeMembership) => item.teamId === stored) ?? me.memberships[0];
-        // Creating or joining a Team is the first onboarding step, so a Team-less session is sent there.
+        if (!membership && location.pathname === "/onboarding") {
+          return (
+            <AutomaticTeamBootstrap
+              me={me}
+              onReady={(teamId) => {
+                if (teamId) window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, teamId);
+                setMeRevision((value) => value + 1);
+              }}
+            />
+          );
+        }
         if (!membership) return <Navigate replace to="/teams/new" />;
         const selectTeam = (teamId: string) => {
           if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
@@ -533,6 +544,65 @@ function AuthenticatedTeamGate() {
       }}
     </AsyncState>
   );
+}
+
+function AutomaticTeamBootstrap({ me, onReady }: { me: MeResponse; onReady: (teamId?: string) => void }) {
+  const [attempt, setAttempt] = useState(0);
+  const [error, setError] = useState<string>();
+  const started = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt is the explicit retry trigger for the same Team request.
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    let active = true;
+    const displayName = `${me.user.displayName}'s Team`.slice(0, 120);
+    void browserApi.createTeam({ name: `team-${me.user.id}`, displayName }).then(
+      (created) => active && onReady(created.id),
+      (cause: unknown) => {
+        if (!active) return;
+        if (cause instanceof ApiError && cause.code === "TEAM_NAME_CONFLICT") {
+          onReady();
+          return;
+        }
+        setError(cause instanceof Error ? cause.message : "Unable to prepare your Team");
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [attempt, me.user.displayName, me.user.id, onReady]);
+  return (
+    <main className="center-card" aria-busy={!error || undefined}>
+      <span className="eyebrow">OpenTag</span>
+      <h1>Preparing your Team</h1>
+      <p>OpenTag will continue automatically.</p>
+      {error ? (
+        <div className="onboarding-feedback">
+          <div className="notice error" role="alert">
+            {error}
+          </div>
+          <button
+            className="button"
+            type="button"
+            onClick={() => {
+              started.current = false;
+              setError(undefined);
+              setAttempt((value) => value + 1);
+            }}
+          >
+            Try again
+          </button>
+        </div>
+      ) : (
+        <p role="status">Creating a secure Team workspace…</p>
+      )}
+    </main>
+  );
+}
+
+function OnboardingRoute() {
+  const { me, membership } = useTeam();
+  return <OnboardingPage membership={membership} user={me.user} />;
 }
 
 function readTeamPreference(): string | undefined {
@@ -2187,32 +2257,6 @@ function ComputersSettings({ canManage, teamId }: { canManage: boolean; teamId: 
         )}
       </AsyncState>
     </>
-  );
-}
-
-function OnboardingPage() {
-  const { membership } = useTeam();
-  return (
-    <Page title="Set up OpenTag" description="Connect the runtime path before inviting the Team to mention an Agent.">
-      {membership.role === "admin" ? (
-        <>
-          <ol className="steps">
-            <li>Team: {membership.teamDisplayName}</li>
-            <li>Connect a Local Computer</li>
-            <li>Confirm the provider CLI</li>
-            <li>Create an Agent</li>
-            <li>Connect IM</li>
-          </ol>
-          <Link className="button" to="/settings/computers">
-            Start with a Computer
-          </Link>
-        </>
-      ) : (
-        <EmptyState title="Team Admin setup required">
-          You can browse the Team after an Admin completes setup.
-        </EmptyState>
-      )}
-    </Page>
   );
 }
 

@@ -1215,6 +1215,24 @@ describe("OpenTag Web App Shell", () => {
     expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(createdTeamId);
   });
 
+  it("automatically creates the default admin Team from the website onboarding entry", async () => {
+    installApi("admin", { teamless: true });
+    window.history.replaceState({}, "", "/onboarding");
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Preparing your Team" })).toBeTruthy();
+    expect(screen.queryByLabelText("Team name")).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Reviewer needs its runtime route" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
+    const request = vi
+      .mocked(fetch)
+      .mock.calls.find(([path, init]) => path === "/api/v1/teams" && init?.method === "POST");
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+      name: `team-${userId}`,
+      displayName: "Ada's Team",
+    });
+    expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(createdTeamId);
+  });
+
   it("resolves an internal Team handle collision without asking the user for another name", async () => {
     installApi("admin", { teamless: true, teamNameConflict: true });
     window.history.replaceState({}, "", "/teams/new");

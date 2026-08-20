@@ -1509,6 +1509,170 @@ code {
   margin-top: 24px;
 }
 
+.onboarding-shell {
+  min-height: 100dvh;
+  background:
+    linear-gradient(rgb(248 247 240 / 94%), rgb(248 247 240 / 94%)),
+    linear-gradient(to right, rgb(201 204 187 / 20%) 1px, transparent 1px),
+    linear-gradient(to bottom, rgb(201 204 187 / 20%) 1px, transparent 1px);
+  background-size:
+    auto,
+    36px 36px,
+    36px 36px;
+}
+
+.onboarding-header {
+  display: flex;
+  min-height: 68px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  padding: 12px clamp(20px, 4vw, 56px);
+}
+
+.onboarding-header .brand {
+  margin: 0;
+}
+
+.onboarding-account {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  color: var(--secondary-foreground);
+  font-size: 0.82rem;
+}
+
+.onboarding-main {
+  width: min(920px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: clamp(56px, 9vh, 96px) 0 80px;
+}
+
+.onboarding-title {
+  border-bottom: 1px solid var(--strong-border);
+  padding-bottom: 28px;
+}
+
+.onboarding-title h1 {
+  margin-bottom: 8px;
+  font-size: clamp(2.25rem, 5vw, 3.5rem);
+}
+
+.onboarding-title p {
+  max-width: 48ch;
+  margin-bottom: 0;
+  color: var(--muted);
+}
+
+.onboarding-loading,
+.onboarding-action {
+  margin-top: 34px;
+}
+
+.onboarding-action {
+  min-width: 0;
+}
+
+.onboarding-action > .panel {
+  width: 100%;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.onboarding-action-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 28px;
+  margin-bottom: 24px;
+}
+
+.onboarding-action-heading h2 {
+  margin-bottom: 8px;
+  font-family: "Bricolage Grotesque Variable", "Geist Variable", sans-serif;
+  font-size: clamp(1.45rem, 3vw, 1.8rem);
+  letter-spacing: -0.035em;
+}
+
+.onboarding-action-heading p {
+  max-width: 640px;
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 0.94rem;
+}
+
+.onboarding-action-heading .status-chip {
+  flex: 0 0 auto;
+  margin-top: 4px;
+}
+
+.onboarding-pending {
+  width: min(100%, 760px);
+  border-left: 2px solid var(--brand);
+  color: var(--secondary-foreground);
+  padding: 10px 14px;
+}
+
+.onboarding-feedback {
+  display: grid;
+  justify-items: start;
+  gap: 14px;
+}
+
+.onboarding-feedback .notice {
+  margin-top: 0;
+}
+
+.onboarding-choice-list {
+  display: grid;
+  width: min(100%, 760px);
+  border-top: 1px solid var(--strong-border);
+}
+
+.onboarding-choice {
+  display: flex;
+  width: 100%;
+  min-height: 64px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--foreground);
+  padding: 12px 4px;
+  text-align: left;
+}
+
+.onboarding-choice:hover {
+  border-color: var(--border);
+  background: var(--brand-light);
+  color: var(--foreground);
+}
+
+.onboarding-choice:active {
+  transform: none;
+}
+
+.onboarding-choice strong,
+.onboarding-choice span {
+  display: block;
+}
+
+.onboarding-choice span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.onboarding-helper {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
 .account-page-actions {
   display: grid;
   justify-items: start;
@@ -2147,6 +2311,51 @@ textarea:focus {
 }
 
 @media (max-width: 720px) {
+  .onboarding-header {
+    min-height: 60px;
+    padding: 10px 18px;
+  }
+
+  .onboarding-account > span {
+    display: none;
+  }
+
+  .onboarding-main {
+    width: min(100% - 32px, 920px);
+    padding: 42px 0 56px;
+  }
+
+  .onboarding-title {
+    padding-bottom: 22px;
+  }
+
+  .onboarding-action-heading,
+  .onboarding-choice {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .onboarding-action-heading {
+    gap: 12px;
+  }
+
+  .onboarding-action-heading .status-chip {
+    align-self: flex-start;
+  }
+
+  .onboarding-choice {
+    gap: 5px;
+  }
+
+  .onboarding-action .button,
+  .onboarding-feedback > .button {
+    width: 100%;
+  }
+
+  .onboarding-action pre {
+    font-size: 0.78rem;
+  }
+
   .dialog-layer {
     align-items: end;
     padding: 12px;

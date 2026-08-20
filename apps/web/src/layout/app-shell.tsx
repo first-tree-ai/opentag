@@ -1,6 +1,6 @@
 import type { MeMembership } from "@opentag/shared/browser";
 import { Link, NavLink, Outlet } from "react-router-dom";
-import { useTeam } from "../features/auth/team-session.js";
+import { useTeam } from "../session/team-session.js";
 
 export function AppShell() {
   const { me, membership, selectTeam } = useTeam();

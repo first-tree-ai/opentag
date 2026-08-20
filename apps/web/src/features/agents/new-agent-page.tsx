@@ -4,12 +4,12 @@ import { Link, useNavigate } from "react-router-dom";
 import { browserApi } from "../../api.js";
 import { useResource } from "../../lib/resource.js";
 import { UnavailablePage } from "../../routes/fallback-pages.js";
+import { useTeam } from "../../session/team-session.js";
 import { AsyncState } from "../../ui/async-state.js";
 import { EmptyState } from "../../ui/empty-state.js";
 import { Notice } from "../../ui/feedback.js";
 import { FormCard } from "../../ui/form-card.js";
 import { Page } from "../../ui/page.js";
-import { useTeam } from "../auth/team-session.js";
 
 export function NewAgentPage() {
   const { membership } = useTeam();

@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
+import { useTeam } from "../../session/team-session.js";
 import { EmptyState } from "../../ui/empty-state.js";
 import { Page } from "../../ui/page.js";
-import { useTeam } from "../auth/team-session.js";
 
 export function OnboardingPage() {
   const { membership } = useTeam();

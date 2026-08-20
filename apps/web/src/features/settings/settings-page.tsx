@@ -1,9 +1,9 @@
 import { NavLink, useParams } from "react-router-dom";
 import { titleCase } from "../../lib/format.js";
 import { NotFoundPage } from "../../routes/fallback-pages.js";
+import { useTeam } from "../../session/team-session.js";
 import { EmptyState } from "../../ui/empty-state.js";
 import { Page } from "../../ui/page.js";
-import { useTeam } from "../auth/team-session.js";
 import { ComputersSettings } from "./computers-settings.js";
 import { MembersSettings } from "./members-settings.js";
 import { TeamSettings } from "./team-settings.js";

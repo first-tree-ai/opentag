@@ -4,8 +4,8 @@ import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { ApiError, browserApi } from "../../api.js";
 import { useResource } from "../../lib/resource.js";
 import { UnavailablePage } from "../../routes/fallback-pages.js";
+import { TeamContext } from "../../session/team-session.js";
 import { AsyncState } from "../../ui/async-state.js";
-import { TeamContext } from "./team-session.js";
 
 export function AuthenticatedTeamGate() {
   const location = useLocation();

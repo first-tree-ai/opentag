@@ -2,10 +2,10 @@ import type { AgentSummary } from "@opentag/shared/browser";
 import { Link } from "react-router-dom";
 import { browserApi } from "../../api.js";
 import { useResource } from "../../lib/resource.js";
+import { useTeam } from "../../session/team-session.js";
 import { AsyncState } from "../../ui/async-state.js";
 import { EmptyState } from "../../ui/empty-state.js";
 import { Page } from "../../ui/page.js";
-import { useTeam } from "../auth/team-session.js";
 
 export function AgentsPage() {
   const { membership } = useTeam();

@@ -826,6 +826,43 @@ describe("OpenTag Web App Shell", () => {
       "Usage",
       "Security",
     ]);
+    expect(Array.from(navigation.querySelectorAll(".local-nav-group-label"), (label) => label.textContent)).toEqual([
+      "Personal",
+      "Team",
+      "Capabilities",
+      "Governance",
+    ]);
+  });
+
+  it("keeps unavailable Team capabilities explicit instead of inventing records", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/settings/resources");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Team Resources are not enabled" })).toBeTruthy();
+    expect(screen.getByText("This page does not create or infer Team Resource records.")).toBeTruthy();
+    expect(screen.getByText("No Resource assignment projection is exposed by the current API.")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Review Agent resources" })).toBeNull();
+    fireEvent.click(screen.getByRole("link", { name: "Integrations" }));
+    expect(await screen.findByRole("heading", { name: "Team Integrations are not enabled" })).toBeTruthy();
+    expect(
+      screen.getByText("Open an Agent's IM tab to review its current Feishu or Slack connection state."),
+    ).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open Agents" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("link", { name: "Usage" }));
+    expect(await screen.findByRole("heading", { name: "Usage reporting is not enabled" })).toBeTruthy();
+  });
+
+  it("shows the server-returned membership without inventing a capability matrix", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/settings/access");
+    render(<App />);
+
+    expect(await screen.findByText("Server-returned membership")).toBeTruthy();
+    expect(screen.getByText("Your role: Admin")).toBeTruthy();
+    expect(screen.getByText("The current API does not publish a complete Team capability matrix.")).toBeTruthy();
+    expect(screen.getByText("Not exposed by the API")).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
   });
 
   it("lets admins rename a Team and refreshes the UUID-selected Team context from /me", async () => {

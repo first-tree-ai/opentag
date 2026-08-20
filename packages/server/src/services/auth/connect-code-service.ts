@@ -34,7 +34,7 @@ export function buildConnectBootstrapCommand(options: {
   publicUrl: string;
 }): string {
   const channel = getChannelConfig(options.environment);
-  const loginArgs = `login ${shellArg(options.code)} --server ${shellArg(options.publicUrl)}`;
+  const loginArgs = `login --server ${shellArg(options.publicUrl)} -- ${shellArg(options.code)}`;
   if (options.environment === "dev") {
     if (!SAFE_SHELL_ARG_PATTERN.test(channel.binName)) throw new TypeError("Invalid channel binary name");
     return `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/${channel.binName}" ${loginArgs}`;

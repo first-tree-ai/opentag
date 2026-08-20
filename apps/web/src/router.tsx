@@ -5,13 +5,13 @@ import type {
   AuthProvidersResponse,
   Computer,
   FeishuSetupAttempt,
-  ImBindingSummary,
   MeMembership,
   MeResponse,
   TeamComputerSummary,
   TeamMemberSummary,
   UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
+import { MembershipRoleSchema } from "@opentag/shared/browser";
 import { toString as qrToString } from "qrcode";
 import {
   createContext,
@@ -366,59 +366,32 @@ function AgentsPage() {
         ) : undefined
       }
     >
-      <AsyncState state={state}>
-        {(value) => <AgentsContent agents={value.agents} teamId={membership.teamId} />}
-      </AsyncState>
+      <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
     </Page>
   );
 }
 
-interface AgentOperationalState {
-  bindings: Map<string, ImBindingSummary | undefined>;
-  computers: Map<string, TeamComputerSummary>;
-}
-
-function AgentsContent({ agents, teamId }: { agents: AgentSummary[]; teamId: string }) {
-  const operationalState = useAgentOperationalState(agents, teamId);
+function AgentsContent({ agents }: { agents: AgentSummary[] }) {
   return (
     <>
-      <TeamSetupChecklist agents={agents} state={operationalState} />
+      <TeamSetupChecklist agents={agents} />
       {agents.length === 0 ? (
         <EmptyState title="No Agents yet">A Team Admin can create the first Agent.</EmptyState>
       ) : (
-        <AgentList agents={agents} state={operationalState} />
+        <AgentList agents={agents} />
       )}
     </>
   );
 }
 
-function useAgentOperationalState(agents: AgentSummary[], teamId: string): LoadState<AgentOperationalState> {
-  const agentKey = agents.map((agent) => agent.id).join(",");
-  return useResource(async () => {
-    const [computerResponse, bindingRows] = await Promise.all([
-      browserApi.computers(teamId),
-      Promise.all(agents.map(async (agent) => [agent.id, await browserApi.imBinding(agent.id)] as const)),
-    ]);
-    return {
-      bindings: new Map(bindingRows),
-      computers: new Map(computerResponse.computers.map((computer: TeamComputerSummary) => [computer.id, computer])),
-    };
-  }, `${teamId}:${agentKey}`);
-}
-
-function TeamSetupChecklist({ agents, state }: { agents: AgentSummary[]; state: LoadState<AgentOperationalState> }) {
-  if (state.kind !== "ready") return null;
-  const hasComputer = [...state.value.computers.values()].some((computer) => computer.connectionStatus === "online");
-  const hasAgent = agents.length > 0;
-  const hasMessaging = [...state.value.bindings.values()].some((binding) => binding?.bindingState === "active");
-  if (hasComputer && hasAgent && hasMessaging) return null;
+function TeamSetupChecklist({ agents }: { agents: AgentSummary[] }) {
+  if (agents.length > 0) return null;
   const steps = [
-    { label: "Connect computer", complete: hasComputer },
-    { label: "Create agent", complete: hasAgent },
-    { label: "Connect messaging", complete: hasMessaging },
-    { label: "Send first @mention", complete: false, unavailable: true },
+    { label: "Connect computer", status: "Not confirmed" },
+    { label: "Create agent", status: "Action required" },
+    { label: "Connect messaging", status: "Not confirmed" },
+    { label: "Send first @mention", status: "Not tracked yet" },
   ];
-  const completed = steps.filter((step) => step.complete).length;
   return (
     <section className="setup-checklist" aria-labelledby="team-setup-title">
       <div className="setup-checklist-heading">
@@ -426,17 +399,15 @@ function TeamSetupChecklist({ agents, state }: { agents: AgentSummary[]; state: 
           <span className="section-kicker">Team setup</span>
           <h2 id="team-setup-title">Finish the path to your first mention</h2>
         </div>
-        <span className="setup-progress">{completed} confirmed</span>
+        <span className="setup-progress">Setup preview</span>
       </div>
       <ol className="setup-steps">
         {steps.map((step) => (
-          <li className={step.complete ? "is-complete" : ""} key={step.label}>
-            <span className="step-marker" aria-hidden="true">
-              {step.complete ? "✓" : ""}
-            </span>
+          <li key={step.label}>
+            <span className="step-marker" aria-hidden="true" />
             <span>
               <strong>{step.label}</strong>
-              <small>{step.complete ? "Complete" : step.unavailable ? "Not tracked yet" : "Action required"}</small>
+              <small>{step.status}</small>
             </span>
           </li>
         ))}
@@ -445,7 +416,7 @@ function TeamSetupChecklist({ agents, state }: { agents: AgentSummary[]; state: 
   );
 }
 
-function AgentList({ agents, state }: { agents: AgentSummary[]; state: LoadState<AgentOperationalState> }) {
+function AgentList({ agents }: { agents: AgentSummary[] }) {
   return (
     <section className="agent-list-section" aria-labelledby="agent-list-title">
       <div className="list-heading">
@@ -461,24 +432,17 @@ function AgentList({ agents, state }: { agents: AgentSummary[]; state: LoadState
           <span>Computer</span>
           <span>Last active</span>
         </div>
-        <AsyncState state={state}>
-          {(operational) => (
-            <div className="agent-table-body">
-              {agents.map((agent) => (
-                <AgentRow agent={agent} operational={operational} key={agent.id} />
-              ))}
-            </div>
-          )}
-        </AsyncState>
+        <div className="agent-table-body">
+          {agents.map((agent) => (
+            <AgentRow agent={agent} key={agent.id} />
+          ))}
+        </div>
       </div>
     </section>
   );
 }
 
-function AgentRow({ agent, operational }: { agent: AgentSummary; operational: AgentOperationalState }) {
-  const binding = operational.bindings.get(agent.id);
-  const computer = operational.computers.get(agent.computer.id);
-  const needsSetup = binding?.bindingState !== "active" || computer?.connectionStatus !== "online";
+function AgentRow({ agent }: { agent: AgentSummary }) {
   return (
     <Link className="agent-row" to={`/agents/${agent.id}/general`}>
       <span className="agent-identity">
@@ -491,20 +455,18 @@ function AgentRow({ agent, operational }: { agent: AgentSummary; operational: Ag
         </span>
       </span>
       <span data-label="Readiness">
-        <StatusLabel tone={needsSetup ? "neutral" : "success"}>{needsSetup ? "Needs setup" : "Ready"}</StatusLabel>
+        <StatusLabel tone="neutral">Unavailable</StatusLabel>
       </span>
       <span className="cell-stack" data-label="Runtime">
         <strong>{providerLabel(agent.runtimeProvider)}</strong>
-        <small>Status unavailable</small>
+        <small>Provider</small>
       </span>
       <span data-label="Messaging">
-        <StatusLabel tone={binding?.bindingState === "active" ? "success" : "neutral"}>
-          {binding?.bindingState === "active" ? "Connected" : "Not connected"}
-        </StatusLabel>
+        <StatusLabel tone="neutral">Unavailable</StatusLabel>
       </span>
       <span className="cell-stack" data-label="Computer">
         <strong>{agent.computer.displayName}</strong>
-        <small>{computer ? titleCase(computer.connectionStatus) : "Unable to confirm"}</small>
+        <small>{titleCase(agent.computer.platform)}</small>
       </span>
       <span className="muted" data-label="Last active">
         Unavailable
@@ -1018,7 +980,7 @@ const settingsSections = [
 function SettingsPage() {
   const { section = "team" } = useParams();
   const navigate = useNavigate();
-  const { membership, refreshMe } = useTeam();
+  const { me, membership, refreshMe } = useTeam();
   const currentSection = settingsSections.find((item) => item.key === section);
   if (!currentSection) return <NotFoundPage />;
   return (
@@ -1052,7 +1014,12 @@ function SettingsPage() {
           </header>
           {section === "team" ? <TeamSettings membership={membership} refreshMe={refreshMe} /> : null}
           {section === "members" ? (
-            <MembersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
+            <MembersSettings
+              canManage={membership.role === "admin"}
+              currentUserId={me.user.id}
+              refreshMe={refreshMe}
+              teamId={membership.teamId}
+            />
           ) : null}
           {section === "computers" ? (
             <ComputersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
@@ -1130,8 +1097,41 @@ function TeamSettings({ membership, refreshMe }: { membership: MeMembership; ref
   );
 }
 
-function MembersSettings({ canManage, teamId }: { canManage: boolean; teamId: string }) {
-  const state = useResource(() => browserApi.members(teamId), teamId);
+function MembersSettings({
+  canManage,
+  currentUserId,
+  refreshMe,
+  teamId,
+}: {
+  canManage: boolean;
+  currentUserId: string;
+  refreshMe: () => void;
+  teamId: string;
+}) {
+  const [revision, setRevision] = useState(0);
+  const state = useResource(() => browserApi.members(teamId), `${teamId}:${revision}`);
+  const pendingUserIdsRef = useRef(new Set<string>());
+  const [pendingUserIds, setPendingUserIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [error, setError] = useState<string>();
+
+  async function changeRole(member: TeamMemberSummary, value: string) {
+    if (value === member.role || pendingUserIdsRef.current.has(member.userId)) return;
+    pendingUserIdsRef.current.add(member.userId);
+    setPendingUserIds(new Set(pendingUserIdsRef.current));
+    setError(undefined);
+    try {
+      const role = MembershipRoleSchema.parse(value);
+      await browserApi.updateTeamMember(teamId, member.userId, { role });
+      setRevision((current) => current + 1);
+      if (member.userId === currentUserId) refreshMe();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to update the member role");
+    } finally {
+      pendingUserIdsRef.current.delete(member.userId);
+      setPendingUserIds(new Set(pendingUserIdsRef.current));
+    }
+  }
+
   return (
     <>
       {canManage ? <InvitationSettings teamId={teamId} /> : null}
@@ -1143,12 +1143,32 @@ function MembersSettings({ canManage, teamId }: { canManage: boolean; teamId: st
               {value.members.map((member: TeamMemberSummary) => (
                 <div className="row" key={member.userId}>
                   <strong>{member.displayName}</strong>
-                  <span>{member.role}</span>
+                  {canManage ? (
+                    <select
+                      aria-label={`Role for ${member.displayName}`}
+                      disabled={pendingUserIds.has(member.userId)}
+                      value={member.role}
+                      onChange={(event) => void changeRole(member, event.currentTarget.value)}
+                    >
+                      {MembershipRoleSchema.options.map((role) => (
+                        <option value={role} key={role}>
+                          {role}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span>{member.role}</span>
+                  )}
                 </div>
               ))}
             </div>
           )}
         </AsyncState>
+        {error ? (
+          <p className="notice error" role="alert">
+            {error}
+          </p>
+        ) : null}
       </section>
     </>
   );

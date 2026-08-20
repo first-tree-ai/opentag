@@ -11,6 +11,7 @@ Codex, Claude Code, and Pi Provider implementations are safe to use as the
 lowest Client execution layer. It covers these production boundaries:
 
 - `src/agent-runtime/base-agent-runtime.ts`
+- `src/agent-runtime/event-validator.ts`
 - `src/agent-runtime/errors.ts`
 - `src/agent-runtime/types.ts`
 - `src/agent-runtime/validation.ts`
@@ -20,6 +21,7 @@ lowest Client execution layer. It covers these production boundaries:
 - `src/providers/claude-code/process-wire.ts`
 - `src/providers/pi/agent-runtime.ts`
 - `src/providers/pi/rpc-wire.ts`
+- `src/providers/process-owner.ts`
 
 Production Client execution now uses this contract through:
 
@@ -28,9 +30,10 @@ Production Client execution now uses this contract through:
 - `src/runtime/agent-turn-runner.ts`
 - `src/runtime/client-runtime-composition.ts`
 
-The coverage gate requires 100% statements, branches, functions, and lines for
-the contract, Codex translation, hosted-tool host, Session Runtime manager, and
-Claude Code translation, Turn runner, and Session Runtime/hosted-tool integration.
+The required CI coverage gate enforces 100% statements, branches, functions,
+and lines for the contract, all three Provider translations and wire adapters,
+shared process ownership, hosted-tool host, Turn runner, Session Runtime
+manager, and production Client Runtime composition.
 Coverage is a floor, not the acceptance criterion by itself: production
 composition, crash recovery, protocol behavior, and live local Provider sessions
 are tested separately.
@@ -76,6 +79,8 @@ Required cases are:
 - strict FIFO follow-ups and independent typed results;
 - Run ID, input, configuration, binding, and JSON validation limits;
 - ordered, awaited event delivery before Promise settlement;
+- centrally enforced model-turn, message, and parallel-tool event lifecycles;
+- strict JSON shapes and insertion-order-independent binding equality;
 - steer, respond, abort, and interaction Run fences;
 - caller `AbortSignal` handling for active and queued Runs;
 - rejected interrupts before and after an authoritative Provider terminal claim;
@@ -97,6 +102,7 @@ A scripted interactive App Server client verifies:
 - approval, permissions, structured question, and MCP elicitation responses;
 - foreign Thread/Turn events, duplicate requests, malformed data, and process failure;
 - probe outcomes, credential discovery, process environment allow-listing, and cleanup.
+- readiness-probe cancellation, including custom probe runners that ignore signals.
 
 The same suite verifies the experimental hosted-tool protocol: initialization
 advertises experimental API support, `thread/start` receives the exact canonical
@@ -235,10 +241,10 @@ is reported as a failure; it is never converted into a skipped success.
 
 ## Latest Local Execution
 
-On 2026-08-20 the merged Agent Runtime, three-Provider, and production Client
-Runtime suite passed 207 tests with 100% statements, branches, functions, and
-lines. All 304 Client tests passed. Repository formatting, notice, build, and
-type-check gates passed, as did all 96 Server integration tests.
+On 2026-08-20 the contract-hardening Agent Runtime suite passed 251 tests with
+100% statements, branches, functions, and lines. All 370 Client tests passed.
+Repository formatting, notice, build, and type-check gates passed, as did all
+104 Server integration tests.
 
 The Pi live test passed against the user-installed `pi` 0.83.0 executable:
 both create and resumed Runs completed, the materialized opaque binding was

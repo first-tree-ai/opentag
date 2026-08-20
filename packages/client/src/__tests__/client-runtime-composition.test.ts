@@ -1,17 +1,32 @@
 import { randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { EffectiveRuntimeSnapshot, SessionReconcileRequest } from "@opentag/shared";
+import type {
+  DirectImMessageDeliveryRequest,
+  EffectiveRuntimeSnapshot,
+  SessionReconcileRequest,
+} from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import type { AgentRuntime, AgentRuntimeFactory } from "../agent-runtime/types.js";
+import { createLogger } from "../observability/logger.js";
 import { CODEX_AGENT_RUNTIME_APP_SERVER_ARGS } from "../providers/codex/agent-runtime.js";
-import { createClientRuntime, resolveCodexHome } from "../runtime/client-runtime-composition.js";
+import {
+  ComposedClientRuntime,
+  createClientRuntime,
+  createClientRuntimeHandlers,
+  createClientRuntimePreflight,
+  resolveCodexHome,
+  resolvedCodexFactory,
+  resolveExecutable,
+  serializeReadiness,
+} from "../runtime/client-runtime-composition.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
+import { RuntimeStorageError } from "../storage/durable-file.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex-app-server.mjs", import.meta.url));
 const directories: string[] = [];
@@ -83,6 +98,248 @@ describe("createClientRuntime production composition", () => {
 
   it("uses HOME when CODEX_HOME is absent", () => {
     expect(resolveCodexHome({ HOME: "/provider-home" })).toBe(resolve("/provider-home/.codex"));
+    expect(resolveCodexHome({ CODEX_HOME: "/explicit-provider-home", HOME: "/ignored" })).toBe(
+      resolve("/explicit-provider-home"),
+    );
+    expect(resolveCodexHome()).toEqual(expect.any(String));
+    expect(resolveCodexHome({})).toBe(resolve(homedir(), ".codex"));
+  });
+
+  it("fails closed for unregistered providers and caller cancellation during initial readiness", async () => {
+    const home = await temporaryDirectory("opentag-client-composition-fences-");
+    await expect(
+      createClientRuntime(runtimeConnection(), {
+        clientVersion: "0.0.1",
+        codexHome: resolve(home, "wrong-provider-home"),
+        environment: {},
+        factory: readyFactory("claude-code"),
+        home,
+      }),
+    ).rejects.toThrow("only registers the reviewed Codex provider");
+
+    const controller = new AbortController();
+    const error = new Error("cancel readiness");
+    const cancelling = readyFactory("codex", async () => {
+      controller.abort(error);
+      throw error;
+    });
+    await expect(
+      createClientRuntime(runtimeConnection(), {
+        clientVersion: "0.0.1",
+        codexHome: resolve(home, "cancelled-home"),
+        environment: {},
+        factory: cancelling,
+        home,
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow("cancel readiness");
+  });
+
+  it("detects Provider Home replacement after readiness and supports default environment/logger composition", async () => {
+    const home = await temporaryDirectory("opentag-client-composition-identity-");
+    const codexHome = resolve(home, "codex-home");
+    const replacement = resolve(home, "replacement");
+    await mkdir(codexHome);
+    await mkdir(replacement);
+    const replacing = readyFactory("codex", async () => {
+      await rm(codexHome, { recursive: true });
+      await symlink(replacement, codexHome);
+      return { ready: true, issues: [] };
+    });
+    const replaced = await createClientRuntime(runtimeConnection(), {
+      capabilityRefreshIntervalMs: 1,
+      clientVersion: "0.0.1",
+      codexHome,
+      environment: {},
+      factory: replacing,
+      home,
+      logger: { child: () => createLogger("composition-child") } as never,
+      signal: new AbortController().signal,
+    });
+    expect(replaced.messageToolAvailable).toBe(false);
+    replaced.stop();
+    replaced.stop();
+
+    const defaultEnvironment = await createClientRuntime(runtimeConnection(), {
+      clientVersion: "0.0.1",
+      codexHome: resolve(home, "default-environment-home"),
+      factory: readyFactory(),
+      home,
+    });
+    defaultEnvironment.stop();
+  });
+
+  it("tests executable resolution and the resolved factory readiness fence without a shell", async () => {
+    const home = await temporaryDirectory("opentag-client-executable-");
+    const empty = resolve(home, "empty");
+    const bin = resolve(home, "bin");
+    await mkdir(empty);
+    await mkdir(bin);
+    const command = resolve(bin, "codex-fixture");
+    await writeFile(command, "#!/bin/sh\nexit 0\n", "utf8");
+    await chmod(command, 0o755);
+    const canonicalCommand = await realpath(command);
+    await expect(resolveExecutable(command, {})).resolves.toBe(canonicalCommand);
+    await expect(resolveExecutable("codex-fixture", { PATH: `${delimiter}${empty}${delimiter}${bin}` })).resolves.toBe(
+      canonicalCommand,
+    );
+    await expect(resolveExecutable("missing", {})).rejects.toThrow("PATH is unavailable");
+    await expect(resolveExecutable("missing", { PATH: empty })).rejects.toThrow("compatible Codex executable");
+
+    const factory = resolvedCodexFactory({
+      clientVersion: "0.0.1",
+      codexHome: home,
+      command: resolve(home, "missing-absolute"),
+      environment: {},
+      sourceEnvironment: {},
+    });
+    expect(() => factory.create({} as never)).toThrow("readiness has not been established");
+    expect(() => factory.resume({} as never)).toThrow("readiness has not been established");
+    await expect(factory.probe({})).resolves.toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+    const aborted = new AbortController();
+    aborted.abort(new Error("stop resolution"));
+    await expect(factory.probe({ signal: aborted.signal })).rejects.toThrow("stop resolution");
+  });
+
+  it("unit-tests composition delegates and every preflight outcome", async () => {
+    const accepted = { result: { status: "accepted" } };
+    const custody = { accept: vi.fn(async () => accepted) };
+    const reportOwner = { handleResult: vi.fn(async () => "handled") };
+    const recovery = {
+      afterReconciled: vi.fn(async () => undefined),
+      cancel: vi.fn(async () => undefined),
+      prepare: vi.fn(async (_request, result) => result),
+    };
+    const handlers = createClientRuntimeHandlers(custody as never, reportOwner as never, recovery as never);
+    await expect(handlers.handleDelivery({} as never)).resolves.toBe(accepted);
+    await expect(handlers.handleTurnReportResult({} as never)).resolves.toBeUndefined();
+    await expect(handlers.prepareReconcileResult({} as never, { status: "ready" } as never)).resolves.toEqual({
+      status: "ready",
+    });
+    await expect(
+      handlers.onReconcileResultSendFailed({} as never, {} as never, new Error("send")),
+    ).resolves.toBeUndefined();
+    await expect(handlers.onReconciled({} as never, {} as never)).resolves.toBeUndefined();
+
+    const request = delivery(snapshot());
+    const ensureProviderReady = vi.fn(async () => undefined);
+    const runtime = vi.fn(() => ({ state: { phase: "idle" } }));
+    const verifyAgent = vi.fn(async () => undefined);
+    const validate = vi.fn(() => undefined as "configuration_unsupported" | undefined);
+    const preflight = createClientRuntimePreflight({
+      ensureProviderReady,
+      isProviderReady: () => false,
+      runtimeManager: { runtime, validate } as never,
+      workspace: { verifyAgent } as never,
+    });
+    await expect(preflight(request)).resolves.toBeUndefined();
+    expect(ensureProviderReady).toHaveBeenCalledOnce();
+    expect(verifyAgent).toHaveBeenCalledOnce();
+    expect(runtime).toHaveBeenCalledWith("session-1");
+
+    validate.mockReturnValue("configuration_unsupported");
+    await expect(preflight(request)).resolves.toBe("configuration_unsupported");
+
+    validate.mockReturnValue(undefined);
+    verifyAgent.mockRejectedValueOnce(new RuntimeStorageError("conflict", "binding conflict"));
+    await expect(preflight(request)).resolves.toBe("session_binding_conflict");
+    verifyAgent.mockRejectedValueOnce(new Error("provider failed"));
+    await expect(preflight(request)).resolves.toBe("provider_unavailable");
+
+    const alreadyReady = createClientRuntimePreflight({
+      ensureProviderReady,
+      isProviderReady: () => true,
+      runtimeManager: { runtime, validate } as never,
+      workspace: { verifyAgent: vi.fn(async () => undefined) } as never,
+    });
+    await expect(alreadyReady(request)).resolves.toBeUndefined();
+  });
+
+  it("deduplicates concurrent readiness work and permits a fresh probe after settlement", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate;
+    });
+    const operation = vi.fn(() => gate);
+    const readiness = serializeReadiness(operation);
+    const first = readiness();
+    const second = readiness();
+    expect(second).toBe(first);
+    expect(operation).toHaveBeenCalledOnce();
+    release();
+    await first;
+    await readiness();
+    expect(operation).toHaveBeenCalledTimes(2);
+  });
+
+  it("covers ComposedClientRuntime monitor guards with deterministic component doubles", async () => {
+    const runtime = { run: vi.fn(async () => undefined), stop: vi.fn() };
+    const components = {
+      bindingStore: {},
+      custody: {},
+      messageToolAvailable: true,
+      reconciler: {},
+      reportOwner: { stop: vi.fn() },
+      runner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
+      runtimeManager: { close: vi.fn(async () => undefined) },
+      toolHost: { close: vi.fn() },
+      workspace: {},
+      refreshCapability: vi.fn(async () => undefined),
+      capabilityRefreshIntervalMs: 10,
+      capabilityAbort: new AbortController(),
+    };
+    const stopped = new ComposedClientRuntime(runtime as never, components as never);
+    stopped.stop();
+    stopped.stop();
+    await expect(stopped.run()).resolves.toBeUndefined();
+
+    let release!: () => void;
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate;
+    });
+    const concurrentRuntime = { run: vi.fn(() => gate), stop: vi.fn() };
+    const concurrent = new ComposedClientRuntime(
+      concurrentRuntime as never,
+      {
+        ...components,
+        capabilityAbort: new AbortController(),
+      } as never,
+    );
+    const first = concurrent.run();
+    const second = concurrent.run();
+    release();
+    await Promise.all([first, second]);
+
+    let finishRuntime!: () => void;
+    const runtimeGate = new Promise<void>((resolveRuntime) => {
+      finishRuntime = resolveRuntime;
+    });
+    let startRefresh!: () => void;
+    const refreshStarted = new Promise<void>((resolveStarted) => {
+      startRefresh = resolveStarted;
+    });
+    let finishRefresh!: () => void;
+    const refreshGate = new Promise<void>((resolveRefresh) => {
+      finishRefresh = resolveRefresh;
+    });
+    const refreshing = new ComposedClientRuntime(
+      { run: () => runtimeGate, stop: vi.fn() } as never,
+      {
+        ...components,
+        capabilityAbort: new AbortController(),
+        refreshCapability: () => {
+          startRefresh();
+          return refreshGate;
+        },
+      } as never,
+    );
+    const running = refreshing.run();
+    await refreshStarted;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+    finishRuntime();
+    await Promise.resolve();
+    finishRefresh();
+    await running;
   });
 
   it("revokes and restores the advertised message-tool capability after fresh Provider probes", async () => {
@@ -447,5 +704,36 @@ function snapshot(): EffectiveRuntimeSnapshot {
     allowedTools: [],
     execution: { approvalPolicy: "never", networkAccess: false },
     workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
+  };
+}
+
+function delivery(runtime: EffectiveRuntimeSnapshot): DirectImMessageDeliveryRequest {
+  return {
+    type: "im:deliver",
+    requestId: randomUUID(),
+    deliveryId: "delivery-1",
+    imMessageId: "message-1",
+    sessionId: "session-1",
+    agentId: "agent-1",
+    placementGeneration: 1,
+    attention: "direct",
+    content: { kind: "text", text: "hello" },
+    runtime,
+  };
+}
+
+function readyFactory(
+  providerId = "codex",
+  probe: AgentRuntimeFactory["probe"] = async () => ({ ready: true, issues: [] }),
+): AgentRuntimeFactory {
+  return {
+    manifest: { providerId, displayName: providerId, contractVersion: 1, bindingSchemaVersion: 1 },
+    probe,
+    create: async () => {
+      throw new Error("not used");
+    },
+    resume: async () => {
+      throw new Error("not used");
+    },
   };
 }

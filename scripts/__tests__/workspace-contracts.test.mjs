@@ -214,6 +214,51 @@ test("rejects root export targets outside the files boundary", async () => {
   });
 });
 
+test("rejects invalid package export target segments", async () => {
+  for (const target of [
+    "./dist/../private.mjs",
+    "./dist/./index.mjs",
+    "./dist/node_modules/private.mjs",
+    "./dist/%2e%2e/private.mjs",
+  ]) {
+    await withFixture(async (rootDirectory) => {
+      const manifestPath = join(rootDirectory, "packages/shared/package.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      manifest.exports["."] = target;
+      await writeJson(manifestPath, manifest);
+
+      await assert.rejects(
+        verifyWorkspaceContracts({ rootDirectory }),
+        /root export target .* contains an invalid package target segment/,
+      );
+    });
+  }
+});
+
+test("rejects package versions that node-semver does not accept", async () => {
+  for (const version of ["01.0.0", "1.0.0-alpha..1", "1.0.0-01"]) {
+    await withFixture(async (rootDirectory) => {
+      const manifestPath = join(rootDirectory, "packages/shared/package.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      manifest.version = version;
+      await writeJson(manifestPath, manifest);
+
+      await assert.rejects(verifyWorkspaceContracts({ rootDirectory }), /version must be a valid semantic version/);
+    });
+  }
+});
+
+test("accepts SemVer build metadata", async () => {
+  await withFixture(async (rootDirectory) => {
+    const manifestPath = join(rootDirectory, "packages/shared/package.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    manifest.version = "1.0.0+build.1";
+    await writeJson(manifestPath, manifest);
+
+    await assert.doesNotReject(verifyWorkspaceContracts({ rootDirectory }));
+  });
+});
+
 test("rejects package deep imports", async () => {
   await withFixture(async (rootDirectory) => {
     await writeFile(

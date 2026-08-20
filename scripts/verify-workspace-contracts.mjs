@@ -2,13 +2,14 @@ import { access, readdir, readFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import semver from "semver";
 import ts from "typescript";
 
 const CONTRACT_FILENAME = "workspace-contracts.json";
 const DEPENDENCY_FIELDS = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"];
 const SOURCE_EXTENSIONS = new Set([".cjs", ".cts", ".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"]);
 const SKIPPED_DIRECTORIES = new Set([".turbo", "coverage", "dist", "node_modules"]);
-const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const INVALID_PACKAGE_TARGET_SEGMENT = /^(?:\.{1,2}|node_modules)$/i;
 
 export class WorkspaceContractError extends Error {
   constructor(violations) {
@@ -267,6 +268,19 @@ function filesEntryCoversTarget(filesEntry, target) {
   return normalizedTarget === normalizedEntry || normalizedTarget.startsWith(`${normalizedEntry}/`);
 }
 
+function isValidPackageExportTarget(target) {
+  if (!target.startsWith("./") || target.includes("\\") || /%2f|%5c/i.test(target)) {
+    return false;
+  }
+  try {
+    return !decodeURIComponent(target.slice(2))
+      .split("/")
+      .some((segment) => INVALID_PACKAGE_TARGET_SEGMENT.test(segment));
+  } catch {
+    return false;
+  }
+}
+
 function declaredDependencies(manifest) {
   const dependencies = new Map();
   for (const field of DEPENDENCY_FIELDS) {
@@ -353,7 +367,7 @@ function validateManifest(workspace, workspaceNames, violations) {
   if (manifest.name !== contract.name) {
     violations.push(`${manifestPath}: name must be "${contract.name}", found "${manifest.name ?? "missing"}"`);
   }
-  if (typeof manifest.version !== "string" || !SEMVER_PATTERN.test(manifest.version)) {
+  if (typeof manifest.version !== "string" || semver.valid(manifest.version) === null) {
     violations.push(`${manifestPath}: version must be a valid semantic version`);
   }
   if (manifest.private !== contract.private) {
@@ -386,6 +400,8 @@ function validateManifest(workspace, workspaceNames, violations) {
     for (const target of exportTargets) {
       if (!target.startsWith("./")) {
         violations.push(`${manifestPath}: root export target "${target}" must be package-relative`);
+      } else if (!isValidPackageExportTarget(target)) {
+        violations.push(`${manifestPath}: root export target "${target}" contains an invalid package target segment`);
       } else if (
         contract.requiresFiles &&
         hasFilesBoundary &&

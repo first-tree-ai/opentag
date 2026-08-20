@@ -130,24 +130,33 @@ function untokenized(css: string, owner: Owner): string[] {
 }
 
 /**
- * What could express a duration or an easing, once the value's own tokens are
- * removed. Only three things can: a time literal, which always carries a unit;
- * an easing keyword; and a function call, which covers `calc()`, `steps()`,
- * `cubic-bezier()` and any `var()` from a family that does not own this
- * property -- every one of them announced by a parenthesis.
+ * A longhand carries its own tokens and nothing else, so anything left after
+ * they are removed is a decision -- including `auto`, which is a real
+ * `animation-duration` value and a duration outside this scale. Naming what
+ * may remain needs no list of what may not.
  *
- * Nothing else in these values can name a time, so nothing else is inspected.
- * That is deliberate after three rounds of the opposite: modelling the
- * `animation` shorthand's own grammar meant rejecting a keyframes name with a
- * digit in it, then an integer iteration count, then a quoted name and a
- * fractional count -- each a valid declaration whose duration and easing
- * resolved through the tokens the whole time. Asking what can carry the
- * decision needs no grammar and has no next case.
+ * The shorthand carries a name, a count and direction keywords too, so it is
+ * asked the narrower question: what here could express a duration or an
+ * easing? A time literal, which always carries a unit; an easing keyword; a
+ * function call, which covers calc(), steps(), cubic-bezier() and any var()
+ * from a family that does not own the property; and `auto`, for the same
+ * reason as above. Nothing else can name a time, so nothing else is inspected,
+ * and a name, a count or a direction passes without being understood.
  *
- * The cost is that this guard no longer notices CSS that is invalid for other
- * reasons: `transition: opacity var(--motion-fast) var(--ease-standard) 2` has
- * a stray number the browser will drop, and passes. Validating CSS is not what
- * this is for, and the attempt to do both is what produced the false positives.
+ * That question is asked of the string-free projection, because a keyframes
+ * name may be a string and a string cannot supply a duration: `animation:
+ * "140ms" ...` is a valid animation called `140ms`. Scanning the raw value
+ * reported all three patterns for names that only looked like code.
+ *
+ * `auto` in the shorthand is refused even where it might be a keyframes name,
+ * which needs the full grammar to tell apart. That is one deliberate false
+ * positive, on a keyword this stylesheet does not use, and it is the only
+ * place this guard prefers a refusal to a gap.
+ *
+ * What this gives up: CSS invalid for unrelated reasons goes unnoticed.
+ * `transition: opacity var(--motion-fast) var(--ease-standard) 2` carries a
+ * stray number the browser drops, and passes. Validating CSS was never the
+ * job, and trying to do both is what produced three rounds of false positives.
  *
  * Function names and keywords are ASCII case-insensitive to the browser, so
  * `EASE-IN-OUT` eases exactly like its lower-case spelling. Custom property
@@ -157,14 +166,22 @@ function untokenized(css: string, owner: Owner): string[] {
 const TIME = /(\d+\.?\d*|\.\d+)\s*m?s\b/i;
 const EASING = /\b(ease|ease-in|ease-out|ease-in-out|linear|step-start|step-end|steps|cubic-bezier)\b/i;
 const CALL = /\(/;
+const AUTO = /\bauto\b/i;
 
 function untokenizedMotion(css: string): string[] {
   return declarations(css).flatMap((declaration) => {
     const owner = MOTION_OWNERS.find((candidate) => candidate.owns(propertyName(declaration)));
     if (owner === undefined) return [];
-    const residue = declaration.value.replace(ownedReferences(owner), " ");
-    if (!TIME.test(residue) && !EASING.test(residue) && !CALL.test(residue)) return [];
-    return [`${declaration.name}: ${declaration.value}`];
+    const report = [`${declaration.name}: ${declaration.value}`];
+
+    if (owner !== MOTION_SHORTHAND) {
+      const residue = declaration.value.replace(ownedReferences(owner), " ").trim().split(/\s+/).filter(Boolean);
+      return residue.every((word) => word === ",") ? [] : report;
+    }
+
+    const residue = declaration.references.replace(ownedReferences(owner), " ");
+    const carries = TIME.test(residue) || EASING.test(residue) || CALL.test(residue) || AUTO.test(residue);
+    return carries ? report : [];
   });
 }
 
@@ -295,6 +312,30 @@ describe("the guard itself", () => {
     expect(untokenizedMotion(shorthand)).toEqual([
       "transition: opacity calc(var(--motion-fast) * 2) var(--ease-standard)",
     ]);
+  });
+
+  it("reads a keyframes name as a name, even when it looks like code", () => {
+    const names = [
+      '.row { animation: "140ms" var(--motion-fast) var(--ease-standard) infinite; }',
+      '.row { animation: "ease-in" var(--motion-fast) var(--ease-standard) infinite; }',
+      '.row { animation: "calc()" var(--motion-fast) var(--ease-standard) infinite; }',
+    ];
+    expect(names.flatMap((css) => untokenizedMotion(css))).toEqual([]);
+  });
+
+  it("rejects auto, which names a duration of its own", () => {
+    expect(untokenizedMotion(".row { animation-duration: auto; }")).toEqual(["animation-duration: auto"]);
+    expect(untokenizedMotion(".row { animation: pulse auto var(--ease-standard); }")).toEqual([
+      "animation: pulse auto var(--ease-standard)",
+    ]);
+  });
+
+  it("lets a longhand carry its own tokens and nothing else", () => {
+    const listed = ".row { transition-duration: var(--motion-fast), var(--motion-slow); }";
+    expect(untokenizedMotion(listed)).toEqual([]);
+
+    const stray = ".row { transition-duration: var(--motion-fast) 2; }";
+    expect(untokenizedMotion(stray)).toEqual(["transition-duration: var(--motion-fast) 2"]);
   });
 
   it("keeps the rest of the animation shorthand's own grammar", () => {

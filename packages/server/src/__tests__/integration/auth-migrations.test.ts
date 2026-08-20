@@ -255,10 +255,20 @@ describe("database migrations", () => {
 
         await migrateDatabase(databaseUrl, migrationsFolder);
         const [lifecycle] = await sql<
-          { count: number; deleted_at_exists: boolean; status_default: string | null; statuses: string[] }[]
+          {
+            count: number;
+            creation_intents_null: boolean;
+            deleted_at_exists: boolean;
+            status_default: string | null;
+            statuses: string[];
+          }[]
         >`
           select
             (select count(*)::int from drizzle.__drizzle_migrations) as count,
+            not exists(
+              select 1 from agents
+              where creation_intent_id is not null or creation_intent_fingerprint is not null
+            ) as creation_intents_null,
             exists(
               select 1 from information_schema.columns
               where table_schema = 'public' and table_name = 'agents' and column_name = 'deleted_at'
@@ -270,7 +280,8 @@ describe("database migrations", () => {
             array(select status::text from agents order by name) as statuses
         `;
         expect(lifecycle).toEqual({
-          count: 8,
+          count: 9,
+          creation_intents_null: true,
           deleted_at_exists: false,
           status_default: "'active'::agent_status",
           statuses: ["active", "deleted"],
@@ -285,12 +296,16 @@ describe("database migrations", () => {
           select indexdef from pg_indexes where indexname = 'agents_team_name_active_unique'
         `;
         expect(agentNameIndex?.indexdef).toContain("status <> 'deleted'::agent_status");
+        const [creationIntentIndex] = await sql<{ indexdef: string }[]>`
+          select indexdef from pg_indexes where indexname = 'agents_creation_intent_unique'
+        `;
+        expect(creationIntentIndex?.indexdef).toContain("UNIQUE INDEX");
 
         await migrateDatabase(databaseUrl, migrationsFolder);
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(8);
+        expect(rerun?.count).toBe(9);
       } finally {
         await sql.end();
       }

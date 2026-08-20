@@ -17,6 +17,7 @@ export const AgentNameSchema = z
   .max(64)
   .regex(/^[a-z0-9][a-z0-9-]*$/);
 export const AgentDisplayNameSchema = z.string().trim().min(1).max(120);
+const AgentCreationIntentIdSchema = z.string().uuid();
 export const AgentRuntimeProviderSchema = z.enum(["codex", "claude-code"]);
 export const ReceiveModeSchema = z.enum(["all_message", "mention_only"]);
 export const AgentStatusSchema = z.enum(["active", "suspended"]);
@@ -132,6 +133,7 @@ export const AgentAdminConfigSchema = AgentIdentitySchema.extend({
 
 export const CreateAgentRequestSchema = z
   .object({
+    creationIntentId: AgentCreationIntentIdSchema.optional(),
     name: AgentNameSchema,
     displayName: AgentDisplayNameSchema,
     runtimeProvider: AgentRuntimeProviderSchema,

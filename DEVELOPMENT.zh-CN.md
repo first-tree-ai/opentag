@@ -104,7 +104,7 @@ export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 ./scripts/dev-install.sh
 export PATH="$HOME/.local/bin${PATH:+:$PATH}"
-opentag-dev login <connect-code> --server http://127.0.0.1:8000
+opentag-dev login --server http://127.0.0.1:8000 -- <connect-code>
 ```
 
 源码 checkout 属于 `dev` channel。`scripts/dev-install.sh` 会构建完整 workspace，将 channel config 指定的 dev

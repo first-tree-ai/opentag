@@ -5,10 +5,10 @@ describe("buildConnectBootstrapCommand", () => {
   it.each([
     [
       "dev",
-      `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login code_123 --server http://127.0.0.1:8000`,
+      `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login --server http://127.0.0.1:8000 -- code_123`,
     ],
-    ["staging", "npm i -g open-tag-staging && opentag-staging login code_123 --server https://dev.example.com"],
-    ["prod", "npm i -g open-tag && opentag login code_123 --server https://opentag.example.com"],
+    ["staging", "npm i -g open-tag-staging && opentag-staging login --server https://dev.example.com -- code_123"],
+    ["prod", "npm i -g open-tag && opentag login --server https://opentag.example.com -- code_123"],
   ] as const)("builds the %s command from the shared channel config", (environment, expected) => {
     expect(
       buildConnectBootstrapCommand({
@@ -32,7 +32,7 @@ describe("buildConnectBootstrapCommand", () => {
       publicUrl: "https://dev.example.com",
     });
     expect(command).toBe(
-      "npm i -g open-tag-staging && opentag-staging login 'code'\\''; echo injected' --server https://dev.example.com",
+      "npm i -g open-tag-staging && opentag-staging login --server https://dev.example.com -- 'code'\\''; echo injected'",
     );
     expect(command.slice(0, command.indexOf("&&"))).not.toContain("code");
   });
@@ -44,7 +44,7 @@ describe("buildConnectBootstrapCommand", () => {
       publicUrl: "http://127.0.0.1:8000",
     });
     expect(command).toBe(
-      `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login 'code'\\''; echo injected' --server http://127.0.0.1:8000`,
+      `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login --server http://127.0.0.1:8000 -- 'code'\\''; echo injected'`,
     );
     expect(command.slice(0, command.indexOf("login"))).not.toContain("code");
   });

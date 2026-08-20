@@ -186,7 +186,7 @@ describe("BrowserApi", () => {
       expect(init?.body).toBe(JSON.stringify({ teamId }));
       return new Response(
         JSON.stringify({
-          bootstrapCommand: `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login code --server http://127.0.0.1:8000`,
+          bootstrapCommand: `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login --server http://127.0.0.1:8000 -- code`,
           expiresIn: 900,
           issuedAt: "2030-01-01T00:00:00.000Z",
         }),

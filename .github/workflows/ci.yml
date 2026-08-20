@@ -308,7 +308,7 @@ jobs:
           }
           trap cleanup_runtime EXIT
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs \
-            login "$connect_code" --server http://127.0.0.1:18000 --no-start
+            login --server http://127.0.0.1:18000 --no-start -- "$connect_code"
           test -f "$runtime_home/config/credentials.json"
           test ! -e "$runtime_home/config/computer.json"
           test ! -e "$runtime_home/data/computer.json"

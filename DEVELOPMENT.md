@@ -105,7 +105,7 @@ export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 ./scripts/dev-install.sh
 export PATH="$HOME/.local/bin${PATH:+:$PATH}"
-opentag-dev login <connect-code> --server http://127.0.0.1:8000
+opentag-dev login --server http://127.0.0.1:8000 -- <connect-code>
 ```
 
 The source checkout is the `dev` channel. `scripts/dev-install.sh` builds the complete workspace, links the configured

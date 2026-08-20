@@ -331,7 +331,10 @@ button.danger:hover {
 .team-menu-popover {
   top: calc(100% + 6px);
   left: 0;
-  display: grid;
+  display: flex;
+  max-height: calc(100dvh - 32px);
+  flex-direction: column;
+  overflow: hidden;
   width: min(272px, calc(100vw - 32px));
   padding: 8px;
 }
@@ -362,7 +365,12 @@ button.danger:hover {
 
 .team-menu-list {
   display: grid;
+  min-height: 0;
+  max-height: min(352px, 45dvh);
   gap: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .team-menu-option {

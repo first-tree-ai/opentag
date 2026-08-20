@@ -16,6 +16,7 @@ import { toString as qrToString } from "qrcode";
 import {
   createContext,
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   useCallback,
   useContext,
@@ -310,11 +311,22 @@ function AppShell() {
   const [accountError, setAccountError] = useState<string>();
   const teamMenuRef = useRef<HTMLDivElement>(null);
   const accountMenuRef = useRef<HTMLDivElement>(null);
+  const teamTriggerRef = useRef<HTMLButtonElement>(null);
+  const accountTriggerRef = useRef<HTMLButtonElement>(null);
   const filteredMemberships = me.memberships.filter((item) =>
     item.teamDisplayName.toLocaleLowerCase().includes(teamQuery.trim().toLocaleLowerCase()),
   );
   useEffect(() => {
     if (!openMenu) return;
+    const menu = openMenu === "team" ? teamMenuRef.current : accountMenuRef.current;
+    const initialFocus =
+      openMenu === "team"
+        ? (menu?.querySelector<HTMLInputElement>('input[type="search"]') ??
+          menu?.querySelector<HTMLElement>('[aria-current="true"]') ??
+          menu?.querySelector<HTMLElement>("button, a"))
+        : menu?.querySelector<HTMLElement>('[role="menuitem"]');
+    initialFocus?.focus();
+
     const closeOutside = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
@@ -322,7 +334,11 @@ function AppShell() {
       if (!activeMenu?.contains(target)) setOpenMenu(undefined);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpenMenu(undefined);
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      const trigger = openMenu === "team" ? teamTriggerRef.current : accountTriggerRef.current;
+      setOpenMenu(undefined);
+      trigger?.focus();
     };
     document.addEventListener("pointerdown", closeOutside);
     document.addEventListener("keydown", closeOnEscape);
@@ -331,6 +347,24 @@ function AppShell() {
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [openMenu]);
+  function handleAccountMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
+    const items = Array.from(
+      accountMenuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])') ?? [],
+    );
+    if (items.length === 0) return;
+    event.preventDefault();
+    const activeIndex = items.indexOf(document.activeElement as HTMLElement);
+    if (event.key === "Home") {
+      items[0]?.focus();
+    } else if (event.key === "End") {
+      items.at(-1)?.focus();
+    } else {
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const nextIndex = activeIndex < 0 ? 0 : (activeIndex + direction + items.length) % items.length;
+      items[nextIndex]?.focus();
+    }
+  }
   async function logout() {
     setLoggingOut(true);
     setAccountError(undefined);
@@ -363,6 +397,7 @@ function AppShell() {
               aria-expanded={openMenu === "team"}
               aria-haspopup="dialog"
               className="team-switcher"
+              ref={teamTriggerRef}
               type="button"
               onClick={() => {
                 setTeamQuery("");
@@ -457,6 +492,7 @@ function AppShell() {
               aria-expanded={openMenu === "account"}
               aria-haspopup="menu"
               className="account-row"
+              ref={accountTriggerRef}
               type="button"
               onClick={() => setOpenMenu((value) => (value === "account" ? undefined : "account"))}
             >
@@ -472,7 +508,13 @@ function AppShell() {
               </span>
             </button>
             {openMenu === "account" ? (
-              <div aria-label="Account" className="account-menu-popover" id="account-menu-popover" role="menu">
+              <div
+                aria-label="Account"
+                className="account-menu-popover"
+                id="account-menu-popover"
+                role="menu"
+                onKeyDown={handleAccountMenuKeyDown}
+              >
                 <Link
                   role="menuitem"
                   to="/account"

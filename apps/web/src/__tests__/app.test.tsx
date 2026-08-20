@@ -775,6 +775,37 @@ describe("OpenTag Web App Shell", () => {
     );
   });
 
+  it("moves focus into the Team picker and returns it to the trigger on Escape", async () => {
+    installApi("admin");
+    render(<App />);
+    const trigger = await screen.findByRole("button", { name: "Example" });
+    fireEvent.click(trigger);
+    const currentTeam = screen.getByRole("button", { name: /Example Admin/ });
+    expect(document.activeElement).toBe(currentTeam);
+    fireEvent.keyDown(currentTeam, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Switch Team" })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("supports arrow-key navigation and focus return in the account menu", async () => {
+    installApi("admin");
+    render(<App />);
+    const trigger = await screen.findByRole("button", { name: "Account menu" });
+    fireEvent.click(trigger);
+    const accountSettings = screen.getByRole("menuitem", { name: "Account settings" });
+    const signOut = screen.getByRole("menuitem", { name: "Sign out" });
+    expect(document.activeElement).toBe(accountSettings);
+    fireEvent.keyDown(accountSettings, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(signOut);
+    fireEvent.keyDown(signOut, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(accountSettings);
+    fireEvent.keyDown(accountSettings, { key: "End" });
+    expect(document.activeElement).toBe(signOut);
+    fireEvent.keyDown(signOut, { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it("removes the old admin product shell without a redirect", async () => {
     window.history.replaceState({}, "", "/admin");
     render(<App />);

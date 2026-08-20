@@ -3,7 +3,12 @@ import { constants } from "node:fs";
 import { access, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
-import { computeRuntimeSnapshotHashes, RUNTIME_CLIENT_CAPABILITY_TTL_MS } from "@opentag/shared";
+import {
+  type AgentRuntimeProvider,
+  computeRuntimeSnapshotHashes,
+  RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+  type RuntimeProviderReadinessObservation,
+} from "@opentag/shared";
 import type {
   AgentRuntimeFactory,
   AgentRuntimeProbeRequest,
@@ -15,6 +20,12 @@ import type { OpenTagApi } from "../api.js";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import {
+  CLAUDE_CODE_AGENT_RUNTIME_MANIFEST,
+  ClaudeCodeAgentRuntimeFactory,
+  claudeCodeAgentRuntimeEnvironment,
+} from "../providers/claude-code/agent-runtime.js";
+import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
+import {
   CODEX_AGENT_RUNTIME_MANIFEST,
   CodexAgentRuntimeFactory,
   codexAgentRuntimeEnvironment,
@@ -24,6 +35,7 @@ import { RuntimeStorageError } from "../storage/durable-file.js";
 import {
   type AgentRuntimeProviderRegistration,
   AgentRuntimeProviderRegistry,
+  AgentRuntimeProviderUnavailableError,
 } from "./agent-runtime-provider-registry.js";
 import { AgentTurnRunner } from "./agent-turn-runner.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
@@ -46,8 +58,11 @@ export interface CreateClientRuntimeOptions {
   readonly clientVersion: string;
   readonly codexCommand?: string;
   readonly codexHome?: string;
+  readonly claudeCodeCommand?: string;
+  readonly claudeCodeHome?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly factory?: AgentRuntimeFactory;
+  readonly factories?: readonly AgentRuntimeFactory[];
   readonly home: string;
   readonly logger?: ClientLogger;
   readonly signal?: AbortSignal;
@@ -162,32 +177,86 @@ export async function createClientRuntime(
   options.signal?.throwIfAborted();
   const defaultHome = sourceEnvironment.HOME ?? homedir();
   const configuredCodexHome = resolve(options.codexHome ?? sourceEnvironment.CODEX_HOME ?? join(defaultHome, ".codex"));
+  const configuredClaudeCodeHome = resolve(
+    options.claudeCodeHome ?? sourceEnvironment.CLAUDE_CONFIG_DIR ?? join(defaultHome, ".claude"),
+  );
   await mkdir(configuredCodexHome, { recursive: true, mode: 0o700 });
+  await mkdir(configuredClaudeCodeHome, { recursive: true, mode: 0o700 });
   const codexHome = await realpath(configuredCodexHome);
-  const command = options.codexCommand ?? "codex";
+  const claudeCodeHome = await realpath(configuredClaudeCodeHome);
+  const codexCommand = options.codexCommand ?? "codex";
+  const claudeCodeCommand = options.claudeCodeCommand ?? "claude";
   options.signal?.throwIfAborted();
-  const environment = codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome });
-  const providerArtifactIdentity = createHash("sha256").update(codexHome, "utf8").digest("hex");
-  const factory =
-    options.factory ??
-    resolvedCodexFactory({
-      clientVersion: options.clientVersion,
-      command,
-      codexHome,
-      environment,
-      sourceEnvironment,
-    });
-  const providers = new AgentRuntimeProviderRegistry([
-    codexProviderRegistration(factory, providerArtifactIdentity, codexHome),
-  ]);
+  const codexEnvironment = codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome });
+  const claudeCodeEnvironment = claudeCodeAgentRuntimeEnvironment({
+    ...sourceEnvironment,
+    CLAUDE_CONFIG_DIR: claudeCodeHome,
+  });
+  const providerHomes: Readonly<Record<"codex" | "claude-code", string>> = {
+    codex: codexHome,
+    "claude-code": claudeCodeHome,
+  };
+  const providerArtifactIdentities: Readonly<Record<"codex" | "claude-code", string>> = {
+    codex: createHash("sha256").update(codexHome, "utf8").digest("hex"),
+    "claude-code": createHash("sha256").update(claudeCodeHome, "utf8").digest("hex"),
+  };
+  const factories =
+    options.factories ??
+    (options.factory
+      ? [options.factory]
+      : [
+          resolvedCodexFactory({
+            clientVersion: options.clientVersion,
+            command: codexCommand,
+            codexHome,
+            environment: codexEnvironment,
+            sourceEnvironment,
+          }),
+          resolvedClaudeCodeFactory({
+            claudeCodeHome,
+            command: claudeCodeCommand,
+            environment: claudeCodeEnvironment,
+            sourceEnvironment,
+          }),
+        ]);
+  const providers = new AgentRuntimeProviderRegistry(
+    factories.map((factory) => productionProviderRegistration(factory, providerArtifactIdentities, providerHomes)),
+  );
   const capabilityAbort = new AbortController();
   const readinessSignal = options.signal
     ? AbortSignal.any([options.signal, capabilityAbort.signal])
     : capabilityAbort.signal;
+  const refreshProviderReadiness = async (providerId: string, signal?: AbortSignal): Promise<boolean> => {
+    const refreshSignal = signal ? AbortSignal.any([readinessSignal, signal]) : readinessSignal;
+    const provider = providerId as AgentRuntimeProvider;
+    const releaseReadiness = providers.isReady(providerId)
+      ? connection.leaseProviderReadiness({ provider, status: "ready" })
+      : undefined;
+    if (!releaseReadiness) connection.setProviderReadiness({ provider, status: "checking" });
+    try {
+      const available = await providers.refresh(providerId, refreshSignal);
+      refreshSignal.throwIfAborted();
+      connection.setProviderReadiness(providerReadiness(provider, available, providers.probeResult(providerId)));
+      connection.setVerifiedCapabilities({ imMessageTool: providers.isReady("codex") ? 1 : 0 });
+      return available;
+    } finally {
+      releaseReadiness?.();
+    }
+  };
   const refreshCapability = async (): Promise<void> => {
-    const available = await providers.refresh(CODEX_AGENT_RUNTIME_MANIFEST.providerId, readinessSignal);
-    readinessSignal.throwIfAborted();
-    connection.setVerifiedCapabilities({ imMessageTool: available ? 1 : 0 });
+    await Promise.all(providers.providerIds().map((providerId) => refreshProviderReadiness(providerId)));
+  };
+  const ensureProviderReady = async (providerId: string, signal?: AbortSignal): Promise<void> => {
+    if (providers.isReady(providerId)) return;
+    if (!(await refreshProviderReadiness(providerId, signal))) {
+      throw new AgentRuntimeProviderUnavailableError(
+        providerId,
+        providers.probeResult(providerId) ?? {
+          ready: false,
+          issues: [{ code: "temporarily_unavailable", message: "Provider readiness could not be established" }],
+        },
+      );
+    }
   };
   try {
     await refreshCapability();
@@ -205,6 +274,7 @@ export async function createClientRuntime(
   const toolHost = new RuntimeToolHost(connection);
   const runtimeManager = new SessionRuntimeManager({
     bindingStore,
+    ensureProviderReady,
     providers,
     toolHost,
     workspace,
@@ -229,8 +299,6 @@ export async function createClientRuntime(
   let runner: AgentTurnRunner;
   const preflight = createClientRuntimePreflight({
     providers,
-    readinessSignal,
-    runtimeManager,
     workspace,
   });
   const custody = new TurnCustodyOwner({
@@ -258,7 +326,7 @@ export async function createClientRuntime(
   return new ComposedClientRuntime(runtime, {
     bindingStore,
     custody,
-    messageToolAvailable: providers.isReady(CODEX_AGENT_RUNTIME_MANIFEST.providerId),
+    messageToolAvailable: providers.providerIds().some((providerId) => providers.isReady(providerId)),
     reconciler,
     reportOwner,
     runner,
@@ -274,6 +342,28 @@ export async function createClientRuntime(
   });
 }
 
+export function codexProviderReadiness(
+  available: boolean,
+  result: AgentRuntimeProbeResult | undefined,
+): RuntimeProviderReadinessObservation {
+  return providerReadiness("codex", available, result);
+}
+
+export function providerReadiness(
+  provider: AgentRuntimeProvider,
+  available: boolean,
+  result: AgentRuntimeProbeResult | undefined,
+): RuntimeProviderReadinessObservation {
+  if (available) return { provider, status: "ready" };
+  if (result?.issues.some((issue) => issue.code === "artifact_missing")) {
+    return { provider, status: "install" };
+  }
+  if (result?.issues.some((issue) => issue.code === "credential_missing")) {
+    return { provider, status: "sign-in" };
+  }
+  return { provider, status: "unavailable" };
+}
+
 export interface ResolvedCodexFactoryOptions {
   readonly clientVersion: string;
   readonly codexHome: string;
@@ -282,24 +372,29 @@ export interface ResolvedCodexFactoryOptions {
   readonly sourceEnvironment: NodeJS.ProcessEnv;
 }
 
-function codexProviderRegistration(
+function productionProviderRegistration(
   factory: AgentRuntimeFactory,
-  artifactIdentity: string,
-  codexHome: string,
+  artifactIdentities: Readonly<Record<"codex" | "claude-code", string>>,
+  providerHomes: Readonly<Record<"codex" | "claude-code", string>>,
 ): AgentRuntimeProviderRegistration {
-  if (factory.manifest.providerId !== CODEX_AGENT_RUNTIME_MANIFEST.providerId) {
-    throw new Error("Production Client Runtime only registers the reviewed Codex provider");
+  const providerId = factory.manifest.providerId;
+  if (providerId !== "codex" && providerId !== "claude-code") {
+    throw new Error(`Production Client Runtime does not register the unreviewed provider: ${providerId}`);
   }
-  return {
-    artifactIdentity,
+  const providerHome = providerHomes[providerId];
+  const common = {
+    artifactIdentity: artifactIdentities[providerId],
     factory,
-    policy: codexRuntimePolicy,
-    validate: validateCodexRuntimePolicy,
-    verifyArtifact: async (signal) => {
+    verifyArtifact: async (signal?: AbortSignal) => {
       signal?.throwIfAborted();
-      if ((await realpath(codexHome)) !== codexHome) throw new Error("Codex Home identity changed");
+      if ((await realpath(providerHome)) !== providerHome) {
+        throw new Error(`${factory.manifest.displayName} Home identity changed`);
+      }
     },
   };
+  return providerId === "codex"
+    ? { ...common, policy: codexRuntimePolicy, validate: validateCodexRuntimePolicy }
+    : { ...common, policy: claudeCodeRuntimePolicy, validate: validateClaudeCodeRuntimePolicy };
 }
 
 export function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): AgentRuntimeFactory {
@@ -337,6 +432,52 @@ function requireReadyCodexFactory(factory: CodexAgentRuntimeFactory | undefined)
   return factory;
 }
 
+export interface ResolvedClaudeCodeFactoryOptions {
+  readonly claudeCodeHome: string;
+  readonly command: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly sourceEnvironment: NodeJS.ProcessEnv;
+}
+
+export function resolvedClaudeCodeFactory(options: ResolvedClaudeCodeFactoryOptions): AgentRuntimeFactory {
+  let readyFactory: ClaudeCodeAgentRuntimeFactory | undefined;
+  return {
+    manifest: CLAUDE_CODE_AGENT_RUNTIME_MANIFEST,
+    async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
+      let command: string;
+      try {
+        request.signal?.throwIfAborted();
+        command = await resolveExecutable(options.command, options.sourceEnvironment);
+      } catch (error) {
+        if (request.signal?.aborted) throw error;
+        return {
+          ready: false,
+          issues: [{ code: "artifact_missing", message: "Claude Code CLI could not be executed" }],
+        };
+      }
+      const candidate = new ClaudeCodeAgentRuntimeFactory({
+        process: { command, env: options.environment },
+      });
+      const result = await candidate.probe(request);
+      if (result.ready) readyFactory = candidate;
+      return result;
+    },
+    create(request: CreateAgentRuntimeRequest) {
+      return requireReadyClaudeCodeFactory(readyFactory).create(request);
+    },
+    resume(request: ResumeAgentRuntimeRequest) {
+      return requireReadyClaudeCodeFactory(readyFactory).resume(request);
+    },
+  };
+}
+
+function requireReadyClaudeCodeFactory(
+  factory: ClaudeCodeAgentRuntimeFactory | undefined,
+): ClaudeCodeAgentRuntimeFactory {
+  if (!factory) throw new Error("Claude Code provider readiness has not been established");
+  return factory;
+}
+
 export function resolveCodexHome(environment: NodeJS.ProcessEnv = process.env): string {
   return resolve(environment.CODEX_HOME ?? join(environment.HOME ?? homedir(), ".codex"));
 }
@@ -347,7 +488,7 @@ export async function resolveExecutable(command: string, environment: NodeJS.Pro
     return realpath(command);
   }
   const path = environment.PATH;
-  if (!path) throw new Error("PATH is unavailable while locating Codex");
+  if (!path) throw new Error("PATH is unavailable while locating an Agent Runtime provider");
   /* v8 ignore next -- executable suffix probing is a Windows-only branch. */
   const extensions = process.platform === "win32" ? (environment.PATHEXT ?? ".EXE;.CMD;.BAT").split(";") : [""];
   for (const directory of path.split(delimiter)) {
@@ -362,13 +503,11 @@ export async function resolveExecutable(command: string, environment: NodeJS.Pro
       }
     }
   }
-  throw new Error("A compatible Codex executable is unavailable");
+  throw new Error("A compatible Agent Runtime provider executable is unavailable");
 }
 
 interface ClientRuntimePreflightDependencies {
-  readonly providers: Pick<AgentRuntimeProviderRegistry, "ensureReady" | "validateConfiguration">;
-  readonly readinessSignal?: AbortSignal;
-  readonly runtimeManager: Pick<SessionRuntimeManager, "runtime">;
+  readonly providers: Pick<AgentRuntimeProviderRegistry, "validateConfiguration">;
   readonly workspace: Pick<AgentWorkspaceManager, "verifyAgent">;
 }
 
@@ -379,12 +518,10 @@ export function createClientRuntimePreflight(
     const policyReason = dependencies.providers.validateConfiguration(request.runtime);
     if (policyReason) return policyReason;
     try {
-      await dependencies.providers.ensureReady(request.runtime.provider, dependencies.readinessSignal);
       await dependencies.workspace.verifyAgent(request.runtime, computeRuntimeSnapshotHashes(request.runtime));
-      dependencies.runtimeManager.runtime(request.sessionId);
       return undefined;
     } catch (error) {
-      return error instanceof RuntimeStorageError ? "session_binding_conflict" : "provider_unavailable";
+      return error instanceof RuntimeStorageError ? "session_binding_conflict" : "configuration_unsupported";
     }
   };
 }

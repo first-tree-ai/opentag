@@ -935,10 +935,18 @@ function AgentRow({ agent }: { agent: AgentListItem }) {
   );
 }
 
+function useOwnComputersResource(teamId: string) {
+  return useResource(() => browserApi.ownComputers(), teamId, {
+    onBackgroundError: markOwnComputersUnconfirmed,
+    revalidateMs: 30_000,
+    refreshOnFocus: true,
+  });
+}
+
 function NewAgentPage() {
   const { membership } = useTeam();
   const navigate = useNavigate();
-  const computers = useResource(() => browserApi.ownComputers(), membership.teamId);
+  const computers = useOwnComputersResource(membership.teamId);
   if (membership.role !== "admin") return <UnavailablePage title="Team Admin access required" />;
   return (
     <Page title="Create Agent" description="Create the identity first. Complete its setup from the Agent overview.">
@@ -960,7 +968,7 @@ function NewAgentDialog({
 }) {
   const { membership } = useTeam();
   const navigate = useNavigate();
-  const computers = useResource(() => browserApi.ownComputers(), membership.teamId);
+  const computers = useOwnComputersResource(membership.teamId);
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -1092,6 +1100,8 @@ function AgentCreationContent({
 }) {
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  const [computerId, setComputerId] = useState("");
+  const [runtimeProvider, setRuntimeProvider] = useState<"codex" | "claude-code">("codex");
   const firstFieldRef = useRef<HTMLInputElement>(null);
   const inFlightRef = useRef(false);
   const creationIntentRef = useRef<{ fingerprint: string; id: string } | null>(null);
@@ -1135,8 +1145,11 @@ function AgentCreationContent({
 
   return (
     <AsyncState state={computers}>
-      {(value) =>
-        value.computers.length === 0 ? (
+      {(value) => {
+        const computer = value.computers.find((candidate) => candidate.id === computerId) ?? value.computers[0];
+        const selectedComputerId = computer?.id ?? "";
+        const readiness = computer?.providerReadiness?.find((entry) => entry.provider === runtimeProvider);
+        return value.computers.length === 0 ? (
           <EmptyState title="Connect a Local Computer first">
             Open <Link to="/settings/computers">Computer settings</Link> to generate a connection command.
           </EmptyState>
@@ -1178,14 +1191,27 @@ function AgentCreationContent({
             <div className="agent-create-grid">
               <div className="agent-create-field">
                 <label htmlFor="new-agent-provider">Provider</label>
-                <select id="new-agent-provider" name="runtimeProvider" disabled={submitting}>
+                <select
+                  id="new-agent-provider"
+                  name="runtimeProvider"
+                  disabled={submitting}
+                  value={runtimeProvider}
+                  onChange={(event) => setRuntimeProvider(event.currentTarget.value as "codex" | "claude-code")}
+                >
                   <option value="codex">Codex</option>
                   <option value="claude-code">Claude Code</option>
                 </select>
               </div>
               <div className="agent-create-field">
                 <label htmlFor="new-agent-computer">Computer</label>
-                <select id="new-agent-computer" name="computerId" disabled={submitting} required>
+                <select
+                  id="new-agent-computer"
+                  name="computerId"
+                  disabled={submitting}
+                  required
+                  value={selectedComputerId}
+                  onChange={(event) => setComputerId(event.currentTarget.value)}
+                >
                   {value.computers.map((computer: Computer) => (
                     <option value={computer.id} key={computer.id}>
                       {computer.displayName}
@@ -1193,6 +1219,12 @@ function AgentCreationContent({
                   ))}
                 </select>
               </div>
+            </div>
+            <div
+              className={`notice ${readiness?.status === "ready" && computer?.connectionStatus === "online" ? "" : "warning"}`}
+              role="status"
+            >
+              {providerReadinessMessage(computer, runtimeProvider, readiness?.status)}
             </div>
             <p className="agent-create-note">New Agents receive only direct mentions by default.</p>
             {error ? (
@@ -1211,10 +1243,39 @@ function AgentCreationContent({
               </button>
             </div>
           </form>
-        )
-      }
+        );
+      }}
     </AsyncState>
   );
+}
+
+function markOwnComputersUnconfirmed(value: { computers: Computer[] }): { computers: Computer[] } {
+  return {
+    computers: value.computers.map(({ providerReadiness: _providerReadiness, ...computer }) => computer),
+  };
+}
+
+function providerReadinessMessage(
+  computer: Computer | undefined,
+  provider: "codex" | "claude-code",
+  status: "checking" | "install" | "sign-in" | "ready" | "unavailable" | undefined,
+): string {
+  const label = providerLabel(provider);
+  if (computer?.connectionStatus === "offline") {
+    return `${computer.displayName} is offline. You can still create this Agent; ${label} Turns will fail without starting and can be retried when this Computer reconnects. No other Provider will be substituted.`;
+  }
+  if (status === "ready") return `${label} is ready on ${computer?.displayName ?? "this Computer"}.`;
+  const action =
+    status === "checking"
+      ? "readiness is still being checked"
+      : status === "install"
+        ? "must be installed"
+        : status === "sign-in"
+          ? "requires sign-in"
+          : status === "unavailable"
+            ? "is currently unavailable"
+            : "readiness has not been reported by this Computer";
+  return `${label} ${action}. You can still create this Agent; its Turns will fail without starting and can be retried after readiness is restored. No other Provider will be substituted.`;
 }
 
 const agentSections = [

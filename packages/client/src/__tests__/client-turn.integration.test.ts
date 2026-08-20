@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import type {
@@ -10,6 +10,9 @@ import type {
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeFactory } from "../agent-runtime/types.js";
+import { ClaudeCodeAgentRuntimeFactory } from "../providers/claude-code/agent-runtime.js";
+import type { ClaudeCodeProcessClient, ClaudeCodeProcessResult } from "../providers/claude-code/process-wire.js";
+import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
 import { CodexAgentRuntimeFactory } from "../providers/codex/agent-runtime.js";
 import type {
   CodexAppServerMessage,
@@ -70,7 +73,9 @@ describe("Agent Runtime Client Turn vertical", () => {
       finalText: "answer-1",
     });
     expect(fixture.clients).toHaveLength(1);
-    expect(fixture.clients[0]?.cwd).toBe(resolve(fixture.workspace.paths("agent-1").agentsFile, ".."));
+    expect(await realpath(fixture.clients[0]?.cwd ?? "")).toBe(
+      await realpath(resolve(fixture.workspace.paths("agent-1").agentsFile, "..")),
+    );
     await expect(readFile(resolve(fixture.clients[0]?.cwd ?? "", "AGENTS.md"), "utf8")).resolves.toContain(
       "# OpenTag managed instructions",
     );
@@ -127,6 +132,43 @@ describe("Agent Runtime Client Turn vertical", () => {
     expect(report.finalText).toBe("answer-1");
     await fixture.record(report);
     await vi.waitFor(() => expect(fixture.custody.admission.snapshot().client).toBe(0));
+    await fixture.runtimeManager.close();
+  });
+
+  it("runs a Claude Code Agent through exact Provider selection and the IM Turn path", async () => {
+    const fixture = await runtimeFixture(Promise.resolve(), Promise.resolve(), "claude-code");
+    const accepted = await fixture.custody.accept(delivery(fixture.runtime, "delivery-claude", "use Claude"));
+    await accepted.onAcceptedSent?.();
+    const report = await fixture.waitForReport(0);
+
+    expect(report).toMatchObject({
+      outcome: "completed",
+      executionEffects: "completed",
+      finalText: "claude-answer",
+    });
+    expect(fixture.claudeProcesses).toHaveLength(1);
+    expect(fixture.claudeProcesses[0]?.args).toContain("--strict-mcp-config");
+    expect(await fixture.store.read("agent-1", "session-1")).toMatchObject({
+      provider: "claude-code",
+      runtimeBinding: { providerId: "claude-code", schemaVersion: 1 },
+    });
+    await fixture.record(report);
+    await fixture.runtimeManager.close();
+  });
+
+  it.each(["bridge", "process"] as const)("reports Claude Code %s setup failure as not started", async (failure) => {
+    const fixture = await runtimeFixture(Promise.resolve(), Promise.resolve(), "claude-code", failure);
+    const accepted = await fixture.custody.accept(delivery(fixture.runtime, `delivery-${failure}`, "use Claude"));
+    await accepted.onAcceptedSent?.();
+    const report = await fixture.waitForReport(0);
+
+    expect(report).toMatchObject({
+      outcome: "failed",
+      executionEffects: "not_started",
+      errorReason: "provider_start_failed",
+    });
+    expect(fixture.claudeProcesses).toHaveLength(0);
+    await fixture.record(report);
     await fixture.runtimeManager.close();
   });
 
@@ -196,30 +238,54 @@ describe("Agent Runtime Client Turn vertical", () => {
 async function runtimeFixture(
   terminalGate: Promise<void> = Promise.resolve(),
   startingGate: Promise<void> = Promise.resolve(),
+  provider: "codex" | "claude-code" = "codex",
+  claudeFailure?: "bridge" | "process",
 ) {
   const home = await mkdtemp(resolve(tmpdir(), "opentag-turn-integration-"));
   directories.push(home);
   const computerId = randomUUID();
-  const runtime = snapshot();
+  const runtime = snapshot(1, provider);
   const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
   const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
   const connection = new FakeConnection();
   const reportOwner = new TurnReportOwner({ connection });
   const toolHost = new RuntimeToolHost(connection);
   const clients: ScriptedTurnClient[] = [];
+  const claudeProcesses: ScriptedClaudeCodeProcess[] = [];
   const logs: RecordedLog[] = [];
-  const factory = new CodexAgentRuntimeFactory({
-    clientVersion: "0.0.1",
-    createClient: (cwd) => {
-      const client = new ScriptedTurnClient(cwd, terminalGate);
-      clients.push(client);
-      return client;
-    },
-    probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "test" }),
-  });
+  const factory: AgentRuntimeFactory =
+    provider === "codex"
+      ? new CodexAgentRuntimeFactory({
+          clientVersion: "0.0.1",
+          createClient: (cwd) => {
+            const client = new ScriptedTurnClient(cwd, terminalGate);
+            clients.push(client);
+            return client;
+          },
+          probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "test" }),
+        })
+      : new ClaudeCodeAgentRuntimeFactory({
+          createSessionId: () => "11111111-1111-4111-8111-111111111111",
+          createProcess: (_cwd, args) => {
+            if (claudeFailure === "process") throw 42;
+            const process = new ScriptedClaudeCodeProcess(args, terminalGate);
+            claudeProcesses.push(process);
+            return process;
+          },
+          probeRunner: async () => ({ credential: true, streamJson: true, version: "test" }),
+          ...(claudeFailure === "bridge"
+            ? {
+                startHostedToolBridge: async () => {
+                  throw new Error("bridge setup failed");
+                },
+              }
+            : {}),
+        });
+  const providers = await providerRegistry(factory);
   const runtimeManager = new SessionRuntimeManager({
     bindingStore: store,
-    providers: await providerRegistry(factory),
+    ensureProviderReady: (providerId, signal) => providers.ensureReady(providerId, signal),
+    providers,
     toolHost,
     workspace,
   });
@@ -281,6 +347,7 @@ async function runtimeFixture(
     });
   return {
     clients,
+    claudeProcesses,
     connection,
     custody,
     logs,
@@ -303,8 +370,8 @@ async function providerRegistry(factory: AgentRuntimeFactory): Promise<AgentRunt
     {
       artifactIdentity: "a".repeat(64),
       factory,
-      policy: codexRuntimePolicy,
-      validate: validateCodexRuntimePolicy,
+      policy: factory.manifest.providerId === "codex" ? codexRuntimePolicy : claudeCodeRuntimePolicy,
+      validate: factory.manifest.providerId === "codex" ? validateCodexRuntimePolicy : validateClaudeCodeRuntimePolicy,
     },
   ]);
   await providers.refresh(factory.manifest.providerId);
@@ -435,18 +502,53 @@ class ScriptedTurnClient implements InteractiveCodexAppServerClient {
   }
 }
 
-function snapshot(revision = 1): EffectiveRuntimeSnapshot {
+class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
+  readonly args: readonly string[];
+  readonly #terminalGate: Promise<void>;
+
+  constructor(args: readonly string[], terminalGate: Promise<void>) {
+    this.args = args;
+    this.#terminalGate = terminalGate;
+  }
+
+  async execute(
+    _input: Readonly<Record<string, unknown>>,
+    onMessage: (message: Readonly<Record<string, unknown>>) => void,
+  ): Promise<ClaudeCodeProcessResult> {
+    await this.#terminalGate;
+    onMessage({
+      type: "system",
+      subtype: "init",
+      session_id: "11111111-1111-4111-8111-111111111111",
+    });
+    onMessage({
+      type: "result",
+      subtype: "success",
+      session_id: "11111111-1111-4111-8111-111111111111",
+      is_error: false,
+      result: "claude-answer",
+      permission_denials: [],
+      usage: {},
+    });
+    return { stderr: "" };
+  }
+
+  async interrupt(): Promise<void> {}
+  async close(): Promise<void> {}
+}
+
+function snapshot(revision = 1, provider: "codex" | "claude-code" = "codex"): EffectiveRuntimeSnapshot {
   return {
     revision: {
       agent: { sequence: revision, id: `agent-revision-${revision}` },
       session: { sequence: revision, id: `session-revision-${revision}` },
     },
     agentId: "agent-1",
-    provider: "codex",
+    provider,
     model: `model-${revision}`,
     instructions: { platform: "platform", agent: "agent", session: "session" },
     allowedTools: [],
-    execution: { approvalPolicy: "never", networkAccess: false },
+    execution: { approvalPolicy: "never", networkAccess: provider === "claude-code" },
     workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
   };
 }

@@ -207,10 +207,14 @@ describe("account identity and Team foundation persistence", () => {
         })
         .returning();
       if (!computer) throw new Error("Computer fixture was not created");
-      const computerResult = await value.teamService.listComputers(userId, primaryTeam.id);
+      const computerResult = await value.teamService.listComputers(userId, primaryTeam.id, true);
       expect(computerResult.computers.find((candidate) => candidate.id === computer.id)).toMatchObject({
         ownerUserId: userId,
         ownerDisplayName: "Product Name",
+        providerReadiness: [
+          { provider: "codex", status: "unavailable", observedAt: null },
+          { provider: "claude-code", status: "unavailable", observedAt: null },
+        ],
       });
       const agentService = new AgentService(value.database, { membershipService: value.teamService, now: () => now });
       await agentService.createForTeam(userId, primaryTeam.id, {

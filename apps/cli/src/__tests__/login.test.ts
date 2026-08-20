@@ -2,8 +2,9 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { credentialsPath, readCredentials, resolveComputerIdentity } from "@opentag/client";
+import { Command } from "commander";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { executeLoginCommand } from "../commands/login.js";
+import { executeLoginCommand, registerLoginCommand } from "../commands/login.js";
 import { runLogin } from "../core/auth/login.js";
 import { LoginServiceInstallError, runLoginWithService } from "../core/auth/login-service.js";
 import type { DaemonServiceManager } from "../core/daemon/service/index.js";
@@ -15,6 +16,31 @@ afterEach(async () => {
 });
 
 describe("runLogin", () => {
+  it("parses a leading-hyphen connect code after the option terminator", async () => {
+    const login = vi.fn().mockResolvedValue({ credentialsPath: "/private/credentials.json", message: "Logged in" });
+    const program = new Command().name("opentag").exitOverride();
+    registerLoginCommand(program, { login, writeOutput: vi.fn() });
+
+    await program.parseAsync([
+      "node",
+      "opentag",
+      "login",
+      "--server",
+      "https://opentag.example",
+      "--no-start",
+      "--",
+      "-R5hUHv2GVEjyiKiBLCyzgi-yef7_tQ5",
+    ]);
+
+    expect(login).toHaveBeenCalledWith(
+      expect.objectContaining({
+        code: "-R5hUHv2GVEjyiKiBLCyzgi-yef7_tQ5",
+        noStart: true,
+        serverUrl: "https://opentag.example",
+      }),
+    );
+  });
+
   it("stores credentials without returning or printing secrets", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-login-"));
     temporaryDirectories.push(home);

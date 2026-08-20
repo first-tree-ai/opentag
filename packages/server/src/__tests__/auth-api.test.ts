@@ -152,7 +152,7 @@ describe("auth HTTP API", () => {
     expect(response.headers["cache-control"]).toBe("no-store");
     expect(response.json()).toEqual({
       bootstrapCommand:
-        "npm i -g open-tag-staging && opentag-staging login short_lived_code --server https://dev.example.com",
+        "npm i -g open-tag-staging && opentag-staging login --server https://dev.example.com -- short_lived_code",
       expiresIn: 900,
       issuedAt: "2030-01-01T00:00:00.000Z",
     });

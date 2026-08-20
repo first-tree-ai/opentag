@@ -1,7 +1,7 @@
 # OpenTag
 
 > Canonical source: [README.md](./README.md)
-> Last synced with: 2026-08-19
+> Last synced with: 2026-08-20
 
 OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与 AI 编码 Agent。项目目前处于 **pre-alpha**
 阶段：产品工作流仍在开发中，尚不适合生产使用。
@@ -46,7 +46,7 @@ export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 ./scripts/dev-install.sh
 export PATH="$HOME/.local/bin${PATH:+:$PATH}"
-opentag-dev login <connect-code> --server http://127.0.0.1:8000
+opentag-dev login --server http://127.0.0.1:8000 -- <connect-code>
 opentag-dev daemon status
 ```
 
@@ -72,7 +72,9 @@ pnpm --filter open-tag start agent list
 配置 `OPENTAG_GOOGLE_CLIENT_ID` 和 `OPENTAG_GOOGLE_CLIENT_SECRET` 后即可启用 Google 登录，然后打开
 `http://127.0.0.1:8000/`。active Team member 使用同一套 App Shell 和 member-safe 视图；Team Admin 额外管理
 Agent、runtime 配置、IM binding 与 Local Computer setup。Computers 页面列出带时间戳的 Team Computer 观测，
-Admin 还可以生成短期有效的安装/login 命令。membership 与邀请变更仍通过显式 CLI 操作完成：
+Admin 还可以生成短期有效的安装/login 命令。Team Admin 可在 **Settings → Members** 创建、复制和轮换 bearer
+邀请链接；受邀者可在登录前预览邀请，兑换后 Web 会选中刚加入的 Team。membership role 与 lifecycle 变更仍通过
+显式 CLI 操作完成：
 
 若 loopback 开发环境没有 Google 凭据，可设置 `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true`，并将
 `OPENTAG_DEV_AUTH_EMAIL` 设为已有 bootstrap 用户的唯一 email。该 bypass 在 `dev` 以外的环境会被拒绝，

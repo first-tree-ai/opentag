@@ -68,7 +68,7 @@ function facts(overrides: Partial<OnboardingFacts> = {}): OnboardingFacts {
     computers: [computer()],
     agents: [agent()],
     binding: binding(),
-    providerAcknowledged: true,
+    acknowledgedComputerIds: [computer().id],
     ...overrides,
   };
 }
@@ -144,7 +144,7 @@ describe("deriveOnboardingState", () => {
 
   it("asks for a Computer before anything else once the Team exists", () => {
     const state = deriveOnboardingState(
-      facts({ computers: [], agents: [], binding: undefined, providerAcknowledged: false }),
+      facts({ computers: [], agents: [], binding: undefined, acknowledgedComputerIds: [] }),
     );
     expect(state.step).toBe("computer");
     expect(state.completed).toEqual(["team"]);
@@ -159,7 +159,7 @@ describe("deriveOnboardingState", () => {
   });
 
   it("asks the admin to confirm the provider CLI before creating an Agent", () => {
-    const state = deriveOnboardingState(facts({ agents: [], binding: undefined, providerAcknowledged: false }));
+    const state = deriveOnboardingState(facts({ agents: [], binding: undefined, acknowledgedComputerIds: [] }));
     expect(state.step).toBe("provider");
     expect(state.completed).toEqual(["team", "computer"]);
   });
@@ -199,7 +199,7 @@ describe("deriveOnboardingState", () => {
   });
 
   it("does not walk backwards when the provider was confirmed in another browser", () => {
-    const state = deriveOnboardingState(facts({ binding: undefined, providerAcknowledged: false }));
+    const state = deriveOnboardingState(facts({ binding: undefined, acknowledgedComputerIds: [] }));
     expect(state.step).toBe("im");
   });
 
@@ -210,7 +210,7 @@ describe("deriveOnboardingState", () => {
   });
 
   it("does not report a member as stuck on the Admin's browser-local confirmation", () => {
-    const pending = { agents: [], binding: undefined, providerAcknowledged: false } as const;
+    const pending = { agents: [], binding: undefined, acknowledgedComputerIds: [] } as const;
     expect(deriveOnboardingState(facts({ ...pending })).step).toBe("provider");
     expect(deriveOnboardingState(facts({ ...pending, role: "member" })).step).toBe("agent");
   });
@@ -260,5 +260,32 @@ describe("deriveOnboardingState canManage", () => {
 
   it("keeps a Team member read-only", () => {
     expect(deriveOnboardingState(facts({ role: "member" })).canManage).toBe(false);
+  });
+});
+
+describe("provider confirmation is scoped to a Computer", () => {
+  const other = computer({ id: "6f2a3d19-59ab-4f0a-9a3e-8f1d2c3b4a5e", displayName: "Build box" });
+
+  it("still asks when only a different Computer was confirmed", () => {
+    const state = deriveOnboardingState(
+      facts({ computers: [other], agents: [], binding: undefined, acknowledgedComputerIds: [computer().id] }),
+    );
+    expect(state.step).toBe("provider");
+  });
+
+  it("skips the step for a second Team once that Computer is confirmed", () => {
+    const state = deriveOnboardingState(
+      facts({ agents: [], binding: undefined, acknowledgedComputerIds: [computer().id] }),
+    );
+    expect(state.step).toBe("agent");
+  });
+
+  it("defers to the Agent step while the Computer is still ambiguous", () => {
+    // The confirmation cannot name a Computer yet, so it is made against the one
+    // the admin actually picks, inside Agent creation.
+    const state = deriveOnboardingState(
+      facts({ computers: [computer(), other], agents: [], binding: undefined, acknowledgedComputerIds: [] }),
+    );
+    expect(state.step).toBe("agent");
   });
 });

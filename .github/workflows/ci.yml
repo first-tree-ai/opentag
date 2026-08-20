@@ -71,6 +71,23 @@ jobs:
       - name: Test PostgreSQL integration
         run: pnpm --filter @opentag/server test:integration
 
+      - name: Enforce Agent Runtime coverage
+        run: pnpm --filter @opentag/client test:agent-runtime:coverage
+
+      - name: Measure unit coverage
+        run: pnpm test:coverage
+
+      - name: Upload coverage reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unit-coverage-reports-${{ github.sha }}
+          path: |
+            packages/client/coverage/**
+            coverage/unit/**
+          if-no-files-found: warn
+          retention-days: 14
+
   node-compatibility:
     name: ${{ matrix.name }}
     runs-on: ubuntu-latest
@@ -291,7 +308,7 @@ jobs:
           }
           trap cleanup_runtime EXIT
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs \
-            login "$connect_code" --server http://127.0.0.1:18000 --no-start
+            login --server http://127.0.0.1:18000 --no-start -- "$connect_code"
           test -f "$runtime_home/config/credentials.json"
           test ! -e "$runtime_home/config/computer.json"
           test ! -e "$runtime_home/data/computer.json"

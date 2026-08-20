@@ -32,7 +32,7 @@ describe("auth contracts", () => {
 
   it("accepts only the server-authored connect command contract", () => {
     const response = {
-      bootstrapCommand: "npm i -g open-tag && opentag login code --server https://opentag.example.com",
+      bootstrapCommand: "npm i -g open-tag && opentag login --server https://opentag.example.com -- code",
       expiresIn: 900,
       issuedAt: "2030-01-01T00:00:00.000Z",
     };

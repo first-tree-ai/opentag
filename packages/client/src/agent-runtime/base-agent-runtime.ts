@@ -1,4 +1,5 @@
 import { AgentProviderError, AgentRuntimeError } from "./errors.js";
+import { AgentRunEventValidator } from "./event-validator.js";
 import type {
   AgentAbortRequest,
   AgentInteractionRequest,
@@ -37,6 +38,7 @@ interface RunRecord {
   readonly request: AgentPromptRequest;
   readonly controller: AbortController;
   readonly executionFailure: Promise<never>;
+  readonly eventValidator: AgentRunEventValidator;
   readonly failExecution: (error: Error) => void;
   readonly promise: Promise<AgentRunResult>;
   readonly resolve: (result: AgentRunResult) => void;
@@ -234,6 +236,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       request: snapshot,
       controller: new AbortController(),
       executionFailure,
+      eventValidator: new AgentRunEventValidator(),
       failExecution,
       promise,
       resolve: resolveResult,
@@ -261,6 +264,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       await this.#dispatch({ type: "run_started", runId: record.request.runId });
       const providerExecution = Promise.resolve().then(() => this.executeRun(record.request, this.#context(record)));
       const providerResult = await Promise.race([providerExecution, record.executionFailure]);
+      record.eventValidator.assertSettled(providerResult);
       result = this.#providerResult(record.request.runId, providerResult);
     } catch (error) {
       result = this.#resultForThrownError(record, error);
@@ -295,6 +299,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       },
       emit: async (event: AgentProviderRunEvent) => {
         assertCurrent();
+        record.eventValidator.accept(event);
         await this.#dispatch({ ...event, runId: record.request.runId } as AgentRuntimeEvent);
       },
       updateBinding: async (binding: AgentRuntimeBinding) => {

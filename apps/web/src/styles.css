@@ -136,6 +136,16 @@ aside {
   font-size: 0.75rem;
   color: #bdd3c9;
 }
+.team-picker-group {
+  display: grid;
+  gap: 0.5rem;
+  justify-items: start;
+}
+.team-picker-action {
+  font-size: 0.75rem;
+  color: #bdd3c9;
+  text-decoration: underline;
+}
 .brand {
   font-family: Georgia, serif;
   font-size: 1.7rem;
@@ -225,6 +235,11 @@ dd {
   background: white;
 }
 .form-card label {
+  display: grid;
+  gap: 0.45rem;
+  font-weight: 700;
+}
+.invite-link {
   display: grid;
   gap: 0.45rem;
   font-weight: 700;

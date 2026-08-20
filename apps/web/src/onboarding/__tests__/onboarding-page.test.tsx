@@ -207,12 +207,12 @@ describe("Onboarding flow", () => {
     expect(screen.queryByText("No active Team")).toBeNull();
   });
 
-  it("sends the legacy /teams/new entry to the same onboarding flow", async () => {
+  it("offers the same Team creation form in the first step as the standalone page", async () => {
     installApi({ memberships: false });
-    window.history.replaceState({}, "", "/teams/new");
-    render(<App />);
+    renderOnboarding();
     expect(await screen.findByRole("heading", { name: "Create or join a Team" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/onboarding");
+    expect(screen.getByLabelText("Display name")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create Team" })).toBeTruthy();
   });
 
   it("starts at the Computer step for a Team with nothing connected", async () => {
@@ -242,13 +242,13 @@ describe("Onboarding flow", () => {
     installApi();
     renderOnboarding();
     expect(await screen.findByRole("heading", { name: "Prepare the Codex CLI" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Codex is ready on that Computer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Codex is ready on Ada's Mac" }));
     expect(await screen.findByRole("heading", { name: "Create your Agent" })).toBeTruthy();
   });
 
   it("does not show a Computer or Provider selector when only one option is real", async () => {
     installApi();
-    window.localStorage.setItem(`opentag.onboarding.providerReady:${teamId}`, "true");
+    window.localStorage.setItem(`opentag.onboarding.providerReady:${computerId}`, "true");
     renderOnboarding();
     expect(await screen.findByRole("heading", { name: "Create your Agent" })).toBeTruthy();
     expect(screen.queryByLabelText("Computer")).toBeNull();
@@ -258,7 +258,7 @@ describe("Onboarding flow", () => {
 
   it("asks which Computer only when more than one is online", async () => {
     installApi({ computers: "two" });
-    window.localStorage.setItem(`opentag.onboarding.providerReady:${teamId}`, "true");
+    window.localStorage.setItem(`opentag.onboarding.providerReady:${computerId}`, "true");
     renderOnboarding();
     expect(await screen.findByRole("heading", { name: "Create your Agent" })).toBeTruthy();
     expect(screen.getByLabelText("Computer")).toBeTruthy();
@@ -266,7 +266,7 @@ describe("Onboarding flow", () => {
 
   it("creates the Agent with a derived name and the mention_only default", async () => {
     const { createdAgents } = installApi();
-    window.localStorage.setItem(`opentag.onboarding.providerReady:${teamId}`, "true");
+    window.localStorage.setItem(`opentag.onboarding.providerReady:${computerId}`, "true");
     renderOnboarding();
     const name = await screen.findByLabelText("Agent name");
     fireEvent.change(name, { target: { value: "Release Captain" } });
@@ -283,7 +283,7 @@ describe("Onboarding flow", () => {
 
   it("recovers the existing Agent instead of failing when the create response was lost", async () => {
     installApi({ createAgent: "conflict" });
-    window.localStorage.setItem(`opentag.onboarding.providerReady:${teamId}`, "true");
+    window.localStorage.setItem(`opentag.onboarding.providerReady:${computerId}`, "true");
     renderOnboarding();
     const name = await screen.findByLabelText("Agent name");
     fireEvent.change(name, { target: { value: "Reviewer" } });
@@ -414,5 +414,38 @@ describe("Onboarding IM recovery", () => {
     );
     expect(screen.queryByRole("button", { name: "Reauthorize Feishu" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Connect Feishu" })).toBeNull();
+  });
+});
+
+describe("Onboarding provider confirmation", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+    window.history.replaceState({}, "", "/onboarding");
+  });
+
+  it("requires confirming the picked Computer when more than one is online", async () => {
+    const { createdAgents } = installApi({ computers: "two" });
+    renderOnboarding();
+    const name = await screen.findByLabelText("Agent name");
+    fireEvent.change(name, { target: { value: "Reviewer" } });
+    const confirm = screen.getByLabelText("Codex is installed and signed in on that Computer") as HTMLInputElement;
+    expect(confirm.required).toBe(true);
+    fireEvent.click(confirm);
+    fireEvent.change(screen.getByLabelText("Computer"), { target: { value: secondComputerId } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+    await waitFor(() => expect(createdAgents).toHaveLength(1));
+    // The confirmation is recorded against the Computer that was actually chosen.
+    expect(createdAgents[0]).toMatchObject({ computerId: secondComputerId });
+    expect(window.localStorage.getItem(`opentag.onboarding.providerReady:${secondComputerId}`)).toBe("true");
+    expect(window.localStorage.getItem(`opentag.onboarding.providerReady:${computerId}`)).toBeNull();
+  });
+
+  it("names the Computer it is asking about when only one is online", async () => {
+    installApi();
+    renderOnboarding();
+    expect(await screen.findByRole("heading", { name: "Prepare the Codex CLI" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Codex is ready on Ada's Mac" }));
+    expect(await screen.findByRole("heading", { name: "Create your Agent" })).toBeTruthy();
+    expect(window.localStorage.getItem(`opentag.onboarding.providerReady:${computerId}`)).toBe("true");
   });
 });

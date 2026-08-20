@@ -58,11 +58,13 @@ export interface OnboardingFacts {
   readonly agents: readonly AgentSummary[];
   readonly binding: ImBindingSummary | undefined;
   /**
-   * The provider CLI is self-attested. No server surface reports whether Codex is
-   * installed and signed in on the Computer, so the admin confirms it once and the
-   * flow never blocks Agent readiness on it.
+   * The provider CLI is self-attested per Computer: no Server surface reports
+   * whether Codex is installed and signed in there. It is keyed by Computer rather
+   * than by Team because that is the resource it actually describes -- the same
+   * machine serves every Team its owner belongs to, and a different machine has
+   * never been confirmed. The flow never blocks Agent readiness on it.
    */
-  readonly providerAcknowledged: boolean;
+  readonly acknowledgedComputerIds: readonly string[];
 }
 
 export interface OnboardingState {
@@ -127,10 +129,15 @@ function deriveStep(
   // so a Computer that later goes offline must not push the flow backwards.
   if (!agent) {
     if (computer.kind === "none" || computer.kind === "offline") return "computer";
+    // A confirmation can only be asked for once the Computer it describes is known,
+    // so an ambiguous choice is resolved first.
+    if (computer.kind === "choice") return "agent";
     // The provider confirmation lives in the Admin's browser, so a read-only viewer
     // can never observe it. Reporting only Server-observable progress to them beats
     // claiming the Admin is stuck on a step nobody else can see.
-    if (!facts.providerAcknowledged && canManageOnboarding(facts.role)) return "provider";
+    if (!facts.acknowledgedComputerIds.includes(computer.computer.id) && canManageOnboarding(facts.role)) {
+      return "provider";
+    }
     return "agent";
   }
   return im.kind === "active" ? "ready" : "im";
@@ -157,4 +164,9 @@ export function deriveAgentName(displayName: string): string {
     .slice(0, 64)
     .replace(/-+$/g, "");
   return slug || "agent";
+}
+
+/** The Computer the provider confirmation applies to, when exactly one is eligible. */
+export function acknowledgeableComputer(selection: ComputerSelection): OnboardingComputer | undefined {
+  return selection.kind === "single" ? selection.computer : undefined;
 }

@@ -39,6 +39,16 @@ export const MembershipStatusSchema = z.enum(["active", "left", "removed"]);
 export const AuthIdentityProviderSchema = z.enum(["google", "github", "oidc"]);
 export const TeamNameSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/);
 
+/**
+ * The canonical Team field contracts, used by every writer: creation, profile update and the bootstrap CLI.
+ * Length lives here rather than on the projections below, because a bound on a writer prevents bad data
+ * while a bound on a read path only turns a value older writers validly stored into an unrecoverable error
+ * on pages the user cannot get past. Rows predating these bounds stay readable and come into range the
+ * first time they are renamed.
+ */
+export const TeamNameInputSchema = z.string().trim().toLowerCase().max(64).pipe(TeamNameSchema);
+export const TeamDisplayNameSchema = z.string().trim().min(1).max(120);
+
 export const MeMembershipSchema = z
   .object({
     teamId: z.string().uuid(),

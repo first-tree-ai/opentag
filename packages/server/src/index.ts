@@ -186,9 +186,7 @@ export async function startServer(): Promise<void> {
       onDiagnostic: (code) => app?.log.error({ code }, "IM delivery worker diagnostic"),
     });
     const identityService = new AuthIdentityService(database);
-    const postAuthentication = new PostAuthenticationService(database, invitationService, {
-      membershipService: teamService,
-    });
+    const postAuthentication = new PostAuthenticationService(database, invitationService);
     const google = config.google
       ? new GoogleBrowserAuthService({
           database,

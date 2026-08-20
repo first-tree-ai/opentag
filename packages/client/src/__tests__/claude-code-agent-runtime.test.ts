@@ -151,6 +151,13 @@ describe("ClaudeCodeAgentRuntime", () => {
       ready: false,
       issues: [{ code: "version_incompatible" }, { code: "credential_missing" }],
     });
+
+    const controller = new AbortController();
+    const hanging = new ClaudeCodeAgentRuntimeFactory({
+      probeRunner: async () => new Promise<never>(() => undefined),
+    }).probe({ signal: controller.signal });
+    controller.abort(new Error("stop Claude probe"));
+    await expect(hanging).rejects.toThrow("stop Claude probe");
   });
 
   it("passes only system and Claude provider environment variables", () => {

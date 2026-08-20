@@ -120,6 +120,9 @@ export class InvitationService {
       .where(eq(invitations.tokenHash, tokenHash))
       .limit(1);
     if (!candidate) throw this.#invalid();
+    // User before Team, matching post-authentication, which locks the redeeming user before calling in here.
+    // Taking the Team first would invert against it and deadlock two concurrent redemptions of one invitation.
+    await this.#membershipService.lockUserForMembershipWrite(transaction, userId);
     await this.#membershipService.lockTeamForMutation(transaction, candidate.teamId);
     const [invitation] = await transaction
       .select()
@@ -130,20 +133,22 @@ export class InvitationService {
     const now = this.#now();
     if (!invitation || invitation.revokedAt || invitation.expiresAt <= now) throw this.#invalid();
 
-    const membership = await this.#membershipService.joinWithInvitationInTransaction(
+    const { membership, transitioned } = await this.#membershipService.joinWithInvitationInTransaction(
       transaction,
       userId,
       invitation.teamId,
       invitation.role,
     );
 
-    await transaction.insert(invitationRedemptions).values({
-      invitationId: invitation.id,
-      userId,
-      redeemedAt: now,
-      ip: audit.ip,
-      userAgent: audit.userAgent,
-    });
+    if (transitioned) {
+      await transaction.insert(invitationRedemptions).values({
+        invitationId: invitation.id,
+        userId,
+        redeemedAt: now,
+        ip: audit.ip,
+        userAgent: audit.userAgent,
+      });
+    }
     const [team] = await transaction.select().from(teams).where(eq(teams.id, invitation.teamId)).limit(1);
     if (!team) throw this.#invalid();
     return {

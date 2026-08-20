@@ -1,29 +1,24 @@
 import type { AgentSummary, Computer, MeMembership, MembershipRole } from "@opentag/shared/browser";
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { browserApi } from "../api.js";
+import { CreateTeamForm } from "../create-team-form.js";
 import { FeishuSetupAttemptPanel, useFeishuSetup } from "../feishu-setup.js";
-import { type TeamSession, useTeamSession } from "../team-context.js";
+import { SELECTED_TEAM_STORAGE_KEY, type TeamSession, useTeamSession } from "../team-context.js";
 import { AsyncState, DefinitionList, EmptyState, Page, useResource } from "../ui.js";
 import {
+  acknowledgeableComputer,
   canManageOnboarding,
   deriveAgentName,
   deriveOnboardingState,
   ONBOARDING_STEPS,
+  type OnboardingComputer,
   type OnboardingFacts,
   type OnboardingState,
   type OnboardingStepId,
   selectOnboardingAgent,
 } from "./flow.js";
 import { createOrRecoverAgent } from "./recover-created-agent.js";
-
-/**
- * Creating the first Team needs POST /api/v1/teams, which PR-A1 adds. Until it
- * lands, `TeamStep` explains the gap instead of offering a control that cannot
- * work. Flipping this flag and filling in the `TEAM_CREATION_AVAILABLE` branch of
- * `TeamStep` is the whole seam.
- */
-const TEAM_CREATION_AVAILABLE = false;
 
 const STEP_TITLES: Record<OnboardingStepId, string> = {
   team: "Create or join a Team",
@@ -60,7 +55,7 @@ async function loadOnboardingFacts(
   role: MembershipRole,
 ): Promise<OnboardingFacts> {
   if (!membership) {
-    return { role, membership: undefined, computers: [], agents: [], binding: undefined, providerAcknowledged: false };
+    return { role, membership: undefined, computers: [], agents: [], binding: undefined, acknowledgedComputerIds: [] };
   }
   const [computers, agents] = await Promise.all([
     // Agent creation runs on a Computer the manager owns, but a member cannot see
@@ -79,7 +74,7 @@ async function loadOnboardingFacts(
     computers,
     agents: agents.agents,
     binding,
-    providerAcknowledged: readProviderAcknowledgement(membership.teamId),
+    acknowledgedComputerIds: readAcknowledgedComputerIds(computers),
   };
 }
 
@@ -138,9 +133,12 @@ function ActiveStep({
 }) {
   const membership = facts.membership;
   // Without a Team there is no Team-scoped step to render, and the derived step agrees.
-  if (!membership || state.step === "team") return <TeamStep />;
+  if (!membership || state.step === "team") return <TeamStep onCreated={session.refreshMe} />;
   if (state.step === "computer") return <ComputerStep onRefresh={onRefresh} teamId={membership.teamId} />;
-  if (state.step === "provider") return <ProviderStep onRefresh={onRefresh} teamId={membership.teamId} />;
+  if (state.step === "provider") {
+    const computer = acknowledgeableComputer(state.computer);
+    if (computer) return <ProviderStep computer={computer} onRefresh={onRefresh} />;
+  }
   if (!state.agent)
     return (
       <AgentStep
@@ -163,20 +161,23 @@ function StepPanel({ title, children }: { title: string; children: ReactNode }) 
   );
 }
 
-function TeamStep() {
+/**
+ * The same `CreateTeamForm` the standalone `/teams/new` page mounts. Creating a
+ * Team behaves identically in both places; only what happens next differs, and
+ * here that is advancing to the next unfinished step of this same flow.
+ */
+function TeamStep({ onCreated }: { onCreated: () => void }) {
+  const navigate = useNavigate();
   return (
     <StepPanel title={STEP_TITLES.team}>
-      {TEAM_CREATION_AVAILABLE ? (
-        <p>Create the Team that will own your Agents.</p>
-      ) : (
-        <>
-          <p>
-            Creating a Team from the browser is not available in this build. Ask a Team Admin for an invitation link, or
-            create the Team with the CLI and reload this page.
-          </p>
-          <p className="muted">Once you belong to a Team this page continues from the next unfinished step.</p>
-        </>
-      )}
+      <p>A Team holds your members, Agents and permissions. You become its first Team Admin.</p>
+      <CreateTeamForm
+        onCreated={(created) => {
+          window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, created.id);
+          onCreated();
+        }}
+        onUnauthenticated={() => navigate(`/login?next=${encodeURIComponent("/onboarding")}`)}
+      />
     </StepPanel>
   );
 }
@@ -237,12 +238,12 @@ function ComputerStep({ onRefresh, teamId }: { onRefresh: () => void; teamId: st
   );
 }
 
-function ProviderStep({ onRefresh, teamId }: { onRefresh: () => void; teamId: string }) {
+function ProviderStep({ computer, onRefresh }: { computer: OnboardingComputer; onRefresh: () => void }) {
   return (
     <StepPanel title={STEP_TITLES.provider}>
       <p>
-        Your Agent runs Codex under your own identity on that Computer. Install the Codex CLI and sign in there, then
-        confirm below.
+        Your Agent runs Codex under your own identity on {computer.displayName}. Install the Codex CLI and sign in
+        there, then confirm below.
       </p>
       <pre>
         <code>npm install -g @openai/codex{"\n"}codex login</code>
@@ -255,11 +256,11 @@ function ProviderStep({ onRefresh, teamId }: { onRefresh: () => void; teamId: st
         className="button"
         type="button"
         onClick={() => {
-          writeProviderAcknowledgement(teamId);
+          acknowledgeComputer(computer.id);
           onRefresh();
         }}
       >
-        Codex is ready on that Computer
+        Codex is ready on {computer.displayName}
       </button>
     </StepPanel>
   );
@@ -286,6 +287,9 @@ function AgentStep({
     const displayName = String(data.get("displayName") ?? "").trim();
     const computerId = only?.id ?? String(data.get("computerId") ?? "");
     if (!displayName || !computerId) return;
+    // With several Computers the confirmation is made here, against the machine the
+    // Admin actually picked, so the Agent can never land on an unconfirmed one.
+    if (!only) acknowledgeComputer(computerId);
     setBusy(true);
     try {
       setError(undefined);
@@ -318,16 +322,22 @@ function AgentStep({
         {only ? (
           <p className="muted">Runs Codex on {only.displayName}.</p>
         ) : (
-          <label>
-            Computer
-            <select name="computerId" required>
-              {choices.map((computer) => (
-                <option value={computer.id} key={computer.id}>
-                  {computer.displayName}
-                </option>
-              ))}
-            </select>
-          </label>
+          <>
+            <label>
+              Computer
+              <select name="computerId" required>
+                {choices.map((computer) => (
+                  <option value={computer.id} key={computer.id}>
+                    {computer.displayName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="checkbox">
+              <input name="providerReady" required type="checkbox" />
+              Codex is installed and signed in on that Computer
+            </label>
+          </>
         )}
         <p className="muted">This Agent replies only when it is mentioned.</p>
         <button className="button" disabled={busy} type="submit">
@@ -417,18 +427,22 @@ function ReadyStep({ agent }: { agent: AgentSummary }) {
 }
 
 /**
- * The provider confirmation is the one onboarding fact with no Server home, so it
- * is remembered per Team in this browser. Every other step is re-derived from the
- * Server on each entry; losing this one only repeats a step that creates nothing.
+ * The provider confirmation is the one onboarding fact with no Server home, so it is
+ * remembered in this browser -- keyed by Computer, because that is the resource it
+ * describes. The same machine then serves every Team its owner belongs to, and a
+ * machine that was never confirmed still asks. Every other step is re-derived from
+ * the Server on each entry; losing this one only repeats a step that creates nothing.
  */
-function providerAcknowledgementKey(teamId: string): string {
-  return `opentag.onboarding.providerReady:${teamId}`;
+function providerAcknowledgementKey(computerId: string): string {
+  return `opentag.onboarding.providerReady:${computerId}`;
 }
 
-function readProviderAcknowledgement(teamId: string): boolean {
-  return window.localStorage.getItem(providerAcknowledgementKey(teamId)) === "true";
+function readAcknowledgedComputerIds(computers: readonly OnboardingComputer[]): string[] {
+  return computers
+    .map((computer) => computer.id)
+    .filter((id) => window.localStorage.getItem(providerAcknowledgementKey(id)) === "true");
 }
 
-function writeProviderAcknowledgement(teamId: string): void {
-  window.localStorage.setItem(providerAcknowledgementKey(teamId), "true");
+function acknowledgeComputer(computerId: string): void {
+  window.localStorage.setItem(providerAcknowledgementKey(computerId), "true");
 }

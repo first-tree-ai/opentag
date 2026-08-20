@@ -10,9 +10,11 @@ import type {
   TeamMemberSummary,
   UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
+import { MembershipRoleSchema } from "@opentag/shared/browser";
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ApiError, browserApi } from "./api.js";
+import { CreateTeamForm } from "./create-team-form.js";
 import { FeishuSetupAttemptPanel, useFeishuSetup } from "./feishu-setup.js";
 import { OnboardingPage } from "./onboarding/onboarding-page.js";
 import { readTeamPreference, SELECTED_TEAM_STORAGE_KEY, TeamContext, useTeam } from "./team-context.js";
@@ -33,8 +35,7 @@ export function AppRouter() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/invites/:token" element={<InvitePage />} />
-      {/* Onboarding owns Team creation so the zero-Team path has a single destination. */}
-      <Route path="/teams/new" element={<Navigate replace to="/onboarding" />} />
+      <Route path="/teams/new" element={<NewTeamPage />} />
       <Route element={<AuthenticatedTeamGate />}>
         <Route path="/onboarding" element={<OnboardingPage />} />
         <Route element={<AppShell />}>
@@ -79,18 +80,58 @@ function LoginPage() {
 
 function InvitePage() {
   const { token = "" } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
+  const selectedTeamHint = new URLSearchParams(location.search).get("joinedTeamId") ?? undefined;
   const preview = useResource(() => browserApi.invitationPreview(token), token);
   const [error, setError] = useState<string>();
-  async function join() {
-    try {
-      await browserApi.redeemInvitation(token);
-      navigate("/agents");
-    } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 401) {
-        navigate(`/login?next=${encodeURIComponent(`/invites/${token}`)}`);
-      } else setError(cause instanceof Error ? cause.message : "The invitation could not be redeemed");
-    }
+  const [joining, setJoining] = useState(false);
+  const joinInFlight = useRef(false);
+  const completeJoin = useCallback(
+    async (serverSelectedTeamId?: string) => {
+      if (joinInFlight.current) return;
+      joinInFlight.current = true;
+      setJoining(true);
+      try {
+        if (serverSelectedTeamId) {
+          const me = await browserApi.me();
+          if (me.memberships.some((membership) => membership.teamId === serverSelectedTeamId)) {
+            clearPendingInvitation(token);
+            window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, serverSelectedTeamId);
+            navigate("/agents", { replace: true });
+            return;
+          }
+        }
+        const redemption = await browserApi.redeemInvitation(token);
+        const me = await browserApi.me();
+        if (!me.memberships.some((membership) => membership.teamId === redemption.membership.teamId)) {
+          throw new Error("The invited Team is not available to the signed-in account");
+        }
+        clearPendingInvitation(token);
+        window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, redemption.membership.teamId);
+        navigate("/agents", { replace: true });
+      } catch (cause) {
+        if (cause instanceof ApiError && cause.status === 401) {
+          rememberPendingInvitation(token);
+          navigate(`/login?next=${encodeURIComponent(`/invites/${token}`)}`);
+        } else {
+          if (!serverSelectedTeamId) clearPendingInvitation(token);
+          setError(cause instanceof Error ? cause.message : "The invitation could not be redeemed");
+        }
+      } finally {
+        joinInFlight.current = false;
+        setJoining(false);
+      }
+    },
+    [navigate, token],
+  );
+  useEffect(() => {
+    if (readPendingInvitation() === token) void completeJoin(selectedTeamHint);
+  }, [completeJoin, selectedTeamHint, token]);
+  function join() {
+    setError(undefined);
+    rememberPendingInvitation(token);
+    void completeJoin(selectedTeamHint);
   }
   return (
     <main className="center-card">
@@ -102,8 +143,8 @@ function InvitePage() {
             <p>
               This invitation grants the {value.role} role and expires {formatDate(value.expiresAt)}.
             </p>
-            <button className="button" type="button" onClick={join}>
-              Join Team
+            <button className="button" disabled={joining} type="button" onClick={join}>
+              {joining ? "Joining…" : "Join Team"}
             </button>
           </>
         )}
@@ -113,6 +154,54 @@ function InvitePage() {
           {error}
         </div>
       ) : null}
+    </main>
+  );
+}
+
+const PENDING_INVITATION_STORAGE_KEY = "opentag.pendingInvitationToken";
+
+function readPendingInvitation(): string | undefined {
+  try {
+    return window.sessionStorage.getItem(PENDING_INVITATION_STORAGE_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function rememberPendingInvitation(token: string): void {
+  try {
+    window.sessionStorage.setItem(PENDING_INVITATION_STORAGE_KEY, token);
+  } catch {
+    // The explicit Join action can still continue when browser storage is unavailable.
+  }
+}
+
+function clearPendingInvitation(token: string): void {
+  try {
+    if (window.sessionStorage.getItem(PENDING_INVITATION_STORAGE_KEY) === token) {
+      window.sessionStorage.removeItem(PENDING_INVITATION_STORAGE_KEY);
+    }
+  } catch {
+    // There is no pending browser state to clean up when storage is unavailable.
+  }
+}
+
+function NewTeamPage() {
+  const navigate = useNavigate();
+  return (
+    <main className="center-card">
+      <span className="eyebrow">OpenTag</span>
+      <h1>Create Team</h1>
+      <p>A Team holds your members, Agents and permissions. You become its first Team Admin.</p>
+      <CreateTeamForm
+        onCreated={(created) => {
+          window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, created.id);
+          // A newly created Team has no Computer, Agent or IM binding yet, so the
+          // setup flow is the only place with anything to do next.
+          navigate("/onboarding");
+        }}
+        onUnauthenticated={() => navigate(`/login?next=${encodeURIComponent("/teams/new")}`)}
+      />
     </main>
   );
 }
@@ -131,8 +220,9 @@ function AuthenticatedTeamGate() {
       {(me) => {
         const stored = readTeamPreference();
         const membership = me.memberships.find((item: MeMembership) => item.teamId === stored) ?? me.memberships[0];
-        // A signed-in user with no Team cannot use any Team-scoped page. Onboarding
-        // owns that state and creates the first Team, so it is the only destination.
+        // Creating a Team is the first onboarding step, so a Team-less session goes
+        // there and continues into Computer/Provider/Agent/IM without a second stop.
+        // `/teams/new` stays the standalone entry for someone who already has a Team.
         if (!membership && location.pathname !== "/onboarding") return <Navigate replace to="/onboarding" />;
         const selectTeam = (teamId: string) => {
           if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
@@ -158,16 +248,21 @@ function AppShell() {
         <Link className="brand" to="/agents">
           OpenTag
         </Link>
-        <label className="team-picker">
-          <span>Team</span>
-          <select value={membership.teamId} onChange={(event) => selectTeam(event.currentTarget.value)}>
-            {me.memberships.map((item: MeMembership) => (
-              <option value={item.teamId} key={item.teamId}>
-                {item.teamDisplayName}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="team-picker-group">
+          <label className="team-picker">
+            <span>Team</span>
+            <select value={membership.teamId} onChange={(event) => selectTeam(event.currentTarget.value)}>
+              {me.memberships.map((item: MeMembership) => (
+                <option value={item.teamId} key={item.teamId}>
+                  {item.teamDisplayName}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Link className="team-picker-action" to="/teams/new">
+            Create Team
+          </Link>
+        </div>
         <nav>
           <NavLink to="/agents">Agents</NavLink>
           <NavLink to="/settings/team">Settings</NavLink>
@@ -625,7 +720,7 @@ function AccessTab({ agent }: { agent: AgentDetail }) {
 
 function SettingsPage() {
   const { section = "team" } = useParams();
-  const { membership, refreshMe } = useTeam();
+  const { me, membership, refreshMe } = useTeam();
   const allowed = ["team", "computers", "resources", "members", "security"];
   if (!allowed.includes(section)) return <NotFoundPage />;
   return (
@@ -638,7 +733,14 @@ function SettingsPage() {
         ))}
       </nav>
       {section === "team" ? <TeamSettings membership={membership} refreshMe={refreshMe} /> : null}
-      {section === "members" ? <MembersSettings teamId={membership.teamId} /> : null}
+      {section === "members" ? (
+        <MembersSettings
+          canManage={membership.role === "admin"}
+          currentUserId={me.user.id}
+          refreshMe={refreshMe}
+          teamId={membership.teamId}
+        />
+      ) : null}
       {section === "computers" ? (
         <ComputersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
       ) : null}
@@ -700,21 +802,162 @@ function TeamSettings({ membership, refreshMe }: { membership: MeMembership; ref
   );
 }
 
-function MembersSettings({ teamId }: { teamId: string }) {
-  const state = useResource(() => browserApi.members(teamId), teamId);
+function MembersSettings({
+  canManage,
+  currentUserId,
+  refreshMe,
+  teamId,
+}: {
+  canManage: boolean;
+  currentUserId: string;
+  refreshMe: () => void;
+  teamId: string;
+}) {
+  const [revision, setRevision] = useState(0);
+  const state = useResource(() => browserApi.members(teamId), `${teamId}:${revision}`);
+  const pendingUserIdsRef = useRef(new Set<string>());
+  const [pendingUserIds, setPendingUserIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [error, setError] = useState<string>();
+
+  async function changeRole(member: TeamMemberSummary, value: string) {
+    if (value === member.role || pendingUserIdsRef.current.has(member.userId)) return;
+    pendingUserIdsRef.current.add(member.userId);
+    setPendingUserIds(new Set(pendingUserIdsRef.current));
+    setError(undefined);
+    try {
+      const role = MembershipRoleSchema.parse(value);
+      await browserApi.updateTeamMember(teamId, member.userId, { role });
+      setRevision((current) => current + 1);
+      if (member.userId === currentUserId) refreshMe();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to update the member role");
+    } finally {
+      pendingUserIdsRef.current.delete(member.userId);
+      setPendingUserIds(new Set(pendingUserIdsRef.current));
+    }
+  }
+
   return (
-    <AsyncState state={state}>
-      {(value) => (
-        <div className="list">
-          {value.members.map((member: TeamMemberSummary) => (
-            <div className="row" key={member.userId}>
-              <strong>{member.displayName}</strong>
-              <span>{member.role}</span>
+    <>
+      {canManage ? <InvitationSettings teamId={teamId} /> : null}
+      <section className="panel">
+        <h2>Team members</h2>
+        <AsyncState state={state}>
+          {(value) => (
+            <div className="list">
+              {value.members.map((member: TeamMemberSummary) => (
+                <div className="row" key={member.userId}>
+                  <strong>{member.displayName}</strong>
+                  {canManage ? (
+                    <select
+                      aria-label={`Role for ${member.displayName}`}
+                      disabled={pendingUserIds.has(member.userId)}
+                      value={member.role}
+                      onChange={(event) => void changeRole(member, event.currentTarget.value)}
+                    >
+                      {MembershipRoleSchema.options.map((role) => (
+                        <option value={role} key={role}>
+                          {role}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span>{member.role}</span>
+                  )}
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      )}
-    </AsyncState>
+          )}
+        </AsyncState>
+        {error ? (
+          <p className="notice error" role="alert">
+            {error}
+          </p>
+        ) : null}
+      </section>
+    </>
+  );
+}
+
+function InvitationSettings({ teamId }: { teamId: string }) {
+  const state = useResource(() => browserApi.invitation(teamId), teamId);
+  const [current, setCurrent] = useState<Awaited<ReturnType<typeof browserApi.invitation>>>();
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string>();
+  const [error, setError] = useState<string>();
+
+  async function createInvitation() {
+    await mutateInvitation(() => browserApi.createInvitation(teamId), "Invitation link created.");
+  }
+
+  async function rotateInvitation() {
+    if (!window.confirm("Rotate this invitation link? The current link will stop working immediately.")) return;
+    await mutateInvitation(() => browserApi.rotateInvitation(teamId), "Invitation link rotated.");
+  }
+
+  async function mutateInvitation(action: () => Promise<NonNullable<typeof current>>, successMessage: string) {
+    setBusy(true);
+    setError(undefined);
+    setMessage(undefined);
+    try {
+      setCurrent(await action());
+      setMessage(successMessage);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to update the invitation link");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyInvitation(inviteUrl: string) {
+    setError(undefined);
+    setMessage(undefined);
+    try {
+      if (!window.navigator.clipboard) throw new Error("Clipboard access is unavailable in this browser");
+      await window.navigator.clipboard.writeText(inviteUrl);
+      setMessage("Invitation link copied.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to copy the invitation link");
+    }
+  }
+
+  return (
+    <section className="panel">
+      <h2>Invite people</h2>
+      <p>Anyone with the active link can join this Team as a member until the link expires.</p>
+      <AsyncState state={state}>
+        {(loaded) => {
+          const invitation = current ?? loaded;
+          return invitation ? (
+            <>
+              <label className="invite-link">
+                Invitation link
+                <input aria-label="Invitation link" readOnly type="url" value={invitation.inviteUrl} />
+              </label>
+              <p className="muted">Expires {formatDate(invitation.expiresAt)}.</p>
+              <div className="actions">
+                <button type="button" onClick={() => void copyInvitation(invitation.inviteUrl)}>
+                  Copy invitation link
+                </button>
+                <button className="secondary" disabled={busy} type="button" onClick={() => void rotateInvitation()}>
+                  {busy ? "Rotating…" : "Rotate invitation link"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <button className="button" disabled={busy} type="button" onClick={() => void createInvitation()}>
+              {busy ? "Creating…" : "Create invitation link"}
+            </button>
+          );
+        }}
+      </AsyncState>
+      {message ? <p className="notice success">{message}</p> : null}
+      {error ? (
+        <p className="notice error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </section>
   );
 }
 

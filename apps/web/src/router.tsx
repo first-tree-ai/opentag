@@ -1390,84 +1390,140 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
         return (
           <AsyncState state={state}>
             {(binding) => (
-              <>
+              <div className="im-stack">
                 {binding ? (
-                  <DefinitionList
-                    rows={[
-                      ["Provider", binding.provider],
-                      [
-                        "Binding state",
-                        binding.bindingState === "reauthorization_required" && binding.provider === "feishu"
-                          ? "Online · permissions update required"
-                          : binding.bindingState,
-                      ],
-                      ["Receive mode", binding.receiveMode],
-                      [
-                        "Last confirmed",
-                        binding.lastConfirmedAt ? formatDate(binding.lastConfirmedAt) : "Unable to confirm",
-                      ],
-                    ]}
-                  />
+                  <>
+                    <section className="im-section" aria-labelledby="bot-connection-heading">
+                      <div className="im-section-heading">
+                        <h3 id="bot-connection-heading">Bot connection</h3>
+                        <p>{agent.displayName} receives messages through this dedicated identity.</p>
+                      </div>
+                      <div className="binding-status">
+                        <div className="binding-status-main">
+                          <i
+                            className={`availability-dot ${availabilityTone(agent.availability.dependencies.im.state)}`}
+                            aria-hidden="true"
+                          />
+                          <span>
+                            <strong>{binding.bot.displayName}</strong>
+                            <small>
+                              <span>{titleCase(binding.provider)} · </span>
+                              <span>{imBindingStateLabel(binding)}</span>
+                            </small>
+                          </span>
+                        </div>
+                        <small>
+                          {binding.lastConfirmedAt
+                            ? `Confirmed ${formatDate(binding.lastConfirmedAt)}`
+                            : "Unable to confirm"}
+                        </small>
+                      </div>
+                      {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                      binding.provider === "feishu" &&
+                      agent.viewerCapabilities.canManage ? (
+                        <div className="im-actions">
+                          <button className="button" type="button" onClick={() => void connect("reauthorize")}>
+                            Reauthorize Feishu
+                          </button>
+                        </div>
+                      ) : null}
+                      {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                      binding.provider === "slack" ? (
+                        <span className="notice">Slack reauthorization is not available in this release.</span>
+                      ) : null}
+                    </section>
+                    <section className="im-section" aria-labelledby="message-policy-heading">
+                      <div className="im-section-heading">
+                        <h3 id="message-policy-heading">Message policy</h3>
+                        <p>Choose which channel messages can start Agent work.</p>
+                      </div>
+                      <div className="message-policy">
+                        <div className="message-policy-copy">
+                          <strong>Receive mode</strong>
+                          <p>Mentions only is the safer default and reduces unnecessary context.</p>
+                        </div>
+                        {agent.viewerCapabilities.canManage ? (
+                          <div className="segmented-control">
+                            {binding.receiveMode === "mention_only" ? (
+                              <>
+                                <span className="active">Mentions only</span>
+                                <button type="button" onClick={() => void changeReceiveMode("all_message")}>
+                                  Enable all messages
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
+                                  Use mentions only
+                                </button>
+                                <span className="active">All messages</span>
+                              </>
+                            )}
+                          </div>
+                        ) : (
+                          <strong>{receiveModeLabel(binding.receiveMode)}</strong>
+                        )}
+                      </div>
+                    </section>
+                    {agent.viewerCapabilities.canManage ? (
+                      <section className="im-section" aria-labelledby="connection-actions-heading">
+                        <div className="im-section-heading">
+                          <h3 id="connection-actions-heading">Connection actions</h3>
+                          <p>Changes here can temporarily stop new IM work.</p>
+                        </div>
+                        <div className="im-actions">
+                          {binding.provider === "feishu" ? (
+                            <button className="secondary" type="button" onClick={() => void connect("replace")}>
+                              Replace with existing or new Feishu Bot
+                            </button>
+                          ) : null}
+                          <button
+                            className="danger-text"
+                            type="button"
+                            onClick={() => {
+                              if (
+                                !window.confirm(
+                                  "Disable this IM binding? New IM work will stop until another binding is connected.",
+                                )
+                              )
+                                return;
+                              void browserApi.disableImBinding(binding.id).then(
+                                () => {
+                                  setReload((value) => value + 1);
+                                  onAgentChanged();
+                                },
+                                (cause: unknown) =>
+                                  setError(cause instanceof Error ? cause.message : "Unable to disable IM binding"),
+                              );
+                            }}
+                          >
+                            Disable IM binding
+                          </button>
+                        </div>
+                      </section>
+                    ) : (
+                      <p className="muted">IM setup is managed by Team Admins.</p>
+                    )}
+                  </>
                 ) : (
-                  <EmptyState title="No IM binding">Connect a supported IM bot when the Agent is ready.</EmptyState>
-                )}
-                {agent.viewerCapabilities.canManage ? (
-                  <div className="actions">
-                    {!binding ? (
-                      <button className="button" type="button" onClick={() => void connect()}>
-                        Connect existing or new Feishu Bot
-                      </button>
-                    ) : null}
-                    {(binding?.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
-                    binding?.provider === "feishu" ? (
-                      <button className="button" type="button" onClick={() => void connect("reauthorize")}>
-                        Reauthorize Feishu
-                      </button>
-                    ) : null}
-                    {(binding?.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
-                    binding?.provider === "slack" ? (
-                      <span className="notice">Slack reauthorization is not available in this release.</span>
-                    ) : null}
-                    {binding?.receiveMode === "mention_only" ? (
-                      <button type="button" onClick={() => void changeReceiveMode("all_message")}>
-                        Enable all messages
-                      </button>
-                    ) : binding ? (
-                      <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
-                        Use mentions only
-                      </button>
-                    ) : null}
-                    {binding?.provider === "feishu" ? (
-                      <button type="button" onClick={() => void connect("replace")}>
-                        Replace with existing or new Feishu Bot
-                      </button>
-                    ) : null}
-                    {binding ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (
-                            !window.confirm(
-                              "Disable this IM binding? New IM work will stop until another binding is connected.",
-                            )
-                          )
-                            return;
-                          void browserApi.disableImBinding(binding.id).then(
-                            () => {
-                              setReload((value) => value + 1);
-                              onAgentChanged();
-                            },
-                            (cause: unknown) =>
-                              setError(cause instanceof Error ? cause.message : "Unable to disable IM binding"),
-                          );
-                        }}
-                      >
-                        Disable IM binding
-                      </button>
-                    ) : null}
-                  </div>
-                ) : (
-                  <p className="muted">IM setup is managed by Team Admins.</p>
+                  <section className="im-section" aria-labelledby="bot-connection-heading">
+                    <div className="im-section-heading">
+                      <h3 id="bot-connection-heading">Bot connection</h3>
+                      <p>Connect a supported IM bot when the Agent is ready.</p>
+                    </div>
+                    <EmptyState title="No IM binding">
+                      This Agent does not have a Feishu or Slack identity yet.
+                    </EmptyState>
+                    {agent.viewerCapabilities.canManage ? (
+                      <div className="im-actions">
+                        <button className="button" type="button" onClick={() => void connect()}>
+                          Connect existing or new Feishu Bot
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="muted">IM setup is managed by Team Admins.</p>
+                    )}
+                  </section>
                 )}
                 {setup.feedback}
                 {error ? (
@@ -1475,13 +1531,26 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                     {error}
                   </div>
                 ) : null}
-              </>
+              </div>
             )}
           </AsyncState>
         );
       }}
     </FeishuSetup>
   );
+}
+
+function imBindingStateLabel(binding: ImBindingSummary): string {
+  if (binding.bindingState === "reauthorization_required" && binding.provider === "feishu") {
+    return "Online · permissions update required";
+  }
+  return {
+    active: "Online",
+    provisioning: "Setting up",
+    reauthorization_required: "Permissions update required",
+    error: "Needs attention",
+    disabled: "Disabled",
+  }[binding.bindingState];
 }
 
 function AccessTab({ agent }: { agent: AgentDetailView }) {

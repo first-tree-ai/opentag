@@ -855,7 +855,7 @@ button.danger:hover {
 .agent-table-header,
 .agent-row {
   display: grid;
-  grid-template-columns: minmax(205px, 1.25fr) minmax(185px, 1fr) minmax(185px, 1fr) minmax(76px, auto);
+  grid-template-columns: minmax(205px, 1fr) minmax(185px, 0.45fr) minmax(76px, auto);
   gap: 20px;
 }
 
@@ -968,8 +968,7 @@ button.danger:hover {
 }
 
 .availability-cell strong,
-.availability-action strong,
-.dependency-card > strong {
+.availability-action strong {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -1173,52 +1172,6 @@ button.danger:hover {
   color: var(--brand-ink);
   font-size: 0.78rem;
   font-weight: 620;
-}
-
-.dependency-grid {
-  display: grid;
-  overflow: hidden;
-  border: 1px solid var(--strong-border);
-  border-radius: 10px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.dependency-card {
-  min-width: 0;
-  border-right: 1px solid var(--border);
-  padding: 18px;
-}
-
-.dependency-card:last-child {
-  border-right: 0;
-}
-
-.dependency-card > span {
-  display: block;
-  margin-bottom: 12px;
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 620;
-  text-transform: uppercase;
-}
-
-.dependency-card > strong {
-  font-size: 0.86rem;
-}
-
-.dependency-card p {
-  overflow: hidden;
-  margin: 10px 0 2px;
-  color: var(--foreground);
-  font-size: 0.82rem;
-  font-weight: 590;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dependency-card small {
-  color: var(--muted);
-  font-size: 0.72rem;
 }
 
 .admin-controls {
@@ -1666,6 +1619,15 @@ code {
   font-size: 0.75rem;
 }
 
+.availability-action a {
+  color: currentColor;
+  font-size: 0.72rem;
+  font-weight: 680;
+  text-decoration: underline;
+  text-decoration-color: rgb(40 64 30 / 28%);
+  text-underline-offset: 3px;
+}
+
 .object-identity p {
   color: var(--muted);
   font-size: 0.8rem;
@@ -1719,62 +1681,66 @@ code {
   font-weight: 660;
 }
 
-.overview-section-copy {
-  margin: -7px 0 13px;
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
-.dependency-grid {
-  display: grid;
-  overflow: visible;
-  border: 0;
+.agent-use-panel {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 32px;
   border-radius: var(--radius);
   background: var(--brand-light);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  padding: 21px 22px;
+  padding: 24px;
 }
 
-.dependency-card {
-  position: relative;
+.agent-use-panel.empty {
+  background: var(--surface-soft);
+}
+
+.agent-use-copy {
   min-width: 0;
-  border-right: 0;
-  padding: 0 32px 0 0;
 }
 
-.dependency-card:not(:last-child)::after {
-  position: absolute;
-  top: 10px;
-  right: 16px;
-  width: 20px;
-  height: 1px;
-  background: #b9c99b;
-  content: "";
+.agent-use-channel {
+  display: block;
+  margin-bottom: 9px;
+  color: var(--brand-ink);
+  font-size: 0.72rem;
+  font-weight: 680;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
-.dependency-card > span {
-  margin-bottom: 0;
-  color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 620;
-  text-transform: none;
+.agent-use-copy h4 {
+  margin-bottom: 7px;
+  color: var(--foreground);
+  font-size: 1.05rem;
 }
 
-.dependency-card > strong {
-  margin-top: 13px;
+.agent-use-copy p {
+  max-width: 510px;
+  margin: 0;
   color: var(--secondary-foreground);
-  font-size: 0.75rem;
+  font-size: 0.84rem;
+  line-height: 1.6;
 }
 
-.dependency-card p {
-  margin: 8px 0 2px;
-  font-size: 0.88rem;
-  font-weight: 650;
+.agent-use-identity {
+  display: grid;
+  flex: 0 0 auto;
+  justify-items: end;
+  gap: 5px;
+  padding-top: 3px;
+  text-align: right;
 }
 
-.dependency-card small {
+.agent-use-identity > span {
+  color: var(--foreground);
+  font-size: 0.82rem;
+  font-weight: 660;
+}
+
+.agent-use-identity small {
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.72rem;
 }
 
 .overview-section .definition-list {
@@ -1783,7 +1749,7 @@ code {
   border: 0;
   border-radius: var(--radius);
   background: var(--surface-soft);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   padding: 20px 22px;
 }
 
@@ -2791,19 +2757,15 @@ textarea:focus {
     justify-self: end;
   }
 
-  .dependency-grid {
+  .agent-use-panel {
+    flex-direction: column;
     gap: 18px;
-    grid-template-columns: 1fr;
+    padding: 20px;
   }
 
-  .dependency-card {
-    border-right: 0;
-    border-bottom: 0;
-    padding: 0;
-  }
-
-  .dependency-card:not(:last-child)::after {
-    display: none;
+  .agent-use-identity {
+    justify-items: start;
+    text-align: left;
   }
 
   .overview-section .definition-list {

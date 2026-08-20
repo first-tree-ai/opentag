@@ -72,7 +72,7 @@ type AgentAvailability = {
   };
 };
 
-type AgentListItem = AgentSummary & { computerState: TeamComputerSummary | undefined };
+type AgentListItem = AgentSummary & { evidenceConfirmed: boolean };
 type AgentDetailView = AgentDetail & { availability: AgentAvailability };
 
 function projectAgentAvailability(
@@ -155,16 +155,8 @@ function projectAgentAvailability(
 }
 
 async function loadAgentList(teamId: string): Promise<{ agents: AgentListItem[] }> {
-  const [{ agents }, computersResult] = await Promise.all([
-    browserApi.agents(teamId),
-    browserApi.computers(teamId).catch(() => ({ computers: [] })),
-  ]);
-  return {
-    agents: agents.map((agent) => ({
-      ...agent,
-      computerState: computersResult.computers.find((computer) => computer.id === agent.computer.id),
-    })),
-  };
+  const { agents } = await browserApi.agents(teamId);
+  return { agents: agents.map((agent) => ({ ...agent, evidenceConfirmed: true })) };
 }
 
 async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
@@ -190,7 +182,7 @@ async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
 }
 
 function markAgentListUnconfirmed(value: { agents: AgentListItem[] }): { agents: AgentListItem[] } {
-  return { agents: value.agents.map((agent) => ({ ...agent, computerState: undefined })) };
+  return { agents: value.agents.map((agent) => ({ ...agent, evidenceConfirmed: false })) };
 }
 
 function markAgentDetailUnconfirmed(agent: AgentDetailView): AgentDetailView {
@@ -877,7 +869,7 @@ function AgentsPage() {
     <>
       <Page
         title="Agents"
-        description="Shared agents your team can use in Feishu or Slack."
+        description="Shared AI teammates configured for your Team."
         action={
           membership.role === "admin" ? (
             <button className="button" ref={createTriggerRef} type="button" onClick={() => setCreateOpen(true)}>
@@ -912,8 +904,7 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
       <div className="agent-table">
         <div className="agent-table-header" aria-hidden="true">
           <span>Agent</span>
-          <span>Status</span>
-          <span>Runtime</span>
+          <span>State</span>
           <span />
         </div>
         <div className="agent-table-body">
@@ -927,23 +918,12 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
 }
 
 function AgentRow({ agent }: { agent: AgentListItem }) {
-  const computerStatus = agent.computerState?.connectionStatus;
   const status =
     agent.status === "suspended"
-      ? { label: "Suspended", reason: "Agent is suspended", tone: "suspended" }
-      : computerStatus === "online"
-        ? {
-            label: "Computer online",
-            reason: lastConfirmedLabel(agent.computerState?.lastSeenAt ?? null),
-            tone: "ready",
-          }
-        : computerStatus === "offline"
-          ? {
-              label: "Computer offline",
-              reason: lastConfirmedLabel(agent.computerState?.lastSeenAt ?? null),
-              tone: "action-required",
-            }
-          : { label: "Unconfirmed", reason: "Unable to confirm Computer", tone: "unconfirmed" };
+      ? { label: "Suspended", reason: "Not receiving new work", tone: "suspended" }
+      : agent.evidenceConfirmed
+        ? { label: "Active", reason: undefined, tone: "ready" }
+        : { label: "Unconfirmed", reason: "Unable to refresh Agent", tone: "unconfirmed" };
   return (
     <div className="agent-row">
       <Link aria-label={`Open ${agent.displayName}`} className="agent-row-link" to={`/agents/${agent.id}/general`} />
@@ -953,21 +933,17 @@ function AgentRow({ agent }: { agent: AgentListItem }) {
         </span>
         <span>
           <strong>{agent.displayName}</strong>
-          <small>@{agent.name}</small>
+          <small>
+            @{agent.name} · {providerLabel(agent.runtimeProvider)}
+          </small>
         </span>
       </span>
-      <span className="cell-stack availability-cell" data-label="Status">
+      <span className="cell-stack availability-cell" data-label="State">
         <strong>
           <i className={`availability-dot ${status.tone}`} aria-hidden="true" />
           {status.label}
         </strong>
-        <small>{status.reason}</small>
-      </span>
-      <span className="cell-stack" data-label="Runtime">
-        <strong>{providerLabel(agent.runtimeProvider)}</strong>
-        <small>
-          {agent.computer.displayName} · {titleCase(agent.computer.platform)}
-        </small>
+        {status.reason ? <small>{status.reason}</small> : null}
       </span>
       <span className="agent-row-action" aria-hidden="true">
         ›
@@ -1342,9 +1318,7 @@ function providerReadinessMessage(
 const agentSections = [
   { key: "general", label: "Overview" },
   { key: "runtime", label: "Runtime" },
-  { key: "im", label: "IM" },
-  { key: "resources", label: "Resources" },
-  { key: "integrations", label: "Integrations" },
+  { key: "im", label: "Messaging" },
   { key: "access", label: "Access" },
 ] as const;
 
@@ -1428,48 +1402,44 @@ function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetailView; tab:
   if (tab === "general") return <GeneralTab agent={agent} onAgentChanged={onAgentChanged} />;
   if (tab === "runtime") return <RuntimeTab agent={agent} />;
   if (tab === "im") return <ImTab agent={agent} onAgentChanged={onAgentChanged} />;
-  if (tab === "resources")
-    return (
-      <EmptyState title="No Team Resources assigned">
-        The Team Resource model is not enabled in this release.
-      </EmptyState>
-    );
-  if (tab === "integrations")
-    return (
-      <EmptyState title="No Agent Integrations supported">
-        IM bot connections are managed separately on the IM tab.
-      </EmptyState>
-    );
   if (tab === "access") return <AccessTab agent={agent} />;
   return <NotFoundPage />;
 }
 
 function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
+  const channel = agent.availability.dependencies.channel;
+  const channelLabel = channel.provider ? titleCase(channel.provider) : undefined;
+  const botDisplayName = channel.botDisplayName ?? agent.displayName;
   return (
     <div className="overview-stack">
-      <section className="overview-section" aria-labelledby="availability-heading">
-        <h3 id="availability-heading">Availability</h3>
-        <p className="overview-section-copy">
-          These dependencies jointly determine whether {agent.displayName} can receive work.
-        </p>
-        <div className="dependency-grid">
-          <DependencyCard
-            title="Computer"
-            state={agent.availability.dependencies.computer.state}
-            primary={agent.computer.displayName}
-            secondary={lastConfirmedLabel(agent.availability.dependencies.computer.lastConfirmedAt)}
-          />
-          <DependencyCard
-            title="Handoff"
-            state={agent.availability.dependencies.handoff.state}
-            primary={
-              agent.availability.dependencies.channel.provider
-                ? `${titleCase(agent.availability.dependencies.channel.provider)} · ${providerLabel(agent.runtimeProvider)}`
-                : providerLabel(agent.runtimeProvider)
-            }
-            secondary={handoffDetailLabel(agent.availability.dependencies.handoff.state)}
-          />
+      <section className="overview-section" aria-labelledby="use-agent-heading">
+        <div className="overview-section-heading">
+          <h3 id="use-agent-heading">Use this Agent</h3>
+          <Link to={`/agents/${agent.id}/im`}>
+            {agent.viewerCapabilities.canManage ? "Manage messaging" : "View messaging"}
+          </Link>
         </div>
+        {channelLabel ? (
+          <div className="agent-use-panel">
+            <div className="agent-use-copy">
+              <span className="agent-use-channel">{channelLabel}</span>
+              <h4>Message @{agent.name}</h4>
+              <p>{agentUseInstruction(agent, channelLabel)}</p>
+            </div>
+            <div className="agent-use-identity">
+              <span>{botDisplayName}</span>
+              <small>{receiveModeLabel(agent.receiveMode)}</small>
+            </div>
+          </div>
+        ) : (
+          <div className="agent-use-panel empty">
+            <div className="agent-use-copy">
+              <span className="agent-use-channel">Messaging</span>
+              <h4>Connect Feishu or Slack</h4>
+              <p>This Agent needs a messaging identity before teammates can send it work.</p>
+            </div>
+          </div>
+        )}
       </section>
       <section className="overview-section" aria-labelledby="identity-access-heading">
         <div className="overview-section-heading">
@@ -1478,7 +1448,6 @@ function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgent
         </div>
         <DefinitionList
           rows={[
-            ["Bot identity", agent.availability.dependencies.channel.botDisplayName ?? `@${agent.name}`],
             ["Manager", agent.manager.displayName],
             ["Who can use", "Team members"],
           ]}
@@ -1490,6 +1459,7 @@ function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgent
 }
 
 function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
+  const recovery = agentAvailabilityRecovery(agent);
   return (
     <div className={`availability-action ${availabilityTone(agent.availability.state)}`}>
       <span>
@@ -1497,33 +1467,10 @@ function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
           <i className={`availability-dot ${availabilityTone(agent.availability.state)}`} aria-hidden="true" />
           {availabilityStateLabel(agent.availability.state)}
         </strong>
-        <small>{availabilityReasonLabel(agent.availability.reason)}</small>
+        <small>{agentAvailabilitySummary(agent)}</small>
       </span>
+      {recovery ? <Link to={recovery.to}>{recovery.label}</Link> : null}
     </div>
-  );
-}
-
-function DependencyCard({
-  title,
-  state,
-  primary,
-  secondary,
-}: {
-  title: string;
-  state: AgentAvailability["dependencies"]["handoff"]["state"];
-  primary: string;
-  secondary: string;
-}) {
-  return (
-    <article className="dependency-card">
-      <span>{title}</span>
-      <strong>
-        <i className={`availability-dot ${availabilityTone(state)}`} aria-hidden="true" />
-        {dependencyStateLabel(state)}
-      </strong>
-      <p>{primary}</p>
-      <small>{secondary}</small>
-    </article>
   );
 }
 
@@ -2869,57 +2816,44 @@ function availabilityStateLabel(state: AgentAvailability["state"]): string {
   return labels[state];
 }
 
-function dependencyStateLabel(state: AgentAvailability["dependencies"]["handoff"]["state"]): string {
-  const labels = {
-    ready: "Ready",
-    action_required: "Needs attention",
-    setting_up: "Setting up",
-    not_connected: "Not connected",
-    unconfirmed: "Unable to confirm",
-  } satisfies Record<AgentAvailability["dependencies"]["handoff"]["state"], string>;
-  return labels[state];
+function agentUseInstruction(agent: AgentDetailView, channelLabel: string): string {
+  if (agent.receiveMode === "all_message") {
+    return `Send a direct message to @${agent.name}. In connected ${channelLabel} conversations, it can also receive messages without a mention.`;
+  }
+  return `Send a direct message, or mention @${agent.name} in a ${channelLabel} conversation.`;
 }
 
-function handoffDetailLabel(state: AgentAvailability["dependencies"]["handoff"]["state"]): string {
-  const labels = {
-    ready: "Ready to receive work",
-    action_required: "Handoff needs attention",
-    setting_up: "IM setup in progress",
-    not_connected: "No IM binding",
-    unconfirmed: "Unable to confirm handoff",
-  } satisfies Record<AgentAvailability["dependencies"]["handoff"]["state"], string>;
-  return labels[state];
+function agentAvailabilitySummary(agent: AgentDetailView): string {
+  if (agent.availability.state === "ready") {
+    const provider = agent.availability.dependencies.channel.provider;
+    return provider ? `Available in ${titleCase(provider)}` : "Ready for new work";
+  }
+  return {
+    action_required: "Cannot receive new work",
+    setting_up: "Messaging setup in progress",
+    not_connected: "Messaging is not connected",
+    suspended: "Not receiving new work",
+    unconfirmed: "Status temporarily unavailable",
+  }[agent.availability.state];
 }
 
-function availabilityReasonLabel(reason: AgentAvailability["reason"]): string {
-  if (!reason) return "All dependencies healthy";
-  const labels = {
-    agent_suspended: "Agent is suspended",
-    agent_unconfirmed: "Unable to refresh Agent status",
-    computer_offline: "Computer is offline",
-    runtime_unavailable: "Runtime message tools unavailable",
-    im_not_connected: "Connect Feishu or Slack",
-    im_provisioning: "IM connection is being prepared",
-    im_reauthorization_required: "IM permissions need updating",
-    im_error: "IM connection needs attention",
-    handoff_unavailable: "Handoff needs attention",
-    computer_unconfirmed: "Unable to confirm Computer",
-    handoff_unconfirmed: "Unable to confirm handoff",
-  } satisfies Record<NonNullable<AgentAvailability["reason"]>, string>;
-  return labels[reason];
-}
-
-function lastConfirmedLabel(value: string | null): string {
-  if (!value) return "Not yet confirmed";
-  const elapsedSeconds = Math.round((new Date(value).getTime() - Date.now()) / 1000);
-  const absoluteSeconds = Math.abs(elapsedSeconds);
-  const formatter = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
-  if (absoluteSeconds < 60) return `Confirmed ${formatter.format(elapsedSeconds, "second")}`;
-  const elapsedMinutes = Math.round(elapsedSeconds / 60);
-  if (Math.abs(elapsedMinutes) < 60) return `Confirmed ${formatter.format(elapsedMinutes, "minute")}`;
-  const elapsedHours = Math.round(elapsedMinutes / 60);
-  if (Math.abs(elapsedHours) < 24) return `Confirmed ${formatter.format(elapsedHours, "hour")}`;
-  return `Confirmed ${formatter.format(Math.round(elapsedHours / 24), "day")}`;
+function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to: string } | undefined {
+  if (!agent.viewerCapabilities.canManage || agent.availability.state === "ready") return undefined;
+  if (agent.availability.reason === "agent_suspended") {
+    return { label: "Manage", to: `/agents/${agent.id}/general#admin-controls` };
+  }
+  if (
+    agent.availability.reason === "im_not_connected" ||
+    agent.availability.reason === "im_provisioning" ||
+    agent.availability.reason === "im_reauthorization_required" ||
+    agent.availability.reason === "im_error" ||
+    agent.availability.reason === "handoff_unavailable" ||
+    agent.availability.reason === "handoff_unconfirmed"
+  ) {
+    return { label: "Review messaging", to: `/agents/${agent.id}/im` };
+  }
+  if (agent.availability.state === "unconfirmed") return undefined;
+  return { label: "Review runtime", to: `/agents/${agent.id}/runtime` };
 }
 
 function initials(value: string): string {
@@ -2933,11 +2867,9 @@ function initials(value: string): string {
 
 function agentSectionDescription(section: (typeof agentSections)[number]["key"]): string {
   const descriptions = {
-    general: "Review identity, readiness dependencies, and the configuration that needs attention.",
+    general: "See how teammates use this Agent and who can access it.",
     runtime: "Inspect the bound Computer, provider, model, instructions, and execution limits.",
-    im: "Manage the Agent-owned Feishu or Slack bot connection and receive policy.",
-    resources: "Team Resources are not enabled for Agents in this release.",
-    integrations: "Agent Integrations are not enabled; supported bot connections are managed on the IM tab.",
+    im: "Manage the Agent's Feishu or Slack bot and message policy.",
     access: "Understand who can use, inspect, and manage this Agent.",
   } satisfies Record<(typeof agentSections)[number]["key"], string>;
   return descriptions[section];

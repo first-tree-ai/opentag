@@ -1233,6 +1233,23 @@ describe("OpenTag Web App Shell", () => {
     expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(createdTeamId);
   });
 
+  it("continues website onboarding when the selected Team preference cannot be stored", async () => {
+    installApi("admin", { teamless: true });
+    window.history.replaceState({}, "", "/onboarding");
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    try {
+      render(<App />);
+      expect(await screen.findByRole("heading", { name: "Preparing your Team" })).toBeTruthy();
+      expect(await screen.findByRole("heading", { name: "Reviewer needs its runtime route" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/onboarding");
+      expect(vi.mocked(fetch).mock.calls.filter(([path]) => path === "/api/v1/me")).toHaveLength(2);
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
   it("resolves an internal Team handle collision without asking the user for another name", async () => {
     installApi("admin", { teamless: true, teamNameConflict: true });
     window.history.replaceState({}, "", "/teams/new");

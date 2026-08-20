@@ -523,7 +523,13 @@ function AuthenticatedTeamGate() {
             <AutomaticTeamBootstrap
               me={me}
               onReady={(teamId) => {
-                if (teamId) window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, teamId);
+                if (teamId) {
+                  try {
+                    window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, teamId);
+                  } catch {
+                    // Team preference is optional; authoritative /me facts must still refresh.
+                  }
+                }
                 setMeRevision((value) => value + 1);
               }}
             />

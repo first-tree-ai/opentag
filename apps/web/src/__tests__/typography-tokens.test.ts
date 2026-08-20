@@ -7,6 +7,9 @@ import { describe, expect, it } from "vitest";
  * literals written at the point of use, most of them within a pixel of each
  * other. These tests keep type flowing through the token layer so the scale
  * cannot drift back apart one component at a time.
+ *
+ * The checks are pure functions over CSS text, so the suite below can also
+ * prove that each one rejects the declaration it exists to catch.
  */
 
 /** The suite runs from apps/web and, under the coverage config, from the repo root. */
@@ -33,76 +36,131 @@ const TOKEN_REFERENCE = new RegExp(`var\\(--((?:${FAMILIES.join("|")})-[a-z0-9-]
  */
 const LINE_HEIGHT_LITERALS = new Set(["1", "38px"]);
 
-function captures(pattern: RegExp, group = 1): string[] {
-  return [...stylesheet.matchAll(pattern)]
+/**
+ * The `font` shorthand resets size, line height, weight, style and family at
+ * once, so it can leave the token layer behind in a single declaration. Form
+ * controls legitimately adopt the inherited font; nothing else may use it.
+ */
+const FONT_SHORTHAND_LITERALS = new Set(["inherit"]);
+
+function captures(css: string, pattern: RegExp, group = 1): string[] {
+  return [...css.matchAll(pattern)]
     .map((match) => match[group])
     .filter((value): value is string => value !== undefined)
     .map((value) => value.trim());
 }
 
-function declarations(property: string): string[] {
-  return captures(new RegExp(`(?<![\\w-])${property}:\\s*([^;]+);`, "g"));
+/** Values of `property`, matched as a longhand so `font:` never picks up `font-size:`. */
+function declarations(css: string, property: string): string[] {
+  return captures(css, new RegExp(`(?<![\\w-])${property}:\\s*([^;]+);`, "g"));
 }
 
-function definedTokens(prefix: string): Set<string> {
-  return new Set(captures(new RegExp(`--(${prefix}-[a-z0-9-]+):`, "g")));
+function definedTokens(css: string, prefix: string): Set<string> {
+  return new Set(captures(css, new RegExp(`--(${prefix}-[a-z0-9-]+):`, "g")));
 }
 
-function definedTypographyTokens(): Set<string> {
-  return new Set(FAMILIES.flatMap((prefix) => [...definedTokens(prefix)]));
+function definedTypographyTokens(css: string): Set<string> {
+  return new Set(FAMILIES.flatMap((prefix) => [...definedTokens(css, prefix)]));
+}
+
+function offTokenValues(css: string, property: string, allowed: RegExp, literals?: Set<string>): string[] {
+  return declarations(css, property).filter((value) => !allowed.test(value) && !(literals?.has(value) ?? false));
+}
+
+function danglingReferences(css: string): string[] {
+  const defined = definedTypographyTokens(css);
+  return [...new Set(captures(css, TOKEN_REFERENCE).filter((name) => !defined.has(name)))];
+}
+
+function unresolvedRoles(css: string): string[] {
+  const steps = definedTokens(css, "fs");
+  return captures(css, /--text-[a-z]+:\s*var\(--(fs-[a-z0-9-]+)\);/g).filter((step) => !steps.has(step));
 }
 
 describe("typography tokens", () => {
   it("declares every font size through a --text-* role", () => {
-    const literals = declarations("font-size").filter((value) => !/^var\(--text-[a-z]+\)$/.test(value));
-    expect(literals).toEqual([]);
+    expect(offTokenValues(stylesheet, "font-size", /^var\(--text-[a-z]+\)$/)).toEqual([]);
   });
 
   it("declares every font weight through a --fw-* token", () => {
-    const literals = declarations("font-weight").filter((value) => !/^var\(--fw-[a-z]+\)$/.test(value));
-    expect(literals).toEqual([]);
+    expect(offTokenValues(stylesheet, "font-weight", /^var\(--fw-[a-z]+\)$/)).toEqual([]);
+  });
+
+  it("declares every font family through a --font-* token", () => {
+    expect(offTokenValues(stylesheet, "font-family", /^var\(--font-[a-z]+\)$/)).toEqual([]);
+  });
+
+  it("keeps the font shorthand to the controls that inherit it", () => {
+    expect(offTokenValues(stylesheet, "font", /^$/, FONT_SHORTHAND_LITERALS)).toEqual([]);
   });
 
   it("declares every line height through a --lh-* token or a named geometry exception", () => {
-    const literals = declarations("line-height").filter(
-      (value) => !/^var\(--lh-[a-z]+\)$/.test(value) && !LINE_HEIGHT_LITERALS.has(value),
-    );
-    expect(literals).toEqual([]);
+    expect(offTokenValues(stylesheet, "line-height", /^var\(--lh-[a-z]+\)$/, LINE_HEIGHT_LITERALS)).toEqual([]);
   });
 
   it("declares every letter spacing through a --track-* token", () => {
-    const literals = declarations("letter-spacing").filter((value) => !/^var\(--track-[a-z]+\)$/.test(value));
-    expect(literals).toEqual([]);
+    expect(offTokenValues(stylesheet, "letter-spacing", /^var\(--track-[a-z]+\)$/)).toEqual([]);
   });
 
   it("references only tokens that exist, including one role pointing at a step", () => {
-    const defined = definedTypographyTokens();
-    const dangling = captures(TOKEN_REFERENCE).filter((name) => !defined.has(name));
-    expect([...new Set(dangling)]).toEqual([]);
+    expect(danglingReferences(stylesheet)).toEqual([]);
+  });
+
+  it("resolves each role to a step that is actually declared", () => {
+    expect(unresolvedRoles(stylesheet)).toEqual([]);
   });
 
   it("keeps every raw step on a whole pixel", () => {
-    const steps = captures(/--fs-[0-9]+:\s*([0-9.]+)rem;/g).map((value) => Number(value) * 16);
+    const steps = captures(stylesheet, /--fs-[0-9]+:\s*([0-9.]+)rem;/g).map((value) => Number(value) * 16);
     expect(steps.length).toBeGreaterThan(0);
     expect(steps.filter((px) => !Number.isInteger(px))).toEqual([]);
   });
 
   it("names each step after the pixel size it produces", () => {
-    const named = captures(/--fs-([0-9]+):\s*([0-9.]+)rem;/g);
-    const values = captures(/--fs-([0-9]+):\s*([0-9.]+)rem;/g, 2);
-    const mismatched = named.filter((name, index) => Number(name) !== Number(values[index]) * 16);
-    expect(mismatched).toEqual([]);
-  });
-
-  it("resolves each role to a step that is actually declared", () => {
-    const steps = definedTokens("fs");
-    const unresolved = captures(/--text-[a-z]+:\s*var\(--(fs-[a-z0-9-]+)\);/g).filter((step) => !steps.has(step));
-    expect(unresolved).toEqual([]);
+    const named = captures(stylesheet, /--fs-([0-9]+):\s*([0-9.]+)rem;/g);
+    const values = captures(stylesheet, /--fs-([0-9]+):\s*([0-9.]+)rem;/g, 2);
+    expect(named.filter((name, index) => Number(name) !== Number(values[index]) * 16)).toEqual([]);
   });
 
   it("resolves each role to a raw step rather than a bare length", () => {
-    const roles = captures(/--text-[a-z]+:\s*([^;]+);/g);
+    const roles = captures(stylesheet, /--text-[a-z]+:\s*([^;]+);/g);
     expect(roles.length).toBeGreaterThan(0);
     expect(roles.filter((value) => !/^var\(--fs-[0-9]+\)$/.test(value))).toEqual([]);
+  });
+});
+
+describe("the guard itself", () => {
+  it("rejects the font shorthand, which escapes four token families at once", () => {
+    const css = "body { font: 13px/1 Arial, sans-serif; }";
+    expect(offTokenValues(css, "font", /^$/, FONT_SHORTHAND_LITERALS)).toEqual(["13px/1 Arial, sans-serif"]);
+  });
+
+  it("allows the font shorthand only where controls inherit it", () => {
+    const css = "button { font: inherit; }";
+    expect(offTokenValues(css, "font", /^$/, FONT_SHORTHAND_LITERALS)).toEqual([]);
+  });
+
+  it("rejects a literal font family", () => {
+    const css = ".brand { font-family: Arial, sans-serif; }";
+    expect(offTokenValues(css, "font-family", /^var\(--font-[a-z]+\)$/)).toEqual(["Arial, sans-serif"]);
+  });
+
+  it("rejects a literal font size, weight, tracking and line height", () => {
+    const css = ".row { font-size: 0.83rem; font-weight: 615; letter-spacing: 0.03em; line-height: 1.42; }";
+    expect(offTokenValues(css, "font-size", /^var\(--text-[a-z]+\)$/)).toEqual(["0.83rem"]);
+    expect(offTokenValues(css, "font-weight", /^var\(--fw-[a-z]+\)$/)).toEqual(["615"]);
+    expect(offTokenValues(css, "letter-spacing", /^var\(--track-[a-z]+\)$/)).toEqual(["0.03em"]);
+    expect(offTokenValues(css, "line-height", /^var\(--lh-[a-z]+\)$/, LINE_HEIGHT_LITERALS)).toEqual(["1.42"]);
+  });
+
+  it("rejects a reference to a token that was never declared", () => {
+    const css = ":root { --text-ui: var(--fs-15); }\n.row { line-height: var(--lh-prsoe); }";
+    expect(danglingReferences(css)).toEqual(["fs-15", "lh-prsoe"]);
+    expect(unresolvedRoles(css)).toEqual(["fs-15"]);
+  });
+
+  it("does not mistake a longhand for the shorthand it starts with", () => {
+    const css = "body { font-size: var(--text-ui); font-synthesis: none; }";
+    expect(declarations(css, "font")).toEqual([]);
   });
 });

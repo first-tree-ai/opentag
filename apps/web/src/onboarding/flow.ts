@@ -147,11 +147,11 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
   }
 
   const onlineComputers = facts.computers.filter((computer) => computer.connectionStatus === "online");
-  const [computer, ...otherOnlineComputers] = onlineComputers;
+  const [onlineComputer, ...otherOnlineComputers] = onlineComputers;
   if (facts.computers.length === 0) {
     return { currentState: { kind: "computer", availability: "none" }, runtimeReady: false, handoffReady, canManage };
   }
-  if (!computer) {
+  if (!onlineComputer) {
     return {
       currentState: { kind: "computer", availability: "offline", computers: facts.computers },
       runtimeReady: false,
@@ -159,13 +159,32 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
       canManage,
     };
   }
-  if (otherOnlineComputers.length > 0) {
+
+  const runnableComputerIds = new Set(
+    facts.providers.filter((provider) => provider.runtimeReady).map((provider) => provider.computerId),
+  );
+  const eligibleComputers = onlineComputers.filter((computer) => runnableComputerIds.has(computer.id));
+  const [eligibleComputer, ...otherEligibleComputers] = eligibleComputers;
+  if (otherEligibleComputers.length > 0) {
     return {
-      currentState: { kind: "computer", availability: "choice", computers: onlineComputers },
+      currentState: { kind: "computer", availability: "choice", computers: eligibleComputers },
       runtimeReady: false,
       handoffReady,
       canManage,
     };
+  }
+
+  let computer = eligibleComputer;
+  if (!computer) {
+    if (otherOnlineComputers.length > 0) {
+      return {
+        currentState: { kind: "computer", availability: "choice", computers: onlineComputers },
+        runtimeReady: false,
+        handoffReady,
+        canManage,
+      };
+    }
+    computer = onlineComputer;
   }
 
   const runnableProviders = facts.providers.filter(

@@ -75,8 +75,29 @@ describe("deriveOnboardingState", () => {
     });
   });
 
-  it("asks only when multiple Computers are eligible", () => {
+  it("automatically uses the only Computer with a runnable Provider", () => {
     expect(deriveOnboardingState(facts({ computers: [computerA, computerB] })).currentState).toEqual({
+      kind: "agent",
+      computer: computerA,
+      provider: codex,
+    });
+  });
+
+  it("asks among multiple eligible Computers without listing ineligible ones", () => {
+    const computerC = { ...computerB, id: "computer-c", displayName: "Computer C" };
+    const codexOnB = { ...codex, computerId: computerB.id };
+    expect(
+      deriveOnboardingState(facts({ computers: [computerA, computerB, computerC], providers: [codex, codexOnB] }))
+        .currentState,
+    ).toEqual({
+      kind: "computer",
+      availability: "choice",
+      computers: [computerA, computerB],
+    });
+  });
+
+  it("asks which online Computer to prepare when none has a runnable Provider", () => {
+    expect(deriveOnboardingState(facts({ computers: [computerA, computerB], providers: [] })).currentState).toEqual({
       kind: "computer",
       availability: "choice",
       computers: [computerA, computerB],

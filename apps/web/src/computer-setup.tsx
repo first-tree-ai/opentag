@@ -27,6 +27,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
   const baselineConnections = useRef<Map<string, string | null>>(new Map());
   const connectCodeExpiresAt = useRef(0);
   const connectAttempt = useRef(0);
+  const activePollCycle = useRef(0);
   const mounted = useRef(false);
   const onConnectedRef = useRef(onConnected);
   onConnectedRef.current = onConnected;
@@ -36,6 +37,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
     return () => {
       mounted.current = false;
       connectAttempt.current += 1;
+      activePollCycle.current += 1;
     };
   }, []);
 
@@ -50,11 +52,13 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
       if (!mounted.current || connectAttempt.current !== attempt) return;
       const issued = await browserApi.issueConnectCode(teamId);
       if (!mounted.current || connectAttempt.current !== attempt) return;
+      const cycle = activePollCycle.current + 1;
+      activePollCycle.current = cycle;
       baselineConnections.current = baseline;
       connectCodeExpiresAt.current = Date.parse(issued.issuedAt) + issued.expiresIn * 1_000;
       setBootstrapCommand(issued.bootstrapCommand);
       setComputerConnected(false);
-      setPollCycle(attempt);
+      setPollCycle(cycle);
       setWaitingForComputer(true);
     } catch (cause) {
       if (!mounted.current || connectAttempt.current !== attempt) return;
@@ -71,7 +75,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
     let pollTimer = 0;
     const expiryTimer = window.setTimeout(
       () => {
-        if (!active || completed) return;
+        if (!active || completed || activePollCycle.current !== pollCycle) return;
         completed = true;
         window.clearInterval(pollTimer);
         setWaitingForComputer(false);
@@ -83,7 +87,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
     pollTimer = window.setInterval(() => {
       void browserApi.ownComputers().then(
         (value) => {
-          if (!active || completed) return;
+          if (!active || completed || activePollCycle.current !== pollCycle) return;
           const connected = value.computers.some(
             (computer: Computer) =>
               computer.connectionStatus === "online" &&
@@ -101,7 +105,9 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
           onConnectedRef.current?.();
         },
         (cause: unknown) => {
-          if (active && !completed) setError(errorMessage(cause, "Unable to refresh Computers"));
+          if (active && !completed && activePollCycle.current === pollCycle) {
+            setError(errorMessage(cause, "Unable to refresh Computers"));
+          }
         },
       );
     }, COMPUTER_POLL_INTERVAL_MS);

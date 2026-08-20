@@ -25,6 +25,14 @@ const newComputer: Computer = {
   platform: "linux",
 };
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
 async function clickGenerate(): Promise<void> {
   await act(async () => {
     fireEvent.click(screen.getByRole("button", { name: "Generate connection command" }));
@@ -185,6 +193,70 @@ describe("ComputerSetup", () => {
     expect(screen.getByRole("status").textContent).toBe("Waiting for the Computer to connect…");
     expect(screen.queryByRole("alert")).toBeNull();
     expect(vi.getTimerCount()).toBe(2);
+  });
+
+  it("ignores an old in-flight poll after replacement issuance succeeds", async () => {
+    const oldPoll = deferred<{ computers: Computer[] }>();
+    const replacementIssue = deferred<{ bootstrapCommand: string; expiresIn: number; issuedAt: string }>();
+    const onConnected = vi.fn();
+    let ownComputersCall = 0;
+    vi.spyOn(browserApi, "ownComputers").mockImplementation(() => {
+      ownComputersCall += 1;
+      return ownComputersCall === 2 ? oldPoll.promise : Promise.resolve({ computers: [] });
+    });
+    vi.spyOn(browserApi, "issueConnectCode")
+      .mockResolvedValueOnce({ bootstrapCommand: "first command", expiresIn: 900, issuedAt: connectedAt })
+      .mockImplementationOnce(() => replacementIssue.promise);
+
+    render(<ComputerSetup teamId={teamId} onConnected={onConnected} />);
+    await clickGenerate();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500);
+    });
+    await clickGenerate();
+
+    await act(async () => {
+      replacementIssue.resolve({
+        bootstrapCommand: "replacement command",
+        expiresIn: 900,
+        issuedAt: "2026-08-20T00:00:01.500Z",
+      });
+      await Promise.resolve();
+      oldPoll.resolve({ computers: [newComputer] });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("replacement command")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("Waiting for the Computer to connect…");
+    expect(onConnected).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(2);
+  });
+
+  it("keeps the current polling cycle when replacement issuance fails", async () => {
+    const onConnected = vi.fn();
+    vi.spyOn(browserApi, "ownComputers")
+      .mockResolvedValueOnce({ computers: [] })
+      .mockResolvedValueOnce({ computers: [] })
+      .mockResolvedValue({ computers: [newComputer] });
+    vi.spyOn(browserApi, "issueConnectCode")
+      .mockResolvedValueOnce({ bootstrapCommand: "first command", expiresIn: 900, issuedAt: connectedAt })
+      .mockRejectedValueOnce(new Error("Replacement command failed"));
+
+    render(<ComputerSetup teamId={teamId} onConnected={onConnected} />);
+    await clickGenerate();
+    await clickGenerate();
+
+    expect(screen.getByRole("alert").textContent).toBe("Replacement command failed");
+    expect(screen.getByRole("status").textContent).toBe("Waiting for the Computer to connect…");
+    expect(vi.getTimerCount()).toBe(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500);
+    });
+
+    expect(screen.getByRole("status").textContent).toBe("Computer connected.");
+    expect(onConnected).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("normalizes connect-code issuance errors", async () => {

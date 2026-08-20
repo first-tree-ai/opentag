@@ -43,6 +43,8 @@ export interface OnboardingFacts {
   readonly team: OnboardingTeam | undefined;
   readonly computers: readonly OnboardingComputer[];
   readonly providers: readonly OnboardingProvider[];
+  /** An explicit current choice; ignored unless it still names a runnable route. */
+  readonly providerSelection?: Pick<OnboardingProvider, "computerId" | "provider">;
   /** The Agent belonging to this onboarding intent, if it already exists. */
   readonly agent: OnboardingAgent | undefined;
   readonly handoff: OnboardingHandoff | undefined;
@@ -76,15 +78,11 @@ export type OnboardingCurrentState =
       readonly computer: OnboardingComputer;
     }
   | {
-      readonly kind: "provider";
-      readonly availability: "choice";
-      readonly computer: OnboardingComputer;
-      readonly providers: readonly OnboardingProvider[];
-    }
-  | {
       readonly kind: "agent";
       readonly computer: OnboardingComputer;
       readonly provider: OnboardingProvider;
+      /** Remaining runnable Providers for a non-blocking Change control. */
+      readonly alternatives: readonly OnboardingProvider[];
     }
   | { readonly kind: "agent-runtime"; readonly agent: OnboardingAgent }
   | {
@@ -190,8 +188,9 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
   const runnableProviders = facts.providers.filter(
     (provider) => provider.computerId === computer.id && provider.runtimeReady,
   );
-  const [provider, ...otherRunnableProviders] = runnableProviders;
-  if (!provider) {
+  const orderedProviders = [...runnableProviders].sort(compareProviders);
+  const [defaultProvider] = orderedProviders;
+  if (!defaultProvider) {
     return {
       currentState: { kind: "provider", availability: "none", computer },
       runtimeReady: false,
@@ -199,21 +198,33 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
       canManage,
     };
   }
-  if (otherRunnableProviders.length > 0) {
-    return {
-      currentState: { kind: "provider", availability: "choice", computer, providers: runnableProviders },
-      runtimeReady: false,
-      handoffReady,
-      canManage,
-    };
-  }
+
+  const selection = facts.providerSelection;
+  const provider =
+    orderedProviders.find(
+      (candidate) =>
+        selection !== undefined &&
+        candidate.computerId === selection.computerId &&
+        candidate.provider === selection.provider,
+    ) ?? defaultProvider;
+  const alternatives = orderedProviders.filter(
+    (candidate) => candidate.computerId !== provider.computerId || candidate.provider !== provider.provider,
+  );
 
   return {
-    currentState: { kind: "agent", computer, provider },
+    currentState: { kind: "agent", computer, provider, alternatives },
     runtimeReady: true,
     handoffReady,
     canManage,
   };
+}
+
+function compareProviders(left: OnboardingProvider, right: OnboardingProvider): number {
+  return providerRank(left.provider) - providerRank(right.provider);
+}
+
+function providerRank(provider: AgentRuntimeProvider): number {
+  return provider === "codex" ? 0 : 1;
 }
 
 function agentRuntimeIsReady(agent: OnboardingAgent, providers: readonly OnboardingProvider[]): boolean {

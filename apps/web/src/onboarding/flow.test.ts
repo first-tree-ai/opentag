@@ -70,7 +70,7 @@ describe("deriveOnboardingState", () => {
   it("automatically uses the single online Computer and ignores offline alternatives", () => {
     const offline = { ...computerB, connectionStatus: "offline" as const };
     expect(deriveOnboardingState(facts({ computers: [offline, computerA] }))).toMatchObject({
-      currentState: { kind: "agent", computer: computerA, provider: codex },
+      currentState: { kind: "agent", computer: computerA, provider: codex, alternatives: [] },
       runtimeReady: true,
     });
   });
@@ -80,6 +80,7 @@ describe("deriveOnboardingState", () => {
       kind: "agent",
       computer: computerA,
       provider: codex,
+      alternatives: [],
     });
   });
 
@@ -115,22 +116,64 @@ describe("deriveOnboardingState", () => {
 
   it("automatically uses one runnable Provider", () => {
     expect(deriveOnboardingState(facts())).toMatchObject({
-      currentState: { kind: "agent", computer: computerA, provider: codex },
+      currentState: { kind: "agent", computer: computerA, provider: codex, alternatives: [] },
       runtimeReady: true,
     });
   });
 
-  it("asks only when multiple Providers are runnable", () => {
+  it("selects Codex by default regardless of Provider input order", () => {
     const claude = { ...codex, provider: "claude-code" as const };
-    expect(deriveOnboardingState(facts({ providers: [codex, claude] }))).toMatchObject({
+    expect(deriveOnboardingState(facts({ providers: [claude, codex] }))).toMatchObject({
       currentState: {
-        kind: "provider",
-        availability: "choice",
+        kind: "agent",
         computer: computerA,
-        providers: [codex, claude],
+        provider: codex,
       },
-      runtimeReady: false,
+      runtimeReady: true,
     });
+  });
+
+  it("preserves an explicit Claude Code selection while it remains runnable", () => {
+    const claude = { ...codex, provider: "claude-code" as const };
+    expect(
+      deriveOnboardingState(
+        facts({
+          providers: [codex, claude],
+          providerSelection: { computerId: computerA.id, provider: "claude-code" },
+        }),
+      ).currentState,
+    ).toMatchObject({ kind: "agent", provider: claude });
+  });
+
+  it("falls back to Codex when an explicit selection is stale", () => {
+    const claude = { ...codex, provider: "claude-code" as const };
+    const unavailableClaude = { ...codex, provider: "claude-code" as const, runtimeReady: false };
+    const unavailable = deriveOnboardingState(
+      facts({
+        providers: [unavailableClaude, codex],
+        providerSelection: { computerId: computerA.id, provider: "claude-code" },
+      }),
+    ).currentState;
+    const wrongComputer = deriveOnboardingState(
+      facts({
+        providers: [claude, codex],
+        providerSelection: { computerId: computerB.id, provider: "claude-code" },
+      }),
+    ).currentState;
+    expect(unavailable).toMatchObject({ kind: "agent", provider: codex });
+    expect(wrongComputer).toMatchObject({ kind: "agent", provider: codex });
+  });
+
+  it("returns only the remaining runnable Providers as alternatives", () => {
+    const claude = { ...codex, provider: "claude-code" as const };
+    expect(
+      deriveOnboardingState(
+        facts({
+          providers: [codex, claude],
+          providerSelection: { computerId: computerA.id, provider: "claude-code" },
+        }),
+      ).currentState,
+    ).toEqual({ kind: "agent", computer: computerA, provider: claude, alternatives: [codex] });
   });
 
   it("does not move an existing Agent back when its Computer goes offline", () => {

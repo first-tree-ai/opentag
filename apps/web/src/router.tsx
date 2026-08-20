@@ -1922,9 +1922,16 @@ const settingsSections = [
 function SettingsPage() {
   const { section = "team" } = useParams();
   const { invitationOpen, setInvitationMutationPending } = useOutletContext<AppShellOutletContext>();
+  const location = useLocation();
   const navigate = useNavigate();
   const { me, membership, refreshMe } = useTeam();
   const currentSection = settingsSections.find((item) => item.key === section);
+
+  useEffect(() => {
+    if (section !== "team" || location.hash !== "#members") return;
+    document.getElementById("members")?.scrollIntoView({ block: "start" });
+  }, [location.hash, section]);
+
   if (!currentSection) return <NotFoundPage />;
   return (
     <section className="settings-page">

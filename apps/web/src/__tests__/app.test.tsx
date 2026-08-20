@@ -420,6 +420,7 @@ describe("OpenTag Web App Shell", () => {
     window.localStorage.clear();
     window.sessionStorage.clear();
     window.history.replaceState({}, "", "/agents");
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
   });
 
   it("uses the same Agents-first shell for admins", async () => {
@@ -877,6 +878,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Team members" })).toBeTruthy();
     expect(window.location.pathname).toBe("/settings/team");
     expect(window.location.hash).toBe("#members");
+    expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalledWith({ block: "start" });
   });
 
   it("redirects the legacy Settings account URL to the editable Account page", async () => {

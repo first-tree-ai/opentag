@@ -1,4 +1,4 @@
-import { TeamNameSchema } from "@opentag/shared";
+import { TeamNameSchema, UserDisplayNameSchema } from "@opentag/shared";
 import { sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient } from "../db/client.js";
@@ -9,7 +9,7 @@ import { TeamMembershipService } from "../services/teams/index.js";
 export const BootstrapAdminInputSchema = z
   .object({
     connectCodeTtlSeconds: z.number().int().positive().default(CONNECT_CODE_TTL_SECONDS),
-    displayName: z.string().trim().min(1),
+    displayName: UserDisplayNameSchema,
     email: z.string().trim().toLowerCase().email(),
     teamDisplayName: z.string().trim().min(1),
     teamName: z.string().trim().toLowerCase().pipe(TeamNameSchema),

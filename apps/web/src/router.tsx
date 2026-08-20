@@ -98,7 +98,7 @@ export function AppRouter() {
           <Route path="/agents/new" element={<NewAgentPage />} />
           <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
           <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
-          <Route path="/settings" element={<Navigate replace to="team" />} />
+          <Route path="/settings" element={<Navigate replace to="account" />} />
           <Route path="/settings/:section" element={<SettingsPage />} />
         </Route>
       </Route>
@@ -297,7 +297,7 @@ function AppShell() {
         </label>
         <nav>
           <NavLink to="/agents">Agents</NavLink>
-          <NavLink to="/settings/team">Settings</NavLink>
+          <NavLink to="/settings/account">Settings</NavLink>
         </nav>
       </aside>
       <div className="app-main">
@@ -804,19 +804,20 @@ function AccessTab({ agent }: { agent: AgentDetail }) {
 }
 
 function SettingsPage() {
-  const { section = "team" } = useParams();
+  const { section = "account" } = useParams();
   const { me, membership, refreshMe } = useTeam();
-  const allowed = ["team", "computers", "resources", "members", "security"];
+  const allowed = ["account", "team", "computers", "resources", "members", "security"];
   if (!allowed.includes(section)) return <NotFoundPage />;
   return (
     <Page title="Settings">
-      <nav className="tabs" aria-label="Team settings">
+      <nav className="tabs" aria-label="Settings">
         {allowed.map((item) => (
           <NavLink to={`/settings/${item}`} key={item}>
             {titleCase(item)}
           </NavLink>
         ))}
       </nav>
+      {section === "account" ? <AccountSettings refreshMe={refreshMe} user={me.user} /> : null}
       {section === "team" ? <TeamSettings membership={membership} refreshMe={refreshMe} /> : null}
       {section === "members" ? (
         <MembersSettings
@@ -836,6 +837,67 @@ function SettingsPage() {
         <EmptyState title="Security overview">Sensitive credentials are never returned to the browser.</EmptyState>
       ) : null}
     </Page>
+  );
+}
+
+function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeResponse["user"] }) {
+  const saveInFlight = useRef(false);
+  const [displayName, setDisplayName] = useState(user.displayName);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string>();
+  const [error, setError] = useState<string>();
+
+  useEffect(() => setDisplayName(user.displayName), [user.displayName]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (saveInFlight.current) return;
+    saveInFlight.current = true;
+    setSaving(true);
+    setMessage(undefined);
+    setError(undefined);
+    try {
+      const updated = await browserApi.updateProfile({ displayName });
+      setDisplayName(updated.displayName);
+      setMessage("Account profile saved.");
+      refreshMe();
+    } catch (cause) {
+      setDisplayName(user.displayName);
+      setError(cause instanceof Error ? cause.message : "Unable to save the account profile");
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form className="form-card" onSubmit={submit}>
+      <h2>Account profile</h2>
+      <label>
+        Email
+        <input name="email" readOnly type="email" value={user.email} />
+      </label>
+      <label>
+        Display name
+        <input
+          maxLength={255}
+          name="displayName"
+          onChange={(event) => setDisplayName(event.currentTarget.value)}
+          required
+          value={displayName}
+        />
+      </label>
+      <p className="muted">This name is shared across every Team you belong to.</p>
+      <button className="button" disabled={saving} type="submit">
+        {saving ? "Saving…" : "Save account profile"}
+      </button>
+      {message ? <p role="status">{message}</p> : null}
+      {error ? (
+        <p className="notice error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </form>
   );
 }
 

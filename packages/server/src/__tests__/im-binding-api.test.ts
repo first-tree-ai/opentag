@@ -40,6 +40,7 @@ function authService(): UserAuthService {
     exchangeConnectCode: vi.fn(),
     refresh: vi.fn(),
     getActiveUserById: vi.fn(),
+    updateSelfProfile: vi.fn(),
     getAuthenticatedUser: vi.fn().mockResolvedValue({
       tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       me: {

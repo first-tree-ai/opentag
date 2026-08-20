@@ -11,6 +11,25 @@ function setDocumentCookie(value: string): void {
 }
 
 describe("BrowserApi", () => {
+  it("updates the current user profile with PATCH, response parsing, and browser CSRF", async () => {
+    setDocumentCookie("opentag_csrf=profile-csrf; Path=/");
+    const profile = { id: userId, email: "ada@example.com", displayName: "Ada Lovelace" };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("/api/v1/me");
+      expect(init?.method).toBe("PATCH");
+      expect(init?.body).toBe(JSON.stringify({ displayName: "Ada Lovelace" }));
+      expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
+      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("profile-csrf");
+      return new Response(JSON.stringify(profile), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    await expect(new BrowserApi(fetchImpl).updateProfile({ displayName: "Ada Lovelace" })).resolves.toEqual(profile);
+    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
+
   it("updates a Team member role with the browser mutation contract", async () => {
     setDocumentCookie("opentag_csrf=member-csrf; Path=/");
     const updatedMember = {

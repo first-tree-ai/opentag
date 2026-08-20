@@ -53,6 +53,11 @@ export {
   RefreshTokenResponseSchema,
   type TeamName,
   TeamNameSchema,
+  type UpdateUserProfileRequest,
+  UpdateUserProfileRequestSchema,
+  UserDisplayNameSchema,
+  type UserProfile,
+  UserProfileSchema,
 } from "./auth.js";
 export {
   type ChannelConfig,

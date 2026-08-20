@@ -4,6 +4,8 @@ import {
   ConnectCodeIssueResponseSchema,
   HTTP_PATHS,
   MeResponseSchema,
+  UpdateUserProfileRequestSchema,
+  UserProfileSchema,
 } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
 import { createUserAuthPreHandler } from "../plugins/user-auth.js";
@@ -26,6 +28,12 @@ export function registerMeRoutes(
   app.get(HTTP_PATHS.me, { preHandler }, async (request, reply) =>
     reply.code(200).send(MeResponseSchema.parse(request.authContext?.me)),
   );
+  app.patch(HTTP_PATHS.me, { preHandler }, async (request, reply) => {
+    const userId = request.authContext?.me.user.id;
+    if (!userId) throw new Error("Authenticated user context is missing");
+    const input = parseRequest(UpdateUserProfileRequestSchema, request.body);
+    return reply.code(200).send(UserProfileSchema.parse(await authService.updateSelfProfile(userId, input)));
+  });
 
   if (options.connectCodeIssuer && options.environment && options.publicUrl) {
     const connectCodeIssuer = options.connectCodeIssuer;

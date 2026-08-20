@@ -123,6 +123,23 @@ describe("createClientRuntime production composition", () => {
     });
     runtime.stop();
     runtime.reportOwner.stop();
+
+    const throwingConnection = runtimeConnection();
+    const throwingRuntime = await createClientRuntime(throwingConnection, {
+      clientVersion: "0.0.1",
+      codexHome: resolve(home, "throwing-codex-home"),
+      environment: {},
+      factory: readyFactory("codex", async () => {
+        throw new Error("probe transport failed");
+      }),
+      home: resolve(home, "throwing-runtime"),
+    });
+    await throwingRuntime.reconciler.reconcile(reconcileRequest(throwingConnection.computerId, snapshot()));
+    await expect(throwingRuntime.runtimeManager.ensureRuntime("session-1")).rejects.toMatchObject({
+      result: { issues: [{ code: "temporarily_unavailable" }] },
+    });
+    throwingRuntime.stop();
+    throwingRuntime.reportOwner.stop();
   });
 
   it("uses HOME when CODEX_HOME is absent", () => {

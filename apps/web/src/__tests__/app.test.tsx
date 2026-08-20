@@ -639,7 +639,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/settings/team");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Team members" })).toBeTruthy();
-    expect(screen.getAllByLabelText("Display name")).toHaveLength(1);
+    expect(screen.getAllByLabelText("Team name")).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Save account profile" })).toBeNull();
   });
 
@@ -855,7 +855,7 @@ describe("OpenTag Web App Shell", () => {
     ).toBeNull();
   });
 
-  it("combines Team profile, members, and invitations in task order", async () => {
+  it("groups invitations with Team members", async () => {
     installApi("admin");
     window.history.replaceState({}, "", "/settings/team");
     render(<App />);
@@ -867,7 +867,10 @@ describe("OpenTag Web App Shell", () => {
       within(teamSettings)
         .getAllByRole("heading", { level: 2 })
         .map((heading) => heading.textContent),
-    ).toEqual(["Team profile", "Team members", "Invite people"]);
+    ).toEqual(["Team profile", "Team members"]);
+    const membersSection = document.querySelector<HTMLElement>("#members");
+    if (!membersSection) throw new Error("Team members section was not rendered");
+    expect(within(membersSection).getByRole("heading", { level: 3, name: "Invite members" })).toBeTruthy();
   });
 
   it("redirects the legacy Members URL to the merged Team page", async () => {
@@ -925,21 +928,31 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("table")).toBeNull();
   });
 
-  it("lets admins rename a Team and refreshes the UUID-selected Team context from /me", async () => {
+  it("lets admins rename a Team without changing its CLI identifier", async () => {
     installApi("admin");
     window.localStorage.setItem("opentag.selectedTeamId", teamId);
     window.history.replaceState({}, "", "/settings/team");
     render(<App />);
-    const name = await screen.findByLabelText("Canonical name");
-    const displayName = screen.getByLabelText("Display name");
-    fireEvent.change(name, { target: { value: "RENAMED-TEAM" } });
+    const displayName = await screen.findByLabelText("Team name");
+    const profileForm = displayName.closest("form");
+    if (!profileForm) throw new Error("Team profile form was not rendered");
+    const cliIdentifier = within(profileForm).getByText("example", { selector: "dd code" });
+    expect(cliIdentifier.textContent).toContain("example");
+    expect(within(profileForm).getAllByRole("textbox")).toHaveLength(1);
     fireEvent.change(displayName, { target: { value: "Renamed Team" } });
     fireEvent.click(screen.getByRole("button", { name: "Save Team profile" }));
     await waitFor(() =>
       expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === "/api/v1/me")).toHaveLength(2),
     );
-    expect(await screen.findByDisplayValue("renamed-team")).toBeTruthy();
-    expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Renamed Team");
+    const updateCall = vi
+      .mocked(fetch)
+      .mock.calls.find(([input, init]) => String(input) === `/api/v1/teams/${teamId}` && init?.method === "PATCH");
+    expect(JSON.parse(String(updateCall?.[1]?.body))).toEqual({ displayName: "Renamed Team" });
+    const refreshedDisplayName = (await screen.findByLabelText("Team name")) as HTMLInputElement;
+    const refreshedProfileForm = refreshedDisplayName.closest("form");
+    if (!refreshedProfileForm) throw new Error("Refreshed Team profile form was not rendered");
+    expect(refreshedDisplayName.value).toBe("Renamed Team");
+    expect(within(refreshedProfileForm).getByText("example", { selector: "dd code" })).toBeTruthy();
     expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(teamId);
   });
 
@@ -948,9 +961,9 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/settings/team");
     render(<App />);
     expect(await screen.findByText("example")).toBeTruthy();
-    expect(screen.getByText("Display name").parentElement?.querySelector("dd")?.textContent).toBe("Example");
+    expect(screen.getByText("Team name").parentElement?.querySelector("dd")?.textContent).toBe("Example");
     expect(screen.queryByRole("button", { name: "Save Team profile" })).toBeNull();
-    expect(screen.queryByLabelText("Canonical name")).toBeNull();
+    expect(screen.queryByLabelText("CLI identifier")).toBeNull();
   });
 
   it("accepts an invitation and selects the newly joined Team", async () => {

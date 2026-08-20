@@ -11,7 +11,11 @@ import type {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeFactory } from "../agent-runtime/types.js";
 import { ClaudeCodeAgentRuntimeFactory } from "../providers/claude-code/agent-runtime.js";
-import type { ClaudeCodeProcessClient, ClaudeCodeProcessResult } from "../providers/claude-code/process-wire.js";
+import {
+  type ClaudeCodeProcessClient,
+  ClaudeCodeProcessError,
+  type ClaudeCodeProcessResult,
+} from "../providers/claude-code/process-wire.js";
 import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
 import { CodexAgentRuntimeFactory } from "../providers/codex/agent-runtime.js";
 import type {
@@ -156,7 +160,11 @@ describe("Agent Runtime Client Turn vertical", () => {
     await fixture.runtimeManager.close();
   });
 
-  it.each(["bridge", "process"] as const)("reports Claude Code %s setup failure as not started", async (failure) => {
+  it.each([
+    ["bridge", 0],
+    ["process", 0],
+    ["spawn", 1],
+  ] as const)("reports Claude Code %s setup failure as not started", async (failure, processCount) => {
     const fixture = await runtimeFixture(Promise.resolve(), Promise.resolve(), "claude-code", failure);
     const accepted = await fixture.custody.accept(delivery(fixture.runtime, `delivery-${failure}`, "use Claude"));
     await accepted.onAcceptedSent?.();
@@ -167,7 +175,7 @@ describe("Agent Runtime Client Turn vertical", () => {
       executionEffects: "not_started",
       errorReason: "provider_start_failed",
     });
-    expect(fixture.claudeProcesses).toHaveLength(0);
+    expect(fixture.claudeProcesses).toHaveLength(processCount);
     await fixture.record(report);
     await fixture.runtimeManager.close();
   });
@@ -239,7 +247,7 @@ async function runtimeFixture(
   terminalGate: Promise<void> = Promise.resolve(),
   startingGate: Promise<void> = Promise.resolve(),
   provider: "codex" | "claude-code" = "codex",
-  claudeFailure?: "bridge" | "process",
+  claudeFailure?: "bridge" | "process" | "spawn",
 ) {
   const home = await mkdtemp(resolve(tmpdir(), "opentag-turn-integration-"));
   directories.push(home);
@@ -268,7 +276,7 @@ async function runtimeFixture(
           createSessionId: () => "11111111-1111-4111-8111-111111111111",
           createProcess: (_cwd, args) => {
             if (claudeFailure === "process") throw 42;
-            const process = new ScriptedClaudeCodeProcess(args, terminalGate);
+            const process = new ScriptedClaudeCodeProcess(args, terminalGate, claudeFailure === "spawn");
             claudeProcesses.push(process);
             return process;
           },
@@ -504,10 +512,12 @@ class ScriptedTurnClient implements InteractiveCodexAppServerClient {
 
 class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
   readonly args: readonly string[];
+  readonly #failSpawn: boolean;
   readonly #terminalGate: Promise<void>;
 
-  constructor(args: readonly string[], terminalGate: Promise<void>) {
+  constructor(args: readonly string[], terminalGate: Promise<void>, failSpawn = false) {
     this.args = args;
+    this.#failSpawn = failSpawn;
     this.#terminalGate = terminalGate;
   }
 
@@ -515,6 +525,7 @@ class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
     _input: Readonly<Record<string, unknown>>,
     onMessage: (message: Readonly<Record<string, unknown>>) => void,
   ): Promise<ClaudeCodeProcessResult> {
+    if (this.#failSpawn) throw new ClaudeCodeProcessError("spawn", "asynchronous spawn failed");
     await this.#terminalGate;
     onMessage({
       type: "system",

@@ -10,7 +10,6 @@ import type {
   MeResponse,
   TeamComputerSummary,
   TeamMemberSummary,
-  UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
 import { MembershipRoleSchema } from "@opentag/shared/browser";
 import {
@@ -41,6 +40,7 @@ import { ComputerSetup } from "./computer-setup.js";
 import { CreateTeamForm } from "./create-team-form.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
 import { OnboardingPage } from "./onboarding/page.js";
+import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
 
@@ -345,6 +345,7 @@ export function AppRouter() {
           <Route path="/account" element={<AccountPage />} />
           <Route path="/settings" element={<Navigate replace to="team" />} />
           <Route path="/settings/account" element={<Navigate replace to="/account" />} />
+          <Route path="/settings/members" element={<Navigate replace to="/settings/team#members" />} />
           <Route path="/settings/:section" element={<SettingsPage />} />
         </Route>
       </Route>
@@ -760,12 +761,15 @@ function AppShell() {
           </div>
           <nav aria-label="Workspace" className="primary-nav">
             <NavLink to="/agents" onClick={() => setNavigationOpen(false)}>
+              <WorkspaceNavIcon name="agents" />
               Agents
             </NavLink>
             <span className="nav-placeholder" aria-disabled="true">
+              <WorkspaceNavIcon name="tasks" />
               Tasks
             </span>
             <NavLink to="/settings" onClick={() => setNavigationOpen(false)}>
+              <WorkspaceNavIcon name="settings" />
               Settings
             </NavLink>
           </nav>
@@ -847,6 +851,42 @@ function AppShell() {
         />
       ) : null}
     </div>
+  );
+}
+
+function WorkspaceNavIcon({ name }: { name: "agents" | "settings" | "tasks" }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className="primary-nav-icon"
+      fill="none"
+      focusable="false"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.8"
+      viewBox="0 0 24 24"
+    >
+      {name === "agents" ? (
+        <>
+          <circle cx="9" cy="8" r="3" />
+          <path d="M3.5 19v-1.5A4.5 4.5 0 0 1 8 13h2a4.5 4.5 0 0 1 4.5 4.5V19" />
+          <path d="M15.5 5.4a3 3 0 0 1 0 5.2M17 13.4a4.5 4.5 0 0 1 3.5 4.4V19" />
+        </>
+      ) : null}
+      {name === "tasks" ? (
+        <>
+          <rect height="17" rx="2.2" width="17" x="3.5" y="3.5" />
+          <path d="m7.5 12 3 3 6-6" />
+        </>
+      ) : null}
+      {name === "settings" ? (
+        <>
+          <path d="m9.8 3.8.6-1.6h3.2l.6 1.6 1.8.7 1.5-.7 2.3 2.3-.7 1.5.7 1.8 1.6.6v3.2l-1.6.6-.7 1.8.7 1.5-2.3 2.3-1.5-.7-1.8.7-.6 1.6h-3.2l-.6-1.6-1.8-.7-1.5.7-2.3-2.3.7-1.5-.7-1.8-1.6-.6V10l1.6-.6.7-1.8-.7-1.5 2.3-2.3 1.5.7 1.8-.7Z" />
+          <circle cx="12" cy="12" r="3" />
+        </>
+      ) : null}
+    </svg>
   );
 }
 
@@ -1612,7 +1652,10 @@ function RuntimeTab({ agent }: { agent: AgentDetailView }) {
             ]}
           />
           {config ? (
-            <RuntimeConfigForm initialConfig={config} />
+            <RuntimeConfigurationForm
+              initialConfig={config}
+              save={(input) => browserApi.updateAgent(config.id, input)}
+            />
           ) : (
             <p className="muted">Runtime instructions and tuning are visible only to Team Admins.</p>
           )}
@@ -1620,67 +1663,6 @@ function RuntimeTab({ agent }: { agent: AgentDetailView }) {
       )}
     </AsyncState>
   );
-}
-
-function RuntimeConfigForm({ initialConfig }: { initialConfig: AgentAdminConfig }) {
-  const [config, setConfig] = useState(initialConfig);
-  const [message, setMessage] = useState<string>();
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    const maxDuration = String(data.get("maxDurationMs") ?? "").trim();
-    const runtimeConfig: UpdateAgentRuntimeConfig = {
-      model: nullableText(data.get("model")),
-      reasoningEffort: nullableText(data.get("reasoningEffort")),
-      instructions: String(data.get("instructions") ?? ""),
-      maxDurationMs: maxDuration ? Number(maxDuration) : null,
-    };
-    try {
-      const updated = await browserApi.updateAgent(config.id, {
-        expectedRevision: config.revision,
-        runtimeConfig,
-      });
-      setConfig(updated);
-      setMessage("Runtime configuration saved.");
-    } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to save Runtime configuration");
-    }
-  }
-  return (
-    <form className="form-card" key={config.revision} onSubmit={submit}>
-      <h2>Admin configuration</h2>
-      <label>
-        Model
-        <input defaultValue={config.runtimeConfig.model ?? ""} name="model" placeholder="Provider default" />
-      </label>
-      <label>
-        Reasoning effort
-        <input
-          defaultValue={config.runtimeConfig.reasoningEffort ?? ""}
-          name="reasoningEffort"
-          placeholder="Provider default"
-        />
-      </label>
-      <label>
-        Instructions
-        <textarea defaultValue={config.runtimeConfig.instructions} name="instructions" rows={10} />
-      </label>
-      <label>
-        Maximum duration (ms)
-        <input defaultValue={config.runtimeConfig.maxDurationMs ?? ""} min="1" name="maxDurationMs" type="number" />
-      </label>
-      <p className="muted">Allowed message tools: {config.runtimeConfig.allowedTools.join(", ") || "None"}</p>
-      <button className="button commit" type="submit">
-        Save Runtime settings
-      </button>
-      {message ? <p role="status">{message}</p> : null}
-    </form>
-  );
-}
-
-function nullableText(value: FormDataEntryValue | null): string | null {
-  const text = String(value ?? "").trim();
-  return text || null;
 }
 
 function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
@@ -1896,8 +1878,7 @@ function AccessTab({ agent }: { agent: AgentDetailView }) {
 }
 
 const settingsSections = [
-  { key: "team", label: "General" },
-  { key: "members", label: "Members" },
+  { key: "team", label: "Team" },
   { key: "computers", label: "Computers" },
   { key: "resources", label: "Resources" },
   { key: "integrations", label: "Integrations" },
@@ -1909,9 +1890,16 @@ const settingsSections = [
 function SettingsPage() {
   const { section = "team" } = useParams();
   const { invitationOpen, setInvitationMutationPending } = useOutletContext<AppShellOutletContext>();
+  const location = useLocation();
   const navigate = useNavigate();
   const { me, membership, refreshMe } = useTeam();
   const currentSection = settingsSections.find((item) => item.key === section);
+
+  useEffect(() => {
+    if (section !== "team" || location.hash !== "#members") return;
+    document.getElementById("members")?.scrollIntoView({ block: "start" });
+  }, [location.hash, section]);
+
   if (!currentSection) return <NotFoundPage />;
   return (
     <section className="settings-page">
@@ -1942,15 +1930,13 @@ function SettingsPage() {
             <h2>{currentSection.label}</h2>
             <p>{settingsSectionDescription(currentSection.key)}</p>
           </header>
-          {section === "team" ? <TeamSettings membership={membership} refreshMe={refreshMe} /> : null}
-          {section === "members" ? (
-            <MembersSettings
-              canManage={membership.role === "admin"}
+          {section === "team" ? (
+            <TeamSettings
               currentUserId={me.user.id}
               invitationDialogOpen={invitationOpen}
+              membership={membership}
               onInvitationMutationPendingChange={setInvitationMutationPending}
               refreshMe={refreshMe}
-              teamId={membership.teamId}
             />
           ) : null}
           {section === "computers" ? (
@@ -2184,7 +2170,35 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
   );
 }
 
-function TeamSettings({ membership, refreshMe }: { membership: MeMembership; refreshMe: () => void }) {
+function TeamSettings({
+  currentUserId,
+  invitationDialogOpen,
+  membership,
+  onInvitationMutationPendingChange,
+  refreshMe,
+}: {
+  currentUserId: string;
+  invitationDialogOpen: boolean;
+  membership: MeMembership;
+  onInvitationMutationPendingChange: (pending: boolean) => void;
+  refreshMe: () => void;
+}) {
+  return (
+    <div className="settings-team-stack">
+      <TeamProfileSettings membership={membership} refreshMe={refreshMe} />
+      <MembersSettings
+        canManage={membership.role === "admin"}
+        currentUserId={currentUserId}
+        invitationDialogOpen={invitationDialogOpen}
+        onInvitationMutationPendingChange={onInvitationMutationPendingChange}
+        refreshMe={refreshMe}
+        teamId={membership.teamId}
+      />
+    </div>
+  );
+}
+
+function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembership; refreshMe: () => void }) {
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
@@ -2360,10 +2374,7 @@ function MembersSettings({
 
   return (
     <>
-      {canManage && !invitationDialogOpen ? (
-        <InvitationSettings teamId={teamId} onMutationPendingChange={onInvitationMutationPendingChange} />
-      ) : null}
-      <section className="settings-list-section">
+      <section className="settings-list-section" id="members">
         <AsyncState state={state}>
           {(value) => {
             const adminCount = value.members.filter((member: TeamMemberSummary) => member.role === "admin").length;
@@ -2430,6 +2441,9 @@ function MembersSettings({
           </p>
         ) : null}
       </section>
+      {canManage && !invitationDialogOpen ? (
+        <InvitationSettings teamId={teamId} onMutationPendingChange={onInvitationMutationPendingChange} />
+      ) : null}
     </>
   );
 }
@@ -2545,7 +2559,7 @@ function InvitationDialog({
           </button>
         </header>
         <p className="dialog-description" id="invitation-dialog-description">
-          Anyone with the active link can join this Team as a member until the link expires.
+          This link lets anyone join the Team as a member until it expires.
         </p>
         <InvitationSettings presentation="dialog" teamId={teamId} onMutationPendingChange={onMutationPendingChange} />
       </div>
@@ -2569,12 +2583,12 @@ function InvitationSettings({
   const [error, setError] = useState<string>();
 
   async function createInvitation() {
-    await mutateInvitation(() => browserApi.createInvitation(teamId), "Invitation link created.");
+    await mutateInvitation(() => browserApi.createInvitation(teamId), "Invite link created.");
   }
 
   async function rotateInvitation() {
-    if (!window.confirm("Rotate this invitation link? The current link will stop working immediately.")) return;
-    await mutateInvitation(() => browserApi.rotateInvitation(teamId), "Invitation link rotated.");
+    if (!window.confirm("Replace this invite link? The current link will stop working immediately.")) return;
+    await mutateInvitation(() => browserApi.rotateInvitation(teamId), "Invite link replaced.");
   }
 
   async function mutateInvitation(action: () => Promise<NonNullable<typeof current>>, successMessage: string) {
@@ -2586,7 +2600,7 @@ function InvitationSettings({
       setCurrent(await action());
       setMessage(successMessage);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to update the invitation link");
+      setError(cause instanceof Error ? cause.message : "Unable to update the invite link");
     } finally {
       setBusy(false);
       onMutationPendingChange(false);
@@ -2599,9 +2613,9 @@ function InvitationSettings({
     try {
       if (!window.navigator.clipboard) throw new Error("Clipboard access is unavailable in this browser");
       await window.navigator.clipboard.writeText(inviteUrl);
-      setMessage("Invitation link copied.");
+      setMessage("Invite link copied.");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to copy the invitation link");
+      setError(cause instanceof Error ? cause.message : "Unable to copy the invite link");
     }
   }
 
@@ -2610,7 +2624,7 @@ function InvitationSettings({
       {presentation === "panel" ? (
         <>
           <h2>Invite people</h2>
-          <p>Anyone with the active link can join this Team as a member until the link expires.</p>
+          <p>This link lets anyone join the Team as a member until it expires.</p>
         </>
       ) : null}
       <AsyncState state={state}>
@@ -2619,22 +2633,22 @@ function InvitationSettings({
           return invitation ? (
             <>
               <label className="invite-link">
-                Invitation link
-                <input aria-label="Invitation link" readOnly type="url" value={invitation.inviteUrl} />
+                Invite link
+                <input aria-label="Invite link" readOnly type="url" value={invitation.inviteUrl} />
               </label>
-              <p className="muted">Expires {formatDate(invitation.expiresAt)}.</p>
+              <p className="muted">Expires {formatInviteExpiry(invitation.expiresAt)}.</p>
               <div className={presentation === "dialog" ? "actions dialog-actions" : "actions"}>
                 <button type="button" onClick={() => void copyInvitation(invitation.inviteUrl)}>
-                  Copy invitation link
+                  Copy link
                 </button>
                 <button className="secondary" disabled={busy} type="button" onClick={() => void rotateInvitation()}>
-                  {busy ? "Rotating…" : "Rotate invitation link"}
+                  {busy ? "Replacing…" : "Replace link"}
                 </button>
               </div>
             </>
           ) : (
             <button className="button" disabled={busy} type="button" onClick={() => void createInvitation()}>
-              {busy ? "Creating…" : "Create invitation link"}
+              {busy ? "Creating…" : "Create invite link"}
             </button>
           );
         }}
@@ -2909,8 +2923,7 @@ function agentSectionDescription(section: (typeof agentSections)[number]["key"])
 
 function settingsSectionDescription(section: (typeof settingsSections)[number]["key"]): string {
   const descriptions = {
-    team: "Manage the current Team's stable identity and display name.",
-    members: "Invite people and review the Team membership visible to you.",
+    team: "Manage the current Team's profile, members, and invitation link.",
     computers: "Connect and inspect the Computers available to the current Team.",
     resources: "Review reusable repositories, skills, tools, and prompts.",
     integrations: "Review supported Team and Agent connection surfaces.",
@@ -2923,4 +2936,11 @@ function settingsSectionDescription(section: (typeof settingsSections)[number]["
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+}
+
+function formatInviteExpiry(value: string) {
+  const date = new Date(value);
+  const day = new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(date);
+  const time = new Intl.DateTimeFormat("en-US", { timeStyle: "short" }).format(date);
+  return `${day} at ${time}`;
 }

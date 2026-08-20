@@ -342,7 +342,8 @@ export function AppRouter() {
           <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
           <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
           <Route path="/account" element={<AccountPage />} />
-          <Route path="/settings" element={<Navigate replace to="account" />} />
+          <Route path="/settings" element={<Navigate replace to="team" />} />
+          <Route path="/settings/account" element={<Navigate replace to="/account" />} />
           <Route path="/settings/:section" element={<SettingsPage />} />
         </Route>
       </Route>
@@ -1375,39 +1376,10 @@ function AgentDetailPage() {
 }
 
 function AccountPage() {
-  const { me } = useTeam();
-  const navigate = useNavigate();
-  const [loggingOut, setLoggingOut] = useState(false);
-  const [error, setError] = useState<string>();
-  async function logout() {
-    setLoggingOut(true);
-    setError(undefined);
-    try {
-      await browserApi.logout();
-      navigate("/login", { replace: true });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to sign out");
-      setLoggingOut(false);
-    }
-  }
+  const { me, refreshMe } = useTeam();
   return (
-    <Page title="Account" description="Review the identity used to access OpenTag.">
-      <DefinitionList
-        rows={[
-          ["Display name", me.user.displayName],
-          ["Email", me.user.email],
-        ]}
-      />
-      <div className="account-page-actions">
-        <button className="secondary" disabled={loggingOut} type="button" onClick={() => void logout()}>
-          {loggingOut ? "Signing out…" : "Sign out"}
-        </button>
-        {error ? (
-          <div className="notice error" role="alert">
-            {error}
-          </div>
-        ) : null}
-      </div>
+    <Page title="Account" description="Manage the identity used across every Team you belong to.">
+      <AccountSettings refreshMe={refreshMe} user={me.user} />
     </Page>
   );
 }
@@ -1918,18 +1890,15 @@ function AccessTab({ agent }: { agent: AgentDetailView }) {
 }
 
 const settingsSections = [
-  { key: "account", label: "Account", group: "Personal" },
-  { key: "team", label: "General", group: "Team" },
-  { key: "members", label: "Members", group: "Team" },
-  { key: "computers", label: "Computers", group: "Team" },
-  { key: "resources", label: "Resources", group: "Capabilities" },
-  { key: "integrations", label: "Integrations", group: "Capabilities" },
-  { key: "access", label: "Access", group: "Governance" },
-  { key: "usage", label: "Usage", group: "Governance" },
-  { key: "security", label: "Security", group: "Governance" },
+  { key: "team", label: "General" },
+  { key: "members", label: "Members" },
+  { key: "computers", label: "Computers" },
+  { key: "resources", label: "Resources" },
+  { key: "integrations", label: "Integrations" },
+  { key: "access", label: "Access" },
+  { key: "usage", label: "Usage" },
+  { key: "security", label: "Security" },
 ] as const;
-
-const settingsGroups = ["Personal", "Team", "Capabilities", "Governance"] as const;
 
 function SettingsPage() {
   const { section = "team" } = useParams();
@@ -1942,37 +1911,24 @@ function SettingsPage() {
     <section className="settings-page">
       <header className="settings-title">
         <h1>Settings</h1>
-        <p>Manage your account and the current Team's identity, infrastructure, access, and security.</p>
+        <p>Manage the current Team's identity, infrastructure, access, and security.</p>
       </header>
       <label className="local-nav-select">
         <span>Settings section</span>
         <select value={section} onChange={(event) => navigate(`/settings/${event.currentTarget.value}`)}>
-          {settingsGroups.map((group) => (
-            <optgroup label={group} key={group}>
-              {settingsSections
-                .filter((item) => item.group === group)
-                .map((item) => (
-                  <option value={item.key} key={item.key}>
-                    {item.label}
-                  </option>
-                ))}
-            </optgroup>
+          {settingsSections.map((item) => (
+            <option value={item.key} key={item.key}>
+              {item.label}
+            </option>
           ))}
         </select>
       </label>
       <div className="settings-layout">
         <nav className="local-nav" aria-label="Settings">
-          {settingsGroups.map((group) => (
-            <div className="local-nav-group" key={group}>
-              <span className="local-nav-group-label">{group}</span>
-              {settingsSections
-                .filter((item) => item.group === group)
-                .map((item) => (
-                  <NavLink to={`/settings/${item.key}`} key={item.key}>
-                    {item.label}
-                  </NavLink>
-                ))}
-            </div>
+          {settingsSections.map((item) => (
+            <NavLink to={`/settings/${item.key}`} key={item.key}>
+              {item.label}
+            </NavLink>
           ))}
         </nav>
         <div className="settings-content">
@@ -1980,7 +1936,6 @@ function SettingsPage() {
             <h2>{currentSection.label}</h2>
             <p>{settingsSectionDescription(currentSection.key)}</p>
           </header>
-          {section === "account" ? <AccountSettings refreshMe={refreshMe} user={me.user} /> : null}
           {section === "team" ? <TeamSettings membership={membership} refreshMe={refreshMe} /> : null}
           {section === "members" ? (
             <MembersSettings
@@ -2974,7 +2929,6 @@ function agentSectionDescription(section: (typeof agentSections)[number]["key"])
 
 function settingsSectionDescription(section: (typeof settingsSections)[number]["key"]): string {
   const descriptions = {
-    account: "Manage the display identity shared across every Team you belong to.",
     team: "Manage the current Team's stable identity and display name.",
     members: "Invite people and review the Team membership visible to you.",
     computers: "Connect and inspect the Computers available to the current Team.",

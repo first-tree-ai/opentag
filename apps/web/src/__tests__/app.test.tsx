@@ -610,7 +610,7 @@ describe("OpenTag Web App Shell", () => {
 
   it.each(["admin", "member"] as const)("lets a %s update their global account display name", async (role) => {
     installApi(role);
-    window.history.replaceState({}, "", "/settings/account");
+    window.history.replaceState({}, "", "/account");
     render(<App />);
 
     const email = (await screen.findByLabelText("Email")) as HTMLInputElement;
@@ -637,7 +637,7 @@ describe("OpenTag Web App Shell", () => {
       resolveUpdate = resolve;
     });
     installApi("member", { profileUpdate: () => update });
-    window.history.replaceState({}, "", "/settings/account");
+    window.history.replaceState({}, "", "/account");
     render(<App />);
 
     const displayName = (await screen.findByLabelText("Display name")) as HTMLInputElement;
@@ -657,7 +657,7 @@ describe("OpenTag Web App Shell", () => {
 
   it("restores the confirmed server name and shows the error when an account update fails", async () => {
     installApi("member", { profileUpdateFails: true });
-    window.history.replaceState({}, "", "/settings/account");
+    window.history.replaceState({}, "", "/account");
     render(<App />);
 
     const displayName = (await screen.findByLabelText("Display name")) as HTMLInputElement;
@@ -861,8 +861,10 @@ describe("OpenTag Web App Shell", () => {
       within(navigation)
         .getAllByRole("link")
         .map((link) => link.textContent),
-    ).toEqual([
-      "Account",
+    ).toEqual(["General", "Members", "Computers", "Resources", "Integrations", "Access", "Usage", "Security"]);
+    expect(navigation.querySelector(".local-nav-group-label")).toBeNull();
+    const mobileNavigation = screen.getByLabelText("Settings section");
+    expect(Array.from(mobileNavigation.querySelectorAll("option"), (option) => option.textContent)).toEqual([
       "General",
       "Members",
       "Computers",
@@ -872,12 +874,33 @@ describe("OpenTag Web App Shell", () => {
       "Usage",
       "Security",
     ]);
-    expect(Array.from(navigation.querySelectorAll(".local-nav-group-label"), (label) => label.textContent)).toEqual([
-      "Personal",
-      "Team",
-      "Capabilities",
-      "Governance",
-    ]);
+    expect(mobileNavigation.querySelector("optgroup")).toBeNull();
+  });
+
+  it("opens Settings on General and keeps account scope out of the Settings shell", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/settings");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "General" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/settings/team");
+    expect(screen.getByText("Manage the current Team's identity, infrastructure, access, and security.")).toBeTruthy();
+    expect(
+      within(screen.getByRole("navigation", { name: "Settings" })).queryByRole("link", { name: "Account" }),
+    ).toBeNull();
+  });
+
+  it("redirects the legacy Settings account URL to the editable Account page", async () => {
+    installApi("member");
+    window.history.replaceState({}, "", "/settings/account");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/account");
+    const displayName = screen.getByLabelText("Display name") as HTMLInputElement;
+    expect(displayName.readOnly).toBe(false);
+    fireEvent.change(displayName, { target: { value: "Legacy Account" } });
+    expect(screen.getByRole("button", { name: "Save account profile" })).toBeTruthy();
   });
 
   it("keeps unavailable Team capabilities explicit instead of inventing records", async () => {
@@ -1672,6 +1695,11 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Account settings" }));
     expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/account");
+    const displayName = screen.getByLabelText("Display name") as HTMLInputElement;
+    expect(displayName.readOnly).toBe(false);
+    fireEvent.change(displayName, { target: { value: "Account Menu" } });
+    expect(screen.getByRole("button", { name: "Save account profile" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();

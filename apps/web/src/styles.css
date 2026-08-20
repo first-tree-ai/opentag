@@ -1515,13 +1515,6 @@ code {
   margin-top: 24px;
 }
 
-.account-page-actions {
-  display: grid;
-  justify-items: start;
-  gap: 14px;
-  margin-top: 28px;
-}
-
 /* Product surfaces use spacing and tonal grouping instead of repeated rules. */
 .page-header,
 .settings-title {
@@ -2141,25 +2134,6 @@ textarea:focus {
 .settings-page .local-nav {
   position: sticky;
   top: 28px;
-}
-
-.local-nav-group {
-  display: grid;
-  gap: 3px;
-}
-
-.local-nav-group + .local-nav-group {
-  margin-top: 15px;
-}
-
-.local-nav-group-label {
-  margin-bottom: 3px;
-  color: #737c72;
-  font-size: 0.66rem;
-  font-weight: 680;
-  letter-spacing: 0.09em;
-  padding: 0 11px;
-  text-transform: uppercase;
 }
 
 .settings-profile-form,

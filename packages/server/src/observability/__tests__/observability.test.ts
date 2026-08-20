@@ -23,6 +23,7 @@ import { OutboundMessageService } from "../../services/im/outbound-message-servi
 import { FeishuConnectionManager } from "../../services/im-bindings/feishu/connection-manager.js";
 import { safeFeishuSetupErrorCode } from "../../services/im-bindings/feishu/errors.js";
 import { FeishuSetupService } from "../../services/im-bindings/feishu/setup-service.js";
+import { ImBindingServiceError } from "../../services/im-bindings/im-binding-service.js";
 import { OPENTAG_ATTR } from "../attributes.js";
 import { traceDeliveryClaim } from "../delivery-tracing.js";
 import { traceFeishuInbound } from "../feishu-tracing.js";
@@ -186,6 +187,12 @@ describe("span helpers", () => {
     expect(safeFeishuSetupErrorCode({ code: "access_denied" })).toBe("FEISHU_SETUP_DENIED");
     expect(safeFeishuSetupErrorCode({ code: "expired_token" })).toBe("FEISHU_SETUP_EXPIRED");
     expect(safeFeishuSetupErrorCode({ code: "abort" })).toBe("FEISHU_SETUP_CANCELED");
+    expect(safeFeishuSetupErrorCode({ code: "FEISHU_APP_ALREADY_BOUND" })).toBe("FEISHU_SETUP_FAILED");
+    expect(
+      safeFeishuSetupErrorCode(
+        new ImBindingServiceError("FEISHU_APP_ALREADY_BOUND", 409, "The selected Feishu App is already bound"),
+      ),
+    ).toBe("FEISHU_APP_ALREADY_BOUND");
   });
 
   it("normalizes bounded primitive attributes and drops nullish values", () => {

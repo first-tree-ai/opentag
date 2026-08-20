@@ -1,3 +1,5 @@
+import { ImBindingServiceError } from "../im-binding-service.js";
+
 export type FeishuSafeErrorCode =
   | "FEISHU_ADMISSION_NOT_READY"
   | "FEISHU_APP_IDENTITY_MISMATCH"
@@ -23,6 +25,7 @@ export function safeFeishuConnectionErrorCode(error: unknown): string {
 
 export function safeFeishuSetupErrorCode(error: unknown): string {
   if (error instanceof FeishuOperationError) return error.code;
+  if (error instanceof ImBindingServiceError && error.code === "FEISHU_APP_ALREADY_BOUND") return error.code;
   if (typeof error !== "object" || error === null || !("code" in error)) return "FEISHU_SETUP_FAILED";
   if (error.code === "access_denied") return "FEISHU_SETUP_DENIED";
   if (error.code === "expired_token") return "FEISHU_SETUP_EXPIRED";

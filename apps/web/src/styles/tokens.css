@@ -1,0 +1,19 @@
+:root {
+  --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-display: Georgia, serif;
+  --color-ink: #18201d;
+  --color-canvas: #f3f5ef;
+  --color-surface: #fff;
+  --color-surface-translucent: rgba(255, 255, 255, 0.9);
+  --color-surface-soft: rgba(255, 255, 255, 0.45);
+  --color-border: #dce3da;
+  --color-border-subtle: #e8ece6;
+  --color-muted: #64736c;
+  --color-brand: #16634a;
+  --color-brand-deep: #173a30;
+  --color-brand-text: #eaf4ef;
+  --color-brand-muted: #bdd3c9;
+  --color-focus: #d9963b;
+  --radius-control: 9px;
+  --radius-panel: 18px;
+}

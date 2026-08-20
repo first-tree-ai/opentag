@@ -28,7 +28,7 @@ describe("BrowserApi", () => {
       );
     });
     await expect(
-      new BrowserApi(fetchImpl).updateTeam(teamId, { name: "renamed-team", displayName: "Renamed Team" }),
+      new BrowserApi(fetchImpl).teams.update(teamId, { name: "renamed-team", displayName: "Renamed Team" }),
     ).resolves.toMatchObject({ id: teamId, name: "renamed-team" });
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
@@ -46,7 +46,7 @@ describe("BrowserApi", () => {
           { status: 200, headers: { "content-type": "application/json" } },
         ),
     );
-    await expect(new BrowserApi(fetchImpl).authProviders()).resolves.toMatchObject({
+    await expect(new BrowserApi(fetchImpl).auth.providers()).resolves.toMatchObject({
       providers: [{ id: "google" }, { id: "dev", enabled: true }],
     });
     expect(fetchImpl).toHaveBeenCalledOnce();
@@ -69,7 +69,7 @@ describe("BrowserApi", () => {
     );
     vi.stubGlobal("fetch", fetchImpl);
 
-    await expect(new BrowserApi().me()).resolves.toMatchObject({ user: { email: "admin@example.com" } });
+    await expect(new BrowserApi().auth.me()).resolves.toMatchObject({ user: { email: "admin@example.com" } });
     expect(fetchImpl.mock.contexts).toEqual([globalThis]);
   });
 
@@ -98,7 +98,7 @@ describe("BrowserApi", () => {
       );
     });
 
-    await expect(new BrowserApi(fetchImpl).redeemInvitation("A".repeat(32))).resolves.toBeUndefined();
+    await expect(new BrowserApi(fetchImpl).auth.redeemInvitation("A".repeat(32))).resolves.toBeUndefined();
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
@@ -113,8 +113,8 @@ describe("BrowserApi", () => {
       return new Response(null, { status: 204 });
     });
     const api = new BrowserApi(fetchImpl);
-    await expect(api.imBinding("1a63a21e-f6c7-4474-91ea-4dabf0566a24")).resolves.toBeUndefined();
-    await expect(api.disableImBinding("2a63a21e-f6c7-4474-91ea-4dabf0566a24")).resolves.toBeUndefined();
+    await expect(api.agents.imBinding("1a63a21e-f6c7-4474-91ea-4dabf0566a24")).resolves.toBeUndefined();
+    await expect(api.agents.disableImBinding("2a63a21e-f6c7-4474-91ea-4dabf0566a24")).resolves.toBeUndefined();
     expect(fetchImpl.mock.calls.filter(([input]) => String(input) === "/api/v1/auth/browser/refresh")).toHaveLength(2);
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
@@ -133,8 +133,8 @@ describe("BrowserApi", () => {
           { status: 409, headers: { "content-type": "application/json" } },
         ),
     );
-    const error = await new BrowserApi(fetchImpl)
-      .agentConfig("1a63a21e-f6c7-4474-91ea-4dabf0566a24")
+    const error = await new BrowserApi(fetchImpl).agents
+      .config("1a63a21e-f6c7-4474-91ea-4dabf0566a24")
       .catch((cause) => cause);
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({
@@ -167,8 +167,8 @@ describe("BrowserApi", () => {
       );
     });
     const api = new BrowserApi(fetchImpl);
-    await expect(api.ownComputers()).resolves.toEqual({ computers: [] });
-    await expect(api.issueConnectCode(teamId)).resolves.toMatchObject({ expiresIn: 900 });
+    await expect(api.computers.listMine()).resolves.toEqual({ computers: [] });
+    await expect(api.computers.issueConnectCode(teamId)).resolves.toMatchObject({ expiresIn: 900 });
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 });

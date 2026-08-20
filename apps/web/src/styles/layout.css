@@ -1,0 +1,89 @@
+.center-card {
+  width: min(540px, calc(100% - 2rem));
+  margin: 12vh auto;
+  padding: 3rem;
+  background: var(--color-surface-translucent);
+  border: 1px solid var(--color-border);
+  border-radius: 28px;
+  box-shadow: 0 25px 70px rgba(29, 61, 48, 0.12);
+}
+
+.center-card h1,
+.hero h1,
+.page-header h1 {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: clamp(2.2rem, 5vw, 4rem);
+  margin: 0.25rem 0 1rem;
+  letter-spacing: -0.04em;
+}
+
+.page {
+  width: min(1100px, calc(100% - 3rem));
+  margin: 5rem auto;
+}
+
+.hero {
+  max-width: 760px;
+  margin-bottom: 3rem;
+}
+
+.shell {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  min-height: 100vh;
+}
+
+aside {
+  padding: 2rem 1.4rem;
+  background: var(--color-brand-deep);
+  color: var(--color-brand-text);
+  display: flex;
+  flex-direction: column;
+  gap: 1.8rem;
+}
+
+.app-main {
+  min-width: 0;
+}
+
+.topbar {
+  min-height: 64px;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.content {
+  padding: clamp(2rem, 5vw, 5rem);
+  overflow: auto;
+}
+
+.page-header {
+  margin-bottom: 2rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.page-heading-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.page-header h1 {
+  font-size: clamp(2rem, 4vw, 3.4rem);
+}
+
+.page-header p,
+.muted,
+.timestamp {
+  color: var(--color-muted);
+}

@@ -1,0 +1,33 @@
+@media (max-width: 720px) {
+  .shell {
+    grid-template-columns: 1fr;
+  }
+
+  aside {
+    position: static;
+  }
+
+  nav {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .content {
+    padding: 2rem 1rem;
+  }
+
+  .page-heading-row,
+  .dialog-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto;
+    transition-duration: 0.01ms;
+    animation-duration: 0.01ms;
+  }
+}

@@ -7,6 +7,7 @@ import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/error
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
+  type AgentHostedTools,
   type AgentPromptRequest,
   type AgentProviderRunContext,
   type AgentProviderRunResult,
@@ -21,7 +22,13 @@ import {
   type JsonValue,
   type ResumeAgentRuntimeRequest,
 } from "../../agent-runtime/types.js";
-import { assertBinding, assertJsonValue, runWithAbortSignal } from "../../agent-runtime/validation.js";
+import {
+  assertBinding,
+  assertHostedTools,
+  assertJsonValue,
+  runWithAbortSignal,
+} from "../../agent-runtime/validation.js";
+import { type ClaudeCodeHostedToolBridge, startClaudeCodeHostedToolBridge } from "./hosted-tool-bridge.js";
 import {
   ClaudeCodeProcess,
   type ClaudeCodeProcessClient,
@@ -52,7 +59,9 @@ interface ClaudeCodeRuntimeOptions {
   readonly configuration?: AgentRunConfiguration;
   readonly createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
   readonly eventSink: AgentRuntimeEventSink;
+  readonly hostedTools?: AgentHostedTools;
   readonly resume: boolean;
+  readonly startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
 }
 
 export interface ClaudeCodeAgentRuntimeFactoryOptions {
@@ -70,6 +79,7 @@ export interface ClaudeCodeAgentRuntimeFactoryOptions {
   };
   readonly createProcess?: (cwd: string, args: readonly string[]) => ClaudeCodeProcessClient;
   readonly createSessionId?: () => string;
+  readonly startHostedToolBridge?: typeof startClaudeCodeHostedToolBridge;
   readonly probeRunner?: (signal?: AbortSignal) => Promise<{
     readonly credential: boolean;
     readonly streamJson: boolean;
@@ -109,6 +119,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #sessionId: string;
   readonly #configuration?: AgentRunConfiguration;
   readonly #createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
+  readonly #hostedTools?: AgentHostedTools;
+  readonly #startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
   readonly #textBlocks = new Map<string, TextBlockState>();
   readonly #tools = new Map<string, ToolState>();
   readonly #toolBlocks = new Map<string, string>();
@@ -133,6 +145,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#sessionId = parseClaudeCodeBinding(options.binding);
     this.#configuration = options.configuration;
     this.#createProcess = options.createProcess;
+    this.#hostedTools = options.hostedTools;
+    this.#startHostedToolBridge = options.startHostedToolBridge;
     this.#sessionExists = options.resume;
   }
 
@@ -151,8 +165,18 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#startedModelTurns.clear();
     this.#completedModelTurns.clear();
     let process: ClaudeCodeProcessClient | undefined;
+    let hostedToolBridge: ClaudeCodeHostedToolBridge | undefined;
     try {
-      process = this.#createProcess(this.#arguments(request));
+      try {
+        hostedToolBridge = await this.#startHostedToolBridge(this.#hostedTools, request.runId, context.signal);
+        process = this.#createProcess(this.#arguments(request, hostedToolBridge));
+      } catch (error) {
+        throw new AgentProviderError(
+          "provider_start_failed",
+          error instanceof Error ? error.message : "Claude Code failed before accepting input",
+          { cause: error },
+        );
+      }
       this.#process = process;
       await process.execute(claudeCodeInput(request), (message) => this.#enqueue(message), context.signal);
       await this.#eventTail;
@@ -177,6 +201,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       /* v8 ignore next -- finally is mandatory cleanup; V8 reports a synthetic branch for its closing token. */
     } finally {
       await process?.close().catch(() => undefined);
+      await hostedToolBridge?.close();
       this.#process = undefined;
       this.#context = undefined;
       this.#currentMessageId = undefined;
@@ -195,7 +220,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     await this.#process?.close();
   }
 
-  #arguments(request: AgentPromptRequest): readonly string[] {
+  #arguments(request: AgentPromptRequest, hostedToolBridge: ClaudeCodeHostedToolBridge): readonly string[] {
     const configuration = mergeConfiguration(this.#configuration, request.configuration);
     const provider = parseProviderConfiguration(configuration?.provider);
     const args = [
@@ -209,6 +234,10 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       "--no-chrome",
       "--setting-sources",
       "",
+      "--strict-mcp-config",
+      "--mcp-config",
+      hostedToolBridge.configPath,
+      ...(hostedToolBridge.allowedTools.length > 0 ? ["--allowedTools", ...hostedToolBridge.allowedTools] : []),
       ...(this.#sessionExists ? ["--resume", this.#sessionId] : ["--session-id", this.#sessionId]),
       "--permission-mode",
       "bypassPermissions",
@@ -534,6 +563,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     readonly streamJson: boolean;
     readonly version: string;
   }>;
+  readonly #startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
 
   constructor(options: ClaudeCodeAgentRuntimeFactoryOptions = {}) {
     this.#createSessionId = options.createSessionId ?? randomUUID;
@@ -553,6 +583,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
           spawnProcess: options.process?.spawnProcess,
         }));
     this.#probeRunner = options.probeRunner ?? ((signal) => probeClaudeCode(command, environment, signal));
+    this.#startHostedToolBridge = options.startHostedToolBridge ?? startClaudeCodeHostedToolBridge;
   }
 
   async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
@@ -606,7 +637,9 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
         configuration: request.configuration,
         createProcess: (args) => this.#createProcess(request.workspace.cwd, args),
         eventSink: request.eventSink,
+        hostedTools: request.hostedTools,
         resume: mode === "resume",
+        startHostedToolBridge: this.#startHostedToolBridge,
       });
     } catch (error) {
       throw new AgentRuntimeError(mode === "create" ? "create_failed" : "resume_failed", `Claude Code ${mode} failed`, {
@@ -620,6 +653,7 @@ export function claudeCodeAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = pr
   const exact = new Set([
     "APPDATA",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CONFIG_DIR",
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_FOUNDRY",
     "CLAUDE_CODE_USE_VERTEX",
@@ -674,7 +708,10 @@ async function probeClaudeCode(
   const streamJson =
     helpResult.stdout.includes("stream-json") &&
     helpResult.stdout.includes("--session-id") &&
-    helpResult.stdout.includes("--resume");
+    helpResult.stdout.includes("--resume") &&
+    helpResult.stdout.includes("--mcp-config") &&
+    helpResult.stdout.includes("--strict-mcp-config") &&
+    helpResult.stdout.includes("--allowedTools");
   const credential =
     hasCredentialEnvironment(environment) || (await probeClaudeCodeCredential(command, execution, signal));
   return { credential, streamJson, version };
@@ -755,6 +792,15 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
     throw new AgentRuntimeError(
       "configuration_invalid",
       "Claude Code does not implement the common tool allow-list contract",
+    );
+  }
+  if (request.hostedTools) {
+    assertHostedTools(
+      {
+        ...request.policy,
+        tools: { mode: "allow-list", names: request.hostedTools.definitions.map(({ name }) => name) },
+      },
+      request.hostedTools,
     );
   }
 }

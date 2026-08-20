@@ -203,6 +203,25 @@ describe("SessionBindingStore", () => {
     await expect(fixture.store.read("agent-1", "session-1")).rejects.toThrow("Agent Runtime binding is invalid");
   });
 
+  it("reads Claude Code bindings from the existing Session binding v2 contract", async () => {
+    const fixture = await bindingFixture();
+    const path = sessionBindingPath(fixture.home, "agent-1", "session-1");
+    const current = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    current.provider = "claude-code";
+    current.runtimeBinding = {
+      providerId: "claude-code",
+      schemaVersion: 1,
+      payload: { sessionId: randomUUID() },
+    };
+    await writeFile(path, `${JSON.stringify(current)}\n`, "utf8");
+
+    await expect(fixture.store.read("agent-1", "session-1")).resolves.toMatchObject({
+      schemaVersion: 2,
+      provider: "claude-code",
+      runtimeBinding: { providerId: "claude-code", schemaVersion: 1 },
+    });
+  });
+
   it("reads a legacy v1 Codex thread and rewrites only the opaque v2 binding", async () => {
     const fixture = await bindingFixture();
     const path = sessionBindingPath(fixture.home, "agent-1", "session-1");
@@ -228,6 +247,19 @@ describe("SessionBindingStore", () => {
       runtimeBinding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "legacy-thread" } },
     });
     expect(rewritten).not.toHaveProperty("providerThreadId");
+  });
+
+  it("does not reinterpret a legacy v1 Codex thread as a Claude Code binding", async () => {
+    const fixture = await bindingFixture();
+    const path = sessionBindingPath(fixture.home, "agent-1", "session-1");
+    const current = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    delete current.runtimeBinding;
+    current.schemaVersion = 1;
+    current.provider = "claude-code";
+    current.providerThreadId = "legacy-thread";
+    await writeFile(path, `${JSON.stringify(current)}\n`, "utf8");
+
+    await expect(fixture.store.read("agent-1", "session-1")).rejects.toThrow("Session binding values are invalid");
   });
 
   it("ignores the legacy runtime/agents binding without migrating or deleting it", async () => {

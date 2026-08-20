@@ -4,7 +4,8 @@ import type {
   AgentSummary,
   AuthProvidersResponse,
   Computer,
-  FeishuSetupAttempt,
+  ImBindingHandoffStatus,
+  ImBindingSummary,
   MeMembership,
   MeResponse,
   TeamComputerSummary,
@@ -12,7 +13,6 @@ import type {
   UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
 import { MembershipRoleSchema } from "@opentag/shared/browser";
-import { toString as qrToString } from "qrcode";
 import {
   createContext,
   type FormEvent,
@@ -24,34 +24,267 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  Link,
+  Navigate,
+  NavLink,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useOutletContext,
+  useParams,
+} from "react-router-dom";
 import { ApiError, browserApi } from "./api.js";
+import { ComputerSetup } from "./computer-setup.js";
 import { CreateTeamForm } from "./create-team-form.js";
+import { FeishuSetup } from "./im/feishu-setup.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
 
-function useResource<T>(loader: () => Promise<T>, key: string): LoadState<T> {
+type AgentAvailability = {
+  state: "ready" | "action_required" | "setting_up" | "not_connected" | "suspended" | "unconfirmed";
+  reason:
+    | "agent_suspended"
+    | "agent_unconfirmed"
+    | "computer_offline"
+    | "runtime_unavailable"
+    | "im_not_connected"
+    | "im_provisioning"
+    | "im_reauthorization_required"
+    | "im_error"
+    | "handoff_unavailable"
+    | "computer_unconfirmed"
+    | "handoff_unconfirmed"
+    | null;
+  lastConfirmedAt: string | null;
+  dependencies: {
+    computer: { state: "ready" | "action_required" | "unconfirmed"; lastConfirmedAt: string | null };
+    handoff: {
+      state: "ready" | "action_required" | "setting_up" | "not_connected" | "unconfirmed";
+      lastConfirmedAt: string | null;
+    };
+    channel: {
+      provider: "feishu" | "slack" | null;
+      botDisplayName: string | null;
+    };
+  };
+};
+
+type AgentListItem = AgentSummary & { computerState: TeamComputerSummary | undefined };
+type AgentDetailView = AgentDetail & { availability: AgentAvailability };
+
+function projectAgentAvailability(
+  agent: AgentSummary,
+  computer: TeamComputerSummary | undefined,
+  binding: ImBindingSummary | undefined,
+  handoff: ImBindingHandoffStatus | undefined,
+  evidenceConfirmed: boolean,
+): AgentAvailability {
+  const computerReady = computer?.connectionStatus === "online";
+  const handoffState = !evidenceConfirmed
+    ? ("unconfirmed" as const)
+    : !binding
+      ? ("not_connected" as const)
+      : binding.bindingState === "provisioning"
+        ? ("setting_up" as const)
+        : binding.bindingState === "active" && handoff?.handoffReady
+          ? ("ready" as const)
+          : ("action_required" as const);
+  const dependencies: AgentAvailability["dependencies"] = {
+    computer: {
+      state: computer ? (computerReady ? "ready" : "action_required") : "unconfirmed",
+      lastConfirmedAt: computer?.lastSeenAt ?? null,
+    },
+    handoff: { state: handoffState, lastConfirmedAt: binding?.lastConfirmedAt ?? null },
+    channel: {
+      provider: binding?.provider ?? null,
+      botDisplayName: binding?.bot.displayName ?? null,
+    },
+  };
+  if (agent.status === "suspended") {
+    return { state: "suspended", reason: "agent_suspended", lastConfirmedAt: agent.updatedAt, dependencies };
+  }
+  if (!computer) {
+    return { state: "unconfirmed", reason: "computer_unconfirmed", lastConfirmedAt: null, dependencies };
+  }
+  if (!computerReady) {
+    return {
+      state: "action_required",
+      reason: "computer_offline",
+      lastConfirmedAt: computer?.lastSeenAt ?? null,
+      dependencies,
+    };
+  }
+  if (agent.runtimeProvider !== "codex") {
+    return { state: "action_required", reason: "runtime_unavailable", lastConfirmedAt: null, dependencies };
+  }
+  if (!evidenceConfirmed) {
+    return { state: "unconfirmed", reason: "handoff_unconfirmed", lastConfirmedAt: null, dependencies };
+  }
+  if (!binding) return { state: "not_connected", reason: "im_not_connected", lastConfirmedAt: null, dependencies };
+  if (binding.bindingState === "provisioning") {
+    return {
+      state: "setting_up",
+      reason: "im_provisioning",
+      lastConfirmedAt: binding.lastConfirmedAt,
+      dependencies,
+    };
+  }
+  if (binding.bindingState === "reauthorization_required") {
+    return {
+      state: "action_required",
+      reason: "im_reauthorization_required",
+      lastConfirmedAt: binding.lastConfirmedAt,
+      dependencies,
+    };
+  }
+  if (binding.bindingState === "error" || binding.bindingState === "disabled") {
+    return { state: "action_required", reason: "im_error", lastConfirmedAt: binding.lastConfirmedAt, dependencies };
+  }
+  if (!handoff?.handoffReady) {
+    return {
+      state: "action_required",
+      reason: "handoff_unavailable",
+      lastConfirmedAt: binding.lastConfirmedAt,
+      dependencies,
+    };
+  }
+  return { state: "ready", reason: null, lastConfirmedAt: binding.lastConfirmedAt, dependencies };
+}
+
+async function loadAgentList(teamId: string): Promise<{ agents: AgentListItem[] }> {
+  const [{ agents }, computersResult] = await Promise.all([
+    browserApi.agents(teamId),
+    browserApi.computers(teamId).catch(() => ({ computers: [] })),
+  ]);
+  return {
+    agents: agents.map((agent) => ({
+      ...agent,
+      computerState: computersResult.computers.find((computer) => computer.id === agent.computer.id),
+    })),
+  };
+}
+
+async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
+  const agent = await browserApi.agent(agentId);
+  const [computersResult, bindingResult, handoffResult] = await Promise.allSettled([
+    browserApi.computers(agent.teamId),
+    browserApi.imBinding(agent.id),
+    browserApi.imBindingHandoff(agent.id),
+  ]);
+  const computers = computersResult.status === "fulfilled" ? computersResult.value.computers : [];
+  const binding = bindingResult.status === "fulfilled" ? bindingResult.value : undefined;
+  const handoff = handoffResult.status === "fulfilled" ? handoffResult.value : undefined;
+  return {
+    ...agent,
+    availability: projectAgentAvailability(
+      agent,
+      computers.find((computer) => computer.id === agent.computer.id),
+      binding,
+      handoff,
+      bindingResult.status === "fulfilled" && handoffResult.status === "fulfilled",
+    ),
+  };
+}
+
+function markAgentListUnconfirmed(value: { agents: AgentListItem[] }): { agents: AgentListItem[] } {
+  return { agents: value.agents.map((agent) => ({ ...agent, computerState: undefined })) };
+}
+
+function markAgentDetailUnconfirmed(agent: AgentDetailView): AgentDetailView {
+  return {
+    ...agent,
+    availability: {
+      ...agent.availability,
+      state: "unconfirmed",
+      reason: "agent_unconfirmed",
+      lastConfirmedAt: null,
+      dependencies: {
+        ...agent.availability.dependencies,
+        computer: { state: "unconfirmed", lastConfirmedAt: null },
+        handoff: { state: "unconfirmed", lastConfirmedAt: null },
+      },
+    },
+  };
+}
+
+function useResource<T>(
+  loader: () => Promise<T>,
+  key: string,
+  options: {
+    onBackgroundError?: (value: T, error: Error) => T;
+    revalidateMs?: number;
+    refreshOnFocus?: boolean;
+  } = {},
+): LoadState<T> {
   const [state, setState] = useState<LoadState<T>>({ kind: "loading" });
   const loaderRef = useRef(loader);
   const keyRef = useRef(key);
+  const optionsRef = useRef(options);
   loaderRef.current = loader;
   keyRef.current = key;
+  optionsRef.current = options;
   useEffect(() => {
     let active = true;
+    let request = 0;
+    let inFlight = false;
     const activeKey = key;
-    setState({ kind: "loading" });
-    void loaderRef.current().then(
-      (value) => active && keyRef.current === activeKey && setState({ kind: "ready", value }),
-      (error: unknown) =>
-        active &&
-        keyRef.current === activeKey &&
-        setState({ kind: "error", error: error instanceof Error ? error : new Error(String(error)) }),
-    );
+    const load = (showLoading: boolean) => {
+      if (inFlight) return;
+      inFlight = true;
+      const currentRequest = ++request;
+      if (showLoading) setState({ kind: "loading" });
+      void loaderRef
+        .current()
+        .then(
+          (value) =>
+            active && keyRef.current === activeKey && request === currentRequest && setState({ kind: "ready", value }),
+          (error: unknown) => {
+            if (!active || keyRef.current !== activeKey || request !== currentRequest) return;
+            const resolvedError = error instanceof Error ? error : new Error(String(error));
+            if (showLoading || isTerminalResourceError(resolvedError)) {
+              setState({ kind: "error", error: resolvedError });
+              return;
+            }
+            setState((current) => {
+              if (current.kind !== "ready" || !optionsRef.current.onBackgroundError) {
+                return { kind: "error", error: resolvedError };
+              }
+              return {
+                kind: "ready",
+                value: optionsRef.current.onBackgroundError(current.value, resolvedError),
+              };
+            });
+          },
+        )
+        .finally(() => {
+          if (active && keyRef.current === activeKey && request === currentRequest) inFlight = false;
+        });
+    };
+    const revalidate = () => load(false);
+    load(true);
+    const interval = options.revalidateMs ? window.setInterval(revalidate, options.revalidateMs) : undefined;
+    const refreshVisible = () => {
+      if (document.visibilityState === "visible") revalidate();
+    };
+    if (options.refreshOnFocus) {
+      window.addEventListener("focus", revalidate);
+      document.addEventListener("visibilitychange", refreshVisible);
+    }
     return () => {
       active = false;
+      if (interval !== undefined) window.clearInterval(interval);
+      window.removeEventListener("focus", revalidate);
+      document.removeEventListener("visibilitychange", refreshVisible);
     };
-  }, [key]);
+  }, [key, options.refreshOnFocus, options.revalidateMs]);
   return state;
+}
+
+function isTerminalResourceError(error: Error): boolean {
+  return error instanceof ApiError && [401, 403, 404, 410].includes(error.status);
 }
 
 function AsyncState<T>({ state, children }: { state: LoadState<T>; children: (value: T) => ReactNode }) {
@@ -77,6 +310,12 @@ interface TeamSession {
   membership: MeMembership;
   refreshMe: () => void;
   selectTeam: (teamId: string) => void;
+}
+
+interface AppShellOutletContext {
+  invitationMutationPending: boolean;
+  invitationOpen: boolean;
+  setInvitationMutationPending: (pending: boolean) => void;
 }
 
 const teamContext = createContext<TeamSession | undefined>(undefined);
@@ -306,6 +545,8 @@ function AppShell() {
   const navigate = useNavigate();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [openMenu, setOpenMenu] = useState<"team" | "account">();
+  const [invitationOpen, setInvitationOpen] = useState(false);
+  const [invitationMutationPending, setInvitationMutationPending] = useState(false);
   const [teamQuery, setTeamQuery] = useState("");
   const [loggingOut, setLoggingOut] = useState(false);
   const [accountError, setAccountError] = useState<string>();
@@ -458,17 +699,35 @@ function AppShell() {
                   })}
                   {filteredMemberships.length === 0 ? <span className="team-menu-empty">No matching Teams</span> : null}
                 </div>
-                <Link
-                  className="team-menu-action"
-                  to="/teams/new"
-                  onClick={() => {
-                    setOpenMenu(undefined);
-                    setNavigationOpen(false);
-                  }}
-                >
-                  <span aria-hidden="true">＋</span>
-                  Create Team
-                </Link>
+                <div className="team-menu-actions">
+                  {membership.role === "admin" ? (
+                    <button
+                      className="team-menu-action"
+                      disabled={invitationMutationPending}
+                      type="button"
+                      onClick={() => {
+                        if (invitationMutationPending) return;
+                        setOpenMenu(undefined);
+                        setNavigationOpen(false);
+                        setInvitationOpen(true);
+                      }}
+                    >
+                      <span aria-hidden="true">↗</span>
+                      Invite people
+                    </button>
+                  ) : null}
+                  <Link
+                    className="team-menu-action"
+                    to="/teams/new"
+                    onClick={() => {
+                      setOpenMenu(undefined);
+                      setNavigationOpen(false);
+                    }}
+                  >
+                    <span aria-hidden="true">＋</span>
+                    Create Team
+                  </Link>
+                </div>
               </section>
             ) : null}
           </div>
@@ -501,7 +760,6 @@ function AppShell() {
               </span>
               <span className="account-copy">
                 <strong>{me.user.displayName}</strong>
-                <small>{me.user.email}</small>
               </span>
               <span className="account-menu-dots" aria-hidden="true">
                 ⋮
@@ -548,34 +806,53 @@ function AppShell() {
           </button>
         </header>
         <main className="content">
-          <Outlet />
+          <Outlet context={{ invitationMutationPending, invitationOpen, setInvitationMutationPending }} />
         </main>
       </div>
+      {invitationOpen ? (
+        <InvitationDialog
+          mutationPending={invitationMutationPending}
+          onMutationPendingChange={setInvitationMutationPending}
+          returnFocusRef={teamTriggerRef}
+          teamDisplayName={membership.teamDisplayName}
+          teamId={membership.teamId}
+          onClose={() => setInvitationOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
 
 function AgentsPage() {
   const { membership } = useTeam();
-  const state = useResource(() => browserApi.agents(membership.teamId), membership.teamId);
+  const [createOpen, setCreateOpen] = useState(false);
+  const createTriggerRef = useRef<HTMLButtonElement>(null);
+  const state = useResource(() => loadAgentList(membership.teamId), membership.teamId, {
+    onBackgroundError: markAgentListUnconfirmed,
+    revalidateMs: 30_000,
+    refreshOnFocus: true,
+  });
   return (
-    <Page
-      title="Agents"
-      description="Configure and monitor your team's long-lived Agent identities."
-      action={
-        membership.role === "admin" ? (
-          <Link className="button" to="/agents/new">
-            Create Agent
-          </Link>
-        ) : undefined
-      }
-    >
-      <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
-    </Page>
+    <>
+      <Page
+        title="Agents"
+        description="Shared agents your team can use in Feishu or Slack."
+        action={
+          membership.role === "admin" ? (
+            <button className="button" ref={createTriggerRef} type="button" onClick={() => setCreateOpen(true)}>
+              New Agent
+            </button>
+          ) : undefined
+        }
+      >
+        <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
+      </Page>
+      {createOpen ? <NewAgentDialog returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} /> : null}
+    </>
   );
 }
 
-function AgentsContent({ agents }: { agents: AgentSummary[] }) {
+function AgentsContent({ agents }: { agents: AgentListItem[] }) {
   return agents.length === 0 ? (
     <EmptyState title="No Agents yet">A Team Admin can create the first Agent.</EmptyState>
   ) : (
@@ -583,19 +860,20 @@ function AgentsContent({ agents }: { agents: AgentSummary[] }) {
   );
 }
 
-function AgentList({ agents }: { agents: AgentSummary[] }) {
+function AgentList({ agents }: { agents: AgentListItem[] }) {
   return (
-    <section className="agent-list-section" aria-labelledby="agent-list-title">
-      <div className="list-heading">
-        <h2 id="agent-list-title">Team Agents</h2>
-        <span>{agents.length}</span>
+    <section className="agent-list-section" aria-label="Team Agents">
+      <div className="agent-summary-strip">
+        <span>
+          <strong>{agents.length}</strong> Agents
+        </span>
       </div>
       <div className="agent-table">
         <div className="agent-table-header" aria-hidden="true">
           <span>Agent</span>
+          <span>Status</span>
           <span>Runtime</span>
-          <span>IM</span>
-          <span>Computer</span>
+          <span />
         </div>
         <div className="agent-table-body">
           {agents.map((agent) => (
@@ -607,106 +885,397 @@ function AgentList({ agents }: { agents: AgentSummary[] }) {
   );
 }
 
-function AgentRow({ agent }: { agent: AgentSummary }) {
+function AgentRow({ agent }: { agent: AgentListItem }) {
+  const computerStatus = agent.computerState?.connectionStatus;
+  const status =
+    agent.status === "suspended"
+      ? { label: "Suspended", reason: "Agent is suspended", tone: "suspended" }
+      : computerStatus === "online"
+        ? {
+            label: "Computer online",
+            reason: lastConfirmedLabel(agent.computerState?.lastSeenAt ?? null),
+            tone: "ready",
+          }
+        : computerStatus === "offline"
+          ? {
+              label: "Computer offline",
+              reason: lastConfirmedLabel(agent.computerState?.lastSeenAt ?? null),
+              tone: "action-required",
+            }
+          : { label: "Unconfirmed", reason: "Unable to confirm Computer", tone: "unconfirmed" };
   return (
-    <Link className="agent-row" to={`/agents/${agent.id}/general`}>
+    <div className="agent-row">
+      <Link aria-label={`Open ${agent.displayName}`} className="agent-row-link" to={`/agents/${agent.id}/general`} />
       <span className="agent-identity">
         <span className="agent-avatar" aria-hidden="true">
           {initials(agent.displayName)}
         </span>
         <span>
           <strong>{agent.displayName}</strong>
-          <small>{agent.name}</small>
-          <span className={`status-chip ${agent.status}`}>{titleCase(agent.status)}</span>
+          <small>@{agent.name}</small>
         </span>
+      </span>
+      <span className="cell-stack availability-cell" data-label="Status">
+        <strong>
+          <i className={`availability-dot ${status.tone}`} aria-hidden="true" />
+          {status.label}
+        </strong>
+        <small>{status.reason}</small>
       </span>
       <span className="cell-stack" data-label="Runtime">
         <strong>{providerLabel(agent.runtimeProvider)}</strong>
-        <small>Provider</small>
+        <small>
+          {agent.computer.displayName} · {titleCase(agent.computer.platform)}
+        </small>
       </span>
-      <span className="cell-stack" data-label="IM">
-        <strong>{receiveModeLabel(agent.receiveMode)}</strong>
-        <small>Receive mode</small>
+      <span className="agent-row-action" aria-hidden="true">
+        ›
       </span>
-      <span className="cell-stack" data-label="Computer">
-        <strong>{agent.computer.displayName}</strong>
-        <small>{titleCase(agent.computer.platform)}</small>
-      </span>
-    </Link>
+    </div>
   );
+}
+
+function useOwnComputersResource(teamId: string) {
+  return useResource(() => browserApi.ownComputers(), teamId, {
+    onBackgroundError: markOwnComputersUnconfirmed,
+    revalidateMs: 30_000,
+    refreshOnFocus: true,
+  });
 }
 
 function NewAgentPage() {
   const { membership } = useTeam();
   const navigate = useNavigate();
-  const computers = useResource(() => browserApi.ownComputers(), membership.teamId);
-  const [error, setError] = useState<string>();
+  const computers = useOwnComputersResource(membership.teamId);
   if (membership.role !== "admin") return <UnavailablePage title="Team Admin access required" />;
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    try {
-      const created = await browserApi.createAgent(membership.teamId, {
-        name: String(data.get("name") ?? ""),
-        displayName: String(data.get("displayName") ?? ""),
-        runtimeProvider: String(data.get("runtimeProvider") ?? "codex") as "codex" | "claude-code",
-        computerId: String(data.get("computerId") ?? ""),
-      });
-      navigate(`/agents/${created.id}/general`);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Agent creation failed");
-    }
-  }
   return (
     <Page title="Create Agent" description="Create the identity first. Complete its setup from the Agent overview.">
-      <AsyncState state={computers}>
-        {(value) =>
-          value.computers.length === 0 ? (
-            <EmptyState title="Connect a Local Computer first">
-              Open <Link to="/settings/computers">Computer settings</Link> to generate a connection command.
-            </EmptyState>
-          ) : (
-            <form className="form-card" onSubmit={submit}>
-              <label>
-                Name
-                <input name="name" required pattern="[a-z0-9][a-z0-9-]*" />
-              </label>
-              <label>
-                Display name
-                <input name="displayName" required />
-              </label>
-              <label>
-                Provider
-                <select name="runtimeProvider">
+      <AgentCreationContent
+        computers={computers}
+        teamId={membership.teamId}
+        onCreated={(agentId) => navigate(`/agents/${agentId}/general`)}
+      />
+    </Page>
+  );
+}
+
+function NewAgentDialog({
+  onClose,
+  returnFocusRef,
+}: {
+  onClose: () => void;
+  returnFocusRef: { current: HTMLButtonElement | null };
+}) {
+  const { membership } = useTeam();
+  const navigate = useNavigate();
+  const computers = useOwnComputersResource(membership.teamId);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(submitting);
+  const onCloseRef = useRef(onClose);
+  submittingRef.current = submitting;
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const target = dialog.querySelector<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled])",
+    );
+    if (submitting) {
+      if (!activeElement || !dialog.contains(activeElement) || activeElement.matches(":disabled")) {
+        (target ?? dialog).focus();
+      }
+    } else if (activeElement === dialog) {
+      target?.focus();
+    }
+  }, [submitting]);
+
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (!submittingRef.current) onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (!dialogRef.current?.contains(document.activeElement) || document.activeElement === dialogRef.current) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      returnFocusRef.current?.focus();
+    };
+  }, [returnFocusRef]);
+
+  return (
+    <div className="dialog-layer">
+      <button
+        aria-label="Dismiss new Agent dialog"
+        className="dialog-backdrop"
+        disabled={submitting}
+        tabIndex={-1}
+        type="button"
+        onClick={onClose}
+      />
+      <div
+        aria-describedby="new-agent-dialog-description"
+        aria-labelledby="new-agent-dialog-title"
+        aria-modal="true"
+        className="dialog-card new-agent-dialog"
+        ref={dialogRef}
+        role="dialog"
+        tabIndex={-1}
+      >
+        <header className="dialog-header">
+          <div>
+            <span className="eyebrow dialog-eyebrow">Create</span>
+            <h2 id="new-agent-dialog-title">New Agent</h2>
+          </div>
+          <button
+            aria-label="Close new Agent dialog"
+            className="dialog-close"
+            disabled={submitting}
+            ref={closeButtonRef}
+            type="button"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </header>
+        <p className="dialog-description" id="new-agent-dialog-description">
+          Give the Agent an identity and choose where it runs. You can finish its setup from the overview.
+        </p>
+        <AgentCreationContent
+          computers={computers}
+          presentation="dialog"
+          teamId={membership.teamId}
+          onCancel={onClose}
+          onCreated={(agentId) => navigate(`/agents/${agentId}/general`)}
+          onSubmittingChange={setSubmitting}
+        />
+      </div>
+    </div>
+  );
+}
+
+function AgentCreationContent({
+  computers,
+  onCancel,
+  onCreated,
+  onSubmittingChange,
+  presentation = "page",
+  teamId,
+}: {
+  computers: LoadState<{ computers: Computer[] }>;
+  onCancel?: () => void;
+  onCreated: (agentId: string) => void;
+  onSubmittingChange?: (submitting: boolean) => void;
+  presentation?: "dialog" | "page";
+  teamId: string;
+}) {
+  const [error, setError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
+  const [computerId, setComputerId] = useState("");
+  const [runtimeProvider, setRuntimeProvider] = useState<"codex" | "claude-code">("codex");
+  const firstFieldRef = useRef<HTMLInputElement>(null);
+  const inFlightRef = useRef(false);
+  const creationIntentRef = useRef<{ fingerprint: string; id: string } | null>(null);
+
+  useEffect(() => {
+    if (presentation === "dialog" && computers.kind === "ready") firstFieldRef.current?.focus();
+  }, [computers.kind, presentation]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (inFlightRef.current) return;
+    const data = new FormData(event.currentTarget);
+    const input = {
+      name: String(data.get("name") ?? ""),
+      displayName: String(data.get("displayName") ?? ""),
+      runtimeProvider: String(data.get("runtimeProvider") ?? "codex") as "codex" | "claude-code",
+      computerId: String(data.get("computerId") ?? ""),
+    };
+    const fingerprint = JSON.stringify(input);
+    if (creationIntentRef.current?.fingerprint !== fingerprint) {
+      creationIntentRef.current = { fingerprint, id: crypto.randomUUID() };
+    }
+    inFlightRef.current = true;
+    setError(undefined);
+    setSubmitting(true);
+    onSubmittingChange?.(true);
+    try {
+      const created = await browserApi.createAgent(teamId, {
+        creationIntentId: creationIntentRef.current.id,
+        ...input,
+      });
+      onCreated(created.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Agent creation failed");
+    } finally {
+      inFlightRef.current = false;
+      setSubmitting(false);
+      onSubmittingChange?.(false);
+    }
+  }
+
+  return (
+    <AsyncState state={computers}>
+      {(value) => {
+        const computer = value.computers.find((candidate) => candidate.id === computerId) ?? value.computers[0];
+        const selectedComputerId = computer?.id ?? "";
+        const readiness = computer?.providerReadiness?.find((entry) => entry.provider === runtimeProvider);
+        return value.computers.length === 0 ? (
+          <EmptyState title="Connect a Local Computer first">
+            Open <Link to="/settings/computers">Computer settings</Link> to generate a connection command.
+          </EmptyState>
+        ) : (
+          <form className="form-card agent-create-form" onSubmit={submit}>
+            <div className="agent-create-field">
+              <label htmlFor="new-agent-display-name">Display name</label>
+              <input
+                aria-describedby="new-agent-display-name-hint"
+                id="new-agent-display-name"
+                ref={firstFieldRef}
+                name="displayName"
+                placeholder="Research Assistant"
+                disabled={submitting}
+                required
+              />
+              <span className="field-hint" id="new-agent-display-name-hint">
+                How teammates will see this Agent in lists and conversations.
+              </span>
+            </div>
+            <div className="agent-create-field">
+              <label htmlFor="new-agent-name">Agent name</label>
+              <span className="agent-name-input">
+                <span aria-hidden="true">@</span>
+                <input
+                  aria-describedby="new-agent-name-hint"
+                  id="new-agent-name"
+                  name="name"
+                  pattern="[a-z0-9][a-z0-9-]*"
+                  placeholder="research-assistant"
+                  disabled={submitting}
+                  required
+                />
+              </span>
+              <span className="field-hint" id="new-agent-name-hint">
+                Used for mentions. Lowercase letters, numbers, and hyphens only.
+              </span>
+            </div>
+            <div className="agent-create-grid">
+              <div className="agent-create-field">
+                <label htmlFor="new-agent-provider">Provider</label>
+                <select
+                  id="new-agent-provider"
+                  name="runtimeProvider"
+                  disabled={submitting}
+                  value={runtimeProvider}
+                  onChange={(event) => setRuntimeProvider(event.currentTarget.value as "codex" | "claude-code")}
+                >
                   <option value="codex">Codex</option>
                   <option value="claude-code">Claude Code</option>
                 </select>
-              </label>
-              <label>
-                Computer
-                <select name="computerId" required>
+              </div>
+              <div className="agent-create-field">
+                <label htmlFor="new-agent-computer">Computer</label>
+                <select
+                  id="new-agent-computer"
+                  name="computerId"
+                  disabled={submitting}
+                  required
+                  value={selectedComputerId}
+                  onChange={(event) => setComputerId(event.currentTarget.value)}
+                >
                   {value.computers.map((computer: Computer) => (
                     <option value={computer.id} key={computer.id}>
                       {computer.displayName}
                     </option>
                   ))}
                 </select>
-              </label>
-              <p className="muted">New Agents receive only direct mentions by default.</p>
-              <button className="button" type="submit">
-                Create Agent
-              </button>
-              {error ? (
-                <div className="notice error" role="alert">
-                  {error}
-                </div>
+              </div>
+            </div>
+            <div
+              className={`notice ${readiness?.status === "ready" && computer?.connectionStatus === "online" ? "" : "warning"}`}
+              role="status"
+            >
+              {providerReadinessMessage(computer, runtimeProvider, readiness?.status)}
+            </div>
+            <p className="agent-create-note">New Agents receive only direct mentions by default.</p>
+            {error ? (
+              <div className="notice error" role="alert">
+                {error}
+              </div>
+            ) : null}
+            <div className="agent-create-actions">
+              {presentation === "dialog" ? (
+                <button className="secondary" disabled={submitting} type="button" onClick={onCancel}>
+                  Cancel
+                </button>
               ) : null}
-            </form>
-          )
-        }
-      </AsyncState>
-    </Page>
+              <button className="button" disabled={submitting} type="submit">
+                {submitting ? "Creating…" : "Create Agent"}
+              </button>
+            </div>
+          </form>
+        );
+      }}
+    </AsyncState>
   );
+}
+
+function markOwnComputersUnconfirmed(value: { computers: Computer[] }): { computers: Computer[] } {
+  return {
+    computers: value.computers.map(({ providerReadiness: _providerReadiness, ...computer }) => computer),
+  };
+}
+
+function providerReadinessMessage(
+  computer: Computer | undefined,
+  provider: "codex" | "claude-code",
+  status: "checking" | "install" | "sign-in" | "ready" | "unavailable" | undefined,
+): string {
+  const label = providerLabel(provider);
+  if (computer?.connectionStatus === "offline") {
+    return `${computer.displayName} is offline. You can still create this Agent; ${label} Turns will fail without starting and can be retried when this Computer reconnects. No other Provider will be substituted.`;
+  }
+  if (status === "ready") return `${label} is ready on ${computer?.displayName ?? "this Computer"}.`;
+  const action =
+    status === "checking"
+      ? "readiness is still being checked"
+      : status === "install"
+        ? "must be installed"
+        : status === "sign-in"
+          ? "requires sign-in"
+          : status === "unavailable"
+            ? "is currently unavailable"
+            : "readiness has not been reported by this Computer";
+  return `${label} ${action}. You can still create this Agent; its Turns will fail without starting and can be retried after readiness is restored. No other Provider will be substituted.`;
 }
 
 const agentSections = [
@@ -722,7 +1291,11 @@ function AgentDetailPage() {
   const { agentId = "", tab = "general" } = useParams();
   const [refreshVersion, setRefreshVersion] = useState(0);
   const navigate = useNavigate();
-  const state = useResource(() => browserApi.agent(agentId), `${agentId}:${refreshVersion}`);
+  const state = useResource(() => loadAgentDetail(agentId), `${agentId}:${refreshVersion}`, {
+    onBackgroundError: markAgentDetailUnconfirmed,
+    revalidateMs: 30_000,
+    refreshOnFocus: true,
+  });
   const currentSection = agentSections.find((section) => section.key === tab);
   if (!currentSection) return <NotFoundPage />;
   return (
@@ -731,7 +1304,7 @@ function AgentDetailPage() {
         <section className="object-page">
           <header className="object-header">
             <Link className="breadcrumb" to="/agents">
-              Agents
+              ← Agents
             </Link>
             <div className="object-title-row">
               <div className="object-identity">
@@ -741,12 +1314,12 @@ function AgentDetailPage() {
                 <div>
                   <h1>{agent.displayName}</h1>
                   <p>
-                    <span className="mono">{agent.name}</span>
-                    <span>{providerLabel(agent.runtimeProvider)}</span>
-                    <span>{agent.computer.displayName}</span>
+                    <span>@{agent.name}</span>
+                    <span>Managed by {agent.manager.displayName}</span>
                   </p>
                 </div>
               </div>
+              <AgentAvailabilityAction agent={agent} />
             </div>
           </header>
           <label className="local-nav-select">
@@ -781,10 +1354,10 @@ function AgentDetailPage() {
   );
 }
 
-function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetail; tab: string; onAgentChanged: () => void }) {
+function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetailView; tab: string; onAgentChanged: () => void }) {
   if (tab === "general") return <GeneralTab agent={agent} onAgentChanged={onAgentChanged} />;
   if (tab === "runtime") return <RuntimeTab agent={agent} />;
-  if (tab === "im") return <ImTab agent={agent} />;
+  if (tab === "im") return <ImTab agent={agent} onAgentChanged={onAgentChanged} />;
   if (tab === "resources")
     return (
       <EmptyState title="No Team Resources assigned">
@@ -801,24 +1374,107 @@ function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetail; tab: str
   return <NotFoundPage />;
 }
 
-function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetail; onAgentChanged: () => void }) {
+function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   return (
-    <>
-      <DefinitionList
-        rows={[
-          ["Display name", agent.displayName],
-          ["Manager", agent.manager.displayName],
-          ["Computer", agent.computer.displayName],
-          ["Lifecycle", titleCase(agent.status)],
-          ["Created", formatDate(agent.createdAt)],
-        ]}
-      />
-      {agent.viewerCapabilities.canManage ? <GeneralAdminForm agent={agent} onAgentChanged={onAgentChanged} /> : null}
-    </>
+    <div className="overview-stack">
+      <section className="overview-section" aria-labelledby="availability-heading">
+        <h3 id="availability-heading">Availability</h3>
+        <p className="overview-section-copy">
+          These dependencies jointly determine whether {agent.displayName} can receive work.
+        </p>
+        <div className="dependency-grid">
+          <DependencyCard
+            title="Computer"
+            state={agent.availability.dependencies.computer.state}
+            primary={agent.computer.displayName}
+            secondary={lastConfirmedLabel(agent.availability.dependencies.computer.lastConfirmedAt)}
+          />
+          <DependencyCard
+            title="Handoff"
+            state={agent.availability.dependencies.handoff.state}
+            primary={
+              agent.availability.dependencies.channel.provider
+                ? `${titleCase(agent.availability.dependencies.channel.provider)} · ${providerLabel(agent.runtimeProvider)}`
+                : providerLabel(agent.runtimeProvider)
+            }
+            secondary={handoffDetailLabel(agent.availability.dependencies.handoff.state)}
+          />
+        </div>
+      </section>
+      <section className="overview-section" aria-labelledby="identity-access-heading">
+        <div className="overview-section-heading">
+          <h3 id="identity-access-heading">Identity &amp; access</h3>
+          <Link to={`/agents/${agent.id}/access`}>Manage access</Link>
+        </div>
+        <DefinitionList
+          rows={[
+            ["Bot identity", agent.availability.dependencies.channel.botDisplayName ?? `@${agent.name}`],
+            ["Manager", agent.manager.displayName],
+            ["Who can use", "Team members"],
+          ]}
+        />
+      </section>
+      {agent.viewerCapabilities.canManage ? <AdminControls agent={agent} onAgentChanged={onAgentChanged} /> : null}
+    </div>
   );
 }
 
-function GeneralAdminForm({ agent, onAgentChanged }: { agent: AgentDetail; onAgentChanged: () => void }) {
+function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
+  return (
+    <div className={`availability-action ${availabilityTone(agent.availability.state)}`}>
+      <span>
+        <strong>
+          <i className={`availability-dot ${availabilityTone(agent.availability.state)}`} aria-hidden="true" />
+          {availabilityStateLabel(agent.availability.state)}
+        </strong>
+        <small>{availabilityReasonLabel(agent.availability.reason)}</small>
+      </span>
+    </div>
+  );
+}
+
+function DependencyCard({
+  title,
+  state,
+  primary,
+  secondary,
+}: {
+  title: string;
+  state: AgentAvailability["dependencies"]["handoff"]["state"];
+  primary: string;
+  secondary: string;
+}) {
+  return (
+    <article className="dependency-card">
+      <span>{title}</span>
+      <strong>
+        <i className={`availability-dot ${availabilityTone(state)}`} aria-hidden="true" />
+        {dependencyStateLabel(state)}
+      </strong>
+      <p>{primary}</p>
+      <small>{secondary}</small>
+    </article>
+  );
+}
+
+function AdminControls({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="admin-controls" id="admin-controls">
+      <button
+        aria-expanded={open}
+        className="admin-controls-trigger"
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+      >
+        {open ? "Close Agent settings" : "Edit Agent settings"}
+      </button>
+      {open ? <GeneralAdminForm agent={agent} onAgentChanged={onAgentChanged} /> : null}
+    </div>
+  );
+}
+
+function GeneralAdminForm({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   const configState = useResource(() => browserApi.agentConfig(agent.id), agent.id);
   return (
     <AsyncState state={configState}>
@@ -880,12 +1536,12 @@ function GeneralConfigForm({
         Display name
         <input defaultValue={config.displayName} key={config.revision} name="displayName" required />
       </label>
-      <button className="button" type="submit">
+      <button className="button commit" type="submit">
         Save General settings
       </button>
       <div className="actions">
         {config.status === "active" ? (
-          <button type="button" onClick={() => void changeLifecycle("suspend")}>
+          <button className="secondary" type="button" onClick={() => void changeLifecycle("suspend")}>
             Suspend Agent
           </button>
         ) : (
@@ -904,7 +1560,7 @@ function GeneralConfigForm({
   );
 }
 
-function RuntimeTab({ agent }: { agent: AgentDetail }) {
+function RuntimeTab({ agent }: { agent: AgentDetailView }) {
   const state = useResource(
     () => (agent.viewerCapabilities.canManage ? browserApi.agentConfig(agent.id) : Promise.resolve(undefined)),
     `${agent.id}:${agent.viewerCapabilities.canManage}`,
@@ -978,7 +1634,7 @@ function RuntimeConfigForm({ initialConfig }: { initialConfig: AgentAdminConfig 
         <input defaultValue={config.runtimeConfig.maxDurationMs ?? ""} min="1" name="maxDurationMs" type="number" />
       </label>
       <p className="muted">Allowed message tools: {config.runtimeConfig.allowedTools.join(", ") || "None"}</p>
-      <button className="button" type="submit">
+      <button className="button commit" type="submit">
         Save Runtime settings
       </button>
       {message ? <p role="status">{message}</p> : null}
@@ -991,59 +1647,11 @@ function nullableText(value: FormDataEntryValue | null): string | null {
   return text || null;
 }
 
-function feishuSetupRecovery(attempt: FeishuSetupAttempt): string | undefined {
-  const messages: Record<string, string> = {
-    FEISHU_APP_ALREADY_BOUND:
-      "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",
-    FEISHU_SCOPE_REAUTH_REQUIRED:
-      "Feishu did not grant every required permission. Retry and approve all requested permissions.",
-    IM_BINDING_SCOPE_REAUTH_REQUIRED:
-      "Feishu did not grant every required permission. Retry and approve all requested permissions.",
-    FEISHU_SETUP_DENIED: "Feishu authorization was declined. Retry and approve the requested permissions.",
-    FEISHU_SETUP_EXPIRED: "This Feishu authorization expired. Retry to scan a new QR code.",
-    FEISHU_SETUP_CANCELED: "Feishu setup was canceled. Retry when you are ready.",
-    FEISHU_SETUP_OWNER_RESTARTED: "The server restarted during Feishu setup. Retry to generate a new QR code.",
-    FEISHU_BINDING_IDENTITY_MISMATCH:
-      "The authorized Feishu Bot identity does not match the current binding. Retry with the current Bot or use Replace.",
-  };
-  if (attempt.errorCode && messages[attempt.errorCode]) return messages[attempt.errorCode];
-  if (attempt.state === "expired") return messages.FEISHU_SETUP_EXPIRED;
-  if (attempt.state === "canceled") return messages.FEISHU_SETUP_CANCELED;
-  if (attempt.state === "failed") return "Feishu setup failed. Retry or contact a Team admin for help.";
-  return undefined;
-}
-
-function ImTab({ agent }: { agent: AgentDetail }) {
+function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   const [reload, setReload] = useState(0);
-  const [attempt, setAttempt] = useState<FeishuSetupAttempt>();
   const [error, setError] = useState<string>();
   const [reauthorizationNeeded, setReauthorizationNeeded] = useState(false);
   const state = useResource(() => browserApi.imBinding(agent.id), `${agent.id}:${reload}`);
-  const connect = useCallback(
-    async (intent: "create" | "reauthorize" | "replace" = "create") => {
-      try {
-        setError(undefined);
-        setAttempt(await browserApi.createFeishuSetupAttempt(agent.id, intent));
-        setReauthorizationNeeded(false);
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "Unable to start setup");
-      }
-    },
-    [agent.id],
-  );
-  useEffect(() => {
-    if (!attempt || !["awaiting_user", "validating"].includes(attempt.state)) return;
-    const timer = window.setInterval(() => {
-      void browserApi.feishuSetupAttempt(attempt.id).then(
-        (next) => {
-          setAttempt(next);
-          if (next.state === "succeeded") setReload((value) => value + 1);
-        },
-        (cause: unknown) => setError(cause instanceof Error ? cause.message : "Unable to refresh setup"),
-      );
-    }, 1_500);
-    return () => window.clearInterval(timer);
-  }, [attempt]);
   async function changeReceiveMode(receiveMode: "mention_only" | "all_message") {
     if (
       receiveMode === "all_message" &&
@@ -1056,6 +1664,7 @@ function ImTab({ agent }: { agent: AgentDetail }) {
       const config = await browserApi.agentConfig(agent.id);
       await browserApi.updateAgent(agent.id, { expectedRevision: config.revision, receiveMode });
       setReload((value) => value + 1);
+      onAgentChanged();
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === "IM_BINDING_SCOPE_REAUTH_REQUIRED") {
         setReauthorizationNeeded(true);
@@ -1064,141 +1673,181 @@ function ImTab({ agent }: { agent: AgentDetail }) {
     }
   }
   return (
-    <AsyncState state={state}>
-      {(binding) => (
-        <>
-          {binding ? (
-            <DefinitionList
-              rows={[
-                ["Provider", binding.provider],
-                [
-                  "Binding state",
-                  binding.bindingState === "reauthorization_required" && binding.provider === "feishu"
-                    ? "Online · permissions update required"
-                    : binding.bindingState,
-                ],
-                ["Receive mode", binding.receiveMode],
-                ["Last confirmed", binding.lastConfirmedAt ? formatDate(binding.lastConfirmedAt) : "Unable to confirm"],
-              ]}
-            />
-          ) : (
-            <EmptyState title="No IM binding">Connect a supported IM bot when the Agent is ready.</EmptyState>
-          )}
-          {agent.viewerCapabilities.canManage ? (
-            <div className="actions">
-              {!binding ? (
-                <button className="button" type="button" onClick={() => void connect()}>
-                  Connect existing or new Feishu Bot
-                </button>
-              ) : null}
-              {(binding?.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
-              binding?.provider === "feishu" ? (
-                <button className="button" type="button" onClick={() => void connect("reauthorize")}>
-                  Reauthorize Feishu
-                </button>
-              ) : null}
-              {(binding?.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
-              binding?.provider === "slack" ? (
-                <span className="notice">Slack reauthorization is not available in this release.</span>
-              ) : null}
-              {binding?.receiveMode === "mention_only" ? (
-                <button type="button" onClick={() => void changeReceiveMode("all_message")}>
-                  Enable all messages
-                </button>
-              ) : binding ? (
-                <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
-                  Use mentions only
-                </button>
-              ) : null}
-              {binding?.provider === "feishu" ? (
-                <button type="button" onClick={() => void connect("replace")}>
-                  Replace with existing or new Feishu Bot
-                </button>
-              ) : null}
-              {binding ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (
-                      !window.confirm(
-                        "Disable this IM binding? New IM work will stop until another binding is connected.",
-                      )
-                    )
-                      return;
-                    void browserApi.disableImBinding(binding.id).then(
-                      () => setReload((value) => value + 1),
-                      (cause: unknown) =>
-                        setError(cause instanceof Error ? cause.message : "Unable to disable IM binding"),
-                    );
-                  }}
-                >
-                  Disable IM binding
-                </button>
-              ) : null}
-            </div>
-          ) : (
-            <p className="muted">IM setup is managed by Team Admins.</p>
-          )}
-          {attempt ? (
-            <div className="notice">
-              <strong>Feishu setup started</strong>
-              <br />
-              {attempt.intent === "reauthorize"
-                ? "Confirm the updated permissions for the current Feishu Bot."
-                : "Choose an existing Feishu Bot or create a new one, then confirm the requested permissions."}
-              <br />
-              State: {attempt.state}. Expires {formatDate(attempt.expiresAt)}.
-              {feishuSetupRecovery(attempt) ? (
-                <>
-                  <br />
-                  {feishuSetupRecovery(attempt)}
-                </>
-              ) : null}
-              {attempt.qrUrl ? (
-                <>
-                  <br />
-                  <FeishuQrCode value={attempt.qrUrl} />
-                  <a href={attempt.qrUrl} rel="noreferrer" target="_blank">
-                    Open Feishu authorization
-                  </a>
-                </>
-              ) : null}
-              {["expired", "failed", "canceled"].includes(attempt.state) ? (
-                <>
-                  <br />
-                  <button className="button" type="button" onClick={() => void connect(attempt.intent)}>
-                    Retry Feishu setup
-                  </button>
-                </>
-              ) : null}
-            </div>
-          ) : null}
-          {error ? (
-            <div className="notice error" role="alert">
-              {error}
-            </div>
-          ) : null}
-        </>
-      )}
-    </AsyncState>
+    <FeishuSetup
+      agentId={agent.id}
+      onSuccess={() => {
+        setReload((value) => value + 1);
+        onAgentChanged();
+      }}
+    >
+      {(setup) => {
+        const connect = async (intent: "create" | "reauthorize" | "replace" = "create") => {
+          setError(undefined);
+          if (await setup.start(intent)) setReauthorizationNeeded(false);
+        };
+        return (
+          <AsyncState state={state}>
+            {(binding) => (
+              <div className="im-stack">
+                {binding ? (
+                  <>
+                    <section className="im-section" aria-labelledby="bot-connection-heading">
+                      <div className="im-section-heading">
+                        <h3 id="bot-connection-heading">Bot connection</h3>
+                        <p>{agent.displayName} receives messages through this dedicated identity.</p>
+                      </div>
+                      <div className="binding-status">
+                        <div className="binding-status-main">
+                          <span>
+                            <strong>{binding.bot.displayName}</strong>
+                            <small>
+                              <span>{titleCase(binding.provider)} · </span>
+                              <span>{imBindingStateLabel(binding)}</span>
+                            </small>
+                          </span>
+                        </div>
+                        <small>
+                          {binding.lastConfirmedAt
+                            ? `Confirmed ${formatDate(binding.lastConfirmedAt)}`
+                            : "Unable to confirm"}
+                        </small>
+                      </div>
+                      {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                      binding.provider === "feishu" &&
+                      agent.viewerCapabilities.canManage ? (
+                        <div className="im-actions">
+                          <button className="button" type="button" onClick={() => void connect("reauthorize")}>
+                            Reauthorize Feishu
+                          </button>
+                        </div>
+                      ) : null}
+                      {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                      binding.provider === "slack" ? (
+                        <span className="notice">Slack reauthorization is not available in this release.</span>
+                      ) : null}
+                    </section>
+                    <section className="im-section" aria-labelledby="message-policy-heading">
+                      <div className="im-section-heading">
+                        <h3 id="message-policy-heading">Message policy</h3>
+                        <p>Choose which channel messages can start Agent work.</p>
+                      </div>
+                      <div className="message-policy">
+                        <div className="message-policy-copy">
+                          <strong>Receive mode</strong>
+                          <p>Mentions only is the safer default and reduces unnecessary context.</p>
+                        </div>
+                        {agent.viewerCapabilities.canManage ? (
+                          <div className="segmented-control">
+                            {binding.receiveMode === "mention_only" ? (
+                              <>
+                                <span className="active">Mentions only</span>
+                                <button type="button" onClick={() => void changeReceiveMode("all_message")}>
+                                  Enable all messages
+                                </button>
+                              </>
+                            ) : (
+                              <>
+                                <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
+                                  Use mentions only
+                                </button>
+                                <span className="active">All messages</span>
+                              </>
+                            )}
+                          </div>
+                        ) : (
+                          <strong>{receiveModeLabel(binding.receiveMode)}</strong>
+                        )}
+                      </div>
+                    </section>
+                    {agent.viewerCapabilities.canManage ? (
+                      <section className="im-section" aria-labelledby="connection-actions-heading">
+                        <div className="im-section-heading">
+                          <h3 id="connection-actions-heading">Connection actions</h3>
+                          <p>Changes here can temporarily stop new IM work.</p>
+                        </div>
+                        <div className="im-actions">
+                          {binding.provider === "feishu" ? (
+                            <button className="secondary" type="button" onClick={() => void connect("replace")}>
+                              Replace with existing or new Feishu Bot
+                            </button>
+                          ) : null}
+                          <button
+                            className="danger-text"
+                            type="button"
+                            onClick={() => {
+                              if (
+                                !window.confirm(
+                                  "Disable this IM binding? New IM work will stop until another binding is connected.",
+                                )
+                              )
+                                return;
+                              void browserApi.disableImBinding(binding.id).then(
+                                () => {
+                                  setReload((value) => value + 1);
+                                  onAgentChanged();
+                                },
+                                (cause: unknown) =>
+                                  setError(cause instanceof Error ? cause.message : "Unable to disable IM binding"),
+                              );
+                            }}
+                          >
+                            Disable IM binding
+                          </button>
+                        </div>
+                      </section>
+                    ) : (
+                      <p className="muted">IM setup is managed by Team Admins.</p>
+                    )}
+                  </>
+                ) : (
+                  <section className="im-section" aria-labelledby="bot-connection-heading">
+                    <div className="im-section-heading">
+                      <h3 id="bot-connection-heading">Bot connection</h3>
+                      <p>Connect a supported IM bot when the Agent is ready.</p>
+                    </div>
+                    <EmptyState title="No IM binding">
+                      This Agent does not have a Feishu or Slack identity yet.
+                    </EmptyState>
+                    {agent.viewerCapabilities.canManage ? (
+                      <div className="im-actions">
+                        <button className="button" type="button" onClick={() => void connect()}>
+                          Connect existing or new Feishu Bot
+                        </button>
+                      </div>
+                    ) : (
+                      <p className="muted">IM setup is managed by Team Admins.</p>
+                    )}
+                  </section>
+                )}
+                {setup.feedback}
+                {error ? (
+                  <div className="notice error" role="alert">
+                    {error}
+                  </div>
+                ) : null}
+              </div>
+            )}
+          </AsyncState>
+        );
+      }}
+    </FeishuSetup>
   );
 }
 
-function FeishuQrCode({ value }: { value: string }) {
-  const [source, setSource] = useState<string>();
-  useEffect(() => {
-    let active = true;
-    void qrToString(value, { margin: 1, type: "svg", width: 240 }).then(
-      (svg) => active && setSource(`data:image/svg+xml,${encodeURIComponent(svg)}`),
-    );
-    return () => {
-      active = false;
-    };
-  }, [value]);
-  return source ? <img alt="Scan this QR code in Feishu" className="setup-qr" src={source} /> : null;
+function imBindingStateLabel(binding: ImBindingSummary): string {
+  if (binding.bindingState === "reauthorization_required" && binding.provider === "feishu") {
+    return "Permissions update required";
+  }
+  return {
+    active: "Configured",
+    provisioning: "Setting up",
+    reauthorization_required: "Permissions update required",
+    error: "Needs attention",
+    disabled: "Disabled",
+  }[binding.bindingState];
 }
 
-function AccessTab({ agent }: { agent: AgentDetail }) {
+function AccessTab({ agent }: { agent: AgentDetailView }) {
   return (
     <DefinitionList
       rows={[
@@ -1211,19 +1860,22 @@ function AccessTab({ agent }: { agent: AgentDetail }) {
 }
 
 const settingsSections = [
-  { key: "account", label: "Account" },
-  { key: "team", label: "General" },
-  { key: "members", label: "Members" },
-  { key: "computers", label: "Computers" },
-  { key: "resources", label: "Resources" },
-  { key: "integrations", label: "Integrations" },
-  { key: "access", label: "Access" },
-  { key: "usage", label: "Usage" },
-  { key: "security", label: "Security" },
+  { key: "account", label: "Account", group: "Personal" },
+  { key: "team", label: "General", group: "Team" },
+  { key: "members", label: "Members", group: "Team" },
+  { key: "computers", label: "Computers", group: "Team" },
+  { key: "resources", label: "Resources", group: "Capabilities" },
+  { key: "integrations", label: "Integrations", group: "Capabilities" },
+  { key: "access", label: "Access", group: "Governance" },
+  { key: "usage", label: "Usage", group: "Governance" },
+  { key: "security", label: "Security", group: "Governance" },
 ] as const;
+
+const settingsGroups = ["Personal", "Team", "Capabilities", "Governance"] as const;
 
 function SettingsPage() {
   const { section = "team" } = useParams();
+  const { invitationOpen, setInvitationMutationPending } = useOutletContext<AppShellOutletContext>();
   const navigate = useNavigate();
   const { me, membership, refreshMe } = useTeam();
   const currentSection = settingsSections.find((item) => item.key === section);
@@ -1237,19 +1889,32 @@ function SettingsPage() {
       <label className="local-nav-select">
         <span>Settings section</span>
         <select value={section} onChange={(event) => navigate(`/settings/${event.currentTarget.value}`)}>
-          {settingsSections.map((item) => (
-            <option value={item.key} key={item.key}>
-              {item.label}
-            </option>
+          {settingsGroups.map((group) => (
+            <optgroup label={group} key={group}>
+              {settingsSections
+                .filter((item) => item.group === group)
+                .map((item) => (
+                  <option value={item.key} key={item.key}>
+                    {item.label}
+                  </option>
+                ))}
+            </optgroup>
           ))}
         </select>
       </label>
       <div className="settings-layout">
         <nav className="local-nav" aria-label="Settings">
-          {settingsSections.map((item) => (
-            <NavLink to={`/settings/${item.key}`} key={item.key}>
-              {item.label}
-            </NavLink>
+          {settingsGroups.map((group) => (
+            <div className="local-nav-group" key={group}>
+              <span className="local-nav-group-label">{group}</span>
+              {settingsSections
+                .filter((item) => item.group === group)
+                .map((item) => (
+                  <NavLink to={`/settings/${item.key}`} key={item.key}>
+                    {item.label}
+                  </NavLink>
+                ))}
+            </div>
           ))}
         </nav>
         <div className="settings-content">
@@ -1263,6 +1928,8 @@ function SettingsPage() {
             <MembersSettings
               canManage={membership.role === "admin"}
               currentUserId={me.user.id}
+              invitationDialogOpen={invitationOpen}
+              onInvitationMutationPendingChange={setInvitationMutationPending}
               refreshMe={refreshMe}
               teamId={membership.teamId}
             />
@@ -1271,27 +1938,125 @@ function SettingsPage() {
             <ComputersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
           ) : null}
           {section === "resources" ? (
-            <EmptyState title="Team Resources not enabled">No Resource records are created by this page.</EmptyState>
+            <SettingsUnavailable
+              details={[
+                "This page does not create or infer Team Resource records.",
+                "No Resource assignment projection is exposed by the current API.",
+              ]}
+              title="Team Resources are not enabled"
+            >
+              Repositories, skills, tools, and prompts will appear here only after OpenTag has an authoritative Team
+              Resource model.
+            </SettingsUnavailable>
           ) : null}
           {section === "integrations" ? (
-            <EmptyState title="Team Integrations not enabled">
-              Agent-owned connections remain visible from each Agent's IM and Integrations sections.
-            </EmptyState>
+            <SettingsUnavailable
+              action={{ label: "Open Agents", to: "/agents" }}
+              details={[
+                "Supported bot connections remain owned by individual Agents.",
+                "Open an Agent's IM tab to review its current Feishu or Slack connection state.",
+              ]}
+              title="Team Integrations are not enabled"
+            >
+              OpenTag does not promote Agent credentials into shared Team connections or imply that a provider is
+              available Team-wide.
+            </SettingsUnavailable>
           ) : null}
-          {section === "access" ? (
-            <EmptyState title="Team access uses the current membership policy">
-              Team Admins manage membership while Agent access stays visible on each Agent.
-            </EmptyState>
-          ) : null}
+          {section === "access" ? <AccessSettings membership={membership} /> : null}
           {section === "usage" ? (
-            <EmptyState title="Usage reporting not enabled">No inferred or estimated usage is shown.</EmptyState>
+            <SettingsUnavailable
+              details={[
+                "Task, Turn, and provider totals are not estimated from partial activity.",
+                "Cost reporting will require authoritative provider billing metadata.",
+              ]}
+              title="Usage reporting is not enabled"
+            >
+              This page will stay intentionally empty until OpenTag can report complete, measured Team activity.
+            </SettingsUnavailable>
           ) : null}
           {section === "security" ? (
-            <EmptyState title="Security overview">Sensitive credentials are never returned to the browser.</EmptyState>
+            <SettingsUnavailable
+              details={[
+                "Sensitive credentials are never returned to the browser.",
+                "Team administration remains limited to active Admin memberships.",
+                "Browser sessions and audit events are not available in this version.",
+              ]}
+              status="Current safeguards"
+              title="Security data is intentionally limited"
+            >
+              OpenTag only reports security state that the server can verify. It does not show inferred checks or an
+              unsupported all-clear status.
+            </SettingsUnavailable>
           ) : null}
         </div>
       </div>
     </section>
+  );
+}
+
+function SettingsUnavailable({
+  action,
+  children,
+  details,
+  status = "Not enabled",
+  title,
+}: {
+  action?: { label: string; to: string };
+  children: ReactNode;
+  details: readonly string[];
+  status?: string;
+  title: string;
+}) {
+  return (
+    <section className="settings-unavailable">
+      <span className="settings-state-label">{status}</span>
+      <h2>{title}</h2>
+      <p>{children}</p>
+      <ul>
+        {details.map((detail) => (
+          <li key={detail}>{detail}</li>
+        ))}
+      </ul>
+      {action ? (
+        <Link className="settings-state-action" to={action.to}>
+          {action.label} <span aria-hidden="true">→</span>
+        </Link>
+      ) : null}
+    </section>
+  );
+}
+
+function AccessSettings({ membership }: { membership: MeMembership }) {
+  return (
+    <div className="settings-policy-stack">
+      <section className="settings-policy-banner">
+        <div>
+          <span className="settings-state-label">Server-returned membership</span>
+          <h2>Authorization follows your active Team membership</h2>
+          <p>OpenTag checks authorization on every request. This page only reports facts exposed by the API.</p>
+        </div>
+        <span className="settings-role-badge">Your role: {titleCase(membership.role)}</span>
+      </section>
+      <section className="settings-list-section">
+        <header className="settings-subheader">
+          <div>
+            <h2>Available policy detail</h2>
+            <p>The current API does not publish a complete Team capability matrix.</p>
+          </div>
+        </header>
+        <DefinitionList
+          rows={[
+            ["Selected Team role", titleCase(membership.role)],
+            ["Custom roles", "Not enabled"],
+            ["Per-resource policies", "Not exposed by the API"],
+          ]}
+        />
+        <p className="settings-footnote">
+          Management controls use server-returned capabilities where available; the server remains authoritative for
+          every operation.
+        </p>
+      </section>
+    </div>
   );
 }
 
@@ -1301,8 +2066,11 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
+  const dirty = displayName !== user.displayName;
 
-  useEffect(() => setDisplayName(user.displayName), [user.displayName]);
+  useEffect(() => {
+    setDisplayName(user.displayName);
+  }, [user.displayName]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1326,27 +2094,68 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
   }
 
   return (
-    <form className="form-card" onSubmit={submit}>
+    <form className="settings-profile-form" onSubmit={submit}>
       <h2>Account profile</h2>
-      <label>
-        Email
-        <input name="email" readOnly type="email" value={user.email} />
-      </label>
-      <label>
-        Display name
-        <input
-          maxLength={255}
-          name="displayName"
-          onChange={(event) => setDisplayName(event.currentTarget.value)}
-          required
-          value={displayName}
-        />
-      </label>
-      <p className="muted">This name is shared across every Team you belong to.</p>
-      <button className="button" disabled={saving} type="submit">
-        {saving ? "Saving…" : "Save account profile"}
-      </button>
-      {message ? <p role="status">{message}</p> : null}
+      <div className="settings-field-list">
+        <div className="settings-field-row">
+          <div className="settings-field-copy">
+            <strong>Email</strong>
+            <p>Your sign-in email cannot be changed here.</p>
+          </div>
+          <div className="settings-readonly-value">
+            <input aria-label="Email" name="email" readOnly type="email" value={user.email} />
+            <small>Read only</small>
+          </div>
+        </div>
+        <div className="settings-field-row">
+          <div className="settings-field-copy">
+            <strong>Display name</strong>
+            <p>This identity is shared across every Team you belong to.</p>
+          </div>
+          <label>
+            Display name
+            <input
+              autoComplete="name"
+              maxLength={255}
+              name="displayName"
+              onChange={(event) => {
+                setDisplayName(event.currentTarget.value);
+                setMessage(undefined);
+                setError(undefined);
+              }}
+              required
+              value={displayName}
+            />
+          </label>
+        </div>
+      </div>
+      {dirty ? (
+        <div className="dirty-bar">
+          <span>Unsaved changes</span>
+          <div className="dirty-actions">
+            <button
+              className="tertiary"
+              disabled={saving}
+              type="button"
+              onClick={() => {
+                setDisplayName(user.displayName);
+                setMessage(undefined);
+                setError(undefined);
+              }}
+            >
+              Discard
+            </button>
+            <button className="button commit" disabled={saving} type="submit">
+              {saving ? "Saving…" : "Save account profile"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {message ? (
+        <p className="settings-inline-status success" role="status">
+          {message}
+        </p>
+      ) : null}
       {error ? (
         <p className="notice error" role="alert">
           {error}
@@ -1358,48 +2167,135 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
 
 function TeamSettings({ membership, refreshMe }: { membership: MeMembership; refreshMe: () => void }) {
   const [message, setMessage] = useState<string>();
+  const [error, setError] = useState<string>();
+  const [saving, setSaving] = useState(false);
+  const [teamName, setTeamName] = useState(membership.teamName);
+  const [teamDisplayName, setTeamDisplayName] = useState(membership.teamDisplayName);
+  const dirty = teamName !== membership.teamName || teamDisplayName !== membership.teamDisplayName;
+
+  useEffect(() => {
+    setTeamName(membership.teamName);
+    setTeamDisplayName(membership.teamDisplayName);
+  }, [membership.teamDisplayName, membership.teamName]);
+
   if (membership.role !== "admin") {
     return (
-      <DefinitionList
-        rows={[
-          ["Canonical name", membership.teamName],
-          ["Display name", membership.teamDisplayName],
-          ["Your role", membership.role],
-        ]}
-      />
+      <section className="settings-readonly-panel">
+        <div className="settings-readonly-heading">
+          <div>
+            <h2>Team profile</h2>
+            <p>Only Team Admins can change these fields.</p>
+          </div>
+          <span className="settings-role-badge">Your role: {titleCase(membership.role)}</span>
+        </div>
+        <DefinitionList
+          rows={[
+            ["Canonical name", membership.teamName],
+            ["Display name", membership.teamDisplayName],
+          ]}
+        />
+      </section>
     );
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
+    setSaving(true);
     try {
       setMessage(undefined);
+      setError(undefined);
       await browserApi.updateTeam(membership.teamId, {
-        name: String(data.get("name") ?? ""),
-        displayName: String(data.get("displayName") ?? ""),
+        name: teamName,
+        displayName: teamDisplayName,
       });
       refreshMe();
       setMessage("Team profile saved.");
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to save the Team profile");
+      setError(cause instanceof Error ? cause.message : "Unable to save the Team profile");
+    } finally {
+      setSaving(false);
     }
   }
   return (
-    <form className="form-card" key={`${membership.teamName}:${membership.teamDisplayName}`} onSubmit={submit}>
+    <form className="settings-profile-form" onSubmit={submit}>
       <h2>Team profile</h2>
-      <label>
-        Canonical name
-        <input defaultValue={membership.teamName} name="name" pattern="[A-Za-z0-9][A-Za-z0-9-]*" required />
-      </label>
-      <p className="muted">Changing this name immediately changes the CLI --team selector. The Team ID stays stable.</p>
-      <label>
-        Display name
-        <input defaultValue={membership.teamDisplayName} name="displayName" required />
-      </label>
-      <button className="button" type="submit">
-        Save Team profile
-      </button>
-      {message ? <p role="status">{message}</p> : null}
+      <div className="settings-field-list">
+        <div className="settings-field-row">
+          <div className="settings-field-copy">
+            <strong>Canonical name</strong>
+            <p>Changing this immediately changes the CLI --team selector. The Team ID stays stable.</p>
+          </div>
+          <label>
+            Canonical name
+            <input
+              aria-label="Canonical name"
+              name="name"
+              pattern="[A-Za-z0-9][A-Za-z0-9-]*"
+              required
+              value={teamName}
+              onChange={(event) => {
+                setTeamName(event.currentTarget.value);
+                setMessage(undefined);
+                setError(undefined);
+              }}
+            />
+            <small className="settings-field-hint">
+              CLI selector: <code>--team {teamName.toLocaleLowerCase() || "team-name"}</code>
+            </small>
+          </label>
+        </div>
+        <div className="settings-field-row">
+          <div className="settings-field-copy">
+            <strong>Display name</strong>
+            <p>The human-readable Team name shown in navigation and invitations.</p>
+          </div>
+          <label>
+            Display name
+            <input
+              name="displayName"
+              required
+              value={teamDisplayName}
+              onChange={(event) => {
+                setTeamDisplayName(event.currentTarget.value);
+                setMessage(undefined);
+                setError(undefined);
+              }}
+            />
+          </label>
+        </div>
+      </div>
+      {dirty ? (
+        <div className="dirty-bar">
+          <span>Unsaved changes</span>
+          <div className="dirty-actions">
+            <button
+              className="tertiary"
+              disabled={saving}
+              type="button"
+              onClick={() => {
+                setTeamName(membership.teamName);
+                setTeamDisplayName(membership.teamDisplayName);
+                setMessage(undefined);
+                setError(undefined);
+              }}
+            >
+              Discard
+            </button>
+            <button className="button commit" disabled={saving} type="submit">
+              {saving ? "Saving…" : "Save Team profile"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {message ? (
+        <p className="settings-inline-status success" role="status">
+          {message}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="notice error" role="alert">
+          {error}
+        </p>
+      ) : null}
     </form>
   );
 }
@@ -1407,11 +2303,15 @@ function TeamSettings({ membership, refreshMe }: { membership: MeMembership; ref
 function MembersSettings({
   canManage,
   currentUserId,
+  invitationDialogOpen,
+  onInvitationMutationPendingChange,
   refreshMe,
   teamId,
 }: {
   canManage: boolean;
   currentUserId: string;
+  invitationDialogOpen: boolean;
+  onInvitationMutationPendingChange: (pending: boolean) => void;
   refreshMe: () => void;
   teamId: string;
 }) {
@@ -1441,35 +2341,69 @@ function MembersSettings({
 
   return (
     <>
-      {canManage ? <InvitationSettings teamId={teamId} /> : null}
-      <section className="panel">
-        <h2>Team members</h2>
+      {canManage && !invitationDialogOpen ? (
+        <InvitationSettings teamId={teamId} onMutationPendingChange={onInvitationMutationPendingChange} />
+      ) : null}
+      <section className="settings-list-section">
         <AsyncState state={state}>
-          {(value) => (
-            <div className="list">
-              {value.members.map((member: TeamMemberSummary) => (
-                <div className="row" key={member.userId}>
-                  <strong>{member.displayName}</strong>
-                  {canManage ? (
-                    <select
-                      aria-label={`Role for ${member.displayName}`}
-                      disabled={pendingUserIds.has(member.userId)}
-                      value={member.role}
-                      onChange={(event) => void changeRole(member, event.currentTarget.value)}
-                    >
-                      {MembershipRoleSchema.options.map((role) => (
-                        <option value={role} key={role}>
-                          {role}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <span>{member.role}</span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+          {(value) => {
+            const adminCount = value.members.filter((member: TeamMemberSummary) => member.role === "admin").length;
+            return (
+              <>
+                <header className="settings-subheader">
+                  <div>
+                    <h2>Team members</h2>
+                    <p>
+                      {value.members.length} {value.members.length === 1 ? "member" : "members"} · {adminCount}{" "}
+                      {adminCount === 1 ? "admin" : "admins"}
+                    </p>
+                  </div>
+                  {!canManage ? <span className="settings-role-badge">Read only</span> : null}
+                </header>
+                <table className="settings-member-table" aria-label="Team members">
+                  <thead>
+                    <tr className="settings-table-header">
+                      <th scope="col">Team member</th>
+                      <th scope="col">Role</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {value.members.map((member: TeamMemberSummary) => (
+                      <tr className="settings-member-row" key={member.userId}>
+                        <th className="settings-member-identity" scope="row">
+                          <span className="settings-member-avatar" aria-hidden="true">
+                            {initials(member.displayName)}
+                          </span>
+                          <span>
+                            <strong>{member.displayName}</strong>
+                            {member.userId === currentUserId ? <small>You</small> : null}
+                          </span>
+                        </th>
+                        <td data-label="Role">
+                          {canManage ? (
+                            <select
+                              aria-label={`Role for ${member.displayName}`}
+                              disabled={pendingUserIds.has(member.userId)}
+                              value={member.role}
+                              onChange={(event) => void changeRole(member, event.currentTarget.value)}
+                            >
+                              {MembershipRoleSchema.options.map((role) => (
+                                <option value={role} key={role}>
+                                  {role}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="settings-value-badge">{member.role}</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            );
+          }}
         </AsyncState>
         {error ? (
           <p className="notice error" role="alert">
@@ -1481,7 +2415,134 @@ function MembersSettings({
   );
 }
 
-function InvitationSettings({ teamId }: { teamId: string }) {
+function InvitationDialog({
+  mutationPending,
+  onClose,
+  onMutationPendingChange,
+  returnFocusRef,
+  teamDisplayName,
+  teamId,
+}: {
+  mutationPending: boolean;
+  onClose: () => void;
+  onMutationPendingChange: (pending: boolean) => void;
+  returnFocusRef: { current: HTMLButtonElement | null };
+  teamDisplayName: string;
+  teamId: string;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const mutationPendingRef = useRef(mutationPending);
+  const onCloseRef = useRef(onClose);
+  mutationPendingRef.current = mutationPending;
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const target = dialog?.querySelector<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled])",
+    );
+    if (mutationPending) {
+      if (!dialog.contains(document.activeElement)) (target ?? dialog).focus();
+    } else if (document.activeElement === dialog) {
+      target?.focus();
+    }
+  }, [mutationPending]);
+
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (mutationPendingRef.current) return;
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (!dialogRef.current?.contains(document.activeElement) || document.activeElement === dialogRef.current) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      returnFocusRef.current?.focus();
+    };
+  }, [returnFocusRef]);
+
+  return (
+    <div className="dialog-layer">
+      <button
+        aria-label="Dismiss invitation dialog"
+        className="dialog-backdrop"
+        disabled={mutationPending}
+        tabIndex={-1}
+        type="button"
+        onClick={onClose}
+      />
+      <div
+        aria-describedby="invitation-dialog-description"
+        aria-labelledby="invitation-dialog-title"
+        aria-modal="true"
+        className="dialog-card invitation-dialog"
+        ref={dialogRef}
+        role="dialog"
+        tabIndex={-1}
+      >
+        <header className="dialog-header">
+          <div>
+            <span className="eyebrow dialog-eyebrow">{teamDisplayName}</span>
+            <h2 id="invitation-dialog-title">Invite people</h2>
+          </div>
+          <button
+            aria-label="Close invitation dialog"
+            className="dialog-close"
+            disabled={mutationPending}
+            ref={closeButtonRef}
+            type="button"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </header>
+        <p className="dialog-description" id="invitation-dialog-description">
+          Anyone with the active link can join this Team as a member until the link expires.
+        </p>
+        <InvitationSettings presentation="dialog" teamId={teamId} onMutationPendingChange={onMutationPendingChange} />
+      </div>
+    </div>
+  );
+}
+
+function InvitationSettings({
+  onMutationPendingChange,
+  presentation = "panel",
+  teamId,
+}: {
+  onMutationPendingChange: (pending: boolean) => void;
+  presentation?: "dialog" | "panel";
+  teamId: string;
+}) {
   const state = useResource(() => browserApi.invitation(teamId), teamId);
   const [current, setCurrent] = useState<Awaited<ReturnType<typeof browserApi.invitation>>>();
   const [busy, setBusy] = useState(false);
@@ -1499,6 +2560,7 @@ function InvitationSettings({ teamId }: { teamId: string }) {
 
   async function mutateInvitation(action: () => Promise<NonNullable<typeof current>>, successMessage: string) {
     setBusy(true);
+    onMutationPendingChange(true);
     setError(undefined);
     setMessage(undefined);
     try {
@@ -1508,6 +2570,7 @@ function InvitationSettings({ teamId }: { teamId: string }) {
       setError(cause instanceof Error ? cause.message : "Unable to update the invitation link");
     } finally {
       setBusy(false);
+      onMutationPendingChange(false);
     }
   }
 
@@ -1524,9 +2587,13 @@ function InvitationSettings({ teamId }: { teamId: string }) {
   }
 
   return (
-    <section className="panel">
-      <h2>Invite people</h2>
-      <p>Anyone with the active link can join this Team as a member until the link expires.</p>
+    <section className={presentation === "dialog" ? "invitation-dialog-content" : "settings-invitation-panel"}>
+      {presentation === "panel" ? (
+        <>
+          <h2>Invite people</h2>
+          <p>Anyone with the active link can join this Team as a member until the link expires.</p>
+        </>
+      ) : null}
       <AsyncState state={state}>
         {(loaded) => {
           const invitation = current ?? loaded;
@@ -1537,7 +2604,7 @@ function InvitationSettings({ teamId }: { teamId: string }) {
                 <input aria-label="Invitation link" readOnly type="url" value={invitation.inviteUrl} />
               </label>
               <p className="muted">Expires {formatDate(invitation.expiresAt)}.</p>
-              <div className="actions">
+              <div className={presentation === "dialog" ? "actions dialog-actions" : "actions"}>
                 <button type="button" onClick={() => void copyInvitation(invitation.inviteUrl)}>
                   Copy invitation link
                 </button>
@@ -1566,84 +2633,75 @@ function InvitationSettings({ teamId }: { teamId: string }) {
 function ComputersSettings({ canManage, teamId }: { canManage: boolean; teamId: string }) {
   const [reload, setReload] = useState(0);
   const state = useResource(() => browserApi.computers(teamId), `${teamId}:${reload}`);
-  const [bootstrapCommand, setBootstrapCommand] = useState<string>();
-  const [error, setError] = useState<string>();
-  const [waitingForComputer, setWaitingForComputer] = useState(false);
-  const baselineComputers = useRef<Map<string, string>>(new Map());
-  async function connectComputer() {
-    try {
-      setError(undefined);
-      baselineComputers.current = new Map(
-        (await browserApi.ownComputers()).computers.map((computer: Computer) => [computer.id, computer.lastSeenAt]),
-      );
-      const issued = await browserApi.issueConnectCode(teamId);
-      setBootstrapCommand(issued.bootstrapCommand);
-      setWaitingForComputer(true);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to create a Computer connection command");
-    }
-  }
-  useEffect(() => {
-    if (!waitingForComputer) return;
-    const timer = window.setInterval(() => {
-      void browserApi.ownComputers().then(
-        (value) => {
-          if (
-            value.computers.some(
-              (computer: Computer) => baselineComputers.current.get(computer.id) !== computer.lastSeenAt,
-            )
-          ) {
-            setWaitingForComputer(false);
-            setReload((current) => current + 1);
-          }
-        },
-        (cause: unknown) => setError(cause instanceof Error ? cause.message : "Unable to refresh Computers"),
-      );
-    }, 1_500);
-    return () => window.clearInterval(timer);
-  }, [waitingForComputer]);
   return (
     <>
-      {canManage ? (
-        <section className="panel">
-          <h2>Connect a Local Computer</h2>
-          <p>Generate a short-lived command, then run it in a terminal on the Computer.</p>
-          <button className="button" type="button" onClick={() => void connectComputer()}>
-            Generate connection command
-          </button>
-          {bootstrapCommand ? (
-            <>
-              <pre>
-                <code>{bootstrapCommand}</code>
-              </pre>
-              <p role="status">{waitingForComputer ? "Waiting for the Computer to connect…" : "Computer connected."}</p>
-            </>
-          ) : null}
-          {error ? (
-            <div className="notice error" role="alert">
-              {error}
-            </div>
-          ) : null}
-        </section>
-      ) : null}
+      {canManage ? <ComputerSetup teamId={teamId} onConnected={() => setReload((current) => current + 1)} /> : null}
       <AsyncState state={state}>
         {(value) => (
-          <div className="list">
-            {value.computers.map((computer: TeamComputerSummary) => (
-              <div className="row" key={computer.id}>
-                <span>
-                  <strong>{computer.displayName}</strong>
-                  <small>
-                    {computer.ownerDisplayName} ({computer.platform})
-                  </small>
-                </span>
-                <span className="cell-stack align-end">
-                  <strong>{titleCase(computer.connectionStatus)}</strong>
-                  <small>Observed {formatDate(computer.observedAt)}</small>
-                </span>
+          <section className="settings-list-section">
+            <header className="settings-subheader">
+              <div>
+                <h2>Team computers</h2>
+                <p>
+                  {value.computers.length} {value.computers.length === 1 ? "computer" : "computers"} ·{" "}
+                  {
+                    value.computers.filter((computer: TeamComputerSummary) => computer.connectionStatus === "online")
+                      .length
+                  }{" "}
+                  online
+                </p>
               </div>
-            ))}
-          </div>
+              {!canManage ? <span className="settings-role-badge">Read only</span> : null}
+            </header>
+            {value.computers.length === 0 ? (
+              <div className="settings-compact-empty">
+                <strong>No computers connected</strong>
+                <p>
+                  {canManage ? "Use the connection flow above to add one." : "A Team Admin must connect a computer."}
+                </p>
+              </div>
+            ) : (
+              <table className="settings-computer-table" aria-label="Team computers">
+                <thead>
+                  <tr className="settings-table-header">
+                    <th scope="col">Computer</th>
+                    <th scope="col">Owner &amp; system</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Last seen</th>
+                    <th scope="col">Agents</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {value.computers.map((computer: TeamComputerSummary) => (
+                    <tr className="settings-computer-row" key={computer.id}>
+                      <th className="settings-computer-identity" scope="row">
+                        <span className="settings-computer-icon" aria-hidden="true" />
+                        <strong>{computer.displayName}</strong>
+                      </th>
+                      <td data-label="Owner & system">
+                        <strong>{computer.ownerDisplayName}</strong>
+                        <small>
+                          {computer.platform === "darwin"
+                            ? "macOS"
+                            : computer.platform === "win32"
+                              ? "Windows"
+                              : "Linux"}
+                        </small>
+                      </td>
+                      <td data-label="Status">
+                        <span className="settings-status">
+                          <span className={`settings-status-dot ${computer.connectionStatus}`} aria-hidden="true" />
+                          {titleCase(computer.connectionStatus)}
+                        </span>
+                      </td>
+                      <td data-label="Last seen">{formatDate(computer.lastSeenAt)}</td>
+                      <td data-label="Agents">{computer.agentIds.length}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
         )}
       </AsyncState>
     </>
@@ -1761,6 +2819,80 @@ function receiveModeLabel(receiveMode: AgentSummary["receiveMode"]): string {
   return receiveMode === "all_message" ? "All messages" : "Mentions only";
 }
 
+function availabilityTone(state: AgentAvailability["state"]): string {
+  if (state === "ready") return "ready";
+  if (state === "setting_up") return "setting-up";
+  if (state === "suspended") return "suspended";
+  if (state === "not_connected") return "not-connected";
+  if (state === "unconfirmed") return "unconfirmed";
+  return "action-required";
+}
+
+function availabilityStateLabel(state: AgentAvailability["state"]): string {
+  const labels = {
+    ready: "Ready",
+    action_required: "Action required",
+    setting_up: "Setting up",
+    not_connected: "Not connected",
+    suspended: "Suspended",
+    unconfirmed: "Unable to confirm",
+  } satisfies Record<AgentAvailability["state"], string>;
+  return labels[state];
+}
+
+function dependencyStateLabel(state: AgentAvailability["dependencies"]["handoff"]["state"]): string {
+  const labels = {
+    ready: "Ready",
+    action_required: "Needs attention",
+    setting_up: "Setting up",
+    not_connected: "Not connected",
+    unconfirmed: "Unable to confirm",
+  } satisfies Record<AgentAvailability["dependencies"]["handoff"]["state"], string>;
+  return labels[state];
+}
+
+function handoffDetailLabel(state: AgentAvailability["dependencies"]["handoff"]["state"]): string {
+  const labels = {
+    ready: "Ready to receive work",
+    action_required: "Handoff needs attention",
+    setting_up: "IM setup in progress",
+    not_connected: "No IM binding",
+    unconfirmed: "Unable to confirm handoff",
+  } satisfies Record<AgentAvailability["dependencies"]["handoff"]["state"], string>;
+  return labels[state];
+}
+
+function availabilityReasonLabel(reason: AgentAvailability["reason"]): string {
+  if (!reason) return "All dependencies healthy";
+  const labels = {
+    agent_suspended: "Agent is suspended",
+    agent_unconfirmed: "Unable to refresh Agent status",
+    computer_offline: "Computer is offline",
+    runtime_unavailable: "Runtime message tools unavailable",
+    im_not_connected: "Connect Feishu or Slack",
+    im_provisioning: "IM connection is being prepared",
+    im_reauthorization_required: "IM permissions need updating",
+    im_error: "IM connection needs attention",
+    handoff_unavailable: "Handoff needs attention",
+    computer_unconfirmed: "Unable to confirm Computer",
+    handoff_unconfirmed: "Unable to confirm handoff",
+  } satisfies Record<NonNullable<AgentAvailability["reason"]>, string>;
+  return labels[reason];
+}
+
+function lastConfirmedLabel(value: string | null): string {
+  if (!value) return "Not yet confirmed";
+  const elapsedSeconds = Math.round((new Date(value).getTime() - Date.now()) / 1000);
+  const absoluteSeconds = Math.abs(elapsedSeconds);
+  const formatter = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+  if (absoluteSeconds < 60) return `Confirmed ${formatter.format(elapsedSeconds, "second")}`;
+  const elapsedMinutes = Math.round(elapsedSeconds / 60);
+  if (Math.abs(elapsedMinutes) < 60) return `Confirmed ${formatter.format(elapsedMinutes, "minute")}`;
+  const elapsedHours = Math.round(elapsedMinutes / 60);
+  if (Math.abs(elapsedHours) < 24) return `Confirmed ${formatter.format(elapsedHours, "hour")}`;
+  return `Confirmed ${formatter.format(Math.round(elapsedHours / 24), "day")}`;
+}
+
 function initials(value: string): string {
   const parts = value.trim().split(/\s+/).filter(Boolean);
   if (parts.length === 0) return "OT";
@@ -1775,8 +2907,8 @@ function agentSectionDescription(section: (typeof agentSections)[number]["key"])
     general: "Review identity, readiness dependencies, and the configuration that needs attention.",
     runtime: "Inspect the bound Computer, provider, model, instructions, and execution limits.",
     im: "Manage the Agent-owned Feishu or Slack bot connection and receive policy.",
-    resources: "Review the Team Resources authorized for this Agent.",
-    integrations: "Review external services available to this Agent's runtime.",
+    resources: "Team Resources are not enabled for Agents in this release.",
+    integrations: "Agent Integrations are not enabled; supported bot connections are managed on the IM tab.",
     access: "Understand who can use, inspect, and manage this Agent.",
   } satisfies Record<(typeof agentSections)[number]["key"], string>;
   return descriptions[section];

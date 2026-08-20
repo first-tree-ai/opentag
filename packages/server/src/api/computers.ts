@@ -1,4 +1,4 @@
-import { HTTP_PATHS, ListComputersResponseSchema } from "@opentag/shared";
+import { HTTP_PATHS, ListComputersResponseSchema, PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
 import { createUserAuthPreHandler } from "../plugins/user-auth.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -18,7 +18,13 @@ export function registerComputerRoutes(
       if (!userId) {
         throw new Error("Authenticated user context is missing");
       }
-      return reply.code(200).send(ListComputersResponseSchema.parse(await computerService.listForUser(userId)));
+      return reply
+        .code(200)
+        .send(
+          ListComputersResponseSchema.parse(
+            await computerService.listForUser(userId, request.headers[PROVIDER_READINESS_V1_HEADER] === "1"),
+          ),
+        );
     },
   );
 }

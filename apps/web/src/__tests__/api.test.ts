@@ -279,9 +279,28 @@ describe("BrowserApi", () => {
 
   it("mints a connect command with CSRF and lists only the current user's Computers", async () => {
     setDocumentCookie("opentag_csrf=connect-csrf; Path=/");
+    const computer = {
+      id: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+      ownerUserId: userId,
+      displayName: "workstation",
+      platform: "linux",
+      arch: "x64",
+      clientVersion: "0.0.1",
+      connectionStatus: "online",
+      providerReadiness: [
+        {
+          provider: "codex",
+          status: "ready",
+          observedAt: "2030-01-01T00:00:01.000Z",
+        },
+      ],
+      connectedAt: "2030-01-01T00:00:00.000Z",
+      lastSeenAt: "2030-01-01T00:00:01.000Z",
+    };
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       if (String(input) === "/api/v1/me/computers") {
-        return new Response(JSON.stringify({ computers: [] }), {
+        expect(new Headers(init?.headers).get("x-opentag-provider-readiness")).toBe("1");
+        return new Response(JSON.stringify({ computers: [computer] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
@@ -300,7 +319,7 @@ describe("BrowserApi", () => {
       );
     });
     const api = new BrowserApi(fetchImpl);
-    await expect(api.ownComputers()).resolves.toEqual({ computers: [] });
+    await expect(api.ownComputers()).resolves.toEqual({ computers: [computer] });
     await expect(api.issueConnectCode(teamId)).resolves.toMatchObject({ expiresIn: 900 });
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });

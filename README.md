@@ -97,6 +97,7 @@ future vertical slices.
 ## Documentation
 
 - [Development guide](./DEVELOPMENT.md)
+- [Server observability](./docs/observability.md)
 - [Contributing guide](./CONTRIBUTING.md)
 - [Release guide](./docs/releasing.md)
 - [Deployment guide](./docs/deploying.md)

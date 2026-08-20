@@ -167,8 +167,8 @@ describe("Slack Events API ingress", () => {
       eventTime: envelope.event_time,
     });
     expect(inbox.ingest.mock.calls).toEqual([
-      [current.imBindingId, current.generation, events[0]],
-      [current.imBindingId, current.generation, events[1]],
+      [current.imBindingId, current.generation, events[0], undefined, { provider: "slack" }],
+      [current.imBindingId, current.generation, events[1], undefined, { provider: "slack" }],
     ]);
   });
 

@@ -33,6 +33,7 @@ export interface RuntimePreparation {
 
 export interface RuntimeLocalPolicy {
   validate(snapshot: EffectiveRuntimeSnapshot): InputRejectReason | undefined;
+  validateDelivery?(snapshot: EffectiveRuntimeSnapshot): InputRejectReason | undefined;
 }
 
 export interface SessionReconcilerOptions {
@@ -187,7 +188,9 @@ export class SessionReconciler {
     ) {
       return "session_binding_conflict";
     }
-    return this.#localPolicy?.validate(input.runtime);
+    return this.#localPolicy?.validateDelivery
+      ? this.#localPolicy.validateDelivery(input.runtime)
+      : this.#localPolicy?.validate(input.runtime);
   }
 
   async withAgentLock<T>(agentId: string, task: () => Promise<T>): Promise<T> {

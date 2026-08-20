@@ -23,7 +23,6 @@ import {
   resolveCodexHome,
   resolvedCodexFactory,
   resolveExecutable,
-  serializeReadiness,
 } from "../runtime/client-runtime-composition.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
@@ -225,51 +224,25 @@ describe("createClientRuntime production composition", () => {
     const ensureProviderReady = vi.fn(async () => undefined);
     const runtime = vi.fn(() => ({ state: { phase: "idle" } }));
     const verifyAgent = vi.fn(async () => undefined);
-    const validate = vi.fn(() => undefined as "configuration_unsupported" | undefined);
+    const validateProviderConfiguration = vi.fn(() => undefined as "configuration_unsupported" | undefined);
     const preflight = createClientRuntimePreflight({
-      ensureProviderReady,
-      isProviderReady: () => false,
-      runtimeManager: { runtime, validate } as never,
+      providers: { ensureReady: ensureProviderReady, validateConfiguration: validateProviderConfiguration },
+      runtimeManager: { runtime } as never,
       workspace: { verifyAgent } as never,
     });
     await expect(preflight(request)).resolves.toBeUndefined();
-    expect(ensureProviderReady).toHaveBeenCalledOnce();
+    expect(ensureProviderReady).toHaveBeenCalledWith("codex", undefined);
     expect(verifyAgent).toHaveBeenCalledOnce();
     expect(runtime).toHaveBeenCalledWith("session-1");
 
-    validate.mockReturnValue("configuration_unsupported");
+    validateProviderConfiguration.mockReturnValue("configuration_unsupported");
     await expect(preflight(request)).resolves.toBe("configuration_unsupported");
 
-    validate.mockReturnValue(undefined);
+    validateProviderConfiguration.mockReturnValue(undefined);
     verifyAgent.mockRejectedValueOnce(new RuntimeStorageError("conflict", "binding conflict"));
     await expect(preflight(request)).resolves.toBe("session_binding_conflict");
     verifyAgent.mockRejectedValueOnce(new Error("provider failed"));
     await expect(preflight(request)).resolves.toBe("provider_unavailable");
-
-    const alreadyReady = createClientRuntimePreflight({
-      ensureProviderReady,
-      isProviderReady: () => true,
-      runtimeManager: { runtime, validate } as never,
-      workspace: { verifyAgent: vi.fn(async () => undefined) } as never,
-    });
-    await expect(alreadyReady(request)).resolves.toBeUndefined();
-  });
-
-  it("deduplicates concurrent readiness work and permits a fresh probe after settlement", async () => {
-    let release!: () => void;
-    const gate = new Promise<void>((resolveGate) => {
-      release = resolveGate;
-    });
-    const operation = vi.fn(() => gate);
-    const readiness = serializeReadiness(operation);
-    const first = readiness();
-    const second = readiness();
-    expect(second).toBe(first);
-    expect(operation).toHaveBeenCalledOnce();
-    release();
-    await first;
-    await readiness();
-    expect(operation).toHaveBeenCalledTimes(2);
   });
 
   it("covers ComposedClientRuntime monitor guards with deterministic component doubles", async () => {

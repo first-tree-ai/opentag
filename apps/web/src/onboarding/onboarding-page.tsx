@@ -42,7 +42,11 @@ export function OnboardingPage() {
     `${membership?.teamId ?? "no-team"}:${revision}`,
   );
   return (
-    <Page title="Set up OpenTag" eyebrow={membership?.teamDisplayName}>
+    <Page
+      title="Set up OpenTag"
+      eyebrow={membership?.teamDisplayName}
+      description="Connect the runtime path before inviting the Team to mention an Agent."
+    >
       <AsyncState state={state}>
         {(facts) => <OnboardingFlow facts={facts} onRefresh={refresh} session={session} />}
       </AsyncState>

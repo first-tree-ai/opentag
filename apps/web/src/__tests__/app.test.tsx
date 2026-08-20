@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
 
@@ -307,7 +307,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("link", { name: "Agents" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Create Agent" })).toBeTruthy();
-    expect(screen.queryByText("Tasks")).toBeNull();
+    expect(screen.getByText("Tasks").getAttribute("aria-disabled")).toBe("true");
   });
 
   it.each(["/", "/agents"])("redirects unauthenticated protected path %s to login", async (path) => {
@@ -323,9 +323,35 @@ describe("OpenTag Web App Shell", () => {
     installApi("member");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    expect(screen.getByText("Member · read only")).toBeTruthy();
+    expect(screen.getByText("Member")).toBeTruthy();
     expect(await screen.findByText("Reviewer")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Create Agent" })).toBeNull();
+  });
+
+  it("uses a flat local navigation for Agent detail", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    const navigation = screen.getByRole("navigation", { name: "Agent settings" });
+    expect(
+      within(navigation)
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+    ).toEqual(["Overview", "Runtime", "Messaging", "Resources", "Integrations", "Access"]);
+  });
+
+  it("uses a flat local navigation for Settings", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/settings/team");
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    const navigation = screen.getByRole("navigation", { name: "Team settings" });
+    expect(
+      within(navigation)
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+    ).toEqual(["General", "Members", "Computers", "Resources", "Integrations", "Access", "Usage", "Security"]);
   });
 
   it("lets admins rename a Team and refreshes the UUID-selected Team context from /me", async () => {
@@ -513,7 +539,7 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() =>
       expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === "/api/v1/me")).toHaveLength(2),
     );
-    expect(await screen.findByText("Member · read only")).toBeTruthy();
+    expect(await screen.findByText("Member")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Invite people" })).toBeNull();
     expect(screen.queryByLabelText("Role for Ada")).toBeNull();
   });

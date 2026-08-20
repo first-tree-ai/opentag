@@ -31,9 +31,11 @@ export function useResource<T>(loader: () => Promise<T>, key: string): LoadState
 export function AsyncState<T>({ state, children }: { state: LoadState<T>; children: (value: T) => ReactNode }) {
   if (state.kind === "loading")
     return (
-      <p className="muted" role="status">
-        Loading current server state…
-      </p>
+      <div aria-label="Loading current server state" className="loading-state" role="status">
+        <span />
+        <span />
+        <span />
+      </div>
     );
   if (state.kind === "error")
     return (
@@ -47,25 +49,28 @@ export function AsyncState<T>({ state, children }: { state: LoadState<T>; childr
 export function Page({
   title,
   eyebrow,
+  description,
   action,
   children,
 }: {
   title: string;
   eyebrow?: string;
+  description?: string;
   action?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <>
+    <section className="page">
       <header className="page-header">
         <div>
           {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
           <h1>{title}</h1>
+          {description ? <p>{description}</p> : null}
         </div>
         {action}
       </header>
       {children}
-    </>
+    </section>
   );
 }
 

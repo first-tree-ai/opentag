@@ -30,18 +30,9 @@ describe("PiAgentRuntime exhaustive behavior", () => {
           fileSystem: "read-only",
           network: "disabled",
           approvals: "never",
-          tools: { mode: "allow-list", names: ["read", "ls"] },
+          tools: { mode: "provider-default" },
         },
-        expectedTools: "read,ls",
-      },
-      {
-        policy: {
-          fileSystem: "unrestricted",
-          network: "disabled",
-          approvals: "never",
-          tools: { mode: "allow-list", names: ["read"] },
-        },
-        expectedTools: "read",
+        expectedTools: "read,grep,find,ls",
       },
       {
         policy: {
@@ -60,11 +51,11 @@ describe("PiAgentRuntime exhaustive behavior", () => {
         policy: item.policy,
         configuration: index === 0 ? undefined : { provider: {} },
       });
-      if (index === 2) client.model = null;
+      if (index === 1) client.model = null;
       const result = runtime.prompt({
         runId: `policy-${index}`,
         input: input("work"),
-        ...(index === 2 ? { configuration: { model: "prompt-model", provider: { sessionName: "run" } } } : {}),
+        ...(index === 1 ? { configuration: { model: "prompt-model", provider: { sessionName: "run" } } } : {}),
       });
       await client.called("prompt");
       client.complete({ content: [], usage: undefined });
@@ -435,6 +426,13 @@ describe("PiAgentRuntime exhaustive behavior", () => {
           network: "disabled",
           approvals: "never",
           tools: { mode: "allow-list", names: ["bash"] },
+        },
+      },
+      {
+        ...request(() => undefined),
+        hostedTools: {
+          definitions: [],
+          handler: async () => ({ success: true, content: [] }),
         },
       },
       { ...request(() => undefined), configuration: { model: " " } },

@@ -123,6 +123,14 @@ export class SessionReconciler {
     return this.#recoveries.delete(sessionId);
   }
 
+  claimRecovery(sessionId: string, turn: SessionTurnIdentity): boolean {
+    if (this.#activities.has(sessionId)) return false;
+    const current = this.#recoveries.get(sessionId);
+    if (current) return current.turnId === turn.turnId && current.deliveryId === turn.deliveryId;
+    this.#recoveries.set(sessionId, turn);
+    return true;
+  }
+
   reconcile(input: SessionReconcileRequest): Promise<SessionReconcileResult> {
     const request = SessionReconcileRequestSchema.parse(input);
     const payloadHash = computeReconcilePayloadHash(request);

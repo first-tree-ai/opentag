@@ -32,7 +32,6 @@ const execFileAsync = promisify(execFile);
 const PI_BINDING_SCHEMA_VERSION = 1;
 const PI_PROVIDER_ID = "pi";
 const PI_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-const PI_BUILTIN_TOOLS = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
 const PI_READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 const PI_STOP_REASONS = new Set(["stop", "length", "toolUse", "error", "aborted"]);
 
@@ -823,28 +822,18 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
   if (request.policy.fileSystem === "read-only" && (request.workspace.writableRoots?.length ?? 0) > 0) {
     throw new AgentRuntimeError("configuration_invalid", "read-only policy cannot have writable roots");
   }
+  if (request.hostedTools !== undefined) {
+    throw new AgentRuntimeError("configuration_invalid", "Pi RPC does not implement common hosted tools");
+  }
   validateToolPolicy(request.policy);
 }
 
 function validateToolPolicy(policy: AgentRuntimePolicy): void {
   if (policy.tools.mode === "allow-list") {
-    if (policy.tools.names.length === 0) {
-      throw new AgentRuntimeError("configuration_invalid", "Pi tool allow-list must not be empty");
-    }
-    for (const name of policy.tools.names) {
-      if (!PI_BUILTIN_TOOLS.has(name)) {
-        throw new AgentRuntimeError(
-          "configuration_invalid",
-          `Pi tool is unavailable with extensions disabled: ${name}`,
-        );
-      }
-      if (policy.fileSystem === "read-only" && !(PI_READ_ONLY_TOOLS as readonly string[]).includes(name)) {
-        throw new AgentRuntimeError("configuration_invalid", `Pi read-only policy cannot allow tool: ${name}`);
-      }
-      if (policy.network === "disabled" && name === "bash") {
-        throw new AgentRuntimeError("configuration_invalid", "Pi cannot disable network access for the bash tool");
-      }
-    }
+    throw new AgentRuntimeError(
+      "configuration_invalid",
+      "Pi RPC does not implement the common hosted-tool allow-list contract",
+    );
   }
   if (
     policy.fileSystem === "unrestricted" &&
@@ -922,10 +911,8 @@ function mergeConfiguration(
 
 function piPolicyArguments(policy: AgentRuntimePolicy): readonly string[] {
   if (policy.fileSystem === "read-only") {
-    const tools = policy.tools.mode === "allow-list" ? policy.tools.names : PI_READ_ONLY_TOOLS;
-    return ["--tools", tools.join(",")];
+    return ["--tools", PI_READ_ONLY_TOOLS.join(",")];
   }
-  if (policy.tools.mode === "allow-list") return ["--tools", policy.tools.names.join(",")];
   return [];
 }
 

@@ -156,12 +156,15 @@ describe("SessionReconciler", () => {
     const request = reconcileRequest(computerId, "session-1", snapshot("agent-1", "workspace-1"));
     await reconciler.reconcile(request);
     reconciler.setActivity("session-1", { phase: "reporting", deliveryId: "delivery-1", turnId: "turn-1" });
+    expect(reconciler.claimRecovery("session-1", { deliveryId: "delivery-1", turnId: "turn-1" })).toBe(false);
     await expect(reconciler.reconcile({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
       status: "reporting",
       turn: { turnId: "turn-1" },
     });
     reconciler.clearActivity("session-1", "turn-1");
-    reconciler.setRecovery("session-1", { deliveryId: "delivery-1", turnId: "turn-1" });
+    expect(reconciler.claimRecovery("session-1", { deliveryId: "delivery-1", turnId: "turn-1" })).toBe(true);
+    expect(reconciler.claimRecovery("session-1", { deliveryId: "delivery-1", turnId: "turn-1" })).toBe(true);
+    expect(reconciler.claimRecovery("session-1", { deliveryId: "delivery-2", turnId: "turn-2" })).toBe(false);
     await expect(reconciler.reconcile({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
       status: "recovery_required",
       turn: { turnId: "turn-1" },

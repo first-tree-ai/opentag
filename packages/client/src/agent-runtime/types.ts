@@ -138,10 +138,48 @@ export interface AgentRuntimePolicy {
     | { readonly mode: "allow-list"; readonly names: readonly string[] };
 }
 
+export interface AgentHostedToolDefinition {
+  readonly name: string;
+  readonly description?: string;
+  readonly inputSchema: JsonValue;
+}
+
+export interface AgentHostedToolCall {
+  readonly runId: AgentRunId;
+  readonly toolCallId: string;
+  readonly name: string;
+  readonly input: JsonValue;
+  readonly signal: AbortSignal;
+}
+
+export interface AgentHostedToolContent {
+  readonly type: "text";
+  readonly text: string;
+}
+
+export interface AgentHostedToolError {
+  readonly code: string;
+  readonly message: string;
+}
+
+export interface AgentHostedToolResult {
+  readonly success: boolean;
+  readonly content: readonly AgentHostedToolContent[];
+  readonly error?: AgentHostedToolError;
+}
+
+export type AgentHostedToolHandler = (call: AgentHostedToolCall) => Promise<AgentHostedToolResult>;
+
+export interface AgentHostedTools {
+  readonly definitions: readonly AgentHostedToolDefinition[];
+  readonly handler: AgentHostedToolHandler;
+}
+
 export type AgentRuntimeEventSink = (event: AgentRuntimeEvent) => void | Promise<void>;
 
 export interface CreateAgentRuntimeRequest {
   readonly eventSink: AgentRuntimeEventSink;
+  readonly hostedTools?: AgentHostedTools;
   readonly workspace: AgentRuntimeWorkspace;
   readonly policy: AgentRuntimePolicy;
   readonly configuration?: AgentRunConfiguration;
@@ -153,10 +191,16 @@ export interface ResumeAgentRuntimeRequest extends CreateAgentRuntimeRequest {
 
 export interface AgentRuntimeProbeRequest {
   readonly configuration?: AgentRunConfiguration;
+  readonly signal?: AbortSignal;
 }
 
 export interface AgentRuntimeProbeIssue {
-  readonly code: "artifact_missing" | "credential_missing" | "configuration_invalid" | "version_incompatible";
+  readonly code:
+    | "artifact_missing"
+    | "credential_missing"
+    | "configuration_invalid"
+    | "temporarily_unavailable"
+    | "version_incompatible";
   readonly message: string;
 }
 

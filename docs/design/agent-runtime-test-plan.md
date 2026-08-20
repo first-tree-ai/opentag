@@ -21,9 +21,19 @@ lowest Client execution layer. It covers these production boundaries:
 - `src/providers/pi/agent-runtime.ts`
 - `src/providers/pi/rpc-wire.ts`
 
+Production Client execution now uses this contract through:
+
+- `src/runtime/runtime-tool-host.ts`
+- `src/runtime/session-runtime-manager.ts`
+- `src/runtime/agent-turn-runner.ts`
+- `src/runtime/client-runtime-composition.ts`
+
 The coverage gate requires 100% statements, branches, functions, and lines for
-that exact source set. Coverage is a floor, not the acceptance criterion by
-itself: protocol behavior and live local Provider sessions are tested separately.
+the contract, Codex translation, hosted-tool host, Session Runtime manager, and
+Claude Code translation, Turn runner, and Session Runtime/hosted-tool integration.
+Coverage is a floor, not the acceptance criterion by itself: production
+composition, crash recovery, protocol behavior, and live local Provider sessions
+are tested separately.
 
 There are no file-level or broad range exclusions. Narrow local V8 annotations
 document non-executable invariant branches such as synthetic `finally` edges,
@@ -85,6 +95,13 @@ A scripted interactive App Server client verifies:
 - foreign Thread/Turn events, duplicate requests, malformed data, and process failure;
 - probe outcomes, credential discovery, process environment allow-listing, and cleanup.
 
+The same suite verifies the experimental hosted-tool protocol: initialization
+advertises experimental API support, `thread/start` receives the exact canonical
+dynamic-tool definitions, `thread/resume` restores persisted definitions, and
+unknown, duplicate, late, cancelled, malformed, or failed calls settle with a
+deterministic fail-closed response. A Codex artifact without this protocol is
+reported unavailable; there is no provider-default tool fallback.
+
 ### 3. Real JSONL process tests
 
 The wire client runs against a child-process fixture rather than an in-memory
@@ -117,6 +134,7 @@ A scripted Pi RPC client verifies:
 - post-start session-file fingerprint binding without exposing the local path;
 - process-per-Run operation, prompt, steer, abort, model, thinking, and Provider configuration mapping;
 - fail-closed policy mapping for Pi's no-sandbox and no-approval runtime;
+- fail-closed rejection of common hosted tools, which Pi RPC cannot register;
 - extension, skill, template, theme, context-file, and approval disabling;
 - ordered message, tool, usage, warning, Provider extension, and `agent_settled` terminal events;
 - hidden reasoning content, model errors, late process failures, and terminal ingress precedence;
@@ -165,6 +183,31 @@ temporary session directory. It proves conversation continuity by recalling a
 random project codename after exact resume. The live tests make real model
 requests and are therefore intentionally excluded from the default test command.
 
+### 7. Production Client Runtime integration and recovery
+
+The production-path tests verify:
+
+- daemon composition constructs the provider-neutral `createClientRuntime`
+  entry point and registers only the supported Codex factory;
+- a new Session creates a Provider Runtime and durably writes an opaque v2
+  binding before Run admission;
+- legacy v1 Codex bindings migrate on read and resume the exact Provider Thread;
+- effective configuration or tool-policy changes close the old Runtime and
+  create a new Provider session instead of silently reusing stale definitions;
+- IM hosted tools remain scoped to the active Run identity, allow-list, Session,
+  placement generation, and idempotent request correlation;
+- Agent Runtime events feed generic traces and typed results feed the existing
+  Turn Report path while Client Runtime retains custody;
+- restart recovery reports accepted-but-not-started work as `not_started` and
+  starting/running work as `turn_state_unknown`, without replaying the Run;
+- stop, shutdown, repeated reconcile, binding-write failures, and reporting
+  failures do not admit an unbound Run or leak a Runtime owner.
+
+Repository acceptance also audits that `CodexAdapter`, `CodexTurnRunner`,
+`createCodexClientRuntime`, and their old smoke path have no remaining source,
+export, test, or production consumer. The Agent Runtime live E2E is the sole
+Codex live smoke.
+
 ## Commands and Acceptance
 
 ```bash
@@ -176,6 +219,8 @@ pnpm check
 pnpm build
 pnpm typecheck
 pnpm test
+pnpm --filter @opentag/server test:integration
+git diff --check
 ```
 
 Acceptance requires the offline commands to pass and all four scoped coverage
@@ -187,13 +232,14 @@ is reported as a failure; it is never converted into a skipped success.
 
 ## Latest Local Execution
 
-On 2026-08-20 the scoped Agent Runtime and three-Provider suite passed 176
-tests with 100% statements, branches, functions, and lines. All 280 Client
-tests passed. Repository formatting, notice, build, and type-check gates passed.
+On 2026-08-20 the merged Agent Runtime, three-Provider, and production Client
+Runtime suite passed 207 tests with 100% statements, branches, functions, and
+lines. All 304 Client tests passed. Repository formatting, notice, build, and
+type-check gates passed, as did all 96 Server integration tests.
 
 The Pi live test passed against the user-installed `pi` 0.83.0 executable:
 both create and resumed Runs completed, the materialized opaque binding was
-preserved, and the Runs produced 18 and 329 ordered events respectively. The
+preserved, and the Runs produced 53 and 85 ordered events respectively. The
 Client manifests contain no Pi package, SDK, CLI, or bundled-binary dependency.
 
 The monorepo test command retains two unrelated existing macOS CLI failures

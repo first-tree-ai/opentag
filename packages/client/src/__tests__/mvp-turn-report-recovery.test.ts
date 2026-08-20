@@ -10,6 +10,105 @@ import { MvpTurnReportRecovery, type MvpTurnReportRecoveryOptions } from "../run
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 describe("MvpTurnReportRecovery", () => {
+  it("does not synthesize or replay a Report without an exact disk-only recovery claim", async () => {
+    const request = reconcileRequest("agent-1", "session-1");
+    const binding = {
+      sessionId: request.sessionId,
+      agentId: request.agentId,
+      placementGeneration: request.placementGeneration,
+      unresolvedTurn: {
+        requestId: randomUUID(),
+        deliveryId: "delivery-live",
+        inputHash: "a".repeat(64),
+        turnId: "turn-live",
+        phase: "running" as const,
+      },
+      recentRecordedInputs: [],
+    };
+    const updateUnresolved = vi.fn();
+    const submit = vi.fn();
+    const recovery = new MvpTurnReportRecovery({
+      bindingStore: {
+        read: vi.fn(async () => binding as never),
+        recordResult: vi.fn(),
+        updateUnresolved,
+      } as unknown as MvpTurnReportRecoveryOptions["bindingStore"],
+      reconciler: {
+        claimRecovery: vi.fn(() => false),
+        clearRecovery: vi.fn(),
+        withAgentLock: vi.fn(async (_agentId: string, action: () => unknown) => action()),
+      } as unknown as MvpTurnReportRecoveryOptions["reconciler"],
+      reportOwner: { create: createReport, rearmTerminal: vi.fn(), submit },
+    });
+    const input = recoveryRequired(request, turnReport(request.agentId, request.sessionId, "live"));
+
+    await expect(recovery.prepare(request, input)).resolves.toBe(input);
+    expect(updateUnresolved).not.toHaveBeenCalled();
+    recovery.afterReconciled(request, input);
+    expect(submit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["accepted", "failed", "not_started", "provider_start_failed"],
+    ["starting", "unknown", "may_have_occurred", "turn_state_unknown"],
+    ["running", "unknown", "may_have_occurred", "turn_state_unknown"],
+  ] as const)(
+    "converts an unresolved %s Turn into one durable non-replayed Report",
+    async (phase, outcome, executionEffects, errorReason) => {
+      const request = reconcileRequest("agent-1", "session-1");
+      let binding = {
+        sessionId: request.sessionId,
+        agentId: request.agentId,
+        placementGeneration: request.placementGeneration,
+        unresolvedTurn: {
+          requestId: randomUUID(),
+          deliveryId: "delivery-unresolved",
+          inputHash: "a".repeat(64),
+          turnId: "turn-unresolved",
+          phase,
+        },
+        recentRecordedInputs: [],
+      };
+      const updateUnresolved = vi.fn(async (_agentId, _sessionId, _turnId, _phase, fields) => {
+        binding = {
+          ...binding,
+          unresolvedTurn: { ...binding.unresolvedTurn, phase: "reporting" as const, ...fields },
+        } as never;
+        return binding as never;
+      });
+      const recovery = new MvpTurnReportRecovery({
+        bindingStore: {
+          read: vi.fn(async () => binding as never),
+          recordResult: vi.fn(async () => undefined),
+          updateUnresolved,
+        } as unknown as MvpTurnReportRecoveryOptions["bindingStore"],
+        reconciler: {
+          claimRecovery: vi.fn(() => true),
+          clearRecovery: vi.fn(),
+          withAgentLock: vi.fn(async (_agentId: string, action: () => unknown) => action()),
+        } as unknown as MvpTurnReportRecoveryOptions["reconciler"],
+        reportOwner: { create: createReport, rearmTerminal: vi.fn(), submit: vi.fn() },
+      });
+
+      const result = await recovery.prepare(request, {
+        type: "session:reconcile:result",
+        requestId: request.requestId,
+        sessionId: request.sessionId,
+        placementGeneration: request.placementGeneration,
+        status: "recovery_required",
+        reason: "unresolved_turn",
+        turn: { deliveryId: "delivery-unresolved", turnId: "turn-unresolved" },
+      });
+
+      expect(updateUnresolved).toHaveBeenCalledOnce();
+      expect(binding.unresolvedTurn).toMatchObject({
+        phase: "reporting",
+        report: { outcome, executionEffects, errorReason },
+      });
+      expect(result.retainedReports).toHaveLength(1);
+    },
+  );
+
   it("bounds active replay work and lazily reloads full reports from durable bindings", async () => {
     const first = turnReport("agent-1", "session-1", "first");
     const second = turnReport("agent-2", "session-2", "second");
@@ -32,10 +131,11 @@ describe("MvpTurnReportRecovery", () => {
       logger: recordingLogger(logs),
       maxActiveReplays: 1,
       reconciler: {
+        claimRecovery: vi.fn(() => true),
         clearRecovery: vi.fn(),
         withAgentLock: vi.fn(async (_agentId: string, action: () => unknown) => action()),
       } as unknown as MvpTurnReportRecoveryOptions["reconciler"],
-      reportOwner: { rearmTerminal: vi.fn(), submit },
+      reportOwner: { create: createReport, rearmTerminal: vi.fn(), submit },
     });
     const firstRequest = reconcileRequest(first.agentId, first.sessionId);
     const secondRequest = reconcileRequest(second.agentId, second.sessionId);
@@ -167,11 +267,21 @@ function recoveryFor(
     } as unknown as MvpTurnReportRecoveryOptions["bindingStore"],
     ...limits,
     reconciler: {
+      claimRecovery: vi.fn(() => true),
       clearRecovery: vi.fn(),
       withAgentLock: vi.fn(async (_agentId: string, action: () => unknown) => action()),
     } as unknown as MvpTurnReportRecoveryOptions["reconciler"],
-    reportOwner: { rearmTerminal, submit },
+    reportOwner: { create: createReport, rearmTerminal, submit },
   });
+}
+
+function createReport(input: Parameters<MvpTurnReportRecoveryOptions["reportOwner"]["create"]>[0]): TurnReportRequest {
+  return {
+    type: "turn:report",
+    requestId: randomUUID(),
+    ...input,
+    resultHash: computeTurnResultHash(input),
+  };
 }
 
 function reconcileRequest(agentId: string, sessionId: string): SessionReconcileRequest {

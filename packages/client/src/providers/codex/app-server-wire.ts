@@ -93,8 +93,10 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   readonly #pending = new Map<number, PendingRequest>();
   readonly #listeners = new Set<(message: CodexAppServerMessage) => void>();
   readonly #serverRequestListeners = new Set<(request: CodexAppServerRequest) => void>();
+  readonly #seenServerRequests = new Set<number | string>();
   readonly #pendingServerRequests = new Set<number | string>();
   readonly #respondingServerRequests = new Set<number | string>();
+  readonly #duplicateServerRequests = new Set<number | string>();
   readonly #exit: Promise<void>;
   #resolveExit: (() => void) | undefined;
   #buffer = Buffer.alloc(0);
@@ -174,7 +176,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
       "initialize",
       {
         clientInfo: { name: "opentag", title: "OpenTag", version: clientVersion },
-        capabilities: { experimentalApi: false },
+        capabilities: { experimentalApi: true },
       },
       signal,
     );
@@ -245,8 +247,10 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     this.#closed = true;
     const closingError = new CodexAppServerError("aborted", "Codex App Server is closing");
     for (const pending of [...this.#pending.values()]) pending.reject(closingError);
+    this.#seenServerRequests.clear();
     this.#pendingServerRequests.clear();
     this.#respondingServerRequests.clear();
+    this.#duplicateServerRequests.clear();
     this.#child.stdin.end();
     signalWatchedProcess(this.#child, "SIGTERM");
     if (await settlesWithin(this.#exit, graceMs)) return;
@@ -285,7 +289,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   }
 
   #onStdout(chunk: Buffer): void {
-    if (this.#failure) return;
+    if (this.#failure || this.#closed) return;
     this.#buffer = Buffer.concat([this.#buffer, chunk]);
     if (this.#buffer.byteLength > this.#maxLineBytes && !this.#buffer.includes(0x0a)) {
       this.#fail(new CodexAppServerError("protocol", "Codex emitted an oversized JSONL line"));
@@ -313,6 +317,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         return;
       }
       this.#onMessage(message);
+      if (this.#failure || this.#closed) return;
     }
     if (this.#buffer.byteLength > this.#maxLineBytes) {
       this.#fail(new CodexAppServerError("protocol", "Codex emitted an oversized JSONL line"));
@@ -336,12 +341,13 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
       return;
     }
     if ((typeof message.id === "number" || typeof message.id === "string") && typeof message.method === "string") {
+      if (message.method === "item/tool/call") {
+        if (!this.#claimServerRequest(message.id, true)) return;
+        this.#dispatchAutomaticServerRequest(message.id, message.method, message.params);
+        return;
+      }
       if (this.#serverRequestListeners.size > 0) {
-        if (this.#pendingServerRequests.has(message.id)) {
-          this.#fail(new CodexAppServerError("protocol", "Codex emitted a duplicate server request ID"));
-          return;
-        }
-        this.#pendingServerRequests.add(message.id);
+        if (!this.#claimServerRequest(message.id, false)) return;
         const request = { id: message.id, method: message.method, params: message.params };
         for (const listener of this.#serverRequestListeners) {
           try {
@@ -354,7 +360,8 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         }
         return;
       }
-      void this.#handleServerRequest(message.id, message.method, message.params);
+      if (!this.#claimServerRequest(message.id, false)) return;
+      this.#dispatchAutomaticServerRequest(message.id, message.method, message.params);
       return;
     }
     if (typeof message.method !== "string" || !("params" in message)) {
@@ -373,19 +380,19 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
 
   async #handleServerRequest(id: number | string, method: string, params: unknown): Promise<void> {
     if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
-      await this.#write({ id, result: { decision: "cancel" } }).catch(() => undefined);
+      await this.respondServerRequest(id, { decision: "cancel" }).catch(() => undefined);
       return;
     }
     if (method === "item/tool/requestUserInput") {
-      await this.#write({ id, result: { answers: {} } }).catch(() => undefined);
+      await this.respondServerRequest(id, { answers: {} }).catch(() => undefined);
       return;
     }
     if (method === "item/tool/call") {
       const handler = this.#dynamicToolHandler;
       if (!handler) {
-        await this.#write({
-          id,
-          result: { contentItems: [{ type: "inputText", text: "OpenTag tool is unavailable." }], success: false },
+        await this.respondServerRequest(id, {
+          contentItems: [{ type: "inputText", text: "OpenTag tool is unavailable." }],
+          success: false,
         }).catch(() => undefined);
         return;
       }
@@ -393,27 +400,53 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         const call = parseDynamicToolCall(params);
         const result = await handler(call);
         const text = requireBoundedString(result.text, "OpenTag tool returned invalid output");
-        await this.#write({ id, result: { contentItems: [{ type: "inputText", text }], success: result.success } });
+        await this.respondServerRequest(id, {
+          contentItems: [{ type: "inputText", text }],
+          success: result.success,
+        });
       } catch {
-        await this.#write({
-          id,
-          result: { contentItems: [{ type: "inputText", text: "OpenTag tool request failed." }], success: false },
+        await this.respondServerRequest(id, {
+          contentItems: [{ type: "inputText", text: "OpenTag tool request failed." }],
+          success: false,
         }).catch(() => undefined);
       }
       return;
     }
-    await this.#write({ id, error: { code: -32601, message: "Unsupported unattended server request" } }).catch(
-      () => undefined,
-    );
+    await this.rejectServerRequest(id, -32601, "Unsupported unattended server request").catch(() => undefined);
     this.#fail(new CodexAppServerError("protocol", `Codex requested an unsupported method: ${method}`));
+  }
+
+  #claimServerRequest(id: number | string, deferDuplicateFailure: boolean): boolean {
+    if (!this.#seenServerRequests.has(id)) {
+      this.#seenServerRequests.add(id);
+      this.#pendingServerRequests.add(id);
+      return true;
+    }
+    if (deferDuplicateFailure && this.#pendingServerRequests.has(id)) this.#duplicateServerRequests.add(id);
+    else this.#fail(new CodexAppServerError("protocol", "Codex emitted a duplicate server request ID"));
+    return false;
+  }
+
+  #dispatchAutomaticServerRequest(id: number | string, method: string, params: unknown): void {
+    void this.#handleServerRequest(id, method, params).finally(() => {
+      this.#pendingServerRequests.delete(id);
+      if (!this.#duplicateServerRequests.delete(id) || this.#failure) return;
+      const timer = setTimeout(
+        () => this.#fail(new CodexAppServerError("protocol", "Codex emitted a duplicate server request ID")),
+        10,
+      );
+      timer.unref();
+    });
   }
 
   #fail(error: Error): void {
     if (this.#failure) return;
     this.#failure = error;
     for (const pending of [...this.#pending.values()]) pending.reject(error);
+    this.#seenServerRequests.clear();
     this.#pendingServerRequests.clear();
     this.#respondingServerRequests.clear();
+    this.#duplicateServerRequests.clear();
     for (const listener of this.#listeners) {
       try {
         listener({ method: "opentag/processError", params: { error } });

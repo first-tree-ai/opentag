@@ -27,7 +27,7 @@ describe("TurnTraceBuffer", () => {
     const serialized = JSON.stringify(sender.sent);
     expect(serialized).not.toContain("canary-secret");
     expect(serialized).not.toContain("/absolute/private/path");
-    expect(serialized).toContain("Codex reported a provider warning");
+    expect(serialized).toContain("Provider reported a runtime warning");
     expect(sender.sent.every((entry) => entry.options?.priority === "trace")).toBe(true);
   });
 

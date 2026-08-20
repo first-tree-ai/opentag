@@ -44,6 +44,15 @@ describe("CodexAppServerProcess", () => {
     await process.close();
   });
 
+  it("fails closed when an unattended request reuses an active JSON-RPC ID", async () => {
+    const process = await appServer("normal");
+    await process.initialize("0.0.1");
+    const failure = processFailure(process);
+    await process.request("fixture/duplicate-approval", {}).catch(() => undefined);
+    await expect(failure).resolves.toMatchObject({ code: "protocol" });
+    await process.close().catch(() => undefined);
+  });
+
   it("delegates server requests and writes exactly one explicit response for interactive runtimes", async () => {
     const process = await appServer("normal");
     await process.initialize("0.0.1");
@@ -85,6 +94,22 @@ describe("CodexAppServerProcess", () => {
     await expect(process.request("fixture/hosted-tool", {})).resolves.toEqual({
       contentItems: [{ type: "inputText", text: JSON.stringify({ state: "succeeded" }) }],
       success: true,
+    });
+    await process.close();
+  });
+
+  it("fails closed when a dynamic tool handler is missing, throws, or returns invalid output", async () => {
+    const process = await appServer("normal");
+    await process.initialize("0.0.1");
+    await expect(process.request("fixture/hosted-tool", {})).resolves.toMatchObject({ success: false });
+    process.setDynamicToolHandler(async () => {
+      throw new Error("handler failed");
+    });
+    await expect(process.request("fixture/hosted-tool", {})).resolves.toMatchObject({ success: false });
+    process.setDynamicToolHandler(async () => ({ success: true, text: "" }));
+    await expect(process.request("fixture/hosted-tool", {})).resolves.toMatchObject({ success: false });
+    await expect(process.request("fixture/hosted-tool-invalid-namespace", {})).resolves.toMatchObject({
+      success: false,
     });
     await process.close();
   });

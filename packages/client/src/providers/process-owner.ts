@@ -61,6 +61,7 @@ export function spawnWatchedProcess(
 export function signalWatchedProcess(child: ChildProcessWithoutNullStreams, signal: NodeJS.Signals): void {
   if (!child.pid) return;
   try {
+    /* v8 ignore next -- the Windows process-tree branch is exercised only on Windows. */
     if (process.platform === "win32") child.kill(signal);
     else process.kill(-child.pid, signal);
   } catch {

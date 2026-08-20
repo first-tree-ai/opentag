@@ -22,6 +22,7 @@ export interface SystemdBackendOptions {
   invocation: ResolvedCliInvocation;
   runner: ServiceRunner;
   serviceId: string;
+  sourcePath?: string;
   systemctl?: string;
   uid?: number;
   userHome?: string;
@@ -75,7 +76,7 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
     identity.systemdUnitName,
   );
   const systemctl = options.systemctl ?? "systemctl";
-  const servicePath = buildServicePath(options.invocation, "linux");
+  const servicePath = buildServicePath(options.invocation, "linux", options.sourcePath);
   const expected = renderSystemdUnit({
     home: options.home,
     invocation: options.invocation,

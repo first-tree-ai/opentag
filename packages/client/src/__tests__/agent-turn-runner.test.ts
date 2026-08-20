@@ -33,6 +33,9 @@ describe("AgentTurnRunner", () => {
     ]);
     expect(JSON.stringify(input)).not.toContain(request.runtime.instructions.platform);
     expect(JSON.stringify(input)).not.toContain(request.runtime.instructions.agent);
+    expect(input.items[0]?.text).toContain("For a new IM write, omit retryRequestId");
+    expect(input.items[0]?.text).toContain("Never automatically repeat an unknown IM write");
+    expect(input.items[0]?.text).not.toContain("same requestId");
     expect(
       buildAgentInput({ ...request, runtime: { ...request.runtime, instructions: { platform: "p", agent: "a" } } })
         .items[0]?.text,

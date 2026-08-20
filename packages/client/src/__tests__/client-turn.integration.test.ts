@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import type {
@@ -70,6 +70,10 @@ describe("Agent Runtime Client Turn vertical", () => {
       finalText: "answer-1",
     });
     expect(fixture.clients).toHaveLength(1);
+    expect(fixture.clients[0]?.cwd).toBe(resolve(fixture.workspace.paths("agent-1").agentsFile, ".."));
+    await expect(readFile(resolve(fixture.clients[0]?.cwd ?? "", "AGENTS.md"), "utf8")).resolves.toContain(
+      "# OpenTag managed instructions",
+    );
     expect(fixture.clients[0]?.methods).toContain("thread/start");
     expect(fixture.clients[0]?.methods).not.toContain("thread/resume");
     expect(await fixture.store.read("agent-1", "session-1")).toMatchObject({

@@ -45,7 +45,8 @@ body {
   background: var(--background);
 }
 
-body:has(.center-card)::before {
+/* The grid belongs to isolated entry and recovery pages, never the product workspace. */
+body:has(.decorative-page)::before {
   position: fixed;
   inset: 0;
   z-index: -1;
@@ -55,6 +56,17 @@ body:has(.center-card)::before {
   background-size: 36px 36px;
   content: "";
   mask-image: radial-gradient(circle at center, black, transparent 78%);
+  pointer-events: none;
+}
+
+body:has(.decorative-page)::after {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='180' height='180' filter='url(%23noise)' opacity='.55'/%3E%3C/svg%3E");
+  content: "";
+  opacity: 0.025;
+  pointer-events: none;
 }
 
 button,
@@ -1360,16 +1372,9 @@ dd {
   position: relative;
   width: min(100%, 760px);
   overflow: hidden;
-  border: 1px dashed var(--strong-border);
+  border: 0;
   border-radius: var(--radius);
-  background:
-    linear-gradient(rgb(253 252 246 / 90%), rgb(253 252 246 / 90%)),
-    linear-gradient(to right, var(--border) 1px, transparent 1px),
-    linear-gradient(to bottom, var(--border) 1px, transparent 1px);
-  background-size:
-    auto,
-    28px 28px,
-    28px 28px;
+  background: var(--surface-soft);
   padding: 28px;
 }
 
@@ -1938,11 +1943,6 @@ textarea:focus {
 .definition-list div {
   border-bottom: 0;
   padding: 12px 0;
-}
-
-.empty-state {
-  border: 0;
-  background: var(--surface-soft);
 }
 
 .list {

@@ -427,6 +427,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(screen.getByRole("main").classList.contains("decorative-page")).toBe(false);
     expect(screen.getByRole("link", { name: "Agents" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "New Agent" })).toBeTruthy();
@@ -446,9 +447,28 @@ describe("OpenTag Web App Shell", () => {
     installApi("member", { unauthenticated: true });
     window.history.replaceState({}, "", path);
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();
+    const heading = await screen.findByRole("heading", { name: "Sign in" });
+    expect(heading.closest("main")?.classList.contains("decorative-page")).toBe(true);
     const expectedNext = path === "/" ? "/agents" : path;
     expect(window.location.search).toBe(`?next=${encodeURIComponent(expectedNext)}`);
+  });
+
+  it("keeps authenticated invalid Agent tabs on the plain workspace canvas", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", `/agents/${agentId}/unknown`);
+    render(<App />);
+
+    const heading = await screen.findByRole("heading", { name: "Page not found" });
+    expect(heading.closest(".center-card")?.classList.contains("decorative-page")).toBe(false);
+    expect(screen.getByRole("main").classList.contains("decorative-page")).toBe(false);
+  });
+
+  it("keeps the standalone not-found route on the decorative canvas", async () => {
+    window.history.replaceState({}, "", "/unknown");
+    render(<App />);
+
+    const heading = await screen.findByRole("heading", { name: "Page not found" });
+    expect(heading.closest("main")?.classList.contains("decorative-page")).toBe(true);
   });
 
   it("lets members enter the same shell without admin controls", async () => {

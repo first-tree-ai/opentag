@@ -348,7 +348,7 @@ export function AppRouter() {
           <Route path="/settings/:section" element={<SettingsPage />} />
         </Route>
       </Route>
-      <Route path="*" element={<NotFoundPage />} />
+      <Route path="*" element={<StandaloneNotFoundPage />} />
     </Routes>
   );
 }
@@ -357,7 +357,7 @@ function LoginPage() {
   const providers = useResource(() => browserApi.authProviders(), "auth-providers");
   const next = new URLSearchParams(useLocation().search).get("next") ?? "/agents";
   return (
-    <main className="center-card">
+    <main className="center-card decorative-page">
       <span className="eyebrow">OpenTag</span>
       <h1>Sign in</h1>
       <p>Choose an available sign-in method. Team permissions are checked by the server on every request.</p>
@@ -434,7 +434,7 @@ function InvitePage() {
     void completeJoin(selectedTeamHint);
   }
   return (
-    <main className="center-card">
+    <main className="center-card decorative-page">
       <AsyncState state={preview}>
         {(value) => (
           <>
@@ -490,7 +490,7 @@ function clearPendingInvitation(token: string): void {
 function NewTeamPage() {
   const navigate = useNavigate();
   return (
-    <main className="center-card">
+    <main className="center-card decorative-page">
       <span className="eyebrow">OpenTag</span>
       <h1>Create your team</h1>
       <p>You can invite people and add Agents next.</p>
@@ -2793,17 +2793,27 @@ function EmptyState({ title, children }: { title: string; children: ReactNode })
 
 function UnavailablePage({ title }: { title: string }) {
   return (
-    <main className="center-card">
+    <section className="center-card">
       <h1>{title}</h1>
       <p>This capability is not available in the current release.</p>
       <Link to="/agents">Back to Agents</Link>
-    </main>
+    </section>
   );
 }
 
 function NotFoundPage() {
   return (
-    <main className="center-card">
+    <section className="center-card">
+      <h1>Page not found</h1>
+      <p>The requested OpenTag page is not available.</p>
+      <Link to="/agents">Back to Agents</Link>
+    </section>
+  );
+}
+
+function StandaloneNotFoundPage() {
+  return (
+    <main className="center-card decorative-page">
       <h1>Page not found</h1>
       <p>The requested OpenTag page is not available.</p>
       <Link to="/agents">Back to Agents</Link>

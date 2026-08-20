@@ -1,11 +1,27 @@
 import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared/browser";
 import { toString as qrToString } from "qrcode";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { browserApi } from "../api.js";
+import { ApiError, browserApi } from "../api.js";
 
 const ACTIVE_STATES: readonly FeishuSetupAttempt["state"][] = ["awaiting_user", "validating"];
 const RETRYABLE_STATES: readonly FeishuSetupAttempt["state"][] = ["expired", "failed", "canceled"];
 const POLL_INTERVAL_MS = 1_500;
+const FEISHU_SETUP_MESSAGES: Record<string, string> = {
+  FEISHU_APP_ALREADY_BOUND:
+    "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",
+  FEISHU_SCOPE_REAUTH_REQUIRED:
+    "Feishu did not grant every required permission. Retry and approve all requested permissions.",
+  IM_BINDING_SCOPE_REAUTH_REQUIRED:
+    "Feishu did not grant every required permission. Retry and approve all requested permissions.",
+  FEISHU_SETUP_DENIED: "Feishu authorization was declined. Retry and approve the requested permissions.",
+  FEISHU_SETUP_EXPIRED: "This Feishu authorization expired. Retry to scan a new QR code.",
+  FEISHU_SETUP_CANCELED: "Feishu setup was canceled. Retry when you are ready.",
+  FEISHU_SETUP_OWNER_RESTARTED: "The server restarted during Feishu setup. Retry to generate a new QR code.",
+  FEISHU_BINDING_IDENTITY_MISMATCH:
+    "The authorized Feishu Bot identity does not match the current binding. Retry with the current Bot or use Replace.",
+  FEISHU_UPSTREAM_UNAVAILABLE:
+    "The Feishu open platform did not return a usable authorization. Check the Server's network access to Feishu, then retry.",
+};
 
 export interface FeishuSetupControl {
   /** Starts one setup intent. False means no new attempt was started. */
@@ -197,28 +213,20 @@ function FeishuQrCode({ value }: { value: string }) {
 }
 
 function setupRecovery(attempt: FeishuSetupAttempt): string | undefined {
-  const messages: Record<string, string> = {
-    FEISHU_APP_ALREADY_BOUND:
-      "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",
-    FEISHU_SCOPE_REAUTH_REQUIRED:
-      "Feishu did not grant every required permission. Retry and approve all requested permissions.",
-    IM_BINDING_SCOPE_REAUTH_REQUIRED:
-      "Feishu did not grant every required permission. Retry and approve all requested permissions.",
-    FEISHU_SETUP_DENIED: "Feishu authorization was declined. Retry and approve the requested permissions.",
-    FEISHU_SETUP_EXPIRED: "This Feishu authorization expired. Retry to scan a new QR code.",
-    FEISHU_SETUP_CANCELED: "Feishu setup was canceled. Retry when you are ready.",
-    FEISHU_SETUP_OWNER_RESTARTED: "The server restarted during Feishu setup. Retry to generate a new QR code.",
-    FEISHU_BINDING_IDENTITY_MISMATCH:
-      "The authorized Feishu Bot identity does not match the current binding. Retry with the current Bot or use Replace.",
-  };
-  if (attempt.errorCode && messages[attempt.errorCode]) return messages[attempt.errorCode];
-  if (attempt.state === "expired") return messages.FEISHU_SETUP_EXPIRED;
-  if (attempt.state === "canceled") return messages.FEISHU_SETUP_CANCELED;
+  if (attempt.errorCode && FEISHU_SETUP_MESSAGES[attempt.errorCode]) return FEISHU_SETUP_MESSAGES[attempt.errorCode];
+  if (attempt.state === "expired") return FEISHU_SETUP_MESSAGES.FEISHU_SETUP_EXPIRED;
+  if (attempt.state === "canceled") return FEISHU_SETUP_MESSAGES.FEISHU_SETUP_CANCELED;
   if (attempt.state === "failed") return "Feishu setup failed. Retry or contact a Team admin for help.";
   return undefined;
 }
 
+/**
+ * One recovery message per Server-reported code, whether it arrives as a failed
+ * attempt or as the error of a request that never produced one.
+ */
 function normalizeError(cause: unknown, fallback: string): string {
+  const code = cause instanceof ApiError ? cause.code : undefined;
+  if (code && FEISHU_SETUP_MESSAGES[code]) return FEISHU_SETUP_MESSAGES[code];
   return cause instanceof Error ? cause.message : fallback;
 }
 

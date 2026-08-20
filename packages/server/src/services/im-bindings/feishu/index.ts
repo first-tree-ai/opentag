@@ -3,7 +3,11 @@ export { FeishuAdapter, mapFeishuError, normalizeFeishuMessage } from "./adapter
 export { FeishuConnectionManager } from "./connection-manager.js";
 export {
   FeishuOperationError,
+  type FeishuPublicFailure,
   type FeishuSafeErrorCode,
+  feishuPublicFailure,
+  feishuSetupFailureCode,
+  safeFeishuActivationErrorCode,
   safeFeishuConnectionErrorCode,
   safeFeishuSetupErrorCode,
 } from "./errors.js";

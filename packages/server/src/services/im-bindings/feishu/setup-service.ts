@@ -5,7 +5,12 @@ import type { DatabaseClient } from "../../../db/client.js";
 import { agents, imBindings } from "../../../db/schema/index.js";
 import type { ApplicationCipher } from "../../crypto.js";
 import type { ImBindingService, VerifiedFeishuBinding } from "../im-binding-service.js";
-import { FeishuOperationError, safeFeishuSetupErrorCode } from "./errors.js";
+import {
+  FeishuOperationError,
+  feishuSetupFailureCode,
+  safeFeishuActivationErrorCode,
+  safeFeishuSetupErrorCode,
+} from "./errors.js";
 import type { FeishuAppProfile, FeishuRegistration, FeishuRegistrationGateway } from "./registration.js";
 
 export interface FeishuBindingActivation {
@@ -138,16 +143,16 @@ export class FeishuSetupService {
         existingAppId: intent === "reauthorize" ? (existing?.externalAppId ?? undefined) : undefined,
         receiveMode: agent.receiveMode,
       });
-    } catch {
-      throw new FeishuOperationError("FEISHU_SETUP_FAILED");
+    } catch (cause) {
+      throw new FeishuOperationError(feishuSetupFailureCode(cause));
     }
     let qr: Awaited<FeishuRegistration["qrReady"]>;
     try {
       qr = await registration.qrReady;
-    } catch {
+    } catch (cause) {
       void registration.result.catch(() => undefined);
       registration.abort();
-      throw new FeishuOperationError("FEISHU_SETUP_FAILED");
+      throw new FeishuOperationError(feishuSetupFailureCode(cause));
     }
 
     const attemptId = randomUUID();
@@ -283,8 +288,11 @@ export class FeishuSetupService {
   }
 
   async #complete(attemptId: string, agentId: string, registration: FeishuRegistration): Promise<void> {
+    // Only the authorization itself belongs to Feishu; the claim and activation below are ours.
+    let awaitingAuthorization = true;
     try {
       const result = await registration.result;
+      awaitingAuthorization = false;
       const [claimed] = await this.#database
         .update(imBindings)
         .set({ setupState: "validating", updatedAt: new Date() })
@@ -307,7 +315,7 @@ export class FeishuSetupService {
         teamBrand: result.teamBrand,
       });
     } catch (error) {
-      const code = safeFeishuSetupErrorCode(error);
+      const code = awaitingAuthorization ? safeFeishuSetupErrorCode(error) : safeFeishuActivationErrorCode(error);
       const state =
         code === "FEISHU_SETUP_EXPIRED" ? "expired" : code === "FEISHU_SETUP_CANCELED" ? "canceled" : "failed";
       try {

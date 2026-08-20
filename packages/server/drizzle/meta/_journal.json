@@ -50,6 +50,13 @@
       "when": 1787196282659,
       "tag": "0006_goofy_bastion",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787210618519,
+      "tag": "0007_stale_slapstick",
+      "breakpoints": true
     }
   ]
 }

@@ -51,6 +51,19 @@ export class ImMessageInbox {
     const event = NormalizedInboundImEventSchema.parse(rawEvent);
     return this.#database.transaction(async (transaction) => {
       const now = this.#now();
+      const [candidate] = await transaction
+        .select({ agentId: imBindings.agentId })
+        .from(imBindings)
+        .where(eq(imBindings.id, imBindingId))
+        .limit(1);
+      if (!candidate) throw new Error("IM_BINDING_GENERATION_STALE");
+      const [agent] = await transaction
+        .select()
+        .from(agents)
+        .where(and(eq(agents.id, candidate.agentId), ne(agents.status, "deleted")))
+        .limit(1)
+        .for("update");
+      if (!agent) throw new Error("IM_BINDING_GENERATION_STALE");
       await transaction
         .update(imBindings)
         .set({ externalTeamId: event.externalTeamId, updatedAt: now })
@@ -73,11 +86,12 @@ export class ImMessageInbox {
             eq(imBindings.id, imBindingId),
             eq(imBindings.status, "active"),
             eq(imBindings.credentialGeneration, credentialGeneration),
-            isNull(agents.deletedAt),
+            eq(agents.id, candidate.agentId),
+            ne(agents.status, "deleted"),
           ),
         )
         .limit(1)
-        .for("share", { of: imBindings });
+        .for("update", { of: imBindings });
       if (!scope) throw new Error("IM_BINDING_GENERATION_STALE");
       if (admissionFence) {
         if (
@@ -233,6 +247,7 @@ export class ImMessageInbox {
         event.message.author.kind === "bot" && event.message.author.externalId === scope.imBinding.externalBotId;
       if (isSelf) return { duplicate: false, messageId: created.id, deliveryIds: [] };
       if (conversationKind === null) return { duplicate: false, messageId: created.id, deliveryIds: [] };
+      if (agent.status !== "active") return { duplicate: false, messageId: created.id, deliveryIds: [] };
       const direct =
         conversationKind === "dm" ||
         event.mentions.some((mention) => mention.externalId === scope.imBinding.externalBotId);

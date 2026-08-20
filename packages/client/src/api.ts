@@ -8,6 +8,8 @@ import {
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
   agentImBindingPath,
+  agentReactivatePath,
+  agentSuspendPath,
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
   type CreateAgentRequest,
@@ -243,6 +245,20 @@ export class OpenTagApi {
       method: "PATCH",
       body: JSON.stringify(input),
       headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+    });
+  }
+
+  suspendAgent(accessToken: string, agentId: string): Promise<AgentAdminConfig> {
+    return this.#request(agentSuspendPath(agentId), AgentAdminConfigSchema, {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  reactivateAgent(accessToken: string, agentId: string): Promise<AgentAdminConfig> {
+    return this.#request(agentReactivatePath(agentId), AgentAdminConfigSchema, {
+      method: "POST",
+      headers: { authorization: `Bearer ${accessToken}` },
     });
   }
 

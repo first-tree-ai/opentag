@@ -11,11 +11,21 @@ import {
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agentRuntimeConfigs, agents, computers, imBindings, memberships, users } from "../../db/schema/index.js";
+import {
+  agentRuntimeConfigs,
+  agents,
+  computers,
+  imBindings,
+  memberships,
+  sessionPlacements,
+  sessions,
+  users,
+} from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
+import { disableImBindingInTransaction } from "../im-bindings/index.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import { TeamMembershipService } from "../teams/index.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
@@ -41,8 +51,16 @@ interface AgentSafeRow {
   displayName: string;
   runtimeProvider: "codex" | "claude-code";
   receiveMode: "all_message" | "mention_only";
+  status: AgentRow["status"];
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface AgentSessionStopTarget {
+  agentId: string;
+  computerId: string;
+  placementGeneration: number;
+  sessionId: string;
 }
 
 function toRuntimeConfig(row: AgentRuntimeConfigRow): AgentRuntimeConfig {
@@ -57,6 +75,7 @@ function toRuntimeConfig(row: AgentRuntimeConfigRow): AgentRuntimeConfig {
 }
 
 function toAgentAdminConfig(row: AgentRow, runtimeConfig: AgentRuntimeConfigRow): AgentAdminConfig {
+  if (row.status === "deleted") throw new Error("Deleted Agent cannot be projected as an admin config");
   return {
     id: row.id,
     teamId: row.teamId,
@@ -66,6 +85,7 @@ function toAgentAdminConfig(row: AgentRow, runtimeConfig: AgentRuntimeConfigRow)
     displayName: row.displayName,
     runtimeProvider: row.runtimeProvider,
     receiveMode: row.receiveMode,
+    status: row.status,
     revision: row.revision,
     runtimeConfig: toRuntimeConfig(runtimeConfig),
     createdAt: row.createdAt.toISOString(),
@@ -74,6 +94,7 @@ function toAgentAdminConfig(row: AgentRow, runtimeConfig: AgentRuntimeConfigRow)
 }
 
 function toAgentSummary(row: AgentSafeRow): AgentSummary {
+  if (row.status === "deleted") throw new Error("Deleted Agent cannot be projected as a summary");
   return {
     id: row.id,
     teamId: row.teamId,
@@ -87,6 +108,7 @@ function toAgentSummary(row: AgentSafeRow): AgentSummary {
     displayName: row.displayName,
     runtimeProvider: row.runtimeProvider,
     receiveMode: row.receiveMode,
+    status: row.status,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -125,23 +147,32 @@ function isAgentNameConflict(error: unknown): boolean {
 }
 
 export class AgentService {
+  readonly #afterAgentLocked?: () => Promise<void>;
   readonly #afterMembershipLocked?: () => Promise<void>;
   readonly #database: DatabaseClient;
   readonly #membershipService: TeamMembershipService;
   readonly #now: () => Date;
+  readonly #onDiagnostic: (code: string) => void;
+  readonly #stopSessions: (targets: AgentSessionStopTarget[]) => Promise<void>;
 
   constructor(
     database: DatabaseClient,
     options: {
+      afterAgentLocked?: () => Promise<void>;
       afterMembershipLocked?: () => Promise<void>;
       membershipService?: TeamMembershipService;
       now?: () => Date;
+      onDiagnostic?: (code: string) => void;
+      stopSessions?: (targets: AgentSessionStopTarget[]) => Promise<void>;
     } = {},
   ) {
+    this.#afterAgentLocked = options.afterAgentLocked;
     this.#afterMembershipLocked = options.afterMembershipLocked;
     this.#database = database;
     this.#membershipService = options.membershipService ?? new TeamMembershipService(database, { now: options.now });
     this.#now = options.now ?? (() => new Date());
+    this.#onDiagnostic = options.onDiagnostic ?? (() => undefined);
+    this.#stopSessions = options.stopSessions ?? (async () => undefined);
   }
 
   async createForTeam(callerUserId: string, teamId: string, rawInput: CreateAgentRequest): Promise<AgentAdminConfig> {
@@ -215,12 +246,13 @@ export class AgentService {
         displayName: agents.displayName,
         runtimeProvider: agents.runtimeProvider,
         receiveMode: agents.receiveMode,
+        status: agents.status,
         createdAt: agents.createdAt,
         updatedAt: agents.updatedAt,
       })
       .from(memberships)
       .innerJoin(users, eq(users.id, memberships.userId))
-      .leftJoin(agents, and(eq(agents.teamId, memberships.teamId), isNull(agents.deletedAt)))
+      .leftJoin(agents, and(eq(agents.teamId, memberships.teamId), ne(agents.status, "deleted")))
       .leftJoin(manager, eq(manager.id, agents.managerUserId))
       .leftJoin(computers, eq(computers.id, agents.computerId))
       .where(
@@ -259,13 +291,14 @@ export class AgentService {
         displayName: agents.displayName,
         runtimeProvider: agents.runtimeProvider,
         receiveMode: agents.receiveMode,
+        status: agents.status,
         createdAt: agents.createdAt,
         updatedAt: agents.updatedAt,
       })
       .from(agents)
       .innerJoin(manager, eq(manager.id, agents.managerUserId))
       .innerJoin(computers, eq(computers.id, agents.computerId))
-      .where(and(eq(agents.id, agentId), isNull(agents.deletedAt)))
+      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row) throw resourceNotFound();
     const role = await this.#requireTeamMembership(this.#database, callerUserId, row.teamId);
@@ -281,7 +314,7 @@ export class AgentService {
   async updateById(callerUserId: string, agentId: string, rawInput: UpdateAgentRequest): Promise<AgentAdminConfig> {
     const input = UpdateAgentRequestSchema.parse(rawInput);
     return this.#database.transaction(async (transaction) => {
-      const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId, false);
+      const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
       if (scope.agent.revision !== input.expectedRevision) {
         throw new AgentServiceError(
@@ -337,7 +370,7 @@ export class AgentService {
           revision: sql`${agents.revision} + 1`,
           updatedAt: now,
         })
-        .where(and(eq(agents.id, agentId), isNull(agents.deletedAt), eq(agents.revision, input.expectedRevision)))
+        .where(and(eq(agents.id, agentId), ne(agents.status, "deleted"), eq(agents.revision, input.expectedRevision)))
         .returning();
       if (updated) {
         let runtimeConfig = currentRuntimeConfig;
@@ -353,7 +386,7 @@ export class AgentService {
         return toAgentAdminConfig(updated, runtimeConfig);
       }
 
-      const current = await this.#resolveAgentScope(transaction, callerUserId, agentId, false);
+      const current = await this.#resolveAgentScope(transaction, callerUserId, agentId);
       this.#requireManagePermission(current);
       throw new AgentServiceError(
         "AGENT_REVISION_CONFLICT",
@@ -364,43 +397,94 @@ export class AgentService {
     });
   }
 
-  async deleteById(callerUserId: string, agentId: string): Promise<void> {
-    await this.#database.transaction(async (transaction) => {
-      const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId, true);
-      if (scope.agent.deletedAt) {
-        if (scope.canManage) return;
-        throw resourceNotFound();
-      }
+  async suspendById(callerUserId: string, agentId: string): Promise<AgentAdminConfig> {
+    const result = await this.#database.transaction(async (transaction) => {
+      const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
+      if (scope.agent.status !== "active") throw this.#lifecycleConflict("Only an active Agent can be suspended");
+      const runtimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
+      const targets = await this.#activeSessionTargets(transaction, agentId);
+      const now = this.#now();
+      const [updated] = await transaction
+        .update(agents)
+        .set({ status: "suspended", updatedAt: now, revision: sql`${agents.revision} + 1` })
+        .where(and(eq(agents.id, agentId), eq(agents.status, "active")))
+        .returning();
+      if (!updated) throw this.#lifecycleConflict("The Agent lifecycle changed before suspension");
+      return { config: toAgentAdminConfig(updated, runtimeConfig), targets };
+    });
+    await this.#stopSessionsBestEffort(result.targets);
+    return result.config;
+  }
+
+  async reactivateById(callerUserId: string, agentId: string): Promise<AgentAdminConfig> {
+    return this.#database.transaction(async (transaction) => {
+      const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
+      this.#requireManagePermission(scope);
+      if (scope.agent.status !== "suspended") {
+        throw this.#lifecycleConflict("Only a suspended Agent can be reactivated");
+      }
+      const runtimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
+      const now = this.#now();
+      const [updated] = await transaction
+        .update(agents)
+        .set({ status: "active", updatedAt: now, revision: sql`${agents.revision} + 1` })
+        .where(and(eq(agents.id, agentId), eq(agents.status, "suspended")))
+        .returning();
+      if (!updated) throw this.#lifecycleConflict("The Agent lifecycle changed before reactivation");
+      return toAgentAdminConfig(updated, runtimeConfig);
+    });
+  }
+
+  async deleteById(callerUserId: string, agentId: string): Promise<void> {
+    const targets = await this.#database.transaction(async (transaction) => {
+      const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
+      this.#requireManagePermission(scope);
+      if (scope.agent.status !== "suspended") {
+        throw this.#lifecycleConflict("An Agent must be suspended before it can be deleted");
+      }
 
       const now = this.#now();
-      await transaction
+      const activeTargets = await this.#activeSessionTargets(transaction, agentId);
+      const [imBinding] = await transaction
+        .select({ id: imBindings.id })
+        .from(imBindings)
+        .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
+        .limit(1)
+        .for("update");
+      if (imBinding) await disableImBindingInTransaction(transaction, imBinding.id, now);
+      await transaction.delete(agentRuntimeConfigs).where(eq(agentRuntimeConfigs.agentId, agentId));
+      const [deleted] = await transaction
         .update(agents)
-        .set({ deletedAt: now, updatedAt: now, revision: sql`${agents.revision} + 1` })
-        .where(and(eq(agents.id, agentId), isNull(agents.deletedAt)));
+        .set({ status: "deleted", updatedAt: now, revision: sql`${agents.revision} + 1` })
+        .where(and(eq(agents.id, agentId), eq(agents.status, "suspended")))
+        .returning({ id: agents.id });
+      if (!deleted) throw this.#lifecycleConflict("The Agent lifecycle changed before deletion");
+      return activeTargets;
     });
+    await this.#stopSessionsBestEffort(targets);
   }
 
   async #lockAgentScopeForMutation(
     transaction: DatabaseTransaction,
     callerUserId: string,
     agentId: string,
-    includeDeleted: boolean,
   ): Promise<AgentScope> {
     const [candidate] = await transaction
       .select({ teamId: agents.teamId })
       .from(agents)
-      .where(and(eq(agents.id, agentId), ...(includeDeleted ? [] : [isNull(agents.deletedAt)])))
+      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!candidate) throw resourceNotFound();
     const role = await this.#requireTeamMembershipForMutation(transaction, callerUserId, candidate.teamId);
     const [agent] = await transaction
       .select()
       .from(agents)
-      .where(and(eq(agents.id, agentId), ...(includeDeleted ? [] : [isNull(agents.deletedAt)])))
+      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1)
       .for("update");
     if (!agent) throw resourceNotFound();
+    await this.#afterAgentLocked?.();
     return { agent, canManage: role === "admin" };
   }
 
@@ -456,16 +540,11 @@ export class AgentService {
     }
   }
 
-  async #resolveAgentScope(
-    executor: QueryExecutor,
-    callerUserId: string,
-    agentId: string,
-    includeDeleted: boolean,
-  ): Promise<AgentScope> {
+  async #resolveAgentScope(executor: QueryExecutor, callerUserId: string, agentId: string): Promise<AgentScope> {
     const [agent] = await executor
       .select()
       .from(agents)
-      .where(and(eq(agents.id, agentId), ...(includeDeleted ? [] : [isNull(agents.deletedAt)])))
+      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!agent) throw resourceNotFound();
     const role = await this.#requireTeamMembership(executor, callerUserId, agent.teamId);
@@ -481,7 +560,7 @@ export class AgentService {
       .select({ agent: agents, runtimeConfig: agentRuntimeConfigs })
       .from(agents)
       .innerJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
-      .where(and(eq(agents.id, agentId), isNull(agents.deletedAt)))
+      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row) throw resourceNotFound();
     const role = await this.#requireTeamMembership(executor, callerUserId, row.agent.teamId);
@@ -495,6 +574,32 @@ export class AgentService {
   #requireManagePermission(scope: AgentScope): void {
     if (!scope.canManage) {
       throw new AgentServiceError("AGENT_FORBIDDEN", "deterministic", "The caller cannot manage this Agent", 403);
+    }
+  }
+
+  async #activeSessionTargets(transaction: DatabaseTransaction, agentId: string): Promise<AgentSessionStopTarget[]> {
+    return transaction
+      .select({
+        agentId: imBindings.agentId,
+        computerId: sessionPlacements.computerId,
+        placementGeneration: sessionPlacements.generation,
+        sessionId: sessions.id,
+      })
+      .from(sessions)
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .where(and(eq(imBindings.agentId, agentId), isNull(sessions.endedAt)));
+  }
+
+  #lifecycleConflict(message: string): AgentServiceError {
+    return new AgentServiceError("AGENT_LIFECYCLE_CONFLICT", "deterministic", message, 409);
+  }
+
+  async #stopSessionsBestEffort(targets: AgentSessionStopTarget[]): Promise<void> {
+    try {
+      await this.#stopSessions(targets);
+    } catch {
+      this.#onDiagnostic("AGENT_SESSION_STOP_FAILED");
     }
   }
 }

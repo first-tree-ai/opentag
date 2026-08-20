@@ -15,7 +15,7 @@ import {
   type UpdateTeamProfileRequest,
   UpdateTeamProfileRequestSchema,
 } from "@opentag/shared";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agents, computers, memberships, teams, users } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
@@ -484,7 +484,7 @@ export class TeamMembershipService {
       .innerJoin(computers, eq(computers.ownerUserId, memberships.userId))
       .leftJoin(
         agents,
-        and(eq(agents.teamId, memberships.teamId), eq(agents.computerId, computers.id), isNull(agents.deletedAt)),
+        and(eq(agents.teamId, memberships.teamId), eq(agents.computerId, computers.id), ne(agents.status, "deleted")),
       )
       .where(and(eq(memberships.teamId, teamId), eq(memberships.status, "active"), isNull(users.suspendedAt)))
       .orderBy(asc(computers.displayName), asc(computers.id), asc(agents.id));
@@ -529,7 +529,7 @@ export class TeamMembershipService {
     const [activeAgent] = await transaction
       .select({ id: agents.id })
       .from(agents)
-      .where(and(eq(agents.teamId, teamId), eq(agents.managerUserId, userId), isNull(agents.deletedAt)))
+      .where(and(eq(agents.teamId, teamId), eq(agents.managerUserId, userId), ne(agents.status, "deleted")))
       .limit(1);
     if (activeAgent) {
       throw new AuthServiceError(

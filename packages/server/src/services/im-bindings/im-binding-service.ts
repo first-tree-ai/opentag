@@ -73,6 +73,32 @@ export interface SlackConnectionMaterial extends SlackIngressBinding {
   grantedScopes: string[];
 }
 
+export async function disableImBindingInTransaction(
+  transaction: DatabaseTransaction,
+  imBindingId: string,
+  now: Date,
+): Promise<void> {
+  await transaction
+    .update(imBindings)
+    .set({
+      status: "disabled",
+      encryptedCredential: null,
+      encryptedSetupContext: null,
+      setupOwnerInstanceId: null,
+      setupOwnerHeartbeatAt: null,
+      setupExpiresAt: null,
+      connectionOwnerInstanceId: null,
+      connectionLeaseExpiresAt: null,
+      disabledAt: now,
+      updatedAt: now,
+    })
+    .where(and(eq(imBindings.id, imBindingId), ne(imBindings.status, "disabled")));
+  await transaction
+    .update(sessions)
+    .set({ endedAt: now, revision: sql`${sessions.revision} + 1` })
+    .where(and(eq(sessions.imBindingId, imBindingId), isNull(sessions.endedAt)));
+}
+
 export class ImBindingServiceError extends Error {
   readonly category = "deterministic" as const;
   constructor(
@@ -114,7 +140,7 @@ export class ImBindingService {
     const [agent] = await this.#database
       .select({ computerId: agents.computerId })
       .from(agents)
-      .where(and(eq(agents.id, agentId), isNull(agents.deletedAt)))
+      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     return agent?.computerId;
   }
@@ -173,7 +199,7 @@ export class ImBindingService {
           eq(imBindings.externalAppId, appId),
           eq(imBindings.externalTeamId, teamId),
           ne(imBindings.status, "disabled"),
-          isNull(agents.deletedAt),
+          ne(agents.status, "deleted"),
         ),
       )
       .limit(1);
@@ -223,7 +249,7 @@ export class ImBindingService {
         and(
           eq(imBindings.provider, "feishu"),
           eq(imBindings.status, "active"),
-          isNull(agents.deletedAt),
+          ne(agents.status, "deleted"),
           ...(afterId ? [gt(imBindings.id, afterId)] : []),
         ),
       )
@@ -358,7 +384,7 @@ export class ImBindingService {
       if (!imBinding || imBinding.agentId !== candidate.agentId) {
         throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The IM binding was not found");
       }
-      await this.#disableInTransaction(transaction, imBindingId, this.#now());
+      await disableImBindingInTransaction(transaction, imBindingId, this.#now());
     });
   }
 
@@ -439,7 +465,7 @@ export class ImBindingService {
         ),
       )
       .innerJoin(users, and(eq(users.id, memberships.userId), isNull(users.suspendedAt)))
-      .where(and(eq(agents.id, agentId), isNull(agents.deletedAt)))
+      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!scope) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
     if (scope.role !== "admin") {
@@ -455,7 +481,7 @@ export class ImBindingService {
     const [candidate] = await transaction
       .select({ teamId: agents.teamId })
       .from(agents)
-      .where(and(eq(agents.id, agentId), isNull(agents.deletedAt)))
+      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!candidate) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
     try {
@@ -477,7 +503,7 @@ export class ImBindingService {
     const [agent] = await transaction
       .select({ id: agents.id })
       .from(agents)
-      .where(and(eq(agents.id, agentId), eq(agents.teamId, candidate.teamId), isNull(agents.deletedAt)))
+      .where(and(eq(agents.id, agentId), eq(agents.teamId, candidate.teamId), ne(agents.status, "deleted")))
       .limit(1)
       .for("update");
     if (!agent) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
@@ -497,7 +523,7 @@ export class ImBindingService {
         ),
       )
       .innerJoin(users, and(eq(users.id, memberships.userId), isNull(users.suspendedAt)))
-      .where(and(eq(agents.id, agentId), isNull(agents.deletedAt)))
+      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!scope) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
   }
@@ -522,7 +548,7 @@ export class ImBindingService {
       const [agent] = await transaction
         .select({ id: agents.id, receiveMode: agents.receiveMode })
         .from(agents)
-        .where(and(eq(agents.id, input.agentId), isNull(agents.deletedAt)))
+        .where(and(eq(agents.id, input.agentId), ne(agents.status, "deleted")))
         .limit(1)
         .for("update");
       if (!agent) throw new ImBindingServiceError("AGENT_NOT_FOUND", 404, "The Agent was not found");
@@ -571,7 +597,7 @@ export class ImBindingService {
         current.externalTeamId === activationInput.identity.teamId &&
         current.externalBotId === activationInput.identity.botId;
       if (current && current.status !== "provisioning" && !sameIdentity) {
-        await this.#disableInTransaction(transaction, current.id, now);
+        await disableImBindingInTransaction(transaction, current.id, now);
         const [created] = await transaction
           .insert(imBindings)
           .values(this.#activeValues(activationInput, encryptedCredential, 1, now))
@@ -661,7 +687,7 @@ export class ImBindingService {
           eq(imBindings.id, imBindingId),
           eq(imBindings.provider, provider),
           eq(imBindings.status, "active"),
-          isNull(agents.deletedAt),
+          ne(agents.status, "deleted"),
         ),
       )
       .limit(1);
@@ -670,30 +696,8 @@ export class ImBindingService {
 
   async #disable(imBindingId: string): Promise<void> {
     await this.#database.transaction(async (transaction) => {
-      await this.#disableInTransaction(transaction, imBindingId, this.#now());
+      await disableImBindingInTransaction(transaction, imBindingId, this.#now());
     });
-  }
-
-  async #disableInTransaction(transaction: DatabaseTransaction, imBindingId: string, now: Date): Promise<void> {
-    await transaction
-      .update(imBindings)
-      .set({
-        status: "disabled",
-        encryptedCredential: null,
-        encryptedSetupContext: null,
-        setupOwnerInstanceId: null,
-        setupOwnerHeartbeatAt: null,
-        setupExpiresAt: null,
-        connectionOwnerInstanceId: null,
-        connectionLeaseExpiresAt: null,
-        disabledAt: now,
-        updatedAt: now,
-      })
-      .where(and(eq(imBindings.id, imBindingId), ne(imBindings.status, "disabled")));
-    await transaction
-      .update(sessions)
-      .set({ endedAt: now, revision: sql`${sessions.revision} + 1` })
-      .where(and(eq(sessions.imBindingId, imBindingId), isNull(sessions.endedAt)));
   }
 
   async #activity(imBindingId: string): Promise<{ lastInboundAt: string | null; lastOutboundAt: string | null }> {

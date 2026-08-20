@@ -12,7 +12,7 @@ const sessionId = "b077f77b-ad35-4031-8628-aee73f9a7ca8";
 
 function authority(overrides: Record<string, unknown> = {}) {
   return {
-    agentDeletedAt: null,
+    agentStatus: "active",
     agentId,
     imBindingStatus: "active",
     runtimeConfig: {
@@ -102,7 +102,8 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
     ["missing", async () => undefined, "SESSION_NOT_FOUND"],
     ["ended Session", async () => authority({ sessionEndedAt: new Date() }), "AUTHORITY_INACTIVE"],
     ["inactive ImBinding", async () => authority({ imBindingStatus: "disabled" }), "AUTHORITY_INACTIVE"],
-    ["deleted Agent", async () => authority({ agentDeletedAt: new Date() }), "AUTHORITY_INACTIVE"],
+    ["suspended Agent", async () => authority({ agentStatus: "suspended" }), "AUTHORITY_INACTIVE"],
+    ["deleted Agent", async () => authority({ agentStatus: "deleted" }), "AUTHORITY_INACTIVE"],
     ["missing config", async () => authority({ runtimeConfig: null }), "RUNTIME_CONFIG_MISSING"],
     ["unsupported provider", async () => authority({ runtimeProvider: "claude-code" }), "UNSUPPORTED_PROVIDER"],
     [

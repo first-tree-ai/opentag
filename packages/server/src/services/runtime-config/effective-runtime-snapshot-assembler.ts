@@ -11,7 +11,7 @@ import { agentRuntimeConfigs, agents, imBindings, sessions } from "../../db/sche
 import { EffectiveRuntimeSnapshotAssemblerError } from "./errors.js";
 
 interface EffectiveRuntimeSnapshotAuthority {
-  agentDeletedAt: Date | null;
+  agentStatus: string;
   agentId: string;
   imBindingStatus: string;
   runtimeConfig: unknown;
@@ -40,7 +40,7 @@ export class EffectiveRuntimeSnapshotAssembler {
     if (
       authority.sessionEndedAt !== null ||
       authority.imBindingStatus !== "active" ||
-      authority.agentDeletedAt !== null
+      authority.agentStatus !== "active"
     ) {
       throw new EffectiveRuntimeSnapshotAssemblerError("AUTHORITY_INACTIVE");
     }
@@ -109,7 +109,7 @@ async function loadAuthority(
       sessionEndedAt: sessions.endedAt,
       imBindingStatus: imBindings.status,
       agentId: agents.id,
-      agentDeletedAt: agents.deletedAt,
+      agentStatus: agents.status,
       runtimeProvider: agents.runtimeProvider,
       configRevision: agentRuntimeConfigs.revision,
       configModel: agentRuntimeConfigs.model,
@@ -126,7 +126,7 @@ async function loadAuthority(
     .limit(1);
   if (!row) return undefined;
   return {
-    agentDeletedAt: row.agentDeletedAt,
+    agentStatus: row.agentStatus,
     agentId: row.agentId,
     imBindingStatus: row.imBindingStatus,
     runtimeConfig:

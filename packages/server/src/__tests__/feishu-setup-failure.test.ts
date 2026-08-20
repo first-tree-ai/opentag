@@ -3,6 +3,7 @@ import {
   FeishuOperationError,
   feishuPublicFailure,
   feishuSetupFailureCode,
+  safeFeishuActivationErrorCode,
   safeFeishuSetupErrorCode,
 } from "../services/im-bindings/feishu/index.js";
 
@@ -46,6 +47,28 @@ describe("Feishu setup failure classification", () => {
       "FEISHU_SETUP_DENIED",
     );
     expect(safeFeishuSetupErrorCode(new Error("boom"))).toBe("FEISHU_SETUP_FAILED");
+  });
+
+  it.each([
+    ["a database timeout", Object.assign(new Error("statement timeout"), { code: "ETIMEDOUT" })],
+    ["a dropped database connection", Object.assign(new Error("connection terminated"), { code: "ECONNRESET" })],
+  ])("keeps %s after authorization an internal failure", (_label, error) => {
+    expect(safeFeishuActivationErrorCode(error)).toBe("FEISHU_SETUP_FAILED");
+    // The same shape while awaiting Feishu is the platform's, so the phases must not share a classifier.
+    expect(safeFeishuSetupErrorCode(error)).toBe("FEISHU_UPSTREAM_UNAVAILABLE");
+  });
+
+  it("keeps an unlabeled activation failure an internal failure", () => {
+    expect(safeFeishuActivationErrorCode(new Error("activation failed"))).toBe("FEISHU_SETUP_FAILED");
+  });
+
+  it("still names the outcome a caller reported after authorization", () => {
+    expect(safeFeishuActivationErrorCode(Object.assign(new Error("denied"), { code: "access_denied" }))).toBe(
+      "FEISHU_SETUP_DENIED",
+    );
+    expect(safeFeishuActivationErrorCode(new FeishuOperationError("FEISHU_BINDING_NOT_ACTIVE"))).toBe(
+      "FEISHU_BINDING_NOT_ACTIVE",
+    );
   });
 
   it("publishes only the failure the caller can act on", () => {

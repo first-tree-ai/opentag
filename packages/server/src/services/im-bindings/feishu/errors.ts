@@ -83,9 +83,10 @@ function isUpstreamUnavailable(error: unknown): boolean {
 }
 
 /**
- * Classifies a Feishu setup failure before any attempt row or HTTP response is
- * produced. Only the registration start and its QR handshake reach this point,
- * so the URL parsed there is always the one Feishu returned.
+ * Classifies a failure raised while OpenTag talks to the Feishu platform: the
+ * registration start, its QR handshake, and the authorization that follows.
+ * Local work after that authorization must never reach this function, so a
+ * database or activation failure is never reported as a Feishu outage.
  */
 export function feishuSetupFailureCode(error: unknown): FeishuSafeErrorCode {
   return isUpstreamUnavailable(error) ? "FEISHU_UPSTREAM_UNAVAILABLE" : "FEISHU_SETUP_FAILED";
@@ -95,12 +96,26 @@ export function safeFeishuConnectionErrorCode(error: unknown): string {
   return error instanceof FeishuOperationError ? error.code : "FEISHU_CONNECTION_ERROR";
 }
 
-export function safeFeishuSetupErrorCode(error: unknown): string {
+function knownFeishuSetupErrorCode(error: unknown): string | undefined {
   if (error instanceof FeishuOperationError) return error.code;
   if (error instanceof ImBindingServiceError && error.code === "FEISHU_APP_ALREADY_BOUND") return error.code;
-  if (typeof error !== "object" || error === null || !("code" in error)) return feishuSetupFailureCode(error);
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
   if (error.code === "access_denied") return "FEISHU_SETUP_DENIED";
   if (error.code === "expired_token") return "FEISHU_SETUP_EXPIRED";
   if (error.code === "abort") return "FEISHU_SETUP_CANCELED";
-  return feishuSetupFailureCode(error);
+  return undefined;
+}
+
+/** For a failure raised while awaiting Feishu: an unnamed cause may be the platform. */
+export function safeFeishuSetupErrorCode(error: unknown): string {
+  return knownFeishuSetupErrorCode(error) ?? feishuSetupFailureCode(error);
+}
+
+/**
+ * For a failure raised after Feishu returned an authorization, where the
+ * remaining work is OpenTag's own: an unnamed cause stays an internal failure,
+ * so a database timeout is never presented as a Feishu outage.
+ */
+export function safeFeishuActivationErrorCode(error: unknown): string {
+  return knownFeishuSetupErrorCode(error) ?? "FEISHU_SETUP_FAILED";
 }

@@ -7,6 +7,7 @@ export {
   type FeishuSafeErrorCode,
   feishuPublicFailure,
   feishuSetupFailureCode,
+  safeFeishuActivationErrorCode,
   safeFeishuConnectionErrorCode,
   safeFeishuSetupErrorCode,
 } from "./errors.js";

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AGENT_RUNTIME_BINDING_MAX_BYTES,
   AGENT_RUNTIME_ID_MAX_BYTES,
@@ -13,6 +13,7 @@ import {
   assertIdentifier,
   assertJsonValue,
   assertPromptRequest,
+  runWithAbortSignal,
   sameBinding,
 } from "../agent-runtime/validation.js";
 
@@ -278,8 +279,35 @@ describe("Agent Runtime validation", () => {
     }
     const shared = { value: true };
     expect(() => assertJsonValue({ left: shared, right: shared }, "value")).not.toThrow();
+    const nullPrototype = Object.assign(Object.create(null) as Record<string, unknown>, { value: true });
+    expect(() => assertJsonValue(nullPrototype, "value")).not.toThrow();
 
-    for (const value of [Number.NaN, Number.POSITIVE_INFINITY, undefined, 1n, () => undefined]) {
+    class CustomJsonObject {
+      value = true;
+    }
+    const withGetter = Object.defineProperty({}, "value", { enumerable: true, get: () => true });
+    const withHidden = Object.defineProperty({}, "value", { enumerable: false, value: true });
+    const withSymbol = { [Symbol("value")]: true };
+    const sparse: unknown[] = [];
+    sparse.length = 2;
+    sparse[1] = true;
+    const customArray = [true] as unknown[] & { extra?: boolean };
+    customArray.extra = true;
+    for (const value of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      undefined,
+      1n,
+      () => undefined,
+      new Date(),
+      new Map(),
+      new CustomJsonObject(),
+      withGetter,
+      withHidden,
+      withSymbol,
+      sparse,
+      customArray,
+    ]) {
       expect(() => assertJsonValue(value, "value")).toThrowError(expect.objectContaining({ code: "invalid_request" }));
     }
     const cycle: { self?: unknown } = {};
@@ -293,6 +321,37 @@ describe("Agent Runtime validation", () => {
     const binding: AgentRuntimeBinding = { providerId: "test", schemaVersion: 1, payload: { id: "one" } };
     expect(sameBinding(undefined, binding)).toBe(false);
     expect(sameBinding(binding, { ...binding, payload: { id: "one" } })).toBe(true);
+    expect(
+      sameBinding(
+        { providerId: "test", schemaVersion: 1, payload: { first: 1, second: [true, null] } },
+        { schemaVersion: 1, providerId: "test", payload: { second: [true, null], first: 1 } },
+      ),
+    ).toBe(true);
     expect(sameBinding(binding, { ...binding, payload: { id: "two" } })).toBe(false);
+    expect(sameBinding(binding, { ...binding, payload: { id: "one", extra: true } })).toBe(false);
+    expect(
+      sameBinding({ ...binding, payload: [0, { value: true }] }, { ...binding, payload: [0, { value: false }] }),
+    ).toBe(false);
+    expect(sameBinding({ ...binding, payload: [0] }, { ...binding, payload: [0, 1] })).toBe(false);
+    expect(sameBinding({ ...binding, payload: 0 }, { ...binding, payload: -0 })).toBe(true);
+    expect(sameBinding({ ...binding, payload: null }, { ...binding, payload: {} })).toBe(false);
+  });
+
+  it("runs probes with cooperative and enforced AbortSignal cancellation", async () => {
+    await expect(runWithAbortSignal(async () => "without-signal")).resolves.toBe("without-signal");
+
+    const completed = new AbortController();
+    const operation = vi.fn(async (signal?: AbortSignal) => signal);
+    await expect(runWithAbortSignal(operation, completed.signal)).resolves.toBe(completed.signal);
+    expect(operation).toHaveBeenCalledWith(completed.signal);
+
+    const preAborted = new AbortController();
+    preAborted.abort(new Error("already stopped"));
+    await expect(runWithAbortSignal(async () => "unreachable", preAborted.signal)).rejects.toThrow("already stopped");
+
+    const inFlight = new AbortController();
+    const hanging = runWithAbortSignal(() => new Promise<never>(() => undefined), inFlight.signal);
+    inFlight.abort(new Error("stop now"));
+    await expect(hanging).rejects.toThrow("stop now");
   });
 });

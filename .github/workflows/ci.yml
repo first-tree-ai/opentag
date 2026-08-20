@@ -68,6 +68,9 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Enforce Agent Runtime coverage
+        run: pnpm --filter @opentag/client test:agent-runtime:coverage
+
       - name: Test PostgreSQL integration
         run: pnpm --filter @opentag/server test:integration
 

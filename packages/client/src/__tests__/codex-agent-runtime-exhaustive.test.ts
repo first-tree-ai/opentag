@@ -308,7 +308,8 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       ],
     });
 
-    await expect(run).resolves.toMatchObject({
+    const runResult = await run;
+    expect(runResult, JSON.stringify(runResult)).toMatchObject({
       status: "completed",
       output: [{ text: "terminal answer" }],
       usage: { inputTokens: 8, cachedInputTokens: 2, outputTokens: 4 },
@@ -334,7 +335,12 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
 
   it("maps completed fallback, interrupted, and failed Turn terminal forms", async () => {
     const client = new ManualCodexClient();
-    const runtime = await factory(client).create(createRequest(() => undefined));
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await factory(client).create(
+      createRequest((event) => {
+        events.push(event);
+      }),
+    );
 
     const fallback = runtime.prompt({ runId: "fallback", input: input("one") });
     await client.called("turn/start");
@@ -374,6 +380,49 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(4));
     client.complete({ id: "turn-4", status: "failed", error: {}, items: [] });
     await expect(failedDefault).resolves.toMatchObject({ status: "failed", error: { message: "Codex turn failed" } });
+
+    const openMessage = runtime.prompt({ runId: "open-message", input: input("five") });
+    await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(5));
+    client.emit({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", turnId: "turn-5", itemId: "open", delta: "partial" },
+    });
+    client.complete({
+      id: "turn-5",
+      items: [{ id: "open", type: "agentMessage", phase: "final_answer", text: "terminal text" }],
+    });
+    await expect(openMessage).resolves.toMatchObject({ status: "completed", output: [{ text: "terminal text" }] });
+
+    const openDelta = runtime.prompt({ runId: "open-delta", input: input("six") });
+    await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(6));
+    client.emit({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", turnId: "turn-6", itemId: "delta-only", delta: "partial" },
+    });
+    client.complete({ id: "turn-6", items: [] });
+    await expect(openDelta).resolves.toMatchObject({ status: "completed" });
+
+    for (const [index, terminalStatus, itemStatus] of [
+      [7, "completed", "declined"],
+      [8, "completed", "failed"],
+      [9, "failed", "completed"],
+      [10, "interrupted", "completed"],
+    ] as const) {
+      const toolRun = runtime.prompt({ runId: `open-tool-${index}`, input: input("tool") });
+      await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(index));
+      client.emitItem("item/started", { id: `tool-${index}`, type: "commandExecution" });
+      client.complete({
+        id: `turn-${index}`,
+        status: terminalStatus,
+        items: [{ id: `tool-${index}`, type: "commandExecution", status: itemStatus }],
+      });
+      await expect(toolRun).resolves.toMatchObject({
+        status: terminalStatus === "completed" ? "completed" : terminalStatus === "failed" ? "failed" : "aborted",
+      });
+    }
+    expect(events.find((event) => event.type === "tool_completed" && event.toolCallId === "tool-10")).toMatchObject({
+      status: "failed",
+    });
     await runtime.close();
   });
 
@@ -584,6 +633,35 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       await expect(run, entry.name).resolves.toMatchObject({ status: "failed" });
       await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
     }
+  });
+
+  it("rejects wire lifecycles that reuse messages or rename active tools", async () => {
+    const duplicateClient = new ManualCodexClient();
+    const duplicate = await factory(duplicateClient).create(createRequest(() => undefined));
+    const duplicateRun = duplicate.prompt({ runId: "duplicate-message", input: input("fail") });
+    await duplicateClient.called("turn/start");
+    duplicateClient.emitItem("item/completed", { id: "message", type: "agentMessage", text: "done" });
+    duplicateClient.emitItem("item/started", { id: "message", type: "agentMessage" });
+    await expect(duplicateRun).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error", message: "Codex reused a completed agent message ID" },
+    });
+    await vi.waitFor(() => expect(duplicate.state.phase).toBe("closed"));
+
+    const renamedClient = new ManualCodexClient();
+    const renamed = await factory(renamedClient).create(createRequest(() => undefined));
+    const renamedRun = renamed.prompt({ runId: "renamed-tool", input: input("fail") });
+    await renamedClient.called("turn/start");
+    renamedClient.emit({
+      method: "item/commandExecution/outputDelta",
+      params: { threadId: "thread-1", turnId: "turn-1", itemId: "tool", delta: "output" },
+    });
+    renamedClient.emitItem("item/started", { id: "tool", type: "mcpToolCall", server: "server", tool: "read" });
+    await expect(renamedRun).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error", message: "Codex changed a tool name during its lifecycle" },
+    });
+    await vi.waitFor(() => expect(renamed.state.phase).toBe("closed"));
   });
 
   it("fails when a trailing notification breaks after Codex emits terminal", async () => {
@@ -1157,7 +1235,9 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     });
     const controller = new AbortController();
     const probing = runtimeFactory.probe({ signal: controller.signal });
-    await vi.waitFor(async () => expect(Number(await readFile(pidFile, "utf8"))).toBeGreaterThan(0));
+    await vi.waitFor(async () => expect(Number(await readFile(pidFile, "utf8"))).toBeGreaterThan(0), {
+      timeout: 5_000,
+    });
     const pid = Number(await readFile(pidFile, "utf8"));
 
     controller.abort(new Error("stop"));

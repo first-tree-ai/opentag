@@ -25,7 +25,7 @@ import {
   type JsonValue,
   type ResumeAgentRuntimeRequest,
 } from "../../agent-runtime/types.js";
-import { assertBinding, assertJsonValue } from "../../agent-runtime/validation.js";
+import { assertBinding, assertJsonValue, runWithAbortSignal } from "../../agent-runtime/validation.js";
 import { type PiRpcClient, PiRpcError, PiRpcProcess, type PiRpcProcessSpawnOptions } from "./rpc-wire.js";
 
 const execFileAsync = promisify(execFile);
@@ -84,7 +84,7 @@ export interface PiAgentRuntimeFactoryOptions {
   };
   readonly createClient?: (cwd: string, args: readonly string[]) => PiRpcClient;
   readonly createSessionId?: () => string;
-  readonly probeRunner?: () => Promise<{
+  readonly probeRunner?: (signal?: AbortSignal) => Promise<{
     readonly credential: boolean;
     readonly rpc: boolean;
     readonly version: string;
@@ -603,7 +603,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
   readonly manifest = PI_AGENT_RUNTIME_MANIFEST;
   readonly #createSessionId: () => string;
   readonly #createClient: (cwd: string, args: readonly string[]) => PiRpcClient;
-  readonly #probeRunner: () => Promise<{
+  readonly #probeRunner: (signal?: AbortSignal) => Promise<{
     readonly credential: boolean;
     readonly rpc: boolean;
     readonly version: string;
@@ -633,7 +633,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
           requestTimeoutMs: options.process?.requestTimeoutMs,
           spawnProcess: options.process?.spawnProcess,
         }));
-    this.#probeRunner = options.probeRunner ?? (() => probePi(command, environment));
+    this.#probeRunner = options.probeRunner ?? ((signal) => probePi(command, environment, signal));
   }
 
   async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
@@ -645,12 +645,13 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
     }
     let version: string | undefined;
     try {
-      const result = await this.#probeRunner();
+      const result = await runWithAbortSignal(this.#probeRunner, request.signal);
       version = result.version;
       if (!result.rpc) issues.push({ code: "version_incompatible", message: "Pi RPC mode is unavailable" });
       if (!result.credential)
         issues.push({ code: "credential_missing", message: "Pi has no configured model credential" });
-    } catch {
+    } catch (error) {
+      if (request.signal?.aborted) throw error;
       issues.push({ code: "artifact_missing", message: "Pi CLI could not be executed" });
     }
     return { ready: issues.length === 0, ...(version ? { version } : {}), issues };
@@ -778,14 +779,16 @@ export function piAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.en
 async function probePi(
   command: string,
   environment: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<{ readonly credential: boolean; readonly rpc: boolean; readonly version: string }> {
-  const execution = { encoding: "utf8" as const, env: environment, timeout: 5_000, windowsHide: true };
+  const execution = { encoding: "utf8" as const, env: environment, signal, timeout: 5_000, windowsHide: true };
   const versionResult = await execFileAsync(command, ["--version"], execution);
   const version = versionResult.stdout.trim();
   let help = "";
   try {
     help = (await execFileAsync(command, ["--help"], execution)).stdout;
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw error;
     help = "";
   }
   const requiredOptions = [
@@ -805,7 +808,8 @@ async function probePi(
   try {
     const models = await execFileAsync(command, [...PI_RESOURCE_DISABLE_ARGUMENTS, "--list-models"], execution);
     credential = models.stdout.trim().split(/\r?\n/).length > 1;
-  } catch {
+  } catch (error) {
+    if (signal?.aborted) throw error;
     credential = false;
   }
   return { credential, rpc, version };

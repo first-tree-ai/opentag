@@ -20,8 +20,18 @@ function locateStylesheet(): string {
 
 const stylesheet = readFileSync(locateStylesheet(), "utf8");
 
+/** The token families typography flows through. Adding one here extends every check below. */
+const FAMILIES = ["fs", "text", "fw", "track", "font", "lh"] as const;
+
 /** Every typography token reference, wherever it appears — including one role pointing at another. */
-const TOKEN_REFERENCE = /var\(--((?:fs|text|fw|track|font)-[a-z0-9-]+)\)/g;
+const TOKEN_REFERENCE = new RegExp(`var\\(--((?:${FAMILIES.join("|")})-[a-z0-9-]+)\\)`, "g");
+
+/**
+ * Line heights that are box geometry rather than text rhythm: `1` centres a
+ * single glyph in its own line box, and 38px matches the height of the badge
+ * it labels. Any other literal belongs in a --lh-* token.
+ */
+const LINE_HEIGHT_LITERALS = new Set(["1", "38px"]);
 
 function captures(pattern: RegExp, group = 1): string[] {
   return [...stylesheet.matchAll(pattern)]
@@ -39,7 +49,7 @@ function definedTokens(prefix: string): Set<string> {
 }
 
 function definedTypographyTokens(): Set<string> {
-  return new Set(["fs", "text", "fw", "track", "font"].flatMap((prefix) => [...definedTokens(prefix)]));
+  return new Set(FAMILIES.flatMap((prefix) => [...definedTokens(prefix)]));
 }
 
 describe("typography tokens", () => {
@@ -50,6 +60,13 @@ describe("typography tokens", () => {
 
   it("declares every font weight through a --fw-* token", () => {
     const literals = declarations("font-weight").filter((value) => !/^var\(--fw-[a-z]+\)$/.test(value));
+    expect(literals).toEqual([]);
+  });
+
+  it("declares every line height through a --lh-* token or a named geometry exception", () => {
+    const literals = declarations("line-height").filter(
+      (value) => !/^var\(--lh-[a-z]+\)$/.test(value) && !LINE_HEIGHT_LITERALS.has(value),
+    );
     expect(literals).toEqual([]);
   });
 

@@ -13,7 +13,7 @@ import { AuthService, AuthTokenService } from "../../services/auth/index.js";
 import { ComputerService } from "../../services/computers/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
-const jwtSecret = "integration-test-secret-at-least-32-characters";
+const jwtSecret = "im-binding-test-secret-at-least-32-characters";
 let container: StartedPostgreSqlContainer;
 let databaseUrl: string;
 

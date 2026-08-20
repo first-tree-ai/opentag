@@ -39,9 +39,19 @@ export class InvitationService {
     this.#ttlMs = options.ttlMs ?? 7 * 24 * 60 * 60 * 1000;
   }
 
-  async getOrCreate(callerUserId: string, teamId: string): Promise<TeamInvitation> {
+  async get(callerUserId: string, teamId: string): Promise<TeamInvitation | undefined> {
+    await this.#membershipService.requireActiveMembership(this.#database, callerUserId, teamId, "admin");
+    const [current] = await this.#database
+      .select()
+      .from(invitations)
+      .where(and(eq(invitations.teamId, teamId), isNull(invitations.revokedAt), gt(invitations.expiresAt, this.#now())))
+      .limit(1);
+    return current ? this.#toInvitation(current) : undefined;
+  }
+
+  async create(callerUserId: string, teamId: string): Promise<TeamInvitation> {
     return this.#database.transaction(async (transaction) => {
-      await this.#membershipService.requireActiveMembershipForMutation(transaction, callerUserId, teamId);
+      await this.#membershipService.requireActiveMembershipForMutation(transaction, callerUserId, teamId, "admin");
       const now = this.#now();
       await transaction
         .update(invitations)
@@ -183,7 +193,7 @@ export class InvitationService {
     }
     return {
       token,
-      inviteUrl: new URL(`/invite/${encodeURIComponent(token)}`, this.#publicUrl).toString(),
+      inviteUrl: new URL(`/invites/${encodeURIComponent(token)}`, this.#publicUrl).toString(),
       role: row.role,
       expiresAt: row.expiresAt.toISOString(),
     };

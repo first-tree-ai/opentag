@@ -1,4 +1,10 @@
-import { invitationPreviewPath, teamInvitationPath, teamMemberPath, teamMembersPath } from "@opentag/shared";
+import {
+  invitationPreviewPath,
+  teamInvitationPath,
+  teamMemberPath,
+  teamMembersConfigPath,
+  teamMembersPath,
+} from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -16,6 +22,11 @@ const member = {
   status: "active" as const,
   createdAt: "2026-08-19T00:00:00.000Z",
   updatedAt: "2026-08-19T00:00:00.000Z",
+};
+const memberSummary = {
+  userId,
+  displayName: "Admin",
+  role: "admin" as const,
 };
 const apps: ReturnType<typeof createApp>[] = [];
 afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
@@ -37,7 +48,8 @@ function authService(): UserAuthService {
 
 function services() {
   const team = {
-    listMembers: vi.fn().mockResolvedValue({ members: [member] }),
+    listMembers: vi.fn().mockResolvedValue({ members: [memberSummary] }),
+    listMembersConfig: vi.fn().mockResolvedValue({ members: [member] }),
     changeRole: vi.fn().mockResolvedValue(member),
     remove: vi.fn(),
     restore: vi.fn(),
@@ -45,9 +57,15 @@ function services() {
     listComputers: vi.fn().mockResolvedValue({ computers: [] }),
   };
   const invitation = {
-    getOrCreate: vi.fn().mockResolvedValue({
+    get: vi.fn().mockResolvedValue({
       token: "A".repeat(43),
-      inviteUrl: `https://opentag.example.com/invite/${"A".repeat(43)}`,
+      inviteUrl: `https://opentag.example.com/invites/${"A".repeat(43)}`,
+      role: "member",
+      expiresAt: "2026-08-26T00:00:00.000Z",
+    }),
+    create: vi.fn().mockResolvedValue({
+      token: "A".repeat(43),
+      inviteUrl: `https://opentag.example.com/invites/${"A".repeat(43)}`,
       role: "member",
       expiresAt: "2026-08-26T00:00:00.000Z",
     }),
@@ -80,14 +98,30 @@ function testApp() {
 
 describe("Team and invitation HTTP APIs", () => {
   it("uses strict bearer contracts for member and invitation reads", async () => {
-    const { app } = testApp();
+    const { app, invitation } = testApp();
     const authorization = { authorization: "Bearer access" };
     expect((await app.inject({ method: "GET", url: teamMembersPath(teamId), headers: authorization })).json()).toEqual({
-      members: [member],
+      members: [memberSummary],
     });
+    expect(
+      (await app.inject({ method: "GET", url: teamMembersConfigPath(teamId), headers: authorization })).json(),
+    ).toEqual({ members: [member] });
     const shown = await app.inject({ method: "GET", url: teamInvitationPath(teamId), headers: authorization });
     expect(shown.statusCode).toBe(200);
     expect(shown.json()).toMatchObject({ token: "A".repeat(43), role: "member" });
+    expect(invitation.get).toHaveBeenCalledWith(userId, teamId);
+    expect(invitation.create).not.toHaveBeenCalled();
+  });
+
+  it("creates invitation bearers only through an explicit mutation", async () => {
+    const { app, invitation } = testApp();
+    const response = await app.inject({
+      method: "POST",
+      url: teamInvitationPath(teamId),
+      headers: { authorization: "Bearer access" },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(invitation.create).toHaveBeenCalledWith(userId, teamId);
   });
 
   it("requires Origin and double-submit CSRF only for cookie-authenticated mutations", async () => {

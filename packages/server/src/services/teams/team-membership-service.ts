@@ -1,10 +1,13 @@
 import {
+  type ListTeamComputersConfigResponse,
   type ListTeamComputersResponse,
+  type ListTeamMembersConfigResponse,
   type ListTeamMembersResponse,
   type MembershipRole,
   MembershipRoleSchema,
-  type TeamComputer,
-  type TeamMember,
+  type TeamComputerAdminConfig,
+  type TeamComputerSummary,
+  type TeamMemberAdminConfig,
 } from "@opentag/shared";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
@@ -132,6 +135,17 @@ export class TeamMembershipService {
   }
 
   async listMembers(callerUserId: string, teamId: string): Promise<ListTeamMembersResponse> {
+    await this.requireActiveMembership(this.#database, callerUserId, teamId);
+    const rows = await this.#database
+      .select({ userId: users.id, displayName: users.displayName, role: memberships.role })
+      .from(memberships)
+      .innerJoin(users, eq(users.id, memberships.userId))
+      .where(and(eq(memberships.teamId, teamId), eq(memberships.status, "active"), isNull(users.suspendedAt)))
+      .orderBy(asc(users.displayName), asc(users.id));
+    return { members: rows };
+  }
+
+  async listMembersConfig(callerUserId: string, teamId: string): Promise<ListTeamMembersConfigResponse> {
     await this.requireActiveMembership(this.#database, callerUserId, teamId, "admin");
     const rows = await this.#database
       .select({ membership: memberships, user: users })
@@ -141,7 +155,7 @@ export class TeamMembershipService {
       .orderBy(asc(users.displayName), asc(users.id));
     return {
       members: rows.map(
-        ({ membership, user }): TeamMember => ({
+        ({ membership, user }): TeamMemberAdminConfig => ({
           teamId,
           userId: user.id,
           email: user.email,
@@ -155,7 +169,12 @@ export class TeamMembershipService {
     };
   }
 
-  async changeRole(callerUserId: string, teamId: string, userId: string, role: unknown): Promise<TeamMember> {
+  async changeRole(
+    callerUserId: string,
+    teamId: string,
+    userId: string,
+    role: unknown,
+  ): Promise<TeamMemberAdminConfig> {
     const parsedRole = MembershipRoleSchema.parse(role);
     return this.#database.transaction(async (transaction) => {
       await this.requireActiveMembershipForMutation(transaction, callerUserId, teamId, "admin");
@@ -202,7 +221,7 @@ export class TeamMembershipService {
     });
   }
 
-  async restore(callerUserId: string, teamId: string, userId: string, role: unknown): Promise<TeamMember> {
+  async restore(callerUserId: string, teamId: string, userId: string, role: unknown): Promise<TeamMemberAdminConfig> {
     const parsedRole = MembershipRoleSchema.parse(role);
     return this.#database.transaction(async (transaction) => {
       await this.requireActiveMembershipForMutation(transaction, callerUserId, teamId, "admin");
@@ -225,21 +244,40 @@ export class TeamMembershipService {
    * Agent bindings decorate the Computer projection; they do not determine membership in it.
    */
   async listComputers(callerUserId: string, teamId: string): Promise<ListTeamComputersResponse> {
-    await this.requireActiveMembership(this.#database, callerUserId, teamId, "admin");
-    const rows = await this.#database
-      .select({ agentId: agents.id, computer: computers, ownerDisplayName: users.displayName })
-      .from(memberships)
-      .innerJoin(users, eq(users.id, memberships.userId))
-      .innerJoin(computers, eq(computers.ownerUserId, memberships.userId))
-      .leftJoin(
-        agents,
-        and(eq(agents.teamId, memberships.teamId), eq(agents.computerId, computers.id), isNull(agents.deletedAt)),
-      )
-      .where(and(eq(memberships.teamId, teamId), eq(memberships.status, "active"), isNull(users.suspendedAt)))
-      .orderBy(asc(computers.displayName), asc(computers.id), asc(agents.id));
+    await this.requireActiveMembership(this.#database, callerUserId, teamId);
+    const rows = await this.#listComputerRows(teamId);
     const observedAt = this.#now();
     const cutoff = observedAt.getTime() - this.#presenceTimeoutMs;
-    const byId = new Map<string, TeamComputer>();
+    const byId = new Map<string, TeamComputerSummary>();
+    for (const row of rows) {
+      const existing = byId.get(row.computer.id);
+      if (existing) {
+        if (row.agentId) existing.agentIds.push(row.agentId);
+        continue;
+      }
+      byId.set(row.computer.id, {
+        id: row.computer.id,
+        ownerUserId: row.computer.ownerUserId,
+        ownerDisplayName: row.ownerDisplayName,
+        displayName: row.computer.displayName,
+        platform: row.computer.platform,
+        connectionStatus:
+          row.computer.currentInstanceId !== null && row.computer.lastSeenAt.getTime() >= cutoff ? "online" : "offline",
+        connectedAt: row.computer.connectedAt?.toISOString() ?? null,
+        lastSeenAt: row.computer.lastSeenAt.toISOString(),
+        observedAt: observedAt.toISOString(),
+        agentIds: row.agentId ? [row.agentId] : [],
+      });
+    }
+    return { computers: [...byId.values()] };
+  }
+
+  async listComputersConfig(callerUserId: string, teamId: string): Promise<ListTeamComputersConfigResponse> {
+    await this.requireActiveMembership(this.#database, callerUserId, teamId, "admin");
+    const rows = await this.#listComputerRows(teamId);
+    const observedAt = this.#now();
+    const cutoff = observedAt.getTime() - this.#presenceTimeoutMs;
+    const byId = new Map<string, TeamComputerAdminConfig>();
     for (const row of rows) {
       const existing = byId.get(row.computer.id);
       if (existing) {
@@ -263,6 +301,20 @@ export class TeamMembershipService {
       });
     }
     return { computers: [...byId.values()] };
+  }
+
+  #listComputerRows(teamId: string) {
+    return this.#database
+      .select({ agentId: agents.id, computer: computers, ownerDisplayName: users.displayName })
+      .from(memberships)
+      .innerJoin(users, eq(users.id, memberships.userId))
+      .innerJoin(computers, eq(computers.ownerUserId, memberships.userId))
+      .leftJoin(
+        agents,
+        and(eq(agents.teamId, memberships.teamId), eq(agents.computerId, computers.id), isNull(agents.deletedAt)),
+      )
+      .where(and(eq(memberships.teamId, teamId), eq(memberships.status, "active"), isNull(users.suspendedAt)))
+      .orderBy(asc(computers.displayName), asc(computers.id), asc(agents.id));
   }
 
   async #lockMembership(transaction: DatabaseTransaction, teamId: string, userId: string) {
@@ -338,7 +390,10 @@ export class TeamMembershipService {
     }
   }
 
-  async #memberProjection(transaction: DatabaseTransaction, membership: typeof memberships.$inferSelect) {
+  async #memberProjection(
+    transaction: DatabaseTransaction,
+    membership: typeof memberships.$inferSelect,
+  ): Promise<TeamMemberAdminConfig> {
     const [user] = await transaction.select().from(users).where(eq(users.id, membership.userId)).limit(1);
     if (!user) throw this.#notFound();
     return {
@@ -350,7 +405,7 @@ export class TeamMembershipService {
       status: membership.status,
       createdAt: membership.createdAt.toISOString(),
       updatedAt: membership.updatedAt.toISOString(),
-    } satisfies TeamMember;
+    } satisfies TeamMemberAdminConfig;
   }
 
   #notFound(): AuthServiceError {

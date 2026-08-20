@@ -37,9 +37,13 @@ export function registerInvitationRoutes(
 
   app.get(TEAM_INVITATION_TEMPLATE, { preHandler }, async (request, reply) => {
     const { teamId } = parseRequest(TeamParamsSchema, request.params);
-    return reply
-      .code(200)
-      .send(TeamInvitationSchema.parse(await invitationService.getOrCreate(userId(request), teamId)));
+    const invitation = await invitationService.get(userId(request), teamId);
+    return invitation ? reply.code(200).send(TeamInvitationSchema.parse(invitation)) : reply.code(204).send();
+  });
+
+  app.post(TEAM_INVITATION_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { teamId } = parseRequest(TeamParamsSchema, request.params);
+    return reply.code(201).send(TeamInvitationSchema.parse(await invitationService.create(userId(request), teamId)));
   });
 
   app.post(`${TEAM_INVITATION_TEMPLATE}/rotate`, { preHandler }, async (request, reply) => {

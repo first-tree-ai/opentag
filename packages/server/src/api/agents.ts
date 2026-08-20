@@ -1,6 +1,8 @@
 import {
   AGENT_BY_ID_TEMPLATE,
-  AgentSchema,
+  AGENT_CONFIG_TEMPLATE,
+  AgentAdminConfigSchema,
+  AgentDetailSchema,
   CreateAgentRequestSchema,
   ListAgentsResponseSchema,
   TEAM_AGENTS_TEMPLATE,
@@ -33,7 +35,9 @@ export function registerAgentRoutes(
   app.post(TEAM_AGENTS_TEMPLATE, { preHandler }, async (request, reply) => {
     const { teamId } = parseRequest(TeamParamsSchema, request.params);
     const input = parseRequest(CreateAgentRequestSchema, request.body);
-    const response = AgentSchema.parse(await agentService.createForTeam(authenticatedUserId(request), teamId, input));
+    const response = AgentAdminConfigSchema.parse(
+      await agentService.createForTeam(authenticatedUserId(request), teamId, input),
+    );
     return reply.code(201).send(response);
   });
 
@@ -47,14 +51,24 @@ export function registerAgentRoutes(
 
   app.get(AGENT_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
-    const response = AgentSchema.parse(await agentService.getById(authenticatedUserId(request), agentId));
+    const response = AgentDetailSchema.parse(await agentService.getById(authenticatedUserId(request), agentId));
+    return reply.code(200).send(response);
+  });
+
+  app.get(AGENT_CONFIG_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { agentId } = parseRequest(AgentParamsSchema, request.params);
+    const response = AgentAdminConfigSchema.parse(
+      await agentService.getConfigById(authenticatedUserId(request), agentId),
+    );
     return reply.code(200).send(response);
   });
 
   app.patch(AGENT_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
     const input = parseRequest(UpdateAgentRequestSchema, request.body);
-    const response = AgentSchema.parse(await agentService.updateById(authenticatedUserId(request), agentId, input));
+    const response = AgentAdminConfigSchema.parse(
+      await agentService.updateById(authenticatedUserId(request), agentId, input),
+    );
     return reply.code(200).send(response);
   });
 

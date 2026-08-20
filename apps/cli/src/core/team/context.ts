@@ -5,7 +5,7 @@ export interface TeamApiClient
     OpenTagApi,
     | "getTeamInvitation"
     | "leaveTeam"
-    | "listTeamMembers"
+    | "listTeamMembersConfig"
     | "me"
     | "removeTeamMember"
     | "restoreTeamMember"

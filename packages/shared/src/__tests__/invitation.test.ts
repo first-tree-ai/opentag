@@ -16,7 +16,7 @@ describe("invitation contracts", () => {
     expect(() =>
       TeamInvitationSchema.parse({
         token: "short",
-        inviteUrl: "https://example.com/invite/short",
+        inviteUrl: "https://example.com/invites/short",
         role: "member",
         expiresAt: "2026-08-26T00:00:00.000Z",
       }),

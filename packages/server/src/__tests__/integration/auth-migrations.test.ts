@@ -1,4 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq } from "drizzle-orm";
@@ -24,7 +26,7 @@ import {
 } from "../../services/auth/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
-const jwtSecret = "integration-test-secret-at-least-32-characters";
+const jwtSecret = "im-binding-test-secret-at-least-32-characters";
 let container: StartedPostgreSqlContainer;
 let databaseUrl: string;
 
@@ -131,6 +133,101 @@ describe("database migrations", () => {
       expect(emailIndex[0]?.count).toBe(0);
     } finally {
       await sql.end();
+    }
+  });
+
+  it("upgrades a deployed 0005 Drizzle history through 0006 exactly once", async () => {
+    const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0005-migrations-"));
+    const legacyMeta = join(legacyFolder, "meta");
+    await mkdir(legacyMeta);
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+      version: string;
+      dialect: string;
+      entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
+    };
+    for (const entry of journal.entries.filter(({ idx }) => idx <= 5)) {
+      await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(legacyFolder, `${entry.tag}.sql`));
+    }
+    await writeFile(
+      join(legacyMeta, "_journal.json"),
+      JSON.stringify({ ...journal, entries: journal.entries.filter(({ idx }) => idx <= 5) }, null, 2),
+    );
+
+    try {
+      await migrateDatabase(databaseUrl, legacyFolder);
+      const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      try {
+        const [before] = await sql<{ count: number }[]>`
+          select count(*)::int as count from drizzle.__drizzle_migrations
+        `;
+        expect(before?.count).toBe(6);
+        expect(await sql`select to_regclass('public.integrations') as table_name`).toEqual([
+          { table_name: "integrations" },
+        ]);
+
+        await migrateDatabase(databaseUrl, migrationsFolder);
+        const [after] = await sql<{ count: number }[]>`
+          select count(*)::int as count from drizzle.__drizzle_migrations
+        `;
+        expect(after?.count).toBe(7);
+        const [objects] = await sql<
+          { im_bindings: string | null; integrations: string | null; new_enum: boolean; old_enum: boolean }[]
+        >`
+          select
+            to_regclass('public.im_bindings')::text as im_bindings,
+            to_regclass('public.integrations')::text as integrations,
+            exists(select 1 from pg_type where typname = 'im_binding_status') as new_enum,
+            exists(select 1 from pg_type where typname = 'integration_status') as old_enum
+        `;
+        expect(objects).toEqual({ im_bindings: "im_bindings", integrations: null, new_enum: true, old_enum: false });
+        const columns = await sql<{ table_name: string; column_name: string; column_default: string | null }[]>`
+          select table_name, column_name, column_default
+          from information_schema.columns
+          where (table_name in ('sessions', 'im_messages') and column_name in ('integration_id', 'im_binding_id'))
+             or (table_name = 'agents' and column_name = 'receive_mode')
+          order by table_name, column_name
+        `;
+        expect(columns).toEqual([
+          { table_name: "agents", column_name: "receive_mode", column_default: "'mention_only'::agent_receive_mode" },
+          { table_name: "im_messages", column_name: "im_binding_id", column_default: null },
+          { table_name: "sessions", column_name: "im_binding_id", column_default: null },
+        ]);
+        const constraints = await sql<{ conname: string }[]>`
+          select conname from pg_constraint
+          where conname in (
+            'agents_manager_membership_fk',
+            'agents_manager_computer_owner_fk',
+            'im_bindings_agent_id_agents_id_fk',
+            'sessions_im_binding_id_im_bindings_id_fk'
+          )
+          order by conname
+        `;
+        expect(constraints.map(({ conname }) => conname)).toEqual([
+          "agents_manager_computer_owner_fk",
+          "agents_manager_membership_fk",
+          "im_bindings_agent_id_agents_id_fk",
+          "sessions_im_binding_id_im_bindings_id_fk",
+        ]);
+        const indexes = await sql<{ indexname: string }[]>`
+          select indexname from pg_indexes
+          where indexname in ('im_bindings_agent_current_unique', 'sessions_im_binding_scope_idx')
+          order by indexname
+        `;
+        expect(indexes.map(({ indexname }) => indexname)).toEqual([
+          "im_bindings_agent_current_unique",
+          "sessions_im_binding_scope_idx",
+        ]);
+
+        await migrateDatabase(databaseUrl, migrationsFolder);
+        const [rerun] = await sql<{ count: number }[]>`
+          select count(*)::int as count from drizzle.__drizzle_migrations
+        `;
+        expect(rerun?.count).toBe(7);
+      } finally {
+        await sql.end();
+      }
+    } finally {
+      await rm(legacyFolder, { recursive: true, force: true });
     }
   });
 
@@ -320,6 +417,37 @@ describe("authentication persistence", () => {
 
       await expect(fixture.auth.exchangeConnectCode(issued.code)).resolves.toMatchObject({ tokenType: "Bearer" });
       await expect(fixture.auth.exchangeConnectCode(issued.code)).rejects.toMatchObject({ code: "AUTH_CODE_CONSUMED" });
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("issues Web onboarding connect codes only to a live Team Admin", async () => {
+    const fixture = await createAuthFixture();
+    try {
+      const [member] = await fixture.database
+        .insert(users)
+        .values({ email: "computer-member@example.com", displayName: "Computer Member" })
+        .returning();
+      if (!member) throw new Error("Member fixture was not created");
+      await fixture.database.insert(memberships).values({
+        teamId: fixture.bootstrap.teamId,
+        userId: member.id,
+        role: "member",
+        status: "active",
+      });
+      const issuer = new ConnectCodeService(fixture.database);
+      await expect(issuer.issueForTeamAdmin(member.id, fixture.bootstrap.teamId)).rejects.toMatchObject({
+        code: "MEMBERSHIP_FORBIDDEN",
+      });
+      await expect(issuer.issueForTeamAdmin(fixture.bootstrap.userId, fixture.bootstrap.teamId)).resolves.toMatchObject(
+        {
+          expiresIn: 900,
+        },
+      );
+      expect(
+        (await fixture.database.select().from(connectCodes)).filter((row) => row.userId === member.id),
+      ).toHaveLength(0);
     } finally {
       await fixture.sql.end();
     }

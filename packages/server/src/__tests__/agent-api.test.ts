@@ -1,5 +1,6 @@
 import {
   agentByIdPath,
+  agentConfigPath,
   OPENTAG_PLATFORM_INSTRUCTIONS,
   RUNTIME_INSTRUCTIONS_MAX_BYTES,
   teamAgentsPath,
@@ -35,8 +36,19 @@ const agent = {
   createdAt: "2026-08-19T00:00:00.000Z",
   updatedAt: "2026-08-19T00:00:00.000Z",
 };
-const { runtimeConfig, ...agentBase } = agent;
-const agentSummary = { ...agentBase, runtimeConfigRevision: runtimeConfig.revision };
+const {
+  runtimeConfig: _runtimeConfig,
+  revision: _revision,
+  managerUserId,
+  computerId: safeComputerId,
+  ...agentBase
+} = agent;
+const agentSummary = {
+  ...agentBase,
+  manager: { userId: managerUserId, displayName: "Admin" },
+  computer: { id: safeComputerId, displayName: "Laptop", platform: "linux" as const },
+};
+const agentDetail = { ...agentSummary, viewerCapabilities: { canManage: true } };
 
 const apps: ReturnType<typeof createApp>[] = [];
 
@@ -63,7 +75,8 @@ function agentService() {
   return {
     createForTeam: vi.fn().mockResolvedValue(agent),
     listForTeam: vi.fn().mockResolvedValue({ agents: [agentSummary] }),
-    getById: vi.fn().mockResolvedValue(agent),
+    getById: vi.fn().mockResolvedValue(agentDetail),
+    getConfigById: vi.fn().mockResolvedValue(agent),
     updateById: vi.fn().mockResolvedValue({ ...agent, displayName: "Reviewer", revision: 2 }),
     deleteById: vi.fn().mockResolvedValue(undefined),
   };
@@ -112,6 +125,9 @@ describe("Agent HTTP API", () => {
     const { app, service } = appWith();
     expect((await app.inject({ method: "GET", url: agentByIdPath(agentId), headers: authorization })).statusCode).toBe(
       200,
+    );
+    expect((await app.inject({ method: "GET", url: agentConfigPath(agentId), headers: authorization })).json()).toEqual(
+      agent,
     );
     const update = await app.inject({
       method: "PATCH",

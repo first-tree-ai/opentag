@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { ListTeamComputersResponseSchema, TeamMemberSchema } from "../index.js";
+import { ListTeamComputersResponseSchema, TeamMemberAdminConfigSchema, TeamMemberSummarySchema } from "../index.js";
 
 describe("Team contracts", () => {
   it("keeps membership role and lifecycle as separate strict fields", () => {
     expect(
-      TeamMemberSchema.parse({
+      TeamMemberAdminConfigSchema.parse({
         teamId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
         userId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
         email: "member@example.com",
@@ -19,5 +19,16 @@ describe("Team contracts", () => {
 
   it("requires explicit observation time for Computer connection snapshots", () => {
     expect(() => ListTeamComputersResponseSchema.parse({ computers: [{ id: crypto.randomUUID() }] })).toThrow();
+  });
+
+  it("rejects admin-only membership fields from the member-safe projection", () => {
+    expect(() =>
+      TeamMemberSummarySchema.parse({
+        userId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+        displayName: "Member",
+        role: "member",
+        email: "member@example.com",
+      }),
+    ).toThrow();
   });
 });

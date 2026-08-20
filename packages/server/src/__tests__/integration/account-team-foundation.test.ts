@@ -11,6 +11,7 @@ import {
   agents,
   authIdentities,
   computers,
+  invitations,
   memberships,
   teams,
   users,
@@ -266,8 +267,11 @@ describe("account identity and Team foundation persistence", () => {
   it("joins an invited Team without creating a personal Team and rotates bearer links", async () => {
     const value = await fixture();
     try {
-      const firstInvite = await value.invitations.getOrCreate(value.bootstrap.userId, value.bootstrap.teamId);
-      expect(await value.invitations.getOrCreate(value.bootstrap.userId, value.bootstrap.teamId)).toEqual(firstInvite);
+      expect(await value.invitations.get(value.bootstrap.userId, value.bootstrap.teamId)).toBeUndefined();
+      expect(await value.database.select().from(invitations)).toHaveLength(0);
+      const firstInvite = await value.invitations.create(value.bootstrap.userId, value.bootstrap.teamId);
+      expect(await value.invitations.get(value.bootstrap.userId, value.bootstrap.teamId)).toEqual(firstInvite);
+      expect(await value.database.select().from(invitations)).toHaveLength(1);
       const nextInvite = await value.invitations.rotate(value.bootstrap.userId, value.bootstrap.teamId);
       expect(nextInvite.token).not.toBe(firstInvite.token);
       await expect(value.invitations.preview(firstInvite.token)).rejects.toMatchObject({ code: "INVITATION_INVALID" });
@@ -280,6 +284,33 @@ describe("account identity and Team foundation persistence", () => {
         .from(memberships)
         .where(and(eq(memberships.userId, userId), eq(memberships.teamId, value.bootstrap.teamId)));
       expect(membership).toMatchObject({ role: "member", status: "active" });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("keeps invitation bearer reads and mutations admin-only", async () => {
+    const value = await fixture();
+    try {
+      const [member] = await value.database
+        .insert(users)
+        .values({ email: "invitation-member@example.com", displayName: "Invitation Member" })
+        .returning();
+      if (!member) throw new Error("Member fixture was not created");
+      await value.database
+        .insert(memberships)
+        .values({ teamId: value.bootstrap.teamId, userId: member.id, role: "member", status: "active" });
+
+      await expect(value.invitations.get(member.id, value.bootstrap.teamId)).rejects.toMatchObject({
+        code: "MEMBERSHIP_FORBIDDEN",
+      });
+      await expect(value.invitations.create(member.id, value.bootstrap.teamId)).rejects.toMatchObject({
+        code: "MEMBERSHIP_FORBIDDEN",
+      });
+      await expect(value.invitations.rotate(member.id, value.bootstrap.teamId)).rejects.toMatchObject({
+        code: "MEMBERSHIP_FORBIDDEN",
+      });
+      expect(await value.database.select().from(invitations)).toHaveLength(0);
     } finally {
       await value.sql.end();
     }
@@ -306,7 +337,7 @@ describe("account identity and Team foundation persistence", () => {
         { teamId: value.bootstrap.teamId, userId: member.id, role: "member", status: "active" },
       ]);
 
-      const invitation = await value.invitations.getOrCreate(value.bootstrap.userId, value.bootstrap.teamId);
+      const invitation = await value.invitations.create(value.bootstrap.userId, value.bootstrap.teamId);
       await value.teamService.leave(member.id, value.bootstrap.teamId);
       expect(await value.invitations.redeem(member.id, invitation.token)).toMatchObject({
         membership: { role: "member" },
@@ -366,7 +397,7 @@ describe("account identity and Team foundation persistence", () => {
       if (!member) throw new Error("Member fixture was not created");
       await value.database
         .insert(memberships)
-        .values({ teamId: value.bootstrap.teamId, userId: member.id, role: "member", status: "active" });
+        .values({ teamId: value.bootstrap.teamId, userId: member.id, role: "admin", status: "active" });
       const [computer] = await value.database
         .insert(computers)
         .values({

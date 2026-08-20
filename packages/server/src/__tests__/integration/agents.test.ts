@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
+import { and, eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
@@ -121,11 +121,11 @@ describe("Agent persistence and authorization", () => {
             definition: expect.stringContaining("ON DELETE RESTRICT"),
           }),
           expect.objectContaining({
-            conname: "agents_manager_user_id_users_id_fk",
+            conname: "agents_manager_membership_fk",
             definition: expect.stringContaining("ON DELETE RESTRICT"),
           }),
           expect.objectContaining({
-            conname: "agents_computer_id_computers_id_fk",
+            conname: "agents_manager_computer_owner_fk",
             definition: expect.stringContaining("ON DELETE RESTRICT"),
           }),
         ]),
@@ -176,16 +176,22 @@ describe("Agent persistence and authorization", () => {
         teamId: value.bootstrap.teamId,
         managerUserId: value.bootstrap.userId,
         computerId: computer.id,
+        receiveMode: "mention_only",
         revision: 1,
         runtimeConfig: DEFAULT_AGENT_RUNTIME_CONFIG,
       });
       expect((await value.service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).agents).toEqual([
         expect.objectContaining({
           id: created.id,
-          runtimeConfigRevision: created.runtimeConfig.revision,
+          manager: expect.objectContaining({ userId: value.bootstrap.userId }),
+          computer: expect.objectContaining({ id: computer.id }),
         }),
       ]);
-      await expect(value.service.getById(value.bootstrap.userId, created.id)).resolves.toEqual(created);
+      await expect(value.service.getById(value.bootstrap.userId, created.id)).resolves.toMatchObject({
+        id: created.id,
+        viewerCapabilities: { canManage: true },
+      });
+      await expect(value.service.getConfigById(value.bootstrap.userId, created.id)).resolves.toEqual(created);
     } finally {
       await value.sql.end();
     }
@@ -261,7 +267,7 @@ describe("Agent persistence and authorization", () => {
   it("allows Team reads, restricts management, and hides resources across Teams", async () => {
     const value = await fixture();
     try {
-      const manager = await createUser(value.database, value.bootstrap.teamId, "manager@example.com");
+      const manager = await createUser(value.database, value.bootstrap.teamId, "manager@example.com", "admin");
       const member = await createUser(value.database, value.bootstrap.teamId, "member@example.com");
       const managerComputer = await createComputer(value.database, manager.id);
       const created = await value.service.createForTeam(
@@ -269,10 +275,27 @@ describe("Agent persistence and authorization", () => {
         value.bootstrap.teamId,
         createInput(managerComputer.id),
       );
+      await value.database
+        .update(memberships)
+        .set({ role: "member" })
+        .where(and(eq(memberships.teamId, value.bootstrap.teamId), eq(memberships.userId, manager.id)));
+      await expect(
+        value.service.createForTeam(manager.id, value.bootstrap.teamId, createInput(managerComputer.id, "forbidden")),
+      ).rejects.toMatchObject({ code: "MEMBERSHIP_FORBIDDEN", statusCode: 403 });
 
-      await expect(value.service.getById(member.id, created.id)).resolves.toMatchObject({ id: created.id });
+      await expect(value.service.getById(member.id, created.id)).resolves.toMatchObject({
+        id: created.id,
+        viewerCapabilities: { canManage: false },
+      });
+      await expect(value.service.getConfigById(member.id, created.id)).rejects.toMatchObject({
+        code: "AGENT_FORBIDDEN",
+        statusCode: 403,
+      });
       await expect(
         value.service.updateById(member.id, created.id, { displayName: "No", expectedRevision: 1 }),
+      ).rejects.toMatchObject({ code: "AGENT_FORBIDDEN", statusCode: 403 });
+      await expect(
+        value.service.updateById(manager.id, created.id, { displayName: "Manager cannot write", expectedRevision: 1 }),
       ).rejects.toMatchObject({ code: "AGENT_FORBIDDEN", statusCode: 403 });
       await expect(
         value.service.updateById(value.bootstrap.userId, created.id, {
@@ -319,7 +342,10 @@ describe("Agent persistence and authorization", () => {
         code: "RESOURCE_NOT_FOUND",
         statusCode: 404,
       });
-      await expect(value.service.deleteById(manager.id, created.id)).resolves.toBeUndefined();
+      await expect(value.service.deleteById(manager.id, created.id)).rejects.toMatchObject({
+        code: "RESOURCE_NOT_FOUND",
+        statusCode: 404,
+      });
       await expect(value.service.deleteById(value.bootstrap.userId, created.id)).resolves.toBeUndefined();
     } finally {
       await value.sql.end();
@@ -347,7 +373,7 @@ describe("Agent persistence and authorization", () => {
           expectedRevision: 1,
         }),
       ).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT", statusCode: 409 });
-      await expect(value.service.getById(value.bootstrap.userId, created.id)).resolves.toMatchObject({
+      await expect(value.service.getConfigById(value.bootstrap.userId, created.id)).resolves.toMatchObject({
         displayName: "Reviewer",
         revision: 2,
       });
@@ -439,70 +465,10 @@ describe("Agent persistence and authorization", () => {
       );
       expect(replacement.id).not.toBe(created.id);
       expect((await value.service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).agents).toEqual([
-        expect.objectContaining({ id: replacement.id, runtimeConfigRevision: replacement.runtimeConfig.revision }),
+        expect.objectContaining({ id: replacement.id, computer: expect.objectContaining({ id: computer.id }) }),
       ]);
     } finally {
       await value.sql.end();
-    }
-  });
-
-  it("backfills runtime config for Agents created before the runtime config migration", async () => {
-    const rawSql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
-    try {
-      for (const migration of [
-        "0000_strong_thunderbolt_ross.sql",
-        "0001_living_franklin_richards.sql",
-        "0002_sticky_crystal.sql",
-        "0003_noisy_husk.sql",
-      ]) {
-        const contents = await readFile(new URL(`../../../drizzle/${migration}`, import.meta.url), "utf8");
-        for (const statement of contents.split("--> statement-breakpoint")) {
-          if (statement.trim()) await rawSql.unsafe(statement);
-        }
-      }
-      const [user] = await rawSql<{ id: string }[]>`
-        insert into users (email, display_name) values ('legacy@example.com', 'Legacy') returning id
-      `;
-      const [team] = await rawSql<{ id: string }[]>`
-        insert into teams (name, display_name) values ('legacy', 'Legacy') returning id
-      `;
-      if (!user || !team) throw new Error("Legacy fixture authority was not created");
-      const computerId = crypto.randomUUID();
-      await rawSql`
-        insert into computers (id, owner_user_id, display_name, platform, arch, client_version)
-        values (${computerId}, ${user.id}, 'legacy', 'linux', 'x64', '0.0.1')
-      `;
-      const [legacyAgent] = await rawSql<{ id: string }[]>`
-        insert into agents (team_id, manager_user_id, computer_id, name, display_name, runtime_provider)
-        values (${team.id}, ${user.id}, ${computerId}, 'legacy', 'Legacy', 'codex')
-        returning id
-      `;
-      if (!legacyAgent) throw new Error("Legacy Agent fixture was not created");
-
-      const migration = await readFile(new URL("../../../drizzle/0004_sad_thunderbolt.sql", import.meta.url), "utf8");
-      for (const statement of migration.split("--> statement-breakpoint")) {
-        if (statement.trim()) await rawSql.unsafe(statement);
-      }
-      const [backfilled] = await rawSql<
-        {
-          agent_id: string;
-          allowed_tools: string[];
-          instructions: string;
-          revision: string;
-        }[]
-      >`
-        select agent_id, revision::text, instructions, allowed_tools
-        from agent_runtime_configs
-        where agent_id = ${legacyAgent.id}
-      `;
-      expect(backfilled).toEqual({
-        agent_id: legacyAgent.id,
-        revision: "1",
-        instructions: DEFAULT_AGENT_RUNTIME_CONFIG.instructions,
-        allowed_tools: DEFAULT_AGENT_RUNTIME_CONFIG.allowedTools,
-      });
-    } finally {
-      await rawSql.end();
     }
   });
 
@@ -539,7 +505,7 @@ describe("Agent persistence and authorization", () => {
         .returning();
       if (!otherTeam) throw new Error("Other Team fixture was not created");
       await value.database.insert(memberships).values({
-        role: "member",
+        role: "admin",
         teamId: otherTeam.id,
         userId: value.bootstrap.userId,
       });

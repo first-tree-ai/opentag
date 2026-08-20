@@ -22,7 +22,12 @@ import {
   type ResumeAgentRuntimeRequest,
 } from "../../agent-runtime/types.js";
 import { assertBinding, assertJsonValue } from "../../agent-runtime/validation.js";
-import { ClaudeCodeProcess, type ClaudeCodeProcessClient, type ClaudeCodeProcessSpawnOptions } from "./process-wire.js";
+import {
+  ClaudeCodeProcess,
+  type ClaudeCodeProcessClient,
+  ClaudeCodeProcessError,
+  type ClaudeCodeProcessSpawnOptions,
+} from "./process-wire.js";
 
 const execFileAsync = promisify(execFile);
 const CLAUDE_CODE_BINDING_SCHEMA_VERSION = 1;
@@ -159,6 +164,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       this.closeForProviderFailure();
       if (this.#providerFailure) throw this.#providerFailure;
       if (error instanceof AgentProviderError) throw error;
+      if (error instanceof ClaudeCodeProcessError && error.code === "protocol") {
+        throw new AgentProviderError("provider_protocol_error", error.message, { cause: error });
+      }
       throw new AgentProviderError(
         "provider_error",
         error instanceof Error ? error.message : "Claude Code run failed",

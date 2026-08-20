@@ -427,30 +427,45 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     }
   });
 
-  it("preserves a typed protocol failure when the real JSONL process is closed after a foreign init", async () => {
-    const events: AgentRuntimeEvent[] = [];
-    const runtime = await new ClaudeCodeAgentRuntimeFactory({
-      createSessionId: () => SESSION_ID,
-      process: {
-        command: process.execPath,
-        args: [fixture, "foreign-init"],
-        env: { PATH: process.env.PATH },
-      },
-      probeRunner: async () => ({ credential: true, streamJson: true, version: "fixture" }),
-    }).create({
-      ...createRequest((event) => {
-        events.push(event);
-      }),
-      workspace: { cwd: process.cwd() },
-    });
+  it.each([
+    {
+      scenario: "foreign-init",
+      code: "provider_protocol_error",
+      message: "Claude Code initialized another session",
+    },
+    {
+      scenario: "malformed",
+      code: "provider_protocol_error",
+      message: "Claude Code emitted malformed JSONL",
+    },
+    { scenario: "exit", code: "provider_error", message: "Claude Code exited: fixture failure" },
+  ])(
+    "classifies the real JSONL $scenario failure without losing protocol errors",
+    async ({ scenario, code, message }) => {
+      const events: AgentRuntimeEvent[] = [];
+      const runtime = await new ClaudeCodeAgentRuntimeFactory({
+        createSessionId: () => SESSION_ID,
+        process: {
+          command: process.execPath,
+          args: [fixture, scenario],
+          env: { PATH: process.env.PATH },
+        },
+        probeRunner: async () => ({ credential: true, streamJson: true, version: "fixture" }),
+      }).create({
+        ...createRequest((event) => {
+          events.push(event);
+        }),
+        workspace: { cwd: process.cwd() },
+      });
 
-    await expect(runtime.prompt({ runId: "run-wire-foreign-init", input: input("hello") })).resolves.toMatchObject({
-      status: "failed",
-      error: { code: "provider_protocol_error", message: "Claude Code initialized another session" },
-    });
-    expect(events.some((event) => event.type === "provider_event")).toBe(false);
-    await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
-  });
+      await expect(runtime.prompt({ runId: `run-wire-${scenario}`, input: input("hello") })).resolves.toMatchObject({
+        status: "failed",
+        error: { code, message },
+      });
+      expect(events.some((event) => event.type === "provider_event")).toBe(false);
+      await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
+    },
+  );
 
   it("runs the default process adapter and the default local readiness probe against controlled artifacts", async () => {
     const runtime = await new ClaudeCodeAgentRuntimeFactory({

@@ -251,8 +251,8 @@ function NewTeamPage() {
   return (
     <main className="center-card">
       <span className="eyebrow">OpenTag</span>
-      <h1>Create Team</h1>
-      <p>A Team holds your members, Agents and permissions. You become its first Team Admin.</p>
+      <h1>Create your team</h1>
+      <p>You can invite people and add Agents next.</p>
       <CreateTeamForm
         onCreated={(created) => {
           window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, created.id);

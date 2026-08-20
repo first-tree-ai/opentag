@@ -153,6 +153,10 @@ export class RuntimeConnection {
   #verifiedCapabilitiesExpiresAt = 0;
   #providerReadiness?: RuntimeProviderReadinessObservation;
   #providerReadinessExpiresAt = 0;
+  #providerReadinessLease?: {
+    observation: RuntimeProviderReadinessObservation;
+    token: symbol;
+  };
 
   constructor(options: RuntimeConnectionOptions) {
     this.#options = options;
@@ -204,6 +208,15 @@ export class RuntimeConnection {
     this.#providerReadinessExpiresAt = this.#now() + validForMs;
   }
 
+  leaseProviderReadiness(observation: RuntimeProviderReadinessObservation): () => void {
+    this.setProviderReadiness(observation);
+    const lease = { observation: { ...observation }, token: Symbol("provider-readiness-lease") };
+    this.#providerReadinessLease = lease;
+    return () => {
+      if (this.#providerReadinessLease?.token === lease.token) this.#providerReadinessLease = undefined;
+    };
+  }
+
   #currentCapabilities(): RuntimeClientCapabilities {
     return this.#now() <= this.#verifiedCapabilitiesExpiresAt
       ? { ...this.#verifiedCapabilities }
@@ -211,6 +224,7 @@ export class RuntimeConnection {
   }
 
   #currentProviderReadiness(): RuntimeProviderReadinessObservation | undefined {
+    if (this.#providerReadinessLease) return { ...this.#providerReadinessLease.observation };
     return this.#providerReadiness && this.#now() <= this.#providerReadinessExpiresAt
       ? { ...this.#providerReadiness }
       : undefined;

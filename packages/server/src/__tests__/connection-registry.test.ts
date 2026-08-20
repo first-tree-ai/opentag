@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { RUNTIME_CLIENT_CAPABILITY_TTL_MS } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type WebSocket from "ws";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
@@ -110,6 +111,43 @@ describe("ConnectionRegistry", () => {
     expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 3)).toBe(false);
     expect(registry.touch(computerId, verifiedInstanceId, verifiedSocket, 4, { imMessageTool: 1 })).toBe(true);
     expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 4)).toBe(true);
+  });
+
+  it("returns only fresh readiness observations from the current Computer instance", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const currentSocket = socket();
+    await registry.register(
+      {
+        computerId,
+        instanceId,
+        lastHeartbeatAt: 1,
+        providerReadiness: { provider: "codex", status: "sign-in" },
+        providerReadinessObservedAt: 1,
+        socket: currentSocket,
+        userId: randomUUID(),
+      },
+      async () => undefined,
+    );
+
+    expect(registry.providerReadiness(computerId, 1)).toEqual({
+      observation: { provider: "codex", status: "sign-in" },
+      observedAt: 1,
+    });
+    expect(registry.providerReadiness(computerId, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 2)).toBeUndefined();
+
+    expect(
+      registry.touch(computerId, instanceId, currentSocket, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 3, undefined, {
+        provider: "codex",
+        status: "ready",
+      }),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 3)).toMatchObject({
+      observation: { provider: "codex", status: "ready" },
+    });
+    expect(registry.remove(computerId, instanceId, currentSocket)).toBe(true);
+    expect(registry.providerReadiness(computerId, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 3)).toBeUndefined();
   });
 });
 

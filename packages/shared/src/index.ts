@@ -77,9 +77,13 @@ export {
   ComputerConnectionStatusSchema,
   type ComputerPlatform,
   ComputerPlatformSchema,
+  type ComputerProviderReadiness,
+  ComputerProviderReadinessSchema,
   ComputerSchema,
   type ListComputersResponse,
   ListComputersResponseSchema,
+  type ProviderReadinessStatus,
+  ProviderReadinessStatusSchema,
 } from "./computer.js";
 export {
   type ErrorCategory,
@@ -263,6 +267,8 @@ export {
   RuntimeFrameEnvelopeSchema,
   RuntimeHeartbeatIntervalMsSchema,
   RuntimeHeartbeatTimeoutMsSchema,
+  type RuntimeProviderReadinessObservation,
+  RuntimeProviderReadinessObservationSchema,
   RuntimeRequestIdSchema,
   runtimeFrameByteLength,
   type ServerRuntimeFrame,

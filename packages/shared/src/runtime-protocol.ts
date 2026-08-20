@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { ComputerPlatformSchema } from "./computer.js";
+import { ComputerPlatformSchema, ProviderReadinessStatusSchema } from "./computer.js";
 import { ErrorCodeSchema } from "./errors.js";
 
 export const RUNTIME_PROTOCOL_VERSION = 1 as const;
@@ -51,6 +51,13 @@ export const RuntimeCapabilitiesSchema = z
 export const RuntimeClientCapabilitiesSchema = z
   .object({
     imMessageTool: z.union([z.literal(0), z.literal(1)]),
+  })
+  .strict();
+
+export const RuntimeProviderReadinessObservationSchema = z
+  .object({
+    provider: z.literal("codex"),
+    status: ProviderReadinessStatusSchema,
   })
   .strict();
 
@@ -110,6 +117,7 @@ export const ComputerRegisterFrameSchema = z
     arch: z.string().trim().min(1).max(64),
     clientVersion: z.string().trim().min(1).max(64),
     capabilities: RuntimeClientCapabilitiesSchema.default({ imMessageTool: 0 }),
+    providerReadiness: RuntimeProviderReadinessObservationSchema.optional(),
   })
   .strict();
 export const ComputerRegisterResultFrameSchema = z
@@ -132,6 +140,7 @@ export const HeartbeatFrameSchema = z
     computerId: z.string().uuid(),
     instanceId: z.string().uuid(),
     capabilities: RuntimeClientCapabilitiesSchema.default({ imMessageTool: 0 }),
+    providerReadiness: RuntimeProviderReadinessObservationSchema.optional(),
   })
   .strict();
 export const HeartbeatResultFrameSchema = z
@@ -174,6 +183,7 @@ export const ServerRuntimeFrameSchema = z.discriminatedUnion("type", [
 export type ServerWelcomeFrame = z.infer<typeof ServerWelcomeFrameSchema>;
 export type RuntimeCapabilities = z.infer<typeof RuntimeCapabilitiesSchema>;
 export type RuntimeClientCapabilities = z.infer<typeof RuntimeClientCapabilitiesSchema>;
+export type RuntimeProviderReadinessObservation = z.infer<typeof RuntimeProviderReadinessObservationSchema>;
 export type RuntimeFrameEnvelope = z.infer<typeof RuntimeFrameEnvelopeSchema>;
 export type AuthFrame = z.infer<typeof AuthFrameSchema>;
 export type AuthResultFrame = z.infer<typeof AuthResultFrameSchema>;

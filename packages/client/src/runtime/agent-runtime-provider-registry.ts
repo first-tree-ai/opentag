@@ -1,6 +1,6 @@
 import type { EffectiveRuntimeSnapshot, InputRejectReason } from "@opentag/shared";
 import { isAgentRuntimeProviderId } from "../agent-runtime/provider-id.js";
-import type { AgentRuntimeFactory, AgentRuntimePolicy } from "../agent-runtime/types.js";
+import type { AgentRuntimeFactory, AgentRuntimePolicy, AgentRuntimeProbeResult } from "../agent-runtime/types.js";
 
 export interface AgentRuntimeProviderRegistration {
   readonly artifactIdentity: string;
@@ -20,6 +20,7 @@ interface ProviderProbe {
 export class AgentRuntimeProviderRegistry {
   readonly #providers = new Map<string, AgentRuntimeProviderRegistration>();
   readonly #ready = new Set<string>();
+  readonly #probeResults = new Map<string, AgentRuntimeProbeResult>();
   readonly #probes = new Map<string, ProviderProbe>();
 
   constructor(registrations: readonly AgentRuntimeProviderRegistration[] = []) {
@@ -45,6 +46,10 @@ export class AgentRuntimeProviderRegistry {
 
   isReady(providerId: string): boolean {
     return this.#ready.has(providerId);
+  }
+
+  probeResult(providerId: string): AgentRuntimeProbeResult | undefined {
+    return this.#probeResults.get(providerId);
   }
 
   validate(snapshot: EffectiveRuntimeSnapshot): InputRejectReason | undefined {
@@ -83,16 +88,28 @@ export class AgentRuntimeProviderRegistry {
     if (!probe) {
       const provider = this.#providers.get(providerId);
       if (!provider) throw new Error(`Agent Runtime provider is not registered: ${providerId}`);
+      this.#probeResults.delete(providerId);
       const controller = new AbortController();
       let record!: ProviderProbe;
       const promise = (async () => {
         const result = await provider.factory.probe({ signal: controller.signal });
+        if (this.#probes.get(providerId) === record) this.#probeResults.set(providerId, result);
         if (!result.ready) {
           throw new Error(result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
         }
-        await provider.verifyArtifact?.(controller.signal);
+        try {
+          await provider.verifyArtifact?.(controller.signal);
+        } catch (error) {
+          if (this.#probes.get(providerId) === record) {
+            this.#probeResults.set(providerId, {
+              ready: false,
+              issues: [{ code: "temporarily_unavailable", message: "Provider artifact verification failed" }],
+            });
+          }
+          throw error;
+        }
         controller.signal.throwIfAborted();
-        this.#ready.add(providerId);
+        if (this.#probes.get(providerId) === record) this.#ready.add(providerId);
       })().finally(() => {
         record.settled = true;
         if (this.#probes.get(providerId) === record) this.#probes.delete(providerId);

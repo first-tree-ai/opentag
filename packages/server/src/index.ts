@@ -108,11 +108,11 @@ export async function startServer(): Promise<void> {
       new AuthTokenService(config.jwtSecret, config.accessTokenTtlSeconds, config.refreshTokenTtlSeconds),
     );
     const connectCodeService = new ConnectCodeService(database);
-    const computerService = new ComputerService(database, authService);
-    const teamService = new TeamMembershipService(database);
+    const registry = new ConnectionRegistry();
+    const computerService = new ComputerService(database, authService, { providerReadiness: registry });
+    const teamService = new TeamMembershipService(database, { providerReadiness: registry });
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
     const invitationService = new InvitationService(database, teamService, applicationCipher, config.publicUrl);
-    const registry = new ConnectionRegistry();
     const imBindingService = new ImBindingService(database, applicationCipher, {
       runtimeReady: async (agentId) => {
         const [agent] = await database

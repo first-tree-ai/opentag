@@ -6,7 +6,7 @@ import {
   TeamNameInputSchema,
   TeamNameSchema,
 } from "./auth.js";
-import { ComputerConnectionStatusSchema, ComputerPlatformSchema } from "./computer.js";
+import { ComputerConnectionStatusSchema, ComputerPlatformSchema, ComputerProviderReadinessSchema } from "./computer.js";
 
 export const TeamProfileSchema = z
   .object({
@@ -80,6 +80,7 @@ export const TeamComputerSummarySchema = z
     displayName: z.string().min(1),
     platform: ComputerPlatformSchema,
     connectionStatus: ComputerConnectionStatusSchema,
+    providerReadiness: ComputerProviderReadinessSchema,
     connectedAt: z.string().datetime().nullable(),
     lastSeenAt: z.string().datetime(),
     observedAt: z.string().datetime(),
@@ -97,6 +98,7 @@ export const TeamComputerAdminConfigSchema = z
     arch: z.string().min(1),
     clientVersion: z.string().min(1),
     connectionStatus: ComputerConnectionStatusSchema,
+    providerReadiness: ComputerProviderReadinessSchema,
     connectedAt: z.string().datetime().nullable(),
     lastSeenAt: z.string().datetime(),
     observedAt: z.string().datetime(),

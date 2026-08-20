@@ -7,6 +7,7 @@ import {
   type RuntimeClientCapabilities,
   type RuntimeErrorFrame,
   RuntimeFrameEnvelopeSchema,
+  type RuntimeProviderReadinessObservation,
   runtimeFrameByteLength,
   type ServerRuntimeFrame,
   ServerWelcomeFrameSchema,
@@ -198,6 +199,7 @@ export class RuntimeSession {
         parsed.data.computerId,
         parsed.data.instanceId,
         parsed.data.capabilities,
+        parsed.data.providerReadiness,
       ).finally(() => {
         this.#heartbeatInFlight = false;
       });
@@ -260,6 +262,8 @@ export class RuntimeSession {
           computerId: frame.computerId,
           instanceId: frame.instanceId,
           lastHeartbeatAt: this.#options.now().getTime(),
+          providerReadiness: frame.providerReadiness,
+          providerReadinessObservedAt: frame.providerReadiness ? this.#options.now().getTime() : undefined,
           socket: this.#socket,
           userId,
         },
@@ -290,13 +294,23 @@ export class RuntimeSession {
     computerId: string,
     instanceId: string,
     capabilities: RuntimeClientCapabilities,
+    providerReadiness?: RuntimeProviderReadinessObservation,
   ): Promise<void> {
     try {
       if (!this.#userId || computerId !== this.#computerId || instanceId !== this.#instanceId) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance is not registered", 4409, requestId);
         return;
       }
-      if (!this.#registry.touch(computerId, instanceId, this.#socket, this.#options.now().getTime(), capabilities)) {
+      if (
+        !this.#registry.touch(
+          computerId,
+          instanceId,
+          this.#socket,
+          this.#options.now().getTime(),
+          capabilities,
+          providerReadiness,
+        )
+      ) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, requestId);
         return;
       }

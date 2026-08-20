@@ -50,14 +50,17 @@ describe("RuntimeConnection", () => {
       platform: "linux",
       tokenProvider: tokenProvider(),
     });
+    connection.setProviderReadiness({ provider: "codex", status: "ready" });
 
     await connection.run();
     expect(frames.map((frame) => frame.type)).toEqual(["auth", "computer:register", "heartbeat"]);
     expect(frames[0]).toMatchObject({ protocolVersion: 1 });
     const register = frames[1];
     expect(register).toMatchObject({ computerId, displayName: "workstation", platform: "linux" });
+    expect(register).toMatchObject({ providerReadiness: { provider: "codex", status: "ready" } });
     expect(register).not.toHaveProperty("teamId");
     expect(register?.instanceId).toBe(instanceId);
+    expect(frames[2]).toMatchObject({ providerReadiness: { provider: "codex", status: "ready" } });
   });
 
   it("forces token refresh before reconnecting at the proactive refresh boundary", async () => {

@@ -3,6 +3,7 @@ import { z } from "zod";
 export const RUNTIME_ID_MAX_BYTES = 128;
 export const RUNTIME_INSTRUCTIONS_MAX_BYTES = 24 * 1024;
 export const RUNTIME_ALLOWED_TOOLS_MAX_COUNT = 64;
+export const RUNTIME_DEFAULT_MAX_DURATION_MS = 30 * 60 * 1_000;
 export const RUNTIME_MAX_DURATION_MS = 24 * 60 * 60 * 1_000;
 export const OPENTAG_MESSAGE_TOOLS = [
   "opentag_message_send",

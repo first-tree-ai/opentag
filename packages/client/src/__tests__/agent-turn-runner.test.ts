@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { type DirectImMessageDeliveryRequest, RUNTIME_FINAL_TEXT_MAX_BYTES } from "@opentag/shared";
+import {
+  type DirectImMessageDeliveryRequest,
+  RUNTIME_DEFAULT_MAX_DURATION_MS,
+  RUNTIME_FINAL_TEXT_MAX_BYTES,
+} from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRunResult, AgentRuntimeEventSink } from "../agent-runtime/types.js";
 import {
@@ -113,7 +117,7 @@ describe("AgentTurnRunner", () => {
     ).toBe(1);
     expect(
       turnTimeoutMs({ ...request, deadlineAt: undefined, runtime: { ...request.runtime, budget: undefined } }, 0),
-    ).toBe(30 * 60 * 1_000);
+    ).toBe(RUNTIME_DEFAULT_MAX_DURATION_MS);
 
     const create = vi.fn((input) => ({
       ...input,

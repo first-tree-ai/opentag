@@ -1273,6 +1273,18 @@ button.danger:hover {
   font-weight: 620;
 }
 
+.form-field {
+  display: grid;
+  gap: 7px;
+}
+
+.field-help {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 430;
+  line-height: 1.45;
+}
+
 input,
 select,
 textarea {

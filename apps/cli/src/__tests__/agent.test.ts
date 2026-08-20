@@ -334,6 +334,10 @@ describe("Agent CLI core", () => {
       ]),
     );
     expect(update?.options.find((option) => option.long === "--display-name")?.mandatory).toBe(false);
+    expect(update?.options.find((option) => option.long === "--clear-model")?.description).toContain("Provider manage");
+    expect(update?.options.find((option) => option.long === "--clear-max-duration")?.description).toContain(
+      "30-minute",
+    );
   });
 
   it("deletes the explicit Agent without an interactive prompt", async () => {

@@ -82,6 +82,7 @@ export {
   ComputerSchema,
   type ListComputersResponse,
   ListComputersResponseSchema,
+  PROVIDER_READINESS_V1_HEADER,
   type ProviderReadinessStatus,
   ProviderReadinessStatusSchema,
 } from "./computer.js";

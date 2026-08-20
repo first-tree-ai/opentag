@@ -5,6 +5,7 @@ import {
   ListTeamComputersResponseSchema,
   ListTeamMembersConfigResponseSchema,
   ListTeamMembersResponseSchema,
+  PROVIDER_READINESS_V1_HEADER,
   RestoreTeamMemberRequestSchema,
   TEAM_BY_ID_TEMPLATE,
   TEAM_COMPUTERS_CONFIG_TEMPLATE,
@@ -107,7 +108,15 @@ export function registerTeamRoutes(
     const { teamId } = parseRequest(TeamParamsSchema, request.params);
     return reply
       .code(200)
-      .send(ListTeamComputersResponseSchema.parse(await teamService.listComputers(userId(request), teamId)));
+      .send(
+        ListTeamComputersResponseSchema.parse(
+          await teamService.listComputers(
+            userId(request),
+            teamId,
+            request.headers[PROVIDER_READINESS_V1_HEADER] === "1",
+          ),
+        ),
+      );
   });
 
   app.get(TEAM_COMPUTERS_CONFIG_TEMPLATE, { preHandler }, async (request, reply) => {
@@ -115,7 +124,13 @@ export function registerTeamRoutes(
     return reply
       .code(200)
       .send(
-        ListTeamComputersConfigResponseSchema.parse(await teamService.listComputersConfig(userId(request), teamId)),
+        ListTeamComputersConfigResponseSchema.parse(
+          await teamService.listComputersConfig(
+            userId(request),
+            teamId,
+            request.headers[PROVIDER_READINESS_V1_HEADER] === "1",
+          ),
+        ),
       );
   });
 }

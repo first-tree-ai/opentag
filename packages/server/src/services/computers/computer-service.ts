@@ -119,7 +119,7 @@ export class ComputerService {
     return updated.length === 1;
   }
 
-  async listForUser(userId: string): Promise<ListComputersResponse> {
+  async listForUser(userId: string, includeProviderReadiness = false): Promise<ListComputersResponse> {
     await this.#requireTeamMember(userId);
     const rows = await this.#database.select().from(computers).where(eq(computers.ownerUserId, userId));
     const observedAt = this.#now();
@@ -136,12 +136,16 @@ export class ComputerService {
           arch: row.arch,
           clientVersion: row.clientVersion,
           connectionStatus,
-          providerReadiness: projectComputerProviderReadiness(
-            row.id,
-            connectionStatus,
-            observedAt,
-            this.#providerReadiness,
-          ),
+          ...(includeProviderReadiness
+            ? {
+                providerReadiness: projectComputerProviderReadiness(
+                  row.id,
+                  connectionStatus,
+                  observedAt,
+                  this.#providerReadiness,
+                ),
+              }
+            : {}),
           connectedAt: row.connectedAt?.toISOString() ?? null,
           lastSeenAt: row.lastSeenAt.toISOString(),
         };

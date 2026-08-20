@@ -428,6 +428,7 @@ describe("createClientRuntime production composition", () => {
     cleanup.push(server.close);
     const connection = runtimeConnection(server.url);
     const capabilityUpdates = vi.spyOn(connection, "setVerifiedCapabilities");
+    const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
     let probeCount = 0;
     let refreshStarted!: () => void;
     const started = new Promise<void>((resolveStarted) => {
@@ -510,6 +511,9 @@ describe("createClientRuntime production composition", () => {
     });
     const running = runtime.run();
     await started;
+
+    expect(runtime.runtimeManager.validate(snapshot())).toBeUndefined();
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" });
 
     runtime.stop();
     await expect(running).resolves.toBeUndefined();

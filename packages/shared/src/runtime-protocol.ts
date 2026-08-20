@@ -68,6 +68,7 @@ export const ServerWelcomeFrameSchema = z
     capabilities: RuntimeCapabilitiesSchema,
     heartbeatIntervalMs: RuntimeHeartbeatIntervalMsSchema,
     heartbeatTimeoutMs: RuntimeHeartbeatTimeoutMsSchema,
+    providerReadiness: z.literal(1).optional(),
   })
   .strict()
   .superRefine((frame, context) => {

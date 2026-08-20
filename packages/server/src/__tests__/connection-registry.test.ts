@@ -3,6 +3,7 @@ import { RUNTIME_CLIENT_CAPABILITY_TTL_MS } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type WebSocket from "ws";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
+import { projectComputerProviderReadiness } from "../services/computers/provider-readiness.js";
 
 describe("ConnectionRegistry", () => {
   it("fences replacement close, heartbeat, and stale-instance cleanup by exact socket", async () => {
@@ -146,6 +147,25 @@ describe("ConnectionRegistry", () => {
     expect(registry.providerReadiness(computerId, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 3)).toMatchObject({
       observation: { provider: "codex", status: "ready" },
     });
+    expect(
+      registry.touch(
+        computerId,
+        instanceId,
+        currentSocket,
+        RUNTIME_CLIENT_CAPABILITY_TTL_MS * 2 + 4,
+        undefined,
+        undefined,
+      ),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, RUNTIME_CLIENT_CAPABILITY_TTL_MS * 2 + 4)).toBeUndefined();
+    expect(
+      projectComputerProviderReadiness(
+        computerId,
+        "online",
+        new Date(RUNTIME_CLIENT_CAPABILITY_TTL_MS * 2 + 4),
+        registry,
+      ),
+    ).toEqual({ provider: "codex", status: "checking", observedAt: null });
     expect(registry.remove(computerId, instanceId, currentSocket)).toBe(true);
     expect(registry.providerReadiness(computerId, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 3)).toBeUndefined();
   });

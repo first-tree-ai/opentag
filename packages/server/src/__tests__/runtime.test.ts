@@ -1,8 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { setImmediate as waitImmediate } from "node:timers/promises";
-import { HTTP_PATHS, ServerRuntimeFrameSchema } from "@opentag/shared";
+import {
+  HTTP_PATHS,
+  PROVIDER_READINESS_V1_HEADER,
+  RuntimeCapabilitiesSchema,
+  RuntimeHeartbeatIntervalMsSchema,
+  RuntimeHeartbeatTimeoutMsSchema,
+  ServerRuntimeFrameSchema,
+} from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import { z } from "zod";
 import { createApp } from "../app.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -57,7 +65,9 @@ describe("Computer runtime WebSocket", () => {
     });
     apps.push(app);
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
-    const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+    const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`, {
+      headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
+    });
     const frames = frameQueue(socket);
     await opened(socket);
     let receivedBeforeAuth = false;
@@ -70,7 +80,7 @@ describe("Computer runtime WebSocket", () => {
     const authRequestId = randomUUID();
     socket.send(JSON.stringify({ type: "auth", requestId: authRequestId, protocolVersion: 1, accessToken: "access" }));
     expect(await frames.next()).toMatchObject({ type: "auth:result", requestId: authRequestId, ok: true });
-    expect(await frames.next()).toMatchObject({ type: "server:welcome", protocolVersion: 1 });
+    expect(await frames.next()).toMatchObject({ type: "server:welcome", protocolVersion: 1, providerReadiness: 1 });
 
     const register = {
       type: "computer:register",
@@ -113,6 +123,76 @@ describe("Computer runtime WebSocket", () => {
     socket.close();
     await new Promise((resolve) => socket.once("close", resolve));
     await vi.waitFor(() => expect(computers.disconnect).toHaveBeenCalledWith(register.computerId, register.instanceId));
+  });
+
+  it("keeps the welcome frame compatible with an older strict v1 Client", async () => {
+    const app = createApp({
+      authService: authService(),
+      computerService: computerService() as unknown as ComputerService,
+      runtime: { authTimeoutMs: 1_000 },
+    });
+    apps.push(app);
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
+    const frames = frameQueue(socket);
+    await opened(socket);
+    socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), protocolVersion: 1, accessToken: "access" }));
+    await frames.next();
+
+    const welcome = await frames.next();
+    const legacyWelcomeSchema = z
+      .object({
+        type: z.literal("server:welcome"),
+        protocolVersion: z.literal(1),
+        capabilities: RuntimeCapabilitiesSchema,
+        heartbeatIntervalMs: RuntimeHeartbeatIntervalMsSchema,
+        heartbeatTimeoutMs: RuntimeHeartbeatTimeoutMsSchema,
+      })
+      .strict();
+    expect(legacyWelcomeSchema.parse(welcome)).toEqual(welcome);
+    socket.close();
+  });
+
+  it("does not publish a readiness observation rejected by the durable heartbeat guard", async () => {
+    const computers = computerService();
+    let resolveHeartbeat!: (accepted: boolean) => void;
+    computers.heartbeat.mockImplementationOnce(() => new Promise<boolean>((resolve) => (resolveHeartbeat = resolve)));
+    const registry = new ConnectionRegistry();
+    const app = createApp({
+      authService: authService(),
+      computerService: computers as unknown as ComputerService,
+      runtime: { authTimeoutMs: 1_000, registry },
+    });
+    apps.push(app);
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`, {
+      headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
+    });
+    const frames = frameQueue(socket);
+    await authenticate(socket, frames);
+    const register = {
+      ...registerFrame(randomUUID(), randomUUID()),
+      providerReadiness: { provider: "codex", status: "install" },
+    };
+    socket.send(JSON.stringify(register));
+    await frames.next();
+
+    const heartbeat = {
+      type: "heartbeat",
+      requestId: randomUUID(),
+      computerId: register.computerId,
+      instanceId: register.instanceId,
+      providerReadiness: { provider: "codex", status: "ready" },
+    };
+    socket.send(JSON.stringify(heartbeat));
+    await vi.waitFor(() => expect(computers.heartbeat).toHaveBeenCalled());
+    expect(registry.providerReadiness(register.computerId)).toMatchObject({
+      observation: { provider: "codex", status: "install" },
+    });
+
+    resolveHeartbeat(false);
+    expect(await frames.next()).toMatchObject({ type: "error", code: "COMPUTER_NOT_REGISTERED" });
+    expect(registry.providerReadiness(register.computerId)?.observation.status).not.toBe("ready");
   });
 
   it("rejects registration before authentication", async () => {

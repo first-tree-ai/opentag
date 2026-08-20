@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  PROVIDER_READINESS_V1_HEADER,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_VERSION,
@@ -12,7 +13,7 @@ import {
   ServerRuntimeFrameSchema,
   type ServerWelcomeFrame,
 } from "@opentag/shared";
-import WebSocket, { type RawData } from "ws";
+import WebSocket, { type ClientOptions, type RawData } from "ws";
 import { OpenTagApiError } from "../api.js";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
@@ -96,7 +97,7 @@ export interface RuntimeConnectionOptions {
   scheduler?: RuntimeScheduler;
   tokenProvider: Pick<AccessTokenProvider, "getAccessTokenLease">;
   waitForRetry?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
-  webSocketFactory?: (url: string) => WebSocket;
+  webSocketFactory?: (url: string, options: ClientOptions) => WebSocket;
 }
 
 interface RegisteredWaiter {
@@ -362,9 +363,13 @@ export class RuntimeConnection {
     const lease = await raceWithAbort(this.#options.tokenProvider.getAccessTokenLease(this.#forceRefresh), signal);
     this.#forceRefresh = false;
     signal.throwIfAborted();
+    const socketOptions: ClientOptions = {
+      headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
+      maxPayload: RUNTIME_MAX_FRAME_BYTES,
+    };
+    const socketUrl = runtimeWebSocketUrl(this.#options.computer.serverUrl);
     const socket =
-      this.#options.webSocketFactory?.(runtimeWebSocketUrl(this.#options.computer.serverUrl)) ??
-      new WebSocket(runtimeWebSocketUrl(this.#options.computer.serverUrl), { maxPayload: RUNTIME_MAX_FRAME_BYTES });
+      this.#options.webSocketFactory?.(socketUrl, socketOptions) ?? new WebSocket(socketUrl, socketOptions);
     this.#active = socket;
     const instanceId = this.#options.instanceId;
 
@@ -418,7 +423,9 @@ export class RuntimeConnection {
               computerId: this.#options.computer.computerId,
               instanceId,
               capabilities: this.#currentCapabilities(),
-              providerReadiness: this.#currentProviderReadiness(),
+              ...(heartbeatPolicy.providerReadiness === 1
+                ? { providerReadiness: this.#currentProviderReadiness() }
+                : {}),
             },
             { priority: "control", deadline: this.#now() + heartbeatPolicy.heartbeatTimeoutMs },
           ).then(
@@ -527,7 +534,7 @@ export class RuntimeConnection {
             arch: this.#options.arch,
             clientVersion: this.#options.clientVersion,
             capabilities: this.#currentCapabilities(),
-            providerReadiness: this.#currentProviderReadiness(),
+            ...(welcome.providerReadiness === 1 ? { providerReadiness: this.#currentProviderReadiness() } : {}),
           }).catch((error: unknown) => finish(asError(error)));
           return;
         }

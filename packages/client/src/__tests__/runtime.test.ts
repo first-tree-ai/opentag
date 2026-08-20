@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
@@ -19,12 +20,13 @@ describe("RuntimeConnection", () => {
     const computerId = randomUUID();
     const instanceId = randomUUID();
     let connection: RuntimeConnection;
-    server.wss.on("connection", (socket) => {
+    server.wss.on("connection", (socket, request) => {
+      expect(request.headers[PROVIDER_READINESS_V1_HEADER]).toBe("1");
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         frames.push(frame);
         if (frame.type === "auth") {
-          completeAuth(socket, frame);
+          completeAuth(socket, frame, { ...welcome(), providerReadiness: 1 });
         } else if (frame.type === "computer:register") {
           socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
         } else if (frame.type === "heartbeat") {
@@ -61,6 +63,48 @@ describe("RuntimeConnection", () => {
     expect(register).not.toHaveProperty("teamId");
     expect(register?.instanceId).toBe(instanceId);
     expect(frames[2]).toMatchObject({ providerReadiness: { provider: "codex", status: "ready" } });
+  });
+
+  it("keeps readiness fields off v1 frames when an older Server does not acknowledge them", async () => {
+    const server = await runtimeServer();
+    cleanup.push(server.close);
+    const frames: Array<Record<string, unknown>> = [];
+    let connection: RuntimeConnection;
+    server.wss.on("connection", (socket) => {
+      socket.on("message", (data) => {
+        const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+        frames.push(frame);
+        if (frame.type === "auth") completeAuth(socket, frame);
+        if (frame.type === "computer:register") {
+          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+        }
+        if (frame.type === "heartbeat") {
+          socket.send(
+            JSON.stringify({
+              type: "heartbeat:result",
+              requestId: frame.requestId,
+              ok: true,
+              serverTime: new Date().toISOString(),
+            }),
+          );
+          connection.stop();
+        }
+      });
+    });
+    connection = new RuntimeConnection({
+      arch: "x64",
+      clientVersion: "0.0.1",
+      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      displayName: "workstation",
+      instanceId: randomUUID(),
+      platform: "linux",
+      tokenProvider: tokenProvider(),
+    });
+    connection.setProviderReadiness({ provider: "codex", status: "ready" });
+
+    await connection.run();
+    expect(frames.find((frame) => frame.type === "computer:register")).not.toHaveProperty("providerReadiness");
+    expect(frames.find((frame) => frame.type === "heartbeat")).not.toHaveProperty("providerReadiness");
   });
 
   it("forces token refresh before reconnecting at the proactive refresh boundary", async () => {
@@ -598,7 +642,7 @@ function welcome(heartbeatIntervalMs = 10, heartbeatTimeoutMs = 1_000) {
 function completeAuth(
   socket: WebSocket,
   frame: Record<string, unknown>,
-  serverWelcome = welcome(),
+  serverWelcome: Record<string, unknown> = welcome(),
   tokenExpiresInMs = 60_000,
 ): void {
   socket.send(

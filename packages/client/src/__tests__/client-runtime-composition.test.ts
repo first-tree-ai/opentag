@@ -280,7 +280,7 @@ describe("createClientRuntime production composition", () => {
       validateClaudeCodeRuntimePolicy({
         ...claudeSnapshot,
         execution: { approvalPolicy: "on-request", networkAccess: true },
-      }),
+      } as unknown as EffectiveRuntimeSnapshot),
     ).toBe("configuration_unsupported");
     expect(
       validateClaudeCodeRuntimePolicy({

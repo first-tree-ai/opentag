@@ -630,7 +630,7 @@ describe("SessionRuntimeManager", () => {
     expect(factory.runtimes[0]?.closed).toBe(true);
     await missingFinalBinding.close();
 
-    const savedBinding = { ...prepared.binding, runtimeBinding: binding("thread-saved") } as never;
+    const savedBinding = { runtimeBinding: binding("thread-saved") } as never;
     const saved = new SessionRuntimeManager({
       bindingStore: {
         saveRuntimeBinding: async () => savedBinding,

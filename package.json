@@ -10,7 +10,8 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
-    "check": "biome check . && node scripts/third-party-notices.mjs --check",
+    "check": "biome check . && node scripts/verify-workspace-contracts.mjs && node scripts/third-party-notices.mjs --check",
+    "check:workspace": "node scripts/verify-workspace-contracts.mjs",
     "lint": "biome lint .",
     "format": "biome format --write .",
     "typecheck": "turbo run typecheck",

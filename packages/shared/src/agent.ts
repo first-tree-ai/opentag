@@ -19,6 +19,7 @@ export const AgentNameSchema = z
 export const AgentDisplayNameSchema = z.string().trim().min(1).max(120);
 export const AgentRuntimeProviderSchema = z.enum(["codex", "claude-code"]);
 export const ReceiveModeSchema = z.enum(["all_message", "mention_only"]);
+export const AgentStatusSchema = z.enum(["active", "suspended"]);
 
 const OpenTagMessageToolSchema = z.enum(OPENTAG_MESSAGE_TOOLS);
 const AgentInstructionsSchema = RuntimeInstructionSchema.superRefine((instructions, context) => {
@@ -96,6 +97,7 @@ const AgentIdentitySchema = z
     displayName: AgentDisplayNameSchema,
     runtimeProvider: AgentRuntimeProviderSchema,
     receiveMode: ReceiveModeSchema,
+    status: AgentStatusSchema,
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
@@ -161,6 +163,7 @@ export type AgentName = z.infer<typeof AgentNameSchema>;
 export type AgentDisplayName = z.infer<typeof AgentDisplayNameSchema>;
 export type AgentRuntimeProvider = z.infer<typeof AgentRuntimeProviderSchema>;
 export type ReceiveMode = z.infer<typeof ReceiveModeSchema>;
+export type AgentStatus = z.infer<typeof AgentStatusSchema>;
 export type AgentRuntimeConfig = z.infer<typeof AgentRuntimeConfigSchema>;
 export type CreateAgentRuntimeConfig = z.infer<typeof CreateAgentRuntimeConfigSchema>;
 export type UpdateAgentRuntimeConfig = z.infer<typeof UpdateAgentRuntimeConfigSchema>;

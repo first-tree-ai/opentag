@@ -81,6 +81,21 @@ export class SessionService {
 
   async createInternalSession(creatorSessionId: string): Promise<{ session: Session; placement: SessionPlacement }> {
     return this.#database.transaction(async (transaction) => {
+      const [candidate] = await transaction
+        .select({ agentId: agents.id })
+        .from(sessions)
+        .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+        .innerJoin(agents, eq(agents.id, imBindings.agentId))
+        .where(and(eq(sessions.id, creatorSessionId), isNull(sessions.endedAt)))
+        .limit(1);
+      if (!candidate) throw new SessionServiceError("SESSION_NOT_ACTIVE", "The creator Session is not active");
+      const [agent] = await transaction
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.id, candidate.agentId), eq(agents.status, "active")))
+        .limit(1)
+        .for("update");
+      if (!agent) throw new SessionServiceError("AGENT_NOT_ACTIVE", "The Agent is not active");
       const [creator] = await transaction
         .select({ session: sessions, computerId: sessionPlacements.computerId })
         .from(sessions)
@@ -208,14 +223,29 @@ export class SessionService {
   }
 
   async #resolveComputer(transaction: DatabaseTransaction, imBindingId: string): Promise<string> {
-    const [scope] = await transaction
-      .select({ computerId: agents.computerId })
+    const [candidate] = await transaction
+      .select({ agentId: agents.id })
       .from(imBindings)
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .where(and(eq(imBindings.id, imBindingId), eq(imBindings.status, "active"), isNull(agents.deletedAt)))
+      .where(eq(imBindings.id, imBindingId))
       .limit(1);
-    if (!scope) throw new SessionServiceError("IM_BINDING_NOT_ACTIVE", "The IM binding is not active");
-    return scope.computerId;
+    if (!candidate) throw new SessionServiceError("IM_BINDING_NOT_ACTIVE", "The IM binding is not active");
+    const [agent] = await transaction
+      .select({ computerId: agents.computerId })
+      .from(agents)
+      .where(and(eq(agents.id, candidate.agentId), eq(agents.status, "active")))
+      .limit(1)
+      .for("update");
+    if (!agent) throw new SessionServiceError("AGENT_NOT_ACTIVE", "The Agent is not active");
+    const [binding] = await transaction
+      .select({ id: imBindings.id })
+      .from(imBindings)
+      .where(
+        and(eq(imBindings.id, imBindingId), eq(imBindings.agentId, candidate.agentId), eq(imBindings.status, "active")),
+      )
+      .limit(1);
+    if (!binding) throw new SessionServiceError("IM_BINDING_NOT_ACTIVE", "The IM binding is not active");
+    return agent.computerId;
   }
 
   async #findActive(

@@ -16,6 +16,7 @@ const agentSummary = {
   computer: { id: computerId, displayName: "Ada's Mac", platform: "darwin" },
   runtimeProvider: "codex",
   receiveMode: "mention_only",
+  status: "active",
   createdAt: "2026-08-20T00:00:00.000Z",
   updatedAt: "2026-08-20T00:00:00.000Z",
 };
@@ -26,9 +27,39 @@ function json(value: unknown, status = 200) {
 
 function installApi(
   role: "admin" | "member",
-  options: { bound?: boolean; provider?: "feishu" | "slack"; scopeReauth?: boolean; unauthenticated?: boolean } = {},
+  options: {
+    bound?: boolean;
+    initialStatus?: "active" | "suspended";
+    provider?: "feishu" | "slack";
+    scopeReauth?: boolean;
+    unauthenticated?: boolean;
+  } = {},
 ) {
   const teamProfile = { name: "example", displayName: "Example" };
+  let lifecycleStatus = options.initialStatus ?? "active";
+  let revision = lifecycleStatus === "active" ? 1 : 2;
+  const adminConfig = () => ({
+    id: agentId,
+    teamId,
+    name: agentSummary.name,
+    displayName: agentSummary.displayName,
+    runtimeProvider: agentSummary.runtimeProvider,
+    receiveMode: agentSummary.receiveMode,
+    status: lifecycleStatus,
+    createdAt: agentSummary.createdAt,
+    updatedAt: agentSummary.updatedAt,
+    managerUserId: userId,
+    computerId,
+    revision,
+    runtimeConfig: {
+      revision: 1,
+      model: null,
+      reasoningEffort: null,
+      instructions: "",
+      allowedTools: [],
+      maxDurationMs: null,
+    },
+  });
   vi.mocked(fetch).mockImplementation(async (input, init) => {
     const path = String(input);
     if (path === "/api/v1/auth/providers") {
@@ -52,7 +83,9 @@ function installApi(
         updatedAt: "2026-08-20T00:01:00.000Z",
       });
     }
-    if (path === `/api/v1/teams/${teamId}/agents`) return json({ agents: [agentSummary] });
+    if (path === `/api/v1/teams/${teamId}/agents`) {
+      return json({ agents: [{ ...agentSummary, status: lifecycleStatus }] });
+    }
     if (path === `/api/v1/teams/${teamId}/computers`) return json({ computers: [] });
     if (path === "/api/v1/me/computers") return json({ computers: [] });
     if (path === "/api/v1/me/connect-codes" && init?.method === "POST") {
@@ -78,30 +111,21 @@ function installApi(
           409,
         );
       }
-      return json({ ...agentSummary, viewerCapabilities: { canManage: role === "admin" } });
+      if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      return json({ ...agentSummary, status: lifecycleStatus, viewerCapabilities: { canManage: role === "admin" } });
     }
     if (path === `/api/v1/agents/${agentId}/config`) {
-      return json({
-        id: agentId,
-        teamId,
-        name: agentSummary.name,
-        displayName: agentSummary.displayName,
-        runtimeProvider: agentSummary.runtimeProvider,
-        receiveMode: agentSummary.receiveMode,
-        createdAt: agentSummary.createdAt,
-        updatedAt: agentSummary.updatedAt,
-        managerUserId: userId,
-        computerId,
-        revision: 1,
-        runtimeConfig: {
-          revision: 1,
-          model: null,
-          reasoningEffort: null,
-          instructions: "",
-          allowedTools: [],
-          maxDurationMs: null,
-        },
-      });
+      return json(adminConfig());
+    }
+    if (path === `/api/v1/agents/${agentId}/suspend` && init?.method === "POST") {
+      lifecycleStatus = "suspended";
+      revision += 1;
+      return json(adminConfig());
+    }
+    if (path === `/api/v1/agents/${agentId}/reactivate` && init?.method === "POST") {
+      lifecycleStatus = "active";
+      revision += 1;
+      return json(adminConfig());
     }
     if (path === `/api/v1/agents/${agentId}/im-binding`) {
       if (!options.bound) return new Response(null, { status: 204 });
@@ -169,6 +193,44 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Member · read only")).toBeTruthy();
     expect(await screen.findByText("Reviewer")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Create Agent" })).toBeNull();
+  });
+
+  it("keeps suspended lifecycle visible but read-only for members", async () => {
+    installApi("member", { initialStatus: "suspended" });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+    expect(await screen.findByText("Suspended")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Reactivate Agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Delete Agent permanently" })).toBeNull();
+  });
+
+  it("requires suspension and destructive confirmation before an admin deletes an Agent", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Suspend Agent" }));
+    expect(await screen.findByRole("button", { name: "Reactivate Agent" })).toBeTruthy();
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([input, init]) => String(input) === `/api/v1/agents/${agentId}` && (init?.method ?? "GET") === "GET",
+          ),
+      ).toHaveLength(2),
+    );
+    expect(screen.getByText("Lifecycle").parentElement?.querySelector("dd")?.textContent).toBe("Suspended");
+    const deleteButton = screen.getByRole("button", { name: "Delete Agent permanently" });
+    fireEvent.click(deleteButton);
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+    fireEvent.click(deleteButton);
+    await waitFor(() => expect(window.location.pathname).toBe("/agents"));
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(true);
+    expect(confirm).toHaveBeenLastCalledWith(
+      expect.stringMatching(/end its active Sessions.*IM credential.*runtime configuration/),
+    );
+    confirm.mockRestore();
   });
 
   it("lets admins rename a Team and refreshes the UUID-selected Team context from /me", async () => {

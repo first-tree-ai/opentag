@@ -1,6 +1,8 @@
 import {
   agentByIdPath,
   agentConfigPath,
+  agentReactivatePath,
+  agentSuspendPath,
   OPENTAG_PLATFORM_INSTRUCTIONS,
   RUNTIME_INSTRUCTIONS_MAX_BYTES,
   teamAgentsPath,
@@ -24,6 +26,7 @@ const agent = {
   displayName: "Code Reviewer",
   runtimeProvider: "codex" as const,
   receiveMode: "all_message" as const,
+  status: "active" as const,
   revision: 1,
   runtimeConfig: {
     revision: 1,
@@ -78,6 +81,8 @@ function agentService() {
     getById: vi.fn().mockResolvedValue(agentDetail),
     getConfigById: vi.fn().mockResolvedValue(agent),
     updateById: vi.fn().mockResolvedValue({ ...agent, displayName: "Reviewer", revision: 2 }),
+    suspendById: vi.fn().mockResolvedValue({ ...agent, status: "suspended", revision: 2 }),
+    reactivateById: vi.fn().mockResolvedValue({ ...agent, revision: 3 }),
     deleteById: vi.fn().mockResolvedValue(undefined),
   };
 }
@@ -121,7 +126,7 @@ describe("Agent HTTP API", () => {
     expect(service.listForTeam).toHaveBeenCalledWith(userId, teamId);
   });
 
-  it("gets, CAS-updates, and deletes an Agent", async () => {
+  it("gets, CAS-updates, suspends, reactivates, and deletes an Agent", async () => {
     const { app, service } = appWith();
     expect((await app.inject({ method: "GET", url: agentByIdPath(agentId), headers: authorization })).statusCode).toBe(
       200,
@@ -145,6 +150,14 @@ describe("Agent HTTP API", () => {
       expectedRevision: 1,
       runtimeConfig: { maxDurationMs: null, model: null },
     });
+    const suspended = await app.inject({ method: "POST", url: agentSuspendPath(agentId), headers: authorization });
+    expect(suspended.statusCode).toBe(200);
+    expect(suspended.json()).toMatchObject({ status: "suspended", revision: 2 });
+    expect(service.suspendById).toHaveBeenCalledWith(userId, agentId);
+    const reactivated = await app.inject({ method: "POST", url: agentReactivatePath(agentId), headers: authorization });
+    expect(reactivated.statusCode).toBe(200);
+    expect(reactivated.json()).toMatchObject({ status: "active", revision: 3 });
+    expect(service.reactivateById).toHaveBeenCalledWith(userId, agentId);
     const deleted = await app.inject({ method: "DELETE", url: agentByIdPath(agentId), headers: authorization });
     expect(deleted.statusCode).toBe(204);
     expect(deleted.body).toBe("");
@@ -201,6 +214,7 @@ describe("Agent HTTP API", () => {
     ["RESOURCE_NOT_FOUND", 404],
     ["AGENT_NAME_CONFLICT", 409],
     ["AGENT_REVISION_CONFLICT", 409],
+    ["AGENT_LIFECYCLE_CONFLICT", 409],
   ] as const)("maps %s to HTTP %s", async (code, statusCode) => {
     const service = agentService();
     service.getById.mockRejectedValue(

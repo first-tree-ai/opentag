@@ -280,6 +280,7 @@ function AgentCard({ agent }: { agent: AgentSummary }) {
       <div>
         <strong>{agent.displayName}</strong>
         <small>{agent.name}</small>
+        <span className={`status-chip ${agent.status}`}>{titleCase(agent.status)}</span>
       </div>
       <dl>
         <div>
@@ -376,7 +377,8 @@ const agentTabs = ["general", "runtime", "im", "resources", "integrations", "acc
 
 function AgentDetailPage() {
   const { agentId = "", tab = "general" } = useParams();
-  const state = useResource(() => browserApi.agent(agentId), agentId);
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const state = useResource(() => browserApi.agent(agentId), `${agentId}:${refreshVersion}`);
   if (!agentTabs.includes(tab as (typeof agentTabs)[number])) return <NotFoundPage />;
   return (
     <AsyncState state={state}>
@@ -389,15 +391,15 @@ function AgentDetailPage() {
               </NavLink>
             ))}
           </nav>
-          <AgentTab agent={agent} tab={tab} />
+          <AgentTab agent={agent} tab={tab} onAgentChanged={() => setRefreshVersion((value) => value + 1)} />
         </Page>
       )}
     </AsyncState>
   );
 }
 
-function AgentTab({ agent, tab }: { agent: AgentDetail; tab: string }) {
-  if (tab === "general") return <GeneralTab agent={agent} />;
+function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetail; tab: string; onAgentChanged: () => void }) {
+  if (tab === "general") return <GeneralTab agent={agent} onAgentChanged={onAgentChanged} />;
   if (tab === "runtime") return <RuntimeTab agent={agent} />;
   if (tab === "im") return <ImTab agent={agent} />;
   if (tab === "resources")
@@ -416,7 +418,7 @@ function AgentTab({ agent, tab }: { agent: AgentDetail; tab: string }) {
   return <NotFoundPage />;
 }
 
-function GeneralTab({ agent }: { agent: AgentDetail }) {
+function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetail; onAgentChanged: () => void }) {
   return (
     <>
       <DefinitionList
@@ -424,20 +426,32 @@ function GeneralTab({ agent }: { agent: AgentDetail }) {
           ["Display name", agent.displayName],
           ["Manager", agent.manager.displayName],
           ["Computer", agent.computer.displayName],
+          ["Lifecycle", titleCase(agent.status)],
           ["Created", formatDate(agent.createdAt)],
         ]}
       />
-      {agent.viewerCapabilities.canManage ? <GeneralAdminForm agent={agent} /> : null}
+      {agent.viewerCapabilities.canManage ? <GeneralAdminForm agent={agent} onAgentChanged={onAgentChanged} /> : null}
     </>
   );
 }
 
-function GeneralAdminForm({ agent }: { agent: AgentDetail }) {
+function GeneralAdminForm({ agent, onAgentChanged }: { agent: AgentDetail; onAgentChanged: () => void }) {
   const configState = useResource(() => browserApi.agentConfig(agent.id), agent.id);
-  return <AsyncState state={configState}>{(config) => <GeneralConfigForm initialConfig={config} />}</AsyncState>;
+  return (
+    <AsyncState state={configState}>
+      {(config) => <GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />}
+    </AsyncState>
+  );
 }
 
-function GeneralConfigForm({ initialConfig }: { initialConfig: AgentAdminConfig }) {
+function GeneralConfigForm({
+  initialConfig,
+  onAgentChanged,
+}: {
+  initialConfig: AgentAdminConfig;
+  onAgentChanged: () => void;
+}) {
+  const navigate = useNavigate();
   const [config, setConfig] = useState(initialConfig);
   const [message, setMessage] = useState<string>();
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -446,8 +460,34 @@ function GeneralConfigForm({ initialConfig }: { initialConfig: AgentAdminConfig 
     try {
       setConfig(await browserApi.updateAgent(config.id, { expectedRevision: config.revision, displayName }));
       setMessage("General settings saved.");
+      onAgentChanged();
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Unable to save General settings");
+    }
+  }
+  async function changeLifecycle(action: "suspend" | "reactivate") {
+    try {
+      setConfig(
+        action === "suspend" ? await browserApi.suspendAgent(config.id) : await browserApi.reactivateAgent(config.id),
+      );
+      setMessage(action === "suspend" ? "Agent suspended." : "Agent reactivated.");
+      onAgentChanged();
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to change Agent lifecycle");
+    }
+  }
+  async function deleteAgent() {
+    if (
+      !window.confirm(
+        `Permanently delete ${config.displayName}? This will end its active Sessions and clear its IM credential and runtime configuration. Session and message history will be retained, but the Agent cannot be restored.`,
+      )
+    )
+      return;
+    try {
+      await browserApi.deleteAgent(config.id);
+      navigate("/agents");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to delete Agent");
     }
   }
   return (
@@ -460,6 +500,22 @@ function GeneralConfigForm({ initialConfig }: { initialConfig: AgentAdminConfig 
       <button className="button" type="submit">
         Save General settings
       </button>
+      <div className="actions">
+        {config.status === "active" ? (
+          <button type="button" onClick={() => void changeLifecycle("suspend")}>
+            Suspend Agent
+          </button>
+        ) : (
+          <>
+            <button className="button" type="button" onClick={() => void changeLifecycle("reactivate")}>
+              Reactivate Agent
+            </button>
+            <button className="danger" type="button" onClick={() => void deleteAgent()}>
+              Delete Agent permanently
+            </button>
+          </>
+        )}
+      </div>
       {message ? <p role="status">{message}</p> : null}
     </form>
   );

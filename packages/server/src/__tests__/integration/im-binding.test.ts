@@ -35,6 +35,7 @@ import {
   teams,
   users,
 } from "../../db/schema/index.js";
+import { stopAgentSessions } from "../../runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
@@ -208,6 +209,22 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, resolve, reject };
+}
+
+function dispatchedRuntimeResult<T>(result: T) {
+  return vi.fn((_computerId: string, _instanceId: string, _request: unknown, onDispatched?: () => void): Promise<T> => {
+    onDispatched?.();
+    return Promise.resolve(result);
+  });
+}
+
+function dispatchedRuntimeFailure(error: Error) {
+  return vi.fn(
+    (_computerId: string, _instanceId: string, _request: unknown, onDispatched?: () => void): Promise<never> => {
+      onDispatched?.();
+      return Promise.reject(error);
+    },
+  );
 }
 
 async function settleWithin<T>(promise: Promise<T>, milliseconds = 2_000): Promise<T> {
@@ -466,6 +483,642 @@ describe("IM binding persistence", () => {
         statusCode: 403,
       });
     } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("fences suspended work, preserves inbound facts, and deletes execution authority without history loss", async () => {
+    const value = await fixture();
+    const stopSessions = vi.fn(async () => undefined);
+    const agentService = new AgentService(value.database, { stopSessions });
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      const firstEvent = inbound("Ev-lifecycle-active");
+      firstEvent.message.resources = [
+        {
+          providerResourceKey: "file-1",
+          kind: "file",
+          filename: "evidence.txt",
+          mediaType: "text/plain",
+          sizeBytes: 12,
+        },
+      ];
+      const inbox = new ImMessageInbox(value.database);
+      const first = await inbox.ingest(value.imBindingId, 1, firstEvent);
+      const [session] = await value.database.select().from(sessions);
+      if (!session || !first.messageId) throw new Error("Lifecycle fixture was not admitted");
+
+      await expect(agentService.suspendById(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+        status: "suspended",
+      });
+      expect(stopSessions).toHaveBeenCalledWith([
+        expect.objectContaining({ agentId: value.agent.id, sessionId: session.id }),
+      ]);
+      expect(await value.database.select().from(sessions)).toEqual([expect.objectContaining({ endedAt: null })]);
+      expect(await value.database.select().from(imBindings)).toEqual([
+        expect.objectContaining({ id: value.imBindingId, status: "active", encryptedCredential: expect.any(String) }),
+      ]);
+
+      const suspendedEvent = revisionEvent({
+        providerEventId: "Ev-lifecycle-suspended",
+        externalMessageId: "1000.2",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:02.000Z",
+        revisionKey: "created:1000.2",
+      });
+      const suspended = await inbox.ingest(value.imBindingId, 1, suspendedEvent);
+      expect(suspended).toMatchObject({ deliveryIds: [] });
+      expect(await value.database.select().from(imMessages)).toHaveLength(2);
+      expect(await value.database.select().from(imMessageDeliveries)).toEqual([
+        expect.objectContaining({ attemptCount: 0, state: "pending" }),
+      ]);
+      const suspendedWorker = new ImDeliveryWorker({
+        database: value.database,
+        assembler: new EffectiveRuntimeSnapshotAssembler(value.database),
+        domain: {} as RuntimeDomainOwner,
+        registry: new ConnectionRegistry(),
+      });
+      await suspendedWorker.runOnce();
+      expect(await value.database.select().from(imMessageDeliveries)).toEqual([
+        expect.objectContaining({ attemptCount: 0, state: "pending" }),
+      ]);
+
+      await expect(
+        new SessionService(value.database).ensureChatSession(
+          { imBindingId: value.imBindingId, channelId: "C2", conversationKind: "channel" },
+          "channel",
+        ),
+      ).rejects.toMatchObject({ code: "AGENT_NOT_ACTIVE" });
+
+      let providerWrites = 0;
+      const outbound = new OutboundMessageService(value.database, async () => ({
+        provider: "slack" as const,
+        validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
+        normalizeInbound: () => [],
+        send: async () => {
+          providerWrites += 1;
+          return { ok: true as const, externalMessageId: "1000.3", occurredAt: new Date() };
+        },
+        react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
+        fetchResource: async () => ({ stream: Readable.from(Buffer.from("hello world!")) }),
+      }));
+      await expect(
+        outbound.execute({
+          requestId: crypto.randomUUID(),
+          sessionId: session.id,
+          agentId: value.agent.id,
+          computerId: value.computer.id,
+          computerInstanceId: instanceId,
+          placementGeneration: 1,
+          expectedLatestImMessageId: suspended.messageId as string,
+          operation: "send",
+          content: {
+            version: 1,
+            fallbackText: "must not send",
+            blocks: [{ type: "text", text: "must not send" }],
+            truncated: false,
+          },
+        }),
+      ).rejects.toThrow("OUTBOUND_AGENT_NOT_ACTIVE");
+      expect(providerWrites).toBe(0);
+
+      let resourceFetches = 0;
+      const resources = new ImResourceService(value.database, async () => ({
+        provider: "slack" as const,
+        validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
+        normalizeInbound: () => [],
+        send: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
+        react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
+        fetchResource: async () => {
+          resourceFetches += 1;
+          return { stream: Readable.from(Buffer.from("hello world!")) };
+        },
+      }));
+      await expect(
+        resources.open(
+          value.bootstrap.userId,
+          { sessionId: session.id, computerId: value.computer.id, instanceId, placementGeneration: 1 },
+          first.messageId,
+          0,
+        ),
+      ).rejects.toMatchObject({ statusCode: 404 });
+      expect(resourceFetches).toBe(0);
+
+      await expect(agentService.reactivateById(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+        status: "active",
+      });
+      expect(await value.database.select().from(imMessageDeliveries)).toHaveLength(1);
+      await agentService.suspendById(value.bootstrap.userId, value.agent.id);
+      await agentService.deleteById(value.bootstrap.userId, value.agent.id);
+
+      expect(await value.database.select().from(agents)).toEqual([
+        expect.objectContaining({ id: value.agent.id, status: "deleted" }),
+      ]);
+      expect(await value.database.select().from(agentRuntimeConfigs)).toHaveLength(0);
+      expect(await value.database.select().from(imBindings)).toEqual([
+        expect.objectContaining({
+          id: value.imBindingId,
+          status: "disabled",
+          encryptedCredential: null,
+          encryptedSetupContext: null,
+          connectionOwnerInstanceId: null,
+          connectionLeaseExpiresAt: null,
+        }),
+      ]);
+      expect(await value.database.select().from(sessions)).toEqual([
+        expect.objectContaining({ id: session.id, endedAt: expect.any(Date) }),
+      ]);
+      expect(await value.database.select().from(imMessages)).toHaveLength(2);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("serializes suspension ahead of concurrent outbound admission", async () => {
+    const value = await fixture();
+    const authorityLocked = deferred<void>();
+    const releaseSuspend = deferred<void>();
+    const agentService = new AgentService(value.database, {
+      afterAgentLocked: async () => {
+        authorityLocked.resolve();
+        await releaseSuspend.promise;
+      },
+    });
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      const admitted = await new ImMessageInbox(value.database).ingest(
+        value.imBindingId,
+        1,
+        inbound("Ev-lifecycle-outbound-race"),
+      );
+      const [session] = await value.database.select().from(sessions);
+      if (!session || !admitted.messageId) throw new Error("Concurrent lifecycle fixture was not admitted");
+      let providerWrites = 0;
+      const outbound = new OutboundMessageService(value.database, async () => ({
+        provider: "slack" as const,
+        validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
+        normalizeInbound: () => [],
+        send: async () => {
+          providerWrites += 1;
+          return { ok: true as const, externalMessageId: "1000.2", occurredAt: new Date() };
+        },
+        react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
+        fetchResource: async () => ({ stream: Readable.from(Buffer.alloc(0)) }),
+      }));
+
+      const suspend = agentService.suspendById(value.bootstrap.userId, value.agent.id);
+      await authorityLocked.promise;
+      const send = outbound.execute({
+        requestId: crypto.randomUUID(),
+        sessionId: session.id,
+        agentId: value.agent.id,
+        computerId: value.computer.id,
+        computerInstanceId: instanceId,
+        placementGeneration: 1,
+        expectedLatestImMessageId: admitted.messageId,
+        operation: "send",
+        content: {
+          version: 1,
+          fallbackText: "must remain fenced",
+          blocks: [{ type: "text", text: "must remain fenced" }],
+          truncated: false,
+        },
+      });
+      releaseSuspend.resolve();
+      await expect(settleWithin(suspend)).resolves.toMatchObject({ status: "suspended" });
+      await expect(settleWithin(send)).rejects.toThrow("OUTBOUND_AGENT_NOT_ACTIVE");
+      expect(providerWrites).toBe(0);
+    } finally {
+      releaseSuspend.resolve();
+      await value.sql.end();
+    }
+  });
+
+  it("serializes an admitted outbound side effect before suspension", async () => {
+    const value = await fixture();
+    const authorityLocked = deferred<void>();
+    const releaseAdmission = deferred<void>();
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      const admitted = await new ImMessageInbox(value.database).ingest(
+        value.imBindingId,
+        1,
+        inbound("Ev-lifecycle-outbound-admission-wins"),
+      );
+      const [session] = await value.database.select().from(sessions);
+      if (!session || !admitted.messageId) throw new Error("Concurrent outbound fixture was not admitted");
+      let providerWrites = 0;
+      const outbound = new OutboundMessageService(
+        value.database,
+        async () => ({
+          provider: "slack" as const,
+          validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
+          normalizeInbound: () => [],
+          send: async () => {
+            providerWrites += 1;
+            return { ok: true as const, externalMessageId: "1000.2", occurredAt: new Date() };
+          },
+          react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
+          fetchResource: async () => ({ stream: Readable.from(Buffer.alloc(0)) }),
+        }),
+        {
+          afterAgentLocked: async () => {
+            authorityLocked.resolve();
+            await releaseAdmission.promise;
+          },
+        },
+      );
+
+      const send = outbound.execute({
+        requestId: crypto.randomUUID(),
+        sessionId: session.id,
+        agentId: value.agent.id,
+        computerId: value.computer.id,
+        computerInstanceId: instanceId,
+        placementGeneration: 1,
+        expectedLatestImMessageId: admitted.messageId,
+        operation: "send",
+        content: {
+          version: 1,
+          fallbackText: "admitted before suspend",
+          blocks: [{ type: "text", text: "admitted before suspend" }],
+          truncated: false,
+        },
+      });
+      await authorityLocked.promise;
+      const suspend = new AgentService(value.database).suspendById(value.bootstrap.userId, value.agent.id);
+      let suspendSettled = false;
+      void suspend.finally(() => {
+        suspendSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(suspendSettled).toBe(false);
+      releaseAdmission.resolve();
+      await expect(settleWithin(send)).resolves.toMatchObject({ state: "succeeded" });
+      await expect(settleWithin(suspend)).resolves.toMatchObject({ status: "suspended" });
+      expect(providerWrites).toBe(1);
+    } finally {
+      releaseAdmission.resolve();
+      await value.sql.end();
+    }
+  });
+
+  it("lets suspension fence delivery before any ready or delivery runtime frame", async () => {
+    const value = await fixture();
+    const owners: RuntimeDomainOwner[] = [];
+    const authorityLocked = deferred<void>();
+    const releaseSuspend = deferred<void>();
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      await new ImMessageInbox(value.database).ingest(
+        value.imBindingId,
+        1,
+        inbound("Ev-lifecycle-delivery-suspend-wins"),
+      );
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        userId: value.bootstrap.userId,
+        reconcileResult: (frame) => ({
+          type: "session:reconcile:result",
+          requestId: frame.requestId,
+          sessionId: frame.sessionId,
+          placementGeneration: frame.placementGeneration,
+          status: frame.desired === "stopped" ? "stopped" : "ready",
+        }),
+      });
+      owners.push(runtime.domain);
+      const lifecycle = new AgentService(value.database, {
+        afterAgentLocked: async () => {
+          authorityLocked.resolve();
+          await releaseSuspend.promise;
+        },
+        stopSessions: async (targets) => {
+          await Promise.all(
+            targets.map((target) =>
+              runtime.domain.requestReconcile(target.computerId, instanceId, {
+                type: "session:reconcile",
+                requestId: crypto.randomUUID(),
+                computerId: target.computerId,
+                sessionId: target.sessionId,
+                agentId: target.agentId,
+                placementGeneration: target.placementGeneration,
+                desired: "stopped",
+              }),
+            ),
+          );
+        },
+      });
+      const suspend = lifecycle.suspendById(value.bootstrap.userId, value.agent.id);
+      await authorityLocked.promise;
+      const delivery = imDeliveryWorker({
+        database: value.database,
+        domain: runtime.domain,
+        registry: runtime.registry,
+      }).runOnce();
+      releaseSuspend.resolve();
+      await expect(settleWithin(suspend)).resolves.toMatchObject({ status: "suspended" });
+      await settleWithin(delivery);
+      expect(runtime.frames).toEqual([expect.objectContaining({ type: "session:reconcile", desired: "stopped" })]);
+    } finally {
+      releaseSuspend.resolve();
+      for (const owner of owners) owner.close();
+      await value.sql.end();
+    }
+  });
+
+  it("orders an admitted runtime delivery before the final suspension stop", async () => {
+    const value = await fixture();
+    const owners: RuntimeDomainOwner[] = [];
+    const releaseDelivery = deferred<void>();
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      await new ImMessageInbox(value.database).ingest(
+        value.imBindingId,
+        1,
+        inbound("Ev-lifecycle-delivery-admission-wins"),
+      );
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        deliveryGate: releaseDelivery.promise,
+        instanceId,
+        userId: value.bootstrap.userId,
+        reconcileResult: (frame) => ({
+          type: "session:reconcile:result",
+          requestId: frame.requestId,
+          sessionId: frame.sessionId,
+          placementGeneration: frame.placementGeneration,
+          status: frame.desired === "stopped" ? "stopped" : "ready",
+        }),
+      });
+      owners.push(runtime.domain);
+      const workerRun = imDeliveryWorker({
+        database: value.database,
+        domain: runtime.domain,
+        registry: runtime.registry,
+      }).runOnce();
+      await vi.waitFor(() =>
+        expect(runtime.frames).toEqual(expect.arrayContaining([expect.objectContaining({ type: "im:deliver" })])),
+      );
+      const lifecycle = new AgentService(value.database, {
+        stopSessions: async (targets) => {
+          await Promise.all(
+            targets.map((target) =>
+              runtime.domain.requestReconcile(target.computerId, instanceId, {
+                type: "session:reconcile",
+                requestId: crypto.randomUUID(),
+                computerId: target.computerId,
+                sessionId: target.sessionId,
+                agentId: target.agentId,
+                placementGeneration: target.placementGeneration,
+                desired: "stopped",
+              }),
+            ),
+          );
+        },
+      });
+      const suspend = lifecycle.suspendById(value.bootstrap.userId, value.agent.id);
+      releaseDelivery.resolve();
+      await settleWithin(workerRun);
+      await expect(settleWithin(suspend)).resolves.toMatchObject({ status: "suspended" });
+      expect(runtime.frames.map((frame) => (frame as Record<string, unknown>).type)).toEqual([
+        "session:reconcile",
+        "im:deliver",
+        "session:reconcile",
+      ]);
+      expect(runtime.frames.at(-1)).toMatchObject({ type: "session:reconcile", desired: "stopped" });
+    } finally {
+      releaseDelivery.resolve();
+      for (const owner of owners) owner.close();
+      await value.sql.end();
+    }
+  });
+
+  it("does not let a delayed suspension stop fence work admitted after reactivation", async () => {
+    const value = await fixture();
+    const owners: RuntimeDomainOwner[] = [];
+    const oldStopStarted = deferred<void>();
+    const releaseOldStop = deferred<void>();
+    const releaseDelivery = deferred<void>();
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      await new ImMessageInbox(value.database).ingest(
+        value.imBindingId,
+        1,
+        inbound("Ev-lifecycle-reactivation-fences-old-stop"),
+      );
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        deliveryGate: releaseDelivery.promise,
+        instanceId,
+        userId: value.bootstrap.userId,
+      });
+      owners.push(runtime.domain);
+      const lifecycle = new AgentService(value.database, {
+        stopSessions: async (targets) => {
+          oldStopStarted.resolve();
+          await releaseOldStop.promise;
+          await stopAgentSessions(value.database, targets, {
+            currentInstanceId: () => instanceId,
+            requestReconcile: (computerId, currentInstanceId, request, onDispatched) =>
+              runtime.domain.requestReconcile(computerId, currentInstanceId, request, onDispatched),
+          });
+        },
+      });
+
+      const suspend = lifecycle.suspendById(value.bootstrap.userId, value.agent.id);
+      await oldStopStarted.promise;
+      await expect(
+        new AgentService(value.database).reactivateById(value.bootstrap.userId, value.agent.id),
+      ).resolves.toMatchObject({ status: "active" });
+      const workerRun = imDeliveryWorker({
+        database: value.database,
+        domain: runtime.domain,
+        registry: runtime.registry,
+      }).runOnce();
+      await vi.waitFor(() =>
+        expect(runtime.frames).toEqual(expect.arrayContaining([expect.objectContaining({ type: "im:deliver" })])),
+      );
+
+      releaseOldStop.resolve();
+      await expect(settleWithin(suspend)).resolves.toMatchObject({ status: "suspended" });
+      releaseDelivery.resolve();
+      await settleWithin(workerRun);
+      expect(runtime.frames).toEqual([
+        expect.objectContaining({ type: "session:reconcile", desired: "ready" }),
+        expect.objectContaining({ type: "im:deliver" }),
+      ]);
+    } finally {
+      releaseOldStop.resolve();
+      releaseDelivery.resolve();
+      for (const owner of owners) owner.close();
+      await value.sql.end();
+    }
+  });
+
+  it("settles a reclaimed delivery without reversing the Delivery and Agent lock order", async () => {
+    const value = await fixture();
+    const owners: RuntimeDomainOwner[] = [];
+    const firstBeforeAdmission = deferred<void>();
+    const releaseFirstAdmission = deferred<void>();
+    const secondClaimLocked = deferred<void>();
+    const releaseSecondClaim = deferred<void>();
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      await new ImMessageInbox(value.database).ingest(
+        value.imBindingId,
+        1,
+        inbound("Ev-lifecycle-delivery-reclaim-lock-order"),
+      );
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        userId: value.bootstrap.userId,
+      });
+      owners.push(runtime.domain);
+      const firstWorker = imDeliveryWorker({
+        beforeDeliveryAdmission: async () => {
+          firstBeforeAdmission.resolve();
+          await releaseFirstAdmission.promise;
+        },
+        claimLeaseMs: 50,
+        claimRenewMs: 1_000,
+        database: value.database,
+        domain: runtime.domain,
+        registry: runtime.registry,
+      });
+      const secondWorker = imDeliveryWorker({
+        afterClaimRowLocked: async () => {
+          secondClaimLocked.resolve();
+          await releaseSecondClaim.promise;
+        },
+        claimLeaseMs: 50,
+        claimRenewMs: 1_000,
+        database: value.database,
+        domain: runtime.domain,
+        registry: runtime.registry,
+      });
+
+      const firstRun = firstWorker.runOnce();
+      await firstBeforeAdmission.promise;
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      const secondRun = secondWorker.runOnce();
+      await settleWithin(secondClaimLocked.promise);
+      releaseFirstAdmission.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      releaseSecondClaim.resolve();
+
+      await settleWithin(Promise.all([firstRun, secondRun]), 5_000);
+      expect(runtime.frames).toEqual(expect.arrayContaining([expect.objectContaining({ type: "im:deliver" })]));
+    } finally {
+      releaseFirstAdmission.resolve();
+      releaseSecondClaim.resolve();
+      for (const owner of owners) owner.close();
+      await value.sql.end();
+    }
+  });
+
+  it("recovers and settles accepted Turn custody while the Agent is suspended", async () => {
+    const value = await fixture();
+    const owners: RuntimeDomainOwner[] = [];
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-suspended-recovery"));
+      const firstRuntime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        userId: value.bootstrap.userId,
+      });
+      owners.push(firstRuntime.domain);
+      await imDeliveryWorker({
+        database: value.database,
+        domain: firstRuntime.domain,
+        registry: firstRuntime.registry,
+      }).runOnce();
+      const [accepted] = await value.database.select().from(imMessageDeliveries);
+      if (!accepted?.turnId) throw new Error("Accepted custody was not created");
+
+      await new AgentService(value.database).suspendById(value.bootstrap.userId, value.agent.id);
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(0) })
+        .where(eq(imMessageDeliveries.id, accepted.id));
+      const recoveryRuntime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        userId: value.bootstrap.userId,
+        reconcileResult: (frame) => {
+          expect(frame).toMatchObject({ desired: "stopped" });
+          expect(frame).not.toHaveProperty("runtime");
+          return {
+            type: "session:reconcile:result",
+            requestId: frame.requestId,
+            sessionId: frame.sessionId,
+            placementGeneration: frame.placementGeneration,
+            status: "stopped",
+          };
+        },
+      });
+      owners.push(recoveryRuntime.domain);
+      await imDeliveryWorker({
+        database: value.database,
+        domain: recoveryRuntime.domain,
+        registry: recoveryRuntime.registry,
+      }).runOnce();
+      expect(recoveryRuntime.frames).toEqual([
+        expect.objectContaining({ type: "session:reconcile", desired: "stopped" }),
+      ]);
+
+      const report = turnReportFor({
+        agentId: value.agent.id,
+        deliveryId: accepted.id,
+        placementGeneration: accepted.placementGeneration,
+        sessionId: accepted.sessionId,
+        turnId: accepted.turnId,
+      });
+      await expect(recoveryRuntime.domain.handle(report, recoveryRuntime.context)).resolves.toMatchObject({
+        status: "recorded",
+      });
+    } finally {
+      for (const owner of owners) owner.close();
       await value.sql.end();
     }
   });
@@ -1388,7 +2041,7 @@ describe("IM binding persistence", () => {
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-worker"));
       const registry = { currentInstanceId: () => instanceId };
       const failedDomain = {
-        requestReconcile: vi.fn().mockRejectedValue(new Error("runtime unavailable")),
+        requestReconcile: dispatchedRuntimeFailure(new Error("runtime unavailable")),
         requestDelivery: vi.fn(),
       };
       await imDeliveryWorker({
@@ -1933,12 +2586,15 @@ describe("IM binding persistence", () => {
       const reconcileEntered = deferred<void>();
       const releaseReconcile = deferred<void>();
       const firstDomain = {
-        requestReconcile: vi.fn(async () => {
-          reconcileEntered.resolve();
-          await releaseReconcile.promise;
-          return { status: "ready" };
-        }),
-        requestDelivery: vi.fn().mockResolvedValue({
+        requestReconcile: vi.fn(
+          async (_computerId: string, _instanceId: string, _request: unknown, onDispatched?: () => void) => {
+            onDispatched?.();
+            reconcileEntered.resolve();
+            await releaseReconcile.promise;
+            return { status: "ready" };
+          },
+        ),
+        requestDelivery: dispatchedRuntimeResult({
           status: "rejected",
           reason: "configuration_unsupported",
         }),
@@ -2058,8 +2714,8 @@ describe("IM binding persistence", () => {
         database: value.database,
         registry: { currentInstanceId: () => instanceId } as never,
         domain: {
-          requestReconcile: vi.fn().mockResolvedValue({ status: "ready" }),
-          requestDelivery: vi.fn().mockResolvedValue({
+          requestReconcile: dispatchedRuntimeResult({ status: "ready" }),
+          requestDelivery: dispatchedRuntimeResult({
             status: "rejected",
             reason: "configuration_unsupported",
           }),
@@ -2144,7 +2800,7 @@ describe("IM binding persistence", () => {
         .where(eq(computers.id, value.computer.id));
       await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-reconcile-expiry"));
       const failedDomain = {
-        requestReconcile: vi.fn().mockRejectedValue(new Error("reconcile failed before dispatch")),
+        requestReconcile: dispatchedRuntimeFailure(new Error("reconcile failed before dispatch")),
         requestDelivery: vi.fn(),
       };
       const registry = { currentInstanceId: () => instanceId };
@@ -2402,7 +3058,7 @@ describe("IM binding persistence", () => {
             .set({ expiresAt: new Date(0), nextAttemptAt: new Date(0) })
             .where(eq(imMessageDeliveries.id, firstFrame.deliveryId));
           const expiryDomain = {
-            requestReconcile: vi.fn().mockResolvedValue({ status: "recovery_required" }),
+            requestReconcile: dispatchedRuntimeResult({ status: "recovery_required" }),
             requestDelivery: vi.fn(),
           };
           await imDeliveryWorker({
@@ -2910,7 +3566,7 @@ describe("IM binding persistence", () => {
         database: value.database,
         registry: first.registry,
         domain: {
-          requestReconcile: vi.fn().mockResolvedValue({ status: "recovery_required" }),
+          requestReconcile: dispatchedRuntimeResult({ status: "recovery_required" }),
           requestDelivery: vi.fn(),
         } as never,
       }).runOnce();

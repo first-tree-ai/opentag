@@ -97,6 +97,22 @@ export async function runAgentDelete(agentId: string, options: AgentCommandDepen
   return `Deleted Agent ${agentId}`;
 }
 
+export async function runAgentSuspend(
+  agentId: string,
+  options: AgentCommandDependencies = {},
+): Promise<AgentAdminConfig> {
+  const { api, accessToken } = await resolveAgentCommandContext(options);
+  return api.suspendAgent(accessToken, agentId);
+}
+
+export async function runAgentReactivate(
+  agentId: string,
+  options: AgentCommandDependencies = {},
+): Promise<AgentAdminConfig> {
+  const { api, accessToken } = await resolveAgentCommandContext(options);
+  return api.reactivateAgent(accessToken, agentId);
+}
+
 async function createRuntimeConfig(options: AgentCreateOptions) {
   assertInstructionsSource(options);
   const runtimeConfig = {

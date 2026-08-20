@@ -1,2 +1,2 @@
-export { AgentService } from "./agent-service.js";
+export { AgentService, type AgentSessionStopTarget } from "./agent-service.js";
 export { AgentServiceError } from "./errors.js";

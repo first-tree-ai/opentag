@@ -9,7 +9,48 @@ function setDocumentCookie(value: string): void {
   setter.call(document, value);
 }
 
+function jsonResponse(value: unknown): Response {
+  return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } });
+}
+
 describe("BrowserApi", () => {
+  it("uses explicit CSRF-protected Agent lifecycle commands", async () => {
+    setDocumentCookie("opentag_csrf=lifecycle-csrf; Path=/");
+    const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
+    const config = {
+      id: agentId,
+      teamId,
+      managerUserId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+      computerId: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+      name: "reviewer",
+      displayName: "Reviewer",
+      runtimeProvider: "codex",
+      receiveMode: "mention_only",
+      status: "suspended",
+      revision: 2,
+      runtimeConfig: {
+        revision: 1,
+        model: null,
+        reasoningEffort: null,
+        instructions: "",
+        allowedTools: [],
+        maxDurationMs: null,
+      },
+      createdAt: "2030-01-01T00:00:00.000Z",
+      updatedAt: "2030-01-01T00:01:00.000Z",
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(init?.method).toBe(String(input).endsWith(`/agents/${agentId}`) ? "DELETE" : "POST");
+      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("lifecycle-csrf");
+      return init?.method === "DELETE" ? new Response(null, { status: 204 }) : jsonResponse(config);
+    });
+    const api = new BrowserApi(fetchImpl);
+    await expect(api.suspendAgent(agentId)).resolves.toMatchObject({ status: "suspended" });
+    await expect(api.reactivateAgent(agentId)).resolves.toMatchObject({ id: agentId });
+    await expect(api.deleteAgent(agentId)).resolves.toBeUndefined();
+    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
+
   it("updates Team profile fields with the browser mutation contract", async () => {
     setDocumentCookie("opentag_csrf=team-csrf; Path=/");
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {

@@ -16,6 +16,7 @@ import { computers } from "./computers.js";
 
 export const agentRuntimeProvider = pgEnum("agent_runtime_provider", ["codex", "claude-code"]);
 export const agentReceiveMode = pgEnum("agent_receive_mode", ["all_message", "mention_only"]);
+export const agentStatus = pgEnum("agent_status", ["active", "suspended", "deleted"]);
 
 export const agents = pgTable(
   "agents",
@@ -30,15 +31,15 @@ export const agents = pgTable(
     displayName: text("display_name").notNull(),
     runtimeProvider: agentRuntimeProvider("runtime_provider").notNull(),
     receiveMode: agentReceiveMode("receive_mode").notNull().default("mention_only"),
+    status: agentStatus("status").notNull().default("active"),
     revision: integer("revision").notNull().default(1),
-    deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex("agents_team_name_active_unique")
       .on(table.teamId, sql`lower(${table.name})`)
-      .where(sql`${table.deletedAt} is null`),
+      .where(sql`${table.status} <> 'deleted'`),
     index("agents_team_id_idx").on(table.teamId),
     index("agents_manager_user_id_idx").on(table.managerUserId),
     index("agents_computer_id_idx").on(table.computerId),

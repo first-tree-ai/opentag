@@ -524,7 +524,7 @@ describe("account identity and Team foundation persistence", () => {
       await expect(value.teamService.remove(secondAdmin.id, value.bootstrap.teamId, member.id)).rejects.toMatchObject({
         code: "MEMBERSHIP_ACTIVE_AGENTS",
       });
-      await value.database.update(agents).set({ deletedAt: now }).where(eq(agents.id, agent.id));
+      await value.database.update(agents).set({ status: "deleted" }).where(eq(agents.id, agent.id));
       await value.teamService.remove(secondAdmin.id, value.bootstrap.teamId, member.id);
       await expect(value.invitations.redeem(member.id, invitation.token)).rejects.toMatchObject({
         code: "MEMBERSHIP_FORBIDDEN",

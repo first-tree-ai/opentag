@@ -104,6 +104,26 @@ summary:focus-visible {
   background: #2c9b6e;
   border-radius: 50%;
 }
+
+.status-chip {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 0.4rem;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid #cbd5ce;
+  border-radius: 999px;
+  color: #527164;
+  font-size: 0.75rem;
+}
+
+.status-chip.suspended {
+  border-color: #9a5b18;
+  color: #7b4510;
+}
+
+button.danger {
+  background: #9b2c2c;
+}
 .shell {
   display: grid;
   grid-template-columns: 240px 1fr;

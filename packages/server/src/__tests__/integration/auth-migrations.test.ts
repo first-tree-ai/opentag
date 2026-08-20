@@ -136,10 +136,13 @@ describe("database migrations", () => {
     }
   });
 
-  it("upgrades a deployed 0005 Drizzle history through 0006 exactly once", async () => {
+  it("upgrades deployed 0005 and 0006 Drizzle histories through each forward migration exactly once", async () => {
     const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0005-migrations-"));
     const legacyMeta = join(legacyFolder, "meta");
     await mkdir(legacyMeta);
+    const through0006Folder = await mkdtemp(join(tmpdir(), "opentag-0006-migrations-"));
+    const through0006Meta = join(through0006Folder, "meta");
+    await mkdir(through0006Meta);
     const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
       version: string;
       dialect: string;
@@ -151,6 +154,13 @@ describe("database migrations", () => {
     await writeFile(
       join(legacyMeta, "_journal.json"),
       JSON.stringify({ ...journal, entries: journal.entries.filter(({ idx }) => idx <= 5) }, null, 2),
+    );
+    for (const entry of journal.entries.filter(({ idx }) => idx <= 6)) {
+      await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(through0006Folder, `${entry.tag}.sql`));
+    }
+    await writeFile(
+      join(through0006Meta, "_journal.json"),
+      JSON.stringify({ ...journal, entries: journal.entries.filter(({ idx }) => idx <= 6) }, null, 2),
     );
 
     try {
@@ -165,7 +175,7 @@ describe("database migrations", () => {
           { table_name: "integrations" },
         ]);
 
-        await migrateDatabase(databaseUrl, migrationsFolder);
+        await migrateDatabase(databaseUrl, through0006Folder);
         const [after] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
@@ -218,16 +228,75 @@ describe("database migrations", () => {
           "sessions_im_binding_scope_idx",
         ]);
 
+        const userId = crypto.randomUUID();
+        const teamId = crypto.randomUUID();
+        const computerId = crypto.randomUUID();
+        const activeAgentId = crypto.randomUUID();
+        const deletedAgentId = crypto.randomUUID();
+        await sql`insert into users (id, email, display_name) values (${userId}, 'migration@example.com', 'Migration')`;
+        await sql`insert into teams (id, name, display_name) values (${teamId}, 'migration', 'Migration')`;
+        await sql`insert into memberships (team_id, user_id, role) values (${teamId}, ${userId}, 'admin')`;
+        await sql`
+          insert into computers (id, owner_user_id, display_name, platform, arch, client_version)
+          values (${computerId}, ${userId}, 'Migration Computer', 'linux', 'x64', '0.0.1')
+        `;
+        await sql`
+          insert into agents (id, team_id, manager_user_id, computer_id, name, display_name, runtime_provider)
+          values (${activeAgentId}, ${teamId}, ${userId}, ${computerId}, 'active-agent', 'Active Agent', 'codex')
+        `;
+        await sql`
+          insert into agents (
+            id, team_id, manager_user_id, computer_id, name, display_name, runtime_provider, deleted_at
+          )
+          values (
+            ${deletedAgentId}, ${teamId}, ${userId}, ${computerId}, 'deleted-agent', 'Deleted Agent', 'codex', now()
+          )
+        `;
+
+        await migrateDatabase(databaseUrl, migrationsFolder);
+        const [lifecycle] = await sql<
+          { count: number; deleted_at_exists: boolean; status_default: string | null; statuses: string[] }[]
+        >`
+          select
+            (select count(*)::int from drizzle.__drizzle_migrations) as count,
+            exists(
+              select 1 from information_schema.columns
+              where table_schema = 'public' and table_name = 'agents' and column_name = 'deleted_at'
+            ) as deleted_at_exists,
+            (
+              select column_default from information_schema.columns
+              where table_schema = 'public' and table_name = 'agents' and column_name = 'status'
+            ) as status_default,
+            array(select status::text from agents order by name) as statuses
+        `;
+        expect(lifecycle).toEqual({
+          count: 8,
+          deleted_at_exists: false,
+          status_default: "'active'::agent_status",
+          statuses: ["active", "deleted"],
+        });
+        const [agentStatusEnum] = await sql<{ values: string[] }[]>`
+          select array_agg(enumlabel order by enumsortorder)::text[] as values
+          from pg_enum join pg_type on pg_type.oid = pg_enum.enumtypid
+          where pg_type.typname = 'agent_status'
+        `;
+        expect(agentStatusEnum?.values).toEqual(["active", "suspended", "deleted"]);
+        const [agentNameIndex] = await sql<{ indexdef: string }[]>`
+          select indexdef from pg_indexes where indexname = 'agents_team_name_active_unique'
+        `;
+        expect(agentNameIndex?.indexdef).toContain("status <> 'deleted'::agent_status");
+
         await migrateDatabase(databaseUrl, migrationsFolder);
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(7);
+        expect(rerun?.count).toBe(8);
       } finally {
         await sql.end();
       }
     } finally {
       await rm(legacyFolder, { recursive: true, force: true });
+      await rm(through0006Folder, { recursive: true, force: true });
     }
   });
 

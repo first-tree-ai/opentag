@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { runTeamInvitationShow, runTeamMemberList, runTeamMemberRole } from "../index.js";
+import { runTeamInvitationShow, runTeamMemberList, runTeamMemberRole, selectTeam } from "../index.js";
 
 const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -20,14 +20,14 @@ function api() {
       user: { id: userId, email: member.email, displayName: member.displayName },
       memberships: [{ teamId, teamName: "example", teamDisplayName: "Example", role: "admin" }],
     }),
-    listTeamMembers: vi.fn().mockResolvedValue({ members: [member] }),
+    listTeamMembersConfig: vi.fn().mockResolvedValue({ members: [member] }),
     updateTeamMember: vi.fn().mockResolvedValue(member),
     removeTeamMember: vi.fn(),
     restoreTeamMember: vi.fn(),
     leaveTeam: vi.fn(),
     getTeamInvitation: vi.fn().mockResolvedValue({
       token: "A".repeat(43),
-      inviteUrl: `https://opentag.example.com/invite/${"A".repeat(43)}`,
+      inviteUrl: `https://opentag.example.com/invites/${"A".repeat(43)}`,
       role: "member",
       expiresAt: "2026-08-26T00:00:00.000Z",
     }),
@@ -46,7 +46,17 @@ describe("Team CLI core", () => {
   it("exposes the bearer invitation only through the explicit invitation command", async () => {
     const client = api();
     await expect(runTeamInvitationShow({ accessToken: "access", api: client })).resolves.toMatchObject({
-      inviteUrl: expect.stringContaining("/invite/"),
+      inviteUrl: expect.stringContaining("/invites/"),
     });
+  });
+
+  it("hard-switches the CLI selector to the renamed Team handle while preserving UUID selection", () => {
+    const me = {
+      user: { id: userId, email: member.email, displayName: member.displayName },
+      memberships: [{ teamId, teamName: "renamed-team", teamDisplayName: "Renamed Team", role: "admin" as const }],
+    };
+    expect(selectTeam(me, "renamed-team").teamId).toBe(teamId);
+    expect(selectTeam(me, teamId).teamName).toBe("renamed-team");
+    expect(() => selectTeam(me, "example")).toThrow('Team "example" is not available');
   });
 });

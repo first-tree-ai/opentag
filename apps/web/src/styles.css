@@ -28,6 +28,14 @@ button,
   text-decoration: none;
   display: inline-block;
 }
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 3px solid #d9963b;
+  outline-offset: 3px;
+}
 .secondary {
   background: #dce9df;
   color: #164c3a;
@@ -109,6 +117,25 @@ aside {
   flex-direction: column;
   gap: 1.8rem;
 }
+.app-main {
+  min-width: 0;
+}
+.topbar {
+  min-height: 64px;
+  padding: 1rem 2rem;
+  border-bottom: 1px solid #dce3da;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: rgba(255, 255, 255, 0.72);
+}
+.team-picker {
+  display: grid;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  color: #bdd3c9;
+}
 .brand {
   font-family: Georgia, serif;
   font-size: 1.7rem;
@@ -134,6 +161,122 @@ nav a.active {
 }
 .page-header {
   margin-bottom: 2rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding-bottom: 1.25rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid #dce3da;
+}
+.tabs a {
+  color: #52655c;
+}
+.tabs a.active {
+  background: #dfeae4;
+  color: #173a30;
+}
+.agent-card {
+  display: grid;
+  gap: 1rem;
+  padding: 1.25rem;
+  border: 1px solid #dce3da;
+  border-radius: 18px;
+  background: white;
+  text-decoration: none;
+}
+.agent-card small,
+.row small {
+  display: block;
+  margin-top: 0.3rem;
+  color: #64736c;
+}
+.agent-card dl,
+.definition-list {
+  margin: 0;
+}
+.definition-list div,
+.agent-card dl div {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.35fr) 1fr;
+  gap: 1rem;
+  padding: 0.8rem 0;
+  border-bottom: 1px solid #e8ece6;
+}
+dt {
+  color: #64736c;
+}
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.form-card {
+  max-width: 680px;
+  display: grid;
+  gap: 1rem;
+  padding: 1.5rem;
+  border: 1px solid #dce3da;
+  border-radius: 18px;
+  background: white;
+}
+.form-card label {
+  display: grid;
+  gap: 0.45rem;
+  font-weight: 700;
+}
+input,
+select {
+  max-width: 100%;
+  min-height: 44px;
+  border: 1px solid #aebdb5;
+  border-radius: 9px;
+  padding: 0.65rem 0.75rem;
+  background: white;
+  color: #18201d;
+  font: inherit;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+.empty-state {
+  padding: 2rem;
+  border: 1px dashed #afbeb6;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.45);
+}
+.empty-state h2 {
+  margin-top: 0;
+}
+.list {
+  display: grid;
+  gap: 0.65rem;
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid #dce3da;
+  border-radius: 12px;
+  background: white;
+}
+.steps {
+  display: grid;
+  gap: 1rem;
+  max-width: 640px;
+}
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .page-heading-row {
   display: flex;
@@ -270,6 +413,13 @@ th {
   color: #7c2921;
   margin-top: 1rem;
 }
+.setup-qr {
+  display: block;
+  width: min(240px, 100%);
+  margin: 1rem 0;
+  border-radius: 12px;
+  background: #fff;
+}
 @media (max-width: 720px) {
   .shell {
     grid-template-columns: 1fr;
@@ -289,38 +439,12 @@ th {
     flex-direction: column;
   }
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #e9f1ed;
-    background: #0e1714;
-  }
-  .center-card,
-  .team-card,
-  .metric,
-  .panel,
-  .notice,
-  .table-wrap {
-    background: #17231f;
-    border-color: #2c3b35;
-  }
-  .dialog {
-    background: #17231f;
-    border-color: #2c3b35;
-  }
-  code {
-    background: #0f1c18;
-  }
-  .page-header p,
-  .muted,
-  .timestamp {
-    color: #9eb0a8;
-  }
-  th,
-  td {
-    border-color: #2c3b35;
-  }
-  .success {
-    background: #163127;
-    color: #ccebdc;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto;
+    transition-duration: 0.01ms;
+    animation-duration: 0.01ms;
   }
 }

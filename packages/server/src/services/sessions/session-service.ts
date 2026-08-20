@@ -1,7 +1,7 @@
 import type { ImConversationKind, Session, SessionKind, SessionPlacement } from "@opentag/shared";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, imMessageDeliveries, integrations, sessionPlacements, sessions } from "../../db/schema/index.js";
+import { agents, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../../db/schema/index.js";
 
 type SessionRow = typeof sessions.$inferSelect;
 type PlacementRow = typeof sessionPlacements.$inferSelect;
@@ -9,7 +9,7 @@ type PlacementRow = typeof sessionPlacements.$inferSelect;
 function toSession(row: SessionRow): Session {
   return {
     id: row.id,
-    integrationId: row.integrationId,
+    imBindingId: row.imBindingId,
     channelId: row.channelId,
     conversationKind: row.conversationKind,
     kind: row.kind,
@@ -51,7 +51,7 @@ export class SessionService {
   }
 
   async ensureChatSession(
-    scope: { integrationId: string; channelId: string; conversationKind: ImConversationKind },
+    scope: { imBindingId: string; channelId: string; conversationKind: ImConversationKind },
     kind: Exclude<SessionKind, "internal">,
     threadKey?: string,
   ): Promise<{ session: Session; placement: SessionPlacement }> {
@@ -63,8 +63,8 @@ export class SessionService {
     }
 
     return this.#database.transaction(async (transaction) => {
-      const computerId = await this.#resolveComputer(transaction, scope.integrationId);
-      const existing = await this.#findActive(transaction, scope.integrationId, scope.channelId, kind, threadKey);
+      const computerId = await this.#resolveComputer(transaction, scope.imBindingId);
+      const existing = await this.#findActive(transaction, scope.imBindingId, scope.channelId, kind, threadKey);
       if (existing) return this.#withPlacement(transaction, existing, computerId);
 
       const [created] = await transaction
@@ -73,7 +73,7 @@ export class SessionService {
         .onConflictDoNothing()
         .returning();
       const session =
-        created ?? (await this.#findActive(transaction, scope.integrationId, scope.channelId, kind, threadKey));
+        created ?? (await this.#findActive(transaction, scope.imBindingId, scope.channelId, kind, threadKey));
       if (!session) throw new Error("Active Session ensure did not converge");
       return this.#withPlacement(transaction, session, computerId);
     });
@@ -92,7 +92,7 @@ export class SessionService {
       const [created] = await transaction
         .insert(sessions)
         .values({
-          integrationId: creator.session.integrationId,
+          imBindingId: creator.session.imBindingId,
           channelId: creator.session.channelId,
           conversationKind: creator.session.conversationKind,
           kind: "internal",
@@ -207,20 +207,20 @@ export class SessionService {
     if (!placement) throw new SessionServiceError("SESSION_PLACEMENT_STALE", "The Session placement is stale");
   }
 
-  async #resolveComputer(transaction: DatabaseTransaction, integrationId: string): Promise<string> {
+  async #resolveComputer(transaction: DatabaseTransaction, imBindingId: string): Promise<string> {
     const [scope] = await transaction
       .select({ computerId: agents.computerId })
-      .from(integrations)
-      .innerJoin(agents, eq(agents.id, integrations.agentId))
-      .where(and(eq(integrations.id, integrationId), eq(integrations.status, "active"), isNull(agents.deletedAt)))
+      .from(imBindings)
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .where(and(eq(imBindings.id, imBindingId), eq(imBindings.status, "active"), isNull(agents.deletedAt)))
       .limit(1);
-    if (!scope) throw new SessionServiceError("INTEGRATION_NOT_ACTIVE", "The IM Integration is not active");
+    if (!scope) throw new SessionServiceError("IM_BINDING_NOT_ACTIVE", "The IM binding is not active");
     return scope.computerId;
   }
 
   async #findActive(
     transaction: DatabaseTransaction,
-    integrationId: string,
+    imBindingId: string,
     channelId: string,
     kind: Exclude<SessionKind, "internal">,
     threadKey?: string,
@@ -230,7 +230,7 @@ export class SessionService {
       .from(sessions)
       .where(
         and(
-          eq(sessions.integrationId, integrationId),
+          eq(sessions.imBindingId, imBindingId),
           eq(sessions.channelId, channelId),
           eq(sessions.kind, kind),
           kind === "channel" ? isNull(sessions.threadKey) : eq(sessions.threadKey, threadKey ?? ""),

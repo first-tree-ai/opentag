@@ -50,7 +50,7 @@ export class OAuthFlowService {
         .sign(this.#key);
     const [state, context] = await Promise.all([
       common(
-        new SignJWT({ flowNonce, provider: "google", intent: next.startsWith("/invite/") ? "invite" : "login" }),
+        new SignJWT({ flowNonce, provider: "google", intent: next.startsWith("/invites/") ? "invite" : "login" }),
         "opentag-oauth-state",
       ),
       common(new SignJWT({ flowNonce, next, oidcNonce, provider: "google" }), "opentag-oauth-context"),
@@ -80,7 +80,7 @@ export class OAuthFlowService {
         throw new Error("OAuth flow mismatch");
       }
       const next = validateOAuthNext(parsedContext.next);
-      if ((parsedState.intent === "invite") !== next.startsWith("/invite/")) throw new Error("OAuth intent mismatch");
+      if ((parsedState.intent === "invite") !== next.startsWith("/invites/")) throw new Error("OAuth intent mismatch");
       return { next, oidcNonce: parsedContext.oidcNonce };
     } catch {
       throw new AuthServiceError(
@@ -94,7 +94,7 @@ export class OAuthFlowService {
 }
 
 export function validateOAuthNext(value?: string): string {
-  const next = value ?? "/admin";
+  const next = value ?? "/agents";
   if (
     next.length > 1024 ||
     next.includes("\\") ||
@@ -107,12 +107,14 @@ export function validateOAuthNext(value?: string): string {
   ) {
     throw new AuthServiceError("AUTH_OAUTH_FAILED", "validation", "The sign-in destination is invalid", 400);
   }
-  if (/^\/admin(?:\/[^?#]*)?(?:\?[^#]*)?$/.test(next)) return next;
-  if (/^\/invite\/[A-Za-z0-9_-]{32,512}$/.test(next)) return next;
+  if (/^\/(?:agents(?:\/[^?#]*)?|settings(?:\/[^?#]*)?|onboarding|teams\/new|login)(?:\?[^#]*)?$/.test(next)) {
+    return next;
+  }
+  if (/^\/invites\/[A-Za-z0-9_-]{32,512}$/.test(next)) return next;
   throw new AuthServiceError("AUTH_OAUTH_FAILED", "validation", "The sign-in destination is invalid", 400);
 }
 
 export function invitationTokenFromNext(next: string): string | undefined {
-  const match = /^\/invite\/([A-Za-z0-9_-]{32,512})$/.exec(next);
+  const match = /^\/invites\/([A-Za-z0-9_-]{32,512})$/.exec(next);
   return match?.[1];
 }

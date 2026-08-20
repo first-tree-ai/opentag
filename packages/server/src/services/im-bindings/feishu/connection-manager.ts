@@ -1,9 +1,9 @@
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
 import { and, eq, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../../db/client.js";
-import { integrations } from "../../../db/schema/index.js";
+import { agents, imBindings } from "../../../db/schema/index.js";
 import type { ImMessageInbox } from "../../im/index.js";
-import type { IntegrationService, VerifiedFeishuBinding } from "../integration-service.js";
+import type { ImBindingService, VerifiedFeishuBinding } from "../im-binding-service.js";
 import { FeishuAdapter } from "./adapter.js";
 import type { FeishuBindingActivation } from "./setup-service.js";
 
@@ -30,7 +30,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   readonly #database: DatabaseClient;
   readonly #inbox: ImMessageInbox;
   readonly #instanceId: string;
-  readonly #integrations: IntegrationService;
+  readonly #imBindings: ImBindingService;
   readonly #createAdapter: (input: {
     appId: string;
     appSecret: string;
@@ -41,6 +41,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   readonly #maintenanceMs: number;
   readonly #onDiagnostic: (code: string) => void;
   readonly #runtimeReady: (agentId: string) => Promise<boolean>;
+  readonly #afterActivationAgentLocked: (() => Promise<void>) | undefined;
   readonly #owned = new Map<string, OwnedChannel>();
   #maintaining = false;
   #timer: ReturnType<typeof setInterval> | undefined;
@@ -50,7 +51,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     database: DatabaseClient;
     inbox: ImMessageInbox;
     instanceId: string;
-    integrations: IntegrationService;
+    imBindings: ImBindingService;
     createAdapter?: (input: {
       appId: string;
       appSecret: string;
@@ -61,16 +62,18 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     maintenanceMs?: number;
     runtimeReady?: (agentId: string) => Promise<boolean> | boolean;
     onDiagnostic?: (code: string) => void;
+    afterActivationAgentLocked?: () => Promise<void>;
   }) {
     this.#database = input.database;
     this.#inbox = input.inbox;
     this.#instanceId = input.instanceId;
-    this.#integrations = input.integrations;
+    this.#imBindings = input.imBindings;
     this.#createAdapter = input.createAdapter ?? ((options) => new FeishuAdapter(options));
     this.#leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
     this.#maintenanceMs = input.maintenanceMs ?? DEFAULT_MAINTENANCE_MS;
     this.#runtimeReady = async (agentId) => (await input.runtimeReady?.(agentId)) ?? true;
     this.#onDiagnostic = input.onDiagnostic ?? (() => undefined);
+    this.#afterActivationAgentLocked = input.afterActivationAgentLocked;
   }
 
   start(): void {
@@ -89,14 +92,14 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     this.#owned.clear();
     await Promise.allSettled(owned.map((entry) => entry.adapter.channel.disconnect()));
     await this.#database
-      .update(integrations)
+      .update(imBindings)
       .set({
         connectionOwnerInstanceId: null,
         connectionLeaseExpiresAt: null,
         observedConnectedAt: null,
         observedAt: new Date(),
       })
-      .where(eq(integrations.connectionOwnerInstanceId, this.#instanceId));
+      .where(eq(imBindings.connectionOwnerInstanceId, this.#instanceId));
   }
 
   async activateAtomicAttempt(input: {
@@ -114,7 +117,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       teamId: null,
       teamBrand: input.teamBrand,
     });
-    let handoff: { integrationId: string; epoch: number; generation: number; appId: string } | undefined;
+    let handoff: { imBindingId: string; epoch: number; generation: number; appId: string } | undefined;
     const detachHandlers = this.#attachHandlers(candidate, () => handoff);
     try {
       const identity = await candidate.validateBinding();
@@ -134,38 +137,46 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         grantedScopes,
       };
       const committed = await this.#database.transaction(async (transaction) => {
+        const [agent] = await transaction
+          .select({ id: agents.id })
+          .from(agents)
+          .where(eq(agents.id, input.agentId))
+          .limit(1)
+          .for("update");
+        if (!agent) throw new Error("FEISHU_SETUP_FENCE_STALE");
+        await this.#afterActivationAgentLocked?.();
         const [slot] = await transaction
-          .select({ id: integrations.id })
-          .from(integrations)
+          .select({ id: imBindings.id })
+          .from(imBindings)
           .where(
             and(
-              eq(integrations.setupAttemptId, input.attemptId),
-              eq(integrations.agentId, input.agentId),
-              eq(integrations.setupOwnerInstanceId, input.ownerInstanceId),
-              eq(integrations.setupState, "validating"),
+              eq(imBindings.setupAttemptId, input.attemptId),
+              eq(imBindings.agentId, input.agentId),
+              eq(imBindings.setupOwnerInstanceId, input.ownerInstanceId),
+              eq(imBindings.setupState, "validating"),
             ),
           )
           .limit(1)
           .for("update");
         if (!slot) throw new Error("FEISHU_SETUP_FENCE_STALE");
-        const integrationId = await this.#integrations.activateFeishu(verified, transaction);
+        const imBindingId = await this.#imBindings.activateFeishu(verified, transaction);
         const now = new Date();
         const expiresAt = new Date(now.getTime() + this.#leaseMs);
         const [lease] = await transaction
-          .update(integrations)
+          .update(imBindings)
           .set({
             connectionOwnerInstanceId: this.#instanceId,
-            connectionFencingEpoch: sql`${integrations.connectionFencingEpoch} + 1`,
+            connectionFencingEpoch: sql`${imBindings.connectionFencingEpoch} + 1`,
             connectionLeaseExpiresAt: expiresAt,
             observedConnectedAt: now,
             observedAt: now,
             updatedAt: now,
           })
-          .where(and(eq(integrations.id, integrationId), eq(integrations.status, "active")))
-          .returning({ epoch: integrations.connectionFencingEpoch });
+          .where(and(eq(imBindings.id, imBindingId), eq(imBindings.status, "active")))
+          .returning({ epoch: imBindings.connectionFencingEpoch });
         if (!lease) throw new Error("FEISHU_CONNECTION_LEASE_UNAVAILABLE");
         const [completed] = await transaction
-          .update(integrations)
+          .update(imBindings)
           .set({
             setupState: "succeeded",
             setupOwnerInstanceId: null,
@@ -176,26 +187,26 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
             updatedAt: now,
           })
           .where(
-            integrationId === slot.id
+            imBindingId === slot.id
               ? and(
-                  eq(integrations.id, slot.id),
-                  eq(integrations.setupAttemptId, input.attemptId),
-                  eq(integrations.setupOwnerInstanceId, input.ownerInstanceId),
-                  eq(integrations.setupState, "validating"),
+                  eq(imBindings.id, slot.id),
+                  eq(imBindings.setupAttemptId, input.attemptId),
+                  eq(imBindings.setupOwnerInstanceId, input.ownerInstanceId),
+                  eq(imBindings.setupState, "validating"),
                 )
               : and(
-                  eq(integrations.id, slot.id),
-                  eq(integrations.status, "disabled"),
-                  eq(integrations.setupAttemptId, input.attemptId),
-                  eq(integrations.setupState, "validating"),
+                  eq(imBindings.id, slot.id),
+                  eq(imBindings.status, "disabled"),
+                  eq(imBindings.setupAttemptId, input.attemptId),
+                  eq(imBindings.setupState, "validating"),
                 ),
           )
-          .returning({ id: integrations.id });
+          .returning({ id: imBindings.id });
         if (!completed) throw new Error("FEISHU_SETUP_FENCE_STALE");
-        const material = await this.#integrations.getFeishuConnectionMaterial(integrationId, transaction);
+        const material = await this.#imBindings.getFeishuConnectionMaterial(imBindingId, transaction);
         if (!material) throw new Error("FEISHU_BINDING_NOT_ACTIVE");
-        handoff = { integrationId, epoch: lease.epoch, generation: material.generation, appId: material.appId };
-        return { integrationId, epoch: lease.epoch, material };
+        handoff = { imBindingId, epoch: lease.epoch, generation: material.generation, appId: material.appId };
+        return { imBindingId, epoch: lease.epoch, material };
       });
       const next = {
         adapter: candidate,
@@ -203,8 +214,8 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         generation: committed.material.generation,
         appId: committed.material.appId,
       };
-      const previous = this.#owned.get(committed.integrationId);
-      this.#owned.set(committed.integrationId, next);
+      const previous = this.#owned.get(committed.imBindingId);
+      this.#owned.set(committed.imBindingId, next);
       if (previous && previous.adapter !== candidate) {
         await previous.adapter.channel
           .disconnect()
@@ -231,41 +242,41 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   async #maintainOnce(): Promise<void> {
     const now = new Date();
     const expiresAt = new Date(now.getTime() + this.#leaseMs);
-    for (const [integrationId, owned] of [...this.#owned]) {
-      const material = await this.#integrations.getFeishuConnectionMaterial(integrationId);
+    for (const [imBindingId, owned] of [...this.#owned]) {
+      const material = await this.#imBindings.getFeishuConnectionMaterial(imBindingId);
       if (!material || material.generation !== owned.generation || material.appId !== owned.appId) {
-        this.#owned.delete(integrationId);
+        this.#owned.delete(imBindingId);
         await owned.adapter.channel.disconnect().catch(() => this.#onDiagnostic("FEISHU_CONNECTION_DISCONNECT_FAILED"));
-        await this.#release(integrationId, owned.epoch);
+        await this.#release(imBindingId, owned.epoch);
         continue;
       }
       const [renewed] = await this.#database
-        .update(integrations)
+        .update(imBindings)
         .set({ connectionLeaseExpiresAt: expiresAt, observedAt: now })
         .where(
           and(
-            eq(integrations.id, integrationId),
-            eq(integrations.connectionOwnerInstanceId, this.#instanceId),
-            eq(integrations.connectionFencingEpoch, owned.epoch),
-            eq(integrations.status, "active"),
+            eq(imBindings.id, imBindingId),
+            eq(imBindings.connectionOwnerInstanceId, this.#instanceId),
+            eq(imBindings.connectionFencingEpoch, owned.epoch),
+            eq(imBindings.status, "active"),
           ),
         )
-        .returning({ integrationId: integrations.id });
+        .returning({ imBindingId: imBindings.id });
       if (renewed) continue;
-      this.#owned.delete(integrationId);
+      this.#owned.delete(imBindingId);
       await owned.adapter.channel.disconnect().catch(() => this.#onDiagnostic("FEISHU_CONNECTION_DISCONNECT_FAILED"));
     }
 
     let afterId: string | undefined;
     while (!this.#stopped) {
-      const candidates = await this.#integrations.listFeishuConnectionIds(afterId, CONNECTION_SCAN_PAGE_SIZE);
-      for (const integrationId of candidates) {
-        if (this.#owned.has(integrationId)) continue;
-        const epoch = await this.#claim(integrationId, false);
+      const candidates = await this.#imBindings.listFeishuConnectionIds(afterId, CONNECTION_SCAN_PAGE_SIZE);
+      for (const imBindingId of candidates) {
+        if (this.#owned.has(imBindingId)) continue;
+        const epoch = await this.#claim(imBindingId, false);
         if (epoch === undefined) continue;
-        await this.#connectClaimed(integrationId, epoch).catch(async (error) => {
-          await this.#integrations.recordDiagnosticError(integrationId, diagnosticCode(error));
-          await this.#release(integrationId, epoch);
+        await this.#connectClaimed(imBindingId, epoch).catch(async (error) => {
+          await this.#imBindings.recordDiagnosticError(imBindingId, diagnosticCode(error));
+          await this.#release(imBindingId, epoch);
         });
       }
       if (candidates.length < CONNECTION_SCAN_PAGE_SIZE) break;
@@ -273,13 +284,13 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     }
   }
 
-  async #claim(integrationId: string, forceTakeover: boolean): Promise<number | undefined> {
+  async #claim(imBindingId: string, forceTakeover: boolean): Promise<number | undefined> {
     return this.#database.transaction(async (transaction) => {
       const now = new Date();
       const [row] = await transaction
         .select()
-        .from(integrations)
-        .where(eq(integrations.id, integrationId))
+        .from(imBindings)
+        .where(eq(imBindings.id, imBindingId))
         .limit(1)
         .for("update");
       if (row?.status !== "active" || row.provider !== "feishu") return undefined;
@@ -292,7 +303,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         return undefined;
       }
       const [claimed] = await transaction
-        .update(integrations)
+        .update(imBindings)
         .set({
           connectionOwnerInstanceId: this.#instanceId,
           connectionFencingEpoch: row.connectionFencingEpoch + 1,
@@ -300,14 +311,14 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
           observedConnectedAt: null,
           observedAt: now,
         })
-        .where(eq(integrations.id, integrationId))
-        .returning({ epoch: integrations.connectionFencingEpoch });
+        .where(eq(imBindings.id, imBindingId))
+        .returning({ epoch: imBindings.connectionFencingEpoch });
       return claimed?.epoch;
     });
   }
 
-  async #connectClaimed(integrationId: string, epoch: number): Promise<void> {
-    const material = await this.#integrations.getFeishuConnectionMaterial(integrationId);
+  async #connectClaimed(imBindingId: string, epoch: number): Promise<void> {
+    const material = await this.#imBindings.getFeishuConnectionMaterial(imBindingId);
     if (!material) throw new Error("FEISHU_BINDING_NOT_ACTIVE");
     const adapter = this.#createAdapter({
       appId: material.appId,
@@ -317,7 +328,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     });
     const identity = await adapter.validateBinding();
     if (identity.externalBotId !== material.botOpenId) throw new Error("FEISHU_BOT_IDENTITY_MISMATCH");
-    await this.#replaceOwned(integrationId, {
+    await this.#replaceOwned(imBindingId, {
       adapter,
       epoch,
       generation: material.generation,
@@ -325,29 +336,29 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     });
   }
 
-  async #replaceOwned(integrationId: string, next: OwnedChannel): Promise<void> {
+  async #replaceOwned(imBindingId: string, next: OwnedChannel): Promise<void> {
     this.#attachHandlers(next.adapter, () => ({
-      integrationId,
+      imBindingId,
       epoch: next.epoch,
       generation: next.generation,
       appId: next.appId,
     }));
-    const previous = this.#owned.get(integrationId);
+    const previous = this.#owned.get(imBindingId);
     const now = new Date();
     const [observed] = await this.#database
-      .update(integrations)
+      .update(imBindings)
       .set({ observedConnectedAt: now, observedAt: now })
       .where(
         and(
-          eq(integrations.id, integrationId),
-          eq(integrations.connectionOwnerInstanceId, this.#instanceId),
-          eq(integrations.connectionFencingEpoch, next.epoch),
-          eq(integrations.status, "active"),
+          eq(imBindings.id, imBindingId),
+          eq(imBindings.connectionOwnerInstanceId, this.#instanceId),
+          eq(imBindings.connectionFencingEpoch, next.epoch),
+          eq(imBindings.status, "active"),
         ),
       )
-      .returning({ integrationId: integrations.id });
+      .returning({ imBindingId: imBindings.id });
     if (!observed) throw new Error("FEISHU_CONNECTION_LEASE_STALE");
-    this.#owned.set(integrationId, next);
+    this.#owned.set(imBindingId, next);
     if (previous && previous.adapter !== next.adapter) {
       await previous.adapter.channel
         .disconnect()
@@ -357,7 +368,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
 
   #attachHandlers(
     adapter: FeishuAdapter,
-    resolveHandoff: () => { integrationId: string; epoch: number; generation: number; appId: string } | undefined,
+    resolveHandoff: () => { imBindingId: string; epoch: number; generation: number; appId: string } | undefined,
   ): (() => void) | undefined {
     return adapter.channel.on({
       message: async (message: NormalizedMessage) => {
@@ -365,7 +376,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         if (!handoff) throw new Error("FEISHU_ADMISSION_NOT_READY");
         const events = adapter.normalizeInbound({ appId: handoff.appId, teamId: null, message });
         for (const event of events) {
-          await this.#inbox.ingest(handoff.integrationId, handoff.generation, event, {
+          await this.#inbox.ingest(handoff.imBindingId, handoff.generation, event, {
             provider: "feishu",
             holderInstanceId: this.#instanceId,
             fencingEpoch: handoff.epoch,
@@ -375,7 +386,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       reconnecting: () => {
         const handoff = resolveHandoff();
         if (handoff) {
-          void this.#observeDisconnected(handoff.integrationId, handoff.epoch).catch(() =>
+          void this.#observeDisconnected(handoff.imBindingId, handoff.epoch).catch(() =>
             this.#onDiagnostic("FEISHU_CONNECTION_OBSERVATION_FAILED"),
           );
         }
@@ -383,7 +394,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       reconnected: () => {
         const handoff = resolveHandoff();
         if (handoff) {
-          void this.#observeConnected(handoff.integrationId, handoff.epoch).catch(() =>
+          void this.#observeConnected(handoff.imBindingId, handoff.epoch).catch(() =>
             this.#onDiagnostic("FEISHU_CONNECTION_OBSERVATION_FAILED"),
           );
         }
@@ -391,44 +402,44 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       error: (error: unknown) => {
         const handoff = resolveHandoff();
         if (handoff) {
-          void this.#integrations
-            .recordDiagnosticError(handoff.integrationId, diagnosticCode(error))
+          void this.#imBindings
+            .recordDiagnosticError(handoff.imBindingId, diagnosticCode(error))
             .catch(() => this.#onDiagnostic("FEISHU_CONNECTION_DIAGNOSTIC_FAILED"));
         }
       },
     });
   }
 
-  async #observeConnected(integrationId: string, epoch: number): Promise<void> {
+  async #observeConnected(imBindingId: string, epoch: number): Promise<void> {
     const now = new Date();
     await this.#database
-      .update(integrations)
+      .update(imBindings)
       .set({ observedConnectedAt: now, observedAt: now })
       .where(
         and(
-          eq(integrations.id, integrationId),
-          eq(integrations.connectionOwnerInstanceId, this.#instanceId),
-          eq(integrations.connectionFencingEpoch, epoch),
+          eq(imBindings.id, imBindingId),
+          eq(imBindings.connectionOwnerInstanceId, this.#instanceId),
+          eq(imBindings.connectionFencingEpoch, epoch),
         ),
       );
   }
 
-  async #observeDisconnected(integrationId: string, epoch: number): Promise<void> {
+  async #observeDisconnected(imBindingId: string, epoch: number): Promise<void> {
     await this.#database
-      .update(integrations)
+      .update(imBindings)
       .set({ observedConnectedAt: null, observedAt: new Date() })
       .where(
         and(
-          eq(integrations.id, integrationId),
-          eq(integrations.connectionOwnerInstanceId, this.#instanceId),
-          eq(integrations.connectionFencingEpoch, epoch),
+          eq(imBindings.id, imBindingId),
+          eq(imBindings.connectionOwnerInstanceId, this.#instanceId),
+          eq(imBindings.connectionFencingEpoch, epoch),
         ),
       );
   }
 
-  async #release(integrationId: string, epoch: number): Promise<void> {
+  async #release(imBindingId: string, epoch: number): Promise<void> {
     await this.#database
-      .update(integrations)
+      .update(imBindings)
       .set({
         connectionOwnerInstanceId: null,
         connectionLeaseExpiresAt: null,
@@ -437,9 +448,9 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       })
       .where(
         and(
-          eq(integrations.id, integrationId),
-          eq(integrations.connectionOwnerInstanceId, this.#instanceId),
-          eq(integrations.connectionFencingEpoch, epoch),
+          eq(imBindings.id, imBindingId),
+          eq(imBindings.connectionOwnerInstanceId, this.#instanceId),
+          eq(imBindings.connectionFencingEpoch, epoch),
         ),
       );
   }

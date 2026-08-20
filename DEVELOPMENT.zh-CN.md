@@ -191,7 +191,7 @@ bootstrap email 是账号资料，不是邮箱密码凭据。当前 connect code
 无关的 token 颁发边界。未来 Google 或 OIDC identity resolver 可以接入这个边界，无需改变 JWT claims 或 team
 权限模型；每次鉴权始终从 PostgreSQL 读取有效 membership。
 
-## Google 登录、Team membership 与 Admin Web
+## Google 登录、Team membership 与 Web App
 
 创建 Google Web OAuth client，并将 callback 配置为
 `http://127.0.0.1:8000/api/v1/auth/google/callback`，然后设置 `OPENTAG_GOOGLE_CLIENT_ID` 与
@@ -217,7 +217,8 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 `NODE_ENV` 仍可设为 `production`，但它不负责选择 OpenTag package，也不决定产品安全行为。Server 启动时会记录
 解析后的环境、public URL、package 和 binary，且绝不从 hostname 推断环境。
 
-打开 `/admin/` 可使用 Team 管理界面。在 **Computers** 中点击 **Connect computer** 会签发一个 15 分钟、仅可使用
+打开 `/` 可使用 Team 共享 App Shell。active member 使用同一套导航和 member-safe 只读投影，Team Admin 额外获得管理控件。
+在 **Settings → Computers** 中点击 **Generate connection command** 会签发一个 15 分钟、仅可使用
 一次的 code，并复制由 Server 生成的安装/login 命令。页面会轮询当前用户的 Computer 列表，直到新的 daemon
 握手到达；Web 本身不会选择 npm package、binary 或 Server URL。membership 与邀请变更使用 CLI：
 

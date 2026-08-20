@@ -15,9 +15,9 @@ import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
   agents,
   computers,
+  imBindings,
   imMessageDeliveries,
   imMessages,
-  integrations,
   sessionPlacements,
   sessions,
 } from "../db/schema/index.js";
@@ -37,7 +37,7 @@ const CLAIM_RENEW_MS = 5_000;
 const DISPATCH_CLAIM_PREFIX = "IM_DELIVERY_CLAIM_";
 const acceptedDeliveries = alias(imMessageDeliveries, "agent_accepted_deliveries");
 const acceptedSessions = alias(sessions, "agent_accepted_sessions");
-const acceptedIntegrations = alias(integrations, "agent_accepted_integrations");
+const acceptedImBindings = alias(imBindings, "agent_accepted_im_bindings");
 const acceptedAgents = alias(agents, "agent_accepted_agents");
 
 export class ImDeliveryWorker {
@@ -126,17 +126,17 @@ export class ImDeliveryWorker {
           dispatchInputHash: imMessageDeliveries.dispatchInputHash,
           dispatchPayload: imMessageDeliveries.dispatchPayload,
           generation: sessionPlacements.generation,
-          agentId: integrations.agentId,
+          agentId: imBindings.agentId,
         })
         .from(imMessageDeliveries)
         .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
         .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-        .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
-        .innerJoin(agents, eq(agents.id, integrations.agentId))
+        .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+        .innerJoin(agents, eq(agents.id, imBindings.agentId))
         .where(
           and(
             isNull(sessions.endedAt),
-            eq(integrations.status, "active"),
+            eq(imBindings.status, "active"),
             isNull(agents.deletedAt),
             or(
               and(
@@ -158,14 +158,14 @@ export class ImDeliveryWorker {
                     .select({ id: acceptedDeliveries.id })
                     .from(acceptedDeliveries)
                     .innerJoin(acceptedSessions, eq(acceptedSessions.id, acceptedDeliveries.sessionId))
-                    .innerJoin(acceptedIntegrations, eq(acceptedIntegrations.id, acceptedSessions.integrationId))
-                    .innerJoin(acceptedAgents, eq(acceptedAgents.id, acceptedIntegrations.agentId))
+                    .innerJoin(acceptedImBindings, eq(acceptedImBindings.id, acceptedSessions.imBindingId))
+                    .innerJoin(acceptedAgents, eq(acceptedAgents.id, acceptedImBindings.agentId))
                     .where(
                       and(
-                        eq(acceptedIntegrations.agentId, integrations.agentId),
+                        eq(acceptedImBindings.agentId, imBindings.agentId),
                         ne(acceptedDeliveries.id, imMessageDeliveries.id),
                         isNull(acceptedSessions.endedAt),
-                        eq(acceptedIntegrations.status, "active"),
+                        eq(acceptedImBindings.status, "active"),
                         isNull(acceptedAgents.deletedAt),
                         uncertainAgentCustody(acceptedDeliveries),
                       ),
@@ -248,7 +248,7 @@ export class ImDeliveryWorker {
         message: imMessages,
         session: sessions,
         placement: sessionPlacements,
-        integration: integrations,
+        imBinding: imBindings,
         agent: agents,
         computer: computers,
       })
@@ -256,8 +256,8 @@ export class ImDeliveryWorker {
       .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-      .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
-      .innerJoin(agents, eq(agents.id, integrations.agentId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(
         and(
@@ -267,7 +267,7 @@ export class ImDeliveryWorker {
             and(eq(imMessageDeliveries.state, "expired"), isNotNull(imMessageDeliveries.dispatchRequestId)),
           ),
           isNull(sessions.endedAt),
-          eq(integrations.status, "active"),
+          eq(imBindings.status, "active"),
           isNull(agents.deletedAt),
         ),
       )
@@ -420,15 +420,15 @@ export class ImDeliveryWorker {
         delivery: imMessageDeliveries,
         session: sessions,
         placement: sessionPlacements,
-        integration: integrations,
+        imBinding: imBindings,
         agent: agents,
         computer: computers,
       })
       .from(imMessageDeliveries)
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-      .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
-      .innerJoin(agents, eq(agents.id, integrations.agentId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(
         and(
@@ -436,7 +436,7 @@ export class ImDeliveryWorker {
           eq(imMessageDeliveries.state, "accepted"),
           isNull(imMessageDeliveries.reportedAt),
           isNull(sessions.endedAt),
-          eq(integrations.status, "active"),
+          eq(imBindings.status, "active"),
           isNull(agents.deletedAt),
         ),
       )
@@ -670,7 +670,7 @@ export class ImDeliveryWorker {
       .from(imMessages)
       .where(
         and(
-          eq(imMessages.integrationId, session.integrationId),
+          eq(imMessages.imBindingId, session.imBindingId),
           eq(imMessages.channelId, session.channelId),
           eq(imMessages.direction, "inbound"),
           ...(session.kind === "thread" && session.threadKey ? [eq(imMessages.threadKey, session.threadKey)] : []),
@@ -716,14 +716,14 @@ async function hasOtherAgentCustody(database: CustodyQuery, agentId: string, del
     .select({ id: imMessageDeliveries.id })
     .from(imMessageDeliveries)
     .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-    .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
-    .innerJoin(agents, eq(agents.id, integrations.agentId))
+    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+    .innerJoin(agents, eq(agents.id, imBindings.agentId))
     .where(
       and(
-        eq(integrations.agentId, agentId),
+        eq(imBindings.agentId, agentId),
         ne(imMessageDeliveries.id, deliveryId),
         isNull(sessions.endedAt),
-        eq(integrations.status, "active"),
+        eq(imBindings.status, "active"),
         isNull(agents.deletedAt),
         uncertainAgentCustody(imMessageDeliveries),
       ),

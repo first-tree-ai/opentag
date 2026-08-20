@@ -1,17 +1,17 @@
 import { FeishuAdapter } from "./feishu/adapter.js";
-import type { IntegrationService } from "./integration-service.js";
+import type { ImBindingService } from "./im-binding-service.js";
 import type { ImProviderAdapter } from "./provider-adapter.js";
 import { SlackAdapter, type SlackApiClient } from "./slack/adapter.js";
 
 export class ProviderAdapterResolutionError extends Error {
-  constructor(readonly code: "INTEGRATION_ADAPTER_UNAVAILABLE" | "INTEGRATION_GENERATION_STALE") {
+  constructor(readonly code: "IM_BINDING_ADAPTER_UNAVAILABLE" | "IM_BINDING_GENERATION_STALE") {
     super(code);
     this.name = "ProviderAdapterResolutionError";
   }
 }
 
 export function createImProviderAdapterResolver(input: {
-  integrations: IntegrationService;
+  imBindings: ImBindingService;
   slackApi: SlackApiClient;
   createFeishuAdapter?: (options: {
     appId: string;
@@ -19,15 +19,15 @@ export function createImProviderAdapterResolver(input: {
     teamId: string | null;
     teamBrand: "feishu" | "lark" | null;
   }) => ImProviderAdapter<unknown>;
-}): (integrationId: string, generation: number) => Promise<ImProviderAdapter<unknown>> {
+}): (imBindingId: string, generation: number) => Promise<ImProviderAdapter<unknown>> {
   const createFeishuAdapter =
     input.createFeishuAdapter ??
     ((options) => new FeishuAdapter({ ...options, channel: null }) as ImProviderAdapter<unknown>);
-  return async (integrationId, generation) => {
-    const slack = await input.integrations.getSlackConnectionMaterial(integrationId);
+  return async (imBindingId, generation) => {
+    const slack = await input.imBindings.getSlackConnectionMaterial(imBindingId);
     if (slack) {
       if (slack.generation !== generation) {
-        throw new ProviderAdapterResolutionError("INTEGRATION_GENERATION_STALE");
+        throw new ProviderAdapterResolutionError("IM_BINDING_GENERATION_STALE");
       }
       return new SlackAdapter({
         api: input.slackApi,
@@ -37,10 +37,10 @@ export function createImProviderAdapterResolver(input: {
         botUserId: slack.botUserId,
       });
     }
-    const feishu = await input.integrations.getFeishuConnectionMaterial(integrationId);
-    if (!feishu) throw new ProviderAdapterResolutionError("INTEGRATION_ADAPTER_UNAVAILABLE");
+    const feishu = await input.imBindings.getFeishuConnectionMaterial(imBindingId);
+    if (!feishu) throw new ProviderAdapterResolutionError("IM_BINDING_ADAPTER_UNAVAILABLE");
     if (feishu.generation !== generation) {
-      throw new ProviderAdapterResolutionError("INTEGRATION_GENERATION_STALE");
+      throw new ProviderAdapterResolutionError("IM_BINDING_GENERATION_STALE");
     }
     return createFeishuAdapter({
       appId: feishu.appId,

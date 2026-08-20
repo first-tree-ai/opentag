@@ -5,7 +5,7 @@ export const SessionKindSchema = z.enum(["channel", "thread", "internal"]);
 export const SessionSchema = z
   .object({
     id: z.string().uuid(),
-    integrationId: z.string().uuid(),
+    imBindingId: z.string().uuid(),
     channelId: z.string().min(1).max(512),
     conversationKind: z.enum(["channel", "dm", "group_dm"]),
     kind: SessionKindSchema,

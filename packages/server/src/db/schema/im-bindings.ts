@@ -13,7 +13,7 @@ import {
 import { agents } from "./agents.js";
 
 export const imProvider = pgEnum("im_provider", ["feishu", "slack"]);
-export const integrationStatus = pgEnum("integration_status", [
+export const imBindingStatus = pgEnum("im_binding_status", [
   "provisioning",
   "active",
   "reauthorization_required",
@@ -31,15 +31,15 @@ export const feishuSetupState = pgEnum("feishu_setup_state", [
   "canceled",
 ]);
 
-export const integrations = pgTable(
-  "integrations",
+export const imBindings = pgTable(
+  "im_bindings",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     agentId: uuid("agent_id")
       .notNull()
       .references(() => agents.id, { onDelete: "restrict" }),
     provider: imProvider("provider").notNull(),
-    status: integrationStatus("status").notNull().default("provisioning"),
+    status: imBindingStatus("status").notNull().default("provisioning"),
 
     externalAppId: text("external_app_id"),
     externalTeamId: text("external_team_id"),
@@ -62,7 +62,7 @@ export const integrations = pgTable(
     setupOwnerHeartbeatAt: timestamp("setup_owner_heartbeat_at", { withTimezone: true }),
     encryptedSetupContext: text("encrypted_setup_context"),
     setupExpiresAt: timestamp("setup_expires_at", { withTimezone: true }),
-    replacementIntegrationId: uuid("replacement_integration_id").references((): AnyPgColumn => integrations.id, {
+    replacementImBindingId: uuid("replacement_im_binding_id").references((): AnyPgColumn => imBindings.id, {
       onDelete: "set null",
     }),
 
@@ -79,17 +79,17 @@ export const integrations = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    uniqueIndex("integrations_agent_current_unique").on(table.agentId).where(sql`${table.status} <> 'disabled'`),
-    uniqueIndex("integrations_feishu_app_current_unique")
+    uniqueIndex("im_bindings_agent_current_unique").on(table.agentId).where(sql`${table.status} <> 'disabled'`),
+    uniqueIndex("im_bindings_feishu_app_current_unique")
       .on(table.externalAppId)
       .where(sql`${table.provider} = 'feishu' and ${table.status} <> 'disabled'`),
-    uniqueIndex("integrations_slack_app_team_current_unique")
+    uniqueIndex("im_bindings_slack_app_team_current_unique")
       .on(table.externalAppId, table.externalTeamId)
       .where(sql`${table.provider} = 'slack' and ${table.status} <> 'disabled'`),
-    check("integrations_credential_generation_nonnegative", sql`${table.credentialGeneration} >= 0`),
-    check("integrations_connection_epoch_nonnegative", sql`${table.connectionFencingEpoch} >= 0`),
+    check("im_bindings_credential_generation_nonnegative", sql`${table.credentialGeneration} >= 0`),
+    check("im_bindings_connection_epoch_nonnegative", sql`${table.connectionFencingEpoch} >= 0`),
     check(
-      "integrations_active_binding_shape",
+      "im_bindings_active_binding_shape",
       sql`${table.status} not in ('active', 'reauthorization_required') or (
         ${table.externalAppId} is not null and
         (${table.provider} = 'feishu' or ${table.externalTeamId} is not null) and
@@ -99,7 +99,7 @@ export const integrations = pgTable(
       )`,
     ),
     check(
-      "integrations_disabled_secret_shape",
+      "im_bindings_disabled_secret_shape",
       sql`${table.status} <> 'disabled' or (
         ${table.encryptedCredential} is null and ${table.encryptedSetupContext} is null and
         ${table.setupOwnerInstanceId} is null and ${table.connectionOwnerInstanceId} is null and
@@ -107,7 +107,7 @@ export const integrations = pgTable(
       )`,
     ),
     check(
-      "integrations_setup_owner_shape",
+      "im_bindings_setup_owner_shape",
       sql`(${table.setupOwnerInstanceId} is null and ${table.setupOwnerHeartbeatAt} is null and
         ${table.encryptedSetupContext} is null and ${table.setupExpiresAt} is null)
         or (${table.setupAttemptId} is not null and ${table.setupIntent} is not null and
@@ -116,7 +116,7 @@ export const integrations = pgTable(
         ${table.setupExpiresAt} is not null)`,
     ),
     check(
-      "integrations_connection_owner_shape",
+      "im_bindings_connection_owner_shape",
       sql`(${table.connectionOwnerInstanceId} is null and ${table.connectionLeaseExpiresAt} is null)
         or (${table.provider} = 'feishu' and ${table.connectionOwnerInstanceId} is not null and
         ${table.connectionLeaseExpiresAt} is not null)`,
@@ -124,12 +124,12 @@ export const integrations = pgTable(
   ],
 );
 
-export const integrationsRelations = relations(integrations, ({ one, many }) => ({
-  agent: one(agents, { fields: [integrations.agentId], references: [agents.id] }),
-  replacement: one(integrations, {
-    fields: [integrations.replacementIntegrationId],
-    references: [integrations.id],
-    relationName: "integrationReplacement",
+export const imBindingsRelations = relations(imBindings, ({ one, many }) => ({
+  agent: one(agents, { fields: [imBindings.agentId], references: [agents.id] }),
+  replacement: one(imBindings, {
+    fields: [imBindings.replacementImBindingId],
+    references: [imBindings.id],
+    relationName: "imBindingReplacement",
   }),
-  replacedBy: many(integrations, { relationName: "integrationReplacement" }),
+  replacedBy: many(imBindings, { relationName: "imBindingReplacement" }),
 }));

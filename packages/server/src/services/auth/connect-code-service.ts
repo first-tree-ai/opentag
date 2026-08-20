@@ -1,7 +1,7 @@
 import { type ChannelName, getChannelConfig } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { connectCodes, memberships, users } from "../../db/schema/index.js";
+import { connectCodes, memberships, teams, users } from "../../db/schema/index.js";
 import { AuthServiceError } from "./errors.js";
 import { generateSecret, hashSecret } from "./security.js";
 
@@ -17,7 +17,7 @@ export interface IssuedConnectCode {
 }
 
 export interface ConnectCodeIssuer {
-  issueForUser(userId: string): Promise<IssuedConnectCode>;
+  issueForTeamAdmin(userId: string, teamId: string): Promise<IssuedConnectCode>;
 }
 
 function shellQuote(value: string): string {
@@ -100,6 +100,33 @@ export class ConnectCodeService implements ConnectCodeIssuer {
           "An active team membership is required",
           403,
         );
+      }
+      return issueConnectCodeInTransaction(transaction, { issuerUserId: userId, userId }, now);
+    });
+  }
+
+  async issueForTeamAdmin(userId: string, teamId: string): Promise<IssuedConnectCode> {
+    const now = this.#now();
+    return this.#database.transaction(async (transaction) => {
+      const [team] = await transaction
+        .select({ id: teams.id })
+        .from(teams)
+        .where(eq(teams.id, teamId))
+        .limit(1)
+        .for("update");
+      if (!team) throw new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The Team was not found", 404);
+      const [authority] = await transaction
+        .select({ role: memberships.role, suspendedAt: users.suspendedAt })
+        .from(memberships)
+        .innerJoin(users, eq(users.id, memberships.userId))
+        .where(and(eq(memberships.teamId, teamId), eq(memberships.userId, userId), eq(memberships.status, "active")))
+        .limit(1)
+        .for("update");
+      if (!authority || authority.suspendedAt) {
+        throw new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The Team was not found", 404);
+      }
+      if (authority.role !== "admin") {
+        throw new AuthServiceError("MEMBERSHIP_FORBIDDEN", "deterministic", "Team admin access is required", 403);
       }
       return issueConnectCodeInTransaction(transaction, { issuerUserId: userId, userId }, now);
     });

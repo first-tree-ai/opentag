@@ -1,4 +1,4 @@
-import { index, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, pgEnum, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
 import { users } from "./auth.js";
 
 export const computerPlatform = pgEnum("computer_platform", ["darwin", "linux", "win32"]);
@@ -20,5 +20,8 @@ export const computers = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [index("computers_owner_user_id_idx").on(table.ownerUserId)],
+  (table) => [
+    unique("computers_id_owner_user_id_unique").on(table.id, table.ownerUserId),
+    index("computers_owner_user_id_idx").on(table.ownerUserId),
+  ],
 );

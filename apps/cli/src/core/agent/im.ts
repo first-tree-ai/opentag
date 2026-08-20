@@ -1,15 +1,15 @@
-import type { FeishuSetupAttempt, IntegrationDiagnostics, IntegrationSummary, ReceiveMode } from "@opentag/shared";
+import type { FeishuSetupAttempt, ImBindingAdminDetail, ImBindingDiagnostics, ReceiveMode } from "@opentag/shared";
 import { type AgentCommandDependencies, resolveAgentCommandContext } from "./context.js";
 
-export async function runIntegrationShow(
+export async function runImBindingShow(
   agentId: string,
   options: AgentCommandDependencies = {},
-): Promise<IntegrationSummary | undefined> {
+): Promise<ImBindingAdminDetail | undefined> {
   const { api, accessToken } = await resolveAgentCommandContext(options);
-  return api.getAgentIntegration(accessToken, agentId);
+  return api.getAgentImBindingConfig(accessToken, agentId);
 }
 
-export async function runIntegrationConnectFeishu(
+export async function runImBindingConnectFeishu(
   agentId: string,
   intent: "create" | "reauthorize" | "replace",
   options: AgentCommandDependencies = {},
@@ -18,21 +18,21 @@ export async function runIntegrationConnectFeishu(
   return api.createFeishuSetupAttempt(accessToken, agentId, intent);
 }
 
-export async function runIntegrationDiagnose(
+export async function runImBindingDiagnose(
   agentId: string,
   options: AgentCommandDependencies = {},
-): Promise<IntegrationDiagnostics> {
-  const integration = await runIntegrationShow(agentId, options);
-  if (!integration) throw new Error("The Agent has no IM Integration");
+): Promise<ImBindingDiagnostics> {
+  const imBinding = await runImBindingShow(agentId, options);
+  if (!imBinding) throw new Error("The Agent has no IM binding");
   const { api, accessToken } = await resolveAgentCommandContext(options);
-  return api.getIntegrationDiagnostics(accessToken, integration.integration.id);
+  return api.getImBindingDiagnostics(accessToken, imBinding.id);
 }
 
-export async function runIntegrationDisable(agentId: string, options: AgentCommandDependencies = {}): Promise<void> {
-  const integration = await runIntegrationShow(agentId, options);
-  if (!integration) return;
+export async function runImBindingDisable(agentId: string, options: AgentCommandDependencies = {}): Promise<void> {
+  const imBinding = await runImBindingShow(agentId, options);
+  if (!imBinding) return;
   const { api, accessToken } = await resolveAgentCommandContext(options);
-  await api.disableIntegration(accessToken, integration.integration.id);
+  await api.disableImBinding(accessToken, imBinding.id);
 }
 
 export async function runReceiveModeSet(
@@ -41,23 +41,23 @@ export async function runReceiveModeSet(
   options: AgentCommandDependencies = {},
 ) {
   const { api, accessToken } = await resolveAgentCommandContext(options);
-  const current = await api.getAgent(accessToken, agentId);
+  const current = await api.getAgentConfig(accessToken, agentId);
   return api.updateAgent(accessToken, agentId, { expectedRevision: current.revision, receiveMode });
 }
 
-export function formatIntegration(summary: IntegrationSummary | undefined): string {
-  if (!summary) return "No IM Integration configured";
+export function formatImBinding(summary: ImBindingAdminDetail | undefined): string {
+  if (!summary) return "No IM binding configured";
   const identity =
     summary.identity.provider === "feishu"
       ? `${summary.identity.appId} · ${summary.identity.teamId ?? "external Team pending first event"}`
       : `${summary.identity.appId} · ${summary.identity.teamId} · ${summary.identity.botUserId}`;
   return [
-    `provider\t${summary.integration.provider}`,
+    `provider\t${summary.provider}`,
     `identity\t${identity}`,
     `receiveMode\t${summary.receiveMode}`,
     `credentialGeneration\t${summary.credentialGeneration}`,
     `reauthorizationRequired\t${summary.reauthorizationRequired}`,
-    `disabledAt\t${summary.integration.disabledAt ?? "-"}`,
+    `lastConfirmedAt\t${summary.lastConfirmedAt ?? "-"}`,
   ].join("\n");
 }
 
@@ -71,7 +71,7 @@ export function formatFeishuSetup(attempt: FeishuSetupAttempt): string {
   ].join("\n");
 }
 
-export function formatIntegrationDiagnostics(value: IntegrationDiagnostics): string {
+export function formatImBindingDiagnostics(value: ImBindingDiagnostics): string {
   return [
     `provider\t${value.provider}`,
     `ready\t${value.ready}`,

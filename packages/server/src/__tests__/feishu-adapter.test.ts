@@ -15,7 +15,7 @@ import {
   mapFeishuApiFailure,
   mapFeishuError,
   normalizeFeishuMessage,
-} from "../services/integrations/feishu/adapter.js";
+} from "../services/im-bindings/feishu/adapter.js";
 
 describe("Feishu adapter", () => {
   it("maps Channel SDK message, thread, mention, and resource fields", () => {

@@ -1,5 +1,5 @@
-export type { SlackIngressBinding, VerifiedFeishuBinding } from "./integration-service.js";
-export { IntegrationService, IntegrationServiceError } from "./integration-service.js";
+export type { SlackIngressBinding, VerifiedFeishuBinding } from "./im-binding-service.js";
+export { ImBindingService, ImBindingServiceError } from "./im-binding-service.js";
 export type {
   ImProviderAdapter,
   ProviderReactionInput,

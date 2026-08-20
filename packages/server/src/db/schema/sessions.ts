@@ -12,7 +12,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import { computers } from "./computers.js";
-import { imConversationKind, integrations } from "./integrations.js";
+import { imBindings, imConversationKind } from "./im-bindings.js";
 
 export const sessionKind = pgEnum("session_kind", ["channel", "thread", "internal"]);
 
@@ -20,9 +20,9 @@ export const sessions = pgTable(
   "sessions",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    integrationId: uuid("integration_id")
+    imBindingId: uuid("im_binding_id")
       .notNull()
-      .references(() => integrations.id, { onDelete: "restrict" }),
+      .references(() => imBindings.id, { onDelete: "restrict" }),
     channelId: text("channel_id").notNull(),
     conversationKind: imConversationKind("conversation_kind").notNull(),
     kind: sessionKind("kind").notNull(),
@@ -36,12 +36,12 @@ export const sessions = pgTable(
   },
   (table) => [
     uniqueIndex("sessions_active_channel_unique")
-      .on(table.integrationId, table.channelId)
+      .on(table.imBindingId, table.channelId)
       .where(sql`${table.kind} = 'channel' and ${table.endedAt} is null`),
     uniqueIndex("sessions_active_thread_unique")
-      .on(table.integrationId, table.channelId, table.threadKey)
+      .on(table.imBindingId, table.channelId, table.threadKey)
       .where(sql`${table.kind} = 'thread' and ${table.endedAt} is null`),
-    index("sessions_integration_scope_idx").on(table.integrationId, table.channelId, table.threadKey),
+    index("sessions_im_binding_scope_idx").on(table.imBindingId, table.channelId, table.threadKey),
     check(
       "sessions_shape_check",
       sql`(${table.kind} = 'channel' and ${table.threadKey} is null and ${table.createdBySessionId} is null)
@@ -71,7 +71,7 @@ export const sessionPlacements = pgTable(
 );
 
 export const sessionsRelations = relations(sessions, ({ one }) => ({
-  integration: one(integrations, { fields: [sessions.integrationId], references: [integrations.id] }),
+  imBinding: one(imBindings, { fields: [sessions.imBindingId], references: [imBindings.id] }),
   placement: one(sessionPlacements),
   creator: one(sessions, { fields: [sessions.createdBySessionId], references: [sessions.id] }),
 }));

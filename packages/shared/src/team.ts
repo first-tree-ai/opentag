@@ -1,8 +1,35 @@
 import { z } from "zod";
-import { MembershipRoleSchema, MembershipStatusSchema } from "./auth.js";
+import { MembershipRoleSchema, MembershipStatusSchema, TeamNameSchema } from "./auth.js";
 import { ComputerConnectionStatusSchema, ComputerPlatformSchema } from "./computer.js";
 
-export const TeamMemberSchema = z
+export const TeamProfileSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: TeamNameSchema,
+    displayName: z.string().min(1),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+
+export const UpdateTeamProfileRequestSchema = z
+  .object({
+    name: z.string().trim().toLowerCase().pipe(TeamNameSchema).optional(),
+    displayName: z.string().trim().min(1).optional(),
+  })
+  .strict()
+  .refine((value) => value.name !== undefined || value.displayName !== undefined, {
+    message: "At least one Team profile field is required",
+  });
+
+export const TeamMemberSummarySchema = z
+  .object({
+    userId: z.string().uuid(),
+    displayName: z.string().min(1),
+    role: MembershipRoleSchema,
+  })
+  .strict();
+
+export const TeamMemberAdminConfigSchema = z
   .object({
     teamId: z.string().uuid(),
     userId: z.string().uuid(),
@@ -15,11 +42,27 @@ export const TeamMemberSchema = z
   })
   .strict();
 
-export const ListTeamMembersResponseSchema = z.object({ members: z.array(TeamMemberSchema) }).strict();
+export const ListTeamMembersResponseSchema = z.object({ members: z.array(TeamMemberSummarySchema) }).strict();
+export const ListTeamMembersConfigResponseSchema = z.object({ members: z.array(TeamMemberAdminConfigSchema) }).strict();
 export const UpdateTeamMemberRequestSchema = z.object({ role: MembershipRoleSchema }).strict();
 export const RestoreTeamMemberRequestSchema = z.object({ role: MembershipRoleSchema }).strict();
 
-export const TeamComputerSchema = z
+export const TeamComputerSummarySchema = z
+  .object({
+    id: z.string().uuid(),
+    ownerUserId: z.string().uuid(),
+    ownerDisplayName: z.string().min(1),
+    displayName: z.string().min(1),
+    platform: ComputerPlatformSchema,
+    connectionStatus: ComputerConnectionStatusSchema,
+    connectedAt: z.string().datetime().nullable(),
+    lastSeenAt: z.string().datetime(),
+    observedAt: z.string().datetime(),
+    agentIds: z.array(z.string().uuid()),
+  })
+  .strict();
+
+export const TeamComputerAdminConfigSchema = z
   .object({
     id: z.string().uuid(),
     ownerUserId: z.string().uuid(),
@@ -36,11 +79,20 @@ export const TeamComputerSchema = z
   })
   .strict();
 
-export const ListTeamComputersResponseSchema = z.object({ computers: z.array(TeamComputerSchema) }).strict();
+export const ListTeamComputersResponseSchema = z.object({ computers: z.array(TeamComputerSummarySchema) }).strict();
+export const ListTeamComputersConfigResponseSchema = z
+  .object({ computers: z.array(TeamComputerAdminConfigSchema) })
+  .strict();
 
-export type TeamMember = z.infer<typeof TeamMemberSchema>;
+export type TeamMemberSummary = z.infer<typeof TeamMemberSummarySchema>;
+export type TeamProfile = z.infer<typeof TeamProfileSchema>;
+export type UpdateTeamProfileRequest = z.infer<typeof UpdateTeamProfileRequestSchema>;
+export type TeamMemberAdminConfig = z.infer<typeof TeamMemberAdminConfigSchema>;
 export type ListTeamMembersResponse = z.infer<typeof ListTeamMembersResponseSchema>;
+export type ListTeamMembersConfigResponse = z.infer<typeof ListTeamMembersConfigResponseSchema>;
 export type UpdateTeamMemberRequest = z.infer<typeof UpdateTeamMemberRequestSchema>;
 export type RestoreTeamMemberRequest = z.infer<typeof RestoreTeamMemberRequestSchema>;
-export type TeamComputer = z.infer<typeof TeamComputerSchema>;
+export type TeamComputerSummary = z.infer<typeof TeamComputerSummarySchema>;
+export type TeamComputerAdminConfig = z.infer<typeof TeamComputerAdminConfigSchema>;
 export type ListTeamComputersResponse = z.infer<typeof ListTeamComputersResponseSchema>;
+export type ListTeamComputersConfigResponse = z.infer<typeof ListTeamComputersConfigResponseSchema>;

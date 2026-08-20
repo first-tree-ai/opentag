@@ -3,9 +3,9 @@ import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
+  imBindings,
   imMessageDeliveries,
   imMessages,
-  integrations,
   sessionPlacements,
   sessions,
 } from "../../db/schema/index.js";
@@ -43,7 +43,7 @@ export class ImMessageInbox {
   }
 
   async ingest(
-    integrationId: string,
+    imBindingId: string,
     credentialGeneration: number,
     rawEvent: NormalizedInboundImEvent,
     admissionFence?: { provider: "feishu"; holderInstanceId: string; fencingEpoch: number },
@@ -52,53 +52,53 @@ export class ImMessageInbox {
     return this.#database.transaction(async (transaction) => {
       const now = this.#now();
       await transaction
-        .update(integrations)
+        .update(imBindings)
         .set({ externalTeamId: event.externalTeamId, updatedAt: now })
         .where(
           and(
-            eq(integrations.id, integrationId),
-            eq(integrations.provider, "feishu"),
-            eq(integrations.status, "active"),
-            eq(integrations.credentialGeneration, credentialGeneration),
-            eq(integrations.externalAppId, event.externalAppId),
-            isNull(integrations.externalTeamId),
+            eq(imBindings.id, imBindingId),
+            eq(imBindings.provider, "feishu"),
+            eq(imBindings.status, "active"),
+            eq(imBindings.credentialGeneration, credentialGeneration),
+            eq(imBindings.externalAppId, event.externalAppId),
+            isNull(imBindings.externalTeamId),
           ),
         );
       const [scope] = await transaction
-        .select({ integration: integrations, agent: agents })
-        .from(integrations)
-        .innerJoin(agents, eq(agents.id, integrations.agentId))
+        .select({ imBinding: imBindings, agent: agents })
+        .from(imBindings)
+        .innerJoin(agents, eq(agents.id, imBindings.agentId))
         .where(
           and(
-            eq(integrations.id, integrationId),
-            eq(integrations.status, "active"),
-            eq(integrations.credentialGeneration, credentialGeneration),
+            eq(imBindings.id, imBindingId),
+            eq(imBindings.status, "active"),
+            eq(imBindings.credentialGeneration, credentialGeneration),
             isNull(agents.deletedAt),
           ),
         )
         .limit(1)
-        .for("share", { of: integrations });
-      if (!scope) throw new Error("INTEGRATION_GENERATION_STALE");
+        .for("share", { of: imBindings });
+      if (!scope) throw new Error("IM_BINDING_GENERATION_STALE");
       if (admissionFence) {
         if (
-          scope.integration.provider !== "feishu" ||
-          scope.integration.connectionOwnerInstanceId !== admissionFence.holderInstanceId ||
-          scope.integration.connectionFencingEpoch !== admissionFence.fencingEpoch ||
-          !scope.integration.connectionLeaseExpiresAt ||
-          scope.integration.connectionLeaseExpiresAt <= now
+          scope.imBinding.provider !== "feishu" ||
+          scope.imBinding.connectionOwnerInstanceId !== admissionFence.holderInstanceId ||
+          scope.imBinding.connectionFencingEpoch !== admissionFence.fencingEpoch ||
+          !scope.imBinding.connectionLeaseExpiresAt ||
+          scope.imBinding.connectionLeaseExpiresAt <= now
         ) {
           throw new Error("FEISHU_CONNECTION_LEASE_STALE");
         }
         await this.#afterAdmissionFence?.();
       }
-      if (scope.integration.externalAppId !== event.externalAppId) {
-        throw new Error("INTEGRATION_BINDING_IDENTITY_MISMATCH");
+      if (scope.imBinding.externalAppId !== event.externalAppId) {
+        throw new Error("IM_BINDING_BINDING_IDENTITY_MISMATCH");
       }
-      if (scope.integration.externalTeamId !== null && scope.integration.externalTeamId !== event.externalTeamId) {
-        throw new Error("INTEGRATION_TEAM_IDENTITY_MISMATCH");
+      if (scope.imBinding.externalTeamId !== null && scope.imBinding.externalTeamId !== event.externalTeamId) {
+        throw new Error("IM_BINDING_TEAM_IDENTITY_MISMATCH");
       }
       await transaction.execute(
-        sql`select pg_advisory_xact_lock(hashtextextended(${`im-message:${integrationId}:${event.conversation.externalId}:${event.message.externalId}`}, 0))`,
+        sql`select pg_advisory_xact_lock(hashtextextended(${`im-message:${imBindingId}:${event.conversation.externalId}:${event.message.externalId}`}, 0))`,
       );
       await this.#afterMessageAuthority?.();
       const [previousCurrent] = await transaction
@@ -109,7 +109,7 @@ export class ImMessageInbox {
         .from(imMessages)
         .where(
           and(
-            eq(imMessages.integrationId, integrationId),
+            eq(imMessages.imBindingId, imBindingId),
             eq(imMessages.channelId, event.conversation.externalId),
             eq(imMessages.externalMessageId, event.message.externalId),
           ),
@@ -117,7 +117,7 @@ export class ImMessageInbox {
         .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
         .limit(1);
       const previousConversationKind = previousCurrent
-        ? await this.#findConversationKind(transaction, integrationId, event.conversation.externalId)
+        ? await this.#findConversationKind(transaction, imBindingId, event.conversation.externalId)
         : undefined;
       const inheritedDeliveries =
         previousCurrent && event.conversation.kind === "unknown"
@@ -133,7 +133,7 @@ export class ImMessageInbox {
               .where(
                 and(
                   eq(imMessageDeliveries.messageId, previousCurrent.id),
-                  eq(sessions.integrationId, integrationId),
+                  eq(sessions.imBindingId, imBindingId),
                   eq(sessions.channelId, event.conversation.externalId),
                   isNull(sessions.endedAt),
                 ),
@@ -156,7 +156,7 @@ export class ImMessageInbox {
       const [created] = await transaction
         .insert(imMessages)
         .values({
-          integrationId,
+          imBindingId,
           providerEventId: event.providerEventId,
           channelId: event.conversation.externalId,
           externalMessageId: event.message.externalId,
@@ -180,7 +180,7 @@ export class ImMessageInbox {
           .from(imMessages)
           .where(
             and(
-              eq(imMessages.integrationId, integrationId),
+              eq(imMessages.imBindingId, imBindingId),
               or(
                 eq(imMessages.providerEventId, event.providerEventId),
                 and(
@@ -200,7 +200,7 @@ export class ImMessageInbox {
         .from(imMessages)
         .where(
           and(
-            eq(imMessages.integrationId, integrationId),
+            eq(imMessages.imBindingId, imBindingId),
             eq(imMessages.channelId, event.conversation.externalId),
             eq(imMessages.externalMessageId, event.message.externalId),
           ),
@@ -216,7 +216,7 @@ export class ImMessageInbox {
         .from(imMessages)
         .where(
           and(
-            eq(imMessages.integrationId, integrationId),
+            eq(imMessages.imBindingId, imBindingId),
             eq(imMessages.channelId, event.conversation.externalId),
             eq(imMessages.externalMessageId, event.message.externalId),
             ne(imMessages.id, created.id),
@@ -230,19 +230,19 @@ export class ImMessageInbox {
         );
 
       const isSelf =
-        event.message.author.kind === "bot" && event.message.author.externalId === scope.integration.externalBotId;
+        event.message.author.kind === "bot" && event.message.author.externalId === scope.imBinding.externalBotId;
       if (isSelf) return { duplicate: false, messageId: created.id, deliveryIds: [] };
       if (conversationKind === null) return { duplicate: false, messageId: created.id, deliveryIds: [] };
       const direct =
         conversationKind === "dm" ||
-        event.mentions.some((mention) => mention.externalId === scope.integration.externalBotId);
+        event.mentions.some((mention) => mention.externalId === scope.imBinding.externalBotId);
       const deliveries: Array<{ sessionId: string; attention: "direct" | "ambient"; generation: number }> = [];
       if (event.conversation.kind === "unknown") {
         deliveries.push(...inheritedDeliveries);
       } else {
         const channel = await this.#ensureChatSession(
           transaction,
-          integrationId,
+          imBindingId,
           event.conversation.externalId,
           conversationKind,
           "channel",
@@ -253,7 +253,7 @@ export class ImMessageInbox {
         if (threadKey) {
           const existingThread = await this.#findChatSession(
             transaction,
-            integrationId,
+            imBindingId,
             event.conversation.externalId,
             "thread",
             threadKey,
@@ -263,7 +263,7 @@ export class ImMessageInbox {
               existingThread ??
               (await this.#ensureChatSession(
                 transaction,
-                integrationId,
+                imBindingId,
                 event.conversation.externalId,
                 conversationKind,
                 "thread",
@@ -331,7 +331,7 @@ export class ImMessageInbox {
 
   async #findConversationKind(
     transaction: DatabaseTransaction,
-    integrationId: string,
+    imBindingId: string,
     channelId: string,
   ): Promise<"channel" | "dm" | "group_dm" | undefined> {
     const [row] = await transaction
@@ -339,7 +339,7 @@ export class ImMessageInbox {
       .from(sessions)
       .where(
         and(
-          eq(sessions.integrationId, integrationId),
+          eq(sessions.imBindingId, imBindingId),
           eq(sessions.channelId, channelId),
           eq(sessions.kind, "channel"),
           isNull(sessions.threadKey),
@@ -352,7 +352,7 @@ export class ImMessageInbox {
 
   async #findChatSession(
     transaction: DatabaseTransaction,
-    integrationId: string,
+    imBindingId: string,
     channelId: string,
     kind: "channel" | "thread",
     threadKey: string | null,
@@ -363,7 +363,7 @@ export class ImMessageInbox {
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .where(
         and(
-          eq(sessions.integrationId, integrationId),
+          eq(sessions.imBindingId, imBindingId),
           eq(sessions.channelId, channelId),
           eq(sessions.kind, kind),
           threadKey === null ? isNull(sessions.threadKey) : eq(sessions.threadKey, threadKey),
@@ -376,7 +376,7 @@ export class ImMessageInbox {
 
   async #ensureChatSession(
     transaction: DatabaseTransaction,
-    integrationId: string,
+    imBindingId: string,
     channelId: string,
     conversationKind: "channel" | "dm" | "group_dm",
     kind: "channel" | "thread",
@@ -384,15 +384,14 @@ export class ImMessageInbox {
     computerId: string,
     now: Date,
   ): Promise<{ id: string; generation: number }> {
-    const existing = await this.#findChatSession(transaction, integrationId, channelId, kind, threadKey);
+    const existing = await this.#findChatSession(transaction, imBindingId, channelId, kind, threadKey);
     if (existing) return existing;
     const [created] = await transaction
       .insert(sessions)
-      .values({ integrationId, channelId, conversationKind, kind, threadKey, createdAt: now })
+      .values({ imBindingId, channelId, conversationKind, kind, threadKey, createdAt: now })
       .onConflictDoNothing()
       .returning({ id: sessions.id });
-    const sessionId =
-      created?.id ?? (await this.#findSessionId(transaction, integrationId, channelId, kind, threadKey));
+    const sessionId = created?.id ?? (await this.#findSessionId(transaction, imBindingId, channelId, kind, threadKey));
     if (!sessionId) throw new Error("Session ensure did not converge");
     const [placement] = await transaction
       .insert(sessionPlacements)
@@ -411,7 +410,7 @@ export class ImMessageInbox {
 
   async #findSessionId(
     transaction: DatabaseTransaction,
-    integrationId: string,
+    imBindingId: string,
     channelId: string,
     kind: "channel" | "thread",
     threadKey: string | null,
@@ -421,7 +420,7 @@ export class ImMessageInbox {
       .from(sessions)
       .where(
         and(
-          eq(sessions.integrationId, integrationId),
+          eq(sessions.imBindingId, imBindingId),
           eq(sessions.channelId, channelId),
           eq(sessions.kind, kind),
           threadKey === null ? isNull(sessions.threadKey) : eq(sessions.threadKey, threadKey),

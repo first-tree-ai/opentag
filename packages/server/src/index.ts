@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
-import { defaultAdminWebRoot } from "./admin-web.js";
 import { createApp } from "./app.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from "./config.js";
@@ -32,12 +31,13 @@ import {
   DefaultFeishuRegistrationGateway,
   FeishuConnectionManager,
   FeishuSetupService,
-} from "./services/integrations/feishu/index.js";
-import { createImProviderAdapterResolver, IntegrationService } from "./services/integrations/index.js";
-import { DefaultSlackApiClient, SlackAdapter } from "./services/integrations/slack/index.js";
+} from "./services/im-bindings/feishu/index.js";
+import { createImProviderAdapterResolver, ImBindingService } from "./services/im-bindings/index.js";
+import { DefaultSlackApiClient, SlackAdapter } from "./services/im-bindings/slack/index.js";
 import { InvitationService } from "./services/invitations/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { TeamMembershipService } from "./services/teams/index.js";
+import { defaultWebAppRoot } from "./web-app.js";
 
 export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
 export { createApp } from "./app.js";
@@ -108,7 +108,7 @@ export async function startServer(): Promise<void> {
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
     const invitationService = new InvitationService(database, teamService, applicationCipher, config.publicUrl);
     const registry = new ConnectionRegistry();
-    const integrationService = new IntegrationService(database, applicationCipher, {
+    const imBindingService = new ImBindingService(database, applicationCipher, {
       runtimeReady: async (agentId) => {
         const [agent] = await database
           .select({ computerId: agents.computerId })
@@ -156,9 +156,9 @@ export async function startServer(): Promise<void> {
       database,
       inbox: imMessageInbox,
       instanceId,
-      integrations: integrationService,
+      imBindings: imBindingService,
       runtimeReady: async (agentId) => {
-        const computerId = await integrationService.getAgentComputerId(agentId);
+        const computerId = await imBindingService.getAgentComputerId(agentId);
         const currentInstanceId = computerId ? registry.currentInstanceId(computerId) : undefined;
         return Boolean(
           computerId && currentInstanceId && registry.supports(computerId, currentInstanceId, "imMessageTool"),
@@ -169,12 +169,12 @@ export async function startServer(): Promise<void> {
       database,
       cipher: applicationCipher,
       instanceId,
-      integrations: integrationService,
+      imBindings: imBindingService,
       registrations: new DefaultFeishuRegistrationGateway(),
       activation: feishuConnections,
     });
     const slackApi = new DefaultSlackApiClient();
-    const resolveImAdapter = createImProviderAdapterResolver({ integrations: integrationService, slackApi });
+    const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
     outboundMessageService = new OutboundMessageService(database, resolveImAdapter);
     const imResourceService = new ImResourceService(database, resolveImAdapter);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
@@ -202,7 +202,7 @@ export async function startServer(): Promise<void> {
       : undefined;
     const dev = config.devAuth ? new DevBrowserAuthService(database, authService, config.devAuth.email) : undefined;
     app = createApp({
-      adminWebRoot: defaultAdminWebRoot,
+      webAppRoot: defaultWebAppRoot,
       agentService,
       authService,
       browserAuth: {
@@ -219,13 +219,13 @@ export async function startServer(): Promise<void> {
       },
       computerService,
       invitationService,
-      integrationService,
+      imBindingService,
       feishuSetupService,
       imResourceService,
       readiness,
       runtime: { registry, domainOwner },
       slackEvents: {
-        integrations: integrationService,
+        imBindings: imBindingService,
         inbox: imMessageInbox,
         createAdapter: (binding) =>
           new SlackAdapter({

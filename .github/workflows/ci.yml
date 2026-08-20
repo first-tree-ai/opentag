@@ -256,14 +256,14 @@ jobs:
           docker logs opentag-server-ci
           exit 1
 
-      - name: Smoke production administration entrypoints and Computer runtime
+      - name: Smoke production Web App entrypoints and Computer runtime
         run: |
-          curl --fail --silent http://127.0.0.1:18000/admin/ | grep -q "OpenTag Admin"
+          curl --fail --silent http://127.0.0.1:18000/ | grep -q "<title>OpenTag</title>"
           node -e '
             const response = await fetch("http://127.0.0.1:18000/api/v1/not-a-route");
             const body = await response.text();
-            if (response.status !== 404 || body.includes("OpenTag Admin")) {
-              throw new Error("Admin SPA fallback captured an API route");
+            if (response.status !== 404 || body.includes("<title>OpenTag</title>")) {
+              throw new Error("Web App SPA fallback captured an API route");
             }
           '
           docker exec opentag-server-ci node packages/server/dist/db/migrate-cli.mjs

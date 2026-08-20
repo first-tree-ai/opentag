@@ -1,24 +1,26 @@
 import {
   AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE,
-  AGENT_INTEGRATION_TEMPLATE,
+  AGENT_IM_BINDING_CONFIG_TEMPLATE,
+  AGENT_IM_BINDING_TEMPLATE,
   CreateFeishuSetupAttemptRequestSchema,
   FEISHU_SETUP_ATTEMPT_TEMPLATE,
   FeishuSetupAttemptSchema,
-  INTEGRATION_BY_ID_TEMPLATE,
-  INTEGRATION_DIAGNOSTICS_TEMPLATE,
-  IntegrationDiagnosticsSchema,
-  IntegrationSummarySchema,
+  IM_BINDING_BY_ID_TEMPLATE,
+  IM_BINDING_DIAGNOSTICS_TEMPLATE,
+  ImBindingAdminDetailSchema,
+  ImBindingDiagnosticsSchema,
+  ImBindingSummarySchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler } from "../plugins/user-auth.js";
 import type { UserAuthService } from "../services/auth/index.js";
-import type { FeishuSetupService } from "../services/integrations/feishu/index.js";
-import type { IntegrationService } from "../services/integrations/index.js";
+import type { FeishuSetupService } from "../services/im-bindings/feishu/index.js";
+import type { ImBindingService } from "../services/im-bindings/index.js";
 import { parseRequest } from "./request-validation.js";
 
 const AgentParamsSchema = z.object({ agentId: z.string().uuid() }).strict();
-const IntegrationParamsSchema = z.object({ integrationId: z.string().uuid() }).strict();
+const ImBindingParamsSchema = z.object({ imBindingId: z.string().uuid() }).strict();
 const AttemptParamsSchema = z.object({ attemptId: z.string().uuid() }).strict();
 
 function authenticatedUserId(request: FastifyRequest): string {
@@ -27,19 +29,25 @@ function authenticatedUserId(request: FastifyRequest): string {
   return userId;
 }
 
-export function registerIntegrationRoutes(
+export function registerImBindingRoutes(
   app: FastifyInstance,
   authService: UserAuthService,
-  integrations: IntegrationService,
+  imBindings: ImBindingService,
   feishu: FeishuSetupService | undefined,
   publicOrigin?: string,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
 
-  app.get(AGENT_INTEGRATION_TEMPLATE, { preHandler }, async (request, reply) => {
+  app.get(AGENT_IM_BINDING_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
-    const integration = await integrations.getForAgent(authenticatedUserId(request), agentId);
-    return integration ? reply.code(200).send(IntegrationSummarySchema.parse(integration)) : reply.code(204).send();
+    const imBinding = await imBindings.getForAgent(authenticatedUserId(request), agentId);
+    return imBinding ? reply.code(200).send(ImBindingSummarySchema.parse(imBinding)) : reply.code(204).send();
+  });
+
+  app.get(AGENT_IM_BINDING_CONFIG_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { agentId } = parseRequest(AgentParamsSchema, request.params);
+    const imBinding = await imBindings.getConfigForAgent(authenticatedUserId(request), agentId);
+    return imBinding ? reply.code(200).send(ImBindingAdminDetailSchema.parse(imBinding)) : reply.code(204).send();
   });
 
   if (feishu) {
@@ -65,18 +73,16 @@ export function registerIntegrationRoutes(
     });
   }
 
-  app.post(`${INTEGRATION_BY_ID_TEMPLATE}/disable`, { preHandler }, async (request, reply) => {
-    const { integrationId } = parseRequest(IntegrationParamsSchema, request.params);
-    await integrations.disable(authenticatedUserId(request), integrationId);
+  app.post(`${IM_BINDING_BY_ID_TEMPLATE}/disable`, { preHandler }, async (request, reply) => {
+    const { imBindingId } = parseRequest(ImBindingParamsSchema, request.params);
+    await imBindings.disable(authenticatedUserId(request), imBindingId);
     return reply.code(204).send();
   });
 
-  app.get(INTEGRATION_DIAGNOSTICS_TEMPLATE, { preHandler }, async (request, reply) => {
-    const { integrationId } = parseRequest(IntegrationParamsSchema, request.params);
+  app.get(IM_BINDING_DIAGNOSTICS_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { imBindingId } = parseRequest(ImBindingParamsSchema, request.params);
     return reply
       .code(200)
-      .send(
-        IntegrationDiagnosticsSchema.parse(await integrations.diagnostics(authenticatedUserId(request), integrationId)),
-      );
+      .send(ImBindingDiagnosticsSchema.parse(await imBindings.diagnostics(authenticatedUserId(request), imBindingId)));
   });
 }

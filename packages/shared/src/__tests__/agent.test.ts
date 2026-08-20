@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  AgentAdminConfigSchema,
+  AgentDetailSchema,
   AgentNameSchema,
   AgentRuntimeConfigSchema,
-  AgentSchema,
   AgentSummarySchema,
   CreateAgentRequestSchema,
   ListAgentsResponseSchema,
@@ -100,12 +101,19 @@ describe("Agent contracts", () => {
   });
 
   it("validates strict Agent response projections", () => {
-    expect(AgentSchema.parse(agent)).toEqual(agent);
-    const { runtimeConfig: _, ...base } = agent;
-    const summary = { ...base, runtimeConfigRevision: agent.runtimeConfig.revision };
+    expect(AgentAdminConfigSchema.parse(agent)).toEqual(agent);
+    const { runtimeConfig: _, revision: _revision, managerUserId, computerId, ...base } = agent;
+    const summary = {
+      ...base,
+      manager: { userId: managerUserId, displayName: "Manager" },
+      computer: { id: computerId, displayName: "Laptop", platform: "darwin" },
+    };
     expect(AgentSummarySchema.parse(summary)).toEqual(summary);
     expect(ListAgentsResponseSchema.parse({ agents: [summary] })).toEqual({ agents: [summary] });
-    expect(() => AgentSchema.parse({ ...agent, deletedAt: null })).toThrow();
+    expect(AgentDetailSchema.parse({ ...summary, viewerCapabilities: { canManage: false } })).toMatchObject({
+      viewerCapabilities: { canManage: false },
+    });
+    expect(() => AgentAdminConfigSchema.parse({ ...agent, deletedAt: null })).toThrow();
     expect(() =>
       AgentRuntimeConfigSchema.parse({
         ...agent.runtimeConfig,

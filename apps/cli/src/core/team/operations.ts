@@ -1,4 +1,4 @@
-import { MembershipRoleSchema, type TeamInvitation, type TeamMember } from "@opentag/shared";
+import { MembershipRoleSchema, type TeamInvitation, type TeamMemberAdminConfig } from "@opentag/shared";
 import { selectTeam } from "../selection/team.js";
 import { resolveTeamCommandContext, type TeamCommandDependencies } from "./context.js";
 
@@ -12,16 +12,16 @@ async function context(options: TeamSelectionOptions) {
   return { api, accessToken, team };
 }
 
-export async function runTeamMemberList(options: TeamSelectionOptions = {}): Promise<TeamMember[]> {
+export async function runTeamMemberList(options: TeamSelectionOptions = {}): Promise<TeamMemberAdminConfig[]> {
   const value = await context(options);
-  return (await value.api.listTeamMembers(value.accessToken, value.team.teamId)).members;
+  return (await value.api.listTeamMembersConfig(value.accessToken, value.team.teamId)).members;
 }
 
 export async function runTeamMemberRole(
   userId: string,
   role: string,
   options: TeamSelectionOptions = {},
-): Promise<TeamMember> {
+): Promise<TeamMemberAdminConfig> {
   const value = await context(options);
   return value.api.updateTeamMember(value.accessToken, value.team.teamId, userId, {
     role: MembershipRoleSchema.parse(role),
@@ -38,7 +38,7 @@ export async function runTeamMemberRestore(
   userId: string,
   role: string,
   options: TeamSelectionOptions = {},
-): Promise<TeamMember> {
+): Promise<TeamMemberAdminConfig> {
   const value = await context(options);
   return value.api.restoreTeamMember(value.accessToken, value.team.teamId, userId, {
     role: MembershipRoleSchema.parse(role),
@@ -53,7 +53,9 @@ export async function runTeamLeave(options: TeamSelectionOptions = {}): Promise<
 
 export async function runTeamInvitationShow(options: TeamSelectionOptions = {}): Promise<TeamInvitation> {
   const value = await context(options);
-  return value.api.getTeamInvitation(value.accessToken, value.team.teamId);
+  const invitation = await value.api.getTeamInvitation(value.accessToken, value.team.teamId);
+  if (!invitation) throw new Error("No active Team invitation; run team invitation rotate to create one");
+  return invitation;
 }
 
 export async function runTeamInvitationRotate(options: TeamSelectionOptions = {}): Promise<TeamInvitation> {

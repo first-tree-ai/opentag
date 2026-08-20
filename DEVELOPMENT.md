@@ -193,7 +193,7 @@ The bootstrap email is account profile data, not an email/password credential. T
 stable user ID and then uses the provider-neutral token issuer. Future Google or OIDC identity resolvers can join at that
 boundary without changing JWT claims or team authorization; active memberships are always loaded from PostgreSQL.
 
-## Google sign-in, Team membership, and Admin Web
+## Google sign-in, Team membership, and Web App
 
 Create a Google Web OAuth client whose callback is
 `http://127.0.0.1:8000/api/v1/auth/google/callback`, then set `OPENTAG_GOOGLE_CLIENT_ID` and
@@ -222,7 +222,8 @@ the `opentag-dev` binary, `staging` selects `open-tag-staging` / `opentag-stagin
 packages or product security behavior. The server logs the resolved environment, public URL, package, and binary at
 startup; it never infers the environment from the hostname.
 
-Open `/admin/` for the Team view. On **Computers**, **Connect computer** mints a 15-minute, single-use code and copies the
+Open `/` for the shared Team App Shell. Active members use the same navigation with member-safe read projections; Team
+Admins receive the management controls. On **Settings → Computers**, **Generate connection command** mints a 15-minute, single-use code and copies the
 server-authored install/login command. The page polls the current user's Computer list until the new daemon handshake
 arrives. The Web never selects the npm package, binary, or Server URL itself. Use the CLI for membership and invitation
 mutations:

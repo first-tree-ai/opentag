@@ -1,7 +1,14 @@
-import { type ChannelName, ConnectCodeIssueResponseSchema, HTTP_PATHS, MeResponseSchema } from "@opentag/shared";
+import {
+  type ChannelName,
+  ConnectCodeIssueRequestSchema,
+  ConnectCodeIssueResponseSchema,
+  HTTP_PATHS,
+  MeResponseSchema,
+} from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
 import { createUserAuthPreHandler } from "../plugins/user-auth.js";
 import { buildConnectBootstrapCommand, type ConnectCodeIssuer, type UserAuthService } from "../services/auth/index.js";
+import { parseRequest } from "./request-validation.js";
 
 export interface MeRoutesOptions {
   connectCodeIssuer?: ConnectCodeIssuer;
@@ -27,7 +34,8 @@ export function registerMeRoutes(
     app.post(HTTP_PATHS.meConnectCodes, { preHandler }, async (request, reply) => {
       const userId = request.authContext?.me.user.id;
       if (!userId) throw new Error("Authenticated user context is missing");
-      const issued = await connectCodeIssuer.issueForUser(userId);
+      const { teamId } = parseRequest(ConnectCodeIssueRequestSchema, request.body);
+      const issued = await connectCodeIssuer.issueForTeamAdmin(userId, teamId);
       return reply
         .header("Cache-Control", "no-store")
         .code(201)

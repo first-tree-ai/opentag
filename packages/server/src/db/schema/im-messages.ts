@@ -13,7 +13,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { integrations } from "./integrations.js";
+import { imBindings } from "./im-bindings.js";
 import { sessions } from "./sessions.js";
 
 export const imMessageDirection = pgEnum("im_message_direction", ["inbound", "outbound"]);
@@ -35,9 +35,9 @@ export const imMessages = pgTable(
   "im_messages",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    integrationId: uuid("integration_id")
+    imBindingId: uuid("im_binding_id")
       .notNull()
-      .references(() => integrations.id, { onDelete: "restrict" }),
+      .references(() => imBindings.id, { onDelete: "restrict" }),
     providerEventId: text("provider_event_id"),
     channelId: text("channel_id").notNull(),
     externalMessageId: text("external_message_id").notNull(),
@@ -55,17 +55,17 @@ export const imMessages = pgTable(
   },
   (table) => [
     uniqueIndex("im_messages_provider_event_unique")
-      .on(table.integrationId, table.providerEventId)
+      .on(table.imBindingId, table.providerEventId)
       .where(sql`${table.providerEventId} is not null`),
     uniqueIndex("im_messages_semantic_revision_unique").on(
-      table.integrationId,
+      table.imBindingId,
       table.channelId,
       table.externalMessageId,
       table.providerRevisionKey,
     ),
-    index("im_messages_scope_occurred_idx").on(table.integrationId, table.channelId, table.threadKey, table.occurredAt),
+    index("im_messages_scope_occurred_idx").on(table.imBindingId, table.channelId, table.threadKey, table.occurredAt),
     index("im_messages_external_occurred_idx").on(
-      table.integrationId,
+      table.imBindingId,
       table.channelId,
       table.externalMessageId,
       table.occurredAt,

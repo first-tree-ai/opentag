@@ -1,12 +1,19 @@
 import {
+  ListTeamComputersConfigResponseSchema,
   ListTeamComputersResponseSchema,
+  ListTeamMembersConfigResponseSchema,
   ListTeamMembersResponseSchema,
   RestoreTeamMemberRequestSchema,
+  TEAM_BY_ID_TEMPLATE,
+  TEAM_COMPUTERS_CONFIG_TEMPLATE,
   TEAM_COMPUTERS_TEMPLATE,
   TEAM_MEMBER_TEMPLATE,
+  TEAM_MEMBERS_CONFIG_TEMPLATE,
   TEAM_MEMBERS_TEMPLATE,
-  TeamMemberSchema,
+  TeamMemberAdminConfigSchema,
+  TeamProfileSchema,
   UpdateTeamMemberRequestSchema,
+  UpdateTeamProfileRequestSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -32,6 +39,14 @@ export function registerTeamRoutes(
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
 
+  app.patch(TEAM_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { teamId } = parseRequest(TeamParamsSchema, request.params);
+    const input = parseRequest(UpdateTeamProfileRequestSchema, request.body);
+    return reply
+      .code(200)
+      .send(TeamProfileSchema.parse(await teamService.updateTeamProfile(userId(request), teamId, input)));
+  });
+
   app.get(TEAM_MEMBERS_TEMPLATE, { preHandler }, async (request, reply) => {
     const { teamId } = parseRequest(TeamParamsSchema, request.params);
     return reply
@@ -39,12 +54,23 @@ export function registerTeamRoutes(
       .send(ListTeamMembersResponseSchema.parse(await teamService.listMembers(userId(request), teamId)));
   });
 
+  app.get(TEAM_MEMBERS_CONFIG_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { teamId } = parseRequest(TeamParamsSchema, request.params);
+    return reply
+      .code(200)
+      .send(ListTeamMembersConfigResponseSchema.parse(await teamService.listMembersConfig(userId(request), teamId)));
+  });
+
   app.patch(TEAM_MEMBER_TEMPLATE, { preHandler }, async (request, reply) => {
     const { teamId, userId: targetUserId } = parseRequest(MemberParamsSchema, request.params);
     const input = parseRequest(UpdateTeamMemberRequestSchema, request.body);
     return reply
       .code(200)
-      .send(TeamMemberSchema.parse(await teamService.changeRole(userId(request), teamId, targetUserId, input.role)));
+      .send(
+        TeamMemberAdminConfigSchema.parse(
+          await teamService.changeRole(userId(request), teamId, targetUserId, input.role),
+        ),
+      );
   });
 
   app.post(`${TEAM_MEMBER_TEMPLATE}/remove`, { preHandler }, async (request, reply) => {
@@ -58,7 +84,9 @@ export function registerTeamRoutes(
     const input = parseRequest(RestoreTeamMemberRequestSchema, request.body);
     return reply
       .code(200)
-      .send(TeamMemberSchema.parse(await teamService.restore(userId(request), teamId, targetUserId, input.role)));
+      .send(
+        TeamMemberAdminConfigSchema.parse(await teamService.restore(userId(request), teamId, targetUserId, input.role)),
+      );
   });
 
   app.post("/api/v1/teams/:teamId/leave", { preHandler }, async (request, reply) => {
@@ -72,5 +100,14 @@ export function registerTeamRoutes(
     return reply
       .code(200)
       .send(ListTeamComputersResponseSchema.parse(await teamService.listComputers(userId(request), teamId)));
+  });
+
+  app.get(TEAM_COMPUTERS_CONFIG_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { teamId } = parseRequest(TeamParamsSchema, request.params);
+    return reply
+      .code(200)
+      .send(
+        ListTeamComputersConfigResponseSchema.parse(await teamService.listComputersConfig(userId(request), teamId)),
+      );
   });
 }

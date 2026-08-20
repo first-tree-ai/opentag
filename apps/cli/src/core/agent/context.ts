@@ -6,16 +6,18 @@ export interface AgentApiClient
     | "createAgent"
     | "listAgents"
     | "getAgent"
+    | "getAgentConfig"
     | "updateAgent"
     | "deleteAgent"
     | "listComputers"
     | "me"
-    | "getAgentIntegration"
+    | "getAgentImBinding"
+    | "getAgentImBindingConfig"
     | "createFeishuSetupAttempt"
     | "getFeishuSetupAttempt"
     | "cancelFeishuSetupAttempt"
-    | "getIntegrationDiagnostics"
-    | "disableIntegration"
+    | "getImBindingDiagnostics"
+    | "disableImBinding"
   > {}
 
 export interface AgentCommandDependencies {

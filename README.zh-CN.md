@@ -70,11 +70,9 @@ pnpm --filter open-tag start agent list
 这只会记录 Agent identity 和 Computer binding，不会启动 Codex 或 Claude Code turn。
 
 配置 `OPENTAG_GOOGLE_CLIENT_ID` 和 `OPENTAG_GOOGLE_CLIENT_SECRET` 后即可启用 Google 登录，然后打开
-`http://127.0.0.1:8000/admin/`。Team admin 可以查看当前成员、Agent、当前邀请链接和带时间戳的诊断快照。
-在 Computers 页面，**Your computers** 会列出当前用户拥有的全部 Computer，**Team computers** 会列出其他
-active、非 suspended Team member 拥有的全部 Computer。Agent binding 只是附加信息，不是 Computer 进入
-列表的条件。每个 active member 都可以从用户级 admin 首页生成短期有效的 Computer 安装/login 命令，admin
-也可以从 Computers 页面执行同一操作。membership 与邀请变更仍通过显式 CLI 操作完成：
+`http://127.0.0.1:8000/`。active Team member 使用同一套 App Shell 和 member-safe 视图；Team Admin 额外管理
+Agent、runtime 配置、IM binding 与 Local Computer setup。Computers 页面列出带时间戳的 Team Computer 观测，
+Admin 还可以生成短期有效的安装/login 命令。membership 与邀请变更仍通过显式 CLI 操作完成：
 
 若 loopback 开发环境没有 Google 凭据，可设置 `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true`，并将
 `OPENTAG_DEV_AUTH_EMAIL` 设为已有 bootstrap 用户的唯一 email。该 bypass 在 `dev` 以外的环境会被拒绝，

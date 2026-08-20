@@ -1,16 +1,21 @@
 export const API_V1_PREFIX = "/api/v1";
 export const TEAM_AGENTS_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/agents`;
+export const TEAM_BY_ID_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId`;
 export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
-export const AGENT_INTEGRATION_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/integration`;
-export const AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/integrations/feishu/setup-attempts`;
-export const FEISHU_SETUP_ATTEMPT_TEMPLATE = `${API_V1_PREFIX}/integrations/feishu/setup-attempts/:attemptId`;
-export const INTEGRATION_BY_ID_TEMPLATE = `${API_V1_PREFIX}/integrations/:integrationId`;
-export const INTEGRATION_DIAGNOSTICS_TEMPLATE = `${INTEGRATION_BY_ID_TEMPLATE}/diagnostics`;
-export const SLACK_EVENTS_PATH = `${API_V1_PREFIX}/integrations/slack/events`;
+export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
+export const AGENT_IM_BINDING_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding`;
+export const AGENT_IM_BINDING_CONFIG_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/config`;
+export const AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/feishu/setup-attempts`;
+export const FEISHU_SETUP_ATTEMPT_TEMPLATE = `${API_V1_PREFIX}/im-bindings/feishu/setup-attempts/:attemptId`;
+export const IM_BINDING_BY_ID_TEMPLATE = `${API_V1_PREFIX}/im-bindings/:imBindingId`;
+export const IM_BINDING_DIAGNOSTICS_TEMPLATE = `${IM_BINDING_BY_ID_TEMPLATE}/diagnostics`;
+export const SLACK_EVENTS_PATH = `${API_V1_PREFIX}/im-bindings/slack/events`;
 export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-messages/:imMessageId/resources/:ordinal`;
 export const TEAM_MEMBERS_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/members`;
+export const TEAM_MEMBERS_CONFIG_TEMPLATE = `${TEAM_MEMBERS_TEMPLATE}/config`;
 export const TEAM_MEMBER_TEMPLATE = `${TEAM_MEMBERS_TEMPLATE}/:userId`;
 export const TEAM_COMPUTERS_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/computers`;
+export const TEAM_COMPUTERS_CONFIG_TEMPLATE = `${TEAM_COMPUTERS_TEMPLATE}/config`;
 export const TEAM_INVITATION_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/invitation`;
 export const INVITATION_PREVIEW_TEMPLATE = `${API_V1_PREFIX}/invitations/:token/preview`;
 export const INVITATION_REDEEM_TEMPLATE = `${API_V1_PREFIX}/invitations/:token/redeem`;
@@ -35,6 +40,10 @@ export const HTTP_PATHS = {
 
 export function teamMembersPath(teamId: string): string {
   return `${API_V1_PREFIX}/teams/${encodeURIComponent(teamId)}/members`;
+}
+
+export function teamByIdPath(teamId: string): string {
+  return `${API_V1_PREFIX}/teams/${encodeURIComponent(teamId)}`;
 }
 
 export function teamMemberPath(teamId: string, userId: string): string {
@@ -81,24 +90,40 @@ export function agentByIdPath(agentId: string): string {
   return `${API_V1_PREFIX}/agents/${encodeURIComponent(agentId)}`;
 }
 
-export function agentIntegrationPath(agentId: string): string {
-  return `${agentByIdPath(agentId)}/integration`;
+export function agentConfigPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/config`;
+}
+
+export function agentImBindingPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/im-binding`;
+}
+
+export function agentImBindingConfigPath(agentId: string): string {
+  return `${agentImBindingPath(agentId)}/config`;
+}
+
+export function teamMembersConfigPath(teamId: string): string {
+  return `${teamMembersPath(teamId)}/config`;
+}
+
+export function teamComputersConfigPath(teamId: string): string {
+  return `${teamComputersPath(teamId)}/config`;
 }
 
 export function agentFeishuSetupAttemptsPath(agentId: string): string {
-  return `${agentByIdPath(agentId)}/integrations/feishu/setup-attempts`;
+  return `${agentByIdPath(agentId)}/im-binding/feishu/setup-attempts`;
 }
 
 export function feishuSetupAttemptPath(attemptId: string): string {
-  return `${API_V1_PREFIX}/integrations/feishu/setup-attempts/${encodeURIComponent(attemptId)}`;
+  return `${API_V1_PREFIX}/im-bindings/feishu/setup-attempts/${encodeURIComponent(attemptId)}`;
 }
 
-export function integrationDisablePath(integrationId: string): string {
-  return `${API_V1_PREFIX}/integrations/${encodeURIComponent(integrationId)}/disable`;
+export function imBindingDisablePath(imBindingId: string): string {
+  return `${API_V1_PREFIX}/im-bindings/${encodeURIComponent(imBindingId)}/disable`;
 }
 
-export function integrationDiagnosticsPath(integrationId: string): string {
-  return `${API_V1_PREFIX}/integrations/${encodeURIComponent(integrationId)}/diagnostics`;
+export function imBindingDiagnosticsPath(imBindingId: string): string {
+  return `${API_V1_PREFIX}/im-bindings/${encodeURIComponent(imBindingId)}/diagnostics`;
 }
 
 export function runtimeImResourcePath(

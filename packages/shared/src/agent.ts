@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { ReceiveModeSchema } from "./integration.js";
 import {
   OPENTAG_MESSAGE_TOOLS,
   OPENTAG_PLATFORM_INSTRUCTIONS,
@@ -19,6 +18,7 @@ export const AgentNameSchema = z
   .regex(/^[a-z0-9][a-z0-9-]*$/);
 export const AgentDisplayNameSchema = z.string().trim().min(1).max(120);
 export const AgentRuntimeProviderSchema = z.enum(["codex", "claude-code"]);
+export const ReceiveModeSchema = z.enum(["all_message", "mention_only"]);
 
 const OpenTagMessageToolSchema = z.enum(OPENTAG_MESSAGE_TOOLS);
 const AgentInstructionsSchema = RuntimeInstructionSchema.superRefine((instructions, context) => {
@@ -88,28 +88,44 @@ export const UpdateAgentRuntimeConfigSchema = z
     message: "At least one runtime config field must be updated",
   });
 
-const AgentBaseSchema = z
+const AgentIdentitySchema = z
   .object({
     id: z.string().uuid(),
     teamId: z.string().uuid(),
-    managerUserId: z.string().uuid(),
-    computerId: z.string().uuid(),
     name: AgentNameSchema,
     displayName: AgentDisplayNameSchema,
     runtimeProvider: AgentRuntimeProviderSchema,
     receiveMode: ReceiveModeSchema,
-    revision: z.number().int().min(1),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
   .strict();
 
-export const AgentSchema = AgentBaseSchema.extend({
-  runtimeConfig: AgentRuntimeConfigSchema,
+export const AgentSummarySchema = AgentIdentitySchema.extend({
+  manager: z
+    .object({
+      userId: z.string().uuid(),
+      displayName: z.string().min(1),
+    })
+    .strict(),
+  computer: z
+    .object({
+      id: z.string().uuid(),
+      displayName: z.string().min(1),
+      platform: z.enum(["darwin", "linux", "win32"]),
+    })
+    .strict(),
 }).strict();
 
-export const AgentSummarySchema = AgentBaseSchema.extend({
-  runtimeConfigRevision: z.number().int().safe().positive(),
+export const AgentDetailSchema = AgentSummarySchema.extend({
+  viewerCapabilities: z.object({ canManage: z.boolean() }).strict(),
+}).strict();
+
+export const AgentAdminConfigSchema = AgentIdentitySchema.extend({
+  managerUserId: z.string().uuid(),
+  computerId: z.string().uuid(),
+  revision: z.number().int().min(1),
+  runtimeConfig: AgentRuntimeConfigSchema,
 }).strict();
 
 export const CreateAgentRequestSchema = z
@@ -144,11 +160,13 @@ export const ListAgentsResponseSchema = z
 export type AgentName = z.infer<typeof AgentNameSchema>;
 export type AgentDisplayName = z.infer<typeof AgentDisplayNameSchema>;
 export type AgentRuntimeProvider = z.infer<typeof AgentRuntimeProviderSchema>;
+export type ReceiveMode = z.infer<typeof ReceiveModeSchema>;
 export type AgentRuntimeConfig = z.infer<typeof AgentRuntimeConfigSchema>;
 export type CreateAgentRuntimeConfig = z.infer<typeof CreateAgentRuntimeConfigSchema>;
 export type UpdateAgentRuntimeConfig = z.infer<typeof UpdateAgentRuntimeConfigSchema>;
-export type Agent = z.infer<typeof AgentSchema>;
 export type AgentSummary = z.infer<typeof AgentSummarySchema>;
+export type AgentDetail = z.infer<typeof AgentDetailSchema>;
+export type AgentAdminConfig = z.infer<typeof AgentAdminConfigSchema>;
 export type CreateAgentRequest = z.infer<typeof CreateAgentRequestSchema>;
 export type UpdateAgentRequest = z.infer<typeof UpdateAgentRequestSchema>;
 export type ListAgentsResponse = z.infer<typeof ListAgentsResponseSchema>;

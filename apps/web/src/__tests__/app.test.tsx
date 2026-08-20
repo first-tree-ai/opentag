@@ -1540,6 +1540,23 @@ describe("OpenTag Web App Shell", () => {
     expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(createdTeamId);
   });
 
+  it("lands on the created Team when Team preference storage is unavailable", async () => {
+    installApi("admin", { teamless: true });
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    try {
+      render(<App />);
+      fireEvent.change(await screen.findByLabelText("Team name"), { target: { value: "First Tree AI" } });
+      fireEvent.click(screen.getByRole("button", { name: "Create Team" }));
+      expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "First Tree AI" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/agents");
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
   it("keeps Team establishment out of the standalone onboarding route", async () => {
     installApi("admin", { teamless: true });
     window.history.replaceState({}, "", "/onboarding");
@@ -1625,6 +1642,28 @@ describe("OpenTag Web App Shell", () => {
         .getAttribute("aria-current"),
     ).toBe("true");
     expect(within(menu).queryByText("Team settings")).toBeNull();
+  });
+
+  it("switches Teams when Team preference storage is unavailable", async () => {
+    installApi("admin", { alreadyJoinedInvitation: true });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    try {
+      render(<App />);
+      fireEvent.click(await screen.findByRole("button", { name: "Example" }));
+      fireEvent.click(
+        within(screen.getByRole("dialog", { name: "Switch Team" })).getByRole("button", {
+          name: /Invited Team Member/,
+        }),
+      );
+      expect(await screen.findByRole("button", { name: "Invited Team" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/agents");
+    } finally {
+      setItem.mockRestore();
+      consoleError.mockRestore();
+    }
   });
 
   it("keeps account controls personal and signs out from the account menu", async () => {

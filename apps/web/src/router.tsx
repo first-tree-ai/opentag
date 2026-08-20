@@ -498,7 +498,7 @@ function NewTeamPage() {
       <p>You can invite people and add Agents next.</p>
       <CreateTeamForm
         onCreated={(created) => {
-          window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, created.id);
+          rememberTeamPreference(created.id);
           navigate("/agents");
         }}
         onUnauthenticated={() => navigate(`/login?next=${encodeURIComponent("/teams/new")}`)}
@@ -524,7 +524,7 @@ function AuthenticatedTeamGate() {
         if (!membership) return <Navigate replace to="/teams/new" />;
         const selectTeam = (teamId: string) => {
           if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
-          window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, teamId);
+          rememberTeamPreference(teamId);
           navigate(location.pathname, { replace: true });
           window.location.reload();
         };

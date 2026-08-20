@@ -10,7 +10,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import type { UserAuthService } from "../services/auth/index.js";
-import type { FeishuSetupService } from "../services/im-bindings/feishu/index.js";
+import { FeishuOperationError, type FeishuSetupService } from "../services/im-bindings/feishu/index.js";
 import type { ImBindingService } from "../services/im-bindings/index.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -123,5 +123,30 @@ describe("ImBinding HTTP API", () => {
     expect(service.imBindings.disable).toHaveBeenCalledWith(userId, imBindingId);
     expect(JSON.stringify(handoff.json())).not.toMatch(/credential|identity|error|connection|secret/i);
     expect(JSON.stringify(create.json())).not.toContain("secret");
+  });
+
+  it.each([
+    ["an unreachable Feishu platform", "FEISHU_UPSTREAM_UNAVAILABLE", 502, "FEISHU_UPSTREAM_UNAVAILABLE", "transient"],
+    ["an internal setup race", "FEISHU_SETUP_FENCE_STALE", 500, "INTERNAL_ERROR", "transient"],
+  ] as const)("answers %s with a typed error", async (_label, thrown, statusCode, code, category) => {
+    const service = services();
+    service.feishu.createOrReuse = vi.fn().mockRejectedValue(new FeishuOperationError(thrown));
+    const app = createApp({
+      authService: authService(),
+      imBindingService: service.imBindings as unknown as ImBindingService,
+      feishuSetupService: service.feishu as unknown as FeishuSetupService,
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: agentFeishuSetupAttemptsPath(agentId),
+      headers: authorization,
+      payload: { intent: "create" },
+    });
+
+    expect(response.statusCode).toBe(statusCode);
+    expect(response.json().error).toMatchObject({ code, category });
+    expect(JSON.stringify(response.json())).not.toContain("stack");
   });
 });

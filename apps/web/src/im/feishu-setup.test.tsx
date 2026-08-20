@@ -1,7 +1,7 @@
 import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { browserApi } from "../api.js";
+import { ApiError, browserApi } from "../api.js";
 import { FeishuSetup } from "./feishu-setup.js";
 
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
@@ -277,5 +277,32 @@ describe("FeishuSetup", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
     expect((await screen.findByRole("alert")).textContent).toBe("Unable to start setup");
+  });
+
+  it("explains a Server-reported failure the same way whether or not an attempt exists", async () => {
+    const unavailable =
+      "The Feishu open platform did not return a usable authorization. Check the Server's network access to Feishu, then retry.";
+    const start = vi
+      .spyOn(browserApi, "createFeishuSetupAttempt")
+      .mockRejectedValueOnce(
+        new ApiError(502, "The request could not be completed", "FEISHU_UPSTREAM_UNAVAILABLE", "transient"),
+      )
+      .mockResolvedValueOnce(
+        attempt({
+          id: firstAttemptId,
+          intent: "create",
+          state: "failed",
+          errorCode: "FEISHU_UPSTREAM_UNAVAILABLE",
+        }),
+      );
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(unavailable);
+
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(2));
+    expect(screen.getByText(/did not return a usable authorization/)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 });

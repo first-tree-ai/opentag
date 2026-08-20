@@ -1543,7 +1543,8 @@ code {
 .connect-command-meta {
   margin: 8px 0 0;
   color: var(--muted);
-  font-size: 0.84rem;
+  font-size: var(--text-meta);
+  line-height: var(--lh-ui);
 }
 
 .connect-command-actions .connect-command-meta {

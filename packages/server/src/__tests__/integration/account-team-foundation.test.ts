@@ -227,6 +227,60 @@ describe("account identity and Team foundation persistence", () => {
     }
   });
 
+  it("keeps one user/Team lock order so post-auth and explicit redemption cannot deadlock", async () => {
+    const value = await fixture();
+    const second = createDatabaseClient(databaseUrl);
+    let releaseHold: () => void = () => undefined;
+    let signalUserLocked: () => void = () => undefined;
+    const userLocked = new Promise<void>((resolve) => {
+      signalUserLocked = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      releaseHold = resolve;
+    });
+    try {
+      const joiner = await value.identities.resolveOrCreate(google("racer", "racer@example.com"));
+      const invite = await value.invitations.create(value.bootstrap.userId, value.bootstrap.teamId);
+
+      // Mirror post-authentication: it locks the user row and only then redeems, which locks the Team.
+      // Holding it between those two acquisitions is what exposes an inverted order on the explicit path.
+      const viaPostAuth = value.database.transaction(async (transaction) => {
+        await value.teamService.lockUserForMembershipWrite(transaction, joiner);
+        signalUserLocked();
+        await held;
+        return value.invitations.redeemInTransaction(transaction, joiner, invite.token, { ip: "127.0.0.1" });
+      });
+      await userLocked;
+
+      // The explicit path now wants the same user and Team. Under the old order it took the Team first and
+      // the two transactions waited on each other; PostgreSQL would abort one with 40P01.
+      const explicitTeams = new TeamMembershipService(second.database, { now: () => now });
+      const explicitInvitations = new InvitationService(
+        second.database,
+        explicitTeams,
+        new ApplicationCipher(new Uint8Array(32).fill(9)),
+        "https://opentag.example.com",
+        { now: () => now },
+      );
+      const viaExplicit = explicitInvitations.redeem(joiner, invite.token, { ip: "127.0.0.2" });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      releaseHold();
+
+      await expect(viaPostAuth).resolves.toMatchObject({ membership: { teamId: value.bootstrap.teamId } });
+      await expect(viaExplicit).resolves.toMatchObject({ membership: { teamId: value.bootstrap.teamId } });
+      // One redemption transitions the membership; the other observes it already active.
+      expect(
+        await value.database
+          .select()
+          .from(memberships)
+          .where(and(eq(memberships.userId, joiner), eq(memberships.status, "active"))),
+      ).toHaveLength(1);
+    } finally {
+      releaseHold();
+      await Promise.all([second.sql.end(), value.sql.end()]);
+    }
+  });
+
   it("stops one account from creating Teams without bound", async () => {
     const value = await fixture();
     try {

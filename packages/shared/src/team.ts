@@ -12,7 +12,7 @@ export const TeamProfileSchema = z
   .object({
     id: z.string().uuid(),
     name: TeamNameSchema,
-    displayName: TeamDisplayNameSchema,
+    displayName: z.string().min(1),
     updatedAt: z.string().datetime(),
   })
   .strict();
@@ -28,7 +28,7 @@ export const CreateTeamResponseSchema = z
   .object({
     id: z.string().uuid(),
     name: TeamNameSchema,
-    displayName: TeamDisplayNameSchema,
+    displayName: z.string().min(1),
     // Creation always installs the caller as admin; the literal keeps a regression from passing the boundary.
     role: z.literal("admin"),
     createdAt: z.string().datetime(),

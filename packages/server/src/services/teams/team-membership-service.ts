@@ -54,6 +54,7 @@ function isTeamNameConflict(error: unknown): boolean {
 
 export class TeamMembershipService {
   readonly #database: DatabaseClient;
+  readonly #afterMembershipUserLocked: (() => Promise<void>) | undefined;
   readonly #afterTeamProfileAuthorityLocked: (() => Promise<void>) | undefined;
   readonly #now: () => Date;
   readonly #presenceTimeoutMs: number;
@@ -61,12 +62,14 @@ export class TeamMembershipService {
   constructor(
     database: DatabaseClient,
     options: {
+      afterMembershipUserLocked?: () => Promise<void>;
       afterTeamProfileAuthorityLocked?: () => Promise<void>;
       now?: () => Date;
       presenceTimeoutMs?: number;
     } = {},
   ) {
     this.#database = database;
+    this.#afterMembershipUserLocked = options.afterMembershipUserLocked;
     this.#afterTeamProfileAuthorityLocked = options.afterTeamProfileAuthorityLocked;
     this.#now = options.now ?? (() => new Date());
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
@@ -124,6 +127,7 @@ export class TeamMembershipService {
     teamId: string,
     role: MembershipRole,
   ): Promise<{ membership: typeof memberships.$inferSelect; transitioned: boolean }> {
+    await this.lockUserForMembershipWrite(transaction, userId);
     await this.lockTeamForMutation(transaction, teamId);
     const [user] = await transaction.select().from(users).where(eq(users.id, userId)).limit(1);
     if (!user || user.suspendedAt) {
@@ -161,11 +165,18 @@ export class TeamMembershipService {
   }
 
   /**
-   * Locks the user's row and refuses the write that would take them past TEAM_MEMBERSHIP_LIMIT. The lock is
-   * what makes the ceiling hold under concurrency, and re-taking it inside one transaction is a no-op.
+   * Takes the membership-write lock on a user. Every path that can change how many Teams a user belongs to
+   * takes this BEFORE any Team lock, so the two never invert: post-authentication redemption already locks
+   * the user first, and a path that locked the Team first would deadlock against it. Re-taking it inside one
+   * transaction is a no-op.
    */
-  async #requireMembershipHeadroom(transaction: DatabaseTransaction, userId: string): Promise<void> {
+  async lockUserForMembershipWrite(transaction: DatabaseTransaction, userId: string): Promise<void> {
     await transaction.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1).for("update");
+    await this.#afterMembershipUserLocked?.();
+  }
+
+  /** Refuses the write that would take the user past TEAM_MEMBERSHIP_LIMIT; the caller holds the user lock. */
+  async #requireMembershipHeadroom(transaction: DatabaseTransaction, userId: string): Promise<void> {
     const held = await transaction
       .select({ teamId: memberships.teamId })
       .from(memberships)
@@ -384,6 +395,7 @@ export class TeamMembershipService {
   async restore(callerUserId: string, teamId: string, userId: string, role: unknown): Promise<TeamMemberAdminConfig> {
     const parsedRole = MembershipRoleSchema.parse(role);
     return this.#database.transaction(async (transaction) => {
+      await this.lockUserForMembershipWrite(transaction, userId);
       await this.requireActiveMembershipForMutation(transaction, callerUserId, teamId, "admin");
       const target = await this.#lockMembership(transaction, teamId, userId);
       if (target.status === "active") {

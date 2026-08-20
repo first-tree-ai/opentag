@@ -84,17 +84,18 @@ describe("Team contracts", () => {
     });
   });
 
-  it("rejects Team projections carrying values no writer could produce", () => {
-    const profile = {
+  it("keeps reading Team rows that predate the writer limits", () => {
+    // Older writers validly stored longer values in an unbounded text column. Bounds belong on the writers;
+    // rejecting such a row here would only make /me unrecoverable for a Team nobody can still create.
+    const legacy = {
       id: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
-      name: "first-tree",
-      displayName: "a".repeat(121),
+      name: "a".repeat(200),
+      displayName: "a".repeat(300),
       updatedAt: "2026-08-20T00:00:00.000Z",
     };
-    expect(() => TeamProfileSchema.parse(profile)).toThrow();
-    expect(TeamProfileSchema.parse({ ...profile, displayName: "First Tree AI" })).toMatchObject({
-      displayName: "First Tree AI",
-    });
+    expect(TeamProfileSchema.parse(legacy)).toMatchObject({ name: legacy.name, displayName: legacy.displayName });
+    expect(() => UpdateTeamProfileRequestSchema.parse({ displayName: legacy.displayName })).toThrow();
+    expect(() => UpdateTeamProfileRequestSchema.parse({ name: legacy.name })).toThrow();
   });
 
   it("returns the created Team with the caller already holding the admin role", () => {

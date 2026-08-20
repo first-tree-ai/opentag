@@ -120,6 +120,9 @@ export class InvitationService {
       .where(eq(invitations.tokenHash, tokenHash))
       .limit(1);
     if (!candidate) throw this.#invalid();
+    // User before Team, matching post-authentication, which locks the redeeming user before calling in here.
+    // Taking the Team first would invert against it and deadlock two concurrent redemptions of one invitation.
+    await this.#membershipService.lockUserForMembershipWrite(transaction, userId);
     await this.#membershipService.lockTeamForMutation(transaction, candidate.teamId);
     const [invitation] = await transaction
       .select()

@@ -5,6 +5,8 @@ import { App } from "../app.js";
 const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const invitedTeamId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
+const memberUserId = "63e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
+const otherMemberUserId = "73e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const createdTeamId = "6b1f0c9a-2d4e-4a77-9c31-8f0c5b2ad741";
@@ -35,6 +37,8 @@ function installApi(
     invitationExists?: boolean;
     provider?: "feishu" | "slack";
     redeemFails?: boolean;
+    roleUpdate?: (targetUserId: string, role: "admin" | "member") => Promise<Response> | Response;
+    roleUpdateFails?: boolean;
     scopeReauth?: boolean;
     unauthenticated?: boolean;
     teamless?: boolean;
@@ -43,6 +47,9 @@ function installApi(
 ) {
   const teamProfile = { name: "example", displayName: "Example" };
   const createdMemberships: { teamId: string; teamName: string; teamDisplayName: string; role: "admin" }[] = [];
+  let currentRole = role;
+  let memberRole: "admin" | "member" = "member";
+  let otherMemberRole: "admin" | "member" = "member";
   let invitationExists = options.invitationExists ?? false;
   let invitationVersion: "A" | "B" = "A";
   let joinedInvitation = options.alreadyJoinedInvitation ?? false;
@@ -61,7 +68,7 @@ function installApi(
       if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
       const existing = options.teamless
         ? []
-        : [{ teamId, teamName: teamProfile.name, teamDisplayName: teamProfile.displayName, role }];
+        : [{ teamId, teamName: teamProfile.name, teamDisplayName: teamProfile.displayName, role: currentRole }];
       return json({
         user: { id: userId, email: "ada@example.com", displayName: "Ada" },
         memberships: [
@@ -130,7 +137,41 @@ function installApi(
       });
     }
     if (path === `/api/v1/teams/${teamId}/members`) {
-      return json({ members: [{ userId, displayName: "Ada", role }] });
+      return json({
+        members: [
+          { userId, displayName: "Ada", role: currentRole },
+          { userId: memberUserId, displayName: "Grace", role: memberRole },
+          { userId: otherMemberUserId, displayName: "Lin", role: otherMemberRole },
+        ],
+      });
+    }
+    if (path.startsWith(`/api/v1/teams/${teamId}/members/`) && init?.method === "PATCH") {
+      const targetUserId = path.slice(path.lastIndexOf("/") + 1);
+      const body = JSON.parse(String(init.body)) as { role: "admin" | "member" };
+      const response = options.roleUpdate
+        ? await options.roleUpdate(targetUserId, body.role)
+        : options.roleUpdateFails
+          ? json({ error: { message: "The last active Team admin cannot be demoted" } }, 409)
+          : json({
+              teamId,
+              userId: targetUserId,
+              email:
+                targetUserId === userId
+                  ? "ada@example.com"
+                  : targetUserId === memberUserId
+                    ? "grace@example.com"
+                    : "lin@example.com",
+              displayName: targetUserId === userId ? "Ada" : targetUserId === memberUserId ? "Grace" : "Lin",
+              role: body.role,
+              status: "active",
+              createdAt: "2026-08-20T00:00:00.000Z",
+              updatedAt: "2026-08-20T00:01:00.000Z",
+            });
+      if (!response.ok) return response;
+      if (targetUserId === userId) currentRole = body.role;
+      if (targetUserId === memberUserId) memberRole = body.role;
+      if (targetUserId === otherMemberUserId) otherMemberRole = body.role;
+      return response;
     }
     if (path === `/api/v1/teams/${teamId}/invitation` && init?.method === undefined) {
       return invitationExists ? json(invitation()) : new Response(null, { status: 204 });
@@ -164,7 +205,7 @@ function installApi(
     if (path === "/api/v1/me/connect-codes" && init?.method === "POST") {
       return json(
         {
-          bootstrapCommand: "npm i -g @opentag/cli && opentag login --code example",
+          bootstrapCommand: "npm i -g @opentag/cli && opentag login --server https://opentag.example.com -- example",
           expiresIn: 900,
           issuedAt: "2026-08-20T00:00:00.000Z",
         },
@@ -184,7 +225,7 @@ function installApi(
           409,
         );
       }
-      return json({ ...agentSummary, viewerCapabilities: { canManage: role === "admin" } });
+      return json({ ...agentSummary, viewerCapabilities: { canManage: currentRole === "admin" } });
     }
     if (path === `/api/v1/agents/${agentId}/config`) {
       return json({
@@ -373,6 +414,109 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Team members" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Invite people" })).toBeNull();
+    expect(screen.queryByLabelText("Role for Ada")).toBeNull();
+    expect(await screen.findAllByText("member")).toHaveLength(3);
+  });
+
+  it("lets Team admins update another member role from the member list", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+    const role = (await screen.findByLabelText("Role for Grace")) as HTMLSelectElement;
+    fireEvent.change(role, { target: { value: "admin" } });
+    await waitFor(() => expect((screen.getByLabelText("Role for Grace") as HTMLSelectElement).value).toBe("admin"));
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      `/api/v1/teams/${teamId}/members/${memberUserId}`,
+      expect.objectContaining({ method: "PATCH", body: JSON.stringify({ role: "admin" }) }),
+    );
+  });
+
+  it("tracks overlapping role updates per member and prevents duplicate submissions", async () => {
+    let resolveGrace: (response: Response) => void = () => undefined;
+    let resolveLin: (response: Response) => void = () => undefined;
+    const graceUpdate = new Promise<Response>((resolve) => {
+      resolveGrace = resolve;
+    });
+    const linUpdate = new Promise<Response>((resolve) => {
+      resolveLin = resolve;
+    });
+    installApi("admin", {
+      roleUpdate: (targetUserId) => (targetUserId === memberUserId ? graceUpdate : linUpdate),
+    });
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+    const graceRole = (await screen.findByLabelText("Role for Grace")) as HTMLSelectElement;
+    const linRole = screen.getByLabelText("Role for Lin") as HTMLSelectElement;
+
+    fireEvent.change(graceRole, { target: { value: "admin" } });
+    fireEvent.change(linRole, { target: { value: "admin" } });
+    fireEvent.change(graceRole, { target: { value: "admin" } });
+
+    await waitFor(() => {
+      expect((screen.getByLabelText("Role for Grace") as HTMLSelectElement).disabled).toBe(true);
+      expect((screen.getByLabelText("Role for Lin") as HTMLSelectElement).disabled).toBe(true);
+    });
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([input, init]) => String(input).endsWith(`/members/${memberUserId}`) && init?.method === "PATCH",
+        ),
+    ).toHaveLength(1);
+
+    resolveGrace(
+      json({
+        teamId,
+        userId: memberUserId,
+        email: "grace@example.com",
+        displayName: "Grace",
+        role: "admin",
+        status: "active",
+        createdAt: "2026-08-20T00:00:00.000Z",
+        updatedAt: "2026-08-20T00:01:00.000Z",
+      }),
+    );
+    await waitFor(() => {
+      expect((screen.getByLabelText("Role for Grace") as HTMLSelectElement).disabled).toBe(false);
+      expect((screen.getByLabelText("Role for Lin") as HTMLSelectElement).disabled).toBe(true);
+    });
+
+    resolveLin(
+      json({
+        teamId,
+        userId: otherMemberUserId,
+        email: "lin@example.com",
+        displayName: "Lin",
+        role: "admin",
+        status: "active",
+        createdAt: "2026-08-20T00:00:00.000Z",
+        updatedAt: "2026-08-20T00:01:00.000Z",
+      }),
+    );
+    await waitFor(() => expect((screen.getByLabelText("Role for Lin") as HTMLSelectElement).disabled).toBe(false));
+  });
+
+  it("refreshes current membership authority after an admin demotes themself", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText("Role for Ada"), { target: { value: "member" } });
+    await waitFor(() =>
+      expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === "/api/v1/me")).toHaveLength(2),
+    );
+    expect(await screen.findByText("Member · read only")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Invite people" })).toBeNull();
+    expect(screen.queryByLabelText("Role for Ada")).toBeNull();
+  });
+
+  it("keeps the confirmed role and displays the server error when an update is rejected", async () => {
+    installApi("admin", { roleUpdateFails: true });
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+    const role = (await screen.findByLabelText("Role for Ada")) as HTMLSelectElement;
+    fireEvent.change(role, { target: { value: "member" } });
+    expect((await screen.findByRole("alert")).textContent).toBe("The last active Team admin cannot be demoted");
+    expect(role.value).toBe("admin");
   });
 
   it("does not create an IM setup attempt while rendering Agent detail", async () => {
@@ -423,7 +567,7 @@ describe("OpenTag Web App Shell", () => {
     const button = await screen.findByRole("button", { name: "Generate connection command" });
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
     fireEvent.click(button);
-    expect(await screen.findByText(/opentag login --code example/)).toBeTruthy();
+    expect(await screen.findByText(/opentag login --server https:\/\/opentag\.example\.com -- example/)).toBeTruthy();
   });
 
   it("guides Agent creation to Computer setup when none is connected", async () => {

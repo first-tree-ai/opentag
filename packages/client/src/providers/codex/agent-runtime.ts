@@ -170,6 +170,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   readonly #unsubscribeRequests: () => void;
   readonly #wireInteractions = new Map<string, CodexAppServerRequest>();
   readonly #completedMessages = new Map<string, { readonly phase?: string; readonly text: string }>();
+  readonly #activeMessages = new Map<string, string>();
+  readonly #activeTools = new Map<string, string>();
   readonly #hostedToolCalls = new Map<
     string,
     { readonly hash: string; readonly result: Promise<CodexDynamicToolResult> }
@@ -215,6 +217,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#providerFailure = undefined;
     this.#latestUsage = undefined;
     this.#completedMessages.clear();
+    this.#activeMessages.clear();
+    this.#activeTools.clear();
     this.#wireInteractions.clear();
     this.#buffered = [];
     this.#buffering = true;
@@ -237,6 +241,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       const terminal = await this.#terminal.promise;
       await this.#eventTail;
       if (this.#providerFailure) throw this.#providerFailure;
+      await this.#completeOpenLifecycles(terminal);
       return this.#runResult(terminal);
     } catch (error) {
       const failure = error instanceof Error ? error : new Error("Codex run failed");
@@ -416,18 +421,24 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     }
     if (method === "item/agentMessage/delta") {
       this.#assertNotificationTurn(params);
+      const messageId = requireString(params?.itemId, "agent message delta has no itemId");
+      const delta = requireString(params?.delta, "agent message delta has no text", true);
+      await this.#ensureMessageStarted(messageId);
+      this.#activeMessages.set(messageId, `${this.#activeMessages.get(messageId) as string}${delta}`);
       await context.emit({
         type: "message_delta",
-        messageId: requireString(params?.itemId, "agent message delta has no itemId"),
-        delta: requireString(params?.delta, "agent message delta has no text", true),
+        messageId,
+        delta,
       });
       return;
     }
     if (method === "item/commandExecution/outputDelta") {
       this.#assertNotificationTurn(params);
+      const toolCallId = requireString(params?.itemId, "command output delta has no itemId");
+      await this.#ensureToolStarted(toolCallId, "commandExecution", { id: toolCallId, type: "commandExecution" });
       await context.emit({
         type: "tool_updated",
-        toolCallId: requireString(params?.itemId, "command output delta has no itemId"),
+        toolCallId,
         update: { delta: requireString(params?.delta, "command output delta has no text", true) },
       });
       return;
@@ -463,21 +474,25 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     const type = requireString(item.type, `${method} item has no type`);
     if (type === "agentMessage") {
       if (method === "item/started") {
-        await context.emit({ type: "message_started", messageId: id });
+        await this.#ensureMessageStarted(id);
         return;
       }
       const text = requireString(item.text, "completed agent message has no text", true);
       const phase = typeof item.phase === "string" ? item.phase : undefined;
+      await this.#ensureMessageStarted(id);
       this.#completedMessages.set(id, { text, ...(phase ? { phase } : {}) });
       await context.emit({ type: "message_completed", messageId: id, text });
+      this.#activeMessages.delete(id);
       return;
     }
     if (!TOOL_ITEM_TYPES.has(type)) return;
-    const name = toolName(item, type);
+    const name =
+      method === "item/completed" ? (this.#activeTools.get(id) ?? toolName(item, type)) : toolName(item, type);
     if (method === "item/started") {
-      await context.emit({ type: "tool_started", toolCallId: id, name, input: toJsonValue(item) });
+      await this.#ensureToolStarted(id, name, item);
       return;
     }
+    await this.#ensureToolStarted(id, name, item);
     const status = item.status === "declined" ? "declined" : item.status === "failed" ? "failed" : "completed";
     await context.emit({
       type: "tool_completed",
@@ -486,6 +501,54 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       status,
       output: toJsonValue(item),
     });
+    this.#activeTools.delete(id);
+  }
+
+  async #ensureMessageStarted(messageId: string): Promise<void> {
+    if (this.#activeMessages.has(messageId)) return;
+    if (this.#completedMessages.has(messageId)) throw protocolError("Codex reused a completed agent message ID");
+    this.#activeMessages.set(messageId, "");
+    await this.#requireContext().emit({ type: "message_started", messageId });
+  }
+
+  async #ensureToolStarted(toolCallId: string, name: string, input: Record<string, unknown>): Promise<void> {
+    const activeName = this.#activeTools.get(toolCallId);
+    if (activeName) {
+      if (activeName !== name) throw protocolError("Codex changed a tool name during its lifecycle");
+      return;
+    }
+    this.#activeTools.set(toolCallId, name);
+    await this.#requireContext().emit({ type: "tool_started", toolCallId, name, input: toJsonValue(input) });
+  }
+
+  async #completeOpenLifecycles(turn: ParsedTurn): Promise<void> {
+    const context = this.#requireContext();
+    const terminalItems = new Map(
+      turn.items.filter((item) => typeof item.id === "string").map((item) => [item.id as string, item] as const),
+    );
+    for (const [messageId, deltaText] of this.#activeMessages) {
+      const item = terminalItems.get(messageId);
+      const text = typeof item?.text === "string" ? item.text : deltaText;
+      await context.emit({ type: "message_completed", messageId, text });
+      this.#activeMessages.delete(messageId);
+    }
+    for (const [toolCallId, name] of this.#activeTools) {
+      const item = terminalItems.get(toolCallId);
+      const status =
+        item?.status === "declined"
+          ? "declined"
+          : !item || item.status === "failed" || turn.status !== "completed"
+            ? "failed"
+            : "completed";
+      await context.emit({
+        type: "tool_completed",
+        toolCallId,
+        name,
+        status,
+        ...(item ? { output: toJsonValue(item) } : {}),
+      });
+      this.#activeTools.delete(toolCallId);
+    }
   }
 
   async #handleServerRequest(request: CodexAppServerRequest): Promise<void> {

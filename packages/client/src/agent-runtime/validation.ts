@@ -129,9 +129,39 @@ export function assertJsonValue(
     if (seen.has(candidate)) throw new AgentRuntimeError(code, `${field} must not contain cycles`);
     seen.add(candidate);
     if (Array.isArray(candidate)) {
-      for (const item of candidate) visit(item);
+      const keys = Reflect.ownKeys(candidate);
+      if (
+        keys.some(
+          (key) =>
+            key !== "length" &&
+            (typeof key !== "string" || !/^(0|[1-9]\d*)$/.test(key) || Number(key) >= candidate.length),
+        ) ||
+        candidate.length !== Object.keys(candidate).length
+      ) {
+        throw new AgentRuntimeError(code, `${field} must contain dense JSON arrays without custom properties`);
+      }
+      for (let index = 0; index < candidate.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(candidate, String(index));
+        if (!descriptor?.enumerable || !("value" in descriptor)) {
+          throw new AgentRuntimeError(code, `${field} must contain enumerable data properties`);
+        }
+        visit(descriptor.value);
+      }
     } else {
-      for (const item of Object.values(candidate)) visit(item);
+      const prototype = Object.getPrototypeOf(candidate);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new AgentRuntimeError(code, `${field} must contain only plain JSON objects`);
+      }
+      for (const key of Reflect.ownKeys(candidate)) {
+        if (typeof key !== "string") {
+          throw new AgentRuntimeError(code, `${field} must not contain symbol properties`);
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(candidate, key);
+        if (!descriptor?.enumerable || !("value" in descriptor)) {
+          throw new AgentRuntimeError(code, `${field} must contain enumerable data properties`);
+        }
+        visit(descriptor.value);
+      }
     }
     seen.delete(candidate);
   };
@@ -139,7 +169,56 @@ export function assertJsonValue(
 }
 
 export function sameBinding(left: AgentRuntimeBinding | undefined, right: AgentRuntimeBinding): boolean {
-  return left !== undefined && JSON.stringify(left) === JSON.stringify(right);
+  return left !== undefined && sameJsonValue(left as unknown as JsonComparable, right as unknown as JsonComparable);
+}
+
+export async function runWithAbortSignal<T>(
+  operation: (signal?: AbortSignal) => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (!signal) return operation();
+  signal.throwIfAborted();
+  let rejectAborted!: (reason: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAborted = reject;
+  });
+  const onAbort = () => rejectAborted(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    return await Promise.race([operation(signal), aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+type JsonComparable = boolean | number | string | null | readonly JsonComparable[] | JsonComparableObject;
+interface JsonComparableObject {
+  readonly [key: string]: JsonComparable;
+}
+
+function sameJsonValue(left: JsonComparable, right: JsonComparable): boolean {
+  if (left === right) return true;
+  if (Array.isArray(left) || Array.isArray(right)) {
+    return (
+      Array.isArray(left) &&
+      Array.isArray(right) &&
+      left.length === right.length &&
+      left.every((value, index) => sameJsonValue(value, right[index] as JsonComparable))
+    );
+  }
+  if (left === null || right === null || typeof left !== "object" || typeof right !== "object") return false;
+  const leftObject = left as JsonComparableObject;
+  const rightObject = right as JsonComparableObject;
+  const leftKeys = Object.keys(leftObject);
+  const rightKeys = Object.keys(rightObject);
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every(
+      (key) =>
+        Object.hasOwn(rightObject, key) &&
+        sameJsonValue(leftObject[key] as JsonComparable, rightObject[key] as JsonComparable),
+    )
+  );
 }
 
 const TOOL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;

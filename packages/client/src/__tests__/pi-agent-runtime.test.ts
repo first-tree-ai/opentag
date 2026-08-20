@@ -197,6 +197,12 @@ describe("PiAgentRuntime", () => {
       ready: false,
       issues: [{ code: "version_incompatible" }, { code: "credential_missing" }],
     });
+    const controller = new AbortController();
+    const hanging = new PiAgentRuntimeFactory({
+      probeRunner: async () => new Promise<never>(() => undefined),
+    }).probe({ signal: controller.signal });
+    controller.abort(new Error("stop Pi probe"));
+    await expect(hanging).rejects.toThrow("stop Pi probe");
     expect(
       piAgentRuntimeEnvironment({
         HOME: "/home/provider",

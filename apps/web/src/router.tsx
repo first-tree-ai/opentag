@@ -11,6 +11,7 @@ import type {
   TeamMemberSummary,
   UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
+import { MembershipRoleSchema } from "@opentag/shared/browser";
 import { toString as qrToString } from "qrcode";
 import {
   createContext,
@@ -829,7 +830,7 @@ function AccessTab({ agent }: { agent: AgentDetail }) {
 
 function SettingsPage() {
   const { section = "team" } = useParams();
-  const { membership, refreshMe } = useTeam();
+  const { me, membership, refreshMe } = useTeam();
   const allowed = ["team", "computers", "resources", "members", "security"];
   if (!allowed.includes(section)) return <NotFoundPage />;
   return (
@@ -843,7 +844,12 @@ function SettingsPage() {
       </nav>
       {section === "team" ? <TeamSettings membership={membership} refreshMe={refreshMe} /> : null}
       {section === "members" ? (
-        <MembersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
+        <MembersSettings
+          canManage={membership.role === "admin"}
+          currentUserId={me.user.id}
+          refreshMe={refreshMe}
+          teamId={membership.teamId}
+        />
       ) : null}
       {section === "computers" ? (
         <ComputersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
@@ -906,8 +912,41 @@ function TeamSettings({ membership, refreshMe }: { membership: MeMembership; ref
   );
 }
 
-function MembersSettings({ canManage, teamId }: { canManage: boolean; teamId: string }) {
-  const state = useResource(() => browserApi.members(teamId), teamId);
+function MembersSettings({
+  canManage,
+  currentUserId,
+  refreshMe,
+  teamId,
+}: {
+  canManage: boolean;
+  currentUserId: string;
+  refreshMe: () => void;
+  teamId: string;
+}) {
+  const [revision, setRevision] = useState(0);
+  const state = useResource(() => browserApi.members(teamId), `${teamId}:${revision}`);
+  const pendingUserIdsRef = useRef(new Set<string>());
+  const [pendingUserIds, setPendingUserIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [error, setError] = useState<string>();
+
+  async function changeRole(member: TeamMemberSummary, value: string) {
+    if (value === member.role || pendingUserIdsRef.current.has(member.userId)) return;
+    pendingUserIdsRef.current.add(member.userId);
+    setPendingUserIds(new Set(pendingUserIdsRef.current));
+    setError(undefined);
+    try {
+      const role = MembershipRoleSchema.parse(value);
+      await browserApi.updateTeamMember(teamId, member.userId, { role });
+      setRevision((current) => current + 1);
+      if (member.userId === currentUserId) refreshMe();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to update the member role");
+    } finally {
+      pendingUserIdsRef.current.delete(member.userId);
+      setPendingUserIds(new Set(pendingUserIdsRef.current));
+    }
+  }
+
   return (
     <>
       {canManage ? <InvitationSettings teamId={teamId} /> : null}
@@ -919,12 +958,32 @@ function MembersSettings({ canManage, teamId }: { canManage: boolean; teamId: st
               {value.members.map((member: TeamMemberSummary) => (
                 <div className="row" key={member.userId}>
                   <strong>{member.displayName}</strong>
-                  <span>{member.role}</span>
+                  {canManage ? (
+                    <select
+                      aria-label={`Role for ${member.displayName}`}
+                      disabled={pendingUserIds.has(member.userId)}
+                      value={member.role}
+                      onChange={(event) => void changeRole(member, event.currentTarget.value)}
+                    >
+                      {MembershipRoleSchema.options.map((role) => (
+                        <option value={role} key={role}>
+                          {role}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span>{member.role}</span>
+                  )}
                 </div>
               ))}
             </div>
           )}
         </AsyncState>
+        {error ? (
+          <p className="notice error" role="alert">
+            {error}
+          </p>
+        ) : null}
       </section>
     </>
   );

@@ -276,7 +276,7 @@ export class AgentService {
       const [row] = await transaction
         .select({ agent: agents, runtimeConfig: agentRuntimeConfigs })
         .from(agents)
-        .innerJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
+        .leftJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
         .where(
           and(
             eq(agents.teamId, teamId),
@@ -286,8 +286,11 @@ export class AgentService {
         )
         .limit(1);
       if (!row) return undefined;
-      const matchesIntent = row.agent.status !== "deleted" && row.agent.creationIntentFingerprint === intentFingerprint;
-      if (!matchesIntent) {
+      if (
+        row.agent.status === "deleted" ||
+        row.runtimeConfig === null ||
+        row.agent.creationIntentFingerprint !== intentFingerprint
+      ) {
         throw new AgentServiceError(
           "AGENT_CREATION_INTENT_CONFLICT",
           "deterministic",

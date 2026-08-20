@@ -283,6 +283,26 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
+  it("rejects replay after the Agent is deleted", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const input = {
+        ...createInput(computer.id),
+        creationIntentId: "a3adbe5e-8e8e-4ac2-a013-b026684ab185",
+      };
+      const created = await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, input);
+      await value.service.suspendById(value.bootstrap.userId, created.id);
+      await value.service.deleteById(value.bootstrap.userId, created.id);
+
+      await expect(
+        value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, input),
+      ).rejects.toMatchObject({ code: "AGENT_CREATION_INTENT_CONFLICT", statusCode: 409 });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("returns one atomic Agent and runtime-config revision during concurrent replay", async () => {
     const value = await fixture();
     const updater = postgres(databaseUrl, { max: 1, onnotice: () => undefined });

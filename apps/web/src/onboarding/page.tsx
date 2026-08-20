@@ -28,6 +28,11 @@ import {
 
 const FEISHU_BOT_APP_LINK = "https://applink.feishu.cn/client/bot/open";
 const CREATE_INTENT_VERSION = 1;
+/** A Computer republishes Provider readiness about twice a minute, so a slower poll loses nothing. */
+const RUNTIME_POLL_INTERVAL_MS = 5_000;
+const RUNTIME_POLL_LIMIT_MS = 10 * 60 * 1_000;
+/** States that only an action taken outside this page can advance, and that no child polls for. */
+const RUNTIME_WAIT_STATES: readonly OnboardingCurrentState["kind"][] = ["provider", "agent-runtime"];
 /** The application route this page hands the Team over to once setup is complete. */
 const AGENTS_ROUTE = "/agents";
 
@@ -89,6 +94,7 @@ export function OnboardingPage({
     () => readCreationIntent(membership.teamId)?.request.displayName ?? "OpenTag",
   );
   const [refreshPending, setRefreshPending] = useState(false);
+  const [attendedWindow, setAttendedWindow] = useState(0);
   const creationInFlight = useRef(false);
   const refreshInFlight = useRef(false);
   const reload = useCallback(() => {
@@ -97,6 +103,14 @@ export function OnboardingPage({
     setRefreshPending(true);
     setRevision((value) => value + 1);
   }, []);
+  /**
+   * A refresh someone is present for: it reloads facts and restarts the bounded
+   * polling window, so returning to a capped page resumes automatic progress.
+   */
+  const attendedReload = useCallback(() => {
+    setAttendedWindow((value) => value + 1);
+    reload();
+  }, [reload]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: revision is the explicit Server-fact reload trigger.
   useEffect(() => {
@@ -125,9 +139,9 @@ export function OnboardingPage({
   }, [membership.teamId, revision, runtimeFacts]);
 
   useEffect(() => {
-    const refresh = () => reload();
+    const refresh = () => attendedReload();
     const refreshVisible = () => {
-      if (document.visibilityState === "visible") reload();
+      if (document.visibilityState === "visible") attendedReload();
     };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refreshVisible);
@@ -135,12 +149,29 @@ export function OnboardingPage({
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refreshVisible);
     };
-  }, [reload]);
+  }, [attendedReload]);
 
   const resolved = useMemo(() => {
     if (loadState.kind !== "ready") return undefined;
     return resolveSnapshot(membership, loadState.snapshot);
   }, [loadState, membership]);
+
+  const waitingForRuntime = resolved !== undefined && RUNTIME_WAIT_STATES.includes(resolved.state.currentState.kind);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attendedWindow deliberately restarts the bounded window.
+  useEffect(() => {
+    if (!waitingForRuntime) return;
+    let elapsedMs = 0;
+    const timer = window.setInterval(() => {
+      elapsedMs += RUNTIME_POLL_INTERVAL_MS;
+      // An unattended page goes quiet; the next attended refresh starts a fresh window.
+      if (elapsedMs >= RUNTIME_POLL_LIMIT_MS) {
+        window.clearInterval(timer);
+        return;
+      }
+      if (document.visibilityState !== "hidden") reload();
+    }, RUNTIME_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [attendedWindow, reload, waitingForRuntime]);
 
   const runAgentCreation = useCallback(
     (request: Omit<CreateAgentRequest, "creationIntentId">) => {
@@ -212,7 +243,7 @@ export function OnboardingPage({
             }}
             onAgentDisplayNameChange={setAgentDisplayName}
             onCreateAgent={(current) => runAgentCreation(normalizedAgentRequest(current, agentDisplayName))}
-            onReload={reload}
+            onReload={attendedReload}
             refreshPending={refreshPending}
             snapshot={loadState.snapshot}
             state={resolved.state}

@@ -44,6 +44,17 @@ describe("RuntimeToolHost", () => {
       expect(timeoutBody).toMatchObject({ state: "unknown", code: "tool_result_timeout" });
       expect(timeoutBody.requestId).toBe(sent[0]?.requestId);
 
+      await expect(
+        host.execute({
+          runId: "turn-timeout",
+          toolCallId: "call-timeout-changed-retry",
+          name: "opentag_message_send",
+          input: { retryRequestId: timeoutBody.requestId, text: "changed" },
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toMatchObject({ success: false, error: { code: "request_id_conflict" } });
+      expect(sent).toHaveLength(1);
+
       const retry = host.execute({
         runId: "turn-timeout",
         toolCallId: "call-timeout-retry",
@@ -185,9 +196,12 @@ describe("RuntimeToolHost", () => {
     host.close();
   });
 
-  it("reuses an explicit retry identity and rejects conflicting reuse before send", async () => {
+  it("permits only exact retries of identities returned as unknown in the active Run", async () => {
     let listener: ((frame: RuntimeBusinessFrame) => void | Promise<void>) | undefined;
-    const send = vi.fn(async (_frame: unknown) => undefined);
+    const sent: Array<{ requestId: string; text: string }> = [];
+    const send = vi.fn(async (frame: unknown) => {
+      sent.push(frame as { requestId: string; text: string });
+    });
     const host = new RuntimeToolHost({
       send,
       subscribeBusinessFrames: (next) => {
@@ -198,44 +212,191 @@ describe("RuntimeToolHost", () => {
       },
     });
     const delivery = request();
-    const requestId = randomUUID();
     const release = host.activateRun("turn-1", delivery, ["opentag_message_send"]);
     const signal = new AbortController().signal;
-    const call = (text: string, callId: string) => ({
-      runId: "turn-1",
-      toolCallId: callId,
-      name: "opentag_message_send",
-      input: { retryRequestId: requestId, text },
-      signal,
-    });
-    const first = host.execute(call("hello", "call-1"));
-    const same = host.execute(call("hello", "call-2"));
-    await expect.poll(() => send.mock.calls.length).toBe(1);
-    await listener?.({ type: "im:tool:result", requestId, state: "unknown", code: "provider_unknown" });
-    await expect(first).resolves.toMatchObject({ success: false });
-    await expect(same).resolves.toEqual(await first);
-    expect(send).toHaveBeenCalledTimes(1);
-
-    const explicitRetry = host.execute(call("hello", "call-retry"));
-    await expect.poll(() => send.mock.calls.length).toBe(2);
-    expect(send.mock.calls[1]?.[0]).toMatchObject({ requestId, text: "hello" });
-    await listener?.({ type: "im:tool:result", requestId, state: "succeeded" });
-    await expect(explicitRetry).resolves.toMatchObject({ success: true });
-
-    const conflictingId = randomUUID();
-    const pending = host.execute({
-      ...call("one", "call-3"),
-      input: { retryRequestId: conflictingId, text: "one" },
-    });
+    const arbitraryRequestId = randomUUID();
     await expect(
       host.execute({
-        ...call("two", "call-4"),
-        input: { retryRequestId: conflictingId, text: "two" },
+        runId: "turn-1",
+        toolCallId: "call-arbitrary-retry",
+        name: "opentag_message_send",
+        input: { retryRequestId: arbitraryRequestId, text: "hello" },
+        signal,
+      }),
+    ).resolves.toMatchObject({ success: false, error: { code: "retry_request_not_unknown" } });
+    expect(send).not.toHaveBeenCalled();
+
+    const first = host.execute({
+      runId: "turn-1",
+      toolCallId: "call-first",
+      name: "opentag_message_send",
+      input: { text: "hello" },
+      signal,
+    });
+    await expect.poll(() => send.mock.calls.length).toBe(1);
+    const requestId = sent[0]?.requestId as string;
+    await listener?.({ type: "im:tool:result", requestId, state: "unknown", code: "provider_unknown" });
+    const unknown = await first;
+    expect(unknown).toMatchObject({ success: false, error: { code: "provider_unknown" } });
+    expect(JSON.parse((unknown.content[0] as { text: string }).text)).toMatchObject({ requestId, state: "unknown" });
+    expect(send).toHaveBeenCalledTimes(1);
+
+    await expect(
+      host.execute({
+        runId: "turn-1",
+        toolCallId: "call-changed-retry",
+        name: "opentag_message_send",
+        input: { retryRequestId: requestId, text: "changed" },
+        signal,
       }),
     ).resolves.toMatchObject({ success: false, error: { code: "request_id_conflict" } });
-    expect(send).toHaveBeenCalledTimes(3);
-    await listener?.({ type: "im:tool:result", requestId: conflictingId, state: "succeeded" });
-    await expect(pending).resolves.toMatchObject({ success: true });
+    expect(send).toHaveBeenCalledTimes(1);
+
+    const retryCall = (toolCallId: string, retrySignal = signal) =>
+      host.execute({
+        runId: "turn-1",
+        toolCallId,
+        name: "opentag_message_send",
+        input: { retryRequestId: requestId, text: "hello" },
+        signal: retrySignal,
+      });
+    const explicitRetry = retryCall("call-retry");
+    const concurrentController = new AbortController();
+    const concurrentRetry = retryCall("call-concurrent-retry", concurrentController.signal);
+    const definiteController = new AbortController();
+    const definiteConcurrentRetry = retryCall("call-definite-concurrent-retry", definiteController.signal);
+    await expect.poll(() => send.mock.calls.length).toBe(2);
+    expect(sent[1]).toMatchObject({ requestId, text: "hello" });
+    concurrentController.abort();
+    await expect(concurrentRetry).resolves.toMatchObject({
+      success: false,
+      error: { code: "tool_call_cancelled" },
+    });
+    await listener?.({ type: "im:tool:result", requestId, state: "succeeded" });
+    definiteController.abort();
+    await expect(explicitRetry).resolves.toMatchObject({ success: true });
+    await expect(definiteConcurrentRetry).resolves.toMatchObject({ success: true });
+
+    await expect(
+      host.execute({
+        runId: "turn-1",
+        toolCallId: "call-retry-after-success",
+        name: "opentag_message_send",
+        input: { retryRequestId: requestId, text: "hello" },
+        signal,
+      }),
+    ).resolves.toMatchObject({ success: false, error: { code: "retry_request_not_unknown" } });
+    expect(send).toHaveBeenCalledTimes(2);
+    release();
+    host.close();
+  });
+
+  it("lets a definite Server result win a same-tick caller abort and keeps its identity non-retryable", async () => {
+    for (const state of ["succeeded", "deterministic_failed"] as const) {
+      let listener: ((frame: RuntimeBusinessFrame) => void | Promise<void>) | undefined;
+      const sent: Array<{ requestId: string }> = [];
+      const host = new RuntimeToolHost({
+        send: async (frame: unknown) => {
+          sent.push(frame as { requestId: string });
+        },
+        subscribeBusinessFrames: (next) => {
+          listener = next;
+          return () => {
+            listener = undefined;
+          };
+        },
+      });
+      const runId = `turn-definite-abort-${state}`;
+      const release = host.activateRun(runId, request(), ["opentag_message_send"]);
+      const controller = new AbortController();
+      const pending = host.execute({
+        runId,
+        toolCallId: "call-first",
+        name: "opentag_message_send",
+        input: { text: "hello" },
+        signal: controller.signal,
+      });
+      await vi.waitFor(() => expect(sent).toHaveLength(1));
+      const requestId = sent[0]?.requestId as string;
+
+      void listener?.({ type: "im:tool:result", requestId, state, code: "provider_result" });
+      controller.abort();
+
+      await expect(pending).resolves.toMatchObject(
+        state === "succeeded" ? { success: true } : { success: false, error: { code: "provider_result" } },
+      );
+      await expect(
+        host.execute({
+          runId,
+          toolCallId: "call-retry",
+          name: "opentag_message_send",
+          input: { retryRequestId: requestId, text: "hello" },
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toMatchObject({ success: false, error: { code: "retry_request_not_unknown" } });
+      expect(sent).toHaveLength(1);
+      release();
+      host.close();
+    }
+  });
+
+  it("bounds retryable unknown identities to the most recent 64 entries in a Run", async () => {
+    let listener: ((frame: RuntimeBusinessFrame) => void | Promise<void>) | undefined;
+    const sent: Array<{ requestId: string; text: string }> = [];
+    const host = new RuntimeToolHost({
+      send: async (frame: unknown) => {
+        sent.push(frame as { requestId: string; text: string });
+      },
+      subscribeBusinessFrames: (next) => {
+        listener = next;
+        return () => {
+          listener = undefined;
+        };
+      },
+    });
+    const delivery = request();
+    const release = host.activateRun("turn-bounded-retries", delivery, ["opentag_message_send"]);
+    const signal = new AbortController().signal;
+    const unknownIds: string[] = [];
+
+    for (let index = 0; index < 65; index += 1) {
+      const pending = host.execute({
+        runId: "turn-bounded-retries",
+        toolCallId: `call-${index}`,
+        name: "opentag_message_send",
+        input: { text: `message-${index}` },
+        signal,
+      });
+      await vi.waitFor(() => expect(sent).toHaveLength(index + 1));
+      const requestId = sent[index]?.requestId as string;
+      unknownIds.push(requestId);
+      await listener?.({ type: "im:tool:result", requestId, state: "unknown" });
+      await expect(pending).resolves.toMatchObject({ success: false });
+    }
+
+    await expect(
+      host.execute({
+        runId: "turn-bounded-retries",
+        toolCallId: "retry-evicted",
+        name: "opentag_message_send",
+        input: { retryRequestId: unknownIds[0] as string, text: "message-0" },
+        signal,
+      }),
+    ).resolves.toMatchObject({ success: false, error: { code: "retry_request_not_unknown" } });
+    expect(sent).toHaveLength(65);
+
+    const latestRequestId = unknownIds[64] as string;
+    const latestRetry = host.execute({
+      runId: "turn-bounded-retries",
+      toolCallId: "retry-latest",
+      name: "opentag_message_send",
+      input: { retryRequestId: latestRequestId, text: "message-64" },
+      signal,
+    });
+    await vi.waitFor(() => expect(sent).toHaveLength(66));
+    expect(sent[65]).toMatchObject({ requestId: latestRequestId, text: "message-64" });
+    await listener?.({ type: "im:tool:result", requestId: latestRequestId, state: "succeeded" });
+    await expect(latestRetry).resolves.toMatchObject({ success: true });
     release();
     host.close();
   });
@@ -478,27 +639,30 @@ describe("RuntimeToolHost", () => {
     expect(nonErrorFailure).toMatchObject({ success: false, error: { code: "tool_call_failed" } });
 
     sendFailure = undefined;
-    const noCodeRequestId = randomUUID();
     const noCode = host.execute({
       runId: "turn-1",
       toolCallId: "failed-without-code",
       name: "opentag_message_send",
-      input: { retryRequestId: noCodeRequestId, text: "fail" },
+      input: { text: "fail" },
       signal,
     });
+    const noCodeRequestId = (sent.at(-1) as { requestId: string }).requestId;
     await listener?.({ type: "im:tool:result", requestId: noCodeRequestId, state: "deterministic_failed" });
     await expect(noCode).resolves.toMatchObject({ success: false, error: { code: "deterministic_failed" } });
 
     await listener?.({ type: "not-a-tool-result" } as never);
 
-    const sharedRequestId = randomUUID();
+    const sharedOwnerAbort = new AbortController();
     const shared = host.execute({
       runId: "turn-1",
       toolCallId: "shared-owner",
       name: "opentag_message_send",
-      input: { retryRequestId: sharedRequestId, text: "shared" },
-      signal,
+      input: { text: "shared" },
+      signal: sharedOwnerAbort.signal,
     });
+    const sharedRequestId = (sent.at(-1) as { requestId: string }).requestId;
+    sharedOwnerAbort.abort();
+    await expect(shared).resolves.toMatchObject({ success: false, error: { code: "tool_call_cancelled" } });
     const cancelledCaller = new AbortController();
     cancelledCaller.abort();
     await expect(
@@ -511,17 +675,16 @@ describe("RuntimeToolHost", () => {
       }),
     ).resolves.toMatchObject({ success: false, error: { code: "tool_call_cancelled" } });
     await listener?.({ type: "im:tool:result", requestId: sharedRequestId, state: "succeeded" });
-    await shared;
 
     const abortDuringRequest = new AbortController();
-    const abortRequestId = randomUUID();
     const abortPending = host.execute({
       runId: "turn-1",
       toolCallId: "abort-during-request",
       name: "opentag_message_send",
-      input: { retryRequestId: abortRequestId, text: "cancel" },
+      input: { text: "cancel" },
       signal: abortDuringRequest.signal,
     });
+    const abortRequestId = (sent.at(-1) as { requestId: string }).requestId;
     abortDuringRequest.abort();
     const abortedAfterDispatch = await abortPending;
     expect(abortedAfterDispatch).toMatchObject({ success: false, error: { code: "tool_call_cancelled" } });

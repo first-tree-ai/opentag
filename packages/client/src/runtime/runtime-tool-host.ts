@@ -16,9 +16,11 @@ import type {
 import type { RuntimeConnection } from "./runtime-connection.js";
 
 const TOOL_TIMEOUT_MS = 60_000;
+const RETRYABLE_UNKNOWN_LIMIT = 64;
 const OPENTAG_TOOL_SET: ReadonlySet<string> = new Set(OPENTAG_MESSAGE_TOOLS);
 
 interface PendingTool {
+  definiteResult: boolean;
   hash: string;
   promise: Promise<RuntimeImToolResult>;
   reject(error: Error): void;
@@ -30,6 +32,12 @@ interface ActiveRun {
   readonly allowedTools: ReadonlySet<string>;
   readonly calls: Map<string, { readonly hash: string; readonly promise: Promise<AgentHostedToolResult> }>;
   readonly delivery: DirectImMessageDeliveryRequest;
+  readonly retryableUnknown: Map<string, string>;
+}
+
+interface BuiltToolRequest {
+  readonly request: RuntimeImToolRequest;
+  readonly retryRequested: boolean;
 }
 
 class RuntimeToolRequestError extends Error {
@@ -67,7 +75,7 @@ export class RuntimeToolHost {
     if (allowed.size !== allowedTools.length || [...allowed].some((name) => !OPENTAG_TOOL_SET.has(name))) {
       throw new Error("OpenTag runtime tool allow-list is invalid");
     }
-    const active: ActiveRun = { allowedTools: allowed, calls: new Map(), delivery };
+    const active: ActiveRun = { allowedTools: allowed, calls: new Map(), delivery, retryableUnknown: new Map() };
     this.#activeRuns.set(runId, active);
     return () => {
       if (this.#activeRuns.get(runId) === active) this.#activeRuns.delete(runId);
@@ -87,7 +95,7 @@ export class RuntimeToolHost {
       }
       return existing.promise;
     }
-    const promise = this.#executeActive(active.delivery, call);
+    const promise = this.#executeActive(active, call);
     active.calls.set(call.toolCallId, { hash, promise });
     return promise;
   }
@@ -104,14 +112,14 @@ export class RuntimeToolHost {
     this.#pending.clear();
   }
 
-  async #executeActive(
-    delivery: DirectImMessageDeliveryRequest,
-    call: AgentHostedToolCall,
-  ): Promise<AgentHostedToolResult> {
-    let request: RuntimeImToolRequest | undefined;
+  async #executeActive(active: ActiveRun, call: AgentHostedToolCall): Promise<AgentHostedToolResult> {
+    let built: BuiltToolRequest | undefined;
+    let intentHash: string | undefined;
     try {
-      request = buildToolRequest(delivery, call);
-      const result = await this.#request(request, call.signal);
+      built = buildToolRequest(active.delivery, call);
+      intentHash = requestHash(built.request);
+      if (built.retryRequested) assertRetryableUnknown(active, built.request.requestId, intentHash);
+      const result = await this.#request(active, built.request, intentHash, call.signal);
       const text = JSON.stringify({
         requestId: result.requestId,
         state: result.state,
@@ -127,8 +135,8 @@ export class RuntimeToolHost {
             error: { code: result.code ?? result.state, message: "OpenTag message operation did not succeed." },
           };
     } catch (error) {
-      if (request && error instanceof RuntimeToolRequestError) {
-        return failedRequestResult(request.requestId, error.state, error.code, error.message);
+      if (built && error instanceof RuntimeToolRequestError) {
+        return failedRequestResult(built.request.requestId, error.state, error.code, error.message);
       }
       return failedToolResult(
         call.signal.aborted ? "tool_call_cancelled" : "tool_call_failed",
@@ -137,7 +145,12 @@ export class RuntimeToolHost {
     }
   }
 
-  async #request(request: RuntimeImToolRequest, signal: AbortSignal): Promise<RuntimeImToolResult> {
+  async #request(
+    active: ActiveRun,
+    request: RuntimeImToolRequest,
+    hash: string,
+    signal: AbortSignal,
+  ): Promise<RuntimeImToolResult> {
     if (signal.aborted) {
       throw new RuntimeToolRequestError(
         "deterministic_failed",
@@ -145,9 +158,9 @@ export class RuntimeToolHost {
         "OpenTag runtime tool call was aborted before dispatch",
       );
     }
-    const hash = requestHash(request);
     const existing = this.#pending.get(request.requestId);
     if (existing) {
+      /* v8 ignore next 7 -- supplied retry IDs are hash-checked against the Run ledger before this method; only an unforgeable randomUUID collision can reach this defense. */
       if (existing.hash !== hash) {
         throw new RuntimeToolRequestError(
           "deterministic_failed",
@@ -155,7 +168,11 @@ export class RuntimeToolHost {
           "OpenTag runtime tool request ID conflicts with another intent",
         );
       }
-      return withCallerAbort(existing.promise, signal);
+      return withCallerAbort(existing.promise, signal, () => {
+        if (existing.definiteResult) return false;
+        rememberRetryableUnknown(active, request.requestId, hash);
+        return true;
+      });
     }
     let resolveResult!: (result: RuntimeImToolResult) => void;
     let rejectResult!: (error: Error) => void;
@@ -163,9 +180,10 @@ export class RuntimeToolHost {
       resolveResult = resolve;
       rejectResult = reject;
     });
+    let pending!: PendingTool;
     const timer = setTimeout(
       () =>
-        rejectResult(
+        pending.reject(
           new RuntimeToolRequestError(
             "unknown",
             "tool_result_timeout",
@@ -175,12 +193,26 @@ export class RuntimeToolHost {
       TOOL_TIMEOUT_MS,
     );
     timer.unref();
-    const pending: PendingTool = {
+    pending = {
+      definiteResult: false,
       hash,
       promise,
       timer,
-      resolve: resolveResult,
-      reject: rejectResult,
+      resolve: (result) => {
+        if (result.state === "unknown") {
+          if (!pending.definiteResult) rememberRetryableUnknown(active, request.requestId, hash);
+        } else {
+          pending.definiteResult = true;
+          active.retryableUnknown.delete(request.requestId);
+        }
+        resolveResult(result);
+      },
+      reject: (error) => {
+        if (error instanceof RuntimeToolRequestError && error.state === "unknown") {
+          if (!pending.definiteResult) rememberRetryableUnknown(active, request.requestId, hash);
+        }
+        rejectResult(error);
+      },
     };
     this.#pending.set(request.requestId, pending);
     const cleanup = () => {
@@ -193,7 +225,11 @@ export class RuntimeToolHost {
       const detail = error instanceof Error ? error.message : "Runtime send failed";
       pending.reject(new RuntimeToolRequestError("unknown", "runtime_send_failed", detail));
     });
-    return withCallerAbort(promise, signal);
+    return withCallerAbort(promise, signal, () => {
+      if (pending.definiteResult) return false;
+      rememberRetryableUnknown(active, request.requestId, hash);
+      return true;
+    });
   }
 
   #handleResult(input: unknown): void {
@@ -282,9 +318,36 @@ function requestHash(request: unknown): string {
   return createHash("sha256").update(JSON.stringify(request)).digest("hex");
 }
 
-function withCallerAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+function assertRetryableUnknown(active: ActiveRun, requestId: string, intentHash: string): void {
+  const retryableHash = active.retryableUnknown.get(requestId);
+  if (!retryableHash) {
+    throw new RuntimeToolRequestError(
+      "deterministic_failed",
+      "retry_request_not_unknown",
+      "OpenTag rejected a retry request ID that is not retryable in the active Run",
+    );
+  }
+  if (retryableHash !== intentHash) {
+    throw new RuntimeToolRequestError(
+      "deterministic_failed",
+      "request_id_conflict",
+      "OpenTag runtime tool request ID conflicts with the original unknown intent",
+    );
+  }
+}
+
+function rememberRetryableUnknown(active: ActiveRun, requestId: string, intentHash: string): void {
+  active.retryableUnknown.delete(requestId);
+  active.retryableUnknown.set(requestId, intentHash);
+  if (active.retryableUnknown.size <= RETRYABLE_UNKNOWN_LIMIT) return;
+  const oldestRequestId = active.retryableUnknown.keys().next().value as string;
+  active.retryableUnknown.delete(oldestRequestId);
+}
+
+function withCallerAbort<T>(promise: Promise<T>, signal: AbortSignal, shouldAbort: () => boolean): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () =>
+    const onAbort = () => {
+      if (!shouldAbort()) return;
       reject(
         new RuntimeToolRequestError(
           "unknown",
@@ -292,37 +355,50 @@ function withCallerAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T
           "OpenTag runtime tool call was aborted after dispatch",
         ),
       );
+    };
     signal.addEventListener("abort", onAbort, { once: true });
     void promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });
 }
 
-function buildToolRequest(delivery: DirectImMessageDeliveryRequest, call: AgentHostedToolCall): RuntimeImToolRequest {
+function buildToolRequest(delivery: DirectImMessageDeliveryRequest, call: AgentHostedToolCall): BuiltToolRequest {
   const input = requireRecord(call.input);
   if (call.name === "opentag_message_send") {
     requireOnlyKeys(input, ["retryRequestId", "text"]);
     const text = requireText(input.text);
-    return { ...toolRequestBase(delivery, input.retryRequestId), operation: "send", text };
+    const retryRequestId = input.retryRequestId;
+    return {
+      request: { ...toolRequestBase(delivery, retryRequestId), operation: "send", text },
+      retryRequested: retryRequestId !== undefined,
+    };
   }
   if (call.name === "opentag_message_reply") {
     requireOnlyKeys(input, ["replyToImMessageId", "retryRequestId", "text"]);
     const text = requireText(input.text);
     const replyToImMessageId = requireUuid(input.replyToImMessageId);
+    const retryRequestId = input.retryRequestId;
     return {
-      ...toolRequestBase(delivery, input.retryRequestId),
-      operation: "reply",
-      text,
-      replyToImMessageId,
+      request: {
+        ...toolRequestBase(delivery, retryRequestId),
+        operation: "reply",
+        text,
+        replyToImMessageId,
+      },
+      retryRequested: retryRequestId !== undefined,
     };
   }
   requireOnlyKeys(input, ["emoji", "retryRequestId", "targetImMessageId"]);
   const targetImMessageId = requireUuid(input.targetImMessageId);
   const emoji = requireString(input.emoji, 128);
+  const retryRequestId = input.retryRequestId;
   return {
-    ...toolRequestBase(delivery, input.retryRequestId),
-    operation: "react",
-    targetImMessageId,
-    emoji,
+    request: {
+      ...toolRequestBase(delivery, retryRequestId),
+      operation: "react",
+      targetImMessageId,
+      emoji,
+    },
+    retryRequested: retryRequestId !== undefined,
   };
 }
 

@@ -420,7 +420,11 @@ export class TeamMembershipService {
    * Lists every Computer owned by an active, non-suspended Team member.
    * Agent bindings decorate the Computer projection; they do not determine membership in it.
    */
-  async listComputers(callerUserId: string, teamId: string): Promise<ListTeamComputersResponse> {
+  async listComputers(
+    callerUserId: string,
+    teamId: string,
+    includeProviderReadiness = false,
+  ): Promise<ListTeamComputersResponse> {
     await this.requireActiveMembership(this.#database, callerUserId, teamId);
     const rows = await this.#listComputerRows(teamId);
     const observedAt = this.#now();
@@ -441,12 +445,16 @@ export class TeamMembershipService {
         displayName: row.computer.displayName,
         platform: row.computer.platform,
         connectionStatus,
-        providerReadiness: projectComputerProviderReadiness(
-          row.computer.id,
-          connectionStatus,
-          observedAt,
-          this.#providerReadiness,
-        ),
+        ...(includeProviderReadiness
+          ? {
+              providerReadiness: projectComputerProviderReadiness(
+                row.computer.id,
+                connectionStatus,
+                observedAt,
+                this.#providerReadiness,
+              ),
+            }
+          : {}),
         connectedAt: row.computer.connectedAt?.toISOString() ?? null,
         lastSeenAt: row.computer.lastSeenAt.toISOString(),
         observedAt: observedAt.toISOString(),
@@ -456,7 +464,11 @@ export class TeamMembershipService {
     return { computers: [...byId.values()] };
   }
 
-  async listComputersConfig(callerUserId: string, teamId: string): Promise<ListTeamComputersConfigResponse> {
+  async listComputersConfig(
+    callerUserId: string,
+    teamId: string,
+    includeProviderReadiness = false,
+  ): Promise<ListTeamComputersConfigResponse> {
     await this.requireActiveMembership(this.#database, callerUserId, teamId, "admin");
     const rows = await this.#listComputerRows(teamId);
     const observedAt = this.#now();
@@ -479,12 +491,16 @@ export class TeamMembershipService {
         arch: row.computer.arch,
         clientVersion: row.computer.clientVersion,
         connectionStatus,
-        providerReadiness: projectComputerProviderReadiness(
-          row.computer.id,
-          connectionStatus,
-          observedAt,
-          this.#providerReadiness,
-        ),
+        ...(includeProviderReadiness
+          ? {
+              providerReadiness: projectComputerProviderReadiness(
+                row.computer.id,
+                connectionStatus,
+                observedAt,
+                this.#providerReadiness,
+              ),
+            }
+          : {}),
         connectedAt: row.computer.connectedAt?.toISOString() ?? null,
         lastSeenAt: row.computer.lastSeenAt.toISOString(),
         observedAt: observedAt.toISOString(),

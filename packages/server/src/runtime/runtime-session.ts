@@ -46,6 +46,7 @@ export interface RuntimeSessionOptions {
   heartbeatIntervalMs?: number;
   heartbeatTimeoutMs?: number;
   now?: () => Date;
+  providerReadiness?: boolean;
   registerTimeoutMs?: number;
 }
 
@@ -93,6 +94,7 @@ export class RuntimeSession {
       heartbeatIntervalMs: heartbeat.heartbeatIntervalMs,
       heartbeatTimeoutMs: heartbeat.heartbeatTimeoutMs,
       now: options.now ?? (() => new Date()),
+      providerReadiness: options.providerReadiness ?? false,
       registerTimeoutMs: positiveTimeout(options.registerTimeoutMs ?? 5_000, "registerTimeoutMs"),
     };
     if (options.business) {
@@ -227,6 +229,7 @@ export class RuntimeSession {
         capabilities: RUNTIME_V0_CAPABILITIES,
         heartbeatIntervalMs: this.#options.heartbeatIntervalMs,
         heartbeatTimeoutMs: this.#options.heartbeatTimeoutMs,
+        ...(this.#options.providerReadiness ? { providerReadiness: 1 as const } : {}),
       });
       const untilExpiry = authenticated.tokenExpiresAt.getTime() - this.#options.now().getTime();
       this.#tokenTimer = setTimeout(
@@ -241,6 +244,10 @@ export class RuntimeSession {
   async #register(frame: ComputerRegisterFrame): Promise<void> {
     if (!this.#userId) {
       this.#fail("PROTOCOL_ERROR", "Missing authenticated runtime user", 4400, frame.requestId);
+      return;
+    }
+    if (frame.providerReadiness && !this.#options.providerReadiness) {
+      this.#fail("PROTOCOL_ERROR", "Provider readiness was not negotiated", 4400, frame.requestId);
       return;
     }
     try {
@@ -287,6 +294,18 @@ export class RuntimeSession {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance is not registered", 4409, requestId);
         return;
       }
+      if (providerReadiness && !this.#options.providerReadiness) {
+        this.#fail("PROTOCOL_ERROR", "Provider readiness was not negotiated", 4400, requestId);
+        return;
+      }
+      if (!this.#registry.isCurrent(computerId, instanceId, this.#socket)) {
+        this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, requestId);
+        return;
+      }
+      if (!(await this.#computers.heartbeat(this.#userId, computerId, instanceId))) {
+        this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, requestId);
+        return;
+      }
       if (
         !this.#registry.touch(
           computerId,
@@ -297,10 +316,6 @@ export class RuntimeSession {
           providerReadiness,
         )
       ) {
-        this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, requestId);
-        return;
-      }
-      if (!(await this.#computers.heartbeat(this.#userId, computerId, instanceId))) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, requestId);
         return;
       }

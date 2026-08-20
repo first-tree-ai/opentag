@@ -151,6 +151,9 @@ export class ConnectionRegistry {
     if (providerReadiness) {
       current.providerReadiness = { ...providerReadiness };
       current.providerReadinessObservedAt = now;
+    } else {
+      delete current.providerReadiness;
+      delete current.providerReadinessObservedAt;
     }
     return true;
   }

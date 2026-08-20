@@ -263,6 +263,7 @@ describe("BrowserApi", () => {
     };
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       if (String(input) === "/api/v1/me/computers") {
+        expect(new Headers(init?.headers).get("x-opentag-provider-readiness")).toBe("1");
         return new Response(JSON.stringify({ computers: [computer] }), {
           status: 200,
           headers: { "content-type": "application/json" },

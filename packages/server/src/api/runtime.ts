@@ -1,4 +1,4 @@
-import { HTTP_PATHS } from "@opentag/shared";
+import { HTTP_PATHS, PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import type { RuntimeDomainOwner } from "../runtime/runtime-domain-owner.js";
@@ -27,8 +27,11 @@ export function registerRuntimeRoutes(
     now: options.now,
     registerTimeoutMs: options.registerTimeoutMs,
   };
-  app.get(HTTP_PATHS.computerRuntimeWebSocket, { websocket: true }, (socket) => {
-    new RuntimeSession(socket, authService, computerService, registry, sessionOptions).start();
+  app.get(HTTP_PATHS.computerRuntimeWebSocket, { websocket: true }, (socket, request) => {
+    new RuntimeSession(socket, authService, computerService, registry, {
+      ...sessionOptions,
+      providerReadiness: request.headers[PROVIDER_READINESS_V1_HEADER] === "1",
+    }).start();
   });
   const heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 90_000;
   const sweep = setInterval(() => registry.terminateStale(Date.now() - heartbeatTimeoutMs), heartbeatTimeoutMs);

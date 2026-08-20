@@ -17,6 +17,10 @@ const computer = {
 describe("computer contracts", () => {
   it("validates list projections", () => {
     expect(ListComputersResponseSchema.parse({ computers: [computer] })).toEqual({ computers: [computer] });
+    const { providerReadiness: _providerReadiness, ...legacyComputer } = computer;
+    expect(ListComputersResponseSchema.parse({ computers: [legacyComputer] })).toEqual({
+      computers: [legacyComputer],
+    });
   });
 
   it("rejects authority and unsupported platform fields", () => {

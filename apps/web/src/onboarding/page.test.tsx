@@ -12,7 +12,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
 import { OnboardingPage } from "./page.js";
-import type { RuntimeFactsAdapter } from "./runtime-facts.js";
+import type { RuntimeFactsAdapter, RuntimeProviderStatus } from "./runtime-facts.js";
 
 const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -80,7 +80,12 @@ function adminConfig(): AgentAdminConfig {
 }
 
 function runtimeFacts(
-  providers: Array<{ computerId: string; provider: "codex" | "claude-code"; runtimeReady: boolean }>,
+  providers: Array<{
+    computerId: string;
+    provider: "codex" | "claude-code";
+    runtimeReady: boolean;
+    status?: RuntimeProviderStatus;
+  }>,
 ): RuntimeFactsAdapter {
   return { load: vi.fn().mockResolvedValue({ kind: "available", providers }) };
 }
@@ -173,6 +178,20 @@ describe("OnboardingPage", () => {
     installFacts({ computers: [computerA] });
     renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false }]) });
     expect(await screen.findByRole("heading", { name: "Prepare Codex or Claude Code" })).toBeTruthy();
+  });
+
+  it.each([
+    ["checking", "Checking Codex", "OpenTag is checking Codex readiness on Ada's Mac."],
+    ["install", "Install Codex", "Install Codex on Ada's Mac, then check again."],
+    ["sign-in", "Sign in to Codex", "Sign in to Codex on Ada's Mac, then check again."],
+    ["unavailable", "Restore Codex", "Codex is currently unavailable on Ada's Mac. Restore it, then check again."],
+  ] as const)("shows the current %s Provider action", async (status, heading, description) => {
+    installFacts({ computers: [computerA] });
+    renderPage({
+      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false, status }]),
+    });
+    expect(await screen.findByRole("heading", { name: heading })).toBeTruthy();
+    expect(screen.getByText(description)).toBeTruthy();
   });
 
   it("preserves an existing Agent identity during runtime outage", async () => {
@@ -347,5 +366,83 @@ describe("OnboardingPage", () => {
     renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]) });
     fireEvent.click(await screen.findByRole("button", { name: "Connect existing or new Feishu Bot" }));
     await waitFor(() => expect(computers.mock.calls.length).toBeGreaterThan(1));
+  });
+
+  it("deduplicates rapid fact refreshes and reports the pending state", async () => {
+    let finishRefresh: ((value: { computers: TeamComputerSummary[] }) => void) | undefined;
+    const pendingComputers = new Promise<{ computers: TeamComputerSummary[] }>((resolve) => {
+      finishRefresh = resolve;
+    });
+    const computers = vi
+      .spyOn(browserApi, "computers")
+      .mockResolvedValueOnce({ computers: [computerA] })
+      .mockReturnValueOnce(pendingComputers);
+    const agents = vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] });
+    vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
+
+    renderPage({
+      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false, status: "install" }]),
+    });
+    const reload = await screen.findByRole("button", { name: "Check again" });
+    act(() => {
+      fireEvent.click(reload);
+      fireEvent.click(reload);
+    });
+
+    expect(await screen.findByRole("button", { name: "Checking…" })).toHaveProperty("disabled", true);
+    expect(screen.getByRole("status").textContent).toBe("Refreshing Server facts…");
+    expect(computers).toHaveBeenCalledTimes(2);
+    expect(agents).toHaveBeenCalledTimes(2);
+
+    finishRefresh?.({ computers: [computerA] });
+    expect(await screen.findByRole("button", { name: "Check again" })).toHaveProperty("disabled", false);
+  });
+
+  it("keeps an explicit Computer choice in memory when localStorage throws", async () => {
+    const storageTeamId = "a3fda800-7ce2-4338-aae8-3d2120401ed6";
+    const storageAdmin = { ...admin, teamId: storageTeamId };
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    installFacts({ computers: [computerA, computerB] });
+
+    renderPage({ membership: storageAdmin });
+    fireEvent.click(await screen.findByRole("button", { name: /Ada's Mac/ }));
+
+    expect(await screen.findByRole("heading", { name: "Confirm the runtime route" })).toBeTruthy();
+  });
+
+  it("keeps an explicit Agent choice in memory when localStorage throws", async () => {
+    const storageTeamId = "b3fda800-7ce2-4338-aae8-3d2120401ed6";
+    const storageAdmin = { ...admin, teamId: storageTeamId };
+    const researchAgent: AgentSummary = {
+      ...agent,
+      id: "2a63a21e-f6c7-4474-91ea-4dabf0566a24",
+      teamId: storageTeamId,
+      name: "research",
+      displayName: "Research Agent",
+    };
+    const handoff = vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computerA] });
+    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [{ ...agent, teamId: storageTeamId }, researchAgent] });
+    vi.spyOn(browserApi, "logout").mockResolvedValue();
+
+    renderPage({
+      membership: storageAdmin,
+      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true, status: "ready" }]),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: /Research Agent/ }));
+
+    expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
+    expect(handoff).toHaveBeenLastCalledWith(researchAgent.id);
   });
 });

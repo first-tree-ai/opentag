@@ -18,7 +18,13 @@ import {
   type OnboardingProvider,
   type OnboardingState,
 } from "./flow.js";
-import { productionRuntimeFactsAdapter, type RuntimeFactsAdapter, type RuntimeFactsResult } from "./runtime-facts.js";
+import {
+  productionRuntimeFactsAdapter,
+  type RuntimeFactsAdapter,
+  type RuntimeFactsResult,
+  type RuntimeProviderFact,
+  type RuntimeProviderStatus,
+} from "./runtime-facts.js";
 
 const FEISHU_BOT_APP_LINK = "https://applink.feishu.cn/client/bot/open";
 const CREATE_INTENT_VERSION = 1;
@@ -75,21 +81,36 @@ export function OnboardingPage({
   const [loadState, setLoadState] = useState<PageLoadState>({ kind: "loading" });
   const [creation, setCreation] = useState<CreationState>();
   const [creationRetry, setCreationRetry] = useState(0);
+  const [refreshPending, setRefreshPending] = useState(false);
   const creationAttempt = useRef<string | undefined>(undefined);
-  const reload = useCallback(() => setRevision((value) => value + 1), []);
+  const refreshInFlight = useRef(false);
+  const reload = useCallback(() => {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
+    setRefreshPending(true);
+    setRevision((value) => value + 1);
+  }, []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: revision is the explicit Server-fact reload trigger.
   useEffect(() => {
     let active = true;
     setLoadState((current) => (current.kind === "ready" ? current : { kind: "loading" }));
     void loadSnapshot(membership.teamId, runtimeFacts).then(
-      (snapshot) => active && setLoadState({ kind: "ready", snapshot }),
-      (cause: unknown) =>
-        active &&
+      (snapshot) => {
+        if (!active) return;
+        refreshInFlight.current = false;
+        setRefreshPending(false);
+        setLoadState({ kind: "ready", snapshot });
+      },
+      (cause: unknown) => {
+        if (!active) return;
+        refreshInFlight.current = false;
+        setRefreshPending(false);
         setLoadState({
           kind: "error",
           error: cause instanceof Error ? cause : new Error("Unable to load onboarding facts"),
-        }),
+        });
+      },
     );
     return () => {
       active = false;
@@ -178,6 +199,7 @@ export function OnboardingPage({
               setCreationRetry((value) => value + 1);
             }}
             onReload={reload}
+            refreshPending={refreshPending}
             snapshot={loadState.snapshot}
             state={resolved.state}
             teamId={membership.teamId}
@@ -236,6 +258,7 @@ function OnboardingContent({
   onChooseRoute,
   onCreationRetry,
   onReload,
+  refreshPending,
   snapshot,
   state,
   teamId,
@@ -246,6 +269,7 @@ function OnboardingContent({
   onChooseRoute: (selection: RouteSelection) => void;
   onCreationRetry: () => void;
   onReload: () => void;
+  refreshPending: boolean;
   snapshot: OnboardingSnapshot;
   state: OnboardingState;
   teamId: string;
@@ -309,7 +333,7 @@ function OnboardingContent({
         title="Reconnect your Computer"
         description={`Open OpenTag on ${current.computers.map((computer) => computer.displayName).join(", ")}.`}
       >
-        {canManage ? <ReloadButton onReload={onReload} /> : <ReadOnlyCopy />}
+        {canManage ? <ReloadButton pending={refreshPending} onReload={onReload} /> : <ReadOnlyCopy />}
       </ActionSection>
     );
   }
@@ -350,17 +374,20 @@ function OnboardingContent({
   }
   if (current.kind === "provider") {
     const factUnavailable = snapshot.runtime.kind === "unavailable";
+    const attention = runtimeAttention(snapshot.runtime, current.computer.id);
+    const copy = attention ? runtimeAttentionCopy(attention, current.computer.displayName) : undefined;
     return (
       <ActionSection
         readonly={!canManage}
-        title={factUnavailable ? "Confirm the runtime route" : "Prepare Codex or Claude Code"}
+        title={copy?.title ?? (factUnavailable ? "Confirm the runtime route" : "Prepare Codex or Claude Code")}
         description={
-          factUnavailable
+          copy?.description ??
+          (factUnavailable
             ? "OpenTag cannot yet confirm an Agent-ready Provider on this Computer."
-            : `Finish Provider setup on ${current.computer.displayName}, then check again.`
+            : `Finish Provider setup on ${current.computer.displayName}, then check again.`)
         }
       >
-        {canManage ? <ReloadButton onReload={onReload} /> : <ReadOnlyCopy />}
+        {canManage ? <ReloadButton pending={refreshPending} onReload={onReload} /> : <ReadOnlyCopy />}
       </ActionSection>
     );
   }
@@ -386,13 +413,19 @@ function OnboardingContent({
   }
   if (current.kind === "agent-runtime") {
     const agent = snapshot.targetAgent;
+    const attention = runtimeAttention(snapshot.runtime, current.agent.computerId, current.agent.runtimeProvider);
+    const copy = attention ? runtimeAttentionCopy(attention, agent?.computer.displayName ?? "its Computer") : undefined;
     return (
       <ActionSection
         readonly={!canManage}
-        title={`${agent?.displayName ?? "Your Agent"} needs its runtime route`}
-        description="The Agent identity and Feishu setup are unchanged. Restore its bound Computer and Provider, then check again."
+        title={copy?.title ?? `${agent?.displayName ?? "Your Agent"} needs its runtime route`}
+        description={
+          copy
+            ? `${copy.description} The Agent identity and Feishu setup are unchanged.`
+            : "The Agent identity and Feishu setup are unchanged. Restore its bound Computer and Provider, then check again."
+        }
       >
-        {canManage ? <ReloadButton onReload={onReload} /> : <ReadOnlyCopy />}
+        {canManage ? <ReloadButton pending={refreshPending} onReload={onReload} /> : <ReadOnlyCopy />}
       </ActionSection>
     );
   }
@@ -458,11 +491,18 @@ function ActionSection({
   );
 }
 
-function ReloadButton({ onReload }: { onReload: () => void }) {
+function ReloadButton({ onReload, pending }: { onReload: () => void; pending: boolean }) {
   return (
-    <button className="button" type="button" onClick={onReload}>
-      Check again
-    </button>
+    <div className="onboarding-feedback">
+      <button className="button" disabled={pending} type="button" onClick={onReload}>
+        {pending ? "Checking…" : "Check again"}
+      </button>
+      {pending ? (
+        <p className="onboarding-helper" role="status">
+          Refreshing Server facts…
+        </p>
+      ) : null}
+    </div>
   );
 }
 
@@ -579,6 +619,10 @@ async function createOnboardingAgent(
 }
 
 const memoryIntentRecords = new Map<string, CreationIntentRecord>();
+const memoryRouteSelections = new Map<string, RouteSelection>();
+const memoryTargetAgents = new Map<string, string>();
+const memoryRouteFallbackTeams = new Set<string>();
+const memoryTargetFallbackTeams = new Set<string>();
 const fallbackCreationLocks = new Map<string, Promise<void>>();
 
 async function withCreationLock<T>(teamId: string, task: () => Promise<T>): Promise<T> {
@@ -669,23 +713,27 @@ function routeSelectionKey(teamId: string): string {
 
 function readRouteSelection(teamId: string): RouteSelection | undefined {
   try {
-    const value = JSON.parse(
-      window.localStorage.getItem(routeSelectionKey(teamId)) ?? "null",
-    ) as Partial<RouteSelection> | null;
+    const raw = window.localStorage.getItem(routeSelectionKey(teamId));
+    if (!raw) return memoryRouteFallbackTeams.has(teamId) ? memoryRouteSelections.get(teamId) : undefined;
+    const value = JSON.parse(raw) as Partial<RouteSelection> | null;
     if (!value || typeof value.computerId !== "string") return undefined;
     if (value.provider !== undefined && value.provider !== "codex" && value.provider !== "claude-code")
       return undefined;
-    return { computerId: value.computerId, ...(value.provider ? { provider: value.provider } : {}) };
+    const selection = { computerId: value.computerId, ...(value.provider ? { provider: value.provider } : {}) };
+    memoryRouteSelections.set(teamId, selection);
+    return selection;
   } catch {
-    return undefined;
+    return memoryRouteSelections.get(teamId);
   }
 }
 
 function rememberRouteSelection(teamId: string, selection: RouteSelection): void {
+  memoryRouteSelections.set(teamId, selection);
   try {
     window.localStorage.setItem(routeSelectionKey(teamId), JSON.stringify(selection));
+    memoryRouteFallbackTeams.delete(teamId);
   } catch {
-    // The canonical route remains derivable when storage is unavailable.
+    memoryRouteFallbackTeams.add(teamId);
   }
 }
 
@@ -695,17 +743,23 @@ function targetAgentKey(teamId: string): string {
 
 function readTargetAgent(teamId: string): string | undefined {
   try {
-    return window.localStorage.getItem(targetAgentKey(teamId)) ?? undefined;
+    const agentId =
+      window.localStorage.getItem(targetAgentKey(teamId)) ??
+      (memoryTargetFallbackTeams.has(teamId) ? memoryTargetAgents.get(teamId) : undefined);
+    if (agentId) memoryTargetAgents.set(teamId, agentId);
+    return agentId;
   } catch {
-    return undefined;
+    return memoryTargetAgents.get(teamId);
   }
 }
 
 function rememberTargetAgent(teamId: string, agentId: string): void {
+  memoryTargetAgents.set(teamId, agentId);
   try {
     window.localStorage.setItem(targetAgentKey(teamId), agentId);
+    memoryTargetFallbackTeams.delete(teamId);
   } catch {
-    // A unique authoritative Agent can still be recovered without storage.
+    memoryTargetFallbackTeams.add(teamId);
   }
 }
 
@@ -713,6 +767,54 @@ function runnableProviders(runtime: RuntimeFactsResult, computerId: string): Onb
   return runtime.kind === "available"
     ? runtime.providers.filter((provider) => provider.computerId === computerId && provider.runtimeReady)
     : [];
+}
+
+function runtimeAttention(
+  runtime: RuntimeFactsResult,
+  computerId: string,
+  provider?: AgentRuntimeProvider,
+): (RuntimeProviderFact & { readonly status: Exclude<RuntimeProviderStatus, "ready"> }) | undefined {
+  if (runtime.kind === "unavailable") return undefined;
+  return [...runtime.providers]
+    .filter(
+      (fact): fact is RuntimeProviderFact & { readonly status: Exclude<RuntimeProviderStatus, "ready"> } =>
+        fact.status !== undefined && fact.status !== "ready",
+    )
+    .filter(
+      (fact) =>
+        fact.computerId === computerId &&
+        fact.runtimeReady === false &&
+        (provider === undefined || fact.provider === provider),
+    )
+    .sort(compareProviderFacts)[0];
+}
+
+function runtimeAttentionCopy(
+  fact: RuntimeProviderFact & { readonly status: Exclude<RuntimeProviderStatus, "ready"> },
+  computerName: string,
+): { readonly title: string; readonly description: string } {
+  const label = providerLabel(fact.provider);
+  switch (fact.status) {
+    case "checking":
+      return {
+        title: `Checking ${label}`,
+        description: `OpenTag is checking ${label} readiness on ${computerName}.`,
+      };
+    case "install":
+      return { title: `Install ${label}`, description: `Install ${label} on ${computerName}, then check again.` };
+    case "sign-in":
+      return { title: `Sign in to ${label}`, description: `Sign in to ${label} on ${computerName}, then check again.` };
+    case "unavailable":
+      return {
+        title: `Restore ${label}`,
+        description: `${label} is currently unavailable on ${computerName}. Restore it, then check again.`,
+      };
+    default:
+      return {
+        title: `Prepare ${label}`,
+        description: `Finish ${label} setup on ${computerName}, then check again.`,
+      };
+  }
 }
 
 function compareProviderFacts(left: OnboardingProvider, right: OnboardingProvider): number {

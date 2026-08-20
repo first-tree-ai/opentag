@@ -7,8 +7,19 @@ export interface RuntimeFactsInput {
   readonly computers: readonly TeamComputerSummary[];
 }
 
+export type RuntimeProviderStatus = "checking" | "install" | "sign-in" | "ready" | "unavailable";
+
+/**
+ * The normalized readiness fact consumed by the page. `runtimeReady` remains
+ * the only fact used by the flow; `status` only lets the page describe the
+ * current action without inventing Provider readiness.
+ */
+export interface RuntimeProviderFact extends OnboardingProvider {
+  readonly status?: RuntimeProviderStatus;
+}
+
 export type RuntimeFactsResult =
-  | { readonly kind: "available"; readonly providers: readonly OnboardingProvider[] }
+  | { readonly kind: "available"; readonly providers: readonly RuntimeProviderFact[] }
   | { readonly kind: "unavailable" };
 
 /**

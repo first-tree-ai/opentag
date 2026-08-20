@@ -1,0 +1,179 @@
+import type { EffectiveRuntimeSnapshot } from "@opentag/shared";
+import { describe, expect, it, vi } from "vitest";
+import type { AgentRuntimeFactory, AgentRuntimePolicy } from "../agent-runtime/types.js";
+import {
+  type AgentRuntimeProviderRegistration,
+  AgentRuntimeProviderRegistry,
+} from "../runtime/agent-runtime-provider-registry.js";
+
+const policy: AgentRuntimePolicy = {
+  fileSystem: "workspace-write",
+  network: "disabled",
+  approvals: "never",
+  tools: { mode: "allow-list", names: [] },
+};
+
+describe("AgentRuntimeProviderRegistry", () => {
+  it("indexes immutable registrations and owns artifact identity, policy, and configuration validation", () => {
+    const codex = registration(factory("codex"));
+    const claude = registration(factory("claude-code"), "b".repeat(64));
+    const providers = new AgentRuntimeProviderRegistry([codex, claude]);
+
+    expect(providers.registration("codex")).toMatchObject({ factory: codex.factory, artifactIdentity: "a".repeat(64) });
+    expect(Object.isFrozen(providers.registration("codex"))).toBe(true);
+    expect(providers.artifactIdentity("claude-code")).toBe("b".repeat(64));
+    expect(providers.registration("missing")).toBeUndefined();
+    expect(providers.artifactIdentity("missing")).toBeUndefined();
+    expect(providers.validate(snapshot())).toBe("provider_unavailable");
+    expect(providers.validate({ ...snapshot(), execution: { ...snapshot().execution, networkAccess: true } })).toBe(
+      "configuration_unsupported",
+    );
+    expect(
+      providers.validateConfiguration({ ...snapshot(), execution: { ...snapshot().execution, networkAccess: true } }),
+    ).toBe("configuration_unsupported");
+    expect(providers.validateConfiguration({ ...snapshot(), provider: "missing" } as never)).toBe(
+      "configuration_unsupported",
+    );
+    expect(providers.registration("codex")?.policy(snapshot())).toEqual(policy);
+  });
+
+  it("rejects duplicate, invalid provider IDs, and invalid-artifact registrations", () => {
+    expect(
+      () => new AgentRuntimeProviderRegistry([registration(factory("codex")), registration(factory("codex"))]),
+    ).toThrow("duplicated");
+    expect(() => new AgentRuntimeProviderRegistry([registration(factory(""))])).toThrow("invalid");
+    expect(() => new AgentRuntimeProviderRegistry([registration(factory("Claude_Code"))])).toThrow("invalid");
+    expect(() => new AgentRuntimeProviderRegistry([registration(factory("codex"), "bad")])).toThrow(
+      "artifact identity",
+    );
+  });
+
+  it("refreshes readiness, verifies the artifact, and revokes availability after failure", async () => {
+    let ready = true;
+    const probe = vi.fn(async () =>
+      ready
+        ? { ready: true as const, version: "fixture", issues: [] }
+        : {
+            ready: false as const,
+            issues: [{ code: "artifact_missing" as const, message: "missing" }],
+          },
+    );
+    const verifyArtifact = vi.fn(async () => undefined);
+    const providers = new AgentRuntimeProviderRegistry([{ ...registration(factory("codex", probe)), verifyArtifact }]);
+
+    await expect(providers.refresh("codex", new AbortController().signal)).resolves.toBe(true);
+    expect(providers.isReady("codex")).toBe(true);
+    expect(providers.validate(snapshot())).toBeUndefined();
+    expect(verifyArtifact).toHaveBeenCalledOnce();
+    await providers.ensureReady("codex");
+    expect(probe).toHaveBeenCalledOnce();
+
+    ready = false;
+    await expect(providers.refresh("codex")).resolves.toBe(false);
+    expect(providers.isReady("codex")).toBe(false);
+    expect(providers.validate(snapshot())).toBe("provider_unavailable");
+    await expect(providers.ensureReady("codex")).rejects.toThrow("artifact_missing: missing");
+  });
+
+  it("deduplicates the underlying probe while each waiter retains its own cancellation", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate;
+    });
+    const probe = vi.fn(async () => {
+      await gate;
+      return { ready: true as const, issues: [] };
+    });
+    const providers = new AgentRuntimeProviderRegistry([registration(factory("codex", probe))]);
+    const owner = providers.ensureReady("codex");
+    const joinedWithoutSignal = providers.ensureReady("codex");
+    const joinedController = new AbortController();
+    const joinedWithSignal = providers.ensureReady("codex", joinedController.signal);
+
+    const preAborted = new AbortController();
+    preAborted.abort(new Error("already stopped"));
+    await expect(providers.ensureReady("codex", preAborted.signal)).rejects.toThrow("already stopped");
+
+    const waiterAbort = new AbortController();
+    const waiter = providers.ensureReady("codex", waiterAbort.signal);
+    waiterAbort.abort(new Error("stop waiter"));
+    await expect(waiter).rejects.toThrow("stop waiter");
+    expect(probe).toHaveBeenCalledOnce();
+
+    release();
+    await Promise.all([owner, joinedWithoutSignal, joinedWithSignal]);
+    expect(providers.isReady("codex")).toBe(true);
+  });
+
+  it("fails closed for missing registrations, artifact verification errors, and caller abort", async () => {
+    const empty = new AgentRuntimeProviderRegistry();
+    await expect(empty.ensureReady("missing")).rejects.toThrow("not registered");
+    await expect(empty.refresh("missing")).resolves.toBe(false);
+    expect(empty.isReady("missing")).toBe(false);
+
+    const verificationFailure = new AgentRuntimeProviderRegistry([
+      {
+        ...registration(factory("codex")),
+        verifyArtifact: async () => {
+          throw new Error("artifact replaced");
+        },
+      },
+    ]);
+    await expect(verificationFailure.refresh("codex")).resolves.toBe(false);
+    expect(verificationFailure.isReady("codex")).toBe(false);
+
+    const controller = new AbortController();
+    const aborting = new AgentRuntimeProviderRegistry([
+      registration(
+        factory("codex", async ({ signal }) => {
+          return new Promise<never>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+          });
+        }),
+      ),
+    ]);
+    const refreshing = aborting.refresh("codex", controller.signal);
+    controller.abort(new Error("stop registry probe"));
+    await expect(refreshing).rejects.toThrow("stop registry probe");
+  });
+});
+
+function factory(providerId: string, probe: AgentRuntimeFactory["probe"] = async () => ({ ready: true, issues: [] })) {
+  return {
+    manifest: { providerId, displayName: providerId, contractVersion: 1, bindingSchemaVersion: 1 },
+    probe,
+    create: async () => {
+      throw new Error("not used");
+    },
+    resume: async () => {
+      throw new Error("not used");
+    },
+  } satisfies AgentRuntimeFactory;
+}
+
+function registration(
+  runtimeFactory: AgentRuntimeFactory,
+  artifactIdentity = "a".repeat(64),
+): AgentRuntimeProviderRegistration {
+  return {
+    artifactIdentity,
+    factory: runtimeFactory,
+    policy: () => policy,
+    validate: (runtime) => (runtime.execution.networkAccess ? "configuration_unsupported" : undefined),
+  };
+}
+
+function snapshot(): EffectiveRuntimeSnapshot {
+  return {
+    revision: {
+      agent: { sequence: 1, id: "agent-revision-1" },
+      session: { sequence: 1, id: "session-revision-1" },
+    },
+    agentId: "agent-1",
+    provider: "codex",
+    instructions: { platform: "platform", agent: "agent", session: "session" },
+    allowedTools: [],
+    execution: { approvalPolicy: "never", networkAccess: false },
+    workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
+  };
+}

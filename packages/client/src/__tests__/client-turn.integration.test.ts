@@ -9,6 +9,7 @@ import type {
   TurnReportRequest,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentRuntimeFactory } from "../agent-runtime/types.js";
 import { CodexAgentRuntimeFactory } from "../providers/codex/agent-runtime.js";
 import type {
   CodexAppServerMessage,
@@ -16,6 +17,7 @@ import type {
   CodexDynamicToolHandler,
   InteractiveCodexAppServerClient,
 } from "../providers/codex/app-server-wire.js";
+import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
 import { AgentTurnRunner } from "../runtime/agent-turn-runner.js";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
 import { MvpTurnReportRecovery } from "../runtime/mvp-turn-report-recovery.js";
@@ -23,7 +25,11 @@ import type { RuntimeBusinessFrame, RuntimeConnectionState } from "../runtime/ru
 import { RuntimeToolHost } from "../runtime/runtime-tool-host.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
-import { SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
+import {
+  codexRuntimePolicy,
+  SessionRuntimeManager,
+  validateCodexRuntimePolicy,
+} from "../runtime/session-runtime-manager.js";
 import { TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
 import { TurnReportOwner } from "../runtime/turn-report-owner.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
@@ -194,7 +200,7 @@ async function runtimeFixture(
   directories.push(home);
   const computerId = randomUUID();
   const runtime = snapshot();
-  const store = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+  const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
   const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
   const connection = new FakeConnection();
   const reportOwner = new TurnReportOwner({ connection });
@@ -212,7 +218,7 @@ async function runtimeFixture(
   });
   const runtimeManager = new SessionRuntimeManager({
     bindingStore: store,
-    factories: new Map([["codex", factory]]),
+    providers: await providerRegistry(factory),
     toolHost,
     workspace,
   });
@@ -289,6 +295,19 @@ async function runtimeFixture(
     waitForReport,
     workspace,
   };
+}
+
+async function providerRegistry(factory: AgentRuntimeFactory): Promise<AgentRuntimeProviderRegistry> {
+  const providers = new AgentRuntimeProviderRegistry([
+    {
+      artifactIdentity: "a".repeat(64),
+      factory,
+      policy: codexRuntimePolicy,
+      validate: validateCodexRuntimePolicy,
+    },
+  ]);
+  await providers.refresh(factory.manifest.providerId);
+  return providers;
 }
 
 class FakeConnection {

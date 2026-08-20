@@ -24,7 +24,7 @@ export interface LocalAgentWorkspaceState {
   schemaVersion: 1;
   agentId: string;
   workspaceId: string;
-  provider: "codex";
+  provider: string;
   appliedAgentRevisionSequence: number;
   appliedAgentRevisionId: string;
   agentConfigHash: string;
@@ -171,7 +171,8 @@ function parseAgentWorkspaceState(value: unknown): LocalAgentWorkspaceState {
     state.schemaVersion !== 1 ||
     typeof state.agentId !== "string" ||
     typeof state.workspaceId !== "string" ||
-    state.provider !== "codex" ||
+    typeof state.provider !== "string" ||
+    state.provider.length === 0 ||
     typeof state.appliedAgentRevisionSequence !== "number" ||
     !Number.isSafeInteger(state.appliedAgentRevisionSequence) ||
     state.appliedAgentRevisionSequence < 0 ||

@@ -131,7 +131,7 @@ describe("AgentWorkspaceManager", () => {
     const paths = agentRuntimePaths(home, "agent-1");
     await mkdir(resolve(home, "data", "workspaces"), { recursive: true, mode: 0o700 });
     await symlink(external, paths.workspaceRoot);
-    const bindingStore = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+    const bindingStore = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore });
     const computerId = randomUUID();
     const reconciler = new SessionReconciler({ computerId, preparation: workspace });
@@ -148,7 +148,7 @@ describe("AgentWorkspaceManager", () => {
     await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
     if (kind === "symlink") await symlink(external, workspaceStatesRoot, "dir");
     else await writeFile(workspaceStatesRoot, "not-a-directory", "utf8");
-    const bindingStore = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+    const bindingStore = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore });
     const runtime = snapshot("agent-1", "workspace-1", "session");
 
@@ -170,7 +170,7 @@ describe("AgentWorkspaceManager", () => {
     );
     await mkdir(resolve(legacyPath, ".."), { recursive: true, mode: 0o700 });
     await writeFile(legacyPath, '{"legacy":true}\n', { mode: 0o600 });
-    const bindingStore = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+    const bindingStore = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore });
     const runtime = snapshot("agent-1", "workspace-1", "session");
 
@@ -197,7 +197,7 @@ describe("AgentWorkspaceManager", () => {
 async function workspaceFixture() {
   const home = await temporaryHome();
   const computerId = randomUUID();
-  const bindingStore = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+  const bindingStore = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
   const workspace = new AgentWorkspaceManager({ home, bindingStore });
   const reconciler = new SessionReconciler({ computerId, preparation: workspace });
   return { bindingStore, computerId, home, reconciler, workspace };

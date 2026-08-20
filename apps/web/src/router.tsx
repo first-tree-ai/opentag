@@ -188,7 +188,7 @@ function AuthenticatedTeamGate() {
         if (!membership) return <UnavailablePage title="No active Team" />;
         const selectTeam = (teamId: string) => {
           if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
-          localStorage.setItem("opentag.selectedTeamId", teamId);
+          window.localStorage.setItem("opentag.selectedTeamId", teamId);
           navigate(location.pathname, { replace: true });
           window.location.reload();
         };
@@ -203,7 +203,7 @@ function AuthenticatedTeamGate() {
 }
 
 function readTeamPreference(): string | undefined {
-  const value = localStorage.getItem("opentag.selectedTeamId");
+  const value = window.localStorage.getItem("opentag.selectedTeamId");
   return value && value.length <= 64 ? value : undefined;
 }
 

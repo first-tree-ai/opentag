@@ -139,7 +139,7 @@ function installApi(
 
 describe("OpenTag Web App Shell", () => {
   beforeEach(() => {
-    localStorage.clear();
+    window.localStorage.clear();
     window.history.replaceState({}, "", "/agents");
   });
 
@@ -173,7 +173,7 @@ describe("OpenTag Web App Shell", () => {
 
   it("lets admins rename a Team and refreshes the UUID-selected Team context from /me", async () => {
     installApi("admin");
-    localStorage.setItem("opentag.selectedTeamId", teamId);
+    window.localStorage.setItem("opentag.selectedTeamId", teamId);
     window.history.replaceState({}, "", "/settings/team");
     render(<App />);
     const name = await screen.findByLabelText("Canonical name");
@@ -186,7 +186,7 @@ describe("OpenTag Web App Shell", () => {
     );
     expect(await screen.findByDisplayValue("renamed-team")).toBeTruthy();
     expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Renamed Team");
-    expect(localStorage.getItem("opentag.selectedTeamId")).toBe(teamId);
+    expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(teamId);
   });
 
   it("keeps Team profile fields read-only for members", async () => {

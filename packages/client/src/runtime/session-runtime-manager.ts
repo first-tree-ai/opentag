@@ -49,6 +49,10 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     return this.#providers.validate(snapshot);
   }
 
+  validateDelivery(snapshot: EffectiveRuntimeSnapshot): InputRejectReason | undefined {
+    return this.#providers.validateConfiguration(snapshot);
+  }
+
   prepareAgent(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void> {
     return this.#workspace.prepareAgent(snapshot, hashes);
   }

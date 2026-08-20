@@ -188,18 +188,29 @@ export async function createClientRuntime(
   const readinessSignal = options.signal
     ? AbortSignal.any([options.signal, capabilityAbort.signal])
     : capabilityAbort.signal;
-  const refreshCapability = async (): Promise<void> => {
+  const refreshProviderReadiness = async (providerId: string, signal?: AbortSignal): Promise<boolean> => {
+    const refreshSignal = signal ? AbortSignal.any([readinessSignal, signal]) : readinessSignal;
     const releaseReadiness = providers.isReady(CODEX_AGENT_RUNTIME_MANIFEST.providerId)
       ? connection.leaseProviderReadiness({ provider: "codex", status: "ready" })
       : undefined;
     if (!releaseReadiness) connection.setProviderReadiness({ provider: "codex", status: "checking" });
     try {
-      const available = await providers.refresh(CODEX_AGENT_RUNTIME_MANIFEST.providerId, readinessSignal);
-      readinessSignal.throwIfAborted();
+      const available = await providers.refresh(providerId, refreshSignal);
+      refreshSignal.throwIfAborted();
       connection.setVerifiedCapabilities({ imMessageTool: available ? 1 : 0 });
       connection.setProviderReadiness(codexProviderReadiness(available, providers.probeResult("codex")));
+      return available;
     } finally {
       releaseReadiness?.();
+    }
+  };
+  const refreshCapability = async (): Promise<void> => {
+    await refreshProviderReadiness(CODEX_AGENT_RUNTIME_MANIFEST.providerId);
+  };
+  const ensureProviderReady = async (providerId: string, signal?: AbortSignal): Promise<void> => {
+    if (providers.isReady(providerId)) return;
+    if (!(await refreshProviderReadiness(providerId, signal))) {
+      throw new Error(`Agent Runtime provider is unavailable: ${providerId}`);
     }
   };
   try {
@@ -241,8 +252,8 @@ export async function createClientRuntime(
   });
   let runner: AgentTurnRunner;
   const preflight = createClientRuntimePreflight({
+    ensureProviderReady,
     providers,
-    readinessSignal,
     runtimeManager,
     workspace,
   });
@@ -393,8 +404,8 @@ export async function resolveExecutable(command: string, environment: NodeJS.Pro
 }
 
 interface ClientRuntimePreflightDependencies {
-  readonly providers: Pick<AgentRuntimeProviderRegistry, "ensureReady" | "validateConfiguration">;
-  readonly readinessSignal?: AbortSignal;
+  readonly ensureProviderReady: (providerId: string, signal?: AbortSignal) => Promise<void>;
+  readonly providers: Pick<AgentRuntimeProviderRegistry, "validateConfiguration">;
   readonly runtimeManager: Pick<SessionRuntimeManager, "runtime">;
   readonly workspace: Pick<AgentWorkspaceManager, "verifyAgent">;
 }
@@ -406,7 +417,7 @@ export function createClientRuntimePreflight(
     const policyReason = dependencies.providers.validateConfiguration(request.runtime);
     if (policyReason) return policyReason;
     try {
-      await dependencies.providers.ensureReady(request.runtime.provider, dependencies.readinessSignal);
+      await dependencies.ensureProviderReady(request.runtime.provider);
       await dependencies.workspace.verifyAgent(request.runtime, computeRuntimeSnapshotHashes(request.runtime));
       dependencies.runtimeManager.runtime(request.sessionId);
       return undefined;

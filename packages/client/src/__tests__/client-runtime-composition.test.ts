@@ -249,12 +249,13 @@ describe("createClientRuntime production composition", () => {
     const verifyAgent = vi.fn(async () => undefined);
     const validateProviderConfiguration = vi.fn(() => undefined as "configuration_unsupported" | undefined);
     const preflight = createClientRuntimePreflight({
-      providers: { ensureReady: ensureProviderReady, validateConfiguration: validateProviderConfiguration },
+      ensureProviderReady,
+      providers: { validateConfiguration: validateProviderConfiguration },
       runtimeManager: { runtime } as never,
       workspace: { verifyAgent } as never,
     });
     await expect(preflight(request)).resolves.toBeUndefined();
-    expect(ensureProviderReady).toHaveBeenCalledWith("codex", undefined);
+    expect(ensureProviderReady).toHaveBeenCalledWith("codex");
     expect(verifyAgent).toHaveBeenCalledOnce();
     expect(runtime).toHaveBeenCalledWith("session-1");
 
@@ -420,6 +421,114 @@ describe("createClientRuntime production composition", () => {
     await vi.waitFor(() => expect(observed).toContain(0));
     ready = true;
     await vi.waitFor(() => expect(observed.slice(observed.indexOf(0) + 1)).toContain(1));
+    runtime.stop();
+    await running;
+  });
+
+  it("publishes delivery-triggered Provider recovery before the next periodic refresh", async () => {
+    const home = await temporaryDirectory("opentag-client-delivery-readiness-");
+    const server = await runtimeServer();
+    cleanup.push(server.close);
+    const connection = runtimeConnection(server.url);
+    const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
+    const observed: string[] = [];
+    let probeCount = 0;
+    const binding = { providerId: "codex", schemaVersion: 1, payload: { threadId: "thread-1" } };
+    const state = { phase: "idle" as "idle" | "closed", queuedRunCount: 0 };
+    const agentRuntime: AgentRuntime = {
+      manifest: { providerId: "codex", displayName: "Codex", contractVersion: 1, bindingSchemaVersion: 1 },
+      capabilities: { steer: "unsupported", interactions: "unsupported" },
+      state,
+      binding,
+      prompt: async (request) => ({ runId: request.runId, status: "completed", output: [] }),
+      followUp: async (request) => ({ runId: request.runId, status: "completed", output: [] }),
+      steer: async () => undefined,
+      respond: async () => undefined,
+      abort: async () => undefined,
+      waitForIdle: async () => undefined,
+      close: async () => {
+        state.phase = "closed";
+      },
+    };
+    const factory = {
+      manifest: agentRuntime.manifest,
+      probe: vi.fn(async () => {
+        probeCount += 1;
+        return probeCount === 2
+          ? { ready: false, issues: [{ code: "artifact_missing" as const, message: "temporarily missing" }] }
+          : { ready: true, issues: [] };
+      }),
+      create: async () => agentRuntime,
+      resume: async () => agentRuntime,
+    } satisfies AgentRuntimeFactory;
+    server.wss.on("connection", (socket) => {
+      socket.on("message", (data) => {
+        const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (frame.type === "auth") {
+          socket.send(
+            JSON.stringify({
+              type: "auth:result",
+              requestId: frame.requestId,
+              ok: true,
+              userId: randomUUID(),
+              tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+            }),
+          );
+          socket.send(
+            JSON.stringify({
+              type: "server:welcome",
+              protocolVersion: 1,
+              capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
+              providerReadiness: { version: 1, providers: ["codex"] },
+              heartbeatIntervalMs: 10,
+              heartbeatTimeoutMs: 100,
+            }),
+          );
+          return;
+        }
+        if (frame.type === "computer:register") {
+          for (const item of (frame.providerReadiness as Array<{ status: string }> | undefined) ?? []) {
+            observed.push(item.status);
+          }
+          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+          return;
+        }
+        if (frame.type === "heartbeat") {
+          for (const item of (frame.providerReadiness as Array<{ status: string }> | undefined) ?? []) {
+            observed.push(item.status);
+          }
+          socket.send(
+            JSON.stringify({
+              type: "heartbeat:result",
+              requestId: frame.requestId,
+              ok: true,
+              serverTime: new Date().toISOString(),
+            }),
+          );
+        }
+      });
+    });
+    const runtime = await createClientRuntime(connection, {
+      capabilityRefreshIntervalMs: 250,
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory,
+      home,
+    });
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+      status: "ready",
+    });
+    const running = runtime.run();
+    await vi.waitFor(() => expect(observed).toContain("install"), { timeout: 1_000 });
+
+    const accepted = await runtime.custody.accept(delivery(snapshot()));
+
+    expect(accepted.result).toMatchObject({ status: "accepted" });
+    expect(factory.probe).toHaveBeenCalledTimes(3);
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" });
+    const unavailableIndex = observed.lastIndexOf("install");
+    await vi.waitFor(() => expect(observed.slice(unavailableIndex + 1)).toContain("ready"));
+    expect(factory.probe).toHaveBeenCalledTimes(3);
     runtime.stop();
     await running;
   });

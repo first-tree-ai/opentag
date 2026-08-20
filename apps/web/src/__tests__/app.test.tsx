@@ -38,6 +38,7 @@ function installApi(
     agentListStatus?: () => number | undefined;
     agentCreate?: (input: Record<string, unknown>) => Promise<void> | void;
     alreadyJoinedInvitation?: boolean;
+    agentCreateError?: "generic" | "name";
     bindingReauth?: boolean;
     bindingEvidenceFails?: boolean;
     bound?: boolean;
@@ -115,7 +116,16 @@ function installApi(
       const response = options.profileUpdate
         ? await options.profileUpdate(body.displayName)
         : options.profileUpdateFails
-          ? json({ error: { message: "Display name update failed" } }, 409)
+          ? json(
+              {
+                error: {
+                  code: "VALIDATION_ERROR",
+                  category: "validation",
+                  message: "Display name update failed",
+                },
+              },
+              400,
+            )
           : json({ id: userId, email: "ada@example.com", displayName: body.displayName.trim() });
       if (response.ok) currentDisplayName = body.displayName.trim();
       return response;
@@ -188,6 +198,21 @@ function installApi(
       });
     }
     if (/^\/api\/v1\/teams\/[^/]+\/agents$/.test(path) && init?.method === "POST") {
+      if (options.agentCreateError) {
+        return json(
+          {
+            error: {
+              code: "VALIDATION_ERROR",
+              category: "validation",
+              message: "The request payload is invalid",
+              ...(options.agentCreateError === "name"
+                ? { issues: [{ path: ["name"], code: "invalid_format", message: "Use a lowercase Agent name" }] }
+                : {}),
+            },
+          },
+          400,
+        );
+      }
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       await options.agentCreate?.(body);
       return json(adminConfig(), 201);
@@ -219,7 +244,16 @@ function installApi(
       const response = options.roleUpdate
         ? await options.roleUpdate(targetUserId, body.role)
         : options.roleUpdateFails
-          ? json({ error: { message: "The last active Team admin cannot be demoted" } }, 409)
+          ? json(
+              {
+                error: {
+                  code: "MEMBERSHIP_LAST_ADMIN",
+                  category: "deterministic",
+                  message: "The last active Team admin cannot be demoted",
+                },
+              },
+              409,
+            )
           : json({
               teamId,
               userId: targetUserId,
@@ -347,7 +381,12 @@ function installApi(
       if (init?.method === "DELETE") return new Response(null, { status: 204 });
       await options.agentRead?.();
       const failureStatus = options.agentReadStatus?.();
-      if (failureStatus) return json({ error: { message: "Agent unavailable" } }, failureStatus);
+      if (failureStatus) {
+        return json(
+          { error: { code: "RESOURCE_NOT_FOUND", category: "deterministic", message: "Agent unavailable" } },
+          failureStatus,
+        );
+      }
       return json({
         ...agentSummary,
         status: lifecycleStatus,
@@ -427,6 +466,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(screen.getByRole("main").classList.contains("decorative-page")).toBe(false);
     expect(screen.getByRole("link", { name: "Agents" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "New Agent" })).toBeTruthy();
@@ -446,9 +486,28 @@ describe("OpenTag Web App Shell", () => {
     installApi("member", { unauthenticated: true });
     window.history.replaceState({}, "", path);
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();
+    const heading = await screen.findByRole("heading", { name: "Sign in" });
+    expect(heading.closest("main")?.classList.contains("decorative-page")).toBe(true);
     const expectedNext = path === "/" ? "/agents" : path;
     expect(window.location.search).toBe(`?next=${encodeURIComponent(expectedNext)}`);
+  });
+
+  it("keeps authenticated invalid Agent tabs on the plain workspace canvas", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", `/agents/${agentId}/unknown`);
+    render(<App />);
+
+    const heading = await screen.findByRole("heading", { name: "Page not found" });
+    expect(heading.closest(".center-card")?.classList.contains("decorative-page")).toBe(false);
+    expect(screen.getByRole("main").classList.contains("decorative-page")).toBe(false);
+  });
+
+  it("keeps the standalone not-found route on the decorative canvas", async () => {
+    window.history.replaceState({}, "", "/unknown");
+    render(<App />);
+
+    const heading = await screen.findByRole("heading", { name: "Page not found" });
+    expect(heading.closest("main")?.classList.contains("decorative-page")).toBe(true);
   });
 
   it("lets members enter the same shell without admin controls", async () => {
@@ -639,7 +698,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/settings/team");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Team members" })).toBeTruthy();
-    expect(screen.getAllByLabelText("Display name")).toHaveLength(1);
+    expect(screen.getAllByLabelText("Team name")).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Save account profile" })).toBeNull();
   });
 
@@ -855,7 +914,7 @@ describe("OpenTag Web App Shell", () => {
     ).toBeNull();
   });
 
-  it("combines Team profile, members, and invitations in task order", async () => {
+  it("groups invitations with Team members", async () => {
     installApi("admin");
     window.history.replaceState({}, "", "/settings/team");
     render(<App />);
@@ -867,7 +926,10 @@ describe("OpenTag Web App Shell", () => {
       within(teamSettings)
         .getAllByRole("heading", { level: 2 })
         .map((heading) => heading.textContent),
-    ).toEqual(["Team profile", "Team members", "Invite people"]);
+    ).toEqual(["Team profile", "Team members"]);
+    const membersSection = document.querySelector<HTMLElement>("#members");
+    if (!membersSection) throw new Error("Team members section was not rendered");
+    expect(within(membersSection).getByRole("heading", { level: 3, name: "Invite members" })).toBeTruthy();
   });
 
   it("redirects the legacy Members URL to the merged Team page", async () => {
@@ -925,21 +987,31 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("table")).toBeNull();
   });
 
-  it("lets admins rename a Team and refreshes the UUID-selected Team context from /me", async () => {
+  it("lets admins rename a Team without changing its CLI identifier", async () => {
     installApi("admin");
     window.localStorage.setItem("opentag.selectedTeamId", teamId);
     window.history.replaceState({}, "", "/settings/team");
     render(<App />);
-    const name = await screen.findByLabelText("Canonical name");
-    const displayName = screen.getByLabelText("Display name");
-    fireEvent.change(name, { target: { value: "RENAMED-TEAM" } });
+    const displayName = await screen.findByLabelText("Team name");
+    const profileForm = displayName.closest("form");
+    if (!profileForm) throw new Error("Team profile form was not rendered");
+    const cliIdentifier = within(profileForm).getByText("example", { selector: "dd code" });
+    expect(cliIdentifier.textContent).toContain("example");
+    expect(within(profileForm).getAllByRole("textbox")).toHaveLength(1);
     fireEvent.change(displayName, { target: { value: "Renamed Team" } });
     fireEvent.click(screen.getByRole("button", { name: "Save Team profile" }));
     await waitFor(() =>
       expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === "/api/v1/me")).toHaveLength(2),
     );
-    expect(await screen.findByDisplayValue("renamed-team")).toBeTruthy();
-    expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Renamed Team");
+    const updateCall = vi
+      .mocked(fetch)
+      .mock.calls.find(([input, init]) => String(input) === `/api/v1/teams/${teamId}` && init?.method === "PATCH");
+    expect(JSON.parse(String(updateCall?.[1]?.body))).toEqual({ displayName: "Renamed Team" });
+    const refreshedDisplayName = (await screen.findByLabelText("Team name")) as HTMLInputElement;
+    const refreshedProfileForm = refreshedDisplayName.closest("form");
+    if (!refreshedProfileForm) throw new Error("Refreshed Team profile form was not rendered");
+    expect(refreshedDisplayName.value).toBe("Renamed Team");
+    expect(within(refreshedProfileForm).getByText("example", { selector: "dd code" })).toBeTruthy();
     expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(teamId);
   });
 
@@ -948,9 +1020,9 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/settings/team");
     render(<App />);
     expect(await screen.findByText("example")).toBeTruthy();
-    expect(screen.getByText("Display name").parentElement?.querySelector("dd")?.textContent).toBe("Example");
+    expect(screen.getByText("Team name").parentElement?.querySelector("dd")?.textContent).toBe("Example");
     expect(screen.queryByRole("button", { name: "Save Team profile" })).toBeNull();
-    expect(screen.queryByLabelText("Canonical name")).toBeNull();
+    expect(screen.queryByLabelText("CLI identifier")).toBeNull();
   });
 
   it("accepts an invitation and selects the newly joined Team", async () => {
@@ -1453,6 +1525,77 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Connect a Local Computer first" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Computer settings" }).getAttribute("href")).toBe("/settings/computers");
+  });
+
+  it("validates Agent name locally with an accessible field error before sending a request", async () => {
+    installApi("admin", { ownComputer: true });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+    const name = await screen.findByLabelText("Agent name");
+    fireEvent.change(name, { target: { value: "Bestony" } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Bestony" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+    );
+    expect(name.getAttribute("aria-invalid")).toBe("true");
+    expect(name.getAttribute("aria-describedby")?.split(" ")).toContain(alert.id);
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([input, init]) => String(input) === `/api/v1/teams/${teamId}/agents` && init?.method === "POST",
+        ),
+    ).toHaveLength(0);
+  });
+
+  it("creates an Agent with a valid canonical name and keeps the existing payload", async () => {
+    installApi("admin", { ownComputer: true });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText("Agent name"), { target: { value: "bestony" } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Bestony" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}/general`));
+    const createCall = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([input, init]) => String(input) === `/api/v1/teams/${teamId}/agents` && init?.method === "POST",
+      );
+    expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
+      creationIntentId: expect.any(String),
+      name: "bestony",
+      displayName: "Bestony",
+      runtimeProvider: "codex",
+      computerId,
+    });
+  });
+
+  it("maps a Server name issue back to the Agent name field", async () => {
+    installApi("admin", { agentCreateError: "name", ownComputer: true });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+    const name = await screen.findByLabelText("Agent name");
+    fireEvent.change(name, { target: { value: "bestony" } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Bestony" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Use a lowercase Agent name");
+    expect(name.getAttribute("aria-describedby")?.split(" ")).toContain(alert.id);
+    expect(window.location.pathname).toBe("/agents/new");
+  });
+
+  it("keeps an unmapped Server validation error at form level", async () => {
+    installApi("admin", { agentCreateError: "generic", ownComputer: true });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+    const name = await screen.findByLabelText("Agent name");
+    fireEvent.change(name, { target: { value: "bestony" } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Bestony" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("The request payload is invalid");
+    expect(name.getAttribute("aria-invalid")).toBeNull();
   });
 
   it("shows exact Computer and Provider readiness without blocking Agent creation or offering fallback", async () => {

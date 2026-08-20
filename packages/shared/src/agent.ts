@@ -13,9 +13,12 @@ import {
 export const AgentNameSchema = z
   .string()
   .trim()
-  .min(1)
-  .max(64)
-  .regex(/^[a-z0-9][a-z0-9-]*$/);
+  .min(1, "Agent name is required")
+  .max(64, "Agent name must be at most 64 characters")
+  .regex(
+    /^[a-z0-9][a-z0-9-]*$/,
+    "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+  );
 export const AgentDisplayNameSchema = z.string().trim().min(1).max(120);
 const AgentCreationIntentIdSchema = z.string().uuid();
 export const AGENT_RUNTIME_PROVIDERS = ["codex", "claude-code"] as const;

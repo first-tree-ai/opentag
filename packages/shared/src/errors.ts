@@ -47,6 +47,14 @@ export const ErrorCodeSchema = z.enum([
   "VALIDATION_ERROR",
 ]);
 
+export const ValidationIssueSchema = z
+  .object({
+    path: z.array(z.union([z.string(), z.number()])),
+    code: z.string().min(1),
+    message: z.string().min(1),
+  })
+  .strict();
+
 export const ErrorDetailSchema = z
   .object({
     code: ErrorCodeSchema,
@@ -54,6 +62,7 @@ export const ErrorDetailSchema = z
     message: z.string().min(1),
     requestId: z.string().min(1).optional(),
     retryAfterSeconds: z.number().int().positive().optional(),
+    issues: z.array(ValidationIssueSchema).optional(),
   })
   .strict();
 
@@ -67,3 +76,4 @@ export type ErrorCategory = z.infer<typeof ErrorCategorySchema>;
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
 export type ErrorDetail = z.infer<typeof ErrorDetailSchema>;
 export type ErrorEnvelope = z.infer<typeof ErrorEnvelopeSchema>;
+export type ValidationIssue = z.infer<typeof ValidationIssueSchema>;

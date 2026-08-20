@@ -277,6 +277,48 @@ describe("BrowserApi", () => {
     });
   });
 
+  it("preserves validated issues and rejects untyped error payloads", async () => {
+    const issue = { path: ["name"], code: "invalid_format", message: "Use a lowercase Agent name" };
+    const typedFetch = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "VALIDATION_ERROR",
+              category: "validation",
+              message: "The request payload is invalid",
+              issues: [issue],
+            },
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const typedError = await new BrowserApi(typedFetch)
+      .agentConfig("1a63a21e-f6c7-4474-91ea-4dabf0566a24")
+      .catch((cause) => cause);
+    expect(typedError).toMatchObject({ message: "The request payload is invalid", issues: [issue] });
+
+    const untypedFetch = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "VALIDATION_ERROR",
+              category: "validation",
+              message: "Do not trust this",
+              issues: [{ ...issue, input: "secret" }],
+            },
+          }),
+          { status: 400, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const untypedError = await new BrowserApi(untypedFetch)
+      .agentConfig("1a63a21e-f6c7-4474-91ea-4dabf0566a24")
+      .catch((cause) => cause);
+    expect(untypedError).toMatchObject({ status: 400, message: "Request failed" });
+    expect(untypedError.issues).toBeUndefined();
+  });
+
   it("mints a connect command with CSRF and lists only the current user's Computers", async () => {
     setDocumentCookie("opentag_csrf=connect-csrf; Path=/");
     const computer = {

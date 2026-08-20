@@ -11,7 +11,7 @@ import type {
   TeamComputerSummary,
   TeamMemberSummary,
 } from "@opentag/shared/browser";
-import { MembershipRoleSchema } from "@opentag/shared/browser";
+import { AgentNameSchema, MembershipRoleSchema } from "@opentag/shared/browser";
 import {
   createContext,
   type FormEvent,
@@ -1140,6 +1140,7 @@ function AgentCreationContent({
   teamId: string;
 }) {
   const [error, setError] = useState<string>();
+  const [nameError, setNameError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
   const [computerId, setComputerId] = useState("");
   const [runtimeProvider, setRuntimeProvider] = useState<"codex" | "claude-code">("codex");
@@ -1155,8 +1156,15 @@ function AgentCreationContent({
     event.preventDefault();
     if (inFlightRef.current) return;
     const data = new FormData(event.currentTarget);
+    setError(undefined);
+    setNameError(undefined);
+    const name = AgentNameSchema.safeParse(String(data.get("name") ?? ""));
+    if (!name.success) {
+      setNameError(name.error.issues[0]?.message ?? "Agent name is invalid");
+      return;
+    }
     const input = {
-      name: String(data.get("name") ?? ""),
+      name: name.data,
       displayName: String(data.get("displayName") ?? ""),
       runtimeProvider: String(data.get("runtimeProvider") ?? "codex") as "codex" | "claude-code",
       computerId: String(data.get("computerId") ?? ""),
@@ -1166,7 +1174,6 @@ function AgentCreationContent({
       creationIntentRef.current = { fingerprint, id: crypto.randomUUID() };
     }
     inFlightRef.current = true;
-    setError(undefined);
     setSubmitting(true);
     onSubmittingChange?.(true);
     try {
@@ -1176,6 +1183,13 @@ function AgentCreationContent({
       });
       onCreated(created.id);
     } catch (cause) {
+      if (cause instanceof ApiError) {
+        const issue = cause.issues?.find(({ path }) => path[0] === "name");
+        if (issue) {
+          setNameError(issue.message);
+          return;
+        }
+      }
       setError(cause instanceof Error ? cause.message : "Agent creation failed");
     } finally {
       inFlightRef.current = false;
@@ -1216,10 +1230,11 @@ function AgentCreationContent({
               <span className="agent-name-input">
                 <span aria-hidden="true">@</span>
                 <input
-                  aria-describedby="new-agent-name-hint"
+                  aria-describedby={nameError ? "new-agent-name-hint agent-name-error" : "new-agent-name-hint"}
+                  aria-invalid={nameError ? true : undefined}
                   id="new-agent-name"
                   name="name"
-                  pattern="[a-z0-9][a-z0-9-]*"
+                  onChange={() => setNameError(undefined)}
                   placeholder="research-assistant"
                   disabled={submitting}
                   required
@@ -1228,6 +1243,11 @@ function AgentCreationContent({
               <span className="field-hint" id="new-agent-name-hint">
                 Used for mentions. Lowercase letters, numbers, and hyphens only.
               </span>
+              {nameError ? (
+                <span className="field-error" id="agent-name-error" role="alert">
+                  {nameError}
+                </span>
+              ) : null}
             </div>
             <div className="agent-create-grid">
               <div className="agent-create-field">
@@ -2176,14 +2196,12 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
-  const [teamName, setTeamName] = useState(membership.teamName);
   const [teamDisplayName, setTeamDisplayName] = useState(membership.teamDisplayName);
-  const dirty = teamName !== membership.teamName || teamDisplayName !== membership.teamDisplayName;
+  const dirty = teamDisplayName !== membership.teamDisplayName;
 
   useEffect(() => {
-    setTeamName(membership.teamName);
     setTeamDisplayName(membership.teamDisplayName);
-  }, [membership.teamDisplayName, membership.teamName]);
+  }, [membership.teamDisplayName]);
 
   if (membership.role !== "admin") {
     return (
@@ -2197,8 +2215,8 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
         </div>
         <DefinitionList
           rows={[
-            ["Canonical name", membership.teamName],
-            ["Display name", membership.teamDisplayName],
+            ["Team name", membership.teamDisplayName],
+            ["CLI identifier", membership.teamName],
           ]}
         />
       </section>
@@ -2211,7 +2229,6 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
       setMessage(undefined);
       setError(undefined);
       await browserApi.updateTeam(membership.teamId, {
-        name: teamName,
         displayName: teamDisplayName,
       });
       refreshMe();
@@ -2228,35 +2245,11 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
       <div className="settings-field-list">
         <div className="settings-field-row">
           <div className="settings-field-copy">
-            <strong>Canonical name</strong>
-            <p>Changing this immediately changes the CLI --team selector. The Team ID stays stable.</p>
+            <strong>Team name</strong>
+            <p>What people see in navigation and invitations.</p>
           </div>
           <label>
-            Canonical name
-            <input
-              aria-label="Canonical name"
-              name="name"
-              pattern="[A-Za-z0-9][A-Za-z0-9-]*"
-              required
-              value={teamName}
-              onChange={(event) => {
-                setTeamName(event.currentTarget.value);
-                setMessage(undefined);
-                setError(undefined);
-              }}
-            />
-            <small className="settings-field-hint">
-              CLI selector: <code>--team {teamName.toLocaleLowerCase() || "team-name"}</code>
-            </small>
-          </label>
-        </div>
-        <div className="settings-field-row">
-          <div className="settings-field-copy">
-            <strong>Display name</strong>
-            <p>The human-readable Team name shown in navigation and invitations.</p>
-          </div>
-          <label>
-            Display name
+            Team name
             <input
               name="displayName"
               required
@@ -2269,6 +2262,28 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
             />
           </label>
         </div>
+        <div className="settings-field-row">
+          <div className="settings-field-copy">
+            <strong>CLI identifier</strong>
+            <p>Created automatically for CLI commands. It stays the same when you rename the Team.</p>
+          </div>
+          <dl className="settings-readonly-value">
+            <div>
+              <dt className="visually-hidden">CLI identifier</dt>
+              <dd>
+                <code>{membership.teamName}</code>
+              </dd>
+            </div>
+            <div>
+              <dt className="visually-hidden">CLI command</dt>
+              <dd>
+                <small>
+                  <code>--team {membership.teamName}</code>
+                </small>
+              </dd>
+            </div>
+          </dl>
+        </div>
       </div>
       {dirty ? (
         <div className="dirty-bar">
@@ -2279,7 +2294,6 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
               disabled={saving}
               type="button"
               onClick={() => {
-                setTeamName(membership.teamName);
                 setTeamDisplayName(membership.teamDisplayName);
                 setMessage(undefined);
                 setError(undefined);
@@ -2347,78 +2361,76 @@ function MembersSettings({
   }
 
   return (
-    <>
-      <section className="settings-list-section" id="members">
-        <AsyncState state={state}>
-          {(value) => {
-            const adminCount = value.members.filter((member: TeamMemberSummary) => member.role === "admin").length;
-            return (
-              <>
-                <header className="settings-subheader">
-                  <div>
-                    <h2>Team members</h2>
-                    <p>
-                      {value.members.length} {value.members.length === 1 ? "member" : "members"} · {adminCount}{" "}
-                      {adminCount === 1 ? "admin" : "admins"}
-                    </p>
-                  </div>
-                  {!canManage ? <span className="settings-role-badge">Read only</span> : null}
-                </header>
-                <table className="settings-member-table" aria-label="Team members">
-                  <thead>
-                    <tr className="settings-table-header">
-                      <th scope="col">Team member</th>
-                      <th scope="col">Role</th>
+    <section className="settings-list-section settings-members-section" id="members">
+      <AsyncState state={state}>
+        {(value) => {
+          const adminCount = value.members.filter((member: TeamMemberSummary) => member.role === "admin").length;
+          return (
+            <>
+              <header className="settings-subheader">
+                <div>
+                  <h2>Team members</h2>
+                  <p>
+                    {value.members.length} {value.members.length === 1 ? "member" : "members"} · {adminCount}{" "}
+                    {adminCount === 1 ? "admin" : "admins"}
+                  </p>
+                </div>
+                {!canManage ? <span className="settings-role-badge">Read only</span> : null}
+              </header>
+              <table className="settings-member-table" aria-label="Team members">
+                <thead>
+                  <tr className="settings-table-header">
+                    <th scope="col">Team member</th>
+                    <th scope="col">Role</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {value.members.map((member: TeamMemberSummary) => (
+                    <tr className="settings-member-row" key={member.userId}>
+                      <th className="settings-member-identity" scope="row">
+                        <span className="settings-member-avatar" aria-hidden="true">
+                          {initials(member.displayName)}
+                        </span>
+                        <span>
+                          <strong>{member.displayName}</strong>
+                          {member.userId === currentUserId ? <small>You</small> : null}
+                        </span>
+                      </th>
+                      <td data-label="Role">
+                        {canManage ? (
+                          <select
+                            aria-label={`Role for ${member.displayName}`}
+                            disabled={pendingUserIds.has(member.userId)}
+                            value={member.role}
+                            onChange={(event) => void changeRole(member, event.currentTarget.value)}
+                          >
+                            {MembershipRoleSchema.options.map((role) => (
+                              <option value={role} key={role}>
+                                {role}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="settings-value-badge">{member.role}</span>
+                        )}
+                      </td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    {value.members.map((member: TeamMemberSummary) => (
-                      <tr className="settings-member-row" key={member.userId}>
-                        <th className="settings-member-identity" scope="row">
-                          <span className="settings-member-avatar" aria-hidden="true">
-                            {initials(member.displayName)}
-                          </span>
-                          <span>
-                            <strong>{member.displayName}</strong>
-                            {member.userId === currentUserId ? <small>You</small> : null}
-                          </span>
-                        </th>
-                        <td data-label="Role">
-                          {canManage ? (
-                            <select
-                              aria-label={`Role for ${member.displayName}`}
-                              disabled={pendingUserIds.has(member.userId)}
-                              value={member.role}
-                              onChange={(event) => void changeRole(member, event.currentTarget.value)}
-                            >
-                              {MembershipRoleSchema.options.map((role) => (
-                                <option value={role} key={role}>
-                                  {role}
-                                </option>
-                              ))}
-                            </select>
-                          ) : (
-                            <span className="settings-value-badge">{member.role}</span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </>
-            );
-          }}
-        </AsyncState>
-        {error ? (
-          <p className="notice error" role="alert">
-            {error}
-          </p>
-        ) : null}
-      </section>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          );
+        }}
+      </AsyncState>
+      {error ? (
+        <p className="notice error" role="alert">
+          {error}
+        </p>
+      ) : null}
       {canManage && !invitationDialogOpen ? (
         <InvitationSettings teamId={teamId} onMutationPendingChange={onInvitationMutationPendingChange} />
       ) : null}
-    </>
+    </section>
   );
 }
 
@@ -2597,7 +2609,7 @@ function InvitationSettings({
     <section className={presentation === "dialog" ? "invitation-dialog-content" : "settings-invitation-panel"}>
       {presentation === "panel" ? (
         <>
-          <h2>Invite people</h2>
+          <h3>Invite members</h3>
           <p>This link lets anyone join the Team as a member until it expires.</p>
         </>
       ) : null}

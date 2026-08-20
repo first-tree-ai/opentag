@@ -19,6 +19,7 @@ import {
   type CreateTeamRequest,
   type CreateTeamResponse,
   CreateTeamResponseSchema,
+  ErrorEnvelopeSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
   feishuSetupAttemptPath,
@@ -69,6 +70,7 @@ import {
   type UpdateUserProfileRequest,
   type UserProfile,
   UserProfileSchema,
+  type ValidationIssue,
 } from "@opentag/shared/browser";
 
 interface RuntimeSchema<T> {
@@ -81,6 +83,7 @@ export class ApiError extends Error {
     message: string,
     readonly code?: string,
     readonly category?: string,
+    readonly issues?: readonly ValidationIssue[],
   ) {
     super(message);
     this.name = "ApiError";
@@ -331,16 +334,10 @@ export class BrowserApi {
   }
 
   private apiError(response: Response, body: unknown): ApiError {
-    const envelope =
-      typeof body === "object" && body !== null && "error" in body
-        ? (body as { error?: { category?: unknown; code?: unknown; message?: unknown } }).error
-        : undefined;
-    return new ApiError(
-      response.status,
-      typeof envelope?.message === "string" ? envelope.message : "Request failed",
-      typeof envelope?.code === "string" ? envelope.code : undefined,
-      typeof envelope?.category === "string" ? envelope.category : undefined,
-    );
+    const parsed = ErrorEnvelopeSchema.safeParse(body);
+    if (!parsed.success) return new ApiError(response.status, "Request failed");
+    const { error } = parsed.data;
+    return new ApiError(response.status, error.message, error.code, error.category, error.issues);
   }
 
   private csrfHeaders(): HeadersInit {

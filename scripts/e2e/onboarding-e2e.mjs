@@ -82,6 +82,14 @@ function sleep(ms) {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
+function withTimeout(promise, timeoutMs, message) {
+  let timer;
+  const expiry = new Promise((_, fail) => {
+    timer = setTimeout(() => fail(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, expiry]).finally(() => clearTimeout(timer));
+}
+
 async function waitFor(description, predicate, { timeoutMs = 60_000, intervalMs = 500 } = {}) {
   const deadline = Date.now() + timeoutMs;
   let lastError;
@@ -125,7 +133,10 @@ async function psql(url, sql) {
   }
 }
 
-/** Fails closed when the port is taken, so this run can never drive another Server. */
+/**
+ * Turns the common case of a busy port into a clear message before spawning.
+ * The Server's own listening line, not this probe, proves the endpoint is ours.
+ */
 async function assertPortAvailable(port) {
   await new Promise((settle, fail) => {
     const probe = createServer();
@@ -290,17 +301,24 @@ async function main() {
       });
       server.stdout.pipe(log);
       server.stderr.pipe(log);
-      let serverExit;
-      server.on("exit", (code) => {
-        serverExit = code;
-        log.write(`\nserver exited with ${code}\n`);
+      /*
+       * The endpoint belongs to this run only when this child binds it: the
+       * operating system hands the port to one listener, so its own listening
+       * line is the proof. A health response alone could come from anyone.
+       */
+      const listening = new Promise((settle, fail) => {
+        let announced = "";
+        server.stdout.on("data", (chunk) => {
+          if (announced.length > 8_192) announced = announced.slice(-1_024);
+          announced += String(chunk);
+          if (announced.includes(`Server listening at ${BASE_URL}`)) settle(undefined);
+        });
+        server.once("exit", (code) => fail(new Error(`Server exited with ${code}; see ${serverLogPath}`)));
       });
-      await waitFor("the Server health endpoint", async () => {
-        // Readiness must belong to this child: a Server that died can never answer for it.
-        if (serverExit !== undefined) throw new Error(`Server exited with ${serverExit}; see ${serverLogPath}`);
-        const response = await fetch(`${BASE_URL}/healthz`);
-        return response.ok;
-      });
+      // A settled race must not leave a pending timer holding the process open.
+      listening.catch(() => undefined);
+      await withTimeout(listening, 60_000, `Server did not bind ${BASE_URL} within 60s`);
+      await waitFor("the Server health endpoint", async () => (await fetch(`${BASE_URL}/healthz`)).ok);
       return `${BASE_URL} (migrations applied, log: ${serverLogPath})`;
     });
 
@@ -530,16 +548,20 @@ async function main() {
     });
   } finally {
     await shutdown();
+    // A promised cleanup that did not happen is a failed run, not a footnote.
+    let cleanupFailure;
     if (createdDatabase && !KEEP_DATABASE) {
-      await psql(ADMIN_DATABASE_URL, `drop database if exists "${createdDatabase}" with (force)`).catch((error) =>
-        process.stdout.write(`Could not drop ${createdDatabase}: ${error.message}\n`),
+      cleanupFailure = await psql(ADMIN_DATABASE_URL, `drop database if exists "${createdDatabase}" with (force)`).then(
+        () => undefined,
+        (error) => `Could not drop ${createdDatabase}: ${error.message}`,
       );
+      if (cleanupFailure) process.stdout.write(`FAIL cleanup — ${cleanupFailure}\n`);
     }
     process.stdout.write(`\nArtifacts: ${ARTIFACT_DIRECTORY}\n`);
     const failed = steps.filter((entry) => !entry.ok);
     process.stdout.write(`${steps.length - failed.length}/${steps.length} steps passed\n`);
     await rm(workspace, { recursive: true, force: true }).catch(() => undefined);
-    process.exitCode = failed.length > 0 ? 1 : 0;
+    process.exitCode = failed.length > 0 || cleanupFailure ? 1 : 0;
   }
 }
 

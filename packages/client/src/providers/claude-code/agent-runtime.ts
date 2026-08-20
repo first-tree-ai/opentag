@@ -188,8 +188,13 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       this.closeForProviderFailure();
       if (this.#providerFailure) throw this.#providerFailure;
       if (error instanceof AgentProviderError) throw error;
-      if (error instanceof ClaudeCodeProcessError && error.code === "protocol") {
-        throw new AgentProviderError("provider_protocol_error", error.message, { cause: error });
+      if (error instanceof ClaudeCodeProcessError) {
+        if (error.code === "spawn") {
+          throw new AgentProviderError("provider_start_failed", error.message, { cause: error });
+        }
+        if (error.code === "protocol") {
+          throw new AgentProviderError("provider_protocol_error", error.message, { cause: error });
+        }
       }
       throw new AgentProviderError(
         "provider_error",

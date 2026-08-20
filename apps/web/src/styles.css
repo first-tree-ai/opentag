@@ -521,8 +521,15 @@ button.danger:hover {
   color: var(--secondary-foreground);
   font-size: 0.9rem;
   font-weight: 560;
+  gap: 10px;
   padding: 0 11px;
   text-decoration: none;
+}
+
+.primary-nav-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
 }
 
 .nav-placeholder {
@@ -1277,6 +1284,18 @@ button.danger:hover {
   color: var(--error);
   font-size: 0.78rem;
   font-weight: 520;
+}
+
+.form-field {
+  display: grid;
+  gap: 7px;
+}
+
+.field-help {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 430;
+  line-height: 1.45;
 }
 
 input,
@@ -2141,6 +2160,15 @@ textarea:focus {
   display: grid;
   width: min(100%, 760px);
   gap: 18px;
+}
+
+.settings-team-stack {
+  display: grid;
+  gap: 52px;
+}
+
+.settings-team-stack #members {
+  scroll-margin-top: 28px;
 }
 
 .settings-profile-form > h2,

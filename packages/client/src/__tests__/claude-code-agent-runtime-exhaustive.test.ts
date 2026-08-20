@@ -13,7 +13,11 @@ import {
   ClaudeCodeAgentRuntimeFactory,
   claudeCodeAgentRuntimeEnvironment,
 } from "../providers/claude-code/agent-runtime.js";
-import type { ClaudeCodeProcessClient, ClaudeCodeProcessResult } from "../providers/claude-code/process-wire.js";
+import {
+  type ClaudeCodeProcessClient,
+  ClaudeCodeProcessError,
+  type ClaudeCodeProcessResult,
+} from "../providers/claude-code/process-wire.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 const fixture = fileURLToPath(new URL("./fixtures/claude-code-stream.mjs", import.meta.url));
@@ -226,6 +230,19 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       error: { code: "provider_start_failed", message: "bridge setup failed" },
     });
     await vi.waitFor(() => expect(bridgeRuntime.state.phase).toBe("closed"));
+
+    const asynchronousSpawnRuntime = await factory(
+      new ManualClaudeCodeProcess([], {
+        executeError: new ClaudeCodeProcessError("spawn", "asynchronous spawn failed"),
+      }),
+    ).create(createRequest(() => undefined));
+    await expect(
+      asynchronousSpawnRuntime.prompt({ runId: "run-asynchronous-spawn", input: input("x") }),
+    ).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_start_failed", message: "asynchronous spawn failed" },
+    });
+    await vi.waitFor(() => expect(asynchronousSpawnRuntime.state.phase).toBe("closed"));
 
     const executionRuntime = await factory(new ManualClaudeCodeProcess([], { executeError: 42 })).create(
       createRequest(() => undefined),

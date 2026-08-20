@@ -66,6 +66,7 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   #failure?: Error;
   #closed = false;
   #closing = false;
+  #spawned = false;
   #terminalReceived = false;
   #signal?: AbortSignal;
 
@@ -95,7 +96,12 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
     }
     this.#child.stdout.on("data", (chunk: Buffer) => this.#onStdout(chunk));
     this.#child.stderr.on("data", (chunk: Buffer) => this.#onStderr(chunk));
-    this.#child.on("error", (error) => this.#fail(new ClaudeCodeProcessError("spawn", error.message)));
+    this.#child.once("spawn", () => {
+      this.#spawned = true;
+    });
+    this.#child.on("error", (error) =>
+      this.#fail(new ClaudeCodeProcessError(this.#spawned ? "exited" : "spawn", error.message)),
+    );
     this.#child.on("exit", () => this.#onExit());
   }
 

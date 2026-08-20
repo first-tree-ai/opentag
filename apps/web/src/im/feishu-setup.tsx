@@ -67,6 +67,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         if (lifecycleRef.current !== lifecycle) return false;
         creatingRef.current = false;
         if (current && attemptRef.current !== current && started.id === current.id) return true;
+        setError(undefined);
         if (attemptRef.current?.id !== started.id || !ACTIVE_STATES.includes(started.state)) {
           lifecycleRef.current = lifecycle + 1;
         }

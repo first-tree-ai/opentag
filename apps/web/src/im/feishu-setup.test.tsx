@@ -245,6 +245,31 @@ describe("FeishuSetup", () => {
     expect(poll).toHaveBeenCalledTimes(1);
   });
 
+  it("clears a retained poll error when a replacement attempt is accepted", async () => {
+    vi.useFakeTimers();
+    let resolveReplacement: (value: FeishuSetupAttempt) => void = () => undefined;
+    const replacement = new Promise<FeishuSetupAttempt>((resolve) => {
+      resolveReplacement = resolve;
+    });
+    vi.spyOn(browserApi, "createFeishuSetupAttempt")
+      .mockResolvedValueOnce(attempt({ id: firstAttemptId, intent: "reauthorize", state: "awaiting_user" }))
+      .mockReturnValueOnce(replacement);
+    vi.spyOn(browserApi, "feishuSetupAttempt").mockRejectedValue(new Error("Old attempt poll failed"));
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reauthorize" }));
+    await act(async () => undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    await act(async () => vi.advanceTimersByTimeAsync(1_500));
+    expect(screen.getByRole("alert").textContent).toBe("Old attempt poll failed");
+    await act(async () =>
+      resolveReplacement(attempt({ id: secondAttemptId, intent: "replace", state: "awaiting_user" })),
+    );
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(/State: awaiting_user/)).toBeTruthy();
+  });
+
   it("normalizes non-Error failures into a stable error state", async () => {
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockRejectedValue("network unavailable");
     render(<Harness />);

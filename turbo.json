@@ -1,6 +1,18 @@
 {
   "$schema": "https://turbo.build/schema.json",
-  "globalPassThroughEnv": ["GITHUB_OUTPUT", "GITHUB_TOKEN", "MAIN_COMMITS", "RELEASE_TAGS"],
+  "globalPassThroughEnv": [
+    "GITHUB_OUTPUT",
+    "GITHUB_TOKEN",
+    "MAIN_COMMITS",
+    "OPENTAG_E2E_ADMIN_DATABASE_URL",
+    "OPENTAG_E2E_ARTIFACTS",
+    "OPENTAG_E2E_CHROMIUM",
+    "OPENTAG_E2E_DATABASE",
+    "OPENTAG_E2E_PLAYWRIGHT_PATH",
+    "OPENTAG_E2E_PORT",
+    "OPENTAG_E2E_PROVIDER_STUB",
+    "RELEASE_TAGS"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

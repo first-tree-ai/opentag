@@ -15,6 +15,25 @@ function jsonResponse(value: unknown): Response {
 }
 
 describe("BrowserApi", () => {
+  it("updates the current user profile with PATCH, response parsing, and browser CSRF", async () => {
+    setDocumentCookie("opentag_csrf=profile-csrf; Path=/");
+    const profile = { id: userId, email: "ada@example.com", displayName: "Ada Lovelace" };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("/api/v1/me");
+      expect(init?.method).toBe("PATCH");
+      expect(init?.body).toBe(JSON.stringify({ displayName: "Ada Lovelace" }));
+      expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
+      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("profile-csrf");
+      return new Response(JSON.stringify(profile), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    await expect(new BrowserApi(fetchImpl).updateProfile({ displayName: "Ada Lovelace" })).resolves.toEqual(profile);
+    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
+
   it("uses explicit CSRF-protected Agent lifecycle commands", async () => {
     setDocumentCookie("opentag_csrf=lifecycle-csrf; Path=/");
     const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";

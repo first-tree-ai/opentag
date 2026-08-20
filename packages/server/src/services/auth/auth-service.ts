@@ -1,4 +1,11 @@
-import type { ConnectCodeExchangeResponse, MeResponse, RefreshTokenResponse } from "@opentag/shared";
+import {
+  type ConnectCodeExchangeResponse,
+  type MeResponse,
+  type RefreshTokenResponse,
+  type UpdateUserProfileRequest,
+  UpdateUserProfileRequestSchema,
+  type UserProfile,
+} from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { connectCodes, memberships, teams, users } from "../../db/schema/index.js";
@@ -15,7 +22,11 @@ export interface AuthenticatedUser {
   tokenExpiresAt: Date;
 }
 
-export interface UserAuthService {
+export interface SelfProfileService {
+  updateSelfProfile(userId: string, input: UpdateUserProfileRequest): Promise<UserProfile>;
+}
+
+export interface UserAuthService extends SelfProfileService {
   exchangeConnectCode(code: string, expectedUserId?: string): Promise<ConnectCodeExchangeResponse>;
   getActiveUserById(userId: string): Promise<MeResponse>;
   getAuthenticatedUser(accessToken: string): Promise<AuthenticatedUser>;
@@ -119,6 +130,17 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
 
   getActiveUserById(userId: string): Promise<MeResponse> {
     return this.#resolveActiveUser(userId);
+  }
+
+  async updateSelfProfile(userId: string, rawInput: UpdateUserProfileRequest): Promise<UserProfile> {
+    const input = UpdateUserProfileRequestSchema.parse(rawInput);
+    const [updated] = await this.#database
+      .update(users)
+      .set({ displayName: input.displayName, updatedAt: this.#now() })
+      .where(and(eq(users.id, userId), isNull(users.suspendedAt)))
+      .returning({ id: users.id, email: users.email, displayName: users.displayName });
+    if (!updated) throw invalidCredential("AUTH_INVALID_TOKEN", "The token is invalid");
+    return updated;
   }
 
   async #resolveActiveUser(userId: string): Promise<MeResponse> {

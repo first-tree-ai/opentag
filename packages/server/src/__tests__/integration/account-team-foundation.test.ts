@@ -147,6 +147,86 @@ describe("account identity and Team foundation persistence", () => {
     }
   });
 
+  it("keeps a user-maintained display name while returning provider email updates to every reader", async () => {
+    const value = await fixture();
+    try {
+      const userId = await value.identities.resolveOrCreate(google("profile", "old@example.com"));
+      await value.postAuthentication.complete(userId);
+      const primaryTeam = await value.teamService.createTeam(userId, {
+        name: "profile-primary",
+        displayName: "Profile Primary",
+      });
+      const auth = new AuthService(
+        value.database,
+        new AuthTokenService("development-auth-secret-at-least-32-characters", 900, 3600),
+        { now: () => new Date("2026-08-19T01:00:00.000Z") },
+      );
+
+      await expect(auth.updateSelfProfile(userId, { displayName: "  Product Name  " })).resolves.toEqual({
+        id: userId,
+        email: "old@example.com",
+        displayName: "Product Name",
+      });
+      const [selfUpdated] = await value.database.select().from(users).where(eq(users.id, userId));
+      expect(selfUpdated?.updatedAt.toISOString()).toBe("2026-08-19T01:00:00.000Z");
+      const returningIdentities = new AuthIdentityService(value.database, {
+        now: () => new Date("2026-08-19T02:00:00.000Z"),
+      });
+      await returningIdentities.resolveOrCreate({
+        ...google("profile", "new@example.com"),
+        displayName: "Provider Name",
+      });
+
+      const [persisted] = await value.database.select().from(users).where(eq(users.id, userId));
+      expect(persisted).toMatchObject({ email: "new@example.com", displayName: "Product Name" });
+      await expect(value.teamService.listMembers(userId, primaryTeam.id)).resolves.toMatchObject({
+        members: [{ userId, displayName: "Product Name" }],
+      });
+
+      const [secondTeam] = await value.database
+        .insert(teams)
+        .values({ name: "profile-second", displayName: "Profile Second" })
+        .returning();
+      if (!secondTeam) throw new Error("Second Team fixture was not created");
+      await value.database
+        .insert(memberships)
+        .values({ teamId: secondTeam.id, userId, role: "member", status: "active" });
+      await expect(value.teamService.listMembers(userId, secondTeam.id)).resolves.toMatchObject({
+        members: [{ userId, displayName: "Product Name" }],
+      });
+
+      const [computer] = await value.database
+        .insert(computers)
+        .values({
+          id: crypto.randomUUID(),
+          ownerUserId: userId,
+          displayName: "profile-computer",
+          platform: "linux",
+          arch: "x64",
+          clientVersion: "0.0.1",
+        })
+        .returning();
+      if (!computer) throw new Error("Computer fixture was not created");
+      const computerResult = await value.teamService.listComputers(userId, primaryTeam.id);
+      expect(computerResult.computers.find((candidate) => candidate.id === computer.id)).toMatchObject({
+        ownerUserId: userId,
+        ownerDisplayName: "Product Name",
+      });
+      const agentService = new AgentService(value.database, { membershipService: value.teamService, now: () => now });
+      await agentService.createForTeam(userId, primaryTeam.id, {
+        computerId: computer.id,
+        name: "profile-agent",
+        displayName: "Profile Agent",
+        runtimeProvider: "codex",
+      });
+      await expect(agentService.listForTeam(userId, primaryTeam.id)).resolves.toMatchObject({
+        agents: [{ manager: { userId, displayName: "Product Name" } }],
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("never provisions a Team for a solo sign-in, leaving creation an explicit user action", async () => {
     const value = await fixture();
     try {

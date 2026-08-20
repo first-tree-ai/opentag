@@ -103,7 +103,7 @@ export function AppRouter() {
           <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
           <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
           <Route path="/account" element={<AccountPage />} />
-          <Route path="/settings" element={<Navigate replace to="team" />} />
+          <Route path="/settings" element={<Navigate replace to="account" />} />
           <Route path="/settings/:section" element={<SettingsPage />} />
         </Route>
       </Route>
@@ -1249,6 +1249,7 @@ function AccessTab({ agent }: { agent: AgentDetail }) {
 }
 
 const settingsSections = [
+  { key: "account", label: "Account" },
   { key: "team", label: "General" },
   { key: "members", label: "Members" },
   { key: "computers", label: "Computers" },
@@ -1269,7 +1270,7 @@ function SettingsPage() {
     <section className="settings-page">
       <header className="settings-title">
         <h1>Settings</h1>
-        <p>Manage the current Team's identity, infrastructure, access, and security.</p>
+        <p>Manage your account and the current Team's identity, infrastructure, access, and security.</p>
       </header>
       <label className="local-nav-select">
         <span>Settings section</span>
@@ -1282,7 +1283,7 @@ function SettingsPage() {
         </select>
       </label>
       <div className="settings-layout">
-        <nav className="local-nav" aria-label="Team settings">
+        <nav className="local-nav" aria-label="Settings">
           {settingsSections.map((item) => (
             <NavLink to={`/settings/${item.key}`} key={item.key}>
               {item.label}
@@ -1294,6 +1295,7 @@ function SettingsPage() {
             <h2>{currentSection.label}</h2>
             <p>{settingsSectionDescription(currentSection.key)}</p>
           </header>
+          {section === "account" ? <AccountSettings refreshMe={refreshMe} user={me.user} /> : null}
           {section === "team" ? <TeamSettings membership={membership} refreshMe={refreshMe} /> : null}
           {section === "members" ? (
             <MembersSettings
@@ -1328,6 +1330,67 @@ function SettingsPage() {
         </div>
       </div>
     </section>
+  );
+}
+
+function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeResponse["user"] }) {
+  const saveInFlight = useRef(false);
+  const [displayName, setDisplayName] = useState(user.displayName);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState<string>();
+  const [error, setError] = useState<string>();
+
+  useEffect(() => setDisplayName(user.displayName), [user.displayName]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (saveInFlight.current) return;
+    saveInFlight.current = true;
+    setSaving(true);
+    setMessage(undefined);
+    setError(undefined);
+    try {
+      const updated = await browserApi.updateProfile({ displayName });
+      setDisplayName(updated.displayName);
+      setMessage("Account profile saved.");
+      refreshMe();
+    } catch (cause) {
+      setDisplayName(user.displayName);
+      setError(cause instanceof Error ? cause.message : "Unable to save the account profile");
+    } finally {
+      saveInFlight.current = false;
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form className="form-card" onSubmit={submit}>
+      <h2>Account profile</h2>
+      <label>
+        Email
+        <input name="email" readOnly type="email" value={user.email} />
+      </label>
+      <label>
+        Display name
+        <input
+          maxLength={255}
+          name="displayName"
+          onChange={(event) => setDisplayName(event.currentTarget.value)}
+          required
+          value={displayName}
+        />
+      </label>
+      <p className="muted">This name is shared across every Team you belong to.</p>
+      <button className="button" disabled={saving} type="submit">
+        {saving ? "Saving…" : "Save account profile"}
+      </button>
+      {message ? <p role="status">{message}</p> : null}
+      {error ? (
+        <p className="notice error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </form>
   );
 }
 
@@ -1759,6 +1822,7 @@ function agentSectionDescription(section: (typeof agentSections)[number]["key"])
 
 function settingsSectionDescription(section: (typeof settingsSections)[number]["key"]): string {
   const descriptions = {
+    account: "Manage the display identity shared across every Team you belong to.",
     team: "Manage the current Team's stable identity and display name.",
     members: "Invite people and review the Team membership visible to you.",
     computers: "Connect and inspect the Computers available to the current Team.",

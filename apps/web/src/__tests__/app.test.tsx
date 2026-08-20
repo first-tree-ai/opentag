@@ -39,6 +39,8 @@ function installApi(
     initialStatus?: "active" | "suspended";
     invitationExists?: boolean;
     provider?: "feishu" | "slack";
+    profileUpdate?: (displayName: string) => Promise<Response> | Response;
+    profileUpdateFails?: boolean;
     redeemFails?: boolean;
     roleUpdate?: (targetUserId: string, role: "admin" | "member") => Promise<Response> | Response;
     roleUpdateFails?: boolean;
@@ -76,6 +78,7 @@ function installApi(
   });
   const createdMemberships: { teamId: string; teamName: string; teamDisplayName: string; role: "admin" }[] = [];
   let currentRole = role;
+  let currentDisplayName = "Ada";
   let memberRole: "admin" | "member" = "member";
   let otherMemberRole: "admin" | "member" = "member";
   let invitationExists = options.invitationExists ?? false;
@@ -92,13 +95,23 @@ function installApi(
     if (path === "/api/v1/auth/providers") {
       return json({ providers: [{ id: "dev", enabled: true, startUrl: "/api/v1/auth/dev/callback" }] });
     }
+    if (path === "/api/v1/me" && init?.method === "PATCH") {
+      const body = JSON.parse(String(init.body)) as { displayName: string };
+      const response = options.profileUpdate
+        ? await options.profileUpdate(body.displayName)
+        : options.profileUpdateFails
+          ? json({ error: { message: "Display name update failed" } }, 409)
+          : json({ id: userId, email: "ada@example.com", displayName: body.displayName.trim() });
+      if (response.ok) currentDisplayName = body.displayName.trim();
+      return response;
+    }
     if (path === "/api/v1/me") {
       if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
       const existing = options.teamless
         ? []
         : [{ teamId, teamName: teamProfile.name, teamDisplayName: teamProfile.displayName, role: currentRole }];
       return json({
-        user: { id: userId, email: "ada@example.com", displayName: "Ada" },
+        user: { id: userId, email: "ada@example.com", displayName: currentDisplayName },
         memberships: [
           ...existing,
           ...(joinedInvitation
@@ -171,7 +184,7 @@ function installApi(
     if (path === `/api/v1/teams/${teamId}/members`) {
       return json({
         members: [
-          { userId, displayName: "Ada", role: currentRole },
+          { userId, displayName: currentDisplayName, role: currentRole },
           { userId: memberUserId, displayName: "Grace", role: memberRole },
           { userId: otherMemberUserId, displayName: "Lin", role: otherMemberRole },
         ],
@@ -353,6 +366,75 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("link", { name: "Create Agent" })).toBeNull();
   });
 
+  it.each(["admin", "member"] as const)("lets a %s update their global account display name", async (role) => {
+    installApi(role);
+    window.history.replaceState({}, "", "/settings/account");
+    render(<App />);
+
+    const email = (await screen.findByLabelText("Email")) as HTMLInputElement;
+    const displayName = screen.getByLabelText("Display name") as HTMLInputElement;
+    expect(email.value).toBe("ada@example.com");
+    expect(email.readOnly).toBe(true);
+    fireEvent.change(displayName, { target: { value: "  Ada Lovelace  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save account profile" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === "/api/v1/me")).toHaveLength(3),
+    );
+    expect(await screen.findByText("Ada Lovelace")).toBeTruthy();
+    expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Ada Lovelace");
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      "/api/v1/me",
+      expect.objectContaining({ method: "PATCH", body: JSON.stringify({ displayName: "  Ada Lovelace  " }) }),
+    );
+  });
+
+  it("prevents duplicate account saves while a profile update is pending", async () => {
+    let resolveUpdate: (response: Response) => void = () => undefined;
+    const update = new Promise<Response>((resolve) => {
+      resolveUpdate = resolve;
+    });
+    installApi("member", { profileUpdate: () => update });
+    window.history.replaceState({}, "", "/settings/account");
+    render(<App />);
+
+    const displayName = (await screen.findByLabelText("Display name")) as HTMLInputElement;
+    const form = displayName.closest("form");
+    if (!form) throw new Error("Account form was not rendered");
+    fireEvent.change(displayName, { target: { value: "Pending Name" } });
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+
+    expect(((await screen.findByRole("button", { name: "Saving…" })) as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input) === "/api/v1/me" && init?.method === "PATCH"),
+    ).toHaveLength(1);
+    resolveUpdate(json({ id: userId, email: "ada@example.com", displayName: "Pending Name" }));
+    await waitFor(() => expect(screen.getByText("Pending Name")).toBeTruthy());
+  });
+
+  it("restores the confirmed server name and shows the error when an account update fails", async () => {
+    installApi("member", { profileUpdateFails: true });
+    window.history.replaceState({}, "", "/settings/account");
+    render(<App />);
+
+    const displayName = (await screen.findByLabelText("Display name")) as HTMLInputElement;
+    fireEvent.change(displayName, { target: { value: "Rejected Name" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save account profile" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("Display name update failed");
+    expect(displayName.value).toBe("Ada");
+    expect(screen.getByText("Ada")).toBeTruthy();
+  });
+
+  it("keeps Members free of a second display-name write entry", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Team members" })).toBeTruthy();
+    expect(screen.queryByLabelText("Display name")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save account profile" })).toBeNull();
+  });
+
   it("keeps suspended lifecycle visible but read-only for members", async () => {
     installApi("member", { initialStatus: "suspended" });
     window.history.replaceState({}, "", `/agents/${agentId}/general`);
@@ -409,12 +491,22 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/settings/team");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
-    const navigation = screen.getByRole("navigation", { name: "Team settings" });
+    const navigation = screen.getByRole("navigation", { name: "Settings" });
     expect(
       within(navigation)
         .getAllByRole("link")
         .map((link) => link.textContent),
-    ).toEqual(["General", "Members", "Computers", "Resources", "Integrations", "Access", "Usage", "Security"]);
+    ).toEqual([
+      "Account",
+      "General",
+      "Members",
+      "Computers",
+      "Resources",
+      "Integrations",
+      "Access",
+      "Usage",
+      "Security",
+    ]);
   });
 
   it("lets admins rename a Team and refreshes the UUID-selected Team context from /me", async () => {

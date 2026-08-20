@@ -62,6 +62,9 @@ import {
   type UpdateAgentRequest,
   type UpdateTeamMemberRequest,
   type UpdateTeamProfileRequest,
+  type UpdateUserProfileRequest,
+  type UserProfile,
+  UserProfileSchema,
 } from "@opentag/shared/browser";
 
 interface RuntimeSchema<T> {
@@ -85,6 +88,14 @@ export class BrowserApi {
 
   me(): Promise<MeResponse> {
     return this.request("/api/v1/me", MeResponseSchema);
+  }
+
+  updateProfile(input: UpdateUserProfileRequest): Promise<UserProfile> {
+    return this.request(HTTP_PATHS.me, UserProfileSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
   }
 
   authProviders(): Promise<AuthProvidersResponse> {

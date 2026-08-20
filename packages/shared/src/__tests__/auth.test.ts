@@ -7,6 +7,9 @@ import {
   MeResponseSchema,
   RefreshTokenRequestSchema,
   TeamNameSchema,
+  UpdateUserProfileRequestSchema,
+  UserDisplayNameSchema,
+  UserProfileSchema,
 } from "../auth.js";
 
 describe("auth contracts", () => {
@@ -71,6 +74,30 @@ describe("auth contracts", () => {
 
     expect(MeResponseSchema.parse(response)).toEqual(response);
     expect(() => MeResponseSchema.parse({ ...response, state: "active" })).toThrow();
+  });
+
+  it("normalizes strict self-profile updates", () => {
+    expect(UpdateUserProfileRequestSchema.parse({ displayName: "  Ada Lovelace  " })).toEqual({
+      displayName: "Ada Lovelace",
+    });
+    expect(() => UpdateUserProfileRequestSchema.parse({ displayName: "   " })).toThrow();
+    expect(() => UpdateUserProfileRequestSchema.parse({ displayName: "a".repeat(256) })).toThrow();
+    expect(() => UpdateUserProfileRequestSchema.parse({ displayName: "Ada", userId: "caller-authority" })).toThrow();
+  });
+
+  it("shares one bounded user display-name contract across writers", () => {
+    expect(UserDisplayNameSchema.parse(`  ${"a".repeat(255)}  `)).toBe("a".repeat(255));
+    expect(() => UserDisplayNameSchema.parse("a".repeat(256))).toThrow();
+  });
+
+  it("validates the shared user profile response", () => {
+    const profile = {
+      id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+      email: "admin@example.com",
+      displayName: "Admin",
+    };
+    expect(UserProfileSchema.parse(profile)).toEqual(profile);
+    expect(() => UserProfileSchema.parse({ ...profile, displayName: "a".repeat(256) })).toThrow();
   });
 
   it("publishes Google and local-development browser provider availability", () => {

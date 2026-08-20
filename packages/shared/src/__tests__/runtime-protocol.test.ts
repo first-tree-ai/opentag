@@ -1,23 +1,40 @@
 import { describe, expect, it } from "vitest";
 import {
+  AuthV1FrameSchema,
+  AuthV2FrameSchema,
   ClientRuntimeFrameSchema,
+  missingRuntimeCapabilities,
+  negotiateRuntimeCapabilities,
+  RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_MAX_FRAME_BYTES,
-  RUNTIME_PROTOCOL_VERSION,
+  RUNTIME_PROTOCOL_V1,
+  RUNTIME_PROTOCOL_V2,
+  RUNTIME_SERVER_CAPABILITY_OFFERS,
+  RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   runtimeFrameByteLength,
   ServerRuntimeFrameSchema,
 } from "../runtime-protocol.js";
 
 describe("runtime protocol", () => {
-  it("validates the versioned welcome and strict register frame", () => {
+  it("keeps the v1 handshake frozen and strict", () => {
     expect(
       ServerRuntimeFrameSchema.parse({
         type: "server:welcome",
-        protocolVersion: RUNTIME_PROTOCOL_VERSION,
+        protocolVersion: RUNTIME_PROTOCOL_V1,
         capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
         heartbeatIntervalMs: 30_000,
         heartbeatTimeoutMs: 90_000,
       }),
-    ).toMatchObject({ type: "server:welcome" });
+    ).toMatchObject({ type: "server:welcome", protocolVersion: RUNTIME_PROTOCOL_V1 });
+    expect(() =>
+      AuthV1FrameSchema.parse({
+        type: "auth",
+        requestId: crypto.randomUUID(),
+        protocolVersion: RUNTIME_PROTOCOL_V1,
+        accessToken: "access",
+        supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+      }),
+    ).toThrow();
 
     const register = {
       type: "computer:register",
@@ -33,53 +50,91 @@ describe("runtime protocol", () => {
       ...register,
       capabilities: { imMessageTool: 0 },
     });
-    expect(ClientRuntimeFrameSchema.parse({ ...register, capabilities: { imMessageTool: 1 } })).toMatchObject({
-      capabilities: { imMessageTool: 1 },
-    });
     expect(() => ClientRuntimeFrameSchema.parse({ ...register, teamId: crypto.randomUUID() })).toThrow();
-    expect(
-      ClientRuntimeFrameSchema.parse({
-        type: "auth",
-        requestId: crypto.randomUUID(),
-        protocolVersion: RUNTIME_PROTOCOL_VERSION,
-        accessToken: "access",
-      }),
-    ).toMatchObject({ type: "auth", protocolVersion: RUNTIME_PROTOCOL_VERSION });
   });
 
-  it("rejects unknown versions and oversized fields", () => {
-    expect(() =>
-      ServerRuntimeFrameSchema.parse({
-        type: "server:welcome",
-        protocolVersion: 2,
-        capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
-        heartbeatIntervalMs: 1,
-        heartbeatTimeoutMs: 2,
-      }),
-    ).toThrow();
-    expect(() =>
-      ClientRuntimeFrameSchema.parse({
+  it("validates extensible v2 offers while keeping security fields strict", () => {
+    const welcome = ServerRuntimeFrameSchema.parse({
+      type: "server:welcome",
+      protocolVersion: RUNTIME_PROTOCOL_V2,
+      supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+      supportedCapabilities: {
+        ...RUNTIME_SERVER_CAPABILITY_OFFERS,
+        "future.optionalFeature": { min: 1, max: 3 },
+      },
+      requiredClientCapabilities: [],
+      heartbeatIntervalMs: 30_000,
+      heartbeatTimeoutMs: 90_000,
+      futureAdvisory: "ignored",
+    });
+    expect(welcome).toMatchObject({
+      protocolVersion: RUNTIME_PROTOCOL_V2,
+      futureAdvisory: "ignored",
+    });
+    expect(
+      AuthV2FrameSchema.parse({
         type: "auth",
         requestId: crypto.randomUUID(),
-        protocolVersion: RUNTIME_PROTOCOL_VERSION,
-        accessToken: "x".repeat(4097),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+        accessToken: "access",
       }),
-    ).toThrow();
+    ).toMatchObject({ protocolVersion: RUNTIME_PROTOCOL_V2 });
     expect(() =>
-      ClientRuntimeFrameSchema.parse({
+      AuthV2FrameSchema.parse({
         type: "auth",
         requestId: crypto.randomUUID(),
-        protocolVersion: 2,
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+        accessToken: "access",
+        futureAuthField: true,
+      }),
+    ).toThrow();
+  });
+
+  it("selects the highest capability intersection and detects missing requirements", () => {
+    const negotiated = negotiateRuntimeCapabilities(
+      {
+        ...RUNTIME_CLIENT_CAPABILITY_OFFERS,
+        "future.optionalFeature": { min: 2, max: 5 },
+      },
+      {
+        ...RUNTIME_SERVER_CAPABILITY_OFFERS,
+        "future.optionalFeature": { min: 1, max: 3 },
+        "server.unknownFeature": { min: 1, max: 1 },
+      },
+    );
+    expect(negotiated["future.optionalFeature"]).toBe(3);
+    expect(negotiated["server.unknownFeature"]).toBeUndefined();
+    expect(missingRuntimeCapabilities(["runtime.imDelivery"], negotiated)).toEqual([]);
+    expect(missingRuntimeCapabilities(["future.requiredFeature"], negotiated)).toEqual(["future.requiredFeature"]);
+  });
+
+  it("rejects invalid ranges, unknown protocol versions, and oversized fields", () => {
+    expect(() =>
+      AuthV2FrameSchema.parse({
+        type: "auth",
+        requestId: crypto.randomUUID(),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        supportedProtocolVersions: { min: 3, max: 2 },
         accessToken: "access",
       }),
     ).toThrow();
     expect(() =>
-      ServerRuntimeFrameSchema.parse({
-        type: "server:welcome",
-        protocolVersion: RUNTIME_PROTOCOL_VERSION,
-        capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1 },
-        heartbeatIntervalMs: 1,
-        heartbeatTimeoutMs: 90_000,
+      ClientRuntimeFrameSchema.parse({
+        type: "auth",
+        requestId: crypto.randomUUID(),
+        protocolVersion: 3,
+        accessToken: "access",
+      }),
+    ).toThrow();
+    expect(() =>
+      ClientRuntimeFrameSchema.parse({
+        type: "auth",
+        requestId: crypto.randomUUID(),
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+        accessToken: "x".repeat(4097),
       }),
     ).toThrow();
     expect(runtimeFrameByteLength("你")).toBe(3);

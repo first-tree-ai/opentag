@@ -3,7 +3,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { EffectiveRuntimeSnapshot, SessionReconcileRequest, SessionReconcileResult } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WebSocketServer } from "ws";
+import { type WebSocket, WebSocketServer } from "ws";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
 import { ClientRuntime } from "../runtime/client-runtime.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
@@ -27,24 +27,7 @@ describe("ClientRuntime domain dispatch", () => {
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          socket.send(
-            JSON.stringify({
-              type: "auth:result",
-              requestId: frame.requestId,
-              ok: true,
-              userId: randomUUID(),
-              tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-            }),
-          );
-          socket.send(
-            JSON.stringify({
-              type: "server:welcome",
-              protocolVersion: 1,
-              capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
-              heartbeatIntervalMs: 1_000,
-              heartbeatTimeoutMs: 2_000,
-            }),
-          );
+          completeLegacyAuth(socket, frame);
           return;
         }
         if (frame.type === "computer:register") {
@@ -216,6 +199,39 @@ function tokenProvider(): AccessTokenProvider {
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     }),
   } as unknown as AccessTokenProvider;
+}
+
+function completeLegacyAuth(socket: WebSocket, frame: Record<string, unknown>): void {
+  if (frame.protocolVersion !== 1) {
+    socket.send(
+      JSON.stringify({
+        type: "error",
+        requestId: frame.requestId,
+        code: "PROTOCOL_VERSION_UNSUPPORTED",
+        message: "The test Server supports runtime protocol v1 only",
+      }),
+    );
+    socket.close(4400, "Protocol version unsupported");
+    return;
+  }
+  socket.send(
+    JSON.stringify({
+      type: "auth:result",
+      requestId: frame.requestId,
+      ok: true,
+      userId: randomUUID(),
+      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }),
+  );
+  socket.send(
+    JSON.stringify({
+      type: "server:welcome",
+      protocolVersion: 1,
+      capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
+      heartbeatIntervalMs: 1_000,
+      heartbeatTimeoutMs: 2_000,
+    }),
+  );
 }
 
 async function runtimeServer(): Promise<{ close(): Promise<void>; url: string; wss: WebSocketServer }> {

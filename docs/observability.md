@@ -50,7 +50,9 @@ Asynchronous jobs intentionally use independent roots. Search by stable attribut
 - `opentag.session.id`
 - `opentag.agent.id`
 - `opentag.computer.id`
+- `opentag.runtime.connection.id`
 - `opentag.runtime.instance.id`
+- `opentag.runtime.protocol.version`
 
 Message text, raw provider events, mentions, resources, sender identity, provider response bodies, prompts, model output, tool payloads, authorization headers, cookies, tokens, secrets, and credentials are excluded or scrubbed.
 

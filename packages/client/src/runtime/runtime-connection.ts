@@ -1,11 +1,21 @@
 import { randomUUID } from "node:crypto";
 import {
+  missingRuntimeCapabilities,
+  negotiateRuntimeCapabilities,
+  RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
+  RUNTIME_PROTOCOL_V1,
+  RUNTIME_PROTOCOL_V2,
   RUNTIME_PROTOCOL_VERSION,
+  RUNTIME_REQUIRED_SERVER_CAPABILITIES,
+  RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   type RuntimeClientCapabilities,
   RuntimeFrameEnvelopeSchema,
+  type RuntimeNegotiatedCapabilities,
+  type RuntimeProtocolVersion,
   runtimeFrameByteLength,
+  runtimeNegotiatedCapabilitiesEqual,
   runtimeWebSocketUrl,
   ServerRuntimeBusinessFrameSchema,
   ServerRuntimeFrameSchema,
@@ -70,6 +80,13 @@ export class RuntimeSendError extends Error {
   ) {
     super(message);
     this.name = "RuntimeSendError";
+  }
+}
+
+class RuntimeProtocolFallbackError extends Error {
+  constructor() {
+    super("The Server explicitly requires runtime protocol v1");
+    this.name = "RuntimeProtocolFallbackError";
   }
 }
 
@@ -141,12 +158,14 @@ export class RuntimeConnection {
   readonly #registeredWaiters = new Set<RegisteredWaiter>();
   readonly #lifecycleAbort = new AbortController();
   #active?: WebSocket;
+  #connectionId?: string;
   #forceRefresh = false;
   #hasRun = false;
   #running = false;
   #sendInFlight?: QueuedFrame;
   #state: RuntimeConnectionState = "stopped";
   #stopped = false;
+  #protocolVersion: RuntimeProtocolVersion = RUNTIME_PROTOCOL_VERSION;
   #verifiedCapabilities: RuntimeClientCapabilities = { imMessageTool: 0 };
   #verifiedCapabilitiesExpiresAt = 0;
 
@@ -254,6 +273,14 @@ export class RuntimeConnection {
           });
         } catch (error) {
           if (this.#stopped || isAbortError(error)) break;
+          if (error instanceof RuntimeProtocolFallbackError && this.#protocolVersion === RUNTIME_PROTOCOL_V2) {
+            this.#protocolVersion = RUNTIME_PROTOCOL_V1;
+            this.#logger.info(
+              { protocolVersion: RUNTIME_PROTOCOL_V1, state: this.#state },
+              "Runtime protocol fallback selected",
+            );
+            continue;
+          }
           if (error instanceof RuntimeConnectionError && error.fatal) {
             this.#logger.error(
               { attempt: attempt + 1, category: "protocol", state: this.#state },
@@ -318,10 +345,16 @@ export class RuntimeConnection {
   }
 
   send(frame: unknown, options: RuntimeSendOptions = {}): Promise<void> {
+    const socket = this.#active;
+    if (this.#state !== "registered" || !socket || socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new RuntimeSendError("unavailable", "The runtime connection is not registered"));
+    }
+    if (options.signal?.aborted) return Promise.reject(abortError());
     let serialized: string;
     try {
-      serialized = JSON.stringify(frame);
-    } catch {
+      serialized = JSON.stringify(this.#outboundFrame(frame));
+    } catch (error) {
+      if (error instanceof RuntimeSendError) return Promise.reject(error);
       return Promise.reject(new RuntimeSendError("frame_too_large", "The runtime frame cannot be serialized"));
     }
     if (runtimeFrameByteLength(serialized) > RUNTIME_MAX_FRAME_BYTES) {
@@ -329,11 +362,6 @@ export class RuntimeConnection {
         new RuntimeSendError("frame_too_large", `Runtime frames cannot exceed ${RUNTIME_MAX_FRAME_BYTES} bytes`),
       );
     }
-    const socket = this.#active;
-    if (this.#state !== "registered" || !socket || socket.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new RuntimeSendError("unavailable", "The runtime connection is not registered"));
-    }
-    if (options.signal?.aborted) return Promise.reject(abortError());
     return this.#enqueue(socket, serialized, options);
   }
 
@@ -346,10 +374,13 @@ export class RuntimeConnection {
       this.#options.webSocketFactory?.(runtimeWebSocketUrl(this.#options.computer.serverUrl)) ??
       new WebSocket(runtimeWebSocketUrl(this.#options.computer.serverUrl), { maxPayload: RUNTIME_MAX_FRAME_BYTES });
     this.#active = socket;
+    this.#connectionId = undefined;
     const instanceId = this.#options.instanceId;
+    const protocolVersion = this.#protocolVersion;
 
     await new Promise<void>((resolve, reject) => {
       let welcome: ServerWelcomeFrame | undefined;
+      let expectedNegotiatedCapabilities: RuntimeNegotiatedCapabilities | undefined;
       let authRequestId: string | undefined;
       let registerRequestId: string | undefined;
       let pendingHeartbeatRequestId: string | undefined;
@@ -373,6 +404,7 @@ export class RuntimeConnection {
         clearTimers();
         this.#rejectSocketSends(socket, new RuntimeSendError("unavailable", "The runtime socket closed"));
         if (this.#active === socket) this.#active = undefined;
+        this.#connectionId = undefined;
         error ? reject(error) : resolve();
       };
       const failProtocol = (message: string, closeReason: string, fatal = true) => {
@@ -398,6 +430,7 @@ export class RuntimeConnection {
               computerId: this.#options.computer.computerId,
               instanceId,
               capabilities: this.#currentCapabilities(),
+              ...(protocolVersion === RUNTIME_PROTOCOL_V2 ? { protocolVersion: RUNTIME_PROTOCOL_V2 } : {}),
             },
             { priority: "control", deadline: this.#now() + heartbeatPolicy.heartbeatTimeoutMs },
           ).then(
@@ -422,12 +455,23 @@ export class RuntimeConnection {
         if (settled || this.#stopped || this.#active !== socket) return;
         this.#setState("authenticating");
         authRequestId = randomUUID();
-        void this.#sendDirect(socket, {
-          type: "auth",
-          requestId: authRequestId,
-          protocolVersion: RUNTIME_PROTOCOL_VERSION,
-          accessToken: lease.accessToken,
-        }).catch((error: unknown) => finish(asError(error)));
+        void this.#sendDirect(
+          socket,
+          protocolVersion === RUNTIME_PROTOCOL_V2
+            ? {
+                type: "auth",
+                requestId: authRequestId,
+                protocolVersion: RUNTIME_PROTOCOL_V2,
+                supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+                accessToken: lease.accessToken,
+              }
+            : {
+                type: "auth",
+                requestId: authRequestId,
+                protocolVersion: RUNTIME_PROTOCOL_V1,
+                accessToken: lease.accessToken,
+              },
+        ).catch((error: unknown) => finish(asError(error)));
       });
 
       socket.on("message", (data, isBinary) => {
@@ -447,7 +491,7 @@ export class RuntimeConnection {
           failProtocol("The server sent an invalid runtime frame", "Invalid server frame");
           return;
         }
-        if (envelope.data.type === "server:welcome" && envelope.data.protocolVersion !== RUNTIME_PROTOCOL_VERSION) {
+        if (envelope.data.type === "server:welcome" && envelope.data.protocolVersion !== protocolVersion) {
           socket.close(4400, "Protocol version unsupported");
           finish(new RuntimeConnectionError("The runtime protocol version is unsupported", true));
           return;
@@ -462,7 +506,13 @@ export class RuntimeConnection {
           ) {
             let businessFrame: RuntimeBusinessFrame | undefined;
             try {
-              businessFrame = (this.#options.parseBusinessFrame ?? parseServerBusinessFrame)(decoded);
+              if (protocolVersion === RUNTIME_PROTOCOL_V2 && envelope.data.connectionId !== this.#connectionId) {
+                failProtocol("The server sent a stale runtime connection fence", "Stale connection fence");
+                return;
+              }
+              businessFrame = (this.#options.parseBusinessFrame ?? parseServerBusinessFrame)(
+                protocolVersion === RUNTIME_PROTOCOL_V2 ? withoutConnectionId(decoded) : decoded,
+              );
             } catch {
               businessFrame = undefined;
             }
@@ -493,10 +543,31 @@ export class RuntimeConnection {
           return;
         }
         if (this.#state === "welcoming" && frame.type === "server:welcome") {
+          if (frame.protocolVersion !== protocolVersion) {
+            failProtocol("The runtime protocol version is unsupported", "Protocol version unsupported");
+            return;
+          }
+          if (frame.protocolVersion === RUNTIME_PROTOCOL_V2) {
+            expectedNegotiatedCapabilities = negotiateRuntimeCapabilities(
+              RUNTIME_CLIENT_CAPABILITY_OFFERS,
+              frame.supportedCapabilities,
+            );
+            const missing = [
+              ...missingRuntimeCapabilities(frame.requiredClientCapabilities, expectedNegotiatedCapabilities),
+              ...missingRuntimeCapabilities(RUNTIME_REQUIRED_SERVER_CAPABILITIES, expectedNegotiatedCapabilities),
+            ];
+            if (missing.length > 0) {
+              failProtocol(
+                `Required runtime capabilities are unavailable: ${[...new Set(missing)].sort().join(", ")}`,
+                "Required capability unavailable",
+              );
+              return;
+            }
+          }
           welcome = frame;
           this.#setState("registering");
           registerRequestId = randomUUID();
-          void this.#sendDirect(socket, {
+          const registration = {
             type: "computer:register",
             requestId: registerRequestId,
             computerId: this.#options.computer.computerId,
@@ -506,7 +577,18 @@ export class RuntimeConnection {
             arch: this.#options.arch,
             clientVersion: this.#options.clientVersion,
             capabilities: this.#currentCapabilities(),
-          }).catch((error: unknown) => finish(asError(error)));
+          } as const;
+          void this.#sendDirect(
+            socket,
+            protocolVersion === RUNTIME_PROTOCOL_V2
+              ? {
+                  ...registration,
+                  protocolVersion: RUNTIME_PROTOCOL_V2,
+                  supportedCapabilities: RUNTIME_CLIENT_CAPABILITY_OFFERS,
+                  requiredServerCapabilities: RUNTIME_REQUIRED_SERVER_CAPABILITIES,
+                }
+              : registration,
+          ).catch((error: unknown) => finish(asError(error)));
           return;
         }
         if (this.#state === "registering" && frame.type === "computer:register:result") {
@@ -517,6 +599,23 @@ export class RuntimeConnection {
           if (!frame.ok || !welcome) {
             socket.close(4403, "Computer registration rejected");
             finish(new RuntimeConnectionError(`Computer registration failed: ${frame.errorCode}`, true));
+            return;
+          }
+          if (protocolVersion === RUNTIME_PROTOCOL_V2) {
+            if (
+              !("protocolVersion" in frame) ||
+              frame.protocolVersion !== RUNTIME_PROTOCOL_V2 ||
+              !frame.connectionId ||
+              !frame.negotiatedCapabilities ||
+              !expectedNegotiatedCapabilities ||
+              !runtimeNegotiatedCapabilitiesEqual(frame.negotiatedCapabilities, expectedNegotiatedCapabilities)
+            ) {
+              failProtocol("The Server returned an invalid capability negotiation", "Capability mismatch");
+              return;
+            }
+            this.#connectionId = frame.connectionId;
+          } else if ("protocolVersion" in frame) {
+            failProtocol("The Server returned an invalid legacy registration", "Registration version mismatch");
             return;
           }
           established = true;
@@ -542,6 +641,16 @@ export class RuntimeConnection {
             failProtocol("The server returned an unmatched heartbeat result", "Heartbeat request mismatch");
             return;
           }
+          if (
+            (protocolVersion === RUNTIME_PROTOCOL_V2 &&
+              (!("protocolVersion" in frame) ||
+                frame.protocolVersion !== RUNTIME_PROTOCOL_V2 ||
+                frame.connectionId !== this.#connectionId)) ||
+            (protocolVersion === RUNTIME_PROTOCOL_V1 && "protocolVersion" in frame)
+          ) {
+            failProtocol("The Server returned a stale heartbeat fence", "Heartbeat fence mismatch");
+            return;
+          }
           if (!frame.ok) {
             socket.close(4403, "Heartbeat rejected");
             finish(new RuntimeConnectionError(`Runtime heartbeat failed: ${frame.errorCode}`, true));
@@ -553,6 +662,16 @@ export class RuntimeConnection {
           return;
         }
         if (frame.type === "error") {
+          if (
+            this.#state === "authenticating" &&
+            protocolVersion === RUNTIME_PROTOCOL_V2 &&
+            frame.code === "PROTOCOL_VERSION_UNSUPPORTED" &&
+            frame.requestId === authRequestId
+          ) {
+            socket.close(4400, "Retrying runtime protocol v1");
+            finish(new RuntimeProtocolFallbackError());
+            return;
+          }
           if (this.#state === "registered" && frame.code === "AUTH_INVALID_TOKEN") {
             this.#forceRefresh = true;
             socket.close(4000, "Refreshing access token");
@@ -634,6 +753,18 @@ export class RuntimeConnection {
       queue.push(entry);
       this.#drain();
     });
+  }
+
+  #outboundFrame(frame: unknown): unknown {
+    if (this.#protocolVersion !== RUNTIME_PROTOCOL_V2) return frame;
+    if (!this.#connectionId || !frame || typeof frame !== "object" || Array.isArray(frame)) {
+      throw new RuntimeSendError("unavailable", "The runtime connection fence is unavailable");
+    }
+    const record = frame as Readonly<Record<string, unknown>>;
+    if (record.connectionId !== undefined && record.connectionId !== this.#connectionId) {
+      throw new RuntimeSendError("unavailable", "The runtime frame carries a stale connection fence");
+    }
+    return { ...record, connectionId: this.#connectionId };
   }
 
   #drain(): void {
@@ -807,6 +938,13 @@ function safeJson(value: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+function withoutConnectionId(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const frame = { ...(value as Record<string, unknown>) };
+  delete frame.connectionId;
+  return frame;
 }
 
 function parseServerBusinessFrame(value: unknown): RuntimeBusinessFrame | undefined {

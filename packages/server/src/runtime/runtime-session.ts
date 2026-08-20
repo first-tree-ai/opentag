@@ -1,15 +1,25 @@
+import { randomUUID } from "node:crypto";
 import {
+  type AuthFrame,
   ClientRuntimeFrameSchema,
   type ComputerRegisterFrame,
+  type HeartbeatFrame,
+  missingRuntimeCapabilities,
+  negotiateRuntimeCapabilities,
   RUNTIME_MAX_FRAME_BYTES,
-  RUNTIME_PROTOCOL_VERSION,
+  RUNTIME_PROTOCOL_V1,
+  RUNTIME_PROTOCOL_V2,
+  RUNTIME_REQUIRED_CLIENT_CAPABILITIES,
+  RUNTIME_SERVER_CAPABILITY_OFFERS,
+  RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   RUNTIME_V0_CAPABILITIES,
-  type RuntimeClientCapabilities,
   type RuntimeErrorFrame,
   RuntimeFrameEnvelopeSchema,
+  type RuntimeNegotiatedCapabilities,
+  type RuntimeProtocolVersion,
   runtimeFrameByteLength,
   type ServerRuntimeFrame,
-  ServerWelcomeFrameSchema,
+  ServerWelcomeV1FrameSchema,
 } from "@opentag/shared";
 import WebSocket, { type RawData } from "ws";
 import {
@@ -32,6 +42,7 @@ export type RuntimeServerBusinessFrame = Readonly<Record<string, unknown>> & { r
 
 export interface RuntimeBusinessContext {
   computerId: string;
+  connectionId?: string;
   instanceId: string;
   signal: AbortSignal;
   userId: string;
@@ -75,7 +86,9 @@ export class RuntimeSession {
   #heartbeatInFlight = false;
   #userId?: string;
   #computerId?: string;
+  #connectionId?: string;
   #instanceId?: string;
+  #protocolVersion?: RuntimeProtocolVersion;
 
   constructor(
     socket: WebSocket,
@@ -88,9 +101,9 @@ export class RuntimeSession {
     this.#auth = auth;
     this.#computers = computers;
     this.#registry = registry;
-    const heartbeat = ServerWelcomeFrameSchema.parse({
+    const heartbeat = ServerWelcomeV1FrameSchema.parse({
       type: "server:welcome",
-      protocolVersion: RUNTIME_PROTOCOL_VERSION,
+      protocolVersion: RUNTIME_PROTOCOL_V1,
       capabilities: RUNTIME_V0_CAPABILITIES,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 30_000,
       heartbeatTimeoutMs: options.heartbeatTimeoutMs ?? 90_000,
@@ -143,7 +156,11 @@ export class RuntimeSession {
         this.#fail("PROTOCOL_ERROR", "A runtime handshake request is already in progress", 4400);
         return;
       }
-      if (envelope.data.type === "auth" && envelope.data.protocolVersion !== RUNTIME_PROTOCOL_VERSION) {
+      if (
+        envelope.data.type === "auth" &&
+        envelope.data.protocolVersion !== RUNTIME_PROTOCOL_V1 &&
+        envelope.data.protocolVersion !== RUNTIME_PROTOCOL_V2
+      ) {
         this.#fail(
           "PROTOCOL_VERSION_UNSUPPORTED",
           "The runtime protocol version is unsupported",
@@ -157,6 +174,7 @@ export class RuntimeSession {
         this.#fail("PROTOCOL_ERROR", "Authentication must be the first runtime frame", 4400, envelope.data.requestId);
         return;
       }
+      this.#protocolVersion = parsed.data.protocolVersion;
       this.#handshakeInFlight = true;
       void this.#authenticate(parsed.data).finally(() => {
         this.#handshakeInFlight = false;
@@ -174,6 +192,14 @@ export class RuntimeSession {
         this.#fail("PROTOCOL_ERROR", "Computer registration must follow authentication", 4400, envelope.data.requestId);
         return;
       }
+      if (
+        (this.#protocolVersion === RUNTIME_PROTOCOL_V2 &&
+          (!("protocolVersion" in parsed.data) || parsed.data.protocolVersion !== RUNTIME_PROTOCOL_V2)) ||
+        (this.#protocolVersion === RUNTIME_PROTOCOL_V1 && "protocolVersion" in parsed.data)
+      ) {
+        this.#fail("PROTOCOL_ERROR", "Computer registration does not match the negotiated protocol", 4400);
+        return;
+      }
       this.#handshakeInFlight = true;
       void this.#register(parsed.data).finally(() => {
         this.#handshakeInFlight = false;
@@ -188,17 +214,16 @@ export class RuntimeSession {
         this.#fail("PROTOCOL_ERROR", "The heartbeat frame is invalid", 4400, envelope.data.requestId);
         return;
       }
+      if (!this.#heartbeatMatchesConnection(parsed.data)) {
+        this.#fail("COMPUTER_NOT_REGISTERED", "The runtime connection fence is stale", 4409, parsed.data.requestId);
+        return;
+      }
       if (this.#heartbeatInFlight) {
         this.#fail("PROTOCOL_ERROR", "A heartbeat is already in progress", 4400, parsed.data.requestId);
         return;
       }
       this.#heartbeatInFlight = true;
-      void this.#heartbeat(
-        parsed.data.requestId,
-        parsed.data.computerId,
-        parsed.data.instanceId,
-        parsed.data.capabilities,
-      ).finally(() => {
+      void this.#heartbeat(parsed.data).finally(() => {
         this.#heartbeatInFlight = false;
       });
       return;
@@ -212,10 +237,17 @@ export class RuntimeSession {
       );
       return;
     }
-    this.#scheduleBusinessFrame(decoded, envelope.data.requestId);
+    if (this.#protocolVersion === RUNTIME_PROTOCOL_V2 && envelope.data.connectionId !== this.#connectionId) {
+      this.#fail("COMPUTER_NOT_REGISTERED", "The runtime connection fence is stale", 4409, envelope.data.requestId);
+      return;
+    }
+    this.#scheduleBusinessFrame(
+      this.#protocolVersion === RUNTIME_PROTOCOL_V2 ? withoutConnectionId(decoded) : decoded,
+      envelope.data.requestId,
+    );
   }
 
-  async #authenticate(frame: { accessToken: string; requestId: string }): Promise<void> {
+  async #authenticate(frame: AuthFrame): Promise<void> {
     try {
       const authenticated = await this.#auth.getAuthenticatedUser(frame.accessToken);
       if (this.#isClosing()) return;
@@ -229,13 +261,25 @@ export class RuntimeSession {
         userId: this.#userId,
         tokenExpiresAt: authenticated.tokenExpiresAt.toISOString(),
       });
-      this.#send({
-        type: "server:welcome",
-        protocolVersion: RUNTIME_PROTOCOL_VERSION,
-        capabilities: RUNTIME_V0_CAPABILITIES,
-        heartbeatIntervalMs: this.#options.heartbeatIntervalMs,
-        heartbeatTimeoutMs: this.#options.heartbeatTimeoutMs,
-      });
+      this.#send(
+        this.#protocolVersion === RUNTIME_PROTOCOL_V2
+          ? {
+              type: "server:welcome",
+              protocolVersion: RUNTIME_PROTOCOL_V2,
+              supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
+              supportedCapabilities: RUNTIME_SERVER_CAPABILITY_OFFERS,
+              requiredClientCapabilities: RUNTIME_REQUIRED_CLIENT_CAPABILITIES,
+              heartbeatIntervalMs: this.#options.heartbeatIntervalMs,
+              heartbeatTimeoutMs: this.#options.heartbeatTimeoutMs,
+            }
+          : {
+              type: "server:welcome",
+              protocolVersion: RUNTIME_PROTOCOL_V1,
+              capabilities: RUNTIME_V0_CAPABILITIES,
+              heartbeatIntervalMs: this.#options.heartbeatIntervalMs,
+              heartbeatTimeoutMs: this.#options.heartbeatTimeoutMs,
+            },
+      );
       const untilExpiry = authenticated.tokenExpiresAt.getTime() - this.#options.now().getTime();
       this.#tokenTimer = setTimeout(
         () => this.#fail("AUTH_INVALID_TOKEN", "The access token expired", 4401),
@@ -252,18 +296,79 @@ export class RuntimeSession {
       return;
     }
     try {
+      let negotiatedCapabilities: RuntimeNegotiatedCapabilities | undefined;
+      let connectionId: string | undefined;
+      if (this.#protocolVersion === RUNTIME_PROTOCOL_V2) {
+        if (!("protocolVersion" in frame) || frame.protocolVersion !== RUNTIME_PROTOCOL_V2) {
+          this.#fail("PROTOCOL_ERROR", "The registration protocol is invalid", 4400, frame.requestId);
+          return;
+        }
+        negotiatedCapabilities = negotiateRuntimeCapabilities(
+          RUNTIME_SERVER_CAPABILITY_OFFERS,
+          frame.supportedCapabilities,
+        );
+        const missing = [
+          ...missingRuntimeCapabilities(RUNTIME_REQUIRED_CLIENT_CAPABILITIES, negotiatedCapabilities),
+          ...missingRuntimeCapabilities(frame.requiredServerCapabilities, negotiatedCapabilities),
+        ];
+        if (missing.length > 0) {
+          this.#fail(
+            "PROTOCOL_CAPABILITY_UNSUPPORTED",
+            "One or more required runtime capabilities are unavailable",
+            4400,
+            frame.requestId,
+          );
+          return;
+        }
+        connectionId = randomUUID();
+      }
       const userId = this.#userId;
       await this.#registry.register(
         {
+          active: false,
           capabilities: frame.capabilities,
           capabilitiesUpdatedAt: this.#options.now().getTime(),
           computerId: frame.computerId,
+          connectionId,
           instanceId: frame.instanceId,
           lastHeartbeatAt: this.#options.now().getTime(),
+          protocolVersion: this.#protocolVersion ?? RUNTIME_PROTOCOL_V1,
           socket: this.#socket,
           userId,
         },
         () => this.#computers.register(userId, frame),
+        () => {
+          if (this.#isClosing()) return;
+          this.#computerId = frame.computerId;
+          this.#connectionId = connectionId;
+          this.#instanceId = frame.instanceId;
+          setRuntimeConnectionAttrs(
+            this.#socket,
+            runtimeAttrs({
+              computerId: frame.computerId,
+              connectionId,
+              instanceId: frame.instanceId,
+              protocolVersion: this.#protocolVersion,
+            }),
+          );
+          this.#state = "registered";
+          this.#clearHandshakeTimer();
+          this.#send(
+            this.#protocolVersion === RUNTIME_PROTOCOL_V2
+              ? {
+                  type: "computer:register:result",
+                  requestId: frame.requestId,
+                  ok: true,
+                  protocolVersion: RUNTIME_PROTOCOL_V2,
+                  connectionId,
+                  negotiatedCapabilities,
+                }
+              : { type: "computer:register:result", requestId: frame.requestId, ok: true },
+          );
+          if (!this.#registry.activate(frame.computerId, frame.instanceId, this.#socket)) {
+            this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced during registration", 4409);
+          }
+        },
       );
       if (this.#isClosing()) {
         if (this.#registry.remove(frame.computerId, frame.instanceId, this.#socket)) {
@@ -271,26 +376,13 @@ export class RuntimeSession {
         }
         return;
       }
-      this.#computerId = frame.computerId;
-      this.#instanceId = frame.instanceId;
-      setRuntimeConnectionAttrs(
-        this.#socket,
-        runtimeAttrs({ computerId: frame.computerId, instanceId: frame.instanceId }),
-      );
-      this.#state = "registered";
-      this.#clearHandshakeTimer();
-      this.#send({ type: "computer:register:result", requestId: frame.requestId, ok: true });
     } catch (error) {
       this.#handleRequestError(error, frame.requestId);
     }
   }
 
-  async #heartbeat(
-    requestId: string,
-    computerId: string,
-    instanceId: string,
-    capabilities: RuntimeClientCapabilities,
-  ): Promise<void> {
+  async #heartbeat(frame: HeartbeatFrame): Promise<void> {
+    const { requestId, computerId, instanceId, capabilities } = frame;
     try {
       if (!this.#userId || computerId !== this.#computerId || instanceId !== this.#instanceId) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance is not registered", 4409, requestId);
@@ -305,7 +397,18 @@ export class RuntimeSession {
         return;
       }
       if (this.#isClosing()) return;
-      this.#send({ type: "heartbeat:result", requestId, ok: true, serverTime: this.#options.now().toISOString() });
+      this.#send(
+        this.#protocolVersion === RUNTIME_PROTOCOL_V2
+          ? {
+              type: "heartbeat:result",
+              requestId,
+              ok: true,
+              serverTime: this.#options.now().toISOString(),
+              protocolVersion: RUNTIME_PROTOCOL_V2,
+              connectionId: this.#connectionId,
+            }
+          : { type: "heartbeat:result", requestId, ok: true, serverTime: this.#options.now().toISOString() },
+      );
     } catch (error) {
       this.#handleRequestError(error, requestId);
     }
@@ -332,6 +435,7 @@ export class RuntimeSession {
     }
     const context: RuntimeBusinessContext = {
       computerId: this.#computerId,
+      connectionId: this.#connectionId,
       instanceId: this.#instanceId,
       signal: this.#abort.signal,
       userId: this.#userId,
@@ -375,6 +479,7 @@ export class RuntimeSession {
     return (
       !context.signal.aborted &&
       this.#state === "registered" &&
+      context.connectionId === this.#connectionId &&
       this.#registry.isCurrent(context.computerId, context.instanceId, this.#socket)
     );
   }
@@ -408,7 +513,7 @@ export class RuntimeSession {
   #send(frame: unknown): void {
     let serialized: string;
     try {
-      serialized = JSON.stringify(frame);
+      serialized = JSON.stringify(this.#outboundFrame(frame));
     } catch {
       this.#fail("INTERNAL_ERROR", "The runtime response could not be serialized", 1011);
       return;
@@ -418,6 +523,35 @@ export class RuntimeSession {
       return;
     }
     if (this.#socket.readyState === WebSocket.OPEN) this.#socket.send(serialized);
+  }
+
+  #outboundFrame(frame: unknown): unknown {
+    if (
+      this.#protocolVersion !== RUNTIME_PROTOCOL_V2 ||
+      this.#state !== "registered" ||
+      !this.#connectionId ||
+      !frame ||
+      typeof frame !== "object" ||
+      Array.isArray(frame)
+    ) {
+      return frame;
+    }
+    const record = frame as Readonly<Record<string, unknown>>;
+    if (record.type === "error") return frame;
+    if (record.connectionId !== undefined && record.connectionId !== this.#connectionId) {
+      throw new Error("The runtime response carries a stale connection fence");
+    }
+    return { ...record, connectionId: this.#connectionId };
+  }
+
+  #heartbeatMatchesConnection(frame: HeartbeatFrame): boolean {
+    if (this.#protocolVersion === RUNTIME_PROTOCOL_V1) return !("protocolVersion" in frame);
+    return (
+      "protocolVersion" in frame &&
+      frame.protocolVersion === RUNTIME_PROTOCOL_V2 &&
+      frame.connectionId === this.#connectionId &&
+      this.#connectionId !== undefined
+    );
   }
 
   #handleRequestError(error: unknown, requestId?: string): void {
@@ -499,4 +633,11 @@ function safeJson(value: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+function withoutConnectionId(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+  const frame = { ...(value as Record<string, unknown>) };
+  delete frame.connectionId;
+  return frame;
 }

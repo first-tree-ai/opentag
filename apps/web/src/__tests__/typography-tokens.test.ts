@@ -101,16 +101,6 @@ function referenceProjection(value: string): string {
   return withoutStrings(value);
 }
 
-/** The properties this guard owns, alongside the token families themselves. */
-const TYPOGRAPHY_PROPERTIES = new Set([
-  "font",
-  "font-size",
-  "font-weight",
-  "font-family",
-  "line-height",
-  "letter-spacing",
-]);
-
 /**
  * What the browser sees: the decoded name, the decoded value exactly as the
  * browser validates it, where it applies, and whether it applies
@@ -193,21 +183,17 @@ function offTokenValues(css: string, property: string, allowed: RegExp, literals
   return valuesOf(css, property).filter((value) => !allowed.test(value) && !(literals?.has(value) ?? false));
 }
 
-/** A typography declaration is one this guard reads: an owned property, or a token definition. */
-function ownedByGuard(declaration: Declared): boolean {
-  return (
-    TYPOGRAPHY_PROPERTIES.has(propertyName(declaration)) ||
-    FAMILIES.some((family) => declaration.name.startsWith(`--${family}-`))
-  );
-}
-
 /**
  * An escape inside a value changes which tokens the browser consumes, so the
- * text is no longer what it looks like. The stylesheet has never needed one.
+ * text stops meaning what it looks like. References are read from every
+ * declaration, not only the ones this guard owns, so every declaration has to
+ * be canonical for that scan to be worth anything -- outside strings, where a
+ * backslash is ordinary content and no reference is read. The stylesheet has
+ * never contained one.
  */
 function escapedValues(css: string): string[] {
   return declarations(css)
-    .filter((declaration) => ownedByGuard(declaration) && declaration.value.includes("\\"))
+    .filter((declaration) => declaration.references.includes("\\"))
     .map((declaration) => `${declaration.name}: ${declaration.value}`);
 }
 
@@ -327,7 +313,7 @@ describe("typography tokens", () => {
     expect(unresolvedRoles(stylesheet)).toEqual([]);
   });
 
-  it("spells every value it owns without escapes", () => {
+  it("spells every value outside a string without escapes", () => {
     expect(escapedValues(stylesheet)).toEqual([]);
   });
 
@@ -502,6 +488,16 @@ describe("the guard itself", () => {
     const role = String.raw`:root { --text-ui: var\28--fs-13\29; }`;
     expect(escapedValues(role)).toEqual([String.raw`--text-ui: var\28--fs-13\29`]);
     expect(malformedRoles(role)).toEqual([String.raw`--text-ui: var\28--fs-13\29`]);
+  });
+
+  it("refuses an escaped reference under a property it does not otherwise read", () => {
+    const css = String.raw`.row { padding: v\61 r(--fs-99); }`;
+    expect(escapedValues(css)).toEqual([String.raw`padding: v\61 r(--fs-99)`]);
+  });
+
+  it("leaves a backslash inside a string alone, where it is content", () => {
+    const css = String.raw`.row::after { content: "\201C"; }`;
+    expect(escapedValues(css)).toEqual([]);
   });
 
   it("does not read a commented-out declaration as a violation", () => {

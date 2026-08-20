@@ -1,4 +1,4 @@
-import type { EffectiveRuntimeSnapshot, InputRejectReason } from "@opentag/shared";
+import type { AgentRuntimeProvider, EffectiveRuntimeSnapshot, InputRejectReason } from "@opentag/shared";
 import { isAgentRuntimeProviderId } from "../agent-runtime/provider-id.js";
 import type { AgentRuntimeFactory, AgentRuntimePolicy, AgentRuntimeProbeResult } from "../agent-runtime/types.js";
 
@@ -15,6 +15,18 @@ interface ProviderProbe {
   readonly promise: Promise<void>;
   settled: boolean;
   waiters: number;
+}
+
+export class AgentRuntimeProviderUnavailableError extends Error {
+  constructor(
+    readonly providerId: string,
+    readonly result: AgentRuntimeProbeResult,
+    options?: ErrorOptions,
+  ) {
+    const detail = result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; ") || "not ready";
+    super(`Agent Runtime provider is unavailable (${providerId}): ${detail}`, options);
+    this.name = "AgentRuntimeProviderUnavailableError";
+  }
 }
 
 export class AgentRuntimeProviderRegistry {
@@ -38,6 +50,10 @@ export class AgentRuntimeProviderRegistry {
 
   registration(providerId: string): AgentRuntimeProviderRegistration | undefined {
     return this.#providers.get(providerId);
+  }
+
+  providerIds(): readonly AgentRuntimeProvider[] {
+    return [...this.#providers.keys()] as AgentRuntimeProvider[];
   }
 
   artifactIdentity(providerId: string): string | undefined {
@@ -95,7 +111,7 @@ export class AgentRuntimeProviderRegistry {
         const result = await provider.factory.probe({ signal: controller.signal });
         if (this.#probes.get(providerId) === record) this.#probeResults.set(providerId, result);
         if (!result.ready) {
-          throw new Error(result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+          throw new AgentRuntimeProviderUnavailableError(providerId, result);
         }
         try {
           await provider.verifyArtifact?.(controller.signal);
@@ -106,7 +122,14 @@ export class AgentRuntimeProviderRegistry {
               issues: [{ code: "temporarily_unavailable", message: "Provider artifact verification failed" }],
             });
           }
-          throw error;
+          throw new AgentRuntimeProviderUnavailableError(
+            providerId,
+            {
+              ready: false,
+              issues: [{ code: "temporarily_unavailable", message: "Provider artifact verification failed" }],
+            },
+            { cause: error },
+          );
         }
         controller.signal.throwIfAborted();
         if (this.#probes.get(providerId) === record) this.#ready.add(providerId);

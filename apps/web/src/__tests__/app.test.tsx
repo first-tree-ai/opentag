@@ -36,6 +36,7 @@ function installApi(
     alreadyJoinedInvitation?: boolean;
     bindingReauth?: boolean;
     bound?: boolean;
+    computers?: readonly Record<string, unknown>[];
     initialStatus?: "active" | "suspended";
     invitationExists?: boolean;
     provider?: "feishu" | "slack";
@@ -174,6 +175,15 @@ function installApi(
         updatedAt: "2026-08-20T00:01:00.000Z",
       });
     }
+    if (/^\/api\/v1\/teams\/[^/]+\/agents$/.test(path) && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as {
+        computerId: string;
+        displayName: string;
+        name: string;
+        runtimeProvider: "codex" | "claude-code";
+      };
+      return json({ ...adminConfig(), ...body, id: agentId }, 201);
+    }
     // Any Team id, so a Team created during the test is served like the seeded and invited ones.
     if (/^\/api\/v1\/teams\/[^/]+\/agents$/.test(path)) {
       return json({
@@ -249,7 +259,7 @@ function installApi(
       });
     }
     if (/^\/api\/v1\/teams\/[^/]+\/computers$/.test(path)) return json({ computers: [] });
-    if (path === "/api/v1/me/computers") return json({ computers: [] });
+    if (path === "/api/v1/me/computers") return json({ computers: options.computers ?? [] });
     if (path === "/api/v1/me/connect-codes" && init?.method === "POST") {
       return json(
         {
@@ -811,6 +821,49 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Connect a Local Computer first" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Computer settings" }).getAttribute("href")).toBe("/settings/computers");
+  });
+
+  it("shows exact Computer and Provider readiness without blocking Agent creation or offering fallback", async () => {
+    installApi("admin", {
+      computers: [
+        {
+          id: computerId,
+          ownerUserId: userId,
+          displayName: "Ada's Mac",
+          platform: "darwin",
+          arch: "arm64",
+          clientVersion: "0.0.1",
+          connectionStatus: "online",
+          providerReadiness: [
+            { provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" },
+            { provider: "claude-code", status: "sign-in", observedAt: "2026-08-20T00:00:00.000Z" },
+          ],
+          connectedAt: "2026-08-20T00:00:00.000Z",
+          lastSeenAt: "2026-08-20T00:00:00.000Z",
+        },
+      ],
+    });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+    expect(await screen.findByText("Codex is ready on Ada's Mac.")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "claude-code" } });
+    expect(await screen.findByText(/Claude Code requires sign-in/)).toBeTruthy();
+    expect(screen.getByText(/No other Provider will be substituted/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(false);
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "claude-reviewer" } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Claude Reviewer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+    await waitFor(() => {
+      const request = vi
+        .mocked(fetch)
+        .mock.calls.find(([path, init]) => path === `/api/v1/teams/${teamId}/agents` && init?.method === "POST");
+      expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+        name: "claude-reviewer",
+        displayName: "Claude Reviewer",
+        runtimeProvider: "claude-code",
+        computerId,
+      });
+    });
   });
 
   it("sends a Team-less session to Team creation and lands it on Agents", async () => {

@@ -174,7 +174,10 @@ describe("ConnectionRegistry", () => {
         new Date(RUNTIME_CLIENT_CAPABILITY_TTL_MS * 2 + 4),
         registry,
       ),
-    ).toEqual([{ provider: "codex", status: "checking", observedAt: null }]);
+    ).toEqual([
+      { provider: "codex", status: "checking", observedAt: null },
+      { provider: "claude-code", status: "checking", observedAt: null },
+    ]);
     expect(registry.remove(computerId, instanceId, currentSocket)).toBe(true);
     expect(registry.providerReadiness(computerId, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 3)).toEqual([]);
   });

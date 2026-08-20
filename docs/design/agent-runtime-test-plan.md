@@ -1,4 +1,4 @@
-# Agent Runtime, Codex, and Claude Code Provider Test Plan
+# Agent Runtime Provider Test Plan
 
 Status: active quality gate
 
@@ -6,9 +6,9 @@ Last updated: 2026-08-20
 
 ## Goal and Scope
 
-This plan verifies that the provider-neutral Agent Runtime contract and the
-Codex and Claude Code Provider implementations are safe to use as the lowest
-Client execution layer. It covers these production boundaries:
+This plan verifies that the provider-neutral Agent Runtime contract and its
+Codex, Claude Code, and Pi Provider implementations are safe to use as the
+lowest Client execution layer. It covers these production boundaries:
 
 - `src/agent-runtime/base-agent-runtime.ts`
 - `src/agent-runtime/errors.ts`
@@ -18,6 +18,8 @@ Client execution layer. It covers these production boundaries:
 - `src/providers/codex/app-server-wire.ts`
 - `src/providers/claude-code/agent-runtime.ts`
 - `src/providers/claude-code/process-wire.ts`
+- `src/providers/pi/agent-runtime.ts`
+- `src/providers/pi/rpc-wire.ts`
 
 Production Client execution now uses this contract through:
 
@@ -33,35 +35,34 @@ Coverage is a floor, not the acceptance criterion by itself: production
 composition, crash recovery, protocol behavior, and live local Provider sessions
 are tested separately.
 
-There are no file-level or broad range exclusions. Five local V8 annotations in
-the shared Runtime and Codex implementation document non-executable invariant
-branches: one synthetic `finally` branch reported by V8, three defensive Codex
-guards already fenced by Base admission plus the serial Provider envelope
-queue, and one stale queued-signal callback guard fenced by synchronous queue
-ownership and listener detachment. Their normal and failure semantics are
-exercised at the public boundary. Two equivalent local annotations in the
-Claude Code Provider cover its synthetic `finally` branch and an impossible
-cleared-context queue guard. The annotations do not omit a supported Provider
-outcome.
+There are no file-level or broad range exclusions. Narrow local V8 annotations
+document non-executable invariant branches such as synthetic `finally` edges,
+guards already fenced by Base admission, and callbacks made unreachable by
+synchronous ownership and listener detachment. Their normal and failure
+semantics are exercised at the public boundary; the annotations do not omit a
+supported Provider outcome.
 
 ## Local Provider Artifact Boundary
 
-The Client does not declare a Codex or Claude Code package, SDK, CLI, or
-bundled-binary dependency and does not contain an installer or download
-fallback. In normal operation the Providers launch the literal `codex` and
-`claude` commands without a shell; the operating system resolves them from the
-allow-listed `PATH` inherited from the user environment. Explicit command
-overrides remain available only for caller-supplied local executables or
-deterministic process test doubles.
+The Client does not declare a Codex, Claude Code, or Pi package, SDK, CLI, or
+bundled-binary dependency and does not contain an installer or download fallback.
+In normal operation the Providers launch the literal `codex`, `claude`, or `pi`
+command without a shell; the operating system resolves it from the allow-listed
+`PATH` inherited from the user environment. Explicit command overrides remain
+available only for caller-supplied local executables or deterministic process
+test doubles.
 
 Readiness probes invoke those same local executables. Codex checks `--version`
 and `app-server --help`; Claude Code checks `--version`, `--help`, and local
-`auth status --json`. Missing, incompatible, or unauthenticated artifacts fail
-with typed issues; the Client never installs or fetches either Provider. The
-offline suite locks this boundary by checking dependency manifests and by
-asserting the default process launch commands and inherited `PATH`. Explicit
-live E2E commands prove that the installed executables can create and resume a
-Runtime session.
+`auth status --json`; Pi checks `--version`, `--help`, and the offline model list.
+Pi requires 0.80.6 or newer so RPC provides both `agent_settled` and the accepted
+`max` thinking level. Model discovery uses the same extension, skill, template,
+theme, context-file, and project-trust disabling arguments as production Runs.
+Missing, incompatible, or unauthenticated artifacts fail with typed issues; the
+Client never installs or fetches a Provider. The offline suite locks this boundary
+by checking dependency manifests and by asserting the default process launch
+commands and inherited `PATH`. Explicit live E2E commands prove that installed
+executables can create and resume Runtime sessions.
 
 ## Test Layers
 
@@ -128,16 +129,37 @@ A scripted `stream-json` process verifies:
 - malformed, crossed-session, missing-terminal, process, and event-sink failures;
 - probe outcomes, environment allow-listing, and process-tree cleanup.
 
-### 5. Live local end-to-end tests
+### 5. Pi Provider translation tests
 
-The explicit `test:e2e:codex-agent-runtime` command uses the installed and
-authenticated local Codex CLI. It performs:
+A scripted Pi RPC client verifies:
+
+- exact UUID session creation and resume with local-project `--session-id` lookup;
+- post-start session-file fingerprint binding without exposing the local path;
+- process-per-Run operation, prompt, steer, abort, model, thinking, and Provider configuration mapping;
+- fail-closed policy mapping for Pi's no-sandbox and no-approval runtime;
+- fail-closed rejection of common hosted tools, which Pi RPC cannot register;
+- extension, skill, template, theme, context-file, and approval disabling;
+- ordered message, tool, usage, warning, Provider extension, and `agent_settled` terminal events;
+- hidden reasoning content, model errors, late process failures, and terminal ingress precedence;
+- malformed or crossed session state, parent/child turn ordering, invalid event transitions, and disabled extension UI requests;
+- probe outcomes, credential discovery, process environment allow-listing, and process-tree cleanup.
+
+The Pi wire tests additionally enforce correlated strict JSONL responses,
+bounded stdout and stderr, request cancellation and timeout, truncated output,
+asynchronous spawn errors, command rejection, and graceful-to-forced process
+tree termination.
+
+### 6. Live local end-to-end tests
+
+The explicit `test:e2e:codex-agent-runtime`,
+`test:e2e:claude-code-agent-runtime`, and `test:e2e:pi-agent-runtime` commands
+use the installed and authenticated local CLIs. Each performs:
 
 1. deterministic local readiness probing;
-2. real App Server initialization and `thread/start`;
+2. real Provider protocol initialization and persistent session creation;
 3. one text-only Agent Runtime prompt and terminal-result assertion;
-4. Runtime close without deleting the persistent Codex Thread;
-5. a new process with exact binding `thread/resume`;
+4. Runtime close without deleting the persistent Provider session;
+5. a new process with exact opaque-binding resume;
 6. a second prompt proving conversation continuity;
 7. ordered-event and clean-close assertions.
 
@@ -158,7 +180,13 @@ Code live test explicitly requests unrestricted filesystem and enabled network
 with `approvals: never`. The Provider rejects stricter common policies rather
 than claiming a boundary it cannot guarantee.
 
-### 6. Production Client Runtime integration and recovery
+The Pi test uses a temporary read-only workspace, disabled network policy,
+`approvals: never`, no tool request, bounded Run timeouts, and an isolated
+temporary session directory. It proves conversation continuity by recalling a
+random project codename after exact resume. The live tests make real model
+requests and are therefore intentionally excluded from the default test command.
+
+### 7. Production Client Runtime integration and recovery
 
 The production-path tests verify:
 
@@ -189,6 +217,7 @@ Codex live smoke.
 pnpm --filter @opentag/client test:agent-runtime:coverage
 pnpm --filter @opentag/client test:e2e:codex-agent-runtime
 pnpm --filter @opentag/client test:e2e:claude-code-agent-runtime
+pnpm --filter @opentag/client test:e2e:pi-agent-runtime
 pnpm check
 pnpm build
 pnpm typecheck
@@ -197,19 +226,25 @@ pnpm --filter @opentag/server test:integration
 git diff --check
 ```
 
-Acceptance requires all commands to pass, all four scoped coverage metrics to
-equal 100%, the local probe to report ready, both live Runs to complete, exact
-resume to preserve the Thread ID, and no unhandled rejection or leaked child
-process. A failed or unavailable live Provider check must be reported as a
-failure; it is never converted into a skipped success.
+Acceptance requires the offline commands to pass and all four scoped coverage
+metrics to equal 100%. A Provider introduced or modified by a change must also
+pass its live command: the local probe must report ready, both live Runs must
+complete, exact resume must preserve the opaque binding, and no unhandled
+rejection or child process may leak. A failed or unavailable live Provider check
+is reported as a failure; it is never converted into a skipped success.
 
 ## Latest Local Execution
 
-On 2026-08-20 the converged Agent Runtime, Codex, Claude Code, and production
-Client Runtime suite passed 170 tests with 100% statements, branches, functions,
-and lines. All 267 Client tests passed. The Codex live test passed against
-`codex-cli 0.147.0`: both create and resumed Runs completed, the opaque binding
-was preserved, and each Run produced 16 ordered events. The local `claude`
-2.1.210 executable was discovered from the user `PATH`; its create/resume E2E
-remains blocked because `claude auth status --json` reports no active login, and
-readiness correctly reports `credential_missing`.
+On 2026-08-20 the merged Agent Runtime, three-Provider, and production Client
+Runtime suite passed 207 tests with 100% statements, branches, functions, and
+lines. All 304 Client tests passed. Repository formatting, notice, build, and
+type-check gates passed, as did all 96 Server integration tests.
+
+The Pi live test passed against the user-installed `pi` 0.83.0 executable:
+both create and resumed Runs completed, the materialized opaque binding was
+preserved, and the Runs produced 53 and 95 ordered events respectively. The
+Client manifests contain no Pi package, SDK, CLI, or bundled-binary dependency.
+
+The monorepo test command retains two unrelated existing macOS CLI failures
+caused solely by `/tmp` versus `/private/tmp` path spelling. All other package
+tests passed; the Pi and Client suites are green.

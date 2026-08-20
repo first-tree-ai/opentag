@@ -251,7 +251,8 @@ Open `/` for the shared Team App Shell. Active members use the same navigation w
 Admins receive the management controls. On **Settings → Computers**, **Generate connection command** mints a 15-minute, single-use code and copies the
 server-authored install/login command. The page polls the current user's Computer list until the new daemon handshake
 arrives. The Web never selects the npm package, binary, or Server URL itself. Use the CLI for membership and invitation
-mutations:
+mutations. Team Admins can also create, copy, and rotate the current bearer invitation from **Settings → Members**;
+successful redemption selects the joined Team in the Web:
 
 ```bash
 pnpm --filter open-tag start team member list --team example

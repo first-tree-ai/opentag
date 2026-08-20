@@ -243,7 +243,8 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 打开 `/` 可使用 Team 共享 App Shell。active member 使用同一套导航和 member-safe 只读投影，Team Admin 额外获得管理控件。
 在 **Settings → Computers** 中点击 **Generate connection command** 会签发一个 15 分钟、仅可使用
 一次的 code，并复制由 Server 生成的安装/login 命令。页面会轮询当前用户的 Computer 列表，直到新的 daemon
-握手到达；Web 本身不会选择 npm package、binary 或 Server URL。membership 与邀请变更使用 CLI：
+握手到达；Web 本身不会选择 npm package、binary 或 Server URL。membership 与邀请变更可使用 CLI；Team Admin
+也可在 **Settings → Members** 创建、复制和轮换当前 bearer 邀请，成功兑换后 Web 会选中刚加入的 Team：
 
 ```bash
 pnpm --filter open-tag start team member list --team example

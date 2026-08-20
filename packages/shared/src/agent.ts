@@ -21,6 +21,24 @@ const AgentCreationIntentIdSchema = z.string().uuid();
 export const AgentRuntimeProviderSchema = z.enum(["codex", "claude-code"]);
 export const ReceiveModeSchema = z.enum(["all_message", "mention_only"]);
 export const AgentStatusSchema = z.enum(["active", "suspended"]);
+export const AgentAvailabilityStateSchema = z.enum([
+  "ready",
+  "action_required",
+  "setting_up",
+  "not_connected",
+  "suspended",
+]);
+export const AgentAvailabilityReasonSchema = z.enum([
+  "agent_suspended",
+  "computer_offline",
+  "runtime_unavailable",
+  "im_not_connected",
+  "im_provisioning",
+  "im_reauthorization_required",
+  "im_error",
+  "im_connection_unconfirmed",
+]);
+const AgentDependencyStateSchema = z.enum(["ready", "action_required", "setting_up", "not_connected"]);
 
 const OpenTagMessageToolSchema = z.enum(OPENTAG_MESSAGE_TOOLS);
 const AgentInstructionsSchema = RuntimeInstructionSchema.superRefine((instructions, context) => {
@@ -118,6 +136,37 @@ export const AgentSummarySchema = AgentIdentitySchema.extend({
       platform: z.enum(["darwin", "linux", "win32"]),
     })
     .strict(),
+  availability: z
+    .object({
+      state: AgentAvailabilityStateSchema,
+      reason: AgentAvailabilityReasonSchema.nullable(),
+      lastConfirmedAt: z.string().datetime().nullable(),
+      dependencies: z
+        .object({
+          computer: z
+            .object({
+              state: AgentDependencyStateSchema,
+              lastConfirmedAt: z.string().datetime().nullable(),
+            })
+            .strict(),
+          runtime: z
+            .object({
+              state: AgentDependencyStateSchema,
+              lastConfirmedAt: z.string().datetime().nullable(),
+            })
+            .strict(),
+          im: z
+            .object({
+              state: AgentDependencyStateSchema,
+              provider: z.enum(["feishu", "slack"]).nullable(),
+              botDisplayName: z.string().min(1).nullable(),
+              lastConfirmedAt: z.string().datetime().nullable(),
+            })
+            .strict(),
+        })
+        .strict(),
+    })
+    .strict(),
 }).strict();
 
 export const AgentDetailSchema = AgentSummarySchema.extend({
@@ -166,6 +215,8 @@ export type AgentDisplayName = z.infer<typeof AgentDisplayNameSchema>;
 export type AgentRuntimeProvider = z.infer<typeof AgentRuntimeProviderSchema>;
 export type ReceiveMode = z.infer<typeof ReceiveModeSchema>;
 export type AgentStatus = z.infer<typeof AgentStatusSchema>;
+export type AgentAvailabilityState = z.infer<typeof AgentAvailabilityStateSchema>;
+export type AgentAvailabilityReason = z.infer<typeof AgentAvailabilityReasonSchema>;
 export type AgentRuntimeConfig = z.infer<typeof AgentRuntimeConfigSchema>;
 export type CreateAgentRuntimeConfig = z.infer<typeof CreateAgentRuntimeConfigSchema>;
 export type UpdateAgentRuntimeConfig = z.infer<typeof UpdateAgentRuntimeConfigSchema>;

@@ -22,6 +22,21 @@ const agentSummary = {
   runtimeProvider: "codex",
   receiveMode: "mention_only",
   status: "active",
+  availability: {
+    state: "ready",
+    reason: null,
+    lastConfirmedAt: "2026-08-20T00:00:00.000Z",
+    dependencies: {
+      computer: { state: "ready", lastConfirmedAt: "2026-08-20T00:00:00.000Z" },
+      runtime: { state: "ready", lastConfirmedAt: "2026-08-20T00:00:00.000Z" },
+      im: {
+        state: "ready",
+        provider: "feishu",
+        botDisplayName: "Reviewer",
+        lastConfirmedAt: "2026-08-20T00:00:00.000Z",
+      },
+    },
+  },
   createdAt: "2026-08-20T00:00:00.000Z",
   updatedAt: "2026-08-20T00:00:00.000Z",
 };
@@ -55,6 +70,14 @@ function installApi(
   const teamProfile = { name: "example", displayName: "Example" };
   let lifecycleStatus = options.initialStatus ?? "active";
   let revision = lifecycleStatus === "active" ? 1 : 2;
+  const availability = () =>
+    lifecycleStatus === "suspended"
+      ? {
+          ...agentSummary.availability,
+          state: "suspended",
+          reason: "agent_suspended",
+        }
+      : agentSummary.availability;
   const adminConfig = () => ({
     id: agentId,
     teamId,
@@ -179,8 +202,8 @@ function installApi(
       return json({
         agents: [
           path.includes(invitedTeamId)
-            ? { ...agentSummary, teamId: invitedTeamId, status: lifecycleStatus }
-            : { ...agentSummary, status: lifecycleStatus },
+            ? { ...agentSummary, teamId: invitedTeamId, status: lifecycleStatus, availability: availability() }
+            : { ...agentSummary, status: lifecycleStatus, availability: availability() },
         ],
       });
     }
@@ -277,6 +300,7 @@ function installApi(
       return json({
         ...agentSummary,
         status: lifecycleStatus,
+        availability: availability(),
         viewerCapabilities: { canManage: currentRole === "admin" },
       });
     }
@@ -364,7 +388,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("member");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    expect(screen.getByText("ada@example.com")).toBeTruthy();
+    expect(screen.queryByText("ada@example.com")).toBeNull();
     expect(await screen.findByText("Reviewer")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Create Agent" })).toBeNull();
   });
@@ -452,8 +476,8 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/general`);
     const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
     render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Agent settings" }));
     fireEvent.click(await screen.findByRole("button", { name: "Suspend Agent" }));
-    expect(await screen.findByRole("button", { name: "Reactivate Agent" })).toBeTruthy();
     await waitFor(() =>
       expect(
         vi
@@ -463,8 +487,9 @@ describe("OpenTag Web App Shell", () => {
           ),
       ).toHaveLength(2),
     );
-    expect(screen.getByText("Lifecycle").parentElement?.querySelector("dd")?.textContent).toBe("Suspended");
-    const deleteButton = screen.getByRole("button", { name: "Delete Agent permanently" });
+    expect(await screen.findByText("Agent is suspended")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Reactivate Agent" })).toBeTruthy();
+    const deleteButton = await screen.findByRole("button", { name: "Delete Agent permanently" });
     fireEvent.click(deleteButton);
     expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
     fireEvent.click(deleteButton);
@@ -599,6 +624,34 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() => expect(link.value).toBe(`https://opentag.example.com/invites/${"B".repeat(43)}`));
     expect(confirm).toHaveBeenCalledOnce();
     confirm.mockRestore();
+  });
+
+  it("opens invitation-link management directly from the Team picker", async () => {
+    installApi("admin", { invitationExists: true });
+    render(<App />);
+    const teamTrigger = await screen.findByRole("button", { name: "Example" });
+    fireEvent.click(teamTrigger);
+    const teamPicker = screen.getByRole("dialog", { name: "Switch Team" });
+    fireEvent.click(within(teamPicker).getByRole("button", { name: "Invite people" }));
+
+    const invitationDialog = await screen.findByRole("dialog", { name: "Invite people" });
+    expect(screen.queryByRole("dialog", { name: "Switch Team" })).toBeNull();
+    expect((within(invitationDialog).getByLabelText("Invitation link") as HTMLInputElement).value).toBe(
+      `https://opentag.example.com/invites/${"A".repeat(43)}`,
+    );
+    const closeButton = within(invitationDialog).getByRole("button", { name: "Close invitation dialog" });
+    expect(document.activeElement).toBe(closeButton);
+    fireEvent.keyDown(closeButton, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Invite people" })).toBeNull();
+    expect(document.activeElement).toBe(teamTrigger);
+  });
+
+  it("does not expose the Team-picker invitation shortcut to regular members", async () => {
+    installApi("member");
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Example" }));
+    const teamPicker = screen.getByRole("dialog", { name: "Switch Team" });
+    expect(within(teamPicker).queryByRole("button", { name: "Invite people" })).toBeNull();
   });
 
   it("keeps invitation-link management hidden from regular members", async () => {

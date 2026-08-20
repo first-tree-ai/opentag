@@ -154,6 +154,10 @@ export async function startServer(): Promise<void> {
     });
     const agentService = new AgentService(database, {
       membershipService: teamService,
+      runtimeReady: (_agentId, computerId) => {
+        const currentInstanceId = registry.currentInstanceId(computerId);
+        return Boolean(currentInstanceId && registry.supports(computerId, currentInstanceId, "imMessageTool"));
+      },
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
       stopSessions: (targets) =>
         stopAgentSessions(database, targets, {

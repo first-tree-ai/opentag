@@ -306,6 +306,7 @@ function AppShell() {
   const navigate = useNavigate();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [openMenu, setOpenMenu] = useState<"team" | "account">();
+  const [invitationOpen, setInvitationOpen] = useState(false);
   const [teamQuery, setTeamQuery] = useState("");
   const [loggingOut, setLoggingOut] = useState(false);
   const [accountError, setAccountError] = useState<string>();
@@ -458,17 +459,33 @@ function AppShell() {
                   })}
                   {filteredMemberships.length === 0 ? <span className="team-menu-empty">No matching Teams</span> : null}
                 </div>
-                <Link
-                  className="team-menu-action"
-                  to="/teams/new"
-                  onClick={() => {
-                    setOpenMenu(undefined);
-                    setNavigationOpen(false);
-                  }}
-                >
-                  <span aria-hidden="true">＋</span>
-                  Create Team
-                </Link>
+                <div className="team-menu-actions">
+                  {membership.role === "admin" ? (
+                    <button
+                      className="team-menu-action"
+                      type="button"
+                      onClick={() => {
+                        setOpenMenu(undefined);
+                        setNavigationOpen(false);
+                        setInvitationOpen(true);
+                      }}
+                    >
+                      <span aria-hidden="true">↗</span>
+                      Invite people
+                    </button>
+                  ) : null}
+                  <Link
+                    className="team-menu-action"
+                    to="/teams/new"
+                    onClick={() => {
+                      setOpenMenu(undefined);
+                      setNavigationOpen(false);
+                    }}
+                  >
+                    <span aria-hidden="true">＋</span>
+                    Create Team
+                  </Link>
+                </div>
               </section>
             ) : null}
           </div>
@@ -501,7 +518,6 @@ function AppShell() {
               </span>
               <span className="account-copy">
                 <strong>{me.user.displayName}</strong>
-                <small>{me.user.email}</small>
               </span>
               <span className="account-menu-dots" aria-hidden="true">
                 ⋮
@@ -551,6 +567,14 @@ function AppShell() {
           <Outlet />
         </main>
       </div>
+      {invitationOpen ? (
+        <InvitationDialog
+          returnFocusRef={teamTriggerRef}
+          teamDisplayName={membership.teamDisplayName}
+          teamId={membership.teamId}
+          onClose={() => setInvitationOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -561,7 +585,7 @@ function AgentsPage() {
   return (
     <Page
       title="Agents"
-      description="Configure and monitor your team's long-lived Agent identities."
+      description="Shared agents your team can use in Feishu or Slack."
       action={
         membership.role === "admin" ? (
           <Link className="button" to="/agents/new">
@@ -584,18 +608,30 @@ function AgentsContent({ agents }: { agents: AgentSummary[] }) {
 }
 
 function AgentList({ agents }: { agents: AgentSummary[] }) {
+  const readyCount = agents.filter((agent) => agent.availability.state === "ready").length;
+  const attentionCount = agents.length - readyCount;
   return (
-    <section className="agent-list-section" aria-labelledby="agent-list-title">
-      <div className="list-heading">
-        <h2 id="agent-list-title">Team Agents</h2>
-        <span>{agents.length}</span>
+    <section className="agent-list-section" aria-label="Team Agents">
+      <div className="agent-summary-strip">
+        <span>
+          <strong>{agents.length}</strong> Agents
+        </span>
+        <span>
+          <i className="availability-dot ready" aria-hidden="true" />
+          <strong>{readyCount}</strong> Ready
+        </span>
+        <span>
+          <i className="availability-dot action-required" aria-hidden="true" />
+          <strong>{attentionCount}</strong> need attention
+        </span>
       </div>
       <div className="agent-table">
         <div className="agent-table-header" aria-hidden="true">
           <span>Agent</span>
+          <span>Availability</span>
+          <span>Channel</span>
           <span>Runtime</span>
-          <span>IM</span>
-          <span>Computer</span>
+          <span />
         </div>
         <div className="agent-table-body">
           {agents.map((agent) => (
@@ -608,31 +644,50 @@ function AgentList({ agents }: { agents: AgentSummary[] }) {
 }
 
 function AgentRow({ agent }: { agent: AgentSummary }) {
+  const channelProvider = agent.availability.dependencies.im.provider;
+  const action = availabilityAction(agent);
   return (
-    <Link className="agent-row" to={`/agents/${agent.id}/general`}>
+    <div className="agent-row">
+      <Link aria-label={`Open ${agent.displayName}`} className="agent-row-link" to={`/agents/${agent.id}/general`} />
       <span className="agent-identity">
         <span className="agent-avatar" aria-hidden="true">
           {initials(agent.displayName)}
         </span>
         <span>
           <strong>{agent.displayName}</strong>
-          <small>{agent.name}</small>
-          <span className={`status-chip ${agent.status}`}>{titleCase(agent.status)}</span>
+          <small>@{agent.name}</small>
         </span>
+      </span>
+      <span className="cell-stack availability-cell" data-label="Availability">
+        <strong>
+          <i className={`availability-dot ${availabilityTone(agent.availability.state)}`} aria-hidden="true" />
+          {availabilityStateLabel(agent.availability.state)}
+        </strong>
+        <small>{availabilityReasonLabel(agent.availability.reason)}</small>
+        <small title={agent.availability.lastConfirmedAt ?? undefined}>
+          {lastConfirmedLabel(agent.availability.lastConfirmedAt)}
+        </small>
+      </span>
+      <span className="cell-stack" data-label="Channel">
+        <strong>{channelProvider ? titleCase(channelProvider) : "Not connected"}</strong>
+        <small>{channelProvider ? receiveModeLabel(agent.receiveMode) : "Connect Feishu or Slack"}</small>
       </span>
       <span className="cell-stack" data-label="Runtime">
         <strong>{providerLabel(agent.runtimeProvider)}</strong>
-        <small>Provider</small>
+        <small>
+          {agent.computer.displayName} · {titleCase(agent.computer.platform)}
+        </small>
       </span>
-      <span className="cell-stack" data-label="IM">
-        <strong>{receiveModeLabel(agent.receiveMode)}</strong>
-        <small>Receive mode</small>
-      </span>
-      <span className="cell-stack" data-label="Computer">
-        <strong>{agent.computer.displayName}</strong>
-        <small>{titleCase(agent.computer.platform)}</small>
-      </span>
-    </Link>
+      {action.prominent ? (
+        <Link className="agent-row-action prominent" to={action.to}>
+          {action.label}
+        </Link>
+      ) : (
+        <span className="agent-row-action" aria-hidden="true">
+          ›
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -731,7 +786,7 @@ function AgentDetailPage() {
         <section className="object-page">
           <header className="object-header">
             <Link className="breadcrumb" to="/agents">
-              Agents
+              ← Agents
             </Link>
             <div className="object-title-row">
               <div className="object-identity">
@@ -740,13 +795,10 @@ function AgentDetailPage() {
                 </span>
                 <div>
                   <h1>{agent.displayName}</h1>
-                  <p>
-                    <span className="mono">{agent.name}</span>
-                    <span>{providerLabel(agent.runtimeProvider)}</span>
-                    <span>{agent.computer.displayName}</span>
-                  </p>
+                  <p>@{agent.name}</p>
                 </div>
               </div>
+              <AgentAvailabilityAction agent={agent} />
             </div>
           </header>
           <label className="local-nav-select">
@@ -841,18 +893,117 @@ function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetail; tab: str
 
 function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetail; onAgentChanged: () => void }) {
   return (
-    <>
-      <DefinitionList
-        rows={[
-          ["Display name", agent.displayName],
-          ["Manager", agent.manager.displayName],
-          ["Computer", agent.computer.displayName],
-          ["Lifecycle", titleCase(agent.status)],
-          ["Created", formatDate(agent.createdAt)],
-        ]}
-      />
-      {agent.viewerCapabilities.canManage ? <GeneralAdminForm agent={agent} onAgentChanged={onAgentChanged} /> : null}
-    </>
+    <div className="overview-stack">
+      <section className="overview-section" aria-labelledby="availability-heading">
+        <h3 id="availability-heading">Availability</h3>
+        <div className="dependency-grid">
+          <DependencyCard
+            title="Computer"
+            state={agent.availability.dependencies.computer.state}
+            primary={agent.computer.displayName}
+            secondary={lastConfirmedLabel(agent.availability.dependencies.computer.lastConfirmedAt)}
+          />
+          <DependencyCard
+            title="Runtime"
+            state={agent.availability.dependencies.runtime.state}
+            primary={providerLabel(agent.runtimeProvider)}
+            secondary={
+              agent.availability.dependencies.runtime.state === "ready"
+                ? "Message tools available"
+                : "Runtime capability unavailable"
+            }
+          />
+          <DependencyCard
+            title="IM"
+            state={agent.availability.dependencies.im.state}
+            primary={
+              agent.availability.dependencies.im.provider
+                ? titleCase(agent.availability.dependencies.im.provider)
+                : "Not connected"
+            }
+            secondary={
+              agent.availability.dependencies.im.botDisplayName ??
+              lastConfirmedLabel(agent.availability.dependencies.im.lastConfirmedAt)
+            }
+          />
+        </div>
+      </section>
+      <section className="overview-section" aria-labelledby="identity-access-heading">
+        <div className="overview-section-heading">
+          <h3 id="identity-access-heading">Identity &amp; access</h3>
+          <Link to={`/agents/${agent.id}/access`}>Manage access</Link>
+        </div>
+        <DefinitionList
+          rows={[
+            ["Bot identity", agent.availability.dependencies.im.botDisplayName ?? `@${agent.name}`],
+            ["Manager", agent.manager.displayName],
+            ["Who can use", "Team members"],
+          ]}
+        />
+      </section>
+      {agent.viewerCapabilities.canManage ? <AdminControls agent={agent} onAgentChanged={onAgentChanged} /> : null}
+    </div>
+  );
+}
+
+function AgentAvailabilityAction({ agent }: { agent: AgentDetail }) {
+  const action = availabilityAction(agent);
+  return (
+    <div className={`availability-action ${availabilityTone(agent.availability.state)}`}>
+      <span>
+        <strong>
+          <i className={`availability-dot ${availabilityTone(agent.availability.state)}`} aria-hidden="true" />
+          {availabilityStateLabel(agent.availability.state)}
+        </strong>
+        <small>{availabilityReasonLabel(agent.availability.reason)}</small>
+      </span>
+      {action.prominent ? (
+        <Link className="button secondary compact-button" to={action.to}>
+          {action.label}
+        </Link>
+      ) : null}
+    </div>
+  );
+}
+
+function DependencyCard({
+  title,
+  state,
+  primary,
+  secondary,
+}: {
+  title: string;
+  state: AgentSummary["availability"]["dependencies"]["computer"]["state"];
+  primary: string;
+  secondary: string;
+}) {
+  return (
+    <article className="dependency-card">
+      <span>{title}</span>
+      <strong>
+        <i className={`availability-dot ${availabilityTone(state)}`} aria-hidden="true" />
+        {dependencyStateLabel(state)}
+      </strong>
+      <p>{primary}</p>
+      <small>{secondary}</small>
+    </article>
+  );
+}
+
+function AdminControls({ agent, onAgentChanged }: { agent: AgentDetail; onAgentChanged: () => void }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="admin-controls" id="admin-controls">
+      <button
+        aria-expanded={open}
+        className="admin-controls-trigger"
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+      >
+        {open ? "Close Agent settings" : "Edit Agent settings"}
+      </button>
+      {open ? <GeneralAdminForm agent={agent} onAgentChanged={onAgentChanged} /> : null}
+    </div>
   );
 }
 
@@ -1519,7 +1670,94 @@ function MembersSettings({
   );
 }
 
-function InvitationSettings({ teamId }: { teamId: string }) {
+function InvitationDialog({
+  onClose,
+  returnFocusRef,
+  teamDisplayName,
+  teamId,
+}: {
+  onClose: () => void;
+  returnFocusRef: { current: HTMLButtonElement | null };
+  teamDisplayName: string;
+  teamId: string;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      returnFocusRef.current?.focus();
+    };
+  }, [onClose, returnFocusRef]);
+
+  return (
+    <div className="dialog-layer">
+      <button
+        aria-label="Dismiss invitation dialog"
+        className="dialog-backdrop"
+        tabIndex={-1}
+        type="button"
+        onClick={onClose}
+      />
+      <div
+        aria-describedby="invitation-dialog-description"
+        aria-labelledby="invitation-dialog-title"
+        aria-modal="true"
+        className="dialog-card invitation-dialog"
+        ref={dialogRef}
+        role="dialog"
+      >
+        <header className="dialog-header">
+          <div>
+            <span className="eyebrow dialog-eyebrow">{teamDisplayName}</span>
+            <h2 id="invitation-dialog-title">Invite people</h2>
+          </div>
+          <button
+            aria-label="Close invitation dialog"
+            className="dialog-close"
+            ref={closeButtonRef}
+            type="button"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </header>
+        <p className="dialog-description" id="invitation-dialog-description">
+          Anyone with the active link can join this Team as a member until the link expires.
+        </p>
+        <InvitationSettings presentation="dialog" teamId={teamId} />
+      </div>
+    </div>
+  );
+}
+
+function InvitationSettings({ presentation = "panel", teamId }: { presentation?: "dialog" | "panel"; teamId: string }) {
   const state = useResource(() => browserApi.invitation(teamId), teamId);
   const [current, setCurrent] = useState<Awaited<ReturnType<typeof browserApi.invitation>>>();
   const [busy, setBusy] = useState(false);
@@ -1562,9 +1800,13 @@ function InvitationSettings({ teamId }: { teamId: string }) {
   }
 
   return (
-    <section className="panel">
-      <h2>Invite people</h2>
-      <p>Anyone with the active link can join this Team as a member until the link expires.</p>
+    <section className={presentation === "dialog" ? "invitation-dialog-content" : "panel"}>
+      {presentation === "panel" ? (
+        <>
+          <h2>Invite people</h2>
+          <p>Anyone with the active link can join this Team as a member until the link expires.</p>
+        </>
+      ) : null}
       <AsyncState state={state}>
         {(loaded) => {
           const invitation = current ?? loaded;
@@ -1575,7 +1817,7 @@ function InvitationSettings({ teamId }: { teamId: string }) {
                 <input aria-label="Invitation link" readOnly type="url" value={invitation.inviteUrl} />
               </label>
               <p className="muted">Expires {formatDate(invitation.expiresAt)}.</p>
-              <div className="actions">
+              <div className={presentation === "dialog" ? "actions dialog-actions" : "actions"}>
                 <button type="button" onClick={() => void copyInvitation(invitation.inviteUrl)}>
                   Copy invitation link
                 </button>
@@ -1797,6 +2039,85 @@ function providerLabel(provider: AgentSummary["runtimeProvider"]): string {
 
 function receiveModeLabel(receiveMode: AgentSummary["receiveMode"]): string {
   return receiveMode === "all_message" ? "All messages" : "Mentions only";
+}
+
+function availabilityTone(state: AgentSummary["availability"]["state"] | "not_connected"): string {
+  if (state === "ready") return "ready";
+  if (state === "setting_up") return "setting-up";
+  if (state === "suspended") return "suspended";
+  if (state === "not_connected") return "not-connected";
+  return "action-required";
+}
+
+function availabilityStateLabel(state: AgentSummary["availability"]["state"]): string {
+  const labels = {
+    ready: "Ready",
+    action_required: "Action required",
+    setting_up: "Setting up",
+    not_connected: "Not connected",
+    suspended: "Suspended",
+  } satisfies Record<AgentSummary["availability"]["state"], string>;
+  return labels[state];
+}
+
+function dependencyStateLabel(state: AgentSummary["availability"]["dependencies"]["computer"]["state"]): string {
+  const labels = {
+    ready: "Ready",
+    action_required: "Needs attention",
+    setting_up: "Setting up",
+    not_connected: "Not connected",
+  } satisfies Record<AgentSummary["availability"]["dependencies"]["computer"]["state"], string>;
+  return labels[state];
+}
+
+function availabilityReasonLabel(reason: AgentSummary["availability"]["reason"]): string {
+  if (!reason) return "All dependencies healthy";
+  const labels = {
+    agent_suspended: "Agent is suspended",
+    computer_offline: "Computer is offline",
+    runtime_unavailable: "Runtime message tools unavailable",
+    im_not_connected: "Connect Feishu or Slack",
+    im_provisioning: "IM connection is being prepared",
+    im_reauthorization_required: "IM permissions need updating",
+    im_error: "IM connection needs attention",
+    im_connection_unconfirmed: "Unable to confirm IM connection",
+  } satisfies Record<NonNullable<AgentSummary["availability"]["reason"]>, string>;
+  return labels[reason];
+}
+
+function lastConfirmedLabel(value: string | null): string {
+  if (!value) return "Not yet confirmed";
+  const elapsedSeconds = Math.round((new Date(value).getTime() - Date.now()) / 1000);
+  const absoluteSeconds = Math.abs(elapsedSeconds);
+  const formatter = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+  if (absoluteSeconds < 60) return `Confirmed ${formatter.format(elapsedSeconds, "second")}`;
+  const elapsedMinutes = Math.round(elapsedSeconds / 60);
+  if (Math.abs(elapsedMinutes) < 60) return `Confirmed ${formatter.format(elapsedMinutes, "minute")}`;
+  const elapsedHours = Math.round(elapsedMinutes / 60);
+  if (Math.abs(elapsedHours) < 24) return `Confirmed ${formatter.format(elapsedHours, "hour")}`;
+  return `Confirmed ${formatter.format(Math.round(elapsedHours / 24), "day")}`;
+}
+
+function availabilityAction(agent: AgentSummary): { label: string; to: string; prominent: boolean } {
+  if (agent.availability.state === "ready" || agent.availability.state === "suspended") {
+    return { label: "›", to: `/agents/${agent.id}/general`, prominent: false };
+  }
+  if (agent.availability.reason === "im_reauthorization_required") {
+    return { label: "Reauthorize", to: `/agents/${agent.id}/im`, prominent: true };
+  }
+  if (agent.availability.reason === "im_not_connected") {
+    return { label: "Connect IM", to: `/agents/${agent.id}/im`, prominent: true };
+  }
+  if (agent.availability.reason?.startsWith("im_")) {
+    return { label: "Review IM", to: `/agents/${agent.id}/im`, prominent: true };
+  }
+  if (agent.availability.reason === "computer_offline") {
+    return { label: "Check Computer", to: "/settings/computers", prominent: true };
+  }
+  if (agent.availability.reason === "runtime_unavailable") {
+    return { label: "Check Runtime", to: `/agents/${agent.id}/runtime`, prominent: true };
+  }
+  return { label: "Review", to: `/agents/${agent.id}/general`, prominent: true };
 }
 
 function initials(value: string): string {

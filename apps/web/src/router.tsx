@@ -831,6 +831,28 @@ function nullableText(value: FormDataEntryValue | null): string | null {
   return text || null;
 }
 
+function feishuSetupRecovery(attempt: FeishuSetupAttempt): string | undefined {
+  const messages: Record<string, string> = {
+    FEISHU_APP_ALREADY_BOUND:
+      "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",
+    FEISHU_SCOPE_REAUTH_REQUIRED:
+      "Feishu did not grant every required permission. Retry and approve all requested permissions.",
+    IM_BINDING_SCOPE_REAUTH_REQUIRED:
+      "Feishu did not grant every required permission. Retry and approve all requested permissions.",
+    FEISHU_SETUP_DENIED: "Feishu authorization was declined. Retry and approve the requested permissions.",
+    FEISHU_SETUP_EXPIRED: "This Feishu authorization expired. Retry to scan a new QR code.",
+    FEISHU_SETUP_CANCELED: "Feishu setup was canceled. Retry when you are ready.",
+    FEISHU_SETUP_OWNER_RESTARTED: "The server restarted during Feishu setup. Retry to generate a new QR code.",
+    FEISHU_BINDING_IDENTITY_MISMATCH:
+      "The authorized Feishu Bot identity does not match the current binding. Retry with the current Bot or use Replace.",
+  };
+  if (attempt.errorCode && messages[attempt.errorCode]) return messages[attempt.errorCode];
+  if (attempt.state === "expired") return messages.FEISHU_SETUP_EXPIRED;
+  if (attempt.state === "canceled") return messages.FEISHU_SETUP_CANCELED;
+  if (attempt.state === "failed") return "Feishu setup failed. Retry or contact a Team admin for help.";
+  return undefined;
+}
+
 function ImTab({ agent }: { agent: AgentDetail }) {
   const [reload, setReload] = useState(0);
   const [attempt, setAttempt] = useState<FeishuSetupAttempt>();
@@ -838,7 +860,7 @@ function ImTab({ agent }: { agent: AgentDetail }) {
   const [reauthorizationNeeded, setReauthorizationNeeded] = useState(false);
   const state = useResource(() => browserApi.imBinding(agent.id), `${agent.id}:${reload}`);
   const connect = useCallback(
-    async (intent: "create" | "reauthorize" = "create") => {
+    async (intent: "create" | "reauthorize" | "replace" = "create") => {
       try {
         setError(undefined);
         setAttempt(await browserApi.createFeishuSetupAttempt(agent.id, intent));
@@ -889,7 +911,12 @@ function ImTab({ agent }: { agent: AgentDetail }) {
             <DefinitionList
               rows={[
                 ["Provider", binding.provider],
-                ["Binding state", binding.bindingState],
+                [
+                  "Binding state",
+                  binding.bindingState === "reauthorization_required" && binding.provider === "feishu"
+                    ? "Online · permissions update required"
+                    : binding.bindingState,
+                ],
                 ["Receive mode", binding.receiveMode],
                 ["Last confirmed", binding.lastConfirmedAt ? formatDate(binding.lastConfirmedAt) : "Unable to confirm"],
               ]}
@@ -901,7 +928,7 @@ function ImTab({ agent }: { agent: AgentDetail }) {
             <div className="actions">
               {!binding ? (
                 <button className="button" type="button" onClick={() => void connect()}>
-                  Connect Feishu
+                  Connect existing or new Feishu Bot
                 </button>
               ) : null}
               {(binding?.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
@@ -921,6 +948,11 @@ function ImTab({ agent }: { agent: AgentDetail }) {
               ) : binding ? (
                 <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
                   Use mentions only
+                </button>
+              ) : null}
+              {binding?.provider === "feishu" ? (
+                <button type="button" onClick={() => void connect("replace")}>
+                  Replace with existing or new Feishu Bot
                 </button>
               ) : null}
               {binding ? (
@@ -951,7 +983,17 @@ function ImTab({ agent }: { agent: AgentDetail }) {
             <div className="notice">
               <strong>Feishu setup started</strong>
               <br />
+              {attempt.intent === "reauthorize"
+                ? "Confirm the updated permissions for the current Feishu Bot."
+                : "Choose an existing Feishu Bot or create a new one, then confirm the requested permissions."}
+              <br />
               State: {attempt.state}. Expires {formatDate(attempt.expiresAt)}.
+              {feishuSetupRecovery(attempt) ? (
+                <>
+                  <br />
+                  {feishuSetupRecovery(attempt)}
+                </>
+              ) : null}
               {attempt.qrUrl ? (
                 <>
                   <br />
@@ -964,11 +1006,7 @@ function ImTab({ agent }: { agent: AgentDetail }) {
               {["expired", "failed", "canceled"].includes(attempt.state) ? (
                 <>
                   <br />
-                  <button
-                    className="button"
-                    type="button"
-                    onClick={() => void connect(attempt.intent === "reauthorize" ? "reauthorize" : "create")}
-                  >
+                  <button className="button" type="button" onClick={() => void connect(attempt.intent)}>
                     Retry Feishu setup
                   </button>
                 </>

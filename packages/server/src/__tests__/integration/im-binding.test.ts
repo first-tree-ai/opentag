@@ -8,6 +8,7 @@ import {
   computeRuntimeSnapshotHashes,
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
+  FEISHU_REQUIRED_TENANT_SCOPES,
   type NormalizedInboundImEvent,
   type SessionReconcileRequest,
   type SessionReconcileResult,
@@ -4463,7 +4464,6 @@ describe("IM binding persistence", () => {
         appId: string;
         appSecret: string;
         teamBrand: "feishu";
-        requestedScopes: string[];
       }>();
       let aborted = false;
       const registration: FeishuRegistration = {
@@ -4498,12 +4498,7 @@ describe("IM binding persistence", () => {
                 externalBotId: "ou_bot",
               };
             },
-            listGrantedTeamScopes: async () => [
-              "im:message:send_as_bot",
-              "im:message.p2p_msg:readonly",
-              "im:message.group_at_msg:readonly",
-              "im:message.group_msg",
-            ],
+            listGrantedTeamScopes: async () => [...FEISHU_REQUIRED_TENANT_SCOPES],
           }) as unknown as FeishuAdapter,
         maintenanceMs: 1_000_000,
       });
@@ -4525,12 +4520,6 @@ describe("IM binding persistence", () => {
         appId: "cli_1",
         appSecret: "secret",
         teamBrand: "feishu",
-        requestedScopes: [
-          "im:message:send_as_bot",
-          "im:message.p2p_msg:readonly",
-          "im:message.group_at_msg:readonly",
-          "im:message.group_msg",
-        ],
       });
       await expect.poll(async () => (await setup.get(value.bootstrap.userId, first.id)).state).toBe("succeeded");
       expect(validations).toBe(1);
@@ -4551,7 +4540,6 @@ describe("IM binding persistence", () => {
       appId: string;
       appSecret: string;
       teamBrand: "feishu";
-      requestedScopes: string[];
     }>();
     const instanceId = crypto.randomUUID();
     const setup = new FeishuSetupService({
@@ -4630,7 +4618,6 @@ describe("IM binding persistence", () => {
       appId: string;
       appSecret: string;
       teamBrand: "feishu";
-      requestedScopes: string[];
     }>();
     const diagnostics: string[] = [];
     const setup = new FeishuSetupService({
@@ -4660,7 +4647,6 @@ describe("IM binding persistence", () => {
         appId: "cli_failure",
         appSecret: "secret",
         teamBrand: "feishu",
-        requestedScopes: ["im:message:send_as_bot"],
       });
       await expect.poll(() => diagnostics).toContain("FEISHU_SETUP_FAILURE_STATE_WRITE_FAILED");
       await new Promise<void>((resolve) => setImmediate(resolve));
@@ -4686,12 +4672,7 @@ describe("IM binding persistence", () => {
         botOpenId: "ou_diagnostics",
         teamBrand: "feishu",
         appSecret: "secret-diagnostics",
-        grantedScopes: [
-          "im:message:send_as_bot",
-          "im:message.p2p_msg:readonly",
-          "im:message.group_at_msg:readonly",
-          "im:message.group_msg",
-        ],
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
       });
       const ownerInstanceId = crypto.randomUUID();
       await value.database
@@ -4741,6 +4722,250 @@ describe("IM binding persistence", () => {
     }
   });
 
+  it("keeps a legacy Feishu binding online until a complete same-App grant is atomically activated", async () => {
+    const value = await unboundFixture();
+    try {
+      const now = new Date();
+      const legacyScopes = ["im:message:send_as_bot", "im:message.group_msg"];
+      const encryptedCredential = value.cipher.encrypt(
+        JSON.stringify({ appId: "cli_legacy", appSecret: "legacy-secret", grantedScopes: legacyScopes }),
+      );
+      const [legacy] = await value.database
+        .insert(imBindings)
+        .values({
+          agentId: value.agent.id,
+          provider: "feishu",
+          status: "active",
+          externalAppId: "cli_legacy",
+          externalTeamId: "team_legacy",
+          externalBotId: "ou_legacy",
+          externalTeamBrand: "feishu",
+          credentialSchemaVersion: 1,
+          credentialGeneration: 1,
+          encryptedCredential,
+          grantedCapabilities: legacyScopes,
+          connectionOwnerInstanceId: crypto.randomUUID(),
+          connectionFencingEpoch: 1,
+          connectionLeaseExpiresAt: new Date(now.getTime() + 60_000),
+          observedConnectedAt: now,
+          observedAt: now,
+          activatedAt: now,
+        })
+        .returning({ id: imBindings.id });
+      if (!legacy) throw new Error("Legacy Feishu fixture was not created");
+      const [session] = await value.database
+        .insert(sessions)
+        .values({ imBindingId: legacy.id, channelId: "chat_legacy", conversationKind: "channel", kind: "channel" })
+        .returning({ id: sessions.id });
+      if (!session) throw new Error("Legacy Session fixture was not created");
+
+      await expect(
+        value.imBindingService.activateFeishu({
+          agentId: value.agent.id,
+          appId: "cli_legacy",
+          teamId: "team_legacy",
+          botOpenId: "ou_legacy",
+          teamBrand: "feishu",
+          appSecret: "incomplete-secret",
+          grantedScopes: legacyScopes,
+        }),
+      ).rejects.toMatchObject({ code: "IM_BINDING_SCOPE_REAUTH_REQUIRED" });
+
+      await expect(value.imBindingService.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+        bindingState: "reauthorization_required",
+      });
+      await expect(
+        value.imBindingService.getConfigForAgent(value.bootstrap.userId, value.agent.id),
+      ).resolves.toMatchObject({
+        reauthorizationRequired: true,
+        lastErrorCode: "FEISHU_SCOPE_REAUTH_REQUIRED",
+      });
+      await expect(value.imBindingService.diagnostics(value.bootstrap.userId, legacy.id)).resolves.toMatchObject({
+        ready: false,
+        reauthorizationRequired: true,
+        connection: { state: "connected" },
+        lastErrorCode: "FEISHU_SCOPE_REAUTH_REQUIRED",
+      });
+      await expect(value.imBindingService.listFeishuConnectionIds(undefined)).resolves.toContain(legacy.id);
+      await expect(value.imBindingService.getFeishuConnectionMaterial(legacy.id)).resolves.toMatchObject({
+        appSecret: "legacy-secret",
+        generation: 1,
+      });
+      const [unchanged] = await value.database.select().from(imBindings).where(eq(imBindings.id, legacy.id));
+      expect(unchanged).toMatchObject({ status: "active", credentialGeneration: 1, encryptedCredential });
+
+      const activatedId = await value.imBindingService.activateFeishu({
+        agentId: value.agent.id,
+        appId: "cli_legacy",
+        teamId: "team_legacy",
+        botOpenId: "ou_legacy",
+        teamBrand: "feishu",
+        appSecret: "updated-secret",
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+      });
+      expect(activatedId).toBe(legacy.id);
+      await expect(
+        value.imBindingService.getConfigForAgent(value.bootstrap.userId, value.agent.id),
+      ).resolves.toMatchObject({
+        bindingState: "active",
+        credentialGeneration: 2,
+        reauthorizationRequired: false,
+      });
+      const [preservedSession] = await value.database.select().from(sessions).where(eq(sessions.id, session.id));
+      expect(preservedSession?.endedAt).toBeNull();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("rejects same-App Feishu Bot or Team identity drift without replacing the binding", async () => {
+    const value = await unboundFixture();
+    try {
+      const scopes = [...FEISHU_REQUIRED_TENANT_SCOPES];
+      const imBindingId = await value.imBindingService.activateFeishu({
+        agentId: value.agent.id,
+        appId: "cli_identity",
+        teamId: "team_identity",
+        botOpenId: "ou_identity",
+        teamBrand: "feishu",
+        appSecret: "original-secret",
+        grantedScopes: scopes,
+      });
+      const [session] = await value.database
+        .insert(sessions)
+        .values({ imBindingId, channelId: "chat_identity", conversationKind: "channel", kind: "channel" })
+        .returning({ id: sessions.id });
+      if (!session) throw new Error("Identity Session fixture was not created");
+      const [before] = await value.database.select().from(imBindings).where(eq(imBindings.id, imBindingId));
+      if (!before) throw new Error("Identity binding fixture was not created");
+
+      for (const identity of [
+        { teamId: "team_identity", botOpenId: "ou_other" },
+        { teamId: "team_other", botOpenId: "ou_identity" },
+      ]) {
+        await expect(
+          value.imBindingService.activateFeishu({
+            agentId: value.agent.id,
+            appId: "cli_identity",
+            ...identity,
+            teamBrand: "feishu",
+            appSecret: "candidate-secret",
+            grantedScopes: scopes,
+          }),
+        ).rejects.toMatchObject({
+          code: "FEISHU_BINDING_IDENTITY_MISMATCH",
+          statusCode: 409,
+        });
+      }
+
+      const currentRows = await value.database.select().from(imBindings).where(eq(imBindings.agentId, value.agent.id));
+      expect(currentRows).toHaveLength(1);
+      expect(currentRows[0]).toMatchObject({
+        id: imBindingId,
+        status: "active",
+        externalAppId: before.externalAppId,
+        externalTeamId: before.externalTeamId,
+        externalBotId: before.externalBotId,
+        credentialGeneration: before.credentialGeneration,
+        encryptedCredential: before.encryptedCredential,
+      });
+      const [preservedSession] = await value.database.select().from(sessions).where(eq(sessions.id, session.id));
+      expect(preservedSession?.endedAt).toBeNull();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("rejects a Feishu App already owned by another Agent with a stable domain error", async () => {
+    const value = await unboundFixture();
+    try {
+      const secondAgent = await new AgentService(value.database).createForTeam(
+        value.bootstrap.userId,
+        value.bootstrap.teamId,
+        {
+          name: "second-agent",
+          displayName: "Second Agent",
+          runtimeProvider: "codex",
+          computerId: value.computer.id,
+        },
+      );
+      const firstId = await value.imBindingService.activateFeishu({
+        agentId: value.agent.id,
+        appId: "cli_shared",
+        teamId: "team_shared",
+        botOpenId: "ou_shared",
+        teamBrand: "feishu",
+        appSecret: "first-secret",
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+      });
+      await expect(
+        value.imBindingService.activateFeishu({
+          agentId: secondAgent.id,
+          appId: "cli_shared",
+          teamId: "team_shared",
+          botOpenId: "ou_shared",
+          teamBrand: "feishu",
+          appSecret: "second-secret",
+          grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+        }),
+      ).rejects.toMatchObject({
+        code: "FEISHU_APP_ALREADY_BOUND",
+        statusCode: 409,
+        message: "The selected Feishu App is already bound to another Agent",
+      });
+      expect(await value.imBindingService.getForAgent(value.bootstrap.userId, secondAgent.id)).toBeUndefined();
+
+      const completion = deferred<{ appId: string; appSecret: string; teamBrand: "feishu" }>();
+      const instanceId = crypto.randomUUID();
+      const manager = new FeishuConnectionManager({
+        database: value.database,
+        inbox: new ImMessageInbox(value.database),
+        instanceId,
+        imBindings: value.imBindingService,
+        createAdapter: () =>
+          ({
+            channel: { on: () => () => undefined, disconnect: async () => undefined },
+            validateBinding: async () => ({
+              externalAppId: "cli_shared",
+              externalTeamId: "team_shared",
+              externalBotId: "ou_shared",
+            }),
+            listGrantedTeamScopes: async () => [...FEISHU_REQUIRED_TENANT_SCOPES],
+          }) as unknown as FeishuAdapter,
+        maintenanceMs: 1_000_000,
+      });
+      const setup = new FeishuSetupService({
+        database: value.database,
+        cipher: value.cipher,
+        instanceId,
+        imBindings: value.imBindingService,
+        registrations: {
+          start: () => ({
+            qrReady: Promise.resolve({
+              url: "https://open.feishu.cn/qr/already-bound",
+              expiresAt: new Date(Date.now() + 60_000),
+            }),
+            result: completion.promise,
+            abort: () => undefined,
+          }),
+        },
+        activation: manager,
+      });
+      const attempt = await setup.createOrReuse(value.bootstrap.userId, secondAgent.id, "create");
+      completion.resolve({ appId: "cli_shared", appSecret: "candidate-secret", teamBrand: "feishu" });
+      await expect
+        .poll(() => setup.get(value.bootstrap.userId, attempt.id))
+        .toMatchObject({ state: "failed", errorCode: "FEISHU_APP_ALREADY_BOUND" });
+      await manager.stop();
+      await expect(value.imBindingService.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+        id: firstId,
+        bindingState: "active",
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("builds Feishu outbound and resource HTTP capability on a replica that does not own the Channel lease", async () => {
     const value = await unboundFixture();
     try {
@@ -4751,12 +4976,7 @@ describe("IM binding persistence", () => {
         botOpenId: "ou_http",
         teamBrand: "feishu",
         appSecret: "secret-http",
-        grantedScopes: [
-          "im:message:send_as_bot",
-          "im:message.p2p_msg:readonly",
-          "im:message.group_at_msg:readonly",
-          "im:message.group_msg",
-        ],
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
       });
       await value.database
         .update(imBindings)
@@ -4808,12 +5028,7 @@ describe("IM binding persistence", () => {
   it("keeps a replacement Feishu ImBinding Team unset until its own verified event arrives", async () => {
     const value = await unboundFixture();
     try {
-      const scopes = [
-        "im:message:send_as_bot",
-        "im:message.p2p_msg:readonly",
-        "im:message.group_at_msg:readonly",
-        "im:message.group_msg",
-      ];
+      const scopes = [...FEISHU_REQUIRED_TENANT_SCOPES];
       const oldImBindingId = await value.imBindingService.activateFeishu({
         agentId: value.agent.id,
         appId: "cli_old",
@@ -4892,7 +5107,6 @@ describe("IM binding persistence", () => {
           appId: "cli_missing_scope",
           appSecret: "secret",
           teamBrand: "feishu",
-          requestedScopes: ["im:message:send_as_bot", "im:message.group_msg"],
         }),
       ).rejects.toThrow("FEISHU_SCOPE_REAUTH_REQUIRED");
       await expect(value.imBindingService.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
@@ -4909,12 +5123,7 @@ describe("IM binding persistence", () => {
     const instanceId = crypto.randomUUID();
     const agentLocked = deferred<void>();
     const releaseActivation = deferred<void>();
-    const grantedScopes = [
-      "im:message:send_as_bot",
-      "im:message.p2p_msg:readonly",
-      "im:message.group_at_msg:readonly",
-      "im:message.group_msg",
-    ];
+    const grantedScopes = [...FEISHU_REQUIRED_TENANT_SCOPES];
     const manager = new FeishuConnectionManager({
       database: value.database,
       inbox: new ImMessageInbox(value.database),
@@ -4951,7 +5160,6 @@ describe("IM binding persistence", () => {
         appId: "cli_activation_race",
         appSecret: "secret",
         teamBrand: "feishu",
-        requestedScopes: grantedScopes,
       });
       await agentLocked.promise;
 
@@ -5021,7 +5229,6 @@ describe("IM binding persistence", () => {
       appId: string;
       appSecret: string;
       teamBrand: "feishu";
-      requestedScopes: string[];
     }>();
     const start = vi.fn(() => ({
       qrReady: Promise.resolve({ url: "https://open.feishu.cn/qr/cancel", expiresAt: new Date(Date.now() + 60_000) }),
@@ -5048,7 +5255,6 @@ describe("IM binding persistence", () => {
         appId: "cli_canceled",
         appSecret: "secret",
         teamBrand: "feishu",
-        requestedScopes: [],
       });
       await new Promise((resolve) => setTimeout(resolve, 25));
       expect(activateAtomicAttempt).not.toHaveBeenCalled();
@@ -5079,12 +5285,7 @@ describe("IM binding persistence", () => {
           externalTeamId: input.teamId ?? input.appId,
           externalBotId: "ou_bot",
         }),
-        listGrantedTeamScopes: async () => [
-          "im:message:send_as_bot",
-          "im:message.p2p_msg:readonly",
-          "im:message.group_at_msg:readonly",
-          "im:message.group_msg",
-        ],
+        listGrantedTeamScopes: async () => [...FEISHU_REQUIRED_TENANT_SCOPES],
         normalizeInbound: () => [],
         send: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
         react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
@@ -5116,12 +5317,6 @@ describe("IM binding persistence", () => {
         appId: "cli_lease",
         appSecret: "secret",
         teamBrand: "feishu",
-        requestedScopes: [
-          "im:message:send_as_bot",
-          "im:message.p2p_msg:readonly",
-          "im:message.group_at_msg:readonly",
-          "im:message.group_msg",
-        ],
       });
       const [initial] = await value.database.select().from(imBindings);
       expect(initial).toMatchObject({ connectionOwnerInstanceId: firstInstanceId, connectionFencingEpoch: 1 });
@@ -5140,12 +5335,6 @@ describe("IM binding persistence", () => {
         appId: "cli_lease",
         appSecret: "secret-rotated",
         teamBrand: "feishu",
-        requestedScopes: [
-          "im:message:send_as_bot",
-          "im:message.p2p_msg:readonly",
-          "im:message.group_at_msg:readonly",
-          "im:message.group_msg",
-        ],
       });
       const [claimed] = await value.database.select().from(imBindings);
       expect(claimed).toMatchObject({ connectionOwnerInstanceId: secondInstanceId, connectionFencingEpoch: 2 });
@@ -5168,12 +5357,7 @@ describe("IM binding persistence", () => {
         teamId: null,
         botOpenId: "ou_bot",
         teamBrand: "feishu",
-        grantedScopes: [
-          "im:message:send_as_bot",
-          "im:message.p2p_msg:readonly",
-          "im:message.group_at_msg:readonly",
-          "im:message.group_msg",
-        ],
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
       });
       const staleHolder = crypto.randomUUID();
       const currentHolder = crypto.randomUUID();

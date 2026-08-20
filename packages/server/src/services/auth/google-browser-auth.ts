@@ -24,6 +24,11 @@ export interface GoogleAuthCallbackInput {
   state: string;
 }
 
+export interface GoogleAuthCallbackOptions {
+  audit?: InvitationAuditContext;
+  onVerified(): void;
+}
+
 export class GoogleBrowserAuthService {
   readonly #database: DatabaseClient;
   readonly #flow: OAuthFlowService;
@@ -66,9 +71,10 @@ export class GoogleBrowserAuthService {
   async callback(
     input: GoogleAuthCallbackInput,
     context: string,
-    audit: InvitationAuditContext = {},
+    options: GoogleAuthCallbackOptions,
   ): Promise<GoogleAuthCallbackResult> {
     const flow = await this.#flow.verify(input.state, context);
+    options.onVerified();
     if (input.error) {
       throw new AuthServiceError(
         "AUTH_OAUTH_FAILED",
@@ -91,7 +97,7 @@ export class GoogleBrowserAuthService {
         transaction,
         resolvedUserId,
         invitationTokenFromNext(flow.next),
-        audit,
+        options.audit ?? {},
       );
       return resolvedUserId;
     });

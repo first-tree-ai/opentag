@@ -83,15 +83,32 @@ describe("GoogleBrowserAuthService", () => {
     ["temporarily_unavailable", "Google sign-in failed"],
   ])("verifies state before mapping provider error %s", async (error, message) => {
     const { exchangeCode, service, verify } = createService();
+    const onVerified = vi.fn();
 
-    await expect(service.callback({ error, state: "state" }, "signed-context")).rejects.toMatchObject({
+    await expect(service.callback({ error, state: "state" }, "signed-context", { onVerified })).rejects.toMatchObject({
       code: "AUTH_OAUTH_FAILED",
       category: "credential",
       message,
       statusCode: 401,
     });
     expect(verify).toHaveBeenCalledWith("state", "signed-context");
+    expect(onVerified).toHaveBeenCalledOnce();
     expect(exchangeCode).not.toHaveBeenCalled();
+  });
+
+  it("runs the verified lifecycle before exchanging an authorization code", async () => {
+    const { exchangeCode, service } = createService();
+    const onVerified = vi.fn();
+    const exchangeFailure = new Error("provider exchange failed");
+    exchangeCode.mockImplementationOnce(async () => {
+      expect(onVerified).toHaveBeenCalledOnce();
+      throw exchangeFailure;
+    });
+
+    await expect(service.callback({ code: "code", state: "state" }, "signed-context", { onVerified })).rejects.toBe(
+      exchangeFailure,
+    );
+    expect(exchangeCode).toHaveBeenCalledOnce();
   });
 
   it("preserves invalid or expired flow errors before interpreting the provider result", async () => {
@@ -102,10 +119,12 @@ describe("GoogleBrowserAuthService", () => {
       401,
     );
     const { exchangeCode, service } = createService(vi.fn().mockRejectedValue(flowError));
+    const onVerified = vi.fn();
 
-    await expect(service.callback({ error: "access_denied", state: "invalid-state" }, "expired-context")).rejects.toBe(
-      flowError,
-    );
+    await expect(
+      service.callback({ error: "access_denied", state: "invalid-state" }, "expired-context", { onVerified }),
+    ).rejects.toBe(flowError);
+    expect(onVerified).not.toHaveBeenCalled();
     expect(exchangeCode).not.toHaveBeenCalled();
   });
 });

@@ -36,10 +36,25 @@ function google() {
     start: vi
       .fn()
       .mockResolvedValue({ authorizationUrl: "https://accounts.google.com/auth", context: "signed-context" }),
-    callback: vi.fn().mockResolvedValue({
-      next: "/admin",
-      tokens: { accessToken: "access-secret", refreshToken: "refresh-secret", tokenType: "Bearer", expiresIn: 900 },
+    callback: vi.fn().mockImplementation(async (_input: unknown, _context: string, options: { onVerified(): void }) => {
+      options.onVerified();
+      return {
+        next: "/admin",
+        tokens: {
+          accessToken: "access-secret",
+          refreshToken: "refresh-secret",
+          tokenType: "Bearer" as const,
+          expiresIn: 900,
+        },
+      };
     }),
+  };
+}
+
+function failAfterVerification(error: Error) {
+  return async (_input: unknown, _context: string, options: { onVerified(): void }) => {
+    options.onVerified();
+    throw error;
   };
 }
 
@@ -162,7 +177,7 @@ describe("browser authentication routes", () => {
     expect(googleService?.callback).toHaveBeenCalledWith(
       { code: "code", state: "state" },
       "signed-context",
-      expect.any(Object),
+      expect.objectContaining({ audit: expect.any(Object), onVerified: expect.any(Function) }),
     );
   });
 
@@ -179,7 +194,7 @@ describe("browser authentication routes", () => {
     expect(googleService?.callback).toHaveBeenCalledWith(
       { code: "code", state: "state" },
       "signed-context",
-      expect.any(Object),
+      expect.objectContaining({ audit: expect.any(Object), onVerified: expect.any(Function) }),
     );
   });
 
@@ -203,8 +218,10 @@ describe("browser authentication routes", () => {
 
   it("returns a stable cancellation error and clears the OAuth context without reflecting provider text", async () => {
     const googleService = google();
-    googleService.callback.mockRejectedValueOnce(
-      new AuthServiceError("AUTH_OAUTH_FAILED", "credential", "Google sign-in was cancelled", 401),
+    googleService.callback.mockImplementationOnce(
+      failAfterVerification(
+        new AuthServiceError("AUTH_OAUTH_FAILED", "credential", "Google sign-in was cancelled", 401),
+      ),
     );
     const { app } = createBrowserApp({ googleService });
     const response = await app.inject({
@@ -224,14 +241,16 @@ describe("browser authentication routes", () => {
     expect(googleService.callback).toHaveBeenCalledWith(
       { error: "access_denied", state: "state" },
       "signed-context",
-      expect.any(Object),
+      expect.objectContaining({ audit: expect.any(Object), onVerified: expect.any(Function) }),
     );
   });
 
   it("clears the OAuth context when Google code exchange fails", async () => {
     const googleService = google();
-    googleService.callback.mockRejectedValueOnce(
-      new AuthServiceError("AUTH_OAUTH_FAILED", "credential", "Google sign-in could not be verified", 401),
+    googleService.callback.mockImplementationOnce(
+      failAfterVerification(
+        new AuthServiceError("AUTH_OAUTH_FAILED", "credential", "Google sign-in could not be verified", 401),
+      ),
     );
     const { app } = createBrowserApp({ googleService });
     const response = await app.inject({
@@ -245,6 +264,29 @@ describe("browser authentication routes", () => {
     const cookies = String(response.headers["set-cookie"]);
     expect(cookies).toContain("opentag_oauth_context=; Path=/api/v1/auth/google/callback");
     expect(cookies).toContain("Max-Age=0");
+  });
+
+  it("does not clear the OAuth context when state verification fails", async () => {
+    const googleService = google();
+    googleService.callback.mockRejectedValueOnce(
+      new AuthServiceError("AUTH_OAUTH_FAILED", "credential", "The browser sign-in flow is invalid or expired", 401),
+    );
+    const { app } = createBrowserApp({ googleService });
+    const response = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.authGoogleCallback}?code=fake-code&state=mismatched-state`,
+      headers: { cookie: "opentag_oauth_context=signed-context" },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: "AUTH_OAUTH_FAILED",
+        category: "credential",
+        message: "The browser sign-in flow is invalid or expired",
+      },
+    });
+    expect(response.headers["set-cookie"]).toBeUndefined();
   });
 
   it("requires same-origin double-submit CSRF for refresh while bearer API auth remains unaffected", async () => {

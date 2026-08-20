@@ -17,6 +17,7 @@ export { DevBrowserAuthService, type DevBrowserTokenIssuer } from "./dev-browser
 export { AuthServiceError } from "./errors.js";
 export {
   type GoogleAuthCallbackInput,
+  type GoogleAuthCallbackOptions,
   type GoogleAuthCallbackResult,
   type GoogleAuthStartResult,
   GoogleBrowserAuthService,

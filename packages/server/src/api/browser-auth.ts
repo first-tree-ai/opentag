@@ -155,7 +155,6 @@ export function registerBrowserAuthRoutes(
         401,
       );
     }
-    clearOAuthContextCookie(reply, options.secureCookies);
     const result = await options.google.callback(
       {
         ...(callback.code !== undefined ? { code: callback.code } : {}),
@@ -163,7 +162,10 @@ export function registerBrowserAuthRoutes(
         state: callback.state,
       },
       context,
-      audit(request),
+      {
+        audit: audit(request),
+        onVerified: () => clearOAuthContextCookie(reply, options.secureCookies),
+      },
     );
     setBrowserSessionCookies(reply, result.tokens, {
       refreshTtlSeconds: options.refreshTokenTtlSeconds,

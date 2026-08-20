@@ -293,7 +293,10 @@ jobs:
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs \
             login "$connect_code" --server http://127.0.0.1:18000 --no-start
           test -f "$runtime_home/config/credentials.json"
+          test ! -e "$runtime_home/config/computer.json"
+          test ! -e "$runtime_home/data/computer.json"
           test ! -e "$runtime_home/credentials.json"
+          test ! -e "$runtime_home/computer.json"
           OPENTAG_HOME="$runtime_home" OPENTAG_SERVICE_MODE=1 node apps/cli/dist/cli/index.mjs daemon service-run \
             >"$daemon_log" 2>&1 &
           daemon_pid=$!
@@ -315,7 +318,8 @@ jobs:
           grep -q "already running" "$runtime_home/second.log"
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list | grep -q $'\tonline\t'
           computer_id=$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).computerId" \
-            "$runtime_home/data/computer.json")
+            "$runtime_home/config/computer.json")
+          test ! -e "$runtime_home/data/computer.json"
           test ! -e "$runtime_home/computer.json"
 
           agent_create=$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent create \

@@ -24,7 +24,10 @@ describe("OpenTag Home layout", () => {
       data: join(root, "data"),
       home: root,
       logs: join(root, "logs"),
-      runtimeAgents: join(root, "data", "runtime", "agents"),
+      runtime: join(root, "data", "runtime"),
+      runtimeEffectiveSnapshots: join(root, "data", "runtime", "effective-snapshots"),
+      runtimeSessionBindings: join(root, "data", "runtime", "session-bindings"),
+      runtimeWorkspaceStates: join(root, "data", "runtime", "workspace-states"),
       serviceState: join(root, "state", "service"),
       state: join(root, "state"),
       workspaces: join(root, "data", "workspaces"),
@@ -36,13 +39,24 @@ describe("OpenTag Home layout", () => {
     directories.push(home);
     const paths = agentRuntimePaths(home, "agent-1");
 
-    expect(paths.controlRoot).toBe(join(home, "data", "runtime", "agents"));
-    expect(paths.agentControl).toMatch(new RegExp(`^${escapeRegExp(paths.controlRoot)}/a-[a-f0-9]{40}$`, "u"));
+    expect(paths.runtimeRoot).toBe(join(home, "data", "runtime"));
+    expect(paths.workspaceStatesRoot).toBe(join(home, "data", "runtime", "workspace-states"));
+    expect(paths.sessionBindingsRoot).toBe(join(home, "data", "runtime", "session-bindings"));
+    expect(paths.effectiveSnapshotsRoot).toBe(join(home, "data", "runtime", "effective-snapshots"));
+    expect(paths.workspaceState).toMatch(
+      new RegExp(`^${escapeRegExp(paths.workspaceStatesRoot)}/a-[a-f0-9]{40}\\.json$`, "u"),
+    );
+    expect(paths.sessions).toMatch(new RegExp(`^${escapeRegExp(paths.sessionBindingsRoot)}/a-[a-f0-9]{40}$`, "u"));
+    expect(paths.snapshots).toMatch(new RegExp(`^${escapeRegExp(paths.effectiveSnapshotsRoot)}/a-[a-f0-9]{40}$`, "u"));
     expect(paths.workspaceRoot).toMatch(
       new RegExp(`^${escapeRegExp(join(home, "data", "workspaces"))}/a-[a-f0-9]{40}$`, "u"),
     );
-    expect(sessionBindingPath(home, "agent-1", "session-1")).toContain("/data/runtime/agents/");
-    expect(snapshotPath(home, "agent-1", "snapshot-1")).toContain("/data/runtime/agents/");
+    expect(sessionBindingPath(home, "agent-1", "session-1")).toMatch(
+      /\/data\/runtime\/session-bindings\/a-[a-f0-9]{40}\/s-[a-f0-9]{40}\.json$/u,
+    );
+    expect(snapshotPath(home, "agent-1", "snapshot-1")).toMatch(
+      /\/data\/runtime\/effective-snapshots\/a-[a-f0-9]{40}\/s-[a-f0-9]{40}\.json$/u,
+    );
   });
 });
 

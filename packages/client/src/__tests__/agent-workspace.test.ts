@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import type { EffectiveRuntimeSnapshot, SessionReconcileRequest } from "@opentag/shared";
+import {
+  computeRuntimeSnapshotHashes,
+  type EffectiveRuntimeSnapshot,
+  type SessionReconcileRequest,
+} from "@opentag/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
 import { agentRuntimePaths, deriveRuntimeKey } from "../runtime/runtime-paths.js";
@@ -88,6 +92,18 @@ describe("AgentWorkspaceManager", () => {
     await expect(readdir(fixture.workspace.paths("agent-1").sessions)).resolves.toHaveLength(10);
   });
 
+  it("keeps workspace-state ownership separate from Session binding and snapshot directories", async () => {
+    const fixture = await workspaceFixture();
+    const runtime = snapshot("agent-1", "workspace-1", "session");
+    const paths = fixture.workspace.paths("agent-1");
+
+    await fixture.workspace.prepareAgent(runtime, computeRuntimeSnapshotHashes(runtime));
+
+    await expect(stat(paths.workspaceState)).resolves.toBeDefined();
+    await expect(stat(paths.sessions)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(paths.snapshots)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("C-11 atomically upgrades Agent instructions without deleting live files", async () => {
     const fixture = await workspaceFixture();
     const initialRuntime = snapshot("agent-1", "workspace-1", "session");
@@ -122,6 +138,59 @@ describe("AgentWorkspaceManager", () => {
     const request = reconcileRequest(computerId, "session-1", snapshot("agent-1", "workspace-1", "s"));
 
     await expect(reconciler.reconcile(request)).rejects.toThrow(/real director|workspace/i);
+  });
+
+  it.each(["symlink", "file"] as const)("fails closed on a %s workspace-states root", async (kind) => {
+    const home = await temporaryHome();
+    const external = await temporaryHome();
+    const runtimeRoot = resolve(home, "data", "runtime");
+    const workspaceStatesRoot = resolve(runtimeRoot, "workspace-states");
+    await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
+    if (kind === "symlink") await symlink(external, workspaceStatesRoot, "dir");
+    else await writeFile(workspaceStatesRoot, "not-a-directory", "utf8");
+    const bindingStore = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore });
+    const runtime = snapshot("agent-1", "workspace-1", "session");
+
+    await expect(workspace.prepareAgent(runtime, computeRuntimeSnapshotHashes(runtime))).rejects.toThrow(
+      /real director|directories/i,
+    );
+    expect(await readdir(external)).toEqual([]);
+  });
+
+  it("ignores the legacy runtime/agents workspace state without migrating or deleting it", async () => {
+    const home = await temporaryHome();
+    const legacyPath = resolve(
+      home,
+      "data",
+      "runtime",
+      "agents",
+      deriveRuntimeKey("agent", "agent-1"),
+      "workspace.json",
+    );
+    await mkdir(resolve(legacyPath, ".."), { recursive: true, mode: 0o700 });
+    await writeFile(legacyPath, '{"legacy":true}\n', { mode: 0o600 });
+    const bindingStore = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore });
+    const runtime = snapshot("agent-1", "workspace-1", "session");
+
+    await expect(workspace.prepareAgent(runtime, computeRuntimeSnapshotHashes(runtime))).resolves.toBeUndefined();
+    expect(await readFile(legacyPath, "utf8")).toBe('{"legacy":true}\n');
+    expect(JSON.parse(await readFile(workspace.paths("agent-1").workspaceState, "utf8"))).toMatchObject({
+      agentId: "agent-1",
+      workspaceId: "workspace-1",
+    });
+  });
+
+  it("fails closed when workspace state is lost while the managed Workspace remains non-empty", async () => {
+    const fixture = await workspaceFixture();
+    const runtime = snapshot("agent-1", "workspace-1", "session");
+    const hashes = computeRuntimeSnapshotHashes(runtime);
+    await fixture.workspace.prepareAgent(runtime, hashes);
+    const paths = fixture.workspace.paths("agent-1");
+    await rm(paths.workspaceState);
+
+    await expect(fixture.workspace.prepareAgent(runtime, hashes)).rejects.toThrow(/non-empty.*no valid runtime state/i);
   });
 });
 

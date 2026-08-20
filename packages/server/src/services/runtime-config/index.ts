@@ -12,4 +12,6 @@ export {
   isServerAdmittedAgentRuntimeProvider,
   SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS,
   type ServerAdmittedAgentRuntimeProvider,
+  type ServerAgentRuntimeProviderPolicy,
+  serverAgentRuntimeProviderPolicy,
 } from "./provider-admission.js";

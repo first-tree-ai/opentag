@@ -98,6 +98,17 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
     expect(snapshot.allowedTools).toEqual(DEFAULT_AGENT_RUNTIME_CONFIG.allowedTools);
   });
 
+  it("compiles the reviewed Claude Code execution policy without changing the snapshot contract", async () => {
+    const snapshot = await assembler(async () => authority({ runtimeProvider: "claude-code" })).assembleForSession(
+      sessionId,
+    );
+
+    expect(snapshot).toMatchObject({
+      provider: "claude-code",
+      execution: { approvalPolicy: "never", networkAccess: true },
+    });
+  });
+
   it.each([
     ["missing", async () => undefined, "SESSION_NOT_FOUND"],
     ["ended Session", async () => authority({ sessionEndedAt: new Date() }), "AUTHORITY_INACTIVE"],
@@ -105,7 +116,7 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
     ["suspended Agent", async () => authority({ agentStatus: "suspended" }), "AUTHORITY_INACTIVE"],
     ["deleted Agent", async () => authority({ agentStatus: "deleted" }), "AUTHORITY_INACTIVE"],
     ["missing config", async () => authority({ runtimeConfig: null }), "RUNTIME_CONFIG_MISSING"],
-    ["unsupported provider", async () => authority({ runtimeProvider: "claude-code" }), "UNSUPPORTED_PROVIDER"],
+    ["unsupported provider", async () => authority({ runtimeProvider: "pi" }), "UNSUPPORTED_PROVIDER"],
     [
       "invalid stored config",
       async () =>

@@ -1233,9 +1233,12 @@ describe("OpenTag Web App Shell", () => {
     expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(createdTeamId);
   });
 
-  it("continues website onboarding when the selected Team preference cannot be stored", async () => {
+  it("continues website onboarding when the selected Team preference storage is unavailable", async () => {
     installApi("admin", { teamless: true });
     window.history.replaceState({}, "", "/onboarding");
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new Error("Storage unavailable");
     });
@@ -1246,6 +1249,7 @@ describe("OpenTag Web App Shell", () => {
       expect(window.location.pathname).toBe("/onboarding");
       expect(vi.mocked(fetch).mock.calls.filter(([path]) => path === "/api/v1/me")).toHaveLength(2);
     } finally {
+      getItem.mockRestore();
       setItem.mockRestore();
     }
   });

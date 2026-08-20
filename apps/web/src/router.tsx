@@ -612,8 +612,12 @@ function OnboardingRoute() {
 }
 
 function readTeamPreference(): string | undefined {
-  const value = window.localStorage.getItem(SELECTED_TEAM_STORAGE_KEY);
-  return value && value.length <= 64 ? value : undefined;
+  try {
+    const value = window.localStorage.getItem(SELECTED_TEAM_STORAGE_KEY);
+    return value && value.length <= 64 ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function AppShell() {

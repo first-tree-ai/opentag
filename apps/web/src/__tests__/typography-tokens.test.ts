@@ -40,18 +40,21 @@ const FAMILIES = ["fs", "text", "fw", "track", "font", "lh"] as const;
 const TOKEN_REFERENCE = new RegExp(`var\\(\\s*--((?:${FAMILIES.join("|")})-[a-z0-9-]+)`, "g");
 
 /**
- * Line heights that are box geometry rather than text rhythm: `1` centres a
- * single glyph in its own line box, and 38px matches the height of the badge
- * it labels. Any other literal belongs in a --lh-* token.
+ * The declarations that may stand outside the token layer, each pinned to the
+ * selectors that earn it. A value alone is not the exception -- `line-height: 1`
+ * centres a single glyph in its own line box, which is true of a chevron and
+ * not of a paragraph -- so an exception names the property, the value, and
+ * where it applies.
  */
-const LINE_HEIGHT_LITERALS = new Set(["1", "38px"]);
-
-/**
- * The `font` shorthand resets size, line height, weight, style and family at
- * once, so it can leave the token layer behind in a single declaration. Form
- * controls legitimately adopt the inherited font; nothing else may use it.
- */
-const FONT_SHORTHAND_LITERALS = new Set(["inherit"]);
+const EXCEPTIONS: { property: string; value: string; selectors: Set<string> }[] = [
+  {
+    property: "line-height",
+    value: "1",
+    selectors: new Set([".team-menu-chevron", ".account-menu-dots", ".dialog-close"]),
+  },
+  { property: "line-height", value: "38px", selectors: new Set([".center-card::before"]) },
+  { property: "font", value: "inherit", selectors: new Set(["button", "input", "select", "textarea"]) },
+];
 
 /** The selectors a declaration applies under, or none when it sits outside a rule. */
 function selectorsOf(declaration: Declaration): string[] {
@@ -179,8 +182,22 @@ function definedTypographyTokens(css: string): Set<string> {
   return new Set(FAMILIES.flatMap((prefix) => [...definedTokens(css, prefix)]));
 }
 
-function offTokenValues(css: string, property: string, allowed: RegExp, literals?: Set<string>): string[] {
-  return valuesOf(css, property).filter((value) => !allowed.test(value) && !(literals?.has(value) ?? false));
+/** An exception holds only where it was granted: same property, same value, and no other selector. */
+function excepted(declaration: Declared, property: string): boolean {
+  return EXCEPTIONS.some(
+    (exception) =>
+      exception.property === property &&
+      exception.value === declaration.value &&
+      declaration.selectors.length > 0 &&
+      declaration.selectors.every((selector) => exception.selectors.has(selector)),
+  );
+}
+
+function offTokenValues(css: string, property: string, allowed: RegExp): string[] {
+  return declarations(css)
+    .filter((declaration) => propertyName(declaration) === property)
+    .filter((declaration) => !allowed.test(declaration.value) && !excepted(declaration, property))
+    .map((declaration) => declaration.value);
 }
 
 /**
@@ -294,11 +311,11 @@ describe("typography tokens", () => {
   });
 
   it("keeps the font shorthand to the controls that inherit it", () => {
-    expect(offTokenValues(stylesheet, "font", /^$/, FONT_SHORTHAND_LITERALS)).toEqual([]);
+    expect(offTokenValues(stylesheet, "font", /^$/)).toEqual([]);
   });
 
   it("declares every line height through a --lh-* token or a named geometry exception", () => {
-    expect(offTokenValues(stylesheet, "line-height", /^var\(--lh-[a-z]+\)$/, LINE_HEIGHT_LITERALS)).toEqual([]);
+    expect(offTokenValues(stylesheet, "line-height", /^var\(--lh-[a-z]+\)$/)).toEqual([]);
   });
 
   it("declares every letter spacing through a --track-* token", () => {
@@ -348,12 +365,28 @@ describe("typography tokens", () => {
 describe("the guard itself", () => {
   it("rejects the font shorthand, which escapes four token families at once", () => {
     const css = "body { font: 13px/1 Arial, sans-serif; }";
-    expect(offTokenValues(css, "font", /^$/, FONT_SHORTHAND_LITERALS)).toEqual(["13px/1 Arial, sans-serif"]);
+    expect(offTokenValues(css, "font", /^$/)).toEqual(["13px/1 Arial, sans-serif"]);
   });
 
   it("allows the font shorthand only where controls inherit it", () => {
-    const css = "button { font: inherit; }";
-    expect(offTokenValues(css, "font", /^$/, FONT_SHORTHAND_LITERALS)).toEqual([]);
+    const granted = "button,\ninput,\nselect,\ntextarea { font: inherit; }";
+    expect(offTokenValues(granted, "font", /^$/)).toEqual([]);
+
+    const elsewhere = ".card { font: inherit; }";
+    expect(offTokenValues(elsewhere, "font", /^$/)).toEqual(["inherit"]);
+  });
+
+  it("allows a geometric line height only on the selectors that earn it", () => {
+    const granted = ".dialog-close { line-height: 1; }\n.center-card::before { line-height: 38px; }";
+    expect(offTokenValues(granted, "line-height", /^var\(--lh-[a-z]+\)$/)).toEqual([]);
+
+    const elsewhere = ".copy { line-height: 1; }\n.banner { line-height: 38px; }";
+    expect(offTokenValues(elsewhere, "line-height", /^var\(--lh-[a-z]+\)$/)).toEqual(["1", "38px"]);
+  });
+
+  it("does not extend an exception to a rule that adds a selector", () => {
+    const css = ".dialog-close, .copy { line-height: 1; }";
+    expect(offTokenValues(css, "line-height", /^var\(--lh-[a-z]+\)$/)).toEqual(["1"]);
   });
 
   it("rejects a literal font family", () => {
@@ -366,7 +399,7 @@ describe("the guard itself", () => {
     expect(offTokenValues(css, "font-size", /^var\(--text-[a-z]+\)$/)).toEqual(["0.83rem"]);
     expect(offTokenValues(css, "font-weight", /^var\(--fw-[a-z]+\)$/)).toEqual(["615"]);
     expect(offTokenValues(css, "letter-spacing", /^var\(--track-[a-z]+\)$/)).toEqual(["0.03em"]);
-    expect(offTokenValues(css, "line-height", /^var\(--lh-[a-z]+\)$/, LINE_HEIGHT_LITERALS)).toEqual(["1.42"]);
+    expect(offTokenValues(css, "line-height", /^var\(--lh-[a-z]+\)$/)).toEqual(["1.42"]);
   });
 
   it("rejects a reference to a token that was never declared", () => {
@@ -413,7 +446,7 @@ describe("the guard itself", () => {
     const css = "body { FONT-SIZE: 13px; FONT-FAMILY: Arial; }\n.row { Font: 12px Arial; }";
     expect(offTokenValues(css, "font-size", /^var\(--text-[a-z]+\)$/)).toEqual(["13px"]);
     expect(offTokenValues(css, "font-family", /^var\(--font-[a-z]+\)$/)).toEqual(["Arial"]);
-    expect(offTokenValues(css, "font", /^$/, FONT_SHORTHAND_LITERALS)).toEqual(["12px Arial"]);
+    expect(offTokenValues(css, "font", /^$/)).toEqual(["12px Arial"]);
   });
 
   it("reports a step that does not describe a step, rather than skipping it", () => {

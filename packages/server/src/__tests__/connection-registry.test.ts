@@ -70,6 +70,47 @@ describe("ConnectionRegistry", () => {
     expect(stale.close).toHaveBeenCalledWith(1001, "Server shutting down");
     expect(fresh.close).toHaveBeenCalledWith(1001, "Server shutting down");
   });
+
+  it("advertises message-tool readiness only for the verified current instance", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const firstInstanceId = randomUUID();
+    await registry.register(
+      {
+        capabilities: { imMessageTool: 0 },
+        capabilitiesUpdatedAt: 1,
+        computerId,
+        instanceId: firstInstanceId,
+        lastHeartbeatAt: 1,
+        socket: socket(),
+        userId: randomUUID(),
+      },
+      async () => undefined,
+    );
+    expect(registry.supports(computerId, firstInstanceId, "imMessageTool", 1)).toBe(false);
+
+    const verifiedInstanceId = randomUUID();
+    const verifiedSocket = socket();
+    await registry.register(
+      {
+        capabilities: { imMessageTool: 1 },
+        capabilitiesUpdatedAt: 2,
+        computerId,
+        instanceId: verifiedInstanceId,
+        lastHeartbeatAt: 2,
+        socket: verifiedSocket,
+        userId: randomUUID(),
+      },
+      async () => undefined,
+    );
+    expect(registry.supports(computerId, firstInstanceId, "imMessageTool", 2)).toBe(false);
+    expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 2)).toBe(true);
+
+    expect(registry.touch(computerId, verifiedInstanceId, verifiedSocket, 3, { imMessageTool: 0 })).toBe(true);
+    expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 3)).toBe(false);
+    expect(registry.touch(computerId, verifiedInstanceId, verifiedSocket, 4, { imMessageTool: 1 })).toBe(true);
+    expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 4)).toBe(true);
+  });
 });
 
 function socket(): WebSocket {

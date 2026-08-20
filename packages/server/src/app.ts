@@ -7,15 +7,21 @@ import { registerAgentRoutes } from "./api/agents.js";
 import { registerAuthRoutes } from "./api/auth.js";
 import { type BrowserAuthRoutesOptions, registerBrowserAuthRoutes } from "./api/browser-auth.js";
 import { registerComputerRoutes } from "./api/computers.js";
+import { registerImResourceRoute } from "./api/im-resources.js";
+import { registerIntegrationRoutes } from "./api/integrations.js";
 import { registerInvitationRoutes } from "./api/invitations.js";
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
+import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerTeamRoutes } from "./api/teams.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { type AgentService, AgentServiceError } from "./services/agents/index.js";
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
 import type { ComputerService } from "./services/computers/index.js";
+import type { ImResourceService } from "./services/im/index.js";
+import type { FeishuSetupService } from "./services/integrations/feishu/index.js";
+import { type IntegrationService, IntegrationServiceError } from "./services/integrations/index.js";
 import type { InvitationService } from "./services/invitations/index.js";
 import type { TeamMembershipService } from "./services/teams/index.js";
 
@@ -31,9 +37,13 @@ export interface CreateAppOptions {
   };
   browserAuth?: BrowserAuthRoutesOptions;
   invitationService?: InvitationService;
+  integrationService?: IntegrationService;
+  imResourceService?: ImResourceService;
+  feishuSetupService?: FeishuSetupService;
   loggerStream?: FastifyLoggerOptions["stream"];
   readiness?: BootstrapReadiness;
   runtime?: RuntimeRoutesOptions;
+  slackEvents?: SlackEventsRouteOptions;
   teamService?: TeamMembershipService;
 }
 
@@ -92,6 +102,10 @@ export function createApp(options: CreateAppOptions = {}) {
   });
 
   if (options.adminWebRoot) registerAdminWeb(app, options.adminWebRoot);
+  const slackEvents = options.slackEvents;
+  if (slackEvents) {
+    app.register(async (slackApp) => registerSlackEventsRoute(slackApp, slackEvents));
+  }
 
   if (options.authService) {
     const authService = options.authService;
@@ -117,6 +131,12 @@ export function createApp(options: CreateAppOptions = {}) {
     if (options.invitationService) {
       registerInvitationRoutes(app, authService, options.invitationService, publicOrigin);
     }
+    if (options.integrationService) {
+      registerIntegrationRoutes(app, authService, options.integrationService, options.feishuSetupService, publicOrigin);
+    }
+    if (options.imResourceService) {
+      registerImResourceRoute(app, authService, options.imResourceService, publicOrigin);
+    }
     if (options.computerService) {
       const computerService = options.computerService;
       registerComputerRoutes(app, authService, computerService, publicOrigin);
@@ -141,7 +161,11 @@ export function createApp(options: CreateAppOptions = {}) {
   );
 
   app.setErrorHandler((error, request, reply) => {
-    if (error instanceof AuthServiceError || error instanceof AgentServiceError) {
+    if (
+      error instanceof AuthServiceError ||
+      error instanceof AgentServiceError ||
+      error instanceof IntegrationServiceError
+    ) {
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: error.code,

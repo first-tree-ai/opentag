@@ -60,6 +60,7 @@ function registerFrame(computerId: string, instanceId: string) {
     platform: "linux" as const,
     arch: "x64",
     clientVersion: "0.0.1",
+    capabilities: { imMessageTool: 0 as const },
   };
 }
 

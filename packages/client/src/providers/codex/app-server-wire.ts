@@ -51,15 +51,31 @@ export interface CodexAppServerClient {
   interrupt(threadId: string, turnId: string): Promise<void>;
   notify(method: string, params: unknown): Promise<void>;
   request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown>;
+  setDynamicToolHandler?(handler: CodexDynamicToolHandler | undefined): void;
   subscribe(listener: (message: CodexAppServerMessage) => void): () => void;
 }
+
+export interface CodexDynamicToolCall {
+  arguments: unknown;
+  callId: string;
+  namespace: string | null;
+  threadId: string;
+  tool: string;
+  turnId: string;
+}
+
+export interface CodexDynamicToolResult {
+  success: boolean;
+  text: string;
+}
+
+export type CodexDynamicToolHandler = (call: CodexDynamicToolCall) => Promise<CodexDynamicToolResult>;
 
 export interface InteractiveCodexAppServerClient extends CodexAppServerClient {
   rejectServerRequest(id: number | string, code: number, message: string): Promise<void>;
   respondServerRequest(id: number | string, result: unknown): Promise<void>;
   subscribeServerRequests(listener: (request: CodexAppServerRequest) => void): () => void;
 }
-
 interface PendingRequest {
   reject(error: Error): void;
   resolve(value: unknown): void;
@@ -86,6 +102,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   #closed = false;
   #closing = false;
   #failure?: Error;
+  #dynamicToolHandler?: CodexDynamicToolHandler;
 
   constructor(options: CodexSpawnOptions) {
     this.#expectedCodexHome = options.expectedCodexHome;
@@ -133,6 +150,10 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   subscribe(listener: (message: CodexAppServerMessage) => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
+  }
+
+  setDynamicToolHandler(handler: CodexDynamicToolHandler | undefined): void {
+    this.#dynamicToolHandler = handler;
   }
 
   subscribeServerRequests(listener: (request: CodexAppServerRequest) => void): () => void {
@@ -333,7 +354,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         }
         return;
       }
-      void this.#handleServerRequest(message.id, message.method);
+      void this.#handleServerRequest(message.id, message.method, message.params);
       return;
     }
     if (typeof message.method !== "string" || !("params" in message)) {
@@ -350,13 +371,35 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     }
   }
 
-  async #handleServerRequest(id: number | string, method: string): Promise<void> {
+  async #handleServerRequest(id: number | string, method: string, params: unknown): Promise<void> {
     if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
       await this.#write({ id, result: { decision: "cancel" } }).catch(() => undefined);
       return;
     }
     if (method === "item/tool/requestUserInput") {
       await this.#write({ id, result: { answers: {} } }).catch(() => undefined);
+      return;
+    }
+    if (method === "item/tool/call") {
+      const handler = this.#dynamicToolHandler;
+      if (!handler) {
+        await this.#write({
+          id,
+          result: { contentItems: [{ type: "inputText", text: "OpenTag tool is unavailable." }], success: false },
+        }).catch(() => undefined);
+        return;
+      }
+      try {
+        const call = parseDynamicToolCall(params);
+        const result = await handler(call);
+        const text = requireBoundedString(result.text, "OpenTag tool returned invalid output");
+        await this.#write({ id, result: { contentItems: [{ type: "inputText", text }], success: result.success } });
+      } catch {
+        await this.#write({
+          id,
+          result: { contentItems: [{ type: "inputText", text: "OpenTag tool request failed." }], success: false },
+        }).catch(() => undefined);
+      }
       return;
     }
     await this.#write({ id, error: { code: -32601, message: "Unsupported unattended server request" } }).catch(
@@ -386,6 +429,22 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
       timer.unref();
     }
   }
+}
+
+function parseDynamicToolCall(value: unknown): CodexDynamicToolCall {
+  const params = requireRecord(value, "Codex returned invalid dynamic tool parameters");
+  const namespace = params.namespace;
+  if (namespace !== null && typeof namespace !== "string") {
+    throw new CodexAppServerError("protocol", "Codex returned invalid dynamic tool namespace");
+  }
+  return {
+    arguments: params.arguments,
+    callId: requireBoundedString(params.callId, "Codex returned invalid dynamic tool call ID"),
+    namespace,
+    threadId: requireBoundedString(params.threadId, "Codex returned invalid dynamic tool Thread ID"),
+    tool: requireBoundedString(params.tool, "Codex returned invalid dynamic tool name"),
+    turnId: requireBoundedString(params.turnId, "Codex returned invalid dynamic tool Turn ID"),
+  };
 }
 
 async function settlesWithin(promise: Promise<void>, milliseconds: number): Promise<boolean> {

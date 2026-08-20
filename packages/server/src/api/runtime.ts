@@ -1,7 +1,7 @@
 import { HTTP_PATHS } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
-import { RuntimeDomainOwner } from "../runtime/runtime-domain-owner.js";
+import type { RuntimeDomainOwner } from "../runtime/runtime-domain-owner.js";
 import { RuntimeSession, type RuntimeSessionOptions } from "../runtime/runtime-session.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import type { ComputerService } from "../services/computers/index.js";
@@ -18,10 +18,10 @@ export function registerRuntimeRoutes(
   options: RuntimeRoutesOptions = {},
 ): ConnectionRegistry {
   const registry = options.registry ?? new ConnectionRegistry();
-  const domainOwner = options.domainOwner ?? new RuntimeDomainOwner(registry);
+  const domainOwner = options.domainOwner;
   const sessionOptions: RuntimeSessionOptions = {
     authTimeoutMs: options.authTimeoutMs,
-    business: options.business ?? domainOwner.businessOptions(),
+    business: options.business ?? domainOwner?.businessOptions(),
     heartbeatIntervalMs: options.heartbeatIntervalMs,
     heartbeatTimeoutMs: options.heartbeatTimeoutMs,
     now: options.now,
@@ -35,7 +35,7 @@ export function registerRuntimeRoutes(
   sweep.unref();
   app.addHook("onClose", async () => {
     clearInterval(sweep);
-    domainOwner.close();
+    domainOwner?.close();
     registry.closeAll();
   });
   return registry;

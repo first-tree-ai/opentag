@@ -1,32 +1,44 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import {
+  runtimeByteString as byteString,
+  RUNTIME_ID_MAX_BYTES,
+  RuntimeAllowedToolsSchema,
+  RuntimeInstructionsSchema,
+  RuntimeMaxDurationMsSchema,
+  RuntimeModelSchema,
+  RuntimeReasoningEffortSchema,
+  runtimeUtf8Length as utf8Length,
+} from "./runtime-config.js";
 import { RuntimeRequestIdSchema } from "./runtime-protocol.js";
 
-export const RUNTIME_ID_MAX_BYTES = 128;
+export {
+  OPENTAG_MESSAGE_TOOLS,
+  OPENTAG_PLATFORM_INSTRUCTIONS,
+  RUNTIME_ALLOWED_TOOLS_MAX_COUNT,
+  RUNTIME_ID_MAX_BYTES,
+  RUNTIME_INSTRUCTIONS_MAX_BYTES,
+  RUNTIME_MAX_DURATION_MS,
+  RuntimeAllowedToolsSchema,
+  RuntimeInstructionSchema,
+  RuntimeInstructionsSchema,
+  RuntimeMaxDurationMsSchema,
+  RuntimeModelSchema,
+  RuntimeReasoningEffortSchema,
+  RuntimeToolIdSchema,
+} from "./runtime-config.js";
+
 export const RUNTIME_DIRECT_TEXT_MAX_BYTES = 16 * 1024;
-export const RUNTIME_INSTRUCTIONS_MAX_BYTES = 24 * 1024;
 export const RUNTIME_FINAL_TEXT_MAX_BYTES = 48 * 1024;
 export const RUNTIME_TRACE_EVENT_MAX_BYTES = 16 * 1024;
 export const RUNTIME_TRACE_BATCH_MAX_EVENTS = 64;
+export const RUNTIME_IM_HISTORY_MAX_BYTES = 40 * 1024;
+export const RUNTIME_IM_RESOURCE_MAX_COUNT = 16;
 // MVP recovery bridge. Post-MVP, authoritative Turn results move to durable Server ownership.
 export const RUNTIME_MVP_RETAINED_REPORT_LIMIT = 65;
 
-const utf8 = new TextEncoder();
 const opaqueIdPattern = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
 const relativePathPattern = /^(?![A-Za-z]:)(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[^\\\0]+$/;
-
-function utf8Length(value: string): number {
-  return utf8.encode(value).byteLength;
-}
-
-function byteString(maxBytes: number, message: string, minimumBytes = 0) {
-  return z.string().superRefine((value, context) => {
-    const bytes = utf8Length(value);
-    if (bytes < minimumBytes || bytes > maxBytes) {
-      context.addIssue({ code: "custom", message });
-    }
-  });
-}
 
 export const RuntimeOpaqueIdSchema = z
   .string()
@@ -61,16 +73,10 @@ export const EffectiveRuntimeSnapshotSchema = z
       .strict(),
     agentId: RuntimeOpaqueIdSchema,
     provider: z.literal("codex"),
-    model: byteString(128, "Model exceeds the 128-byte limit", 1).optional(),
-    reasoningEffort: byteString(64, "Reasoning effort exceeds the 64-byte limit", 1).optional(),
-    instructions: z
-      .object({
-        platform: byteString(RUNTIME_INSTRUCTIONS_MAX_BYTES, "Platform instructions are too large"),
-        agent: byteString(RUNTIME_INSTRUCTIONS_MAX_BYTES, "Agent instructions are too large"),
-        session: byteString(RUNTIME_INSTRUCTIONS_MAX_BYTES, "Session instructions are too large").optional(),
-      })
-      .strict(),
-    allowedTools: z.array(byteString(RUNTIME_ID_MAX_BYTES, "Tool ID exceeds the 128-byte limit", 1)).max(64),
+    model: RuntimeModelSchema.optional(),
+    reasoningEffort: RuntimeReasoningEffortSchema.optional(),
+    instructions: RuntimeInstructionsSchema,
+    allowedTools: RuntimeAllowedToolsSchema,
     execution: z
       .object({
         approvalPolicy: z.literal("never"),
@@ -86,34 +92,12 @@ export const EffectiveRuntimeSnapshotSchema = z
       .strict(),
     budget: z
       .object({
-        maxDurationMs: z
-          .number()
-          .int()
-          .safe()
-          .positive()
-          .max(24 * 60 * 60 * 1_000)
-          .optional(),
+        maxDurationMs: RuntimeMaxDurationMsSchema.optional(),
       })
       .strict()
       .optional(),
   })
-  .strict()
-  .superRefine((snapshot, context) => {
-    const instructionBytes =
-      utf8Length(snapshot.instructions.platform) +
-      utf8Length(snapshot.instructions.agent) +
-      utf8Length(snapshot.instructions.session ?? "");
-    if (instructionBytes > RUNTIME_INSTRUCTIONS_MAX_BYTES) {
-      context.addIssue({
-        code: "custom",
-        path: ["instructions"],
-        message: "Combined instructions exceed the 24 KiB limit",
-      });
-    }
-    if (new Set(snapshot.allowedTools).size !== snapshot.allowedTools.length) {
-      context.addIssue({ code: "custom", path: ["allowedTools"], message: "Tool IDs must be unique" });
-    }
-  });
+  .strict();
 
 export const InputRejectReasonSchema = z.enum([
   "invalid_input",
@@ -185,9 +169,31 @@ const ReconcileTurnSchema = z
   })
   .strict();
 
+export const RuntimeImResourceReferenceSchema = z
+  .object({
+    imMessageId: RuntimeOpaqueIdSchema,
+    ordinal: z.number().int().min(0).max(15),
+    kind: z.enum(["image", "file", "audio", "video"]),
+    filename: byteString(512, "Resource filename exceeds the 512-byte limit", 1).optional(),
+    mediaType: byteString(255, "Resource media type exceeds the 255-byte limit", 1).optional(),
+    sizeBytes: z.number().int().safe().nonnegative().optional(),
+    availability: z.enum(["available", "unavailable", "too_large", "unsupported"]),
+  })
+  .strict();
+
+export const RuntimeImHistoryItemSchema = z
+  .object({
+    imMessageId: RuntimeOpaqueIdSchema,
+    occurredAt: z.string().datetime({ offset: true }),
+    text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "History item exceeds the 16 KiB limit"),
+  })
+  .strict();
+
 export const RetainedTurnReportClaimSchema = z
   .object({
+    dispatchRequestId: RuntimeRequestIdSchema,
     deliveryId: RuntimeOpaqueIdSchema,
+    inputHash: RuntimeSha256Schema,
     turnId: RuntimeOpaqueIdSchema,
     placementGeneration: RuntimeSequenceSchema,
     resultHash: RuntimeSha256Schema,
@@ -267,11 +273,14 @@ export const DirectImMessageDeliveryRequestSchema = z
     sessionId: RuntimeOpaqueIdSchema,
     agentId: RuntimeOpaqueIdSchema,
     placementGeneration: RuntimeSequenceSchema,
-    attention: z.literal("direct"),
+    attention: z.enum(["direct", "ambient"]),
     content: z
       .object({
         kind: z.literal("text"),
         text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "Direct text exceeds the 16 KiB limit", 1),
+        history: z.array(RuntimeImHistoryItemSchema).max(100).optional(),
+        historyTruncated: z.boolean().optional(),
+        resources: z.array(RuntimeImResourceReferenceSchema).max(RUNTIME_IM_RESOURCE_MAX_COUNT).optional(),
       })
       .strict(),
     runtime: EffectiveRuntimeSnapshotSchema,
@@ -282,7 +291,52 @@ export const DirectImMessageDeliveryRequestSchema = z
     if (frame.runtime.agentId !== frame.agentId) {
       context.addIssue({ code: "custom", path: ["runtime", "agentId"], message: "Agent identity does not match" });
     }
+    const historyBytes = utf8Length(JSON.stringify(frame.content.history ?? []));
+    if (historyBytes > RUNTIME_IM_HISTORY_MAX_BYTES) {
+      context.addIssue({ code: "custom", path: ["content", "history"], message: "IM history exceeds 40 KiB" });
+    }
   });
+
+export const RuntimeImToolRequestSchema = z
+  .object({
+    type: z.literal("im:tool"),
+    requestId: RuntimeRequestIdSchema,
+    sessionId: RuntimeOpaqueIdSchema,
+    agentId: RuntimeOpaqueIdSchema,
+    placementGeneration: RuntimeSequenceSchema,
+    expectedLatestImMessageId: RuntimeOpaqueIdSchema,
+    operation: z.enum(["send", "reply", "react"]),
+    text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "Outbound text exceeds the 16 KiB limit", 1).optional(),
+    replyToImMessageId: RuntimeOpaqueIdSchema.optional(),
+    targetImMessageId: RuntimeOpaqueIdSchema.optional(),
+    emoji: byteString(128, "Reaction emoji exceeds the 128-byte limit", 1).optional(),
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.operation === "react") {
+      if (!frame.targetImMessageId)
+        context.addIssue({ code: "custom", path: ["targetImMessageId"], message: "Reaction target is required" });
+      if (!frame.emoji) context.addIssue({ code: "custom", path: ["emoji"], message: "Reaction emoji is required" });
+      if (frame.text || frame.replyToImMessageId)
+        context.addIssue({ code: "custom", message: "Reaction payload is invalid" });
+      return;
+    }
+    if (!frame.text) context.addIssue({ code: "custom", path: ["text"], message: "Outbound text is required" });
+    if (frame.operation === "reply" && !frame.replyToImMessageId) {
+      context.addIssue({ code: "custom", path: ["replyToImMessageId"], message: "Reply target is required" });
+    }
+  });
+
+export const RuntimeImToolResultSchema = z
+  .object({
+    type: z.literal("im:tool:result"),
+    requestId: RuntimeRequestIdSchema,
+    state: z.enum(["succeeded", "deterministic_failed", "credential_failed", "transient_failed", "unknown"]),
+    code: byteString(160, "IM tool result code exceeds the 160-byte limit", 1).optional(),
+    providerMessageId: byteString(512, "Provider message ID exceeds the 512-byte limit", 1).optional(),
+    retryAfterSeconds: z.number().int().positive().optional(),
+  })
+  .strict();
 
 export const ImMessageDeliveryResultSchema = z
   .object({
@@ -410,6 +464,7 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionReconcileRequestSchema,
   DirectImMessageDeliveryRequestSchema,
   TurnReportResultSchema,
+  RuntimeImToolResultSchema,
 ]);
 
 export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
@@ -417,6 +472,7 @@ export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   ImMessageDeliveryResultSchema,
   AgentTraceBatchSchema,
   TurnReportRequestSchema,
+  RuntimeImToolRequestSchema,
 ]);
 
 export type RuntimeRevision = z.infer<typeof RuntimeRevisionSchema>;
@@ -428,6 +484,10 @@ export type SessionReconcileRequest = z.infer<typeof SessionReconcileRequestSche
 export type SessionReconcileResult = z.infer<typeof SessionReconcileResultSchema>;
 export type RetainedTurnReportClaim = z.infer<typeof RetainedTurnReportClaimSchema>;
 export type DirectImMessageDeliveryRequest = z.infer<typeof DirectImMessageDeliveryRequestSchema>;
+export type RuntimeImResourceReference = z.infer<typeof RuntimeImResourceReferenceSchema>;
+export type RuntimeImHistoryItem = z.infer<typeof RuntimeImHistoryItemSchema>;
+export type RuntimeImToolRequest = z.infer<typeof RuntimeImToolRequestSchema>;
+export type RuntimeImToolResult = z.infer<typeof RuntimeImToolResultSchema>;
 export type ImMessageDeliveryResult = z.infer<typeof ImMessageDeliveryResultSchema>;
 export type AgentTraceEvent = z.infer<typeof AgentTraceEventSchema>;
 export type AgentTraceBatch = z.infer<typeof AgentTraceBatchSchema>;
@@ -486,6 +546,9 @@ export function computeDirectInputHash(input: DirectImMessageDeliveryRequest): s
     frame.attention,
     frame.content.kind,
     frame.content.text,
+    frame.content.history ?? [],
+    frame.content.historyTruncated ?? false,
+    frame.content.resources ?? [],
     computeRuntimeSnapshotHashes(frame.runtime).effectiveSnapshotHash,
     frame.deadlineAt ?? null,
   ]);

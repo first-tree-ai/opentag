@@ -3,7 +3,19 @@ import { AccessTokenProvider, OpenTagApi, readCredentials, resolveOpenTagHome } 
 export interface AgentApiClient
   extends Pick<
     OpenTagApi,
-    "createAgent" | "listAgents" | "getAgent" | "updateAgent" | "deleteAgent" | "listComputers" | "me"
+    | "createAgent"
+    | "listAgents"
+    | "getAgent"
+    | "updateAgent"
+    | "deleteAgent"
+    | "listComputers"
+    | "me"
+    | "getAgentIntegration"
+    | "createFeishuSetupAttempt"
+    | "getFeishuSetupAttempt"
+    | "cancelFeishuSetupAttempt"
+    | "getIntegrationDiagnostics"
+    | "disableIntegration"
   > {}
 
 export interface AgentCommandDependencies {

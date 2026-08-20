@@ -1,4 +1,9 @@
-import { agentByIdPath, teamAgentsPath } from "@opentag/shared";
+import {
+  agentByIdPath,
+  OPENTAG_PLATFORM_INSTRUCTIONS,
+  RUNTIME_INSTRUCTIONS_MAX_BYTES,
+  teamAgentsPath,
+} from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import type { AgentService } from "../services/agents/index.js";
@@ -17,10 +22,21 @@ const agent = {
   name: "code-reviewer",
   displayName: "Code Reviewer",
   runtimeProvider: "codex" as const,
+  receiveMode: "all_message" as const,
   revision: 1,
+  runtimeConfig: {
+    revision: 1,
+    model: null,
+    reasoningEffort: null,
+    instructions: "Follow instructions.",
+    allowedTools: ["opentag_message_react", "opentag_message_reply", "opentag_message_send"] as const,
+    maxDurationMs: null,
+  },
   createdAt: "2026-08-19T00:00:00.000Z",
   updatedAt: "2026-08-19T00:00:00.000Z",
 };
+const { runtimeConfig, ...agentBase } = agent;
+const agentSummary = { ...agentBase, runtimeConfigRevision: runtimeConfig.revision };
 
 const apps: ReturnType<typeof createApp>[] = [];
 
@@ -46,7 +62,7 @@ function authService(): UserAuthService {
 function agentService() {
   return {
     createForTeam: vi.fn().mockResolvedValue(agent),
-    listForTeam: vi.fn().mockResolvedValue({ agents: [agent] }),
+    listForTeam: vi.fn().mockResolvedValue({ agents: [agentSummary] }),
     getById: vi.fn().mockResolvedValue(agent),
     updateById: vi.fn().mockResolvedValue({ ...agent, displayName: "Reviewer", revision: 2 }),
     deleteById: vi.fn().mockResolvedValue(undefined),
@@ -68,7 +84,13 @@ describe("Agent HTTP API", () => {
       method: "POST",
       url: teamAgentsPath(teamId),
       headers: authorization,
-      payload: { name: " code-reviewer ", displayName: " Code Reviewer ", runtimeProvider: "codex", computerId },
+      payload: {
+        name: " code-reviewer ",
+        displayName: " Code Reviewer ",
+        runtimeProvider: "codex",
+        computerId,
+        runtimeConfig: { allowedTools: ["opentag_message_send", "opentag_message_react"], model: "gpt-5.6" },
+      },
     });
     expect(create.statusCode).toBe(201);
     expect(create.json()).toEqual(agent);
@@ -77,11 +99,12 @@ describe("Agent HTTP API", () => {
       displayName: "Code Reviewer",
       runtimeProvider: "codex",
       computerId,
+      runtimeConfig: { allowedTools: ["opentag_message_react", "opentag_message_send"], model: "gpt-5.6" },
     });
 
     const list = await app.inject({ method: "GET", url: teamAgentsPath(teamId), headers: authorization });
     expect(list.statusCode).toBe(200);
-    expect(list.json()).toEqual({ agents: [agent] });
+    expect(list.json()).toEqual({ agents: [agentSummary] });
     expect(service.listForTeam).toHaveBeenCalledWith(userId, teamId);
   });
 
@@ -94,12 +117,17 @@ describe("Agent HTTP API", () => {
       method: "PATCH",
       url: agentByIdPath(agentId),
       headers: authorization,
-      payload: { displayName: " Reviewer ", expectedRevision: 1 },
+      payload: {
+        displayName: " Reviewer ",
+        expectedRevision: 1,
+        runtimeConfig: { maxDurationMs: null, model: null },
+      },
     });
     expect(update.statusCode).toBe(200);
     expect(service.updateById).toHaveBeenCalledWith(userId, agentId, {
       displayName: "Reviewer",
       expectedRevision: 1,
+      runtimeConfig: { maxDurationMs: null, model: null },
     });
     const deleted = await app.inject({ method: "DELETE", url: agentByIdPath(agentId), headers: authorization });
     expect(deleted.statusCode).toBe(204);
@@ -119,6 +147,35 @@ describe("Agent HTTP API", () => {
       payload: { displayName: "Reviewer", expectedRevision: 1, computerId },
     });
     expect(immutable.statusCode).toBe(400);
+    expect(service.updateById).not.toHaveBeenCalled();
+  });
+
+  it("rejects instructions that cannot fit beside the required platform policy", async () => {
+    const { app, service } = appWith();
+    const platformBytes = new TextEncoder().encode(OPENTAG_PLATFORM_INSTRUCTIONS).byteLength;
+    const tooLarge = `${"界".repeat(Math.floor((RUNTIME_INSTRUCTIONS_MAX_BYTES - platformBytes) / 3))}aaaa`;
+    const create = await app.inject({
+      method: "POST",
+      url: teamAgentsPath(teamId),
+      headers: authorization,
+      payload: {
+        computerId,
+        displayName: "Code Reviewer",
+        name: "code-reviewer",
+        runtimeProvider: "codex",
+        runtimeConfig: { instructions: tooLarge },
+      },
+    });
+    expect(create.statusCode).toBe(400);
+    expect(service.createForTeam).not.toHaveBeenCalled();
+
+    const update = await app.inject({
+      method: "PATCH",
+      url: agentByIdPath(agentId),
+      headers: authorization,
+      payload: { expectedRevision: 1, runtimeConfig: { instructions: tooLarge } },
+    });
+    expect(update.statusCode).toBe(400);
     expect(service.updateById).not.toHaveBeenCalled();
   });
 

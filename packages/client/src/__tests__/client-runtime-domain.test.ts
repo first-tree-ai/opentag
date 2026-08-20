@@ -40,7 +40,7 @@ describe("ClientRuntime domain dispatch", () => {
             JSON.stringify({
               type: "server:welcome",
               protocolVersion: 1,
-              capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1 },
+              capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
               heartbeatIntervalMs: 1_000,
               heartbeatTimeoutMs: 2_000,
             }),

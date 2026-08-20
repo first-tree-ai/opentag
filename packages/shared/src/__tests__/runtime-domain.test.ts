@@ -42,7 +42,9 @@ describe("runtime domain contract", () => {
         status: "ready",
         retainedReports: [
           {
+            dispatchRequestId: directDelivery(runtime).requestId,
             deliveryId: report.deliveryId,
+            inputHash: computeDirectInputHash(directDelivery(runtime)),
             turnId: report.turnId,
             placementGeneration: report.placementGeneration,
             resultHash: report.resultHash,
@@ -143,7 +145,9 @@ describe("runtime domain contract", () => {
         reason: "configuration_conflict",
         retainedReports: [
           {
+            dispatchRequestId: directDelivery(runtime).requestId,
             deliveryId: report.deliveryId,
+            inputHash: computeDirectInputHash(directDelivery(runtime)),
             turnId: report.turnId,
             placementGeneration: report.placementGeneration,
             resultHash: report.resultHash,
@@ -160,7 +164,9 @@ describe("runtime domain contract", () => {
         status: "ready",
         retainedReports: [
           {
+            dispatchRequestId: directDelivery(runtime).requestId,
             deliveryId: report.deliveryId,
+            inputHash: computeDirectInputHash(directDelivery(runtime)),
             turnId: report.turnId,
             placementGeneration: report.placementGeneration + 1,
             resultHash: report.resultHash,
@@ -203,7 +209,7 @@ describe("runtime domain contract", () => {
     });
     expect(computeRuntimeSnapshotHashes({ ...runtime, allowedTools: ["read", "write"] })).toEqual(hashes);
     expect(computeDirectInputHash(directDelivery(runtime))).toBe(
-      "60aff5101c7f9f81337d88ef869b660041d735f83cb4a0888e26e6871a001a0c",
+      "a38ede98941af44199dfef03456eb2d6f887c8c6771a664c78a89f3f9b2dc3d0",
     );
     expect(turnReport().resultHash).toBe("1531ebd9cb35b71727fd8913be9afad9f44e24fb3299ced53716085642e460c9");
   });

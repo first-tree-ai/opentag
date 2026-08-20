@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
+  RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_VERSION,
+  type RuntimeClientCapabilities,
   RuntimeFrameEnvelopeSchema,
   runtimeFrameByteLength,
   runtimeWebSocketUrl,
@@ -145,6 +147,8 @@ export class RuntimeConnection {
   #sendInFlight?: QueuedFrame;
   #state: RuntimeConnectionState = "stopped";
   #stopped = false;
+  #verifiedCapabilities: RuntimeClientCapabilities = { imMessageTool: 0 };
+  #verifiedCapabilitiesExpiresAt = 0;
 
   constructor(options: RuntimeConnectionOptions) {
     this.#options = options;
@@ -172,6 +176,23 @@ export class RuntimeConnection {
 
   get instanceId(): string {
     return this.#options.instanceId;
+  }
+
+  setVerifiedCapabilities(
+    capabilities: RuntimeClientCapabilities,
+    validForMs = RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+  ): void {
+    if (!Number.isSafeInteger(validForMs) || validForMs < 1 || validForMs > RUNTIME_CLIENT_CAPABILITY_TTL_MS) {
+      throw new RuntimeConnectionError("Runtime capability validity is invalid", true);
+    }
+    this.#verifiedCapabilities = { ...capabilities };
+    this.#verifiedCapabilitiesExpiresAt = this.#now() + validForMs;
+  }
+
+  #currentCapabilities(): RuntimeClientCapabilities {
+    return this.#now() <= this.#verifiedCapabilitiesExpiresAt
+      ? { ...this.#verifiedCapabilities }
+      : { imMessageTool: 0 };
   }
 
   subscribeState(listener: (state: RuntimeConnectionState) => void): () => void {
@@ -376,6 +397,7 @@ export class RuntimeConnection {
               requestId,
               computerId: this.#options.computer.computerId,
               instanceId,
+              capabilities: this.#currentCapabilities(),
             },
             { priority: "control", deadline: this.#now() + heartbeatPolicy.heartbeatTimeoutMs },
           ).then(
@@ -483,6 +505,7 @@ export class RuntimeConnection {
             platform: this.#options.platform,
             arch: this.#options.arch,
             clientVersion: this.#options.clientVersion,
+            capabilities: this.#currentCapabilities(),
           }).catch((error: unknown) => finish(asError(error)));
           return;
         }

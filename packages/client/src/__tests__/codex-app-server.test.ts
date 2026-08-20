@@ -75,6 +75,20 @@ describe("CodexAppServerProcess", () => {
     await process.close();
   });
 
+  it("hosts a bounded dynamic tool call inside the daemon process", async () => {
+    const process = await appServer("normal");
+    process.setDynamicToolHandler(async (call) => ({
+      success: call.tool === "opentag_message_send" && (call.arguments as { text?: string }).text === "hello",
+      text: JSON.stringify({ state: "succeeded" }),
+    }));
+    await process.initialize("0.0.1");
+    await expect(process.request("fixture/hosted-tool", {})).resolves.toEqual({
+      contentItems: [{ type: "inputText", text: JSON.stringify({ state: "succeeded" }) }],
+      success: true,
+    });
+    await process.close();
+  });
+
   it("D-11 closes the watched provider process group including descendants", async () => {
     const process = await appServer("process-tree");
     const descendant = new Promise<number>((resolve) => {

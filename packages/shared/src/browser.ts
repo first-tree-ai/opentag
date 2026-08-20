@@ -4,6 +4,7 @@ export * from "./computer.js";
 export * from "./errors.js";
 export * from "./health.js";
 export * from "./http-paths.js";
+export * from "./integration.js";
 export * from "./invitation.js";
 export * from "./runtime-protocol.js";
 export * from "./team.js";

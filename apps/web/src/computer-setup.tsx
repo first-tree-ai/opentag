@@ -3,7 +3,9 @@ import { useEffect, useRef, useState } from "react";
 import { browserApi } from "./api.js";
 
 const COMPUTER_POLL_INTERVAL_MS = 1_500;
+const COPY_FEEDBACK_MS = 2_000;
 const CONNECT_CODE_EXPIRED_MESSAGE = "This Computer connection command expired. Generate a new one to continue.";
+const COPY_FALLBACK_HINT = "Copying is unavailable here. The command is selected; press Ctrl or Cmd + C.";
 
 export interface ComputerSetupProps {
   teamId: string;
@@ -12,6 +14,22 @@ export interface ComputerSetupProps {
 
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error && cause.message ? cause.message : fallback;
+}
+
+/** Selects the command so a browser without clipboard access still allows a manual copy. */
+function selectCommand(node: HTMLElement | null): void {
+  const selection = window.getSelection?.();
+  if (!node || !selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+/** Renders the remaining connect-code validity as m:ss without rounding a live second up. */
+function formatRemaining(remainingMs: number): string {
+  const seconds = Math.max(0, Math.ceil(remainingMs / 1_000));
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 export function ComputerSetup({ teamId, onConnected }: ComputerSetupProps) {
@@ -24,10 +42,15 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
   const [waitingForComputer, setWaitingForComputer] = useState(false);
   const [computerConnected, setComputerConnected] = useState(false);
   const [pollCycle, setPollCycle] = useState(0);
+  const [remainingMs, setRemainingMs] = useState<number>();
+  const [copied, setCopied] = useState(false);
+  const [copyHint, setCopyHint] = useState<string>();
   const baselineConnections = useRef<Map<string, string | null>>(new Map());
   const connectCodeExpiresAt = useRef(0);
   const connectAttempt = useRef(0);
   const activePollCycle = useRef(0);
+  const copyResetTimer = useRef(0);
+  const commandRef = useRef<HTMLElement>(null);
   const mounted = useRef(false);
   const onConnectedRef = useRef(onConnected);
   onConnectedRef.current = onConnected;
@@ -38,8 +61,27 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
       mounted.current = false;
       connectAttempt.current += 1;
       activePollCycle.current += 1;
+      window.clearTimeout(copyResetTimer.current);
     };
   }, []);
+
+  async function copyCommand(command: string) {
+    try {
+      await navigator.clipboard.writeText(command);
+      if (!mounted.current) return;
+      setCopyHint(undefined);
+      setCopied(true);
+      window.clearTimeout(copyResetTimer.current);
+      copyResetTimer.current = window.setTimeout(() => {
+        if (mounted.current) setCopied(false);
+      }, COPY_FEEDBACK_MS);
+    } catch {
+      if (!mounted.current) return;
+      setCopied(false);
+      selectCommand(commandRef.current);
+      setCopyHint(COPY_FALLBACK_HINT);
+    }
+  }
 
   async function connectComputer() {
     const attempt = connectAttempt.current + 1;
@@ -59,6 +101,9 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
       setError(undefined);
       setBootstrapCommand(issued.bootstrapCommand);
       setComputerConnected(false);
+      setRemainingMs(Math.max(0, connectCodeExpiresAt.current - Date.now()));
+      setCopied(false);
+      setCopyHint(undefined);
       setPollCycle(cycle);
       setWaitingForComputer(true);
     } catch (cause) {
@@ -81,11 +126,14 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
         window.clearInterval(pollTimer);
         setWaitingForComputer(false);
         setComputerConnected(false);
+        setRemainingMs(undefined);
         setError(CONNECT_CODE_EXPIRED_MESSAGE);
       },
       Math.max(0, expiresAt - Date.now()),
     );
     pollTimer = window.setInterval(() => {
+      // The existing poll cycle also drives the countdown, so the command needs no timer of its own.
+      setRemainingMs(Math.max(0, expiresAt - Date.now()));
       void browserApi.ownComputers().then(
         (value) => {
           if (!active || completed || activePollCycle.current !== pollCycle) return;
@@ -103,6 +151,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
           window.clearTimeout(expiryTimer);
           setWaitingForComputer(false);
           setComputerConnected(true);
+          setRemainingMs(undefined);
           onConnectedRef.current?.();
         },
         (cause: unknown) => {
@@ -129,8 +178,17 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
       {bootstrapCommand ? (
         <>
           <pre>
-            <code>{bootstrapCommand}</code>
+            <code ref={commandRef}>{bootstrapCommand}</code>
           </pre>
+          <div className="connect-command-actions">
+            <button className="button secondary" type="button" onClick={() => void copyCommand(bootstrapCommand)}>
+              {copied ? "Copied" : "Copy command"}
+            </button>
+            {waitingForComputer && remainingMs !== undefined ? (
+              <p className="connect-command-meta">Expires in {formatRemaining(remainingMs)}</p>
+            ) : null}
+          </div>
+          {copyHint ? <p className="connect-command-meta">{copyHint}</p> : null}
           {waitingForComputer || computerConnected ? (
             <p role="status">{waitingForComputer ? "Waiting for the Computer to connect…" : "Computer connected."}</p>
           ) : null}

@@ -1,6 +1,6 @@
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { getChannelConfig } from "@opentag/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadDaemonEnvironment } from "../core/daemon/environment.js";
@@ -13,6 +13,7 @@ import {
 import {
   acquireServiceOperationLease,
   acquireServiceTargetLease,
+  buildServicePath,
   canonicalizeServiceHome,
   deriveServiceIdentity,
   escapeXml,
@@ -82,6 +83,23 @@ describe("daemon service primitives", () => {
         env: { PATH: `${installedBin}:${staleBin}` },
       }),
     ).resolves.toEqual({ args: [], program: currentDist });
+  });
+
+  it("builds a stable service PATH from trusted executable, user, and platform directories", () => {
+    const invocation = { args: [], program: "/opt/opentag/bin/opentag" };
+    const servicePath = buildServicePath(
+      invocation,
+      "linux",
+      "/home/test/.local/bin:relative:/opt/opentag/bin::/home/test/tools:/usr/bin",
+    ).split(":");
+
+    expect(servicePath[0]).toBe("/opt/opentag/bin");
+    expect(servicePath[1]).toBe(dirname(process.execPath));
+    expect(servicePath).toContain("/home/test/.local/bin");
+    expect(servicePath).toContain("/home/test/tools");
+    expect(servicePath).not.toContain("relative");
+    expect(servicePath.filter((entry) => entry === "/opt/opentag/bin")).toHaveLength(1);
+    expect(servicePath.filter((entry) => entry === "/usr/bin")).toHaveLength(1);
   });
 
   it("atomically replaces files and leaves no temporary files", async () => {

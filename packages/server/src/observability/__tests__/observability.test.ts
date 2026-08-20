@@ -396,6 +396,10 @@ describe("background and WebSocket tracing", () => {
           },
           targetExternalId: undefined,
         })
+        .mockResolvedValueOnce({
+          admitted: true,
+          result: Promise.resolve({ ok: false, category: "unknown", code: outboundProviderCode }),
+        })
         .mockResolvedValueOnce(undefined),
     };
     const outboundProviderFailure = new OutboundMessageService(

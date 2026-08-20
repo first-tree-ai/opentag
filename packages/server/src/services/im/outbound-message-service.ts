@@ -58,6 +58,7 @@ export interface OutboundResult {
 }
 
 export class OutboundMessageService {
+  readonly #afterAgentLocked?: () => Promise<void>;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
   readonly #resolveAdapter: (imBindingId: string, generation: number) => Promise<ImProviderAdapter<unknown>>;
@@ -65,8 +66,9 @@ export class OutboundMessageService {
   constructor(
     database: DatabaseClient,
     resolveAdapter: (imBindingId: string, generation: number) => Promise<ImProviderAdapter<unknown>>,
-    options: { now?: () => Date } = {},
+    options: { afterAgentLocked?: () => Promise<void>; now?: () => Date } = {},
   ) {
+    this.#afterAgentLocked = options.afterAgentLocked;
     this.#database = database;
     this.#resolveAdapter = resolveAdapter;
     this.#now = options.now ?? (() => new Date());
@@ -109,6 +111,13 @@ export class OutboundMessageService {
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`im-outbound:${input.requestId}`}, 0))`,
       );
+      const [activeAgent] = await transaction
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.id, input.agentId), eq(agents.status, "active")))
+        .limit(1)
+        .for("update");
+      if (!activeAgent) throw new Error("OUTBOUND_AGENT_NOT_ACTIVE");
       const [scope] = await transaction
         .select({
           session: sessions,
@@ -134,7 +143,7 @@ export class OutboundMessageService {
             eq(sessions.id, input.sessionId),
             isNull(sessions.endedAt),
             ne(imBindings.status, "disabled"),
-            isNull(agents.deletedAt),
+            eq(agents.status, "active"),
           ),
         )
         .limit(1)
@@ -246,8 +255,15 @@ export class OutboundMessageService {
     }
     const { request, scope, targetExternalId } = prepared;
     setActiveSpanAttributes(imAttrs({ provider: scope.imBinding.provider, bindingId: scope.imBinding.id }));
-    let providerResult: ProviderWriteResult;
-    try {
+    const admission = await this.#database.transaction(async (transaction) => {
+      const [agent] = await transaction
+        .select({ status: agents.status })
+        .from(agents)
+        .where(eq(agents.id, input.agentId))
+        .limit(1)
+        .for("update");
+      if (agent?.status !== "active") return { admitted: false } as const;
+      await this.#afterAgentLocked?.();
       const adapter = await this.#resolveAdapter(scope.imBinding.id, request.admittedCredentialGeneration).catch(
         (error: unknown) => {
           const code =
@@ -258,25 +274,43 @@ export class OutboundMessageService {
         },
       );
       if ("resolutionFailure" in adapter) {
-        providerResult = adapter.resolutionFailure;
-      } else if (input.operation === "react") {
-        providerResult = await adapter.react({
-          conversationExternalId: scope.session.channelId,
-          messageExternalId: targetExternalId as string,
-          emoji: input.emoji as string,
-        });
-      } else {
-        providerResult = await adapter.send({
-          requestId: input.requestId,
-          conversationExternalId: scope.session.channelId,
-          fallbackText: input.content?.fallbackText ?? "",
-          threadKey: scope.session.threadKey ?? undefined,
-          replyToExternalId: targetExternalId,
-        });
+        return { admitted: true, result: Promise.resolve(adapter.resolutionFailure) } as const;
       }
-    } catch {
-      providerResult = { ok: false, category: "unknown", code: "provider_unavailable" };
+      try {
+        const result =
+          input.operation === "react"
+            ? adapter.react({
+                conversationExternalId: scope.session.channelId,
+                messageExternalId: targetExternalId as string,
+                emoji: input.emoji as string,
+              })
+            : adapter.send({
+                requestId: input.requestId,
+                conversationExternalId: scope.session.channelId,
+                fallbackText: input.content?.fallbackText ?? "",
+                threadKey: scope.session.threadKey ?? undefined,
+                replyToExternalId: targetExternalId,
+              });
+        return { admitted: true, result } as const;
+      } catch {
+        return {
+          admitted: true,
+          result: Promise.resolve({ ok: false, category: "unknown", code: "provider_unavailable" } as const),
+        } as const;
+      }
+    });
+    if (!admission.admitted) {
+      await this.#database
+        .update(imOutboundRequests)
+        .set({ state: "deterministic_failed", resultCode: "agent_not_active", completedAt: this.#now() })
+        .where(and(eq(imOutboundRequests.requestId, request.requestId), eq(imOutboundRequests.state, "prepared")));
+      throw new Error("OUTBOUND_AGENT_NOT_ACTIVE");
     }
+    const providerResult: ProviderWriteResult = await admission.result.catch(() => ({
+      ok: false,
+      category: "unknown",
+      code: "provider_unavailable",
+    }));
 
     const mapped = this.#mapProviderResult(providerResult);
     await this.#database.transaction(async (transaction) => {

@@ -109,6 +109,12 @@ export async function writeDurableJson(path: string, value: unknown): Promise<vo
   await writeDurableFile(path, `${JSON.stringify(value, undefined, 2)}\n`, 0o600);
 }
 
+export async function removeDurableFile(path: string): Promise<void> {
+  await assertReplaceableFile(path);
+  await rm(path);
+  await syncDirectory(dirname(path));
+}
+
 export async function assertRealDirectory(path: string): Promise<void> {
   const status = await lstat(path);
   if (!status.isDirectory() || status.isSymbolicLink()) {

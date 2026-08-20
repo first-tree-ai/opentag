@@ -1,0 +1,222 @@
+import { createHmac } from "node:crypto";
+import { Writable } from "node:stream";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createApp } from "../app.js";
+
+const now = new Date("2026-08-20T00:00:00.000Z");
+const timestamp = String(Math.floor(now.getTime() / 1000));
+const apps: ReturnType<typeof createApp>[] = [];
+
+afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
+
+function binding() {
+  return {
+    imBindingId: "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0",
+    generation: 5,
+    appId: "A1",
+    teamId: "T1",
+    botUserId: "U_BOT",
+    botAccessToken: "xoxb-sensitive",
+    signingSecret: "signing-sensitive",
+  };
+}
+
+function signedRequest(envelope: Record<string, unknown>, signingSecret = binding().signingSecret) {
+  const payload = JSON.stringify(envelope);
+  const signature = `v0=${createHmac("sha256", signingSecret).update(`v0:${timestamp}:${payload}`).digest("hex")}`;
+  return {
+    method: "POST" as const,
+    url: "/api/v1/im-bindings/slack/events",
+    payload,
+    headers: {
+      "content-type": "application/json",
+      "x-slack-request-timestamp": timestamp,
+      "x-slack-signature": signature,
+    },
+  };
+}
+
+function createServices(overrides: Record<string, unknown> = {}, loggerStream?: Writable) {
+  const current = binding();
+  const imBindings = {
+    findSlackIngressBinding: vi.fn().mockResolvedValue(current),
+    disableFromProvider: vi.fn().mockResolvedValue(undefined),
+    requireReauthorization: vi.fn().mockResolvedValue(undefined),
+  };
+  const inbox = { ingest: vi.fn().mockResolvedValue(undefined) };
+  const adapter = { normalizeInbound: vi.fn().mockReturnValue([]) };
+  const createAdapter = vi.fn(() => adapter);
+  const app = createApp({
+    loggerStream,
+    slackEvents: {
+      now: () => now,
+      imBindings: imBindings as never,
+      inbox: inbox as never,
+      createAdapter: createAdapter as never,
+      ...overrides,
+    },
+  });
+  apps.push(app);
+  return { app, imBindings, inbox, adapter, createAdapter, current };
+}
+
+describe("Slack Events API ingress", () => {
+  it("rejects non-buffer and unroutable bodies before credential lookup", async () => {
+    const { app, imBindings } = createServices();
+    const nonBuffer = await app.inject({
+      method: "POST",
+      url: "/api/v1/im-bindings/slack/events",
+      headers: { "content-type": "text/plain" },
+      payload: "not-json",
+    });
+    expect(nonBuffer.statusCode).toBe(400);
+    expect(nonBuffer.json()).toEqual({ error: "invalid_body" });
+
+    const unroutable = await app.inject({
+      method: "POST",
+      url: "/api/v1/im-bindings/slack/events",
+      headers: { "content-type": "application/json" },
+      payload: JSON.stringify({ type: "event_callback" }),
+    });
+    expect(unroutable.statusCode).toBe(400);
+    expect(unroutable.json()).toEqual({ error: "invalid_route" });
+    expect(imBindings.findSlackIngressBinding).not.toHaveBeenCalled();
+  });
+
+  it("rejects missing bindings, invalid signatures, and mismatched verified identities", async () => {
+    const missing = createServices();
+    missing.imBindings.findSlackIngressBinding.mockResolvedValue(undefined);
+    const envelope = { type: "url_verification", api_app_id: "A1", team_id: "T1", challenge: "ok" };
+    const missingResponse = await missing.app.inject(signedRequest(envelope));
+    expect(missingResponse.statusCode).toBe(404);
+
+    const invalid = createServices();
+    const invalidResponse = await invalid.app.inject(signedRequest(envelope, "wrong-secret"));
+    expect(invalidResponse.statusCode).toBe(401);
+    expect(invalidResponse.json()).toEqual({ error: "invalid_signature" });
+
+    const mismatched = createServices();
+    mismatched.imBindings.findSlackIngressBinding.mockResolvedValue({ ...binding(), appId: "A2" });
+    const mismatchResponse = await mismatched.app.inject(signedRequest(envelope));
+    expect(mismatchResponse.statusCode).toBe(401);
+    expect(mismatchResponse.json()).toEqual({ error: "binding_mismatch" });
+  });
+
+  it("validates URL verification and event callback envelope fields", async () => {
+    const { app } = createServices();
+    const invalidChallenge = await app.inject(
+      signedRequest({ type: "url_verification", api_app_id: "A1", team_id: "T1" }),
+    );
+    expect(invalidChallenge.statusCode).toBe(400);
+    expect(invalidChallenge.json()).toEqual({ error: "invalid_challenge" });
+
+    const unsupported = await app.inject(
+      signedRequest({ type: "event_callback", api_app_id: "A1", team_id: "T1", event_id: "Ev1" }),
+    );
+    expect(unsupported.statusCode).toBe(400);
+    expect(unsupported.json()).toEqual({ error: "unsupported_envelope" });
+  });
+
+  it("disables an uninstalled binding and fences Slack token revocation", async () => {
+    const { app, imBindings, current } = createServices();
+    const base = { type: "event_callback", api_app_id: "A1", team_id: "T1", event_id: "Ev1" };
+
+    await expect(app.inject(signedRequest({ ...base, event: { type: "app_uninstalled" } }))).resolves.toMatchObject({
+      statusCode: 200,
+    });
+    expect(imBindings.disableFromProvider).toHaveBeenCalledWith(current.imBindingId);
+
+    await app.inject(
+      signedRequest({ ...base, event_id: "Ev2", event: { type: "tokens_revoked", tokens: { bot: ["OTHER"] } } }),
+    );
+    expect(imBindings.requireReauthorization).not.toHaveBeenCalled();
+
+    await app.inject(
+      signedRequest({
+        ...base,
+        event_id: "Ev3",
+        event: { type: "tokens_revoked", tokens: { oauth: ["U_OTHER"], bot: [current.botUserId] } },
+      }),
+    );
+    expect(imBindings.requireReauthorization).toHaveBeenCalledWith(current.imBindingId, "SLACK_TOKEN_REVOKED");
+  });
+
+  it("ingests every normalized event with the verified binding generation", async () => {
+    const { app, adapter, inbox, createAdapter, current } = createServices();
+    const events = [{ providerEventId: "Ev1:1" }, { providerEventId: "Ev1:2" }];
+    adapter.normalizeInbound.mockReturnValue(events);
+    const envelope = {
+      type: "event_callback",
+      api_app_id: "A1",
+      team_id: "T1",
+      event_id: "Ev1",
+      event_time: 1_724_025_600,
+      event: { type: "app_mention", channel: "C1", text: "hello" },
+    };
+
+    const response = await app.inject(signedRequest(envelope));
+
+    expect(response.statusCode).toBe(200);
+    expect(createAdapter).toHaveBeenCalledWith(current);
+    expect(adapter.normalizeInbound).toHaveBeenCalledWith({
+      eventId: "Ev1",
+      appId: current.appId,
+      teamId: current.teamId,
+      botUserId: current.botUserId,
+      event: envelope.event,
+      eventTime: envelope.event_time,
+    });
+    expect(inbox.ingest.mock.calls).toEqual([
+      [current.imBindingId, current.generation, events[0], undefined, { provider: "slack" }],
+      [current.imBindingId, current.generation, events[1], undefined, { provider: "slack" }],
+    ]);
+  });
+
+  it.each(["adapter factory", "normalization", "inbox ingestion"])(
+    "does not expose credentials or raw provider failures from %s",
+    async (failurePoint) => {
+      let logs = "";
+      const loggerStream = new Writable({
+        write(chunk, _encoding, callback) {
+          logs += chunk.toString();
+          callback();
+        },
+      });
+      const { app, adapter, createAdapter, inbox } = createServices({}, loggerStream);
+      const failure = new Error("raw-provider-error xoxb-sensitive signing-sensitive");
+      if (failurePoint === "adapter factory")
+        createAdapter.mockImplementation(() => {
+          throw failure;
+        });
+      if (failurePoint === "normalization")
+        adapter.normalizeInbound.mockImplementation(() => {
+          throw failure;
+        });
+      if (failurePoint === "inbox ingestion") {
+        adapter.normalizeInbound.mockReturnValue([{ providerEventId: "Ev1" }]);
+        inbox.ingest.mockRejectedValue(failure);
+      }
+      const response = await app.inject(
+        signedRequest({
+          type: "event_callback",
+          api_app_id: "A1",
+          team_id: "T1",
+          event_id: "Ev1",
+          event: { type: "app_mention", text: "raw-request-body-detail" },
+        }),
+      );
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toMatchObject({ error: { code: "INTERNAL_ERROR", category: "transient" } });
+      expect(response.body).not.toContain("raw-provider-error");
+      expect(response.body).not.toContain("xoxb-sensitive");
+      expect(response.body).not.toContain("signing-sensitive");
+      expect(response.body).not.toContain("raw-request-body-detail");
+      expect(logs).toContain("SLACK_EVENT_PROCESSING_FAILED");
+      expect(logs).not.toContain("raw-provider-error");
+      expect(logs).not.toContain("xoxb-sensitive");
+      expect(logs).not.toContain("signing-sensitive");
+      expect(logs).not.toContain("raw-request-body-detail");
+    },
+  );
+});

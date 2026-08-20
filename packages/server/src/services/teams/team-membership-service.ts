@@ -1,4 +1,7 @@
 import {
+  type CreateTeamRequest,
+  CreateTeamRequestSchema,
+  type CreateTeamResponse,
   type ListTeamComputersConfigResponse,
   type ListTeamComputersResponse,
   type ListTeamMembersConfigResponse,
@@ -12,12 +15,24 @@ import {
   type UpdateTeamProfileRequest,
   UpdateTeamProfileRequestSchema,
 } from "@opentag/shared";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agents, computers, memberships, teams, users } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
+
+/**
+ * The one invariant: a user holds at most this many active memberships. Every writer that can raise the
+ * count — creation, invitation redemption and admin restore — checks it under a lock on the affected
+ * user's row, so concurrent writers cannot both pass. It bounds the membership fan-out that
+ * `#resolveActiveUser` re-reads on every authenticated request.
+ *
+ * It is deliberately NOT a durable quota on Team creation: a creator who promotes another admin may leave,
+ * which frees a slot while the Team and its canonical name persist. Bounding self-serve creation itself
+ * needs a durable record of authorship, which the schema does not carry.
+ */
+export const TEAM_MEMBERSHIP_LIMIT = 50;
 
 function isTeamNameConflict(error: unknown): boolean {
   let current = error;
@@ -39,6 +54,7 @@ function isTeamNameConflict(error: unknown): boolean {
 
 export class TeamMembershipService {
   readonly #database: DatabaseClient;
+  readonly #afterMembershipUserLocked: (() => Promise<void>) | undefined;
   readonly #afterTeamProfileAuthorityLocked: (() => Promise<void>) | undefined;
   readonly #now: () => Date;
   readonly #presenceTimeoutMs: number;
@@ -46,12 +62,14 @@ export class TeamMembershipService {
   constructor(
     database: DatabaseClient,
     options: {
+      afterMembershipUserLocked?: () => Promise<void>;
       afterTeamProfileAuthorityLocked?: () => Promise<void>;
       now?: () => Date;
       presenceTimeoutMs?: number;
     } = {},
   ) {
     this.#database = database;
+    this.#afterMembershipUserLocked = options.afterMembershipUserLocked;
     this.#afterTeamProfileAuthorityLocked = options.afterTeamProfileAuthorityLocked;
     this.#now = options.now ?? (() => new Date());
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
@@ -108,7 +126,8 @@ export class TeamMembershipService {
     userId: string,
     teamId: string,
     role: MembershipRole,
-  ): Promise<typeof memberships.$inferSelect> {
+  ): Promise<{ membership: typeof memberships.$inferSelect; transitioned: boolean }> {
+    await this.lockUserForMembershipWrite(transaction, userId);
     await this.lockTeamForMutation(transaction, teamId);
     const [user] = await transaction.select().from(users).where(eq(users.id, userId)).limit(1);
     if (!user || user.suspendedAt) {
@@ -128,7 +147,8 @@ export class TeamMembershipService {
         403,
       );
     }
-    if (existing?.status === "active") return existing;
+    if (existing?.status === "active") return { membership: existing, transitioned: false };
+    await this.#requireMembershipHeadroom(transaction, userId);
     const now = this.#now();
     const [membership] = existing
       ? await transaction
@@ -141,7 +161,34 @@ export class TeamMembershipService {
           .values({ teamId, userId, role, status: "active", createdAt: now, updatedAt: now })
           .returning();
     if (!membership) throw new Error("Invitation redemption did not return a membership");
-    return membership;
+    return { membership, transitioned: true };
+  }
+
+  /**
+   * Takes the membership-write lock on a user. Every path that can change how many Teams a user belongs to
+   * takes this BEFORE any Team lock, so the two never invert: post-authentication redemption already locks
+   * the user first, and a path that locked the Team first would deadlock against it. Re-taking it inside one
+   * transaction is a no-op.
+   */
+  async lockUserForMembershipWrite(transaction: DatabaseTransaction, userId: string): Promise<void> {
+    await transaction.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1).for("update");
+    await this.#afterMembershipUserLocked?.();
+  }
+
+  /** Refuses the write that would take the user past TEAM_MEMBERSHIP_LIMIT; the caller holds the user lock. */
+  async #requireMembershipHeadroom(transaction: DatabaseTransaction, userId: string): Promise<void> {
+    const held = await transaction
+      .select({ teamId: memberships.teamId })
+      .from(memberships)
+      .where(and(eq(memberships.userId, userId), eq(memberships.status, "active")));
+    if (held.length >= TEAM_MEMBERSHIP_LIMIT) {
+      throw new AuthServiceError(
+        "TEAM_LIMIT_REACHED",
+        "deterministic",
+        `A user can hold at most ${TEAM_MEMBERSHIP_LIMIT} active Team memberships`,
+        409,
+      );
+    }
   }
 
   async bootstrapAdminInTransaction(transaction: DatabaseTransaction, userId: string, teamId: string): Promise<void> {
@@ -162,6 +209,54 @@ export class TeamMembershipService {
       createdAt: now,
       updatedAt: now,
     });
+  }
+
+  /**
+   * Creates a Team and installs its creator as the first admin in one transaction.
+   * Team creation is always an explicit user action; no caller may provision a Team implicitly.
+   */
+  async createTeam(callerUserId: string, rawInput: CreateTeamRequest): Promise<CreateTeamResponse> {
+    const input = CreateTeamRequestSchema.parse(rawInput);
+    try {
+      return await this.#database.transaction(async (transaction) => {
+        const [user] = await transaction
+          .select({ suspendedAt: users.suspendedAt })
+          .from(users)
+          .where(eq(users.id, callerUserId))
+          .limit(1)
+          .for("update");
+        if (!user) throw new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "The token is invalid", 401);
+        if (user.suspendedAt) {
+          throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
+        }
+        await this.#requireMembershipHeadroom(transaction, callerUserId);
+        const now = this.#now();
+        const [team] = await transaction
+          .insert(teams)
+          .values({ name: input.name, displayName: input.displayName, createdAt: now, updatedAt: now })
+          .returning();
+        if (!team) throw new Error("Team insert did not return a row");
+        await this.bootstrapAdminInTransaction(transaction, callerUserId, team.id);
+        return {
+          id: team.id,
+          name: team.name,
+          displayName: team.displayName,
+          role: "admin",
+          createdAt: team.createdAt.toISOString(),
+          updatedAt: team.updatedAt.toISOString(),
+        };
+      });
+    } catch (error) {
+      if (isTeamNameConflict(error)) {
+        throw new AuthServiceError(
+          "TEAM_NAME_CONFLICT",
+          "deterministic",
+          "Another Team already uses this canonical name",
+          409,
+        );
+      }
+      throw error;
+    }
   }
 
   async updateTeamProfile(
@@ -300,11 +395,13 @@ export class TeamMembershipService {
   async restore(callerUserId: string, teamId: string, userId: string, role: unknown): Promise<TeamMemberAdminConfig> {
     const parsedRole = MembershipRoleSchema.parse(role);
     return this.#database.transaction(async (transaction) => {
+      await this.lockUserForMembershipWrite(transaction, userId);
       await this.requireActiveMembershipForMutation(transaction, callerUserId, teamId, "admin");
       const target = await this.#lockMembership(transaction, teamId, userId);
       if (target.status === "active") {
         throw new AuthServiceError("MEMBERSHIP_FORBIDDEN", "deterministic", "The Team member is already active", 409);
       }
+      await this.#requireMembershipHeadroom(transaction, userId);
       const [updated] = await transaction
         .update(memberships)
         .set({ status: "active", role: parsedRole, updatedAt: this.#now() })
@@ -387,7 +484,7 @@ export class TeamMembershipService {
       .innerJoin(computers, eq(computers.ownerUserId, memberships.userId))
       .leftJoin(
         agents,
-        and(eq(agents.teamId, memberships.teamId), eq(agents.computerId, computers.id), isNull(agents.deletedAt)),
+        and(eq(agents.teamId, memberships.teamId), eq(agents.computerId, computers.id), ne(agents.status, "deleted")),
       )
       .where(and(eq(memberships.teamId, teamId), eq(memberships.status, "active"), isNull(users.suspendedAt)))
       .orderBy(asc(computers.displayName), asc(computers.id), asc(agents.id));
@@ -432,7 +529,7 @@ export class TeamMembershipService {
     const [activeAgent] = await transaction
       .select({ id: agents.id })
       .from(agents)
-      .where(and(eq(agents.teamId, teamId), eq(agents.managerUserId, userId), isNull(agents.deletedAt)))
+      .where(and(eq(agents.teamId, teamId), eq(agents.managerUserId, userId), ne(agents.status, "deleted")))
       .limit(1);
     if (activeAgent) {
       throw new AuthServiceError(

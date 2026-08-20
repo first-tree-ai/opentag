@@ -9,7 +9,15 @@ export function formatAgentList(response: ListAgentsResponse): string {
   if (response.agents.length === 0) return "No Agents registered";
   return response.agents
     .map((agent) =>
-      [agent.name, agent.id, agent.displayName, agent.runtimeProvider, agent.computer.id, agent.receiveMode].join("\t"),
+      [
+        agent.name,
+        agent.id,
+        agent.displayName,
+        agent.status,
+        agent.runtimeProvider,
+        agent.computer.id,
+        agent.receiveMode,
+      ].join("\t"),
     )
     .join("\n");
 }
@@ -24,6 +32,7 @@ export function formatAgent(agent: AgentAdminConfig): string {
     `computerId\t${agent.computerId}`,
     `runtimeProvider\t${agent.runtimeProvider}`,
     `receiveMode\t${agent.receiveMode}`,
+    `status\t${agent.status}`,
     `revision\t${agent.revision}`,
     `runtimeConfig.revision\t${agent.runtimeConfig.revision}`,
     `runtimeConfig.model\t${agent.runtimeConfig.model ?? ""}`,

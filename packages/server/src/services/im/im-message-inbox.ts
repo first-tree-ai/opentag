@@ -95,6 +95,23 @@ export class ImMessageInbox {
               return result;
             };
             const now = this.#now();
+            const [candidate] = await transaction
+              .select({ agentId: imBindings.agentId })
+              .from(imBindings)
+              .where(eq(imBindings.id, imBindingId))
+              .limit(1);
+            if (!candidate) {
+              throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
+            }
+            const [agent] = await transaction
+              .select()
+              .from(agents)
+              .where(and(eq(agents.id, candidate.agentId), ne(agents.status, "deleted")))
+              .limit(1)
+              .for("update");
+            if (!agent) {
+              throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
+            }
             await transaction
               .update(imBindings)
               .set({ externalTeamId: event.externalTeamId, updatedAt: now })
@@ -117,11 +134,12 @@ export class ImMessageInbox {
                   eq(imBindings.id, imBindingId),
                   eq(imBindings.status, "active"),
                   eq(imBindings.credentialGeneration, credentialGeneration),
-                  isNull(agents.deletedAt),
+                  eq(agents.id, candidate.agentId),
+                  ne(agents.status, "deleted"),
                 ),
               )
               .limit(1)
-              .for("share", { of: imBindings });
+              .for("update", { of: imBindings });
             if (!scope) {
               throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
             }
@@ -287,6 +305,9 @@ export class ImMessageInbox {
             if (isSelf) return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "self_message");
             if (conversationKind === null) {
               return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "no_delivery");
+            }
+            if (agent.status !== "active") {
+              return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "agent_inactive");
             }
             const direct =
               conversationKind === "dm" ||

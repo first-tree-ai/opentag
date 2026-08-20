@@ -8,6 +8,8 @@ export interface AgentApiClient
     | "getAgent"
     | "getAgentConfig"
     | "updateAgent"
+    | "suspendAgent"
+    | "reactivateAgent"
     | "deleteAgent"
     | "listComputers"
     | "me"

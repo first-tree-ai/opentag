@@ -11,6 +11,7 @@ import type {
   TeamMemberSummary,
   UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
+import { MembershipRoleSchema } from "@opentag/shared/browser";
 import { toString as qrToString } from "qrcode";
 import {
   createContext,
@@ -24,6 +25,7 @@ import {
 } from "react";
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ApiError, browserApi } from "./api.js";
+import { CreateTeamForm } from "./create-team-form.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
 
@@ -54,9 +56,11 @@ function useResource<T>(loader: () => Promise<T>, key: string): LoadState<T> {
 function AsyncState<T>({ state, children }: { state: LoadState<T>; children: (value: T) => ReactNode }) {
   if (state.kind === "loading")
     return (
-      <p className="muted" role="status">
-        Loading current server state…
-      </p>
+      <div aria-label="Loading current server state" className="loading-state" role="status">
+        <span />
+        <span />
+        <span />
+      </div>
     );
   if (state.kind === "error")
     return (
@@ -88,7 +92,7 @@ export function AppRouter() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/invites/:token" element={<InvitePage />} />
-      <Route path="/teams/new" element={<UnavailablePage title="Create Team" />} />
+      <Route path="/teams/new" element={<NewTeamPage />} />
       <Route element={<AuthenticatedTeamGate />}>
         <Route path="/onboarding" element={<OnboardingPage />} />
         <Route element={<AppShell />}>
@@ -133,18 +137,58 @@ function LoginPage() {
 
 function InvitePage() {
   const { token = "" } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
+  const selectedTeamHint = new URLSearchParams(location.search).get("joinedTeamId") ?? undefined;
   const preview = useResource(() => browserApi.invitationPreview(token), token);
   const [error, setError] = useState<string>();
-  async function join() {
-    try {
-      await browserApi.redeemInvitation(token);
-      navigate("/agents");
-    } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 401) {
-        navigate(`/login?next=${encodeURIComponent(`/invites/${token}`)}`);
-      } else setError(cause instanceof Error ? cause.message : "The invitation could not be redeemed");
-    }
+  const [joining, setJoining] = useState(false);
+  const joinInFlight = useRef(false);
+  const completeJoin = useCallback(
+    async (serverSelectedTeamId?: string) => {
+      if (joinInFlight.current) return;
+      joinInFlight.current = true;
+      setJoining(true);
+      try {
+        if (serverSelectedTeamId) {
+          const me = await browserApi.me();
+          if (me.memberships.some((membership: MeMembership) => membership.teamId === serverSelectedTeamId)) {
+            clearPendingInvitation(token);
+            window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, serverSelectedTeamId);
+            navigate("/agents", { replace: true });
+            return;
+          }
+        }
+        const redemption = await browserApi.redeemInvitation(token);
+        const me = await browserApi.me();
+        if (!me.memberships.some((membership: MeMembership) => membership.teamId === redemption.membership.teamId)) {
+          throw new Error("The invited Team is not available to the signed-in account");
+        }
+        clearPendingInvitation(token);
+        window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, redemption.membership.teamId);
+        navigate("/agents", { replace: true });
+      } catch (cause) {
+        if (cause instanceof ApiError && cause.status === 401) {
+          rememberPendingInvitation(token);
+          navigate(`/login?next=${encodeURIComponent(`/invites/${token}`)}`);
+        } else {
+          if (!serverSelectedTeamId) clearPendingInvitation(token);
+          setError(cause instanceof Error ? cause.message : "The invitation could not be redeemed");
+        }
+      } finally {
+        joinInFlight.current = false;
+        setJoining(false);
+      }
+    },
+    [navigate, token],
+  );
+  useEffect(() => {
+    if (readPendingInvitation() === token) void completeJoin(selectedTeamHint);
+  }, [completeJoin, selectedTeamHint, token]);
+  function join() {
+    setError(undefined);
+    rememberPendingInvitation(token);
+    void completeJoin(selectedTeamHint);
   }
   return (
     <main className="center-card">
@@ -156,8 +200,8 @@ function InvitePage() {
             <p>
               This invitation grants the {value.role} role and expires {formatDate(value.expiresAt)}.
             </p>
-            <button className="button" type="button" onClick={join}>
-              Join Team
+            <button className="button" disabled={joining} type="button" onClick={join}>
+              {joining ? "Joining…" : "Join Team"}
             </button>
           </>
         )}
@@ -167,6 +211,53 @@ function InvitePage() {
           {error}
         </div>
       ) : null}
+    </main>
+  );
+}
+
+const SELECTED_TEAM_STORAGE_KEY = "opentag.selectedTeamId";
+const PENDING_INVITATION_STORAGE_KEY = "opentag.pendingInvitationToken";
+
+function readPendingInvitation(): string | undefined {
+  try {
+    return window.sessionStorage.getItem(PENDING_INVITATION_STORAGE_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function rememberPendingInvitation(token: string): void {
+  try {
+    window.sessionStorage.setItem(PENDING_INVITATION_STORAGE_KEY, token);
+  } catch {
+    // The explicit Join action can still continue when browser storage is unavailable.
+  }
+}
+
+function clearPendingInvitation(token: string): void {
+  try {
+    if (window.sessionStorage.getItem(PENDING_INVITATION_STORAGE_KEY) === token) {
+      window.sessionStorage.removeItem(PENDING_INVITATION_STORAGE_KEY);
+    }
+  } catch {
+    // There is no pending browser state to clean up when storage is unavailable.
+  }
+}
+
+function NewTeamPage() {
+  const navigate = useNavigate();
+  return (
+    <main className="center-card">
+      <span className="eyebrow">OpenTag</span>
+      <h1>Create Team</h1>
+      <p>A Team holds your members, Agents and permissions. You become its first Team Admin.</p>
+      <CreateTeamForm
+        onCreated={(created) => {
+          window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, created.id);
+          navigate("/agents");
+        }}
+        onUnauthenticated={() => navigate(`/login?next=${encodeURIComponent("/teams/new")}`)}
+      />
     </main>
   );
 }
@@ -185,10 +276,11 @@ function AuthenticatedTeamGate() {
       {(me) => {
         const stored = readTeamPreference();
         const membership = me.memberships.find((item: MeMembership) => item.teamId === stored) ?? me.memberships[0];
-        if (!membership) return <UnavailablePage title="No active Team" />;
+        // Creating or joining a Team is the first onboarding step, so a Team-less session is sent there.
+        if (!membership) return <Navigate replace to="/teams/new" />;
         const selectTeam = (teamId: string) => {
           if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
-          window.localStorage.setItem("opentag.selectedTeamId", teamId);
+          window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, teamId);
           navigate(location.pathname, { replace: true });
           window.location.reload();
         };
@@ -203,37 +295,80 @@ function AuthenticatedTeamGate() {
 }
 
 function readTeamPreference(): string | undefined {
-  const value = window.localStorage.getItem("opentag.selectedTeamId");
+  const value = window.localStorage.getItem(SELECTED_TEAM_STORAGE_KEY);
   return value && value.length <= 64 ? value : undefined;
 }
 
 function AppShell() {
   const { me, membership, selectTeam } = useTeam();
+  const [navigationOpen, setNavigationOpen] = useState(false);
   return (
     <div className="shell">
-      <aside aria-label="Primary navigation">
-        <Link className="brand" to="/agents">
-          OpenTag
-        </Link>
-        <label className="team-picker">
-          <span>Team</span>
-          <select value={membership.teamId} onChange={(event) => selectTeam(event.currentTarget.value)}>
-            {me.memberships.map((item: MeMembership) => (
-              <option value={item.teamId} key={item.teamId}>
-                {item.teamDisplayName}
-              </option>
-            ))}
-          </select>
-        </label>
-        <nav>
-          <NavLink to="/agents">Agents</NavLink>
-          <NavLink to="/settings/team">Settings</NavLink>
-        </nav>
+      {navigationOpen ? (
+        <button
+          aria-label="Close navigation"
+          className="sidebar-backdrop is-visible"
+          type="button"
+          onClick={() => setNavigationOpen(false)}
+        />
+      ) : null}
+      <aside className={`sidebar${navigationOpen ? " is-open" : ""}`} aria-label="Primary navigation">
+        <div className="sidebar-top">
+          <Link className="brand" to="/agents" onClick={() => setNavigationOpen(false)}>
+            OpenTag
+          </Link>
+          <label className="team-switcher">
+            <span className="visually-hidden">Team</span>
+            <span className="team-avatar" aria-hidden="true">
+              {initials(membership.teamDisplayName)}
+            </span>
+            <select
+              aria-label="Team"
+              value={membership.teamId}
+              onChange={(event) => selectTeam(event.currentTarget.value)}
+            >
+              {me.memberships.map((item: MeMembership) => (
+                <option value={item.teamId} key={item.teamId}>
+                  {item.teamDisplayName}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Link className="team-switcher-action" to="/teams/new" onClick={() => setNavigationOpen(false)}>
+            Create Team
+          </Link>
+          <nav className="primary-nav">
+            <NavLink to="/agents" onClick={() => setNavigationOpen(false)}>
+              Agents
+            </NavLink>
+            <span className="nav-placeholder" aria-disabled="true">
+              Tasks
+            </span>
+          </nav>
+        </div>
+        <div className="sidebar-bottom">
+          <NavLink className="settings-link" to="/settings/team" onClick={() => setNavigationOpen(false)}>
+            Settings
+          </NavLink>
+          <div className="account-row">
+            <span className="account-avatar" aria-hidden="true">
+              {initials(me.user.displayName)}
+            </span>
+            <span>
+              <strong>{me.user.displayName}</strong>
+              <small>{membership.role === "admin" ? "Team Admin" : "Member"}</small>
+            </span>
+          </div>
+        </div>
       </aside>
       <div className="app-main">
-        <header className="topbar">
-          <span>{membership.role === "admin" ? "Team Admin" : "Member · read only"}</span>
-          <span>{me.user.displayName}</span>
+        <header className="mobile-shell-bar">
+          <Link className="mobile-brand" to="/agents" onClick={() => setNavigationOpen(false)}>
+            OpenTag
+          </Link>
+          <button className="secondary compact-button" type="button" onClick={() => setNavigationOpen(true)}>
+            Menu
+          </button>
         </header>
         <main className="content">
           <Outlet />
@@ -249,6 +384,7 @@ function AgentsPage() {
   return (
     <Page
       title="Agents"
+      description="Configure and monitor your team's long-lived Agent identities."
       action={
         membership.role === "admin" ? (
           <Link className="button" to="/agents/new">
@@ -257,45 +393,85 @@ function AgentsPage() {
         ) : undefined
       }
     >
-      <AsyncState state={state}>
-        {(value) =>
-          value.agents.length === 0 ? (
-            <EmptyState title="No Agents yet">A Team Admin can create the first Agent.</EmptyState>
-          ) : (
-            <div className="card-grid">
-              {value.agents.map((agent: AgentSummary) => (
-                <AgentCard agent={agent} key={agent.id} />
-              ))}
-            </div>
-          )
-        }
-      </AsyncState>
+      <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
     </Page>
   );
 }
 
-function AgentCard({ agent }: { agent: AgentSummary }) {
+function AgentsContent({ agents }: { agents: AgentSummary[] }) {
+  return agents.length === 0 ? (
+    <EmptyState title="No Agents yet">A Team Admin can create the first Agent.</EmptyState>
+  ) : (
+    <AgentList agents={agents} />
+  );
+}
+
+function AgentList({ agents }: { agents: AgentSummary[] }) {
   return (
-    <Link className="agent-card" to={`/agents/${agent.id}/general`}>
-      <div>
-        <strong>{agent.displayName}</strong>
-        <small>{agent.name}</small>
+    <section className="agent-list-section" aria-labelledby="agent-list-title">
+      <div className="list-heading">
+        <h2 id="agent-list-title">Team Agents</h2>
+        <span>{agents.length}</span>
       </div>
-      <dl>
-        <div>
-          <dt>Provider</dt>
-          <dd>{agent.runtimeProvider}</dd>
+      <div className="agent-table">
+        <div className="agent-table-header" aria-hidden="true">
+          <span>Agent</span>
+          <span>Readiness</span>
+          <span>Runtime</span>
+          <span>Messaging</span>
+          <span>Computer</span>
+          <span>Last active</span>
         </div>
-        <div>
-          <dt>Computer</dt>
-          <dd>{agent.computer.displayName}</dd>
+        <div className="agent-table-body">
+          {agents.map((agent) => (
+            <AgentRow agent={agent} key={agent.id} />
+          ))}
         </div>
-        <div>
-          <dt>IM policy</dt>
-          <dd>{agent.receiveMode}</dd>
-        </div>
-      </dl>
+      </div>
+    </section>
+  );
+}
+
+function AgentRow({ agent }: { agent: AgentSummary }) {
+  return (
+    <Link className="agent-row" to={`/agents/${agent.id}/general`}>
+      <span className="agent-identity">
+        <span className="agent-avatar" aria-hidden="true">
+          {initials(agent.displayName)}
+        </span>
+        <span>
+          <strong>{agent.displayName}</strong>
+          <small>{agent.name}</small>
+          <span className={`status-chip ${agent.status}`}>{titleCase(agent.status)}</span>
+        </span>
+      </span>
+      <span data-label="Readiness">
+        <StatusLabel tone="neutral">Unavailable</StatusLabel>
+      </span>
+      <span className="cell-stack" data-label="Runtime">
+        <strong>{providerLabel(agent.runtimeProvider)}</strong>
+        <small>Provider</small>
+      </span>
+      <span data-label="Messaging">
+        <StatusLabel tone="neutral">Unavailable</StatusLabel>
+      </span>
+      <span className="cell-stack" data-label="Computer">
+        <strong>{agent.computer.displayName}</strong>
+        <small>{titleCase(agent.computer.platform)}</small>
+      </span>
+      <span className="muted" data-label="Last active">
+        Unavailable
+      </span>
     </Link>
+  );
+}
+
+function StatusLabel({ tone, children }: { tone: "success" | "neutral"; children: ReactNode }) {
+  return (
+    <span className={`status-label ${tone}`}>
+      <span className="status-indicator" aria-hidden="true" />
+      {children}
+    </span>
   );
 }
 
@@ -321,7 +497,7 @@ function NewAgentPage() {
     }
   }
   return (
-    <Page title="Create Agent">
+    <Page title="Create Agent" description="Create the identity first. Complete its setup from the Agent overview.">
       <AsyncState state={computers}>
         {(value) =>
           value.computers.length === 0 ? (
@@ -372,32 +548,81 @@ function NewAgentPage() {
   );
 }
 
-const agentTabs = ["general", "runtime", "im", "resources", "integrations", "access"] as const;
+const agentSections = [
+  { key: "general", label: "Overview" },
+  { key: "runtime", label: "Runtime" },
+  { key: "im", label: "Messaging" },
+  { key: "resources", label: "Resources" },
+  { key: "integrations", label: "Integrations" },
+  { key: "access", label: "Access" },
+] as const;
 
 function AgentDetailPage() {
   const { agentId = "", tab = "general" } = useParams();
-  const state = useResource(() => browserApi.agent(agentId), agentId);
-  if (!agentTabs.includes(tab as (typeof agentTabs)[number])) return <NotFoundPage />;
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const navigate = useNavigate();
+  const state = useResource(() => browserApi.agent(agentId), `${agentId}:${refreshVersion}`);
+  const currentSection = agentSections.find((section) => section.key === tab);
+  if (!currentSection) return <NotFoundPage />;
   return (
     <AsyncState state={state}>
       {(agent) => (
-        <Page title={agent.displayName} eyebrow={agent.name}>
-          <nav className="tabs" aria-label="Agent settings">
-            {agentTabs.map((item) => (
-              <NavLink to={`/agents/${agentId}/${item}`} key={item}>
-                {titleCase(item)}
-              </NavLink>
-            ))}
-          </nav>
-          <AgentTab agent={agent} tab={tab} />
-        </Page>
+        <section className="object-page">
+          <header className="object-header">
+            <Link className="breadcrumb" to="/agents">
+              Agents
+            </Link>
+            <div className="object-title-row">
+              <div className="object-identity">
+                <span className="agent-avatar large" aria-hidden="true">
+                  {initials(agent.displayName)}
+                </span>
+                <div>
+                  <h1>{agent.displayName}</h1>
+                  <p>
+                    <span className="mono">{agent.name}</span>
+                    <span>{providerLabel(agent.runtimeProvider)}</span>
+                    <span>{agent.computer.displayName}</span>
+                  </p>
+                </div>
+              </div>
+              <StatusLabel tone="neutral">Readiness unavailable</StatusLabel>
+            </div>
+          </header>
+          <label className="local-nav-select">
+            <span>Agent section</span>
+            <select value={tab} onChange={(event) => navigate(`/agents/${agentId}/${event.currentTarget.value}`)}>
+              {agentSections.map((section) => (
+                <option value={section.key} key={section.key}>
+                  {section.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="object-layout">
+            <nav className="local-nav" aria-label="Agent settings">
+              {agentSections.map((section) => (
+                <NavLink to={`/agents/${agentId}/${section.key}`} key={section.key}>
+                  {section.label}
+                </NavLink>
+              ))}
+            </nav>
+            <div className="object-content">
+              <header className="section-header">
+                <h2>{currentSection.label}</h2>
+                <p>{agentSectionDescription(currentSection.key)}</p>
+              </header>
+              <AgentTab agent={agent} tab={tab} onAgentChanged={() => setRefreshVersion((value) => value + 1)} />
+            </div>
+          </div>
+        </section>
       )}
     </AsyncState>
   );
 }
 
-function AgentTab({ agent, tab }: { agent: AgentDetail; tab: string }) {
-  if (tab === "general") return <GeneralTab agent={agent} />;
+function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetail; tab: string; onAgentChanged: () => void }) {
+  if (tab === "general") return <GeneralTab agent={agent} onAgentChanged={onAgentChanged} />;
   if (tab === "runtime") return <RuntimeTab agent={agent} />;
   if (tab === "im") return <ImTab agent={agent} />;
   if (tab === "resources")
@@ -416,7 +641,7 @@ function AgentTab({ agent, tab }: { agent: AgentDetail; tab: string }) {
   return <NotFoundPage />;
 }
 
-function GeneralTab({ agent }: { agent: AgentDetail }) {
+function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetail; onAgentChanged: () => void }) {
   return (
     <>
       <DefinitionList
@@ -424,20 +649,32 @@ function GeneralTab({ agent }: { agent: AgentDetail }) {
           ["Display name", agent.displayName],
           ["Manager", agent.manager.displayName],
           ["Computer", agent.computer.displayName],
+          ["Lifecycle", titleCase(agent.status)],
           ["Created", formatDate(agent.createdAt)],
         ]}
       />
-      {agent.viewerCapabilities.canManage ? <GeneralAdminForm agent={agent} /> : null}
+      {agent.viewerCapabilities.canManage ? <GeneralAdminForm agent={agent} onAgentChanged={onAgentChanged} /> : null}
     </>
   );
 }
 
-function GeneralAdminForm({ agent }: { agent: AgentDetail }) {
+function GeneralAdminForm({ agent, onAgentChanged }: { agent: AgentDetail; onAgentChanged: () => void }) {
   const configState = useResource(() => browserApi.agentConfig(agent.id), agent.id);
-  return <AsyncState state={configState}>{(config) => <GeneralConfigForm initialConfig={config} />}</AsyncState>;
+  return (
+    <AsyncState state={configState}>
+      {(config) => <GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />}
+    </AsyncState>
+  );
 }
 
-function GeneralConfigForm({ initialConfig }: { initialConfig: AgentAdminConfig }) {
+function GeneralConfigForm({
+  initialConfig,
+  onAgentChanged,
+}: {
+  initialConfig: AgentAdminConfig;
+  onAgentChanged: () => void;
+}) {
+  const navigate = useNavigate();
   const [config, setConfig] = useState(initialConfig);
   const [message, setMessage] = useState<string>();
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -446,8 +683,34 @@ function GeneralConfigForm({ initialConfig }: { initialConfig: AgentAdminConfig 
     try {
       setConfig(await browserApi.updateAgent(config.id, { expectedRevision: config.revision, displayName }));
       setMessage("General settings saved.");
+      onAgentChanged();
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Unable to save General settings");
+    }
+  }
+  async function changeLifecycle(action: "suspend" | "reactivate") {
+    try {
+      setConfig(
+        action === "suspend" ? await browserApi.suspendAgent(config.id) : await browserApi.reactivateAgent(config.id),
+      );
+      setMessage(action === "suspend" ? "Agent suspended." : "Agent reactivated.");
+      onAgentChanged();
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to change Agent lifecycle");
+    }
+  }
+  async function deleteAgent() {
+    if (
+      !window.confirm(
+        `Permanently delete ${config.displayName}? This will end its active Sessions and clear its IM credential and runtime configuration. Session and message history will be retained, but the Agent cannot be restored.`,
+      )
+    )
+      return;
+    try {
+      await browserApi.deleteAgent(config.id);
+      navigate("/agents");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to delete Agent");
     }
   }
   return (
@@ -460,6 +723,22 @@ function GeneralConfigForm({ initialConfig }: { initialConfig: AgentAdminConfig 
       <button className="button" type="submit">
         Save General settings
       </button>
+      <div className="actions">
+        {config.status === "active" ? (
+          <button type="button" onClick={() => void changeLifecycle("suspend")}>
+            Suspend Agent
+          </button>
+        ) : (
+          <>
+            <button className="button" type="button" onClick={() => void changeLifecycle("reactivate")}>
+              Reactivate Agent
+            </button>
+            <button className="danger" type="button" onClick={() => void deleteAgent()}>
+              Delete Agent permanently
+            </button>
+          </>
+        )}
+      </div>
       {message ? <p role="status">{message}</p> : null}
     </form>
   );
@@ -727,38 +1006,92 @@ function AccessTab({ agent }: { agent: AgentDetail }) {
       rows={[
         ["Safe read", "All active Team members"],
         ["Use", "All active Team members (fixed v0.1 policy)"],
-        ["Manage", agent.viewerCapabilities.canManage ? "Team Admins · you can manage" : "Team Admins"],
+        ["Manage", agent.viewerCapabilities.canManage ? "Team Admins (you can manage)" : "Team Admins"],
       ]}
     />
   );
 }
 
+const settingsSections = [
+  { key: "team", label: "General" },
+  { key: "members", label: "Members" },
+  { key: "computers", label: "Computers" },
+  { key: "resources", label: "Resources" },
+  { key: "integrations", label: "Integrations" },
+  { key: "access", label: "Access" },
+  { key: "usage", label: "Usage" },
+  { key: "security", label: "Security" },
+] as const;
+
 function SettingsPage() {
   const { section = "team" } = useParams();
-  const { membership, refreshMe } = useTeam();
-  const allowed = ["team", "computers", "resources", "members", "security"];
-  if (!allowed.includes(section)) return <NotFoundPage />;
+  const navigate = useNavigate();
+  const { me, membership, refreshMe } = useTeam();
+  const currentSection = settingsSections.find((item) => item.key === section);
+  if (!currentSection) return <NotFoundPage />;
   return (
-    <Page title="Settings">
-      <nav className="tabs" aria-label="Team settings">
-        {allowed.map((item) => (
-          <NavLink to={`/settings/${item}`} key={item}>
-            {titleCase(item)}
-          </NavLink>
-        ))}
-      </nav>
-      {section === "team" ? <TeamSettings membership={membership} refreshMe={refreshMe} /> : null}
-      {section === "members" ? <MembersSettings teamId={membership.teamId} /> : null}
-      {section === "computers" ? (
-        <ComputersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
-      ) : null}
-      {section === "resources" ? (
-        <EmptyState title="Team Resources not enabled">No Resource records are created by this page.</EmptyState>
-      ) : null}
-      {section === "security" ? (
-        <EmptyState title="Security overview">Sensitive credentials are never returned to the browser.</EmptyState>
-      ) : null}
-    </Page>
+    <section className="settings-page">
+      <header className="settings-title">
+        <h1>Settings</h1>
+        <p>Manage the current Team's identity, infrastructure, access, and security.</p>
+      </header>
+      <label className="local-nav-select">
+        <span>Settings section</span>
+        <select value={section} onChange={(event) => navigate(`/settings/${event.currentTarget.value}`)}>
+          {settingsSections.map((item) => (
+            <option value={item.key} key={item.key}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="settings-layout">
+        <nav className="local-nav" aria-label="Team settings">
+          {settingsSections.map((item) => (
+            <NavLink to={`/settings/${item.key}`} key={item.key}>
+              {item.label}
+            </NavLink>
+          ))}
+        </nav>
+        <div className="settings-content">
+          <header className="section-header">
+            <h2>{currentSection.label}</h2>
+            <p>{settingsSectionDescription(currentSection.key)}</p>
+          </header>
+          {section === "team" ? <TeamSettings membership={membership} refreshMe={refreshMe} /> : null}
+          {section === "members" ? (
+            <MembersSettings
+              canManage={membership.role === "admin"}
+              currentUserId={me.user.id}
+              refreshMe={refreshMe}
+              teamId={membership.teamId}
+            />
+          ) : null}
+          {section === "computers" ? (
+            <ComputersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
+          ) : null}
+          {section === "resources" ? (
+            <EmptyState title="Team Resources not enabled">No Resource records are created by this page.</EmptyState>
+          ) : null}
+          {section === "integrations" ? (
+            <EmptyState title="Team Integrations not enabled">
+              Agent-owned connections remain visible from each Agent's Messaging and Integrations sections.
+            </EmptyState>
+          ) : null}
+          {section === "access" ? (
+            <EmptyState title="Team access uses the current membership policy">
+              Team Admins manage membership while Agent access stays visible on each Agent.
+            </EmptyState>
+          ) : null}
+          {section === "usage" ? (
+            <EmptyState title="Usage reporting not enabled">No inferred or estimated usage is shown.</EmptyState>
+          ) : null}
+          {section === "security" ? (
+            <EmptyState title="Security overview">Sensitive credentials are never returned to the browser.</EmptyState>
+          ) : null}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -810,21 +1143,162 @@ function TeamSettings({ membership, refreshMe }: { membership: MeMembership; ref
   );
 }
 
-function MembersSettings({ teamId }: { teamId: string }) {
-  const state = useResource(() => browserApi.members(teamId), teamId);
+function MembersSettings({
+  canManage,
+  currentUserId,
+  refreshMe,
+  teamId,
+}: {
+  canManage: boolean;
+  currentUserId: string;
+  refreshMe: () => void;
+  teamId: string;
+}) {
+  const [revision, setRevision] = useState(0);
+  const state = useResource(() => browserApi.members(teamId), `${teamId}:${revision}`);
+  const pendingUserIdsRef = useRef(new Set<string>());
+  const [pendingUserIds, setPendingUserIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [error, setError] = useState<string>();
+
+  async function changeRole(member: TeamMemberSummary, value: string) {
+    if (value === member.role || pendingUserIdsRef.current.has(member.userId)) return;
+    pendingUserIdsRef.current.add(member.userId);
+    setPendingUserIds(new Set(pendingUserIdsRef.current));
+    setError(undefined);
+    try {
+      const role = MembershipRoleSchema.parse(value);
+      await browserApi.updateTeamMember(teamId, member.userId, { role });
+      setRevision((current) => current + 1);
+      if (member.userId === currentUserId) refreshMe();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to update the member role");
+    } finally {
+      pendingUserIdsRef.current.delete(member.userId);
+      setPendingUserIds(new Set(pendingUserIdsRef.current));
+    }
+  }
+
   return (
-    <AsyncState state={state}>
-      {(value) => (
-        <div className="list">
-          {value.members.map((member: TeamMemberSummary) => (
-            <div className="row" key={member.userId}>
-              <strong>{member.displayName}</strong>
-              <span>{member.role}</span>
+    <>
+      {canManage ? <InvitationSettings teamId={teamId} /> : null}
+      <section className="panel">
+        <h2>Team members</h2>
+        <AsyncState state={state}>
+          {(value) => (
+            <div className="list">
+              {value.members.map((member: TeamMemberSummary) => (
+                <div className="row" key={member.userId}>
+                  <strong>{member.displayName}</strong>
+                  {canManage ? (
+                    <select
+                      aria-label={`Role for ${member.displayName}`}
+                      disabled={pendingUserIds.has(member.userId)}
+                      value={member.role}
+                      onChange={(event) => void changeRole(member, event.currentTarget.value)}
+                    >
+                      {MembershipRoleSchema.options.map((role) => (
+                        <option value={role} key={role}>
+                          {role}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <span>{member.role}</span>
+                  )}
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      )}
-    </AsyncState>
+          )}
+        </AsyncState>
+        {error ? (
+          <p className="notice error" role="alert">
+            {error}
+          </p>
+        ) : null}
+      </section>
+    </>
+  );
+}
+
+function InvitationSettings({ teamId }: { teamId: string }) {
+  const state = useResource(() => browserApi.invitation(teamId), teamId);
+  const [current, setCurrent] = useState<Awaited<ReturnType<typeof browserApi.invitation>>>();
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string>();
+  const [error, setError] = useState<string>();
+
+  async function createInvitation() {
+    await mutateInvitation(() => browserApi.createInvitation(teamId), "Invitation link created.");
+  }
+
+  async function rotateInvitation() {
+    if (!window.confirm("Rotate this invitation link? The current link will stop working immediately.")) return;
+    await mutateInvitation(() => browserApi.rotateInvitation(teamId), "Invitation link rotated.");
+  }
+
+  async function mutateInvitation(action: () => Promise<NonNullable<typeof current>>, successMessage: string) {
+    setBusy(true);
+    setError(undefined);
+    setMessage(undefined);
+    try {
+      setCurrent(await action());
+      setMessage(successMessage);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to update the invitation link");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyInvitation(inviteUrl: string) {
+    setError(undefined);
+    setMessage(undefined);
+    try {
+      if (!window.navigator.clipboard) throw new Error("Clipboard access is unavailable in this browser");
+      await window.navigator.clipboard.writeText(inviteUrl);
+      setMessage("Invitation link copied.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to copy the invitation link");
+    }
+  }
+
+  return (
+    <section className="panel">
+      <h2>Invite people</h2>
+      <p>Anyone with the active link can join this Team as a member until the link expires.</p>
+      <AsyncState state={state}>
+        {(loaded) => {
+          const invitation = current ?? loaded;
+          return invitation ? (
+            <>
+              <label className="invite-link">
+                Invitation link
+                <input aria-label="Invitation link" readOnly type="url" value={invitation.inviteUrl} />
+              </label>
+              <p className="muted">Expires {formatDate(invitation.expiresAt)}.</p>
+              <div className="actions">
+                <button type="button" onClick={() => void copyInvitation(invitation.inviteUrl)}>
+                  Copy invitation link
+                </button>
+                <button className="secondary" disabled={busy} type="button" onClick={() => void rotateInvitation()}>
+                  {busy ? "Rotating…" : "Rotate invitation link"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <button className="button" disabled={busy} type="button" onClick={() => void createInvitation()}>
+              {busy ? "Creating…" : "Create invitation link"}
+            </button>
+          );
+        }}
+      </AsyncState>
+      {message ? <p className="notice success">{message}</p> : null}
+      {error ? (
+        <p className="notice error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </section>
   );
 }
 
@@ -899,11 +1373,12 @@ function ComputersSettings({ canManage, teamId }: { canManage: boolean; teamId: 
                 <span>
                   <strong>{computer.displayName}</strong>
                   <small>
-                    {computer.ownerDisplayName} · {computer.platform}
+                    {computer.ownerDisplayName} ({computer.platform})
                   </small>
                 </span>
-                <span>
-                  {computer.connectionStatus} · observed {formatDate(computer.observedAt)}
+                <span className="cell-stack align-end">
+                  <strong>{titleCase(computer.connectionStatus)}</strong>
+                  <small>Observed {formatDate(computer.observedAt)}</small>
                 </span>
               </div>
             ))}
@@ -917,7 +1392,7 @@ function ComputersSettings({ canManage, teamId }: { canManage: boolean; teamId: 
 function OnboardingPage() {
   const { membership } = useTeam();
   return (
-    <Page title="Set up OpenTag">
+    <Page title="Set up OpenTag" description="Connect the runtime path before inviting the Team to mention an Agent.">
       {membership.role === "admin" ? (
         <>
           <ol className="steps">
@@ -943,25 +1418,28 @@ function OnboardingPage() {
 function Page({
   title,
   eyebrow,
+  description,
   action,
   children,
 }: {
   title: string;
   eyebrow?: string;
+  description?: string;
   action?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <>
+    <section className="page">
       <header className="page-header">
         <div>
           {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
           <h1>{title}</h1>
+          {description ? <p>{description}</p> : null}
         </div>
         {action}
       </header>
       {children}
-    </>
+    </section>
   );
 }
 
@@ -1008,7 +1486,49 @@ function NotFoundPage() {
 }
 
 function titleCase(value: string) {
-  return value.charAt(0).toUpperCase() + value.slice(1);
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function providerLabel(provider: AgentSummary["runtimeProvider"]): string {
+  return provider === "claude-code" ? "Claude Code" : "Codex";
+}
+
+function initials(value: string): string {
+  const parts = value.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "OT";
+  return parts
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join("");
+}
+
+function agentSectionDescription(section: (typeof agentSections)[number]["key"]): string {
+  const descriptions = {
+    general: "Review identity, readiness dependencies, and the configuration that needs attention.",
+    runtime: "Inspect the bound Computer, provider, model, instructions, and execution limits.",
+    im: "Manage the Agent-owned Feishu or Slack bot connection and receive policy.",
+    resources: "Review the Team Resources authorized for this Agent.",
+    integrations: "Review external services available to this Agent's runtime.",
+    access: "Understand who can use, inspect, and manage this Agent.",
+  } satisfies Record<(typeof agentSections)[number]["key"], string>;
+  return descriptions[section];
+}
+
+function settingsSectionDescription(section: (typeof settingsSections)[number]["key"]): string {
+  const descriptions = {
+    team: "Manage the current Team's stable identity and display name.",
+    members: "Invite people and review the Team membership visible to you.",
+    computers: "Connect and inspect the Computers available to the current Team.",
+    resources: "Review reusable repositories, skills, tools, and prompts.",
+    integrations: "Review supported Team and Agent connection surfaces.",
+    access: "Review Team-wide access and administration boundaries.",
+    usage: "Review measured Task, Turn, and provider usage when available.",
+    security: "Review authorization health without exposing credentials.",
+  } satisfies Record<(typeof settingsSections)[number]["key"], string>;
+  return descriptions[section];
 }
 
 function formatDate(value: string) {

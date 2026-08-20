@@ -21,7 +21,7 @@ import {
   type JsonValue,
   type ResumeAgentRuntimeRequest,
 } from "../../agent-runtime/types.js";
-import { assertBinding, assertJsonValue } from "../../agent-runtime/validation.js";
+import { assertBinding, assertJsonValue, runWithAbortSignal } from "../../agent-runtime/validation.js";
 import {
   ClaudeCodeProcess,
   type ClaudeCodeProcessClient,
@@ -70,7 +70,7 @@ export interface ClaudeCodeAgentRuntimeFactoryOptions {
   };
   readonly createProcess?: (cwd: string, args: readonly string[]) => ClaudeCodeProcessClient;
   readonly createSessionId?: () => string;
-  readonly probeRunner?: () => Promise<{
+  readonly probeRunner?: (signal?: AbortSignal) => Promise<{
     readonly credential: boolean;
     readonly streamJson: boolean;
     readonly version: string;
@@ -529,7 +529,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
   readonly manifest = CLAUDE_CODE_AGENT_RUNTIME_MANIFEST;
   readonly #createSessionId: () => string;
   readonly #createProcess: (cwd: string, args: readonly string[]) => ClaudeCodeProcessClient;
-  readonly #probeRunner: () => Promise<{
+  readonly #probeRunner: (signal?: AbortSignal) => Promise<{
     readonly credential: boolean;
     readonly streamJson: boolean;
     readonly version: string;
@@ -552,7 +552,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
           maxStderrBytes: options.process?.maxStderrBytes,
           spawnProcess: options.process?.spawnProcess,
         }));
-    this.#probeRunner = options.probeRunner ?? (() => probeClaudeCode(command, environment));
+    this.#probeRunner = options.probeRunner ?? ((signal) => probeClaudeCode(command, environment, signal));
   }
 
   async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
@@ -564,7 +564,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     }
     let version: string | undefined;
     try {
-      const result = await this.#probeRunner();
+      const result = await runWithAbortSignal(this.#probeRunner, request.signal);
       version = result.version;
       if (!result.streamJson) {
         issues.push({ code: "version_incompatible", message: "Claude Code stream-json mode is unavailable" });
@@ -572,7 +572,8 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
       if (!result.credential) {
         issues.push({ code: "credential_missing", message: "Claude Code credentials were not found" });
       }
-    } catch {
+    } catch (error) {
+      if (request.signal?.aborted) throw error;
       issues.push({ code: "artifact_missing", message: "Claude Code CLI could not be executed" });
     }
     return { ready: issues.length === 0, ...(version ? { version } : {}), issues };
@@ -661,8 +662,9 @@ export function claudeCodeAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = pr
 async function probeClaudeCode(
   command: string,
   environment: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<{ readonly credential: boolean; readonly streamJson: boolean; readonly version: string }> {
-  const execution = { encoding: "utf8" as const, env: environment, timeout: 5_000, windowsHide: true };
+  const execution = { encoding: "utf8" as const, env: environment, signal, timeout: 5_000, windowsHide: true };
   const [versionResult, helpResult] = await Promise.all([
     execFileAsync(command, ["--version"], execution),
     execFileAsync(command, ["--help"], execution),
@@ -673,7 +675,8 @@ async function probeClaudeCode(
     helpResult.stdout.includes("stream-json") &&
     helpResult.stdout.includes("--session-id") &&
     helpResult.stdout.includes("--resume");
-  const credential = hasCredentialEnvironment(environment) || (await probeClaudeCodeCredential(command, execution));
+  const credential =
+    hasCredentialEnvironment(environment) || (await probeClaudeCodeCredential(command, execution, signal));
   return { credential, streamJson, version };
 }
 
@@ -682,14 +685,17 @@ async function probeClaudeCodeCredential(
   execution: {
     readonly encoding: "utf8";
     readonly env: NodeJS.ProcessEnv;
+    readonly signal?: AbortSignal;
     readonly timeout: number;
     readonly windowsHide: boolean;
   },
+  signal?: AbortSignal,
 ): Promise<boolean> {
   let output: string;
   try {
     output = (await execFileAsync(command, ["auth", "status", "--json"], execution)).stdout;
   } catch (error) {
+    if (signal?.aborted) throw error;
     output = (error as Error & { readonly stdout: string }).stdout;
   }
   if (!output) return false;

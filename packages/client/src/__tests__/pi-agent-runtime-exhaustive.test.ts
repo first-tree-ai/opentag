@@ -663,7 +663,37 @@ printf 'provider model\\nfixture configured\\n'
         },
       }).probe({}),
     ).resolves.toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
-  });
+
+    const directory = await temporaryDirectory("opentag-pi-probe-abort-");
+    const helpStarted = join(directory, "help-started");
+    const hangingHelp = await probeCli(`
+if [ "$1" = "--version" ]; then echo "0.80.6"; exit 0; fi
+if [ "$1" = "--help" ]; then printf started > '${helpStarted}'; exec '${process.execPath}' -e 'setInterval(() => undefined, 1000)'; fi
+exit 1
+`);
+    const helpAbort = new AbortController();
+    const helpProbe = new PiAgentRuntimeFactory({ process: { command: hangingHelp, env: {} } }).probe({
+      signal: helpAbort.signal,
+    });
+    await vi.waitFor(async () => expect(await readFile(helpStarted, "utf8")).toBe("started"));
+    helpAbort.abort(new Error("stop"));
+    await expect(helpProbe).rejects.toBeDefined();
+
+    const modelsStarted = join(directory, "models-started");
+    const hangingModels = await probeCli(`
+if [ "$1" = "--version" ]; then echo "0.80.6"; exit 0; fi
+if [ "$1" = "--help" ]; then echo "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name"; exit 0; fi
+printf started > '${modelsStarted}'
+exec '${process.execPath}' -e 'setInterval(() => undefined, 1000)'
+`);
+    const modelsAbort = new AbortController();
+    const modelsProbe = new PiAgentRuntimeFactory({ process: { command: hangingModels, env: {} } }).probe({
+      signal: modelsAbort.signal,
+    });
+    await vi.waitFor(async () => expect(await readFile(modelsStarted, "utf8")).toBe("started"));
+    modelsAbort.abort(new Error("stop"));
+    await expect(modelsProbe).rejects.toBeDefined();
+  }, 10_000);
 
   it("uses the default local Pi process boundary without adding a package dependency", async () => {
     const dependencyFields = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] as const;

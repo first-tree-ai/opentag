@@ -566,12 +566,31 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         {},
       ),
     ).resolves.toMatchObject({ ready: false, issues: [{ code: "artifact_missing" }] });
+
+    const authStarted = join(directory, "auth-started");
+    const hangingAuthCommand = join(directory, "claude-hanging-auth");
+    await writeFile(
+      hangingAuthCommand,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "2.1.210 (Claude Code)"; exit 0; fi\nif [ "$1" = "--help" ]; then echo "stream-json --session-id --resume"; exit 0; fi\nprintf started > '${authStarted}'\nexec '${process.execPath}' -e 'setInterval(() => undefined, 1000)'\n`,
+      "utf8",
+    );
+    await chmod(hangingAuthCommand, 0o755);
+    const authAbort = new AbortController();
+    const authProbe = new ClaudeCodeAgentRuntimeFactory({
+      process: { command: hangingAuthCommand, env: { PATH: process.env.PATH } },
+    }).probe({ signal: authAbort.signal });
+    await vi.waitFor(async () => expect(await readFile(authStarted, "utf8")).toBe("started"));
+    authAbort.abort(new Error("stop"));
+    await expect(authProbe).rejects.toBeDefined();
     expect(claudeCodeAgentRuntimeEnvironment()).toEqual(expect.any(Object));
   });
 
   it("keeps the package boundary free of Claude SDK, CLI, and bundled binary dependencies", async () => {
-    for (const path of [join(process.cwd(), "../..", "package.json"), join(process.cwd(), "package.json")]) {
-      const manifest = JSON.parse(await readFile(path, "utf8")) as Record<string, Record<string, string>>;
+    for (const url of [
+      new URL("../../../../package.json", import.meta.url),
+      new URL("../../package.json", import.meta.url),
+    ]) {
+      const manifest = JSON.parse(await readFile(url, "utf8")) as Record<string, Record<string, string>>;
       const dependencies = {
         ...manifest.dependencies,
         ...manifest.devDependencies,

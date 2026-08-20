@@ -10,9 +10,14 @@ import {
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
   agentImBindingPath,
+  agentReactivatePath,
+  agentSuspendPath,
   type ConnectCodeIssueResponse,
   ConnectCodeIssueResponseSchema,
   type CreateAgentRequest,
+  type CreateTeamRequest,
+  type CreateTeamResponse,
+  CreateTeamResponseSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
   feishuSetupAttemptPath,
@@ -25,6 +30,7 @@ import {
   ImBindingSummarySchema,
   type InvitationPreview,
   InvitationPreviewSchema,
+  type InvitationRedemptionResponse,
   InvitationRedemptionResponseSchema,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
@@ -42,14 +48,19 @@ import {
   MeResponseSchema,
   type TeamInvitation,
   TeamInvitationSchema,
+  type TeamMemberAdminConfig,
+  TeamMemberAdminConfigSchema,
   type TeamProfile,
   TeamProfileSchema,
   teamAgentsPath,
   teamByIdPath,
   teamComputersPath,
   teamInvitationPath,
+  teamInvitationRotatePath,
+  teamMemberPath,
   teamMembersPath,
   type UpdateAgentRequest,
+  type UpdateTeamMemberRequest,
   type UpdateTeamProfileRequest,
 } from "@opentag/shared/browser";
 
@@ -82,6 +93,22 @@ export class BrowserApi {
 
   members(teamId: string): Promise<ListTeamMembersResponse> {
     return this.request(teamMembersPath(teamId), ListTeamMembersResponseSchema);
+  }
+
+  createTeam(input: CreateTeamRequest): Promise<CreateTeamResponse> {
+    return this.request(HTTP_PATHS.teams, CreateTeamResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  updateTeamMember(teamId: string, userId: string, input: UpdateTeamMemberRequest): Promise<TeamMemberAdminConfig> {
+    return this.request(teamMemberPath(teamId, userId), TeamMemberAdminConfigSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
   }
 
   updateTeam(teamId: string, input: UpdateTeamProfileRequest): Promise<TeamProfile> {
@@ -117,6 +144,27 @@ export class BrowserApi {
       method: "PATCH",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  suspendAgent(agentId: string): Promise<AgentAdminConfig> {
+    return this.request(agentSuspendPath(agentId), AgentAdminConfigSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  reactivateAgent(agentId: string): Promise<AgentAdminConfig> {
+    return this.request(agentReactivatePath(agentId), AgentAdminConfigSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  deleteAgent(agentId: string): Promise<void> {
+    return this.requestNoContent(agentByIdPath(agentId), {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
     });
   }
 
@@ -181,12 +229,19 @@ export class BrowserApi {
     });
   }
 
+  rotateInvitation(teamId: string): Promise<TeamInvitation> {
+    return this.request(teamInvitationRotatePath(teamId), TeamInvitationSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
   invitationPreview(token: string): Promise<InvitationPreview> {
     return this.request(invitationPreviewPath(token), InvitationPreviewSchema, undefined, false);
   }
 
-  async redeemInvitation(token: string): Promise<void> {
-    await this.request(invitationRedeemPath(token), InvitationRedemptionResponseSchema, {
+  redeemInvitation(token: string): Promise<InvitationRedemptionResponse> {
+    return this.request(invitationRedeemPath(token), InvitationRedemptionResponseSchema, {
       method: "POST",
       headers: this.csrfHeaders(),
     });

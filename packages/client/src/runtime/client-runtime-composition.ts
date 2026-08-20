@@ -19,10 +19,15 @@ import {
   CodexAgentRuntimeFactory,
   codexAgentRuntimeEnvironment,
 } from "../providers/codex/agent-runtime.js";
+import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
+import {
+  type AgentRuntimeProviderRegistration,
+  AgentRuntimeProviderRegistry,
+} from "./agent-runtime-provider-registry.js";
 import { AgentTurnRunner } from "./agent-turn-runner.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
-import { ClientRuntime } from "./client-runtime.js";
+import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
@@ -162,7 +167,7 @@ export async function createClientRuntime(
   const command = options.codexCommand ?? "codex";
   options.signal?.throwIfAborted();
   const environment = codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome });
-  const providerHomeIdentity = createHash("sha256").update(codexHome, "utf8").digest("hex");
+  const providerArtifactIdentity = createHash("sha256").update(codexHome, "utf8").digest("hex");
   const factory =
     options.factory ??
     resolvedCodexFactory({
@@ -172,39 +177,16 @@ export async function createClientRuntime(
       environment,
       sourceEnvironment,
     });
-  if (factory.manifest.providerId !== "codex") {
-    throw new Error("Production Client Runtime only registers the reviewed Codex provider");
-  }
-  const factories = new Map([[factory.manifest.providerId, factory]]);
+  const providers = new AgentRuntimeProviderRegistry([
+    codexProviderRegistration(factory, providerArtifactIdentity, codexHome),
+  ]);
   const capabilityAbort = new AbortController();
   const readinessSignal = options.signal
     ? AbortSignal.any([options.signal, capabilityAbort.signal])
     : capabilityAbort.signal;
-  let providerReady = false;
-  let providerReadiness: Promise<void> | undefined;
-  const ensureProviderReady = (): Promise<void> => {
-    if (providerReadiness) return providerReadiness;
-    providerReadiness = (async () => {
-      readinessSignal.throwIfAborted();
-      const result = await factory.probe({ signal: readinessSignal });
-      if (!result.ready) throw new Error(result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
-      if ((await realpath(codexHome)) !== codexHome) throw new Error("Codex Home identity changed");
-      readinessSignal.throwIfAborted();
-      providerReady = true;
-    })().finally(() => {
-      providerReadiness = undefined;
-    });
-    return providerReadiness;
-  };
   const refreshCapability = async (): Promise<void> => {
-    const available = await ensureProviderReady()
-      .then(() => true)
-      .catch((error: unknown) => {
-        if (readinessSignal.aborted) throw error;
-        return false;
-      });
+    const available = await providers.refresh(CODEX_AGENT_RUNTIME_MANIFEST.providerId, readinessSignal);
     readinessSignal.throwIfAborted();
-    providerReady = available;
     connection.setVerifiedCapabilities({ imMessageTool: available ? 1 : 0 });
   };
   try {
@@ -214,14 +196,16 @@ export async function createClientRuntime(
     throw error;
   }
 
-  const bindingStore = new SessionBindingStore({ home: options.home, providerHomeIdentity });
+  const bindingStore = new SessionBindingStore({
+    home: options.home,
+    providerArtifactIdentity: (providerId) => providers.artifactIdentity(providerId),
+  });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
   const reportOwner = new TurnReportOwner({ connection });
   const toolHost = new RuntimeToolHost(connection);
   const runtimeManager = new SessionRuntimeManager({
     bindingStore,
-    factories,
-    providerAvailable: () => providerReady,
+    providers,
     toolHost,
     workspace,
   });
@@ -243,21 +227,17 @@ export async function createClientRuntime(
     reportOwner,
   });
   let runner: AgentTurnRunner;
+  const preflight = createClientRuntimePreflight({
+    providers,
+    readinessSignal,
+    runtimeManager,
+    workspace,
+  });
   const custody = new TurnCustodyOwner({
     bindingStore,
     reconciler,
-    preflight: async (request) => {
-      const policyReason = runtimeManager.validate(request.runtime);
-      if (policyReason) return policyReason;
-      try {
-        if (!providerReady) await ensureProviderReady();
-        await workspace.verifyAgent(request.runtime, computeRuntimeSnapshotHashes(request.runtime));
-        runtimeManager.runtime(request.sessionId);
-        return undefined;
-      } catch (error) {
-        return error instanceof RuntimeStorageError ? "session_binding_conflict" : "provider_unavailable";
-      }
-    },
+    preflight,
+    /* v8 ignore next -- late binding is required because custody and runner own each other. */
     start: (owner) => runner.start(owner),
   });
   runner = new AgentTurnRunner({
@@ -273,16 +253,12 @@ export async function createClientRuntime(
   const runtime = new ClientRuntime(connection, {
     logger: moduleLogger("client-runtime"),
     reconciler,
-    handleDelivery: (request) => custody.accept(request),
-    handleTurnReportResult: (result) => reportOwner.handleResult(result).then(() => undefined),
-    prepareReconcileResult: (request, result) => mvpReportRecovery.prepare(request, result),
-    onReconcileResultSendFailed: (request, result) => mvpReportRecovery.cancel(request, result),
-    onReconciled: (request, result) => mvpReportRecovery.afterReconciled(request, result),
+    ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
   });
   return new ComposedClientRuntime(runtime, {
     bindingStore,
     custody,
-    messageToolAvailable: providerReady,
+    messageToolAvailable: providers.isReady(CODEX_AGENT_RUNTIME_MANIFEST.providerId),
     reconciler,
     reportOwner,
     runner,
@@ -298,7 +274,7 @@ export async function createClientRuntime(
   });
 }
 
-interface ResolvedCodexFactoryOptions {
+export interface ResolvedCodexFactoryOptions {
   readonly clientVersion: string;
   readonly codexHome: string;
   readonly command: string;
@@ -306,7 +282,27 @@ interface ResolvedCodexFactoryOptions {
   readonly sourceEnvironment: NodeJS.ProcessEnv;
 }
 
-function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): AgentRuntimeFactory {
+function codexProviderRegistration(
+  factory: AgentRuntimeFactory,
+  artifactIdentity: string,
+  codexHome: string,
+): AgentRuntimeProviderRegistration {
+  if (factory.manifest.providerId !== CODEX_AGENT_RUNTIME_MANIFEST.providerId) {
+    throw new Error("Production Client Runtime only registers the reviewed Codex provider");
+  }
+  return {
+    artifactIdentity,
+    factory,
+    policy: codexRuntimePolicy,
+    validate: validateCodexRuntimePolicy,
+    verifyArtifact: async (signal) => {
+      signal?.throwIfAborted();
+      if ((await realpath(codexHome)) !== codexHome) throw new Error("Codex Home identity changed");
+    },
+  };
+}
+
+export function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): AgentRuntimeFactory {
   let readyFactory: CodexAgentRuntimeFactory | undefined;
   return {
     manifest: CODEX_AGENT_RUNTIME_MANIFEST,
@@ -345,13 +341,14 @@ export function resolveCodexHome(environment: NodeJS.ProcessEnv = process.env): 
   return resolve(environment.CODEX_HOME ?? join(environment.HOME ?? homedir(), ".codex"));
 }
 
-async function resolveExecutable(command: string, environment: NodeJS.ProcessEnv): Promise<string> {
+export async function resolveExecutable(command: string, environment: NodeJS.ProcessEnv): Promise<string> {
   if (isAbsolute(command)) {
     await access(command, constants.X_OK);
     return realpath(command);
   }
   const path = environment.PATH;
   if (!path) throw new Error("PATH is unavailable while locating Codex");
+  /* v8 ignore next -- executable suffix probing is a Windows-only branch. */
   const extensions = process.platform === "win32" ? (environment.PATHEXT ?? ".EXE;.CMD;.BAT").split(";") : [""];
   for (const directory of path.split(delimiter)) {
     if (!directory) continue;
@@ -366,4 +363,53 @@ async function resolveExecutable(command: string, environment: NodeJS.ProcessEnv
     }
   }
   throw new Error("A compatible Codex executable is unavailable");
+}
+
+interface ClientRuntimePreflightDependencies {
+  readonly providers: Pick<AgentRuntimeProviderRegistry, "ensureReady" | "validateConfiguration">;
+  readonly readinessSignal?: AbortSignal;
+  readonly runtimeManager: Pick<SessionRuntimeManager, "runtime">;
+  readonly workspace: Pick<AgentWorkspaceManager, "verifyAgent">;
+}
+
+export function createClientRuntimePreflight(
+  dependencies: ClientRuntimePreflightDependencies,
+): NonNullable<ConstructorParameters<typeof TurnCustodyOwner>[0]["preflight"]> {
+  return async (request) => {
+    const policyReason = dependencies.providers.validateConfiguration(request.runtime);
+    if (policyReason) return policyReason;
+    try {
+      await dependencies.providers.ensureReady(request.runtime.provider, dependencies.readinessSignal);
+      await dependencies.workspace.verifyAgent(request.runtime, computeRuntimeSnapshotHashes(request.runtime));
+      dependencies.runtimeManager.runtime(request.sessionId);
+      return undefined;
+    } catch (error) {
+      return error instanceof RuntimeStorageError ? "session_binding_conflict" : "provider_unavailable";
+    }
+  };
+}
+
+type ComposedClientRuntimeHandlers = Required<
+  Pick<
+    ClientRuntimeOptions,
+    | "handleDelivery"
+    | "handleTurnReportResult"
+    | "onReconcileResultSendFailed"
+    | "onReconciled"
+    | "prepareReconcileResult"
+  >
+>;
+
+export function createClientRuntimeHandlers(
+  custody: Pick<TurnCustodyOwner, "accept">,
+  reportOwner: Pick<TurnReportOwner, "handleResult">,
+  recovery: Pick<MvpTurnReportRecovery, "afterReconciled" | "cancel" | "prepare">,
+): ComposedClientRuntimeHandlers {
+  return {
+    handleDelivery: (request) => custody.accept(request),
+    handleTurnReportResult: (result) => reportOwner.handleResult(result).then(() => undefined),
+    prepareReconcileResult: (request, result) => recovery.prepare(request, result),
+    onReconcileResultSendFailed: (request, result) => recovery.cancel(request, result),
+    onReconciled: (request, result) => recovery.afterReconciled(request, result),
+  };
 }

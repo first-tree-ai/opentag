@@ -1,1 +1,1 @@
-export { TeamMembershipService } from "./team-membership-service.js";
+export { TEAM_MEMBERSHIP_LIMIT, TeamMembershipService } from "./team-membership-service.js";

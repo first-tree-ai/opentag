@@ -10,6 +10,7 @@ import {
   type TurnReportRequest,
   TurnReportRequestSchema,
 } from "@opentag/shared";
+import { isAgentRuntimeProviderId } from "../agent-runtime/provider-id.js";
 import { AGENT_RUNTIME_BINDING_MAX_BYTES, type AgentRuntimeBinding } from "../agent-runtime/types.js";
 import { assertJsonValue } from "../agent-runtime/validation.js";
 import {
@@ -52,7 +53,8 @@ export interface LocalSessionBinding {
   agentId: string;
   workspaceId: string;
   placementGeneration: number;
-  provider: "codex" | "claude-code";
+  provider: string;
+  /** Persisted field name retained for schema-v1/v2 compatibility; value identifies the Provider artifact boundary. */
   providerHomeIdentity: string;
   runtimeBinding?: AgentRuntimeBinding;
   appliedSessionRevisionSequence: number;
@@ -85,19 +87,19 @@ export class SessionBindingConflictError extends Error {
 
 export interface SessionBindingStoreOptions {
   home: string;
-  providerHomeIdentity: string;
+  providerArtifactIdentity(providerId: string): string | undefined;
   recordedInputLimit?: number;
 }
 
 export class SessionBindingStore {
   readonly #home: string;
-  readonly #providerHomeIdentity: string;
+  readonly #providerArtifactIdentity: SessionBindingStoreOptions["providerArtifactIdentity"];
   readonly #recordedInputLimit: number;
   readonly #tails = new Map<string, Promise<void>>();
 
   constructor(options: SessionBindingStoreOptions) {
     this.#home = options.home;
-    this.#providerHomeIdentity = RuntimeSha256Schema.parse(options.providerHomeIdentity);
+    this.#providerArtifactIdentity = options.providerArtifactIdentity;
     this.#recordedInputLimit = options.recordedInputLimit ?? SESSION_RECORDED_INPUT_LIMIT;
     if (!Number.isSafeInteger(this.#recordedInputLimit) || this.#recordedInputLimit < 1) {
       throw new Error("recordedInputLimit must be a positive safe integer");
@@ -165,7 +167,7 @@ export class SessionBindingStore {
         workspaceId: runtime.workspace.workspaceId,
         placementGeneration: request.placementGeneration,
         provider: runtime.provider,
-        providerHomeIdentity: this.#providerHomeIdentity,
+        providerHomeIdentity: this.#artifactIdentity(runtime.provider),
         ...(current && current.lastEffectiveSnapshotHash === hashes.effectiveSnapshotHash && current.runtimeBinding
           ? { runtimeBinding: current.runtimeBinding }
           : {}),
@@ -345,7 +347,7 @@ export class SessionBindingStore {
       binding.sessionId !== request.sessionId ||
       binding.agentId !== request.agentId ||
       (request.runtime && binding.provider !== request.runtime.provider) ||
-      binding.providerHomeIdentity !== this.#providerHomeIdentity ||
+      binding.providerHomeIdentity !== this.#artifactIdentity(binding.provider) ||
       (request.runtime && binding.workspaceId !== request.runtime.workspace.workspaceId)
     ) {
       throw new SessionBindingConflictError("conflict", "The Session binding identity cannot be changed");
@@ -359,10 +361,18 @@ export class SessionBindingStore {
       binding.workspaceId !== request.runtime.workspace.workspaceId ||
       binding.placementGeneration !== request.placementGeneration ||
       binding.lastEffectiveSnapshotHash !== hashes.effectiveSnapshotHash ||
-      binding.providerHomeIdentity !== this.#providerHomeIdentity
+      binding.providerHomeIdentity !== this.#artifactIdentity(binding.provider)
     ) {
       throw new SessionBindingConflictError("conflict", "The delivery does not match the Session binding");
     }
+  }
+
+  #artifactIdentity(providerId: string): string {
+    const identity = this.#providerArtifactIdentity(providerId);
+    if (identity === undefined) {
+      throw new SessionBindingConflictError("conflict", `Provider artifact identity is unavailable: ${providerId}`);
+    }
+    return RuntimeSha256Schema.parse(identity);
   }
 
   #validateReport(binding: LocalSessionBinding, unresolved: UnresolvedTurn, report: TurnReportRequest): void {
@@ -424,7 +434,7 @@ function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
     !isString(value.agentId) ||
     !isString(value.workspaceId) ||
     !isSequence(value.placementGeneration) ||
-    (value.provider !== "codex" && value.provider !== "claude-code") ||
+    !isAgentRuntimeProviderId(value.provider) ||
     (isLegacy && value.provider !== "codex") ||
     !RuntimeSha256Schema.safeParse(value.providerHomeIdentity).success ||
     !isSequence(value.appliedSessionRevisionSequence) ||
@@ -486,7 +496,7 @@ function validateRuntimeBinding(value: unknown): AgentRuntimeBinding {
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, ["providerId", "schemaVersion", "payload"]) ||
-    !isString(value.providerId) ||
+    !isAgentRuntimeProviderId(value.providerId) ||
     !Number.isSafeInteger(value.schemaVersion) ||
     (value.schemaVersion as number) < 1 ||
     !("payload" in value)

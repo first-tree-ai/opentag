@@ -1,8 +1,11 @@
 export const API_V1_PREFIX = "/api/v1";
+export const TEAMS_TEMPLATE = `${API_V1_PREFIX}/teams`;
 export const TEAM_AGENTS_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/agents`;
 export const TEAM_BY_ID_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId`;
 export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
+export const AGENT_SUSPEND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/suspend`;
+export const AGENT_REACTIVATE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/reactivate`;
 export const AGENT_IM_BINDING_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding`;
 export const AGENT_IM_BINDING_CONFIG_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/config`;
 export const AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/feishu/setup-attempts`;
@@ -36,6 +39,7 @@ export const HTTP_PATHS = {
   meComputers: `${API_V1_PREFIX}/me/computers`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
   teamAgents: TEAM_AGENTS_TEMPLATE,
+  teams: TEAMS_TEMPLATE,
 } as const;
 
 export function teamMembersPath(teamId: string): string {
@@ -92,6 +96,14 @@ export function agentByIdPath(agentId: string): string {
 
 export function agentConfigPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/config`;
+}
+
+export function agentSuspendPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/suspend`;
+}
+
+export function agentReactivatePath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/reactivate`;
 }
 
 export function agentImBindingPath(agentId: string): string {

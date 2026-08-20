@@ -55,6 +55,8 @@ export class ImDeliveryWorker {
   readonly #intervalMs: number;
   readonly #claimLeaseMs: number;
   readonly #claimRenewMs: number;
+  readonly #afterClaimRowLocked?: () => Promise<void>;
+  readonly #beforeDeliveryAdmission?: () => Promise<void>;
   readonly #onDiagnostic: (code: string) => void;
   #timer?: ReturnType<typeof setInterval>;
   #running = false;
@@ -67,6 +69,8 @@ export class ImDeliveryWorker {
     intervalMs?: number;
     claimLeaseMs?: number;
     claimRenewMs?: number;
+    afterClaimRowLocked?: () => Promise<void>;
+    beforeDeliveryAdmission?: () => Promise<void>;
     onDiagnostic?: (code: string) => void;
   }) {
     this.#database = input.database;
@@ -76,6 +80,8 @@ export class ImDeliveryWorker {
     this.#intervalMs = input.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.#claimLeaseMs = input.claimLeaseMs ?? CLAIM_LEASE_MS;
     this.#claimRenewMs = input.claimRenewMs ?? CLAIM_RENEW_MS;
+    this.#afterClaimRowLocked = input.afterClaimRowLocked;
+    this.#beforeDeliveryAdmission = input.beforeDeliveryAdmission;
     this.#onDiagnostic = input.onDiagnostic ?? (() => undefined);
   }
 
@@ -144,9 +150,10 @@ export class ImDeliveryWorker {
           and(
             isNull(sessions.endedAt),
             eq(imBindings.status, "active"),
-            isNull(agents.deletedAt),
+            ne(agents.status, "deleted"),
             or(
               and(
+                eq(agents.status, "active"),
                 or(
                   and(
                     eq(imMessageDeliveries.state, "pending"),
@@ -173,7 +180,7 @@ export class ImDeliveryWorker {
                         ne(acceptedDeliveries.id, imMessageDeliveries.id),
                         isNull(acceptedSessions.endedAt),
                         eq(acceptedImBindings.status, "active"),
-                        isNull(acceptedAgents.deletedAt),
+                        ne(acceptedAgents.status, "deleted"),
                         uncertainAgentCustody(acceptedDeliveries),
                       ),
                     ),
@@ -191,6 +198,7 @@ export class ImDeliveryWorker {
         .limit(1)
         .for("update", { of: imMessageDeliveries, skipLocked: true });
       if (!row) return undefined;
+      await this.#afterClaimRowLocked?.();
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`im-agent-custody:${row.agentId}`}, 0))`,
       );
@@ -275,7 +283,7 @@ export class ImDeliveryWorker {
           ),
           isNull(sessions.endedAt),
           eq(imBindings.status, "active"),
-          isNull(agents.deletedAt),
+          eq(agents.status, "active"),
         ),
       )
       .limit(1);
@@ -339,16 +347,28 @@ export class ImDeliveryWorker {
     }
     if (!(await lease.assertOwned())) return;
     try {
-      const reconcile = await this.#domain.requestReconcile(row.placement.computerId, instanceId, {
-        type: "session:reconcile",
-        requestId: randomUUID(),
-        computerId: row.placement.computerId,
-        sessionId: row.session.id,
-        agentId: row.agent.id,
-        placementGeneration: row.placement.generation,
-        desired: "ready",
-        runtime,
-      });
+      const admittedReconcile = await this.#withActiveAgentAdmission(row.agent.id, (onDispatched) =>
+        this.#domain.requestReconcile(
+          row.placement.computerId,
+          instanceId,
+          {
+            type: "session:reconcile",
+            requestId: randomUUID(),
+            computerId: row.placement.computerId,
+            sessionId: row.session.id,
+            agentId: row.agent.id,
+            placementGeneration: row.placement.generation,
+            desired: "ready",
+            runtime,
+          },
+          onDispatched,
+        ),
+      );
+      if (!admittedReconcile.admitted) {
+        await this.#recordFailure(deliveryId, "IM_DELIVERY_AGENT_NOT_ACTIVE", claimToken);
+        return;
+      }
+      const reconcile = await admittedReconcile.result;
       const [currentDelivery] = await this.#database
         .select({ state: imMessageDeliveries.state })
         .from(imMessageDeliveries)
@@ -425,7 +445,15 @@ export class ImDeliveryWorker {
       };
       fitDeliveryFrame(request);
       if (!(await lease.assertOwned())) return;
-      const result = await this.#domain.requestDelivery(row.placement.computerId, instanceId, request);
+      await this.#beforeDeliveryAdmission?.();
+      const admittedDelivery = await this.#withActiveAgentAdmission(row.agent.id, (onDispatched) =>
+        this.#domain.requestDelivery(row.placement.computerId, instanceId, request, onDispatched),
+      );
+      if (!admittedDelivery.admitted) {
+        await this.#recordFailure(deliveryId, "IM_DELIVERY_AGENT_NOT_ACTIVE", claimToken);
+        return;
+      }
+      const result = await admittedDelivery.result;
       setActiveSpanAttributes(outcomeAttrs(result.status, result.reason));
       if (
         result.status === "rejected" &&
@@ -463,7 +491,7 @@ export class ImDeliveryWorker {
           isNull(imMessageDeliveries.reportedAt),
           isNull(sessions.endedAt),
           eq(imBindings.status, "active"),
-          isNull(agents.deletedAt),
+          ne(agents.status, "deleted"),
         ),
       )
       .limit(1);
@@ -512,12 +540,12 @@ export class ImDeliveryWorker {
         await this.#recordFailure(deliveryId, "IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
         return;
       }
-      runtime = pinned.data.runtime;
-    } else {
+      runtime = row.agent.status === "active" ? pinned.data.runtime : undefined;
+    } else if (row.agent.status === "active") {
       this.#onDiagnostic("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
       runtime = await this.#assembleRuntime(deliveryId, row.session.id, "recovery");
     }
-    if (!runtime) return;
+    if (row.agent.status === "active" && !runtime) return;
     try {
       await this.#domain.requestReconcile(row.placement.computerId, instanceId, {
         type: "session:reconcile",
@@ -526,8 +554,8 @@ export class ImDeliveryWorker {
         sessionId: row.session.id,
         agentId: row.agent.id,
         placementGeneration: row.placement.generation,
-        desired: "ready",
-        runtime,
+        desired: row.agent.status === "active" ? "ready" : "stopped",
+        ...(runtime ? { runtime } : {}),
       });
       setActiveSpanAttributes(outcomeAttrs("recovered"));
     } catch {
@@ -565,6 +593,29 @@ export class ImDeliveryWorker {
       );
       return undefined;
     }
+  }
+
+  async #withActiveAgentAdmission<T>(
+    agentId: string,
+    operation: (onDispatched: () => void) => Promise<T>,
+  ): Promise<{ admitted: false } | { admitted: true; result: Promise<T> }> {
+    return this.#database.transaction(async (transaction) => {
+      const [agent] = await transaction
+        .select({ status: agents.status })
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .limit(1)
+        .for("update");
+      if (agent?.status !== "active") return { admitted: false } as const;
+      let markDispatched: () => void = () => undefined;
+      const dispatched = new Promise<void>((resolve) => {
+        markDispatched = resolve;
+      });
+      const result = operation(markDispatched);
+      void result.catch(() => markDispatched());
+      await dispatched;
+      return { admitted: true, result } as const;
+    });
   }
 
   async #recordFailure(deliveryId: string, code: string, claimToken?: string): Promise<void> {
@@ -771,7 +822,7 @@ async function hasOtherAgentCustody(database: CustodyQuery, agentId: string, del
         ne(imMessageDeliveries.id, deliveryId),
         isNull(sessions.endedAt),
         eq(imBindings.status, "active"),
-        isNull(agents.deletedAt),
+        ne(agents.status, "deleted"),
         uncertainAgentCustody(imMessageDeliveries),
       ),
     )

@@ -114,7 +114,7 @@ export class FeishuSetupService {
     const [agent] = await this.#database
       .select({ displayName: agents.displayName, receiveMode: agents.receiveMode })
       .from(agents)
-      .where(and(eq(agents.id, agentId), isNull(agents.deletedAt)))
+      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!agent) throw new Error("AGENT_NOT_FOUND");
     const existing = await this.#currentForAgent(agentId);

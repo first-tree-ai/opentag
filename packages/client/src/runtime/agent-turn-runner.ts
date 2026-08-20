@@ -214,7 +214,8 @@ export function buildAgentInput(request: DirectImMessageDeliveryRequest, supplem
     `Agent revision: ${request.runtime.revision.agent.sequence}/${request.runtime.revision.agent.id}`,
     `Session revision: ${request.runtime.revision.session.sequence}/${request.runtime.revision.session.id}`,
     "Reload and obey the managed AGENTS.md before acting.",
-    "For the same logical IM write retry, reuse the exact same requestId; never mint a new ID after an unknown result.",
+    "For a new IM write, omit retryRequestId; OpenTag assigns the request identity.",
+    "Never automatically repeat an unknown IM write. Only when explicitly retrying the exact same payload, reuse the returned requestId as retryRequestId.",
     "Session instructions:",
     sessionInstructions,
   ].join("\n");

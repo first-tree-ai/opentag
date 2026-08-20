@@ -130,42 +130,40 @@ function untokenized(css: string, owner: Owner): string[] {
 }
 
 /**
- * What a motion value may still say once its own tokens are removed: the
- * property or animation it applies to, and plain keywords like `infinite` or
- * `none`. Identifiers, in other words, and the commas between them -- CSS
- * custom-idents, so `pulse2` counts, since only the first character is barred
- * from being a digit.
+ * What could express a duration or an easing, once the value's own tokens are
+ * removed. Only three things can: a time literal, which always carries a unit;
+ * an easing keyword; and a function call, which covers `calc()`, `steps()`,
+ * `cubic-bezier()` and any `var()` from a family that does not own this
+ * property -- every one of them announced by a parenthesis.
  *
- * The `animation` shorthand also carries an iteration count, which is a bare
- * number and belongs to no token family. It is allowed only there: a bare
- * number is not valid anywhere in `transition`, and a duration always carries
- * a unit, so `130ms` stays rejected either way.
+ * Nothing else in these values can name a time, so nothing else is inspected.
+ * That is deliberate after three rounds of the opposite: modelling the
+ * `animation` shorthand's own grammar meant rejecting a keyframes name with a
+ * digit in it, then an integer iteration count, then a quoted name and a
+ * fractional count -- each a valid declaration whose duration and easing
+ * resolved through the tokens the whole time. Asking what can carry the
+ * decision needs no grammar and has no next case.
  *
- * Radius and elevation are checked by listing what may remain; motion used to
- * be checked by listing what may not, and that asymmetry was the hole --
- * `calc(var(--motion-fast) * 2)` leaves `calc( * 2)`, which is not a literal
- * time, an easing keyword or a foreign variable, and derives a duration
- * outside the scale anyway. Naming what is allowed also covers the arithmetic,
- * the units and the functions nobody thought to forbid.
+ * The cost is that this guard no longer notices CSS that is invalid for other
+ * reasons: `transition: opacity var(--motion-fast) var(--ease-standard) 2` has
+ * a stray number the browser will drop, and passes. Validating CSS is not what
+ * this is for, and the attempt to do both is what produced the false positives.
  *
  * Function names and keywords are ASCII case-insensitive to the browser, so
  * `EASE-IN-OUT` eases exactly like its lower-case spelling. Custom property
  * names are not, which is why the reference patterns stay case-sensitive:
  * `--RADIUS-MD` really is a different token.
  */
-const IDENTIFIER = /^(-?[a-z_][a-z0-9_-]*,?|,)$/i;
-const COUNT = /^\d+(\.\d+)?,?$/;
+const TIME = /(\d+\.?\d*|\.\d+)\s*m?s\b/i;
 const EASING = /\b(ease|ease-in|ease-out|ease-in-out|linear|step-start|step-end|steps|cubic-bezier)\b/i;
+const CALL = /\(/;
 
 function untokenizedMotion(css: string): string[] {
   return declarations(css).flatMap((declaration) => {
     const owner = MOTION_OWNERS.find((candidate) => candidate.owns(propertyName(declaration)));
     if (owner === undefined) return [];
-    const counts = propertyName(declaration) === "animation";
     const residue = declaration.value.replace(ownedReferences(owner), " ");
-    const words = residue.trim().split(/\s+/).filter(Boolean);
-    const derived = words.some((word) => !IDENTIFIER.test(word) && !(counts && COUNT.test(word)));
-    if (!derived && !EASING.test(residue)) return [];
+    if (!TIME.test(residue) && !EASING.test(residue) && !CALL.test(residue)) return [];
     return [`${declaration.name}: ${declaration.value}`];
   });
 }
@@ -307,9 +305,9 @@ describe("the guard itself", () => {
     expect(untokenizedMotion(digits)).toEqual([]);
   });
 
-  it("allows an iteration count only where one is grammatical", () => {
-    const transition = ".row { transition: opacity var(--motion-fast) var(--ease-standard) 2; }";
-    expect(untokenizedMotion(transition)).toEqual(["transition: opacity var(--motion-fast) var(--ease-standard) 2"]);
+  it("does not police CSS that is invalid for reasons of its own", () => {
+    const stray = ".row { transition: opacity var(--motion-fast) var(--ease-standard) 2; }";
+    expect(untokenizedMotion(stray)).toEqual([]);
   });
 
   it("reads a function name in any case, as the browser does", () => {

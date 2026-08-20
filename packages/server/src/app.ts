@@ -226,8 +226,20 @@ export function createApp(options: CreateAppOptions = {}) {
       });
       return reply.code(error.statusCode).send(envelope);
     }
+    if (error instanceof RequestValidationError) {
+      const envelope = ErrorEnvelopeSchema.parse({
+        error: {
+          code: "VALIDATION_ERROR",
+          category: "validation",
+          message: "The request payload is invalid",
+          requestId: request.id,
+          issues: [...error.issues],
+        },
+      });
+      return reply.code(400).send(envelope);
+    }
     const statusCode = contentTypeParserErrorStatus(error);
-    if (error instanceof RequestValidationError || statusCode !== undefined) {
+    if (statusCode !== undefined) {
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: "VALIDATION_ERROR",
@@ -236,7 +248,7 @@ export function createApp(options: CreateAppOptions = {}) {
           requestId: request.id,
         },
       });
-      return reply.code(statusCode ?? 400).send(envelope);
+      return reply.code(statusCode).send(envelope);
     }
     request.log.error({ err: error }, "Request failed");
     const envelope = ErrorEnvelopeSchema.parse({

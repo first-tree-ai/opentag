@@ -22,6 +22,18 @@ describe("error contracts", () => {
     });
   });
 
+  it("accepts strict validation issues", () => {
+    const envelope = {
+      error: {
+        code: "VALIDATION_ERROR",
+        category: "validation",
+        message: "The request payload is invalid",
+        issues: [{ path: ["name", 0], code: "invalid_format", message: "Agent name is invalid" }],
+      },
+    };
+    expect(ErrorEnvelopeSchema.parse(envelope)).toEqual(envelope);
+  });
+
   it("rejects untyped and unexpected error fields", () => {
     expect(() =>
       ErrorEnvelopeSchema.parse({
@@ -31,6 +43,16 @@ describe("error contracts", () => {
     expect(() =>
       ErrorEnvelopeSchema.parse({
         error: { code: "RATE_LIMITED", category: "rate_limit", message: "Slow down", rawToken: "secret" },
+      }),
+    ).toThrow();
+    expect(() =>
+      ErrorEnvelopeSchema.parse({
+        error: {
+          code: "VALIDATION_ERROR",
+          category: "validation",
+          message: "Invalid",
+          issues: [{ path: ["name"], code: "invalid_format", message: "Invalid", input: "secret" }],
+        },
       }),
     ).toThrow();
   });

@@ -128,6 +128,59 @@ describe("OpenTagApi Agent methods", () => {
     expect(error).toMatchObject({ code: "AGENT_REVISION_CONFLICT", status: 409 });
   });
 
+  it("preserves validated request issues without trusting malformed envelopes", async () => {
+    const issue = { path: ["name"], code: "invalid_format", message: "Use a lowercase Agent name" };
+    const typedApi = new OpenTagApi(
+      "https://opentag.example",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse(
+          {
+            error: {
+              code: "VALIDATION_ERROR",
+              category: "validation",
+              message: "The request payload is invalid",
+              issues: [issue],
+            },
+          },
+          400,
+        ),
+      ),
+    );
+    await expect(
+      typedApi.createAgent("access", teamId, {
+        computerId,
+        displayName: "Bestony",
+        name: "Bestony",
+        runtimeProvider: "codex",
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR", status: 400, issues: [issue] });
+
+    const malformedApi = new OpenTagApi(
+      "https://opentag.example",
+      vi.fn<typeof fetch>().mockResolvedValue(
+        jsonResponse(
+          {
+            error: {
+              code: "VALIDATION_ERROR",
+              category: "validation",
+              message: "Do not trust this",
+              issues: [{ ...issue, input: "secret" }],
+            },
+          },
+          400,
+        ),
+      ),
+    );
+    await expect(
+      malformedApi.createAgent("access", teamId, {
+        computerId,
+        displayName: "Bestony",
+        name: "Bestony",
+        runtimeProvider: "codex",
+      }),
+    ).rejects.toMatchObject({ code: "AUTH_INVALID_TOKEN", status: 400, message: "Authentication failed" });
+  });
+
   it("rejects an invalid success response", async () => {
     const api = new OpenTagApi("https://opentag.example", vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({})));
     await expect(api.getAgent("access", agentId)).rejects.toMatchObject({

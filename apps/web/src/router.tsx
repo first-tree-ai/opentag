@@ -11,7 +11,7 @@ import type {
   TeamComputerSummary,
   TeamMemberSummary,
 } from "@opentag/shared/browser";
-import { MembershipRoleSchema } from "@opentag/shared/browser";
+import { AgentNameSchema, MembershipRoleSchema } from "@opentag/shared/browser";
 import {
   createContext,
   type FormEvent,
@@ -1140,6 +1140,7 @@ function AgentCreationContent({
   teamId: string;
 }) {
   const [error, setError] = useState<string>();
+  const [nameError, setNameError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
   const [computerId, setComputerId] = useState("");
   const [runtimeProvider, setRuntimeProvider] = useState<"codex" | "claude-code">("codex");
@@ -1155,8 +1156,15 @@ function AgentCreationContent({
     event.preventDefault();
     if (inFlightRef.current) return;
     const data = new FormData(event.currentTarget);
+    setError(undefined);
+    setNameError(undefined);
+    const name = AgentNameSchema.safeParse(String(data.get("name") ?? ""));
+    if (!name.success) {
+      setNameError(name.error.issues[0]?.message ?? "Agent name is invalid");
+      return;
+    }
     const input = {
-      name: String(data.get("name") ?? ""),
+      name: name.data,
       displayName: String(data.get("displayName") ?? ""),
       runtimeProvider: String(data.get("runtimeProvider") ?? "codex") as "codex" | "claude-code",
       computerId: String(data.get("computerId") ?? ""),
@@ -1166,7 +1174,6 @@ function AgentCreationContent({
       creationIntentRef.current = { fingerprint, id: crypto.randomUUID() };
     }
     inFlightRef.current = true;
-    setError(undefined);
     setSubmitting(true);
     onSubmittingChange?.(true);
     try {
@@ -1176,6 +1183,13 @@ function AgentCreationContent({
       });
       onCreated(created.id);
     } catch (cause) {
+      if (cause instanceof ApiError) {
+        const issue = cause.issues?.find(({ path }) => path[0] === "name");
+        if (issue) {
+          setNameError(issue.message);
+          return;
+        }
+      }
       setError(cause instanceof Error ? cause.message : "Agent creation failed");
     } finally {
       inFlightRef.current = false;
@@ -1216,10 +1230,11 @@ function AgentCreationContent({
               <span className="agent-name-input">
                 <span aria-hidden="true">@</span>
                 <input
-                  aria-describedby="new-agent-name-hint"
+                  aria-describedby={nameError ? "new-agent-name-hint agent-name-error" : "new-agent-name-hint"}
+                  aria-invalid={nameError ? true : undefined}
                   id="new-agent-name"
                   name="name"
-                  pattern="[a-z0-9][a-z0-9-]*"
+                  onChange={() => setNameError(undefined)}
                   placeholder="research-assistant"
                   disabled={submitting}
                   required
@@ -1228,6 +1243,11 @@ function AgentCreationContent({
               <span className="field-hint" id="new-agent-name-hint">
                 Used for mentions. Lowercase letters, numbers, and hyphens only.
               </span>
+              {nameError ? (
+                <span className="field-error" id="agent-name-error" role="alert">
+                  {nameError}
+                </span>
+              ) : null}
             </div>
             <div className="agent-create-grid">
               <div className="agent-create-field">

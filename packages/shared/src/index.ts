@@ -98,6 +98,8 @@ export {
   ErrorDetailSchema,
   type ErrorEnvelope,
   ErrorEnvelopeSchema,
+  type ValidationIssue,
+  ValidationIssueSchema,
 } from "./errors.js";
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
 export {

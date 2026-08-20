@@ -83,7 +83,7 @@ function installApi(
   let memberRole: "admin" | "member" = "member";
   let otherMemberRole: "admin" | "member" = "member";
   let invitationExists = options.invitationExists ?? false;
-  let invitationVersion: "A" | "B" = "A";
+  let invitationVersion: "A" | "B" | "C" = "A";
   let joinedInvitation = options.alreadyJoinedInvitation ?? false;
   let teamNameConflicts = options.teamNameConflicts ?? (options.teamNameConflict ? 1 : 0);
   const invitation = () => ({
@@ -327,6 +327,11 @@ function installApi(
     if (path === "/api/v1/auth/browser/logout" && init?.method === "POST") return new Response(null, { status: 204 });
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
   });
+  return {
+    setInvitationVersion(value: "A" | "B" | "C") {
+      invitationVersion = value;
+    },
+  };
 }
 
 describe("OpenTag Web App Shell", () => {
@@ -646,6 +651,30 @@ describe("OpenTag Web App Shell", () => {
     expect(refreshedPageLink.value).toContain("/invites/BBB");
     fireEvent.click(screen.getByRole("button", { name: "Copy invitation link" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(refreshedPageLink.value));
+    confirm.mockRestore();
+  });
+
+  it("replaces a locally rotated invitation with a newer successful server read", async () => {
+    const api = installApi("admin", { invitationExists: true });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+
+    expect(((await screen.findByLabelText("Invitation link")) as HTMLInputElement).value).toContain("/invites/AAA");
+    fireEvent.click(screen.getByRole("button", { name: "Rotate invitation link" }));
+    await waitFor(() =>
+      expect((screen.getByLabelText("Invitation link") as HTMLInputElement).value).toContain("/invites/BBB"),
+    );
+
+    api.setInvitationVersion("C");
+    fireEvent.click(screen.getByRole("link", { name: "Agents" }));
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("link", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("link", { name: "Members" }));
+
+    await waitFor(() =>
+      expect((screen.getByLabelText("Invitation link") as HTMLInputElement).value).toContain("/invites/CCC"),
+    );
     confirm.mockRestore();
   });
 

@@ -138,7 +138,7 @@ export function OnboardingPage({
 
   const runAgentCreation = useCallback(
     (request: Omit<CreateAgentRequest, "creationIntentId">) => {
-      if (creationInFlight.current) return;
+      if (refreshInFlight.current || creationInFlight.current) return;
       creationInFlight.current = true;
       setCreation({ kind: "pending" });
       void createOnboardingAgent(membership.teamId, request).then(
@@ -416,7 +416,8 @@ function OnboardingContent({
         </ActionSection>
       );
     }
-    const pending = creation?.kind === "pending";
+    const creationPending = creation?.kind === "pending";
+    const pending = creationPending || refreshPending;
     return (
       <ActionSection
         title="Create your Agent"
@@ -482,9 +483,16 @@ function OnboardingContent({
               </div>
             ) : null}
             <button className="button" disabled={pending} type="submit">
-              {pending ? "Creating agent…" : creation?.kind === "error" ? "Try again" : "Create agent"}
+              {refreshPending
+                ? "Updating route…"
+                : creationPending
+                  ? "Creating agent…"
+                  : creation?.kind === "error"
+                    ? "Try again"
+                    : "Create agent"}
             </button>
-            {pending ? <p role="status">Creating Agent identity and runtime binding…</p> : null}
+            {refreshPending ? <p role="status">Confirming the selected runtime route…</p> : null}
+            {creationPending ? <p role="status">Creating Agent identity and runtime binding…</p> : null}
           </div>
         </form>
       </ActionSection>

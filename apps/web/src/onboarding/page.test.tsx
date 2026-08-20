@@ -12,7 +12,7 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
 import { OnboardingPage } from "./page.js";
-import type { RuntimeFactsAdapter, RuntimeProviderStatus } from "./runtime-facts.js";
+import type { RuntimeFactsAdapter, RuntimeFactsResult, RuntimeProviderStatus } from "./runtime-facts.js";
 
 const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -307,6 +307,48 @@ describe("OnboardingPage", () => {
     expect(await screen.findByText("OpenTag will run with Claude Code on Ada's Mac.")).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
 
+    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith(
+        teamId,
+        expect.objectContaining({ computerId: computerAId, runtimeProvider: "claude-code" }),
+      ),
+    );
+  });
+
+  it("does not create on the stale route while an explicit Provider choice reloads", async () => {
+    installFacts({ computers: [computerA] });
+    const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    let finishReload: ((value: RuntimeFactsResult) => void) | undefined;
+    const pendingReload = new Promise<RuntimeFactsResult>((resolve) => {
+      finishReload = resolve;
+    });
+    const available = {
+      kind: "available" as const,
+      providers: [
+        { computerId: computerAId, provider: "codex" as const, runtimeReady: true },
+        { computerId: computerAId, provider: "claude-code" as const, runtimeReady: true },
+      ],
+    };
+    const runtime: RuntimeFactsAdapter = {
+      load: vi.fn().mockResolvedValue(available).mockResolvedValueOnce(available).mockReturnValueOnce(pendingReload),
+    };
+    renderPage({ runtime });
+
+    await screen.findByText("OpenTag will run with Codex on Ada's Mac.");
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+
+    const createButton = screen.getByRole("button", { name: "Updating route…" });
+    expect(createButton).toHaveProperty("disabled", true);
+    expect(screen.getByRole("status").textContent).toBe("Confirming the selected runtime route…");
+    fireEvent.click(createButton);
+    expect(create).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishReload?.(available);
+    });
+    expect(await screen.findByText("OpenTag will run with Claude Code on Ada's Mac.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith(

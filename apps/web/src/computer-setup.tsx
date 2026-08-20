@@ -23,6 +23,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
   const [error, setError] = useState<string>();
   const [waitingForComputer, setWaitingForComputer] = useState(false);
   const [computerConnected, setComputerConnected] = useState(false);
+  const [pollCycle, setPollCycle] = useState(0);
   const baselineConnections = useRef<Map<string, string | null>>(new Map());
   const connectCodeExpiresAt = useRef(0);
   const connectAttempt = useRef(0);
@@ -53,6 +54,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
       connectCodeExpiresAt.current = Date.parse(issued.issuedAt) + issued.expiresIn * 1_000;
       setBootstrapCommand(issued.bootstrapCommand);
       setComputerConnected(false);
+      setPollCycle(attempt);
       setWaitingForComputer(true);
     } catch (cause) {
       if (!mounted.current || connectAttempt.current !== attempt) return;
@@ -61,7 +63,9 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
   }
 
   useEffect(() => {
-    if (!waitingForComputer) return;
+    if (!waitingForComputer || pollCycle === 0) return;
+    const baseline = baselineConnections.current;
+    const expiresAt = connectCodeExpiresAt.current;
     let active = true;
     let completed = false;
     let pollTimer = 0;
@@ -74,7 +78,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
         setComputerConnected(false);
         setError(CONNECT_CODE_EXPIRED_MESSAGE);
       },
-      Math.max(0, connectCodeExpiresAt.current - Date.now()),
+      Math.max(0, expiresAt - Date.now()),
     );
     pollTimer = window.setInterval(() => {
       void browserApi.ownComputers().then(
@@ -83,10 +87,10 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
           const connected = value.computers.some(
             (computer: Computer) =>
               computer.connectionStatus === "online" &&
-              ((!baselineConnections.current.has(computer.id) && computer.connectedAt !== null) ||
-                (baselineConnections.current.has(computer.id) &&
+              ((!baseline.has(computer.id) && computer.connectedAt !== null) ||
+                (baseline.has(computer.id) &&
                   computer.connectedAt !== null &&
-                  baselineConnections.current.get(computer.id) !== computer.connectedAt)),
+                  baseline.get(computer.id) !== computer.connectedAt)),
           );
           if (!connected) return;
           completed = true;
@@ -106,7 +110,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
       window.clearInterval(pollTimer);
       window.clearTimeout(expiryTimer);
     };
-  }, [waitingForComputer]);
+  }, [pollCycle, waitingForComputer]);
 
   return (
     <section className="panel">

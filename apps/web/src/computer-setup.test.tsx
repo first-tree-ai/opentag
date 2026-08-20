@@ -154,6 +154,39 @@ describe("ComputerSetup", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("restarts expiry and polling when a replacement command is generated", async () => {
+    vi.spyOn(browserApi, "ownComputers").mockResolvedValue({ computers: [] });
+    vi.spyOn(browserApi, "issueConnectCode")
+      .mockResolvedValueOnce({
+        bootstrapCommand: "first command",
+        expiresIn: 2,
+        issuedAt: connectedAt,
+      })
+      .mockResolvedValueOnce({
+        bootstrapCommand: "replacement command",
+        expiresIn: 5,
+        issuedAt: "2026-08-20T00:00:01.000Z",
+      });
+
+    render(<ComputerSetup teamId={teamId} />);
+    await clickGenerate();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+    await clickGenerate();
+
+    expect(screen.getByText("replacement command")).toBeTruthy();
+    expect(vi.getTimerCount()).toBe(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_001);
+    });
+
+    expect(screen.getByRole("status").textContent).toBe("Waiting for the Computer to connect…");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(vi.getTimerCount()).toBe(2);
+  });
+
   it("normalizes connect-code issuance errors", async () => {
     vi.spyOn(browserApi, "ownComputers").mockResolvedValue({ computers: [] });
     vi.spyOn(browserApi, "issueConnectCode").mockRejectedValue("unavailable");

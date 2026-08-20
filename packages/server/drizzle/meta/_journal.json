@@ -43,6 +43,13 @@
       "when": 1787150382004,
       "tag": "0005_wooden_roughhouse",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787196282659,
+      "tag": "0006_goofy_bastion",
+      "breakpoints": true
     }
   ]
 }

@@ -1,4 +1,4 @@
-import type { Agent, ListAgentsResponse } from "@opentag/shared";
+import type { AgentAdminConfig, ListAgentsResponse } from "@opentag/shared";
 import { selectTeam } from "../selection/team.js";
 import { type AgentCommandDependencies, resolveAgentCommandContext } from "./context.js";
 
@@ -12,7 +12,7 @@ export async function runAgentList(options: AgentListOptions = {}): Promise<List
   return api.listAgents(accessToken, team.teamId);
 }
 
-export async function runAgentShow(agentId: string, options: AgentCommandDependencies = {}): Promise<Agent> {
+export async function runAgentShow(agentId: string, options: AgentCommandDependencies = {}): Promise<AgentAdminConfig> {
   const { api, accessToken } = await resolveAgentCommandContext(options);
-  return api.getAgent(accessToken, agentId);
+  return api.getAgentConfig(accessToken, agentId);
 }

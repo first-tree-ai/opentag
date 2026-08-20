@@ -1,10 +1,10 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
-import { mapSlackWriteResult, normalizeSlackEnvelope, SlackAdapter } from "../services/integrations/slack/adapter.js";
-import { SlackBindingActivator } from "../services/integrations/slack/binding-activator.js";
-import { DefaultSlackApiClient, SLACK_WEB_CLIENT_OPTIONS } from "../services/integrations/slack/default-api-client.js";
-import { preparseSlackRoute, verifySlackSignature } from "../services/integrations/slack/signature.js";
+import { mapSlackWriteResult, normalizeSlackEnvelope, SlackAdapter } from "../services/im-bindings/slack/adapter.js";
+import { SlackBindingActivator } from "../services/im-bindings/slack/binding-activator.js";
+import { DefaultSlackApiClient, SLACK_WEB_CLIENT_OPTIONS } from "../services/im-bindings/slack/default-api-client.js";
+import { preparseSlackRoute, verifySlackSignature } from "../services/im-bindings/slack/signature.js";
 
 describe("Slack installed-binding adapter", () => {
   it("verifies the raw body and rejects replayed timestamps", () => {
@@ -174,9 +174,9 @@ describe("Slack installed-binding adapter", () => {
     const app = createApp({
       slackEvents: {
         now: () => now,
-        integrations: {
+        imBindings: {
           findSlackIngressBinding: vi.fn().mockResolvedValue({
-            integrationId: crypto.randomUUID(),
+            imBindingId: crypto.randomUUID(),
             generation: 1,
             appId: "A1",
             teamId: "T1",
@@ -196,7 +196,7 @@ describe("Slack installed-binding adapter", () => {
     const signature = `v0=${createHmac("sha256", "secret").update(`v0:${timestamp}:${raw}`).digest("hex")}`;
     const response = await app.inject({
       method: "POST",
-      url: "/api/v1/integrations/slack/events",
+      url: "/api/v1/im-bindings/slack/events",
       payload: raw,
       headers: {
         "content-type": "application/json",
@@ -212,7 +212,7 @@ describe("Slack installed-binding adapter", () => {
   });
 
   it("validates installation identity before activation", async () => {
-    const activateSlack = vi.fn().mockResolvedValue("integration-id");
+    const activateSlack = vi.fn().mockResolvedValue("im-binding-id");
     const api = { authTest: vi.fn().mockResolvedValue({ appId: "A2", teamId: "T1", botUserId: "U1" }) };
     const activator = new SlackBindingActivator({ activateSlack } as never, api as never);
     await expect(

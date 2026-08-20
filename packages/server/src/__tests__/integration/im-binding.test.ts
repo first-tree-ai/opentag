@@ -15,7 +15,7 @@ import {
   type UpdateAgentRequest,
 } from "@opentag/shared";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
@@ -26,11 +26,14 @@ import {
   agentRuntimeConfigs,
   agents,
   computers,
+  imBindings,
   imMessageDeliveries,
   imMessages,
-  integrations,
+  memberships,
   sessionPlacements,
   sessions,
+  teams,
+  users,
 } from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
@@ -45,14 +48,15 @@ import {
   type FeishuRegistration,
   type FeishuRegistrationGateway,
   FeishuSetupService,
-} from "../../services/integrations/feishu/index.js";
+} from "../../services/im-bindings/feishu/index.js";
 import {
   createImProviderAdapterResolver,
-  IntegrationService,
+  ImBindingService,
   ProviderAdapterResolutionError,
-} from "../../services/integrations/index.js";
+} from "../../services/im-bindings/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../services/runtime-config/index.js";
 import { SessionService } from "../../services/sessions/index.js";
+import { TeamMembershipService } from "../../services/teams/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 let container: StartedPostgreSqlContainer;
@@ -83,7 +87,7 @@ async function validatingFeishuAttempt(
   intent: "create" | "reauthorize" | "replace",
 ): Promise<string> {
   const attemptId = crypto.randomUUID();
-  const [existing] = await database.select().from(integrations).where(eq(integrations.agentId, agentId)).limit(1);
+  const [existing] = await database.select().from(imBindings).where(eq(imBindings.agentId, agentId)).limit(1);
   const values = {
     setupAttemptId: attemptId,
     setupIntent: intent,
@@ -95,9 +99,9 @@ async function validatingFeishuAttempt(
     updatedAt: new Date(),
   };
   if (existing) {
-    await database.update(integrations).set(values).where(eq(integrations.id, existing.id));
+    await database.update(imBindings).set(values).where(eq(imBindings.id, existing.id));
   } else {
-    await database.insert(integrations).values({
+    await database.insert(imBindings).values({
       agentId,
       provider: "feishu",
       status: "provisioning",
@@ -134,10 +138,10 @@ async function fixture() {
     runtimeProvider: "codex",
     computerId: computer.id,
   });
-  const integrationService = new IntegrationService(client.database, new ApplicationCipher(Buffer.alloc(32, 7)), {
+  const imBindingService = new ImBindingService(client.database, new ApplicationCipher(Buffer.alloc(32, 7)), {
     now: () => new Date("2026-08-19T00:00:00.000Z"),
   });
-  const integrationId = await integrationService.activateSlack({
+  const imBindingId = await imBindingService.activateSlack({
     agentId: agent.id,
     appId: "A1",
     teamId: "T1",
@@ -154,7 +158,7 @@ async function fixture() {
     signingSecret: "signing-secret",
     installedAt: new Date("2026-08-19T00:00:00.000Z"),
   });
-  return { ...client, agent, bootstrap, computer, integrationId, integrationService };
+  return { ...client, agent, bootstrap, computer, imBindingId, imBindingService };
 }
 
 async function unboundFixture() {
@@ -185,8 +189,8 @@ async function unboundFixture() {
     computerId: computer.id,
   });
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
-  const integrationService = new IntegrationService(client.database, cipher);
-  return { ...client, agent, bootstrap, computer, cipher, integrationService };
+  const imBindingService = new ImBindingService(client.database, cipher);
+  return { ...client, agent, bootstrap, computer, cipher, imBindingService };
 }
 
 function imDeliveryWorker(input: Omit<ConstructorParameters<typeof ImDeliveryWorker>[0], "assembler">) {
@@ -437,7 +441,127 @@ function revisionEvent(input: {
   };
 }
 
-describe("IM Integration persistence", () => {
+describe("IM binding persistence", () => {
+  it("returns a member-safe IM projection while reserving diagnostics and config for Team Admins", async () => {
+    const value = await fixture();
+    try {
+      const [member] = await value.database
+        .insert(users)
+        .values({ email: "member@example.com", displayName: "Member" })
+        .returning();
+      if (!member) throw new Error("Member fixture was not created");
+      await value.database
+        .insert(memberships)
+        .values({ teamId: value.bootstrap.teamId, userId: member.id, role: "member", status: "active" });
+
+      const summary = await value.imBindingService.getForAgent(member.id, value.agent.id);
+      expect(summary).toMatchObject({ provider: "slack", bindingState: "active", receiveMode: "mention_only" });
+      expect(JSON.stringify(summary)).not.toMatch(/credential|identity|appId|botUserId|lastError/i);
+      await expect(value.imBindingService.getConfigForAgent(member.id, value.agent.id)).rejects.toMatchObject({
+        code: "IM_BINDING_FORBIDDEN",
+        statusCode: 403,
+      });
+      await expect(value.imBindingService.diagnostics(member.id, value.imBindingId)).rejects.toMatchObject({
+        code: "IM_BINDING_FORBIDDEN",
+        statusCode: 403,
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("waits for an in-flight admin downgrade and rejects the IM mutation after revocation commits", async () => {
+    const value = await fixture();
+    const revoker = createDatabaseClient(databaseUrl);
+    const teamLocked = deferred<void>();
+    const releaseRevocation = deferred<void>();
+    try {
+      const revocation = revoker.database.transaction(async (transaction) => {
+        await transaction
+          .select({ id: teams.id })
+          .from(teams)
+          .where(eq(teams.id, value.bootstrap.teamId))
+          .limit(1)
+          .for("update");
+        await transaction
+          .update(memberships)
+          .set({ role: "member" })
+          .where(and(eq(memberships.teamId, value.bootstrap.teamId), eq(memberships.userId, value.bootstrap.userId)));
+        teamLocked.resolve();
+        await releaseRevocation.promise;
+      });
+      await teamLocked.promise;
+      const mutation = value.imBindingService.disable(value.bootstrap.userId, value.imBindingId);
+      let settled = false;
+      void mutation.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(settled).toBe(false);
+      releaseRevocation.resolve();
+      await revocation;
+      await expect(mutation).rejects.toMatchObject({ code: "IM_BINDING_FORBIDDEN", statusCode: 403 });
+      expect(
+        (await value.database.select().from(imBindings).where(eq(imBindings.id, value.imBindingId)))[0]?.status,
+      ).toBe("active");
+    } finally {
+      releaseRevocation.resolve();
+      await Promise.all([revoker.sql.end(), value.sql.end()]);
+    }
+  });
+
+  it("holds Team authority while an IM mutation commits so a concurrent downgrade cannot interleave", async () => {
+    const value = await fixture();
+    const authorityLocked = deferred<void>();
+    const releaseMutation = deferred<void>();
+    const service = new ImBindingService(value.database, new ApplicationCipher(Buffer.alloc(32, 7)), {
+      afterMutationAuthorityLocked: async () => {
+        authorityLocked.resolve();
+        await releaseMutation.promise;
+      },
+    });
+    try {
+      const [secondAdmin] = await value.database
+        .insert(users)
+        .values({ email: "second-im-admin@example.com", displayName: "Second IM Admin" })
+        .returning();
+      if (!secondAdmin) throw new Error("Second admin fixture was not created");
+      await value.database.insert(memberships).values({
+        teamId: value.bootstrap.teamId,
+        userId: secondAdmin.id,
+        role: "admin",
+        status: "active",
+      });
+      const mutation = service.disable(value.bootstrap.userId, value.imBindingId);
+      await authorityLocked.promise;
+      const downgrade = new TeamMembershipService(value.database).changeRole(
+        secondAdmin.id,
+        value.bootstrap.teamId,
+        value.bootstrap.userId,
+        "member",
+      );
+      let downgradeSettled = false;
+      void downgrade.finally(() => {
+        downgradeSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(downgradeSettled).toBe(false);
+      releaseMutation.resolve();
+      await expect(mutation).resolves.toBeUndefined();
+      await expect(downgrade).resolves.toMatchObject({ role: "member" });
+      expect(
+        (await value.database.select().from(imBindings).where(eq(imBindings.id, value.imBindingId)))[0]?.status,
+      ).toBe("disabled");
+    } finally {
+      releaseMutation.resolve();
+      await value.sql.end();
+    }
+  });
   it("migrates the authority tables with partial Session uniqueness and self-scope provenance", async () => {
     const value = await fixture();
     try {
@@ -462,9 +586,9 @@ describe("IM Integration persistence", () => {
     const value = await fixture();
     try {
       const inbox = new ImMessageInbox(value.database, { now: () => new Date("2026-08-19T00:00:02.000Z") });
-      const first = await inbox.ingest(value.integrationId, 1, inbound("Ev1"));
-      const retry = await inbox.ingest(value.integrationId, 1, inbound("Ev1"));
-      const companion = await inbox.ingest(value.integrationId, 1, inbound("Ev2"));
+      const first = await inbox.ingest(value.imBindingId, 1, inbound("Ev1"));
+      const retry = await inbox.ingest(value.imBindingId, 1, inbound("Ev1"));
+      const companion = await inbox.ingest(value.imBindingId, 1, inbound("Ev2"));
       expect(first.deliveryIds).toHaveLength(1);
       expect(retry).toEqual({ duplicate: true, messageId: first.messageId, deliveryIds: [] });
       expect(companion).toMatchObject({ duplicate: true, messageId: first.messageId, deliveryIds: [] });
@@ -475,7 +599,7 @@ describe("IM Integration persistence", () => {
         { computerId: value.computer.id, generation: 1 },
       ]);
 
-      const edit = await inbox.ingest(value.integrationId, 1, inbound("Ev3", "edited"));
+      const edit = await inbox.ingest(value.imBindingId, 1, inbound("Ev3", "edited"));
       expect(edit).toMatchObject({ duplicate: false });
       expect(await value.database.select().from(imMessages)).toHaveLength(2);
       expect(await value.database.select().from(imMessageDeliveries)).toEqual(
@@ -516,8 +640,8 @@ describe("IM Integration persistence", () => {
           revisionKey: "3",
         }),
       ];
-      for (const event of revisions("ordered")) await inbox.ingest(value.integrationId, 1, event);
-      for (const event of revisions("reversed").reverse()) await inbox.ingest(value.integrationId, 1, event);
+      for (const event of revisions("ordered")) await inbox.ingest(value.imBindingId, 1, event);
+      for (const event of revisions("reversed").reverse()) await inbox.ingest(value.imBindingId, 1, event);
 
       const messages = await value.database.select().from(imMessages);
       expect(messages).toHaveLength(6);
@@ -560,7 +684,7 @@ describe("IM Integration persistence", () => {
       });
       const newerInbox = new ImMessageInbox(value.database);
       const older = olderInbox.ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "concurrent-create",
@@ -574,7 +698,7 @@ describe("IM Integration persistence", () => {
       let newerSettled = false;
       const newer = newerInbox
         .ingest(
-          value.integrationId,
+          value.imBindingId,
           1,
           revisionEvent({
             providerEventId: "concurrent-delete",
@@ -612,7 +736,7 @@ describe("IM Integration persistence", () => {
     const value = await fixture();
     try {
       const first = await new ImMessageInbox(value.database).ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "custody-create",
@@ -646,7 +770,7 @@ describe("IM Integration persistence", () => {
         .poll(() => runtime.frames.filter((frame) => (frame as { type?: string }).type === "im:deliver").length)
         .toBe(1);
       const newer = await new ImMessageInbox(value.database).ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "custody-delete",
@@ -691,7 +815,7 @@ describe("IM Integration persistence", () => {
     const value = await fixture();
     try {
       const admitted = await new ImMessageInbox(value.database).ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "ttl-create",
@@ -771,7 +895,7 @@ describe("IM Integration persistence", () => {
     try {
       const inbox = new ImMessageInbox(value.database);
       const first = await inbox.ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "capacity-first",
@@ -810,7 +934,7 @@ describe("IM Integration persistence", () => {
         .insert(imMessages)
         .values(
           Array.from({ length: 99 }, (_, index) => ({
-            integrationId: value.integrationId,
+            imBindingId: value.imBindingId,
             providerEventId: `capacity-filler-${index}`,
             channelId: "C1",
             externalMessageId: `capacity-filler-message-${index}`,
@@ -842,7 +966,7 @@ describe("IM Integration persistence", () => {
         })),
       );
       await inbox.ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "capacity-second",
@@ -898,7 +1022,7 @@ describe("IM Integration persistence", () => {
       });
       created.conversation = { externalId: "DM1", kind: "dm" };
       created.mentions = [];
-      await inbox.ingest(value.integrationId, 1, created);
+      await inbox.ingest(value.imBindingId, 1, created);
       const recalled = revisionEvent({
         providerEventId: "dm-recall",
         externalMessageId: "dm-message",
@@ -908,7 +1032,7 @@ describe("IM Integration persistence", () => {
       });
       recalled.conversation = { externalId: "DM1", kind: "unknown" };
       recalled.mentions = [];
-      const result = await inbox.ingest(value.integrationId, 1, recalled);
+      const result = await inbox.ingest(value.imBindingId, 1, recalled);
       const [message] = await value.database
         .select()
         .from(imMessages)
@@ -933,7 +1057,7 @@ describe("IM Integration persistence", () => {
         occurredAt: "2026-08-19T00:00:01.000Z",
         revisionKey: "1",
       });
-      const created = await inbox.ingest(value.integrationId, 1, createdEvent);
+      const created = await inbox.ingest(value.imBindingId, 1, createdEvent);
       const createdDeliveryId = created.deliveryIds[0];
       if (!created.messageId || !createdDeliveryId) throw new Error("Mention delivery fixture was not created");
       await value.database
@@ -956,7 +1080,7 @@ describe("IM Integration persistence", () => {
       });
       recalledEvent.conversation.kind = "unknown";
       recalledEvent.mentions = [];
-      const recalled = await inbox.ingest(value.integrationId, 1, recalledEvent);
+      const recalled = await inbox.ingest(value.imBindingId, 1, recalledEvent);
       expect(recalled.deliveryIds).toHaveLength(1);
       const [recalledDelivery] = await value.database
         .select()
@@ -1011,7 +1135,7 @@ describe("IM Integration persistence", () => {
         occurredAt: "2026-08-19T00:00:03.000Z",
         revisionKey: "1",
       });
-      const second = await inbox.ingest(value.integrationId, 1, secondCreated);
+      const second = await inbox.ingest(value.imBindingId, 1, secondCreated);
       const secondRecall = revisionEvent({
         providerEventId: "all-message-recall",
         externalMessageId: "all-message-message",
@@ -1021,7 +1145,7 @@ describe("IM Integration persistence", () => {
       });
       secondRecall.conversation.kind = "unknown";
       secondRecall.mentions = [];
-      const secondRecalled = await inbox.ingest(value.integrationId, 1, secondRecall);
+      const secondRecalled = await inbox.ingest(value.imBindingId, 1, secondRecall);
       expect(second.deliveryIds).toHaveLength(1);
       expect(secondRecalled.deliveryIds).toHaveLength(1);
       const [secondRecallDelivery] = await value.database
@@ -1056,7 +1180,7 @@ describe("IM Integration persistence", () => {
       });
       const inbox = new ImMessageInbox(value.database);
       const directA = await inbox.ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "mention-only-a",
@@ -1100,7 +1224,7 @@ describe("IM Integration persistence", () => {
         blocks: [{ type: "text", text: "intervening" }],
         truncated: false,
       };
-      const intervening = await inbox.ingest(value.integrationId, 1, interveningEvent);
+      const intervening = await inbox.ingest(value.imBindingId, 1, interveningEvent);
       expect(intervening.deliveryIds).toEqual([]);
 
       const [session] = await value.database.select().from(sessions).where(eq(sessions.channelId, "C1")).limit(1);
@@ -1139,7 +1263,7 @@ describe("IM Integration persistence", () => {
       expect(providerWrites).toBe(0);
 
       const directC = await inbox.ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "mention-only-c",
@@ -1173,6 +1297,7 @@ describe("IM Integration persistence", () => {
   it("inherits thread scope for a Feishu recall and targets the existing thread Session", async () => {
     const value = await fixture();
     try {
+      await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
       const inbox = new ImMessageInbox(value.database);
       const created = revisionEvent({
         providerEventId: "thread-create",
@@ -1182,7 +1307,7 @@ describe("IM Integration persistence", () => {
         revisionKey: "1",
       });
       created.message.threadKey = "thread-root";
-      await inbox.ingest(value.integrationId, 1, created);
+      await inbox.ingest(value.imBindingId, 1, created);
       const recalled = revisionEvent({
         providerEventId: "thread-recall",
         externalMessageId: "thread-message",
@@ -1193,7 +1318,7 @@ describe("IM Integration persistence", () => {
       recalled.conversation.kind = "unknown";
       recalled.message.threadKey = null;
       recalled.mentions = [];
-      const result = await inbox.ingest(value.integrationId, 1, recalled);
+      const result = await inbox.ingest(value.imBindingId, 1, recalled);
       const [message] = await value.database
         .select()
         .from(imMessages)
@@ -1229,7 +1354,7 @@ describe("IM Integration persistence", () => {
       });
       recalled.conversation.kind = "unknown";
       recalled.mentions = [];
-      const recallResult = await inbox.ingest(value.integrationId, 1, recalled);
+      const recallResult = await inbox.ingest(value.imBindingId, 1, recalled);
       expect(recallResult.deliveryIds).toEqual([]);
       const created = revisionEvent({
         providerEventId: "late-create",
@@ -1238,7 +1363,7 @@ describe("IM Integration persistence", () => {
         occurredAt: "2026-08-19T00:00:01.000Z",
         revisionKey: "1",
       });
-      const createResult = await inbox.ingest(value.integrationId, 1, created);
+      const createResult = await inbox.ingest(value.imBindingId, 1, created);
       expect(createResult.deliveryIds).toEqual([]);
       expect(await value.database.select().from(sessions)).toEqual([]);
       expect(await value.database.select().from(imMessageDeliveries)).toEqual([]);
@@ -1260,7 +1385,7 @@ describe("IM Integration persistence", () => {
         .update(computers)
         .set({ currentInstanceId: instanceId })
         .where(eq(computers.id, value.computer.id));
-      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-worker"));
+      await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-worker"));
       const registry = { currentInstanceId: () => instanceId };
       const failedDomain = {
         requestReconcile: vi.fn().mockRejectedValue(new Error("runtime unavailable")),
@@ -1327,7 +1452,7 @@ describe("IM Integration persistence", () => {
 
       const deliverAndRecord = async (event: NormalizedInboundImEvent) => {
         const before = runtime.frames.length;
-        await inbox.ingest(value.integrationId, 1, event);
+        await inbox.ingest(value.imBindingId, 1, event);
         await imDeliveryWorker({
           database: value.database,
           registry: runtime.registry,
@@ -1434,7 +1559,7 @@ describe("IM Integration persistence", () => {
       });
       owners.push(first.domain);
       const inbox = new ImMessageInbox(value.database);
-      await inbox.ingest(value.integrationId, 1, inbound("Ev-agent-fence-accepted"));
+      await inbox.ingest(value.imBindingId, 1, inbound("Ev-agent-fence-accepted"));
       await imDeliveryWorker({
         database: value.database,
         registry: first.registry,
@@ -1474,7 +1599,7 @@ describe("IM Integration persistence", () => {
         runtimeConfig: { model: "gpt-5-after-custody" },
       });
       const pendingAdmission = await inbox.ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "Ev-agent-fence-pending",
@@ -1589,7 +1714,7 @@ describe("IM Integration persistence", () => {
         .set({ currentInstanceId: firstInstanceId })
         .where(eq(computers.id, value.computer.id));
       const inbox = new ImMessageInbox(value.database);
-      const firstAdmission = await inbox.ingest(value.integrationId, 1, inbound("Ev-agent-claim-race-accepted"));
+      const firstAdmission = await inbox.ingest(value.imBindingId, 1, inbound("Ev-agent-claim-race-accepted"));
       const firstDeliveryId = firstAdmission.deliveryIds[0];
       if (!firstDeliveryId || !firstAdmission.messageId) throw new Error("Race fixture was not admitted");
       const [firstDelivery] = await value.database
@@ -1635,7 +1760,7 @@ describe("IM Integration persistence", () => {
         runtimeConfig: { model: "gpt-5-after-late-accept" },
       });
       const secondAdmission = await inbox.ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "Ev-agent-claim-race-pending",
@@ -1802,7 +1927,7 @@ describe("IM Integration persistence", () => {
         .set({ currentInstanceId: instanceId })
         .where(eq(computers.id, value.computer.id));
       const inbox = new ImMessageInbox(value.database);
-      const firstAdmission = await inbox.ingest(value.integrationId, 1, inbound("Ev-owned-claim-first"));
+      const firstAdmission = await inbox.ingest(value.imBindingId, 1, inbound("Ev-owned-claim-first"));
       const firstDeliveryId = firstAdmission.deliveryIds[0];
       if (!firstDeliveryId) throw new Error("Owned claim fixture was not admitted");
       const reconcileEntered = deferred<void>();
@@ -1838,7 +1963,7 @@ describe("IM Integration persistence", () => {
         runtimeConfig: { model: "gpt-5-owned-claim" },
       });
       const secondAdmission = await inbox.ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "Ev-owned-claim-second",
@@ -1902,7 +2027,7 @@ describe("IM Integration persistence", () => {
         .set({ currentInstanceId: instanceId })
         .where(eq(computers.id, value.computer.id));
       const inbox = new ImMessageInbox(value.database);
-      const endedAdmission = await inbox.ingest(value.integrationId, 1, inbound("Ev-ended-session-pending"));
+      const endedAdmission = await inbox.ingest(value.imBindingId, 1, inbound("Ev-ended-session-pending"));
       const endedDeliveryId = endedAdmission.deliveryIds[0];
       if (!endedDeliveryId) throw new Error("Ended Session fixture was not admitted");
       const [endedDelivery] = await value.database
@@ -1916,7 +2041,7 @@ describe("IM Integration persistence", () => {
         .where(eq(sessions.id, endedDelivery.sessionId));
 
       const activeAdmission = await inbox.ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "Ev-active-session-pending",
@@ -1967,7 +2092,7 @@ describe("IM Integration persistence", () => {
           .update(computers)
           .set({ currentInstanceId: instanceId })
           .where(eq(computers.id, value.computer.id));
-        await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound(`Ev-payload-hash-${state}`));
+        await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound(`Ev-payload-hash-${state}`));
         const runtime = await respondingRuntime({
           acceptDeliveries: state === "accepted",
           database: value.database,
@@ -2017,7 +2142,7 @@ describe("IM Integration persistence", () => {
         .update(computers)
         .set({ currentInstanceId: instanceId })
         .where(eq(computers.id, value.computer.id));
-      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-reconcile-expiry"));
+      await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-reconcile-expiry"));
       const failedDomain = {
         requestReconcile: vi.fn().mockRejectedValue(new Error("reconcile failed before dispatch")),
         requestDelivery: vi.fn(),
@@ -2060,7 +2185,7 @@ describe("IM Integration persistence", () => {
         .update(computers)
         .set({ currentInstanceId: firstInstanceId })
         .where(eq(computers.id, value.computer.id));
-      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-custody-restart"));
+      await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-custody-restart"));
       const first = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
@@ -2178,7 +2303,7 @@ describe("IM Integration persistence", () => {
         .update(computers)
         .set({ currentInstanceId: firstInstanceId })
         .where(eq(computers.id, value.computer.id));
-      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-legacy-recovery"));
+      await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-legacy-recovery"));
       const first = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
@@ -2242,7 +2367,7 @@ describe("IM Integration persistence", () => {
           .update(computers)
           .set({ currentInstanceId: firstInstanceId })
           .where(eq(computers.id, value.computer.id));
-        await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound(`Ev-retained-${durableState}`));
+        await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound(`Ev-retained-${durableState}`));
         const first = await respondingRuntime({
           acceptDeliveries: false,
           database: value.database,
@@ -2363,7 +2488,7 @@ describe("IM Integration persistence", () => {
         .update(computers)
         .set({ currentInstanceId: firstInstanceId })
         .where(eq(computers.id, value.computer.id));
-      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-immutable-dispatch"));
+      await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-immutable-dispatch"));
       const first = await respondingRuntime({
         acceptDeliveries: false,
         database: value.database,
@@ -2464,7 +2589,7 @@ describe("IM Integration persistence", () => {
         .update(computers)
         .set({ currentInstanceId: instanceId })
         .where(eq(computers.id, value.computer.id));
-      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-move-before-send"));
+      await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-move-before-send"));
       const [session] = await value.database.select().from(sessions);
       if (!session) throw new Error("Session fixture was not created");
       await new SessionService(value.database).movePlacement(session.id, value.computer.id);
@@ -2501,7 +2626,7 @@ describe("IM Integration persistence", () => {
         .update(computers)
         .set({ currentInstanceId: instanceId })
         .where(eq(computers.id, value.computer.id));
-      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-move-awaiting"));
+      await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-move-awaiting"));
       const [session] = await value.database.select().from(sessions);
       if (!session) throw new Error("Session fixture was not created");
       const gate = deferred<void>();
@@ -2555,7 +2680,7 @@ describe("IM Integration persistence", () => {
         .update(computers)
         .set({ currentInstanceId: firstInstanceId })
         .where(eq(computers.id, value.computer.id));
-      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-move-persisted-pending"));
+      await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-move-persisted-pending"));
       const first = await respondingRuntime({
         acceptDeliveries: false,
         database: value.database,
@@ -2757,7 +2882,7 @@ describe("IM Integration persistence", () => {
         .update(computers)
         .set({ currentInstanceId: firstInstanceId })
         .where(eq(computers.id, value.computer.id));
-      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-move-persisted-expired"));
+      await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-move-persisted-expired"));
       const first = await respondingRuntime({
         acceptDeliveries: false,
         database: value.database,
@@ -2850,7 +2975,7 @@ describe("IM Integration persistence", () => {
         .update(computers)
         .set({ currentInstanceId: instanceId })
         .where(eq(computers.id, value.computer.id));
-      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-move-accepted"));
+      await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-move-accepted"));
       const runtime = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
@@ -2898,7 +3023,7 @@ describe("IM Integration persistence", () => {
         .update(computers)
         .set({ currentInstanceId: firstInstanceId })
         .where(eq(computers.id, value.computer.id));
-      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-client-custody-lost-frame"));
+      await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-client-custody-lost-frame"));
       const first = await respondingRuntime({
         acceptDeliveries: false,
         database: value.database,
@@ -3024,7 +3149,7 @@ describe("IM Integration persistence", () => {
           .update(computers)
           .set({ currentInstanceId: instanceId })
           .where(eq(computers.id, value.computer.id));
-        await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound(`Ev-lock-order-${transition}`));
+        await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound(`Ev-lock-order-${transition}`));
         const runtime = await respondingRuntime({
           acceptDeliveries: false,
           database: value.database,
@@ -3124,7 +3249,7 @@ describe("IM Integration persistence", () => {
         .set({ currentInstanceId: instanceId })
         .where(eq(computers.id, value.computer.id));
       const inbox = new ImMessageInbox(value.database);
-      await inbox.ingest(value.integrationId, 1, inbound("Ev-recovery-fair-first"));
+      await inbox.ingest(value.imBindingId, 1, inbound("Ev-recovery-fair-first"));
       const first = await respondingRuntime({
         database: value.database,
         computerId: value.computer.id,
@@ -3141,7 +3266,7 @@ describe("IM Integration persistence", () => {
       if (!accepted) throw new Error("Accepted recovery fixture was not persisted");
 
       await inbox.ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "Ev-recovery-fair-pending",
@@ -3183,7 +3308,7 @@ describe("IM Integration persistence", () => {
     const value = await fixture();
     try {
       const inbox = new ImMessageInbox(value.database);
-      await inbox.ingest(value.integrationId, 1, inbound("Ev1"));
+      await inbox.ingest(value.imBindingId, 1, inbound("Ev1"));
       const [session] = await value.database.select().from(sessions);
       if (!session) throw new Error("Session fixture was not created");
       const sessionService = new SessionService(value.database);
@@ -3193,7 +3318,7 @@ describe("IM Integration persistence", () => {
         code: "SESSION_PLACEMENT_STALE",
       });
 
-      const replacementIntegrationId = await value.integrationService.activateSlack({
+      const replacementImBindingId = await value.imBindingService.activateSlack({
         agentId: value.agent.id,
         appId: "A2",
         teamId: "T1",
@@ -3214,14 +3339,14 @@ describe("IM Integration persistence", () => {
         (await value.database.select().from(sessions).where(eq(sessions.id, session.id)))[0]?.endedAt,
       ).not.toBeNull();
       expect(await value.database.select().from(imMessages)).toHaveLength(1);
-      const integrationRows = await value.database.select().from(integrations);
-      expect(integrationRows.find((row) => row.id === value.integrationId)?.status).toBe("disabled");
-      expect(integrationRows.find((row) => row.id === replacementIntegrationId)?.status).toBe("active");
+      const imBindingRows = await value.database.select().from(imBindings);
+      expect(imBindingRows.find((row) => row.id === value.imBindingId)?.status).toBe("disabled");
+      expect(imBindingRows.find((row) => row.id === replacementImBindingId)?.status).toBe("active");
       const rebound = inbound("Ev2");
       rebound.externalAppId = "A2";
       rebound.message.externalId = "1000.2";
       rebound.mentions = [{ externalId: "U_BOT_2", displayName: "Assistant" }];
-      await inbox.ingest(replacementIntegrationId, 1, rebound);
+      await inbox.ingest(replacementImBindingId, 1, rebound);
       const sessionRows = await value.database.select().from(sessions);
       expect(sessionRows).toHaveLength(2);
       expect(sessionRows.find((row) => row.id !== session.id)?.endedAt).toBeNull();
@@ -3255,7 +3380,7 @@ describe("IM Integration persistence", () => {
           sizeBytes: 25 * 1024 * 1024 + 1,
         },
       ];
-      const admitted = await new ImMessageInbox(value.database).ingest(value.integrationId, 1, event);
+      const admitted = await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, event);
       if (!admitted.messageId) throw new Error("Resource message fixture was not created");
       const [message] = await value.database.select().from(imMessages).where(eq(imMessages.id, admitted.messageId));
       const [session] = await value.database.select().from(sessions);
@@ -3307,7 +3432,7 @@ describe("IM Integration persistence", () => {
         .update(computers)
         .set({ currentInstanceId: computerInstanceId })
         .where(eq(computers.id, value.computer.id));
-      const admitted = await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-outbound"));
+      const admitted = await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-outbound"));
       const [session] = await value.database.select().from(sessions);
       if (!session || !admitted.messageId) throw new Error("Outbound fixture was not created");
       let sends = 0;
@@ -3412,7 +3537,7 @@ describe("IM Integration persistence", () => {
       expect(unknownWrites).toBe(1);
 
       const resolutionFailure = new OutboundMessageService(value.database, async () => {
-        throw new ProviderAdapterResolutionError("INTEGRATION_ADAPTER_UNAVAILABLE");
+        throw new ProviderAdapterResolutionError("IM_BINDING_ADAPTER_UNAVAILABLE");
       });
       await expect(
         resolutionFailure.execute({ ...replayRequest, requestId: crypto.randomUUID() }),
@@ -3422,7 +3547,7 @@ describe("IM Integration persistence", () => {
     }
   });
 
-  it("marks the Integration reauthorization-required in the credential failure transaction", async () => {
+  it("marks the ImBinding reauthorization-required in the credential failure transaction", async () => {
     const value = await fixture();
     try {
       const computerInstanceId = crypto.randomUUID();
@@ -3431,7 +3556,7 @@ describe("IM Integration persistence", () => {
         .set({ currentInstanceId: computerInstanceId })
         .where(eq(computers.id, value.computer.id));
       const admitted = await new ImMessageInbox(value.database).ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         inbound("Ev-credential-failed"),
       );
@@ -3463,12 +3588,12 @@ describe("IM Integration persistence", () => {
           },
         }),
       ).resolves.toEqual({ state: "credential_failed", code: "invalid_auth", retryAfterSeconds: undefined });
-      expect((await value.database.select().from(integrations))[0]).toMatchObject({
+      expect((await value.database.select().from(imBindings))[0]).toMatchObject({
         status: "reauthorization_required",
         lastErrorCode: "invalid_auth",
       });
       await expect(
-        value.integrationService.diagnostics(value.bootstrap.userId, value.integrationId),
+        value.imBindingService.diagnostics(value.bootstrap.userId, value.imBindingId),
       ).resolves.toMatchObject({ ready: false, reauthorizationRequired: true, lastErrorCode: "invalid_auth" });
     } finally {
       await value.sql.end();
@@ -3484,7 +3609,7 @@ describe("IM Integration persistence", () => {
         .set({ currentInstanceId: computerInstanceId })
         .where(eq(computers.id, value.computer.id));
       await value.database
-        .update(integrations)
+        .update(imBindings)
         .set({
           grantedCapabilities: [
             "chat:write",
@@ -3496,10 +3621,10 @@ describe("IM Integration persistence", () => {
             "reactions:write",
           ],
         })
-        .where(eq(integrations.id, value.integrationId));
+        .where(eq(imBindings.id, value.imBindingId));
       const inbox = new ImMessageInbox(value.database);
       const created = await inbox.ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "target-create",
@@ -3525,7 +3650,7 @@ describe("IM Integration persistence", () => {
         })
         .where(eq(imMessageDeliveries.id, createdDelivery.id));
       await inbox.ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "target-delete",
@@ -3536,7 +3661,7 @@ describe("IM Integration persistence", () => {
         }),
       );
       const latest = await inbox.ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         revisionEvent({
           providerEventId: "new-message",
@@ -3609,7 +3734,7 @@ describe("IM Integration persistence", () => {
         .set({ currentInstanceId: computerInstanceId })
         .where(eq(computers.id, value.computer.id));
       const admitted = await new ImMessageInbox(value.database).ingest(
-        value.integrationId,
+        value.imBindingId,
         1,
         inbound("Ev-old-generation"),
       );
@@ -3617,7 +3742,7 @@ describe("IM Integration persistence", () => {
       if (!session || !admitted.messageId) throw new Error("Outbound fixture was not created");
       const providerResult = deferred<{ ok: false; category: "credential"; code: "invalid_auth" }>();
       const providerEntered = deferred<void>();
-      const outbound = new OutboundMessageService(value.database, async (_integrationId, generation) => ({
+      const outbound = new OutboundMessageService(value.database, async (_imBindingId, generation) => ({
         provider: "slack" as const,
         validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
         normalizeInbound: () => [],
@@ -3646,7 +3771,7 @@ describe("IM Integration persistence", () => {
         },
       });
       await providerEntered.promise;
-      await value.integrationService.activateSlack({
+      await value.imBindingService.activateSlack({
         agentId: value.agent.id,
         appId: "A1",
         teamId: "T1",
@@ -3665,7 +3790,7 @@ describe("IM Integration persistence", () => {
       });
       providerResult.resolve({ ok: false, category: "credential", code: "invalid_auth" });
       await expect(executing).resolves.toMatchObject({ state: "credential_failed", code: "invalid_auth" });
-      expect((await value.database.select().from(integrations))[0]).toMatchObject({
+      expect((await value.database.select().from(imBindings))[0]).toMatchObject({
         credentialGeneration: 2,
         status: "active",
         lastErrorCode: null,
@@ -3702,7 +3827,7 @@ describe("IM Integration persistence", () => {
         database: value.database,
         inbox: new ImMessageInbox(value.database),
         instanceId,
-        integrations: value.integrationService,
+        imBindings: value.imBindingService,
         createAdapter: (input) =>
           ({
             channel: {
@@ -3730,7 +3855,7 @@ describe("IM Integration persistence", () => {
         database: value.database,
         cipher: value.cipher,
         instanceId,
-        integrations: value.integrationService,
+        imBindings: value.imBindingService,
         registrations: gateway,
         activation: manager,
       });
@@ -3753,13 +3878,75 @@ describe("IM Integration persistence", () => {
       });
       await expect.poll(async () => (await setup.get(value.bootstrap.userId, first.id)).state).toBe("succeeded");
       expect(validations).toBe(1);
-      expect(await value.integrationService.getForAgent(value.bootstrap.userId, value.agent.id)).toMatchObject({
+      expect(await value.imBindingService.getConfigForAgent(value.bootstrap.userId, value.agent.id)).toMatchObject({
         identity: { provider: "feishu", appId: "cli_1", botOpenId: "ou_bot", teamId: null },
       });
-      const [stored] = await value.database.select().from(integrations);
+      const [stored] = await value.database.select().from(imBindings);
       expect(stored?.encryptedSetupContext).toBeNull();
       await manager.stop();
     } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("derives expired and stale Feishu setup projections without mutating rows on GET", async () => {
+    const value = await unboundFixture();
+    const completion = deferred<{
+      appId: string;
+      appSecret: string;
+      teamBrand: "feishu";
+      requestedScopes: string[];
+    }>();
+    const instanceId = crypto.randomUUID();
+    const setup = new FeishuSetupService({
+      database: value.database,
+      cipher: value.cipher,
+      instanceId,
+      imBindings: value.imBindingService,
+      registrations: {
+        start: () => ({
+          qrReady: Promise.resolve({
+            url: "https://open.feishu.cn/qr/read-only",
+            expiresAt: new Date(Date.now() + 60_000),
+          }),
+          result: completion.promise,
+          abort: () => undefined,
+        }),
+      },
+      activation: { activateAtomicAttempt: vi.fn() },
+    });
+    try {
+      const attempt = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      await value.database
+        .update(imBindings)
+        .set({ setupExpiresAt: new Date(Date.now() - 1_000) })
+        .where(eq(imBindings.setupAttemptId, attempt.id));
+      const [beforeExpired] = await value.database.select().from(imBindings);
+      await expect(setup.get(value.bootstrap.userId, attempt.id)).resolves.toMatchObject({
+        state: "expired",
+        errorCode: "FEISHU_SETUP_EXPIRED",
+        qrUrl: null,
+      });
+      const [afterExpired] = await value.database.select().from(imBindings);
+      expect(afterExpired).toEqual(beforeExpired);
+
+      await value.database
+        .update(imBindings)
+        .set({
+          setupExpiresAt: new Date(Date.now() + 60_000),
+          setupOwnerHeartbeatAt: new Date(Date.now() - 60_000),
+        })
+        .where(eq(imBindings.setupAttemptId, attempt.id));
+      const [beforeStale] = await value.database.select().from(imBindings);
+      await expect(setup.get(value.bootstrap.userId, attempt.id)).resolves.toMatchObject({
+        state: "failed",
+        errorCode: "FEISHU_SETUP_OWNER_RESTARTED",
+        qrUrl: null,
+      });
+      const [afterStale] = await value.database.select().from(imBindings);
+      expect(afterStale).toEqual(beforeStale);
+    } finally {
+      await setup.stop();
       await value.sql.end();
     }
   });
@@ -3794,7 +3981,7 @@ describe("IM Integration persistence", () => {
       database,
       cipher: value.cipher,
       instanceId: crypto.randomUUID(),
-      integrations: value.integrationService,
+      imBindings: value.imBindingService,
       registrations: {
         start: () => ({
           qrReady: Promise.resolve({
@@ -3832,11 +4019,11 @@ describe("IM Integration persistence", () => {
     const value = await unboundFixture();
     try {
       const now = new Date("2026-08-19T00:00:00.000Z");
-      const service = new IntegrationService(value.database, value.cipher, {
+      const service = new ImBindingService(value.database, value.cipher, {
         now: () => now,
         runtimeReady: () => true,
       });
-      const integrationId = await service.activateFeishu({
+      const imBindingId = await service.activateFeishu({
         agentId: value.agent.id,
         appId: "cli_diagnostics",
         teamId: "team_diagnostics",
@@ -3852,44 +4039,44 @@ describe("IM Integration persistence", () => {
       });
       const ownerInstanceId = crypto.randomUUID();
       await value.database
-        .update(integrations)
+        .update(imBindings)
         .set({
           connectionOwnerInstanceId: ownerInstanceId,
           connectionLeaseExpiresAt: new Date("2026-08-19T00:01:00.000Z"),
           observedAt: now,
           observedConnectedAt: null,
         })
-        .where(eq(integrations.id, integrationId));
-      await expect(service.diagnostics(value.bootstrap.userId, integrationId)).resolves.toMatchObject({
+        .where(eq(imBindings.id, imBindingId));
+      await expect(service.diagnostics(value.bootstrap.userId, imBindingId)).resolves.toMatchObject({
         ready: false,
         runtimeToolAvailable: true,
         connection: { state: "disconnected" },
       });
 
       await value.database
-        .update(integrations)
+        .update(imBindings)
         .set({
           connectionOwnerInstanceId: ownerInstanceId,
           connectionLeaseExpiresAt: new Date("2026-08-18T23:59:59.000Z"),
           observedAt: now,
           observedConnectedAt: now,
         })
-        .where(eq(integrations.id, integrationId));
-      await expect(service.diagnostics(value.bootstrap.userId, integrationId)).resolves.toMatchObject({
+        .where(eq(imBindings.id, imBindingId));
+      await expect(service.diagnostics(value.bootstrap.userId, imBindingId)).resolves.toMatchObject({
         ready: false,
         connection: { state: "disconnected" },
       });
 
       await value.database
-        .update(integrations)
+        .update(imBindings)
         .set({
           connectionOwnerInstanceId: ownerInstanceId,
           connectionLeaseExpiresAt: new Date("2026-08-19T00:01:00.000Z"),
           observedAt: now,
           observedConnectedAt: now,
         })
-        .where(eq(integrations.id, integrationId));
-      await expect(service.diagnostics(value.bootstrap.userId, integrationId)).resolves.toMatchObject({
+        .where(eq(imBindings.id, imBindingId));
+      await expect(service.diagnostics(value.bootstrap.userId, imBindingId)).resolves.toMatchObject({
         ready: true,
         connection: { state: "connected" },
       });
@@ -3901,7 +4088,7 @@ describe("IM Integration persistence", () => {
   it("builds Feishu outbound and resource HTTP capability on a replica that does not own the Channel lease", async () => {
     const value = await unboundFixture();
     try {
-      const integrationId = await value.integrationService.activateFeishu({
+      const imBindingId = await value.imBindingService.activateFeishu({
         agentId: value.agent.id,
         appId: "cli_http",
         teamId: "team_http",
@@ -3916,17 +4103,17 @@ describe("IM Integration persistence", () => {
         ],
       });
       await value.database
-        .update(integrations)
+        .update(imBindings)
         .set({
           connectionOwnerInstanceId: crypto.randomUUID(),
           connectionFencingEpoch: 7,
           connectionLeaseExpiresAt: new Date(Date.now() + 60_000),
         })
-        .where(eq(integrations.id, integrationId));
+        .where(eq(imBindings.id, imBindingId));
       const sends: string[] = [];
       const resources: string[] = [];
       const resolver = createImProviderAdapterResolver({
-        integrations: value.integrationService,
+        imBindings: value.imBindingService,
         slackApi: {} as never,
         createFeishuAdapter: (options) =>
           new (class {
@@ -3948,7 +4135,7 @@ describe("IM Integration persistence", () => {
             };
           })(),
       });
-      const adapter = await resolver(integrationId, 1);
+      const adapter = await resolver(imBindingId, 1);
       await expect(
         adapter.send({ requestId: crypto.randomUUID(), conversationExternalId: "chat", fallbackText: "hello" }),
       ).resolves.toMatchObject({ ok: true, externalMessageId: "om_http" });
@@ -3962,7 +4149,7 @@ describe("IM Integration persistence", () => {
     }
   });
 
-  it("keeps a replacement Feishu Integration Team unset until its own verified event arrives", async () => {
+  it("keeps a replacement Feishu ImBinding Team unset until its own verified event arrives", async () => {
     const value = await unboundFixture();
     try {
       const scopes = [
@@ -3971,7 +4158,7 @@ describe("IM Integration persistence", () => {
         "im:message.group_at_msg:readonly",
         "im:message.group_msg",
       ];
-      const oldIntegrationId = await value.integrationService.activateFeishu({
+      const oldImBindingId = await value.imBindingService.activateFeishu({
         agentId: value.agent.id,
         appId: "cli_old",
         teamId: "team_old",
@@ -3980,7 +4167,7 @@ describe("IM Integration persistence", () => {
         appSecret: "secret-old",
         grantedScopes: scopes,
       });
-      const replacementId = await value.integrationService.activateFeishu({
+      const replacementId = await value.imBindingService.activateFeishu({
         agentId: value.agent.id,
         appId: "cli_new",
         teamId: null,
@@ -3989,11 +4176,11 @@ describe("IM Integration persistence", () => {
         appSecret: "secret-new",
         grantedScopes: scopes,
       });
-      expect(replacementId).not.toBe(oldIntegrationId);
+      expect(replacementId).not.toBe(oldImBindingId);
       const [replacementBeforeEvent] = await value.database
         .select()
-        .from(integrations)
-        .where(eq(integrations.id, replacementId));
+        .from(imBindings)
+        .where(eq(imBindings.id, replacementId));
       expect(replacementBeforeEvent?.externalTeamId).toBeNull();
       const event = revisionEvent({
         providerEventId: "new-team-event",
@@ -4011,8 +4198,8 @@ describe("IM Integration persistence", () => {
       ).resolves.toMatchObject({ duplicate: false });
       const [replacementAfterEvent] = await value.database
         .select()
-        .from(integrations)
-        .where(eq(integrations.id, replacementId));
+        .from(imBindings)
+        .where(eq(imBindings.id, replacementId));
       expect(replacementAfterEvent?.externalTeamId).toBe("team_new");
     } finally {
       await value.sql.end();
@@ -4026,7 +4213,7 @@ describe("IM Integration persistence", () => {
       database: value.database,
       inbox: new ImMessageInbox(value.database),
       instanceId,
-      integrations: value.integrationService,
+      imBindings: value.imBindingService,
       createAdapter: () =>
         ({
           channel: { on: () => undefined, disconnect: async () => undefined },
@@ -4052,10 +4239,80 @@ describe("IM Integration persistence", () => {
           requestedScopes: ["im:message:send_as_bot", "im:message.group_msg"],
         }),
       ).rejects.toThrow("FEISHU_SCOPE_REAUTH_REQUIRED");
-      await expect(
-        value.integrationService.getForAgent(value.bootstrap.userId, value.agent.id),
-      ).resolves.toBeUndefined();
+      await expect(value.imBindingService.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+        bindingState: "provisioning",
+      });
     } finally {
+      await manager.stop();
+      await value.sql.end();
+    }
+  });
+
+  it("serializes Feishu setup completion before an admin disable without reversing Agent and binding locks", async () => {
+    const value = await unboundFixture();
+    const instanceId = crypto.randomUUID();
+    const agentLocked = deferred<void>();
+    const releaseActivation = deferred<void>();
+    const grantedScopes = [
+      "im:message:send_as_bot",
+      "im:message.p2p_msg:readonly",
+      "im:message.group_at_msg:readonly",
+      "im:message.group_msg",
+    ];
+    const manager = new FeishuConnectionManager({
+      database: value.database,
+      inbox: new ImMessageInbox(value.database),
+      instanceId,
+      imBindings: value.imBindingService,
+      createAdapter: () =>
+        ({
+          channel: { on: () => () => undefined, disconnect: async () => undefined },
+          validateBinding: async () => ({
+            externalAppId: "cli_activation_race",
+            externalTeamId: "team_activation_race",
+            externalBotId: "ou_activation_race",
+          }),
+          listGrantedTeamScopes: async () => grantedScopes,
+        }) as unknown as FeishuAdapter,
+      afterActivationAgentLocked: async () => {
+        agentLocked.resolve();
+        await releaseActivation.promise;
+      },
+      maintenanceMs: 1_000_000,
+    });
+    try {
+      const attemptId = await validatingFeishuAttempt(value.database, value.agent.id, instanceId, "create");
+      const [slot] = await value.database
+        .select({ id: imBindings.id })
+        .from(imBindings)
+        .where(eq(imBindings.setupAttemptId, attemptId));
+      if (!slot) throw new Error("Setup slot fixture was not created");
+
+      const activation = manager.activateAtomicAttempt({
+        attemptId,
+        ownerInstanceId: instanceId,
+        agentId: value.agent.id,
+        appId: "cli_activation_race",
+        appSecret: "secret",
+        teamBrand: "feishu",
+        requestedScopes: grantedScopes,
+      });
+      await agentLocked.promise;
+
+      let disableSettled = false;
+      const disable = value.imBindingService.disable(value.bootstrap.userId, slot.id).finally(() => {
+        disableSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(disableSettled).toBe(false);
+
+      releaseActivation.resolve();
+      await expect(activation).resolves.toMatchObject({ appId: "cli_activation_race" });
+      await expect(disable).resolves.toBeUndefined();
+      const [finalBinding] = await value.database.select().from(imBindings).where(eq(imBindings.id, slot.id));
+      expect(finalBinding).toMatchObject({ status: "disabled", setupState: "succeeded" });
+    } finally {
+      releaseActivation.resolve();
       await manager.stop();
       await value.sql.end();
     }
@@ -4077,7 +4334,7 @@ describe("IM Integration persistence", () => {
           })),
         )
         .returning({ id: agents.id });
-      await value.database.insert(integrations).values(
+      await value.database.insert(imBindings).values(
         createdAgents.map((agent, index) => ({
           agentId: agent.id,
           provider: "feishu" as const,
@@ -4092,8 +4349,8 @@ describe("IM Integration persistence", () => {
         })),
       );
 
-      const first = await value.integrationService.listFeishuConnectionIds(undefined, 100);
-      const second = await value.integrationService.listFeishuConnectionIds(first.at(-1), 100);
+      const first = await value.imBindingService.listFeishuConnectionIds(undefined, 100);
+      const second = await value.imBindingService.listFeishuConnectionIds(first.at(-1), 100);
       expect(first).toHaveLength(100);
       expect(second).toHaveLength(1);
       expect(new Set([...first, ...second]).size).toBe(101);
@@ -4120,7 +4377,7 @@ describe("IM Integration persistence", () => {
       database: value.database,
       cipher: value.cipher,
       instanceId: crypto.randomUUID(),
-      integrations: value.integrationService,
+      imBindings: value.imBindingService,
       registrations: { start },
       activation: { activateAtomicAttempt },
     });
@@ -4139,9 +4396,9 @@ describe("IM Integration persistence", () => {
       });
       await new Promise((resolve) => setTimeout(resolve, 25));
       expect(activateAtomicAttempt).not.toHaveBeenCalled();
-      await expect(
-        value.integrationService.getForAgent(value.bootstrap.userId, value.agent.id),
-      ).resolves.toBeUndefined();
+      await expect(value.imBindingService.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+        bindingState: "provisioning",
+      });
     } finally {
       await value.sql.end();
     }
@@ -4181,7 +4438,7 @@ describe("IM Integration persistence", () => {
       database: value.database,
       inbox: new ImMessageInbox(value.database),
       instanceId: firstInstanceId,
-      integrations: value.integrationService,
+      imBindings: value.imBindingService,
       createAdapter,
       maintenanceMs: 1_000_000,
     });
@@ -4189,7 +4446,7 @@ describe("IM Integration persistence", () => {
       database: value.database,
       inbox: new ImMessageInbox(value.database),
       instanceId: secondInstanceId,
-      integrations: value.integrationService,
+      imBindings: value.imBindingService,
       createAdapter,
       maintenanceMs: 1_000_000,
     });
@@ -4210,7 +4467,7 @@ describe("IM Integration persistence", () => {
           "im:message.group_msg",
         ],
       });
-      const [initial] = await value.database.select().from(integrations);
+      const [initial] = await value.database.select().from(imBindings);
       expect(initial).toMatchObject({ connectionOwnerInstanceId: firstInstanceId, connectionFencingEpoch: 1 });
       if (!initial) throw new Error("Lease fixture was not created");
       second.start();
@@ -4234,7 +4491,7 @@ describe("IM Integration persistence", () => {
           "im:message.group_msg",
         ],
       });
-      const [claimed] = await value.database.select().from(integrations);
+      const [claimed] = await value.database.select().from(imBindings);
       expect(claimed).toMatchObject({ connectionOwnerInstanceId: secondInstanceId, connectionFencingEpoch: 2 });
       await first.maintain();
       expect(disconnects).toContain("cli_lease");
@@ -4248,7 +4505,7 @@ describe("IM Integration persistence", () => {
   it("checks the Feishu lease holder and epoch inside the admission transaction", async () => {
     const value = await unboundFixture();
     try {
-      const integrationId = await value.integrationService.activateFeishu({
+      const imBindingId = await value.imBindingService.activateFeishu({
         agentId: value.agent.id,
         appId: "cli_fence",
         appSecret: "secret",
@@ -4265,7 +4522,7 @@ describe("IM Integration persistence", () => {
       const staleHolder = crypto.randomUUID();
       const currentHolder = crypto.randomUUID();
       await value.database
-        .update(integrations)
+        .update(imBindings)
         .set({
           connectionOwnerInstanceId: currentHolder,
           connectionFencingEpoch: 2,
@@ -4273,7 +4530,7 @@ describe("IM Integration persistence", () => {
           observedConnectedAt: new Date(),
           observedAt: new Date(),
         })
-        .where(eq(integrations.id, integrationId));
+        .where(eq(imBindings.id, imBindingId));
       const fenceAcquired = deferred<void>();
       const releaseAdmission = deferred<void>();
       const inbox = new ImMessageInbox(value.database, {
@@ -4284,7 +4541,7 @@ describe("IM Integration persistence", () => {
       });
       await expect(
         inbox.ingest(
-          integrationId,
+          imBindingId,
           1,
           { ...inbound("Ev-stale-fence"), externalAppId: "cli_fence" },
           {
@@ -4296,7 +4553,7 @@ describe("IM Integration persistence", () => {
       ).rejects.toThrow("FEISHU_CONNECTION_LEASE_STALE");
 
       const admission = inbox.ingest(
-        integrationId,
+        imBindingId,
         1,
         { ...inbound("Ev-current-fence"), externalAppId: "cli_fence" },
         {
@@ -4309,13 +4566,13 @@ describe("IM Integration persistence", () => {
       const takeoverHolder = crypto.randomUUID();
       let takeoverSettled = false;
       const takeover = value.database
-        .update(integrations)
+        .update(imBindings)
         .set({
           connectionOwnerInstanceId: takeoverHolder,
           connectionFencingEpoch: 3,
           connectionLeaseExpiresAt: new Date(Date.now() + 60_000),
         })
-        .where(eq(integrations.id, integrationId))
+        .where(eq(imBindings.id, imBindingId))
         .then(() => {
           takeoverSettled = true;
         });
@@ -4326,7 +4583,7 @@ describe("IM Integration persistence", () => {
       await takeover;
       await expect(
         new ImMessageInbox(value.database).ingest(
-          integrationId,
+          imBindingId,
           1,
           { ...inbound("Ev-after-takeover"), externalAppId: "cli_fence" },
           {

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { FeishuSetupAttemptSchema, ImBindingSummarySchema, SlackBindingActivationSchema } from "../im-binding.js";
 import { ImContentV1Schema, NormalizedInboundImEventSchema } from "../im-message.js";
-import { FeishuSetupAttemptSchema, IntegrationSummarySchema, SlackBindingActivationSchema } from "../integration.js";
 
-describe("IM integration contracts", () => {
+describe("IM binding contracts", () => {
   it("accepts only bounded canonical content", () => {
     expect(
       ImContentV1Schema.parse({
@@ -70,29 +70,19 @@ describe("IM integration contracts", () => {
     ).toBeInstanceOf(Date);
   });
 
-  it("requires a provider-specific identity in Integration summaries", () => {
+  it("keeps provider identity and credential metadata out of member-safe summaries", () => {
     const base = {
-      integration: {
-        id: crypto.randomUUID(),
-        agentId: crypto.randomUUID(),
-        provider: "slack",
-        status: "active",
-        disabledAt: null,
-        createdAt: "2026-08-19T00:00:00.000Z",
-        updatedAt: "2026-08-19T00:00:00.000Z",
-      },
+      id: crypto.randomUUID(),
+      agentId: crypto.randomUUID(),
+      provider: "slack",
+      bindingState: "active",
+      bot: { displayName: "Reviewer", avatarUrl: null },
       receiveMode: "mention_only",
-      credentialGeneration: 1,
-      grantedCapabilities: ["chat:write"],
-      reauthorizationRequired: false,
       lastInboundAt: null,
       lastOutboundAt: null,
+      lastConfirmedAt: "2026-08-19T00:00:00.000Z",
     };
-    expect(
-      IntegrationSummarySchema.parse({
-        ...base,
-        identity: { provider: "slack", appId: "A1", teamId: "T1", enterpriseId: null, botUserId: "U1" },
-      }).identity.provider,
-    ).toBe("slack");
+    expect(ImBindingSummarySchema.parse(base)).toEqual(base);
+    expect(() => ImBindingSummarySchema.parse({ ...base, credentialGeneration: 1 })).toThrow();
   });
 });

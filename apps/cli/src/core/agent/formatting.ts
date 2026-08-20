@@ -1,4 +1,4 @@
-import type { Agent, ListAgentsResponse } from "@opentag/shared";
+import type { AgentAdminConfig, ListAgentsResponse } from "@opentag/shared";
 import type { AgentCreateResult } from "./mutations.js";
 
 export function formatAgentCreated(result: AgentCreateResult): string {
@@ -9,20 +9,12 @@ export function formatAgentList(response: ListAgentsResponse): string {
   if (response.agents.length === 0) return "No Agents registered";
   return response.agents
     .map((agent) =>
-      [
-        agent.name,
-        agent.id,
-        agent.displayName,
-        agent.runtimeProvider,
-        agent.computerId,
-        `revision=${agent.revision}`,
-        `runtimeConfigRevision=${agent.runtimeConfigRevision}`,
-      ].join("\t"),
+      [agent.name, agent.id, agent.displayName, agent.runtimeProvider, agent.computer.id, agent.receiveMode].join("\t"),
     )
     .join("\n");
 }
 
-export function formatAgent(agent: Agent): string {
+export function formatAgent(agent: AgentAdminConfig): string {
   return [
     `id\t${agent.id}`,
     `name\t${agent.name}`,

@@ -1,9 +1,9 @@
 import { SLACK_EVENTS_PATH } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
 import type { ImMessageInbox } from "../services/im/index.js";
-import type { IntegrationService, SlackIngressBinding } from "../services/integrations/index.js";
-import type { SlackAdapter } from "../services/integrations/slack/adapter.js";
-import { preparseSlackRoute, verifySlackSignature } from "../services/integrations/slack/signature.js";
+import type { ImBindingService, SlackIngressBinding } from "../services/im-bindings/index.js";
+import type { SlackAdapter } from "../services/im-bindings/slack/adapter.js";
+import { preparseSlackRoute, verifySlackSignature } from "../services/im-bindings/slack/signature.js";
 
 interface SlackEnvelopeBase {
   type?: string;
@@ -16,7 +16,7 @@ interface SlackEnvelopeBase {
 }
 
 export interface SlackEventsRouteOptions {
-  integrations: IntegrationService;
+  imBindings: ImBindingService;
   inbox: ImMessageInbox;
   createAdapter(binding: SlackIngressBinding): SlackAdapter;
   now?: () => Date;
@@ -36,7 +36,7 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
     if (!Buffer.isBuffer(request.body)) return reply.code(400).send({ error: "invalid_body" });
     const route = preparseSlackRoute(request.body);
     if (!route) return reply.code(400).send({ error: "invalid_route" });
-    const binding = await options.integrations.findSlackIngressBinding(route.appId, route.teamId);
+    const binding = await options.imBindings.findSlackIngressBinding(route.appId, route.teamId);
     if (!binding) return reply.code(404).send({ error: "binding_not_found" });
     const timestampHeader = request.headers["x-slack-request-timestamp"];
     const signatureHeader = request.headers["x-slack-signature"];
@@ -70,12 +70,12 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
       return reply.code(400).send({ error: "unsupported_envelope" });
     }
     if (envelope.event.type === "app_uninstalled") {
-      await options.integrations.disableFromProvider(binding.integrationId);
+      await options.imBindings.disableFromProvider(binding.imBindingId);
       return reply.code(200).send({ ok: true });
     }
     if (envelope.event.type === "tokens_revoked") {
       if (envelope.event.tokens?.bot?.includes(binding.botUserId)) {
-        await options.integrations.requireReauthorization(binding.integrationId, "SLACK_TOKEN_REVOKED");
+        await options.imBindings.requireReauthorization(binding.imBindingId, "SLACK_TOKEN_REVOKED");
       }
       return reply.code(200).send({ ok: true });
     }
@@ -89,7 +89,7 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
       event: envelope.event,
       eventTime: envelope.event_time,
     });
-    for (const event of events) await options.inbox.ingest(binding.integrationId, binding.generation, event);
+    for (const event of events) await options.inbox.ingest(binding.imBindingId, binding.generation, event);
     return reply.code(200).send({ ok: true });
   });
 }

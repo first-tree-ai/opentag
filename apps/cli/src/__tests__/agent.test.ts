@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import type { Agent } from "@opentag/shared";
+import type { AgentAdminConfig } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
 import { formatAgent, formatAgentCreated, formatAgentList } from "../core/agent/formatting.js";
@@ -29,7 +29,7 @@ const computer = {
   connectedAt: "2026-08-19T00:00:00.000Z",
   lastSeenAt: "2026-08-19T00:00:01.000Z",
 };
-const agent: Agent = {
+const agent: AgentAdminConfig = {
   id: agentId,
   teamId,
   managerUserId: userId,
@@ -50,8 +50,18 @@ const agent: Agent = {
   createdAt: "2026-08-19T00:00:00.000Z",
   updatedAt: "2026-08-19T00:00:00.000Z",
 };
-const { runtimeConfig, ...agentBase } = agent;
-const agentSummary = { ...agentBase, runtimeConfigRevision: runtimeConfig.revision };
+const {
+  runtimeConfig: _runtimeConfig,
+  revision: _revision,
+  managerUserId,
+  computerId: safeComputerId,
+  ...agentBase
+} = agent;
+const agentSummary = {
+  ...agentBase,
+  manager: { userId: managerUserId, displayName: "Admin" },
+  computer: { id: safeComputerId, displayName: computer.displayName, platform: computer.platform },
+};
 
 function api() {
   return {
@@ -60,14 +70,16 @@ function api() {
     createAgent: vi.fn().mockResolvedValue(agent),
     listAgents: vi.fn().mockResolvedValue({ agents: [agentSummary] }),
     getAgent: vi.fn().mockResolvedValue(agent),
+    getAgentConfig: vi.fn().mockResolvedValue(agent),
     updateAgent: vi.fn().mockResolvedValue({ ...agent, displayName: "Reviewer", revision: 2 }),
     deleteAgent: vi.fn().mockResolvedValue(undefined),
-    getAgentIntegration: vi.fn().mockResolvedValue(undefined),
+    getAgentImBinding: vi.fn().mockResolvedValue(undefined),
+    getAgentImBindingConfig: vi.fn().mockResolvedValue(undefined),
     createFeishuSetupAttempt: vi.fn(),
     getFeishuSetupAttempt: vi.fn(),
     cancelFeishuSetupAttempt: vi.fn(),
-    getIntegrationDiagnostics: vi.fn(),
-    disableIntegration: vi.fn(),
+    getImBindingDiagnostics: vi.fn(),
+    disableImBinding: vi.fn(),
   };
 }
 
@@ -156,16 +168,16 @@ describe("Agent CLI core", () => {
     expect(formatAgentList(response)).toContain("code-reviewer\t");
     expect(formatAgent(agent)).toContain(`revision\t1`);
     expect(formatAgent(agent)).toContain(`runtimeConfig.model\t`);
-    expect(formatAgentList(response)).toContain("runtimeConfigRevision=1");
+    expect(formatAgentList(response)).toContain("all_message");
     expect(formatAgentList({ agents: [] })).toBe("No Agents registered");
     await expect(runAgentShow(agentId, { accessToken: "access", api: client })).resolves.toEqual(agent);
-    expect(client.getAgent).toHaveBeenCalledWith("access", agentId);
+    expect(client.getAgentConfig).toHaveBeenCalledWith("access", agentId);
   });
 
   it("reads the current revision before update and does not retry conflicts", async () => {
     const client = api();
     await runAgentUpdate(agentId, { accessToken: "access", api: client, displayName: "Reviewer" });
-    expect(client.getAgent).toHaveBeenCalledTimes(1);
+    expect(client.getAgentConfig).toHaveBeenCalledTimes(1);
     expect(client.updateAgent).toHaveBeenCalledWith("access", agentId, {
       displayName: "Reviewer",
       expectedRevision: 1,
@@ -227,26 +239,26 @@ describe("Agent CLI core", () => {
       await expect(runAgentUpdate(agentId, { accessToken: "access", api: client, ...options })).rejects.toThrow(
         "cannot be used together",
       );
-      expect(client.getAgent).not.toHaveBeenCalled();
+      expect(client.getAgentConfig).not.toHaveBeenCalled();
     }
 
     const invalidDuration = api();
     await expect(
       runAgentUpdate(agentId, { accessToken: "access", api: invalidDuration, maxDurationMs: "1.5" }),
     ).rejects.toThrow("positive base-10 safe integer");
-    expect(invalidDuration.getAgent).not.toHaveBeenCalled();
+    expect(invalidDuration.getAgentConfig).not.toHaveBeenCalled();
 
     const excessiveDuration = api();
     await expect(
       runAgentUpdate(agentId, { accessToken: "access", api: excessiveDuration, maxDurationMs: "86400001" }),
     ).rejects.toThrow();
-    expect(excessiveDuration.getAgent).not.toHaveBeenCalled();
+    expect(excessiveDuration.getAgentConfig).not.toHaveBeenCalled();
 
     const unknownTool = api();
     await expect(
       runAgentUpdate(agentId, { accessToken: "access", api: unknownTool, allowedTools: ["unknown_tool"] }),
     ).rejects.toThrow();
-    expect(unknownTool.getAgent).not.toHaveBeenCalled();
+    expect(unknownTool.getAgentConfig).not.toHaveBeenCalled();
 
     const duplicateTools = api();
     await expect(
@@ -256,13 +268,13 @@ describe("Agent CLI core", () => {
         allowedTools: ["opentag_message_send", "opentag_message_send"],
       }),
     ).rejects.toThrow("Agent tool IDs must be unique");
-    expect(duplicateTools.getAgent).not.toHaveBeenCalled();
+    expect(duplicateTools.getAgentConfig).not.toHaveBeenCalled();
 
     const empty = api();
     await expect(runAgentUpdate(agentId, { accessToken: "access", api: empty })).rejects.toThrow(
       "No Agent changes were provided",
     );
-    expect(empty.getAgent).not.toHaveBeenCalled();
+    expect(empty.getAgentConfig).not.toHaveBeenCalled();
   });
 
   it("registers every runtime setting option and keeps update display name optional", () => {

@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import type { Agent, Computer, ListComputersResponse } from "@opentag/shared";
+import type { AgentAdminConfig, Computer, ListComputersResponse } from "@opentag/shared";
 import {
   CreateAgentRequestSchema,
   CreateAgentRuntimeConfigSchema,
@@ -25,7 +25,7 @@ export interface AgentCreateOptions extends AgentCommandDependencies {
 }
 
 export interface AgentCreateResult {
-  agent: Agent;
+  agent: AgentAdminConfig;
   warning?: string;
 }
 
@@ -80,10 +80,10 @@ export async function runAgentCreate(options: AgentCreateOptions): Promise<Agent
   };
 }
 
-export async function runAgentUpdate(agentId: string, options: AgentUpdateOptions): Promise<Agent> {
+export async function runAgentUpdate(agentId: string, options: AgentUpdateOptions): Promise<AgentAdminConfig> {
   const mutation = await updateMutation(options);
   const { api, accessToken } = await resolveAgentCommandContext(options);
-  const current = await api.getAgent(accessToken, agentId);
+  const current = await api.getAgentConfig(accessToken, agentId);
   const input = UpdateAgentRequestSchema.parse({
     ...mutation,
     expectedRevision: current.revision,

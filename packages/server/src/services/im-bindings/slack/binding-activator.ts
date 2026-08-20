@@ -1,13 +1,13 @@
 import { type SlackBindingActivation, SlackBindingActivationSchema } from "@opentag/shared";
-import type { IntegrationService } from "../integration-service.js";
+import type { ImBindingService } from "../im-binding-service.js";
 import type { SlackApiClient } from "./adapter.js";
 
 export class SlackBindingActivator {
   readonly #api: SlackApiClient;
-  readonly #integrations: IntegrationService;
+  readonly #imBindings: ImBindingService;
 
-  constructor(integrations: IntegrationService, api: SlackApiClient) {
-    this.#integrations = integrations;
+  constructor(imBindings: ImBindingService, api: SlackApiClient) {
+    this.#imBindings = imBindings;
     this.#api = api;
   }
 
@@ -17,6 +17,6 @@ export class SlackBindingActivator {
     if (verified.appId !== input.appId || verified.teamId !== input.teamId || verified.botUserId !== input.botUserId) {
       throw new Error("SLACK_BINDING_IDENTITY_MISMATCH");
     }
-    return this.#integrations.activateSlack(input);
+    return this.#imBindings.activateSlack(input);
   }
 }

@@ -1,21 +1,11 @@
 import { z } from "zod";
+import { ReceiveModeSchema } from "./agent.js";
 
 export const ImProviderSchema = z.enum(["feishu", "slack"]);
-export const ReceiveModeSchema = z.enum(["all_message", "mention_only"]);
 
-export const IntegrationSchema = z
-  .object({
-    id: z.string().uuid(),
-    agentId: z.string().uuid(),
-    provider: ImProviderSchema,
-    status: z.enum(["provisioning", "active", "reauthorization_required", "error", "disabled"]),
-    disabledAt: z.string().datetime().nullable(),
-    createdAt: z.string().datetime(),
-    updatedAt: z.string().datetime(),
-  })
-  .strict();
+export const ImBindingStateSchema = z.enum(["provisioning", "active", "reauthorization_required", "error", "disabled"]);
 
-export const IntegrationIdentitySchema = z.discriminatedUnion("provider", [
+export const ImBindingIdentitySchema = z.discriminatedUnion("provider", [
   z
     .object({
       provider: z.literal("feishu"),
@@ -38,18 +28,32 @@ export const IntegrationIdentitySchema = z.discriminatedUnion("provider", [
     .strict(),
 ]);
 
-export const IntegrationSummarySchema = z
+export const ImBindingSummarySchema = z
   .object({
-    integration: IntegrationSchema,
-    identity: IntegrationIdentitySchema,
+    id: z.string().uuid(),
+    agentId: z.string().uuid(),
+    provider: ImProviderSchema,
+    bindingState: ImBindingStateSchema,
+    bot: z
+      .object({
+        displayName: z.string().max(255).nullable(),
+        avatarUrl: z.string().url().nullable(),
+      })
+      .strict(),
     receiveMode: ReceiveModeSchema,
-    credentialGeneration: z.number().int().min(1),
-    grantedCapabilities: z.array(z.string().min(1).max(160)).max(128),
-    reauthorizationRequired: z.boolean(),
     lastInboundAt: z.string().datetime().nullable(),
     lastOutboundAt: z.string().datetime().nullable(),
+    lastConfirmedAt: z.string().datetime().nullable(),
   })
   .strict();
+
+export const ImBindingAdminDetailSchema = ImBindingSummarySchema.extend({
+  identity: ImBindingIdentitySchema,
+  credentialGeneration: z.number().int().min(1),
+  grantedCapabilities: z.array(z.string().min(1).max(160)).max(128),
+  reauthorizationRequired: z.boolean(),
+  lastErrorCode: z.string().min(1).max(120).nullable(),
+}).strict();
 
 export const FeishuSetupIntentSchema = z.enum(["create", "reauthorize", "replace"]);
 export const FeishuSetupStateSchema = z.enum([
@@ -79,9 +83,9 @@ export const CreateFeishuSetupAttemptRequestSchema = z
   .object({ intent: FeishuSetupIntentSchema.default("create") })
   .strict();
 
-export const IntegrationDiagnosticsSchema = z
+export const ImBindingDiagnosticsSchema = z
   .object({
-    integrationId: z.string().uuid(),
+    imBindingId: z.string().uuid(),
     provider: ImProviderSchema,
     ready: z.boolean(),
     runtimeToolAvailable: z.boolean(),
@@ -114,12 +118,12 @@ export const SlackBindingActivationSchema = z
   .strict();
 
 export type ImProvider = z.infer<typeof ImProviderSchema>;
-export type ReceiveMode = z.infer<typeof ReceiveModeSchema>;
-export type Integration = z.infer<typeof IntegrationSchema>;
-export type IntegrationIdentity = z.infer<typeof IntegrationIdentitySchema>;
-export type IntegrationSummary = z.infer<typeof IntegrationSummarySchema>;
+export type ImBindingState = z.infer<typeof ImBindingStateSchema>;
+export type ImBindingIdentity = z.infer<typeof ImBindingIdentitySchema>;
+export type ImBindingSummary = z.infer<typeof ImBindingSummarySchema>;
+export type ImBindingAdminDetail = z.infer<typeof ImBindingAdminDetailSchema>;
 export type FeishuSetupIntent = z.infer<typeof FeishuSetupIntentSchema>;
 export type FeishuSetupState = z.infer<typeof FeishuSetupStateSchema>;
 export type FeishuSetupAttempt = z.infer<typeof FeishuSetupAttemptSchema>;
-export type IntegrationDiagnostics = z.infer<typeof IntegrationDiagnosticsSchema>;
+export type ImBindingDiagnostics = z.infer<typeof ImBindingDiagnosticsSchema>;
 export type SlackBindingActivation = z.infer<typeof SlackBindingActivationSchema>;

@@ -7,13 +7,13 @@ import {
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { agentRuntimeConfigs, agents, integrations, sessions } from "../../db/schema/index.js";
+import { agentRuntimeConfigs, agents, imBindings, sessions } from "../../db/schema/index.js";
 import { EffectiveRuntimeSnapshotAssemblerError } from "./errors.js";
 
 interface EffectiveRuntimeSnapshotAuthority {
   agentDeletedAt: Date | null;
   agentId: string;
-  integrationStatus: string;
+  imBindingStatus: string;
   runtimeConfig: unknown;
   runtimeProvider: string;
   sessionEndedAt: Date | null;
@@ -39,7 +39,7 @@ export class EffectiveRuntimeSnapshotAssembler {
     if (!authority) throw new EffectiveRuntimeSnapshotAssemblerError("SESSION_NOT_FOUND");
     if (
       authority.sessionEndedAt !== null ||
-      authority.integrationStatus !== "active" ||
+      authority.imBindingStatus !== "active" ||
       authority.agentDeletedAt !== null
     ) {
       throw new EffectiveRuntimeSnapshotAssemblerError("AUTHORITY_INACTIVE");
@@ -107,7 +107,7 @@ async function loadAuthority(
     .select({
       sessionId: sessions.id,
       sessionEndedAt: sessions.endedAt,
-      integrationStatus: integrations.status,
+      imBindingStatus: imBindings.status,
       agentId: agents.id,
       agentDeletedAt: agents.deletedAt,
       runtimeProvider: agents.runtimeProvider,
@@ -119,8 +119,8 @@ async function loadAuthority(
       configMaxDurationMs: agentRuntimeConfigs.maxDurationMs,
     })
     .from(sessions)
-    .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
-    .innerJoin(agents, eq(agents.id, integrations.agentId))
+    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+    .innerJoin(agents, eq(agents.id, imBindings.agentId))
     .leftJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
     .where(eq(sessions.id, sessionId))
     .limit(1);
@@ -128,7 +128,7 @@ async function loadAuthority(
   return {
     agentDeletedAt: row.agentDeletedAt,
     agentId: row.agentId,
-    integrationStatus: row.integrationStatus,
+    imBindingStatus: row.imBindingStatus,
     runtimeConfig:
       row.configRevision === null
         ? null

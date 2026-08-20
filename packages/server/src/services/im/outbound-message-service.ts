@@ -6,14 +6,14 @@ import type { DatabaseClient } from "../../db/client.js";
 import {
   agents,
   computers,
+  imBindings,
   imMessages,
   imOutboundRequests,
-  integrations,
   sessionPlacements,
   sessions,
 } from "../../db/schema/index.js";
-import type { ImProviderAdapter } from "../integrations/index.js";
-import { ProviderAdapterResolutionError } from "../integrations/provider-adapter-resolver.js";
+import type { ImProviderAdapter } from "../im-bindings/index.js";
+import { ProviderAdapterResolutionError } from "../im-bindings/provider-adapter-resolver.js";
 
 const OutboundRequestSchema = z
   .object({
@@ -59,11 +59,11 @@ export interface OutboundResult {
 export class OutboundMessageService {
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
-  readonly #resolveAdapter: (integrationId: string, generation: number) => Promise<ImProviderAdapter<unknown>>;
+  readonly #resolveAdapter: (imBindingId: string, generation: number) => Promise<ImProviderAdapter<unknown>>;
 
   constructor(
     database: DatabaseClient,
-    resolveAdapter: (integrationId: string, generation: number) => Promise<ImProviderAdapter<unknown>>,
+    resolveAdapter: (imBindingId: string, generation: number) => Promise<ImProviderAdapter<unknown>>,
     options: { now?: () => Date } = {},
   ) {
     this.#database = database;
@@ -84,13 +84,13 @@ export class OutboundMessageService {
         .select({
           session: sessions,
           placement: sessionPlacements,
-          integration: {
-            id: integrations.id,
-            provider: integrations.provider,
-            status: integrations.status,
-            credentialGeneration: integrations.credentialGeneration,
-            grantedCapabilities: integrations.grantedCapabilities,
-            externalBotId: integrations.externalBotId,
+          imBinding: {
+            id: imBindings.id,
+            provider: imBindings.provider,
+            status: imBindings.status,
+            credentialGeneration: imBindings.credentialGeneration,
+            grantedCapabilities: imBindings.grantedCapabilities,
+            externalBotId: imBindings.externalBotId,
           },
           agentId: agents.id,
           currentInstanceId: computers.currentInstanceId,
@@ -98,13 +98,13 @@ export class OutboundMessageService {
         .from(sessions)
         .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
         .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
-        .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
-        .innerJoin(agents, eq(agents.id, integrations.agentId))
+        .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+        .innerJoin(agents, eq(agents.id, imBindings.agentId))
         .where(
           and(
             eq(sessions.id, input.sessionId),
             isNull(sessions.endedAt),
-            ne(integrations.status, "disabled"),
+            ne(imBindings.status, "disabled"),
             isNull(agents.deletedAt),
           ),
         )
@@ -128,14 +128,14 @@ export class OutboundMessageService {
         if (existing.payloadHash !== payloadHash) throw new Error("OUTBOUND_REQUEST_CONFLICT");
         return { existing } as const;
       }
-      if (scope.integration.status !== "active") throw new Error("OUTBOUND_INTEGRATION_NOT_ACTIVE");
+      if (scope.imBinding.status !== "active") throw new Error("OUTBOUND_IM_BINDING_NOT_ACTIVE");
 
       const [latest] = await transaction
         .select({ id: imMessages.id })
         .from(imMessages)
         .where(
           and(
-            eq(imMessages.integrationId, scope.integration.id),
+            eq(imMessages.imBindingId, scope.imBinding.id),
             eq(imMessages.channelId, scope.session.channelId),
             eq(imMessages.direction, "inbound"),
             ...(scope.session.kind === "thread" && scope.session.threadKey
@@ -155,7 +155,7 @@ export class OutboundMessageService {
             .where(
               and(
                 eq(imMessages.id, targetId),
-                eq(imMessages.integrationId, scope.integration.id),
+                eq(imMessages.imBindingId, scope.imBinding.id),
                 eq(imMessages.channelId, scope.session.channelId),
                 ...(scope.session.kind === "thread" && scope.session.threadKey
                   ? [eq(imMessages.threadKey, scope.session.threadKey)]
@@ -171,7 +171,7 @@ export class OutboundMessageService {
           .from(imMessages)
           .where(
             and(
-              eq(imMessages.integrationId, target.message.integrationId),
+              eq(imMessages.imBindingId, target.message.imBindingId),
               eq(imMessages.channelId, target.message.channelId),
               eq(imMessages.externalMessageId, target.message.externalMessageId),
             ),
@@ -182,8 +182,8 @@ export class OutboundMessageService {
       }
       if (input.operation === "react") {
         const requiredScope =
-          scope.integration.provider === "slack" ? "reactions:write" : "im:message.reactions:write_only";
-        if (!scope.integration.grantedCapabilities.includes(requiredScope)) {
+          scope.imBinding.provider === "slack" ? "reactions:write" : "im:message.reactions:write_only";
+        if (!scope.imBinding.grantedCapabilities.includes(requiredScope)) {
           throw new Error("OUTBOUND_CAPABILITY_MISSING");
         }
       }
@@ -194,7 +194,7 @@ export class OutboundMessageService {
           requestId: input.requestId,
           sessionId: input.sessionId,
           expectedLatestImMessageId: input.expectedLatestImMessageId,
-          admittedCredentialGeneration: scope.integration.credentialGeneration,
+          admittedCredentialGeneration: scope.imBinding.credentialGeneration,
           operation: input.operation,
           payloadHash,
           normalizedPayload,
@@ -214,10 +214,10 @@ export class OutboundMessageService {
     const { request, scope, targetExternalId } = prepared;
     let providerResult: ProviderWriteResult;
     try {
-      const adapter = await this.#resolveAdapter(scope.integration.id, request.admittedCredentialGeneration).catch(
+      const adapter = await this.#resolveAdapter(scope.imBinding.id, request.admittedCredentialGeneration).catch(
         (error: unknown) => {
           const code =
-            error instanceof ProviderAdapterResolutionError && error.code === "INTEGRATION_GENERATION_STALE"
+            error instanceof ProviderAdapterResolutionError && error.code === "IM_BINDING_GENERATION_STALE"
               ? "generation_stale"
               : "provider_unavailable";
           return { resolutionFailure: { ok: false as const, category: "transient" as const, code } };
@@ -261,7 +261,7 @@ export class OutboundMessageService {
       if (!providerResult.ok) {
         if (mapped.state === "credential_failed") {
           await transaction
-            .update(integrations)
+            .update(imBindings)
             .set({
               status: "reauthorization_required",
               lastErrorCode: mapped.code ?? "provider_unknown",
@@ -269,9 +269,9 @@ export class OutboundMessageService {
             })
             .where(
               and(
-                eq(integrations.id, scope.integration.id),
-                eq(integrations.status, "active"),
-                eq(integrations.credentialGeneration, request.admittedCredentialGeneration),
+                eq(imBindings.id, scope.imBinding.id),
+                eq(imBindings.status, "active"),
+                eq(imBindings.credentialGeneration, request.admittedCredentialGeneration),
               ),
             );
         }
@@ -279,7 +279,7 @@ export class OutboundMessageService {
       }
       if (input.operation === "react") return;
       await transaction.insert(imMessages).values({
-        integrationId: scope.integration.id,
+        imBindingId: scope.imBinding.id,
         providerEventId: null,
         channelId: scope.session.channelId,
         externalMessageId: providerResult.externalMessageId,
@@ -289,7 +289,7 @@ export class OutboundMessageService {
         threadKey: scope.session.threadKey,
         replyToExternalId: targetExternalId ?? null,
         authorKind: "bot",
-        authorExternalId: scope.integration.externalBotId ?? "unknown",
+        authorExternalId: scope.imBinding.externalBotId ?? "unknown",
         content: input.content as NonNullable<typeof input.content>,
         occurredAt: providerResult.occurredAt,
         receivedAt: this.#now(),

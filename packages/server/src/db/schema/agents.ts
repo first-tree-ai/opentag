@@ -1,5 +1,16 @@
 import { relations, sql } from "drizzle-orm";
-import { check, index, integer, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import {
+  check,
+  foreignKey,
+  index,
+  integer,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { memberships, teams, users } from "./auth.js";
 import { computers } from "./computers.js";
 
@@ -13,16 +24,12 @@ export const agents = pgTable(
     teamId: uuid("team_id")
       .notNull()
       .references(() => teams.id, { onDelete: "restrict" }),
-    managerUserId: uuid("manager_user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "restrict" }),
-    computerId: uuid("computer_id")
-      .notNull()
-      .references(() => computers.id, { onDelete: "restrict" }),
+    managerUserId: uuid("manager_user_id").notNull(),
+    computerId: uuid("computer_id").notNull(),
     name: text("name").notNull(),
     displayName: text("display_name").notNull(),
     runtimeProvider: agentRuntimeProvider("runtime_provider").notNull(),
-    receiveMode: agentReceiveMode("receive_mode").notNull().default("all_message"),
+    receiveMode: agentReceiveMode("receive_mode").notNull().default("mention_only"),
     revision: integer("revision").notNull().default(1),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -35,6 +42,16 @@ export const agents = pgTable(
     index("agents_team_id_idx").on(table.teamId),
     index("agents_manager_user_id_idx").on(table.managerUserId),
     index("agents_computer_id_idx").on(table.computerId),
+    foreignKey({
+      columns: [table.teamId, table.managerUserId],
+      foreignColumns: [memberships.teamId, memberships.userId],
+      name: "agents_manager_membership_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [table.computerId, table.managerUserId],
+      foreignColumns: [computers.id, computers.ownerUserId],
+      name: "agents_manager_computer_owner_fk",
+    }).onDelete("restrict"),
     check("agents_revision_positive", sql`${table.revision} >= 1`),
   ],
 );

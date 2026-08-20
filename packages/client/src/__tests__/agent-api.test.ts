@@ -25,8 +25,19 @@ const agent = {
   createdAt: "2026-08-19T00:00:00.000Z",
   updatedAt: "2026-08-19T00:00:00.000Z",
 };
-const { runtimeConfig, ...agentBase } = agent;
-const agentSummary = { ...agentBase, runtimeConfigRevision: runtimeConfig.revision };
+const {
+  runtimeConfig: _runtimeConfig,
+  revision: _revision,
+  managerUserId,
+  computerId: safeComputerId,
+  ...agentBase
+} = agent;
+const agentSummary = {
+  ...agentBase,
+  manager: { userId: managerUserId, displayName: "Manager" },
+  computer: { id: safeComputerId, displayName: "Laptop", platform: "linux" },
+};
+const agentDetail = { ...agentSummary, viewerCapabilities: { canManage: true } };
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -38,6 +49,7 @@ describe("OpenTagApi Agent methods", () => {
       .fn<typeof fetch>()
       .mockResolvedValueOnce(jsonResponse(agent, 201))
       .mockResolvedValueOnce(jsonResponse({ agents: [agentSummary] }))
+      .mockResolvedValueOnce(jsonResponse(agentDetail))
       .mockResolvedValueOnce(jsonResponse(agent))
       .mockResolvedValueOnce(jsonResponse({ ...agent, displayName: "Reviewer", revision: 2 }))
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
@@ -52,6 +64,7 @@ describe("OpenTagApi Agent methods", () => {
     });
     await api.listAgents("access", teamId);
     await api.getAgent("access", agentId);
+    await api.getAgentConfig("access", agentId);
     await api.updateAgent("access", agentId, {
       displayName: "Reviewer",
       expectedRevision: 1,
@@ -63,6 +76,7 @@ describe("OpenTagApi Agent methods", () => {
       [`https://opentag.example/api/v1/teams/${teamId}/agents`, "POST"],
       [`https://opentag.example/api/v1/teams/${teamId}/agents`, "GET"],
       [`https://opentag.example/api/v1/agents/${agentId}`, "GET"],
+      [`https://opentag.example/api/v1/agents/${agentId}/config`, "GET"],
       [`https://opentag.example/api/v1/agents/${agentId}`, "PATCH"],
       [`https://opentag.example/api/v1/agents/${agentId}`, "DELETE"],
     ]);
@@ -76,7 +90,7 @@ describe("OpenTagApi Agent methods", () => {
       runtimeProvider: "codex",
       runtimeConfig: { instructions: "Custom instructions", maxDurationMs: 60_000 },
     });
-    expect(JSON.parse(String(fetchImpl.mock.calls[3]?.[1]?.body))).toEqual({
+    expect(JSON.parse(String(fetchImpl.mock.calls[4]?.[1]?.body))).toEqual({
       displayName: "Reviewer",
       expectedRevision: 1,
       runtimeConfig: { model: null, reasoningEffort: "high" },
@@ -112,8 +126,8 @@ describe("OpenTagApi Agent methods", () => {
     });
   });
 
-  it("uses typed Integration setup, diagnostics, and disable contracts", async () => {
-    const integrationId = "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0";
+  it("uses typed ImBinding setup, diagnostics, and disable contracts", async () => {
+    const imBindingId = "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0";
     const attemptId = "f645f26d-9184-4f2f-98a1-4ee83ae6a603";
     const attempt = {
       id: attemptId,
@@ -133,7 +147,7 @@ describe("OpenTagApi Agent methods", () => {
       .mockResolvedValueOnce(jsonResponse(attempt))
       .mockResolvedValueOnce(
         jsonResponse({
-          integrationId,
+          imBindingId,
           provider: "feishu",
           ready: false,
           runtimeToolAvailable: false,
@@ -147,17 +161,17 @@ describe("OpenTagApi Agent methods", () => {
       )
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const api = new OpenTagApi("https://opentag.example", fetchImpl);
-    await expect(api.getAgentIntegration("access", agentId)).resolves.toBeUndefined();
+    await expect(api.getAgentImBinding("access", agentId)).resolves.toBeUndefined();
     await api.createFeishuSetupAttempt("access", agentId);
     await api.getFeishuSetupAttempt("access", attemptId);
-    await api.getIntegrationDiagnostics("access", integrationId);
-    await api.disableIntegration("access", integrationId);
+    await api.getImBindingDiagnostics("access", imBindingId);
+    await api.disableImBinding("access", imBindingId);
     expect(fetchImpl.mock.calls.map(([url, init]) => [new URL(url).pathname, init?.method ?? "GET"])).toEqual([
-      [`/api/v1/agents/${agentId}/integration`, "GET"],
-      [`/api/v1/agents/${agentId}/integrations/feishu/setup-attempts`, "POST"],
-      [`/api/v1/integrations/feishu/setup-attempts/${attemptId}`, "GET"],
-      [`/api/v1/integrations/${integrationId}/diagnostics`, "GET"],
-      [`/api/v1/integrations/${integrationId}/disable`, "POST"],
+      [`/api/v1/agents/${agentId}/im-binding`, "GET"],
+      [`/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts`, "POST"],
+      [`/api/v1/im-bindings/feishu/setup-attempts/${attemptId}`, "GET"],
+      [`/api/v1/im-bindings/${imBindingId}/diagnostics`, "GET"],
+      [`/api/v1/im-bindings/${imBindingId}/disable`, "POST"],
     ]);
     expect(fetchImpl.mock.calls[1]?.[1]?.body).toBe(JSON.stringify({ intent: "create" }));
   });

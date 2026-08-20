@@ -1,9 +1,13 @@
 import {
-  type Agent,
-  AgentSchema,
+  type AgentAdminConfig,
+  AgentAdminConfigSchema,
+  type AgentDetail,
+  AgentDetailSchema,
   agentByIdPath,
+  agentConfigPath,
   agentFeishuSetupAttemptsPath,
-  agentIntegrationPath,
+  agentImBindingConfigPath,
+  agentImBindingPath,
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
   type CreateAgentRequest,
@@ -14,18 +18,24 @@ import {
   FeishuSetupAttemptSchema,
   feishuSetupAttemptPath,
   HTTP_PATHS,
-  type IntegrationDiagnostics,
-  IntegrationDiagnosticsSchema,
-  type IntegrationSummary,
-  IntegrationSummarySchema,
-  integrationDiagnosticsPath,
-  integrationDisablePath,
+  type ImBindingAdminDetail,
+  ImBindingAdminDetailSchema,
+  type ImBindingDiagnostics,
+  ImBindingDiagnosticsSchema,
+  type ImBindingSummary,
+  ImBindingSummarySchema,
+  imBindingDiagnosticsPath,
+  imBindingDisablePath,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
   type ListComputersResponse,
   ListComputersResponseSchema,
+  type ListTeamComputersConfigResponse,
+  ListTeamComputersConfigResponseSchema,
   type ListTeamComputersResponse,
   ListTeamComputersResponseSchema,
+  type ListTeamMembersConfigResponse,
+  ListTeamMembersConfigResponseSchema,
   type ListTeamMembersResponse,
   ListTeamMembersResponseSchema,
   type MeResponse,
@@ -36,9 +46,10 @@ import {
   runtimeImResourcePath,
   type TeamInvitation,
   TeamInvitationSchema,
-  type TeamMember,
-  TeamMemberSchema,
+  type TeamMemberAdminConfig,
+  TeamMemberAdminConfigSchema,
   teamAgentsPath,
+  teamComputersConfigPath,
   teamComputersPath,
   teamInvitationPath,
   teamInvitationRotatePath,
@@ -46,6 +57,7 @@ import {
   teamMemberPath,
   teamMemberRemovePath,
   teamMemberRestorePath,
+  teamMembersConfigPath,
   teamMembersPath,
   type UpdateAgentRequest,
   type UpdateTeamMemberRequest,
@@ -110,13 +122,19 @@ export class OpenTagApi {
     });
   }
 
+  listTeamMembersConfig(accessToken: string, teamId: string): Promise<ListTeamMembersConfigResponse> {
+    return this.#request(teamMembersConfigPath(teamId), ListTeamMembersConfigResponseSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
   updateTeamMember(
     accessToken: string,
     teamId: string,
     userId: string,
     input: UpdateTeamMemberRequest,
-  ): Promise<TeamMember> {
-    return this.#request(teamMemberPath(teamId, userId), TeamMemberSchema, {
+  ): Promise<TeamMemberAdminConfig> {
+    return this.#request(teamMemberPath(teamId, userId), TeamMemberAdminConfigSchema, {
       method: "PATCH",
       body: JSON.stringify(input),
       headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
@@ -135,8 +153,8 @@ export class OpenTagApi {
     teamId: string,
     userId: string,
     input: RestoreTeamMemberRequest,
-  ): Promise<TeamMember> {
-    return this.#request(teamMemberRestorePath(teamId, userId), TeamMemberSchema, {
+  ): Promise<TeamMemberAdminConfig> {
+    return this.#request(teamMemberRestorePath(teamId, userId), TeamMemberAdminConfigSchema, {
       method: "POST",
       body: JSON.stringify(input),
       headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
@@ -150,8 +168,15 @@ export class OpenTagApi {
     });
   }
 
-  getTeamInvitation(accessToken: string, teamId: string): Promise<TeamInvitation> {
+  getTeamInvitation(accessToken: string, teamId: string): Promise<TeamInvitation | undefined> {
+    return this.#requestOptional(teamInvitationPath(teamId), TeamInvitationSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  createTeamInvitation(accessToken: string, teamId: string): Promise<TeamInvitation> {
     return this.#request(teamInvitationPath(teamId), TeamInvitationSchema, {
+      method: "POST",
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }
@@ -169,8 +194,14 @@ export class OpenTagApi {
     });
   }
 
-  createAgent(accessToken: string, teamId: string, input: CreateAgentRequest): Promise<Agent> {
-    return this.#request(teamAgentsPath(teamId), AgentSchema, {
+  listTeamComputersConfig(accessToken: string, teamId: string): Promise<ListTeamComputersConfigResponse> {
+    return this.#request(teamComputersConfigPath(teamId), ListTeamComputersConfigResponseSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  createAgent(accessToken: string, teamId: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
+    return this.#request(teamAgentsPath(teamId), AgentAdminConfigSchema, {
       method: "POST",
       body: JSON.stringify(input),
       headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
@@ -183,14 +214,20 @@ export class OpenTagApi {
     });
   }
 
-  getAgent(accessToken: string, agentId: string): Promise<Agent> {
-    return this.#request(agentByIdPath(agentId), AgentSchema, {
+  getAgent(accessToken: string, agentId: string): Promise<AgentDetail> {
+    return this.#request(agentByIdPath(agentId), AgentDetailSchema, {
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }
 
-  updateAgent(accessToken: string, agentId: string, input: UpdateAgentRequest): Promise<Agent> {
-    return this.#request(agentByIdPath(agentId), AgentSchema, {
+  getAgentConfig(accessToken: string, agentId: string): Promise<AgentAdminConfig> {
+    return this.#request(agentConfigPath(agentId), AgentAdminConfigSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  updateAgent(accessToken: string, agentId: string, input: UpdateAgentRequest): Promise<AgentAdminConfig> {
+    return this.#request(agentByIdPath(agentId), AgentAdminConfigSchema, {
       method: "PATCH",
       body: JSON.stringify(input),
       headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
@@ -204,8 +241,14 @@ export class OpenTagApi {
     });
   }
 
-  getAgentIntegration(accessToken: string, agentId: string): Promise<IntegrationSummary | undefined> {
-    return this.#requestOptional(agentIntegrationPath(agentId), IntegrationSummarySchema, {
+  getAgentImBinding(accessToken: string, agentId: string): Promise<ImBindingSummary | undefined> {
+    return this.#requestOptional(agentImBindingPath(agentId), ImBindingSummarySchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  getAgentImBindingConfig(accessToken: string, agentId: string): Promise<ImBindingAdminDetail | undefined> {
+    return this.#requestOptional(agentImBindingConfigPath(agentId), ImBindingAdminDetailSchema, {
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }
@@ -235,14 +278,14 @@ export class OpenTagApi {
     });
   }
 
-  getIntegrationDiagnostics(accessToken: string, integrationId: string): Promise<IntegrationDiagnostics> {
-    return this.#request(integrationDiagnosticsPath(integrationId), IntegrationDiagnosticsSchema, {
+  getImBindingDiagnostics(accessToken: string, imBindingId: string): Promise<ImBindingDiagnostics> {
+    return this.#request(imBindingDiagnosticsPath(imBindingId), ImBindingDiagnosticsSchema, {
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }
 
-  disableIntegration(accessToken: string, integrationId: string): Promise<void> {
-    return this.#requestNoContent(integrationDisablePath(integrationId), {
+  disableImBinding(accessToken: string, imBindingId: string): Promise<void> {
+    return this.#requestNoContent(imBindingDisablePath(imBindingId), {
       method: "POST",
       headers: { authorization: `Bearer ${accessToken}` },
     });

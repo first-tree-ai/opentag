@@ -14,7 +14,7 @@ function authority(overrides: Record<string, unknown> = {}) {
   return {
     agentDeletedAt: null,
     agentId,
-    integrationStatus: "active",
+    imBindingStatus: "active",
     runtimeConfig: {
       revision: 7,
       model: "gpt-5",
@@ -101,7 +101,7 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
   it.each([
     ["missing", async () => undefined, "SESSION_NOT_FOUND"],
     ["ended Session", async () => authority({ sessionEndedAt: new Date() }), "AUTHORITY_INACTIVE"],
-    ["inactive Integration", async () => authority({ integrationStatus: "disabled" }), "AUTHORITY_INACTIVE"],
+    ["inactive ImBinding", async () => authority({ imBindingStatus: "disabled" }), "AUTHORITY_INACTIVE"],
     ["deleted Agent", async () => authority({ agentDeletedAt: new Date() }), "AUTHORITY_INACTIVE"],
     ["missing config", async () => authority({ runtimeConfig: null }), "RUNTIME_CONFIG_MISSING"],
     ["unsupported provider", async () => authority({ runtimeProvider: "claude-code" }), "UNSUPPORTED_PROVIDER"],

@@ -1,7 +1,7 @@
 import type { registerApp } from "@larksuiteoapi/node-sdk";
 import { describe, expect, it, vi } from "vitest";
 
-import { DefaultFeishuRegistrationGateway, feishuMessageScopes } from "../services/integrations/feishu/registration.js";
+import { DefaultFeishuRegistrationGateway, feishuMessageScopes } from "../services/im-bindings/feishu/registration.js";
 
 interface RegistrationOptions {
   appId?: string;

@@ -9,9 +9,9 @@ import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
   agents,
+  imBindings,
   imMessageDeliveries,
   imMessages,
-  integrations,
   sessionPlacements,
   sessions,
 } from "../db/schema/index.js";
@@ -237,8 +237,8 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .from(imMessageDeliveries)
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-      .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
-      .innerJoin(agents, eq(agents.id, integrations.agentId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .where(eq(imMessageDeliveries.id, deliveryId))
       .limit(1);
     return row ? acceptedRecord(row.delivery, row.placement.computerId, row.agentId) : undefined;
@@ -337,8 +337,8 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-      .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
-      .innerJoin(agents, eq(agents.id, integrations.agentId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .where(eq(imMessageDeliveries.id, deliveryId))
       .limit(1)
       .for("update", { of: imMessageDeliveries });

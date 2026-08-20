@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared";
 import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient } from "../../../db/client.js";
-import { agents, integrations } from "../../../db/schema/index.js";
+import { agents, imBindings } from "../../../db/schema/index.js";
 import type { ApplicationCipher } from "../../crypto.js";
-import type { IntegrationService, VerifiedFeishuBinding } from "../integration-service.js";
+import type { ImBindingService, VerifiedFeishuBinding } from "../im-binding-service.js";
 import type { FeishuAppProfile, FeishuRegistration, FeishuRegistrationGateway } from "./registration.js";
 
 export interface FeishuBindingActivation {
@@ -41,7 +41,7 @@ export class FeishuSetupService {
   readonly #cipher: ApplicationCipher;
   readonly #database: DatabaseClient;
   readonly #instanceId: string;
-  readonly #integrations: IntegrationService;
+  readonly #imBindings: ImBindingService;
   readonly #onDiagnostic: (code: string) => void;
   readonly #registrations: FeishuRegistrationGateway;
   readonly #running = new Map<string, FeishuRegistration>();
@@ -51,7 +51,7 @@ export class FeishuSetupService {
     database: DatabaseClient;
     cipher: ApplicationCipher;
     instanceId: string;
-    integrations: IntegrationService;
+    imBindings: ImBindingService;
     registrations: FeishuRegistrationGateway;
     activation: FeishuBindingActivation;
     onDiagnostic?: (code: string) => void;
@@ -59,7 +59,7 @@ export class FeishuSetupService {
     this.#database = input.database;
     this.#cipher = input.cipher;
     this.#instanceId = input.instanceId;
-    this.#integrations = input.integrations;
+    this.#imBindings = input.imBindings;
     this.#registrations = input.registrations;
     this.#activation = input.activation;
     this.#onDiagnostic = input.onDiagnostic ?? (() => undefined);
@@ -78,7 +78,7 @@ export class FeishuSetupService {
     this.#heartbeatTimer = undefined;
     const now = new Date();
     await this.#database
-      .update(integrations)
+      .update(imBindings)
       .set({
         setupState: "failed",
         lastErrorCode: "FEISHU_SETUP_OWNER_RESTARTED",
@@ -90,8 +90,8 @@ export class FeishuSetupService {
       })
       .where(
         and(
-          eq(integrations.setupOwnerInstanceId, this.#instanceId),
-          inArray(integrations.setupState, ["awaiting_user", "validating"]),
+          eq(imBindings.setupOwnerInstanceId, this.#instanceId),
+          inArray(imBindings.setupState, ["awaiting_user", "validating"]),
         ),
       );
     for (const registration of this.#running.values()) registration.abort();
@@ -99,7 +99,7 @@ export class FeishuSetupService {
   }
 
   async createOrReuse(callerUserId: string, agentId: string, intent: FeishuSetupIntent): Promise<FeishuSetupAttempt> {
-    await this.#integrations.assertCanManage(callerUserId, agentId);
+    await this.#imBindings.assertCanManage(callerUserId, agentId);
     const current = await this.#currentForAgent(agentId);
     if (current?.setupAttemptId && current.setupState && ["awaiting_user", "validating"].includes(current.setupState)) {
       if (
@@ -108,6 +108,8 @@ export class FeishuSetupService {
         current.setupOwnerHeartbeatAt.getTime() < Date.now() - OWNER_STALE_MS
       ) {
         await this.#failOwnedSlot(
+          callerUserId,
+          agentId,
           current.id,
           current.setupAttemptId,
           current.setupOwnerInstanceId,
@@ -126,7 +128,7 @@ export class FeishuSetupService {
     if (!agent) throw new Error("AGENT_NOT_FOUND");
     const existing = await this.#currentForAgent(agentId);
     if (intent === "create" && existing && existing.status !== "provisioning") {
-      throw new Error("FEISHU_INTEGRATION_ALREADY_EXISTS");
+      throw new Error("FEISHU_IM_BINDING_ALREADY_EXISTS");
     }
     if (intent === "reauthorize" && (existing?.provider !== "feishu" || !existing.externalAppId)) {
       throw new Error("FEISHU_REAUTHORIZATION_REQUIRES_BINDING");
@@ -155,33 +157,36 @@ export class FeishuSetupService {
 
     const attemptId = randomUUID();
     const now = new Date();
-    let row: typeof integrations.$inferSelect | undefined;
+    let row: typeof imBindings.$inferSelect | undefined;
     try {
-      if (existing) {
-        [row] = await this.#database
-          .update(integrations)
-          .set({
-            setupAttemptId: attemptId,
-            setupIntent: intent,
-            setupState: "awaiting_user",
-            setupOwnerInstanceId: this.#instanceId,
-            setupOwnerHeartbeatAt: now,
-            encryptedSetupContext: this.#cipher.encrypt(JSON.stringify({ qrUrl: qr.url } satisfies AttemptSecret)),
-            setupExpiresAt: qr.expiresAt,
-            lastErrorCode: null,
-            updatedAt: now,
-          })
-          .where(
-            and(
-              eq(integrations.id, existing.id),
-              ne(integrations.status, "disabled"),
-              isNull(integrations.setupOwnerInstanceId),
-            ),
-          )
-          .returning();
-      } else {
-        [row] = await this.#database
-          .insert(integrations)
+      row = await this.#database.transaction(async (transaction) => {
+        await this.#imBindings.assertCanManageForMutation(callerUserId, agentId, transaction);
+        if (existing) {
+          const [updated] = await transaction
+            .update(imBindings)
+            .set({
+              setupAttemptId: attemptId,
+              setupIntent: intent,
+              setupState: "awaiting_user",
+              setupOwnerInstanceId: this.#instanceId,
+              setupOwnerHeartbeatAt: now,
+              encryptedSetupContext: this.#cipher.encrypt(JSON.stringify({ qrUrl: qr.url } satisfies AttemptSecret)),
+              setupExpiresAt: qr.expiresAt,
+              lastErrorCode: null,
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(imBindings.id, existing.id),
+                ne(imBindings.status, "disabled"),
+                isNull(imBindings.setupOwnerInstanceId),
+              ),
+            )
+            .returning();
+          return updated;
+        }
+        const [created] = await transaction
+          .insert(imBindings)
           .values({
             agentId,
             provider: "feishu",
@@ -197,7 +202,8 @@ export class FeishuSetupService {
             updatedAt: now,
           })
           .returning();
-      }
+        return created;
+      });
     } catch (error) {
       void registration.result.catch(() => undefined);
       registration.abort();
@@ -226,59 +232,57 @@ export class FeishuSetupService {
   async get(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
     const row = await this.#load(attemptId);
     if (!row) throw new Error("FEISHU_SETUP_NOT_FOUND");
-    await this.#integrations.assertCanManage(callerUserId, row.agentId);
-    let current = row;
+    await this.#imBindings.assertCanManage(callerUserId, row.agentId);
+    const attempt = this.#toAttempt(row);
+    const now = new Date();
+    if (row.setupState === "awaiting_user" && row.setupExpiresAt && row.setupExpiresAt <= now) {
+      return {
+        ...attempt,
+        state: "expired",
+        qrUrl: null,
+        errorCode: "FEISHU_SETUP_EXPIRED",
+        completedAt: row.setupExpiresAt.toISOString(),
+      };
+    }
     if (
-      current.setupState &&
-      ["awaiting_user", "validating"].includes(current.setupState) &&
-      ((current.setupOwnerInstanceId === this.#instanceId && !this.#running.has(attemptId)) ||
-        !current.setupOwnerHeartbeatAt ||
-        current.setupOwnerHeartbeatAt.getTime() < Date.now() - OWNER_STALE_MS)
+      row.setupState &&
+      ["awaiting_user", "validating"].includes(row.setupState) &&
+      ((row.setupOwnerInstanceId === this.#instanceId && !this.#running.has(attemptId)) ||
+        !row.setupOwnerHeartbeatAt ||
+        row.setupOwnerHeartbeatAt.getTime() < now.getTime() - OWNER_STALE_MS)
     ) {
-      await this.#failOwnedSlot(current.id, attemptId, current.setupOwnerInstanceId, "FEISHU_SETUP_OWNER_RESTARTED");
-      current = (await this.#load(attemptId)) ?? current;
+      return {
+        ...attempt,
+        state: "failed",
+        qrUrl: null,
+        errorCode: "FEISHU_SETUP_OWNER_RESTARTED",
+        completedAt: now.toISOString(),
+      };
     }
-    if (current.setupState === "awaiting_user" && current.setupExpiresAt && current.setupExpiresAt <= new Date()) {
-      const [expired] = await this.#database
-        .update(integrations)
-        .set({
-          setupState: "expired",
-          lastErrorCode: "FEISHU_SETUP_EXPIRED",
-          setupOwnerInstanceId: null,
-          setupOwnerHeartbeatAt: null,
-          encryptedSetupContext: null,
-          setupExpiresAt: null,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(integrations.id, current.id),
-            eq(integrations.setupAttemptId, attemptId),
-            eq(integrations.setupState, "awaiting_user"),
-          ),
-        )
-        .returning();
-      if (expired) current = expired;
-    }
-    return this.#toAttempt(current);
+    return attempt;
   }
 
   async cancel(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
     const attempt = await this.get(callerUserId, attemptId);
+    if (!["awaiting_user", "validating"].includes(attempt.state)) return attempt;
     const now = new Date();
-    const [canceled] = await this.#database
-      .update(integrations)
-      .set({
-        setupState: "canceled",
-        lastErrorCode: "FEISHU_SETUP_CANCELED",
-        setupOwnerInstanceId: null,
-        setupOwnerHeartbeatAt: null,
-        encryptedSetupContext: null,
-        setupExpiresAt: null,
-        updatedAt: now,
-      })
-      .where(and(eq(integrations.setupAttemptId, attemptId), eq(integrations.setupState, "awaiting_user")))
-      .returning();
+    const canceled = await this.#database.transaction(async (transaction) => {
+      await this.#imBindings.assertCanManageForMutation(callerUserId, attempt.agentId, transaction);
+      const [row] = await transaction
+        .update(imBindings)
+        .set({
+          setupState: "canceled",
+          lastErrorCode: "FEISHU_SETUP_CANCELED",
+          setupOwnerInstanceId: null,
+          setupOwnerHeartbeatAt: null,
+          encryptedSetupContext: null,
+          setupExpiresAt: null,
+          updatedAt: now,
+        })
+        .where(and(eq(imBindings.setupAttemptId, attemptId), eq(imBindings.setupState, "awaiting_user")))
+        .returning();
+      return row;
+    });
     if (canceled) this.#running.get(attemptId)?.abort();
     return canceled ? this.#toAttempt(canceled) : attempt;
   }
@@ -287,17 +291,17 @@ export class FeishuSetupService {
     try {
       const result = await registration.result;
       const [claimed] = await this.#database
-        .update(integrations)
+        .update(imBindings)
         .set({ setupState: "validating", updatedAt: new Date() })
         .where(
           and(
-            eq(integrations.setupAttemptId, attemptId),
-            eq(integrations.agentId, agentId),
-            eq(integrations.setupState, "awaiting_user"),
-            eq(integrations.setupOwnerInstanceId, this.#instanceId),
+            eq(imBindings.setupAttemptId, attemptId),
+            eq(imBindings.agentId, agentId),
+            eq(imBindings.setupState, "awaiting_user"),
+            eq(imBindings.setupOwnerInstanceId, this.#instanceId),
           ),
         )
-        .returning({ id: integrations.id });
+        .returning({ id: imBindings.id });
       if (!claimed) return;
       await this.#activation.activateAtomicAttempt({
         attemptId,
@@ -314,7 +318,7 @@ export class FeishuSetupService {
         code === "FEISHU_SETUP_EXPIRED" ? "expired" : code === "FEISHU_SETUP_CANCELED" ? "canceled" : "failed";
       try {
         await this.#database
-          .update(integrations)
+          .update(imBindings)
           .set({
             setupState: state,
             lastErrorCode: code,
@@ -326,8 +330,8 @@ export class FeishuSetupService {
           })
           .where(
             and(
-              eq(integrations.setupAttemptId, attemptId),
-              inArray(integrations.setupState, ["awaiting_user", "validating"]),
+              eq(imBindings.setupAttemptId, attemptId),
+              inArray(imBindings.setupState, ["awaiting_user", "validating"]),
             ),
           );
       } catch {
@@ -341,63 +345,69 @@ export class FeishuSetupService {
   async #heartbeat(): Promise<void> {
     if (this.#running.size === 0) return;
     await this.#database
-      .update(integrations)
+      .update(imBindings)
       .set({ setupOwnerHeartbeatAt: new Date() })
       .where(
         and(
-          eq(integrations.setupOwnerInstanceId, this.#instanceId),
-          inArray(integrations.setupState, ["awaiting_user", "validating"]),
+          eq(imBindings.setupOwnerInstanceId, this.#instanceId),
+          inArray(imBindings.setupState, ["awaiting_user", "validating"]),
         ),
       );
   }
 
-  async #currentForAgent(agentId: string): Promise<typeof integrations.$inferSelect | undefined> {
+  async #currentForAgent(agentId: string): Promise<typeof imBindings.$inferSelect | undefined> {
     const [row] = await this.#database
       .select()
-      .from(integrations)
-      .where(and(eq(integrations.agentId, agentId), ne(integrations.status, "disabled")))
+      .from(imBindings)
+      .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
       .limit(1);
     return row;
   }
 
-  async #load(attemptId: string): Promise<typeof integrations.$inferSelect | undefined> {
+  async #load(attemptId: string): Promise<typeof imBindings.$inferSelect | undefined> {
     const [row] = await this.#database
       .select()
-      .from(integrations)
-      .where(eq(integrations.setupAttemptId, attemptId))
+      .from(imBindings)
+      .where(eq(imBindings.setupAttemptId, attemptId))
       .limit(1);
     return row;
   }
 
   async #failOwnedSlot(
-    integrationId: string,
+    callerUserId: string,
+    agentId: string,
+    imBindingId: string,
     attemptId: string,
     ownerInstanceId: string | null,
     code: string,
   ): Promise<void> {
     if (!ownerInstanceId) return;
-    await this.#database
-      .update(integrations)
-      .set({
-        setupState: "failed",
-        lastErrorCode: code,
-        setupOwnerInstanceId: null,
-        setupOwnerHeartbeatAt: null,
-        encryptedSetupContext: null,
-        setupExpiresAt: null,
-        updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(integrations.id, integrationId),
-          eq(integrations.setupAttemptId, attemptId),
-          eq(integrations.setupOwnerInstanceId, ownerInstanceId),
-          inArray(integrations.setupState, ["awaiting_user", "validating"]),
-        ),
-      );
+    await this.#database.transaction(async (transaction) => {
+      await this.#imBindings.assertCanManageForMutation(callerUserId, agentId, transaction);
+      await transaction
+        .update(imBindings)
+        .set({
+          setupState: "failed",
+          lastErrorCode: code,
+          setupOwnerInstanceId: null,
+          setupOwnerHeartbeatAt: null,
+          encryptedSetupContext: null,
+          setupExpiresAt: null,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(imBindings.id, imBindingId),
+            eq(imBindings.agentId, agentId),
+            eq(imBindings.setupAttemptId, attemptId),
+            eq(imBindings.setupOwnerInstanceId, ownerInstanceId),
+            inArray(imBindings.setupState, ["awaiting_user", "validating"]),
+          ),
+        );
+    });
   }
 
-  #toAttempt(row: typeof integrations.$inferSelect): FeishuSetupAttempt {
+  #toAttempt(row: typeof imBindings.$inferSelect): FeishuSetupAttempt {
     if (!row.setupAttemptId || !row.setupIntent || !row.setupState) throw new Error("FEISHU_SETUP_NOT_FOUND");
     const secret = row.encryptedSetupContext
       ? (JSON.parse(this.#cipher.decrypt(row.encryptedSetupContext)) as AttemptSecret)

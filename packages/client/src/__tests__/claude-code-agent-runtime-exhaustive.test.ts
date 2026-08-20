@@ -300,9 +300,10 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         message: "constrained filesystem",
       },
       { request: withPolicy({ network: "disabled" }), message: "disabled network" },
-      { request: withPolicy({ tools: { mode: "allow-list", names: [] } }), message: "must not be empty" },
-      { request: withPolicy({ tools: { mode: "allow-list", names: ["*"] } }), message: "bounded identifiers" },
-      { request: withPolicy({ tools: { mode: "allow-list", names: [42 as unknown as string] } }), message: "bounded" },
+      {
+        request: withPolicy({ tools: { mode: "allow-list", names: ["Read"] } }),
+        message: "does not implement the common tool allow-list contract",
+      },
       { request: withConfiguration({ model: " " }), message: "model" },
       { request: withConfiguration({ reasoningEffort: "extreme" }), message: "reasoning effort" },
       { request: withConfiguration({ provider: [] }), message: "must be an object" },
@@ -366,18 +367,12 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     });
   });
 
-  it("maps unrestricted policy, tool allow-list, and configuration override arguments", async () => {
+  it("maps unrestricted policy and configuration override arguments", async () => {
     const cases: Array<{
       request: CreateAgentRuntimeRequest;
       promptConfiguration?: AgentRunConfiguration;
       expected: (args: readonly string[]) => void;
     }> = [
-      {
-        request: withPolicy({ tools: { mode: "allow-list", names: ["Read", "Edit"] } }),
-        expected: (args) => {
-          expect(argumentAfter(args, "--tools")).toBe("Read,Edit");
-        },
-      },
       {
         request: withPolicy({ fileSystem: "unrestricted", network: "enabled" }),
         expected: (args) => {
@@ -430,6 +425,31 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       item.expected(process.args);
       await runtime.close();
     }
+  });
+
+  it("preserves a typed protocol failure when the real JSONL process is closed after a foreign init", async () => {
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await new ClaudeCodeAgentRuntimeFactory({
+      createSessionId: () => SESSION_ID,
+      process: {
+        command: process.execPath,
+        args: [fixture, "foreign-init"],
+        env: { PATH: process.env.PATH },
+      },
+      probeRunner: async () => ({ credential: true, streamJson: true, version: "fixture" }),
+    }).create({
+      ...createRequest((event) => {
+        events.push(event);
+      }),
+      workspace: { cwd: process.cwd() },
+    });
+
+    await expect(runtime.prompt({ runId: "run-wire-foreign-init", input: input("hello") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error", message: "Claude Code initialized another session" },
+    });
+    expect(events.some((event) => event.type === "provider_event")).toBe(false);
+    await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
   });
 
   it("runs the default process adapter and the default local readiness probe against controlled artifacts", async () => {

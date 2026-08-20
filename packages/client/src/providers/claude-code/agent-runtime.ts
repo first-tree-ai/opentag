@@ -15,7 +15,6 @@ import {
   type AgentRuntimeEventSink,
   type AgentRuntimeFactory,
   type AgentRuntimeManifest,
-  type AgentRuntimePolicy,
   type AgentRuntimeProbeRequest,
   type AgentRuntimeProbeResult,
   type CreateAgentRuntimeRequest,
@@ -49,7 +48,6 @@ interface ClaudeCodeRuntimeOptions {
   readonly createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
   readonly eventSink: AgentRuntimeEventSink;
   readonly resume: boolean;
-  readonly policy: AgentRuntimePolicy;
 }
 
 export interface ClaudeCodeAgentRuntimeFactoryOptions {
@@ -104,7 +102,6 @@ interface ToolState {
 
 export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #sessionId: string;
-  readonly #policy: AgentRuntimePolicy;
   readonly #configuration?: AgentRunConfiguration;
   readonly #createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
   readonly #textBlocks = new Map<string, TextBlockState>();
@@ -129,7 +126,6 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       binding: options.binding,
     });
     this.#sessionId = parseClaudeCodeBinding(options.binding);
-    this.#policy = options.policy;
     this.#configuration = options.configuration;
     this.#createProcess = options.createProcess;
     this.#sessionExists = options.resume;
@@ -161,6 +157,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     } catch (error) {
       if (context.signal.aborted) throw error;
       this.closeForProviderFailure();
+      if (this.#providerFailure) throw this.#providerFailure;
       if (error instanceof AgentProviderError) throw error;
       throw new AgentProviderError(
         "provider_error",
@@ -205,7 +202,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       "--setting-sources",
       "",
       ...(this.#sessionExists ? ["--resume", this.#sessionId] : ["--session-id", this.#sessionId]),
-      ...claudeCodePolicyArguments(this.#policy),
+      "--permission-mode",
+      "bypassPermissions",
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--effort", configuration.reasoningEffort] : []),
       ...(provider.appendSystemPrompt ? ["--append-system-prompt", provider.appendSystemPrompt] : []),
@@ -600,7 +598,6 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
         createProcess: (args) => this.#createProcess(request.workspace.cwd, args),
         eventSink: request.eventSink,
         resume: mode === "resume",
-        policy: request.policy,
       });
     } catch (error) {
       throw new AgentRuntimeError(mode === "create" ? "create_failed" : "resume_failed", `Claude Code ${mode} failed`, {
@@ -740,18 +737,11 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
       "Claude Code cannot guarantee disabled network because managed settings override CLI sandbox settings",
     );
   }
-  validateToolPolicy(request.policy);
-}
-
-function validateToolPolicy(policy: AgentRuntimePolicy): void {
-  if (policy.tools.mode !== "allow-list") return;
-  if (policy.tools.names.length === 0) {
-    throw new AgentRuntimeError("configuration_invalid", "Claude Code tool allow-list must not be empty");
-  }
-  for (const name of policy.tools.names) {
-    if (typeof name !== "string" || !/^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/.test(name)) {
-      throw new AgentRuntimeError("configuration_invalid", "Claude Code tool names must be bounded identifiers");
-    }
+  if (request.policy.tools.mode !== "provider-default") {
+    throw new AgentRuntimeError(
+      "configuration_invalid",
+      "Claude Code does not implement the common tool allow-list contract",
+    );
   }
 }
 
@@ -820,14 +810,6 @@ function mergeConfiguration(
   };
   validateConfiguration(merged);
   return merged;
-}
-
-function claudeCodePolicyArguments(policy: AgentRuntimePolicy): readonly string[] {
-  const arguments_: string[] = [];
-  const tools = policy.tools.mode === "allow-list" ? policy.tools.names : undefined;
-  if (tools) arguments_.push("--tools", tools.join(","));
-  arguments_.push("--permission-mode", "bypassPermissions");
-  return arguments_;
 }
 
 function claudeCodeInput(request: AgentPromptRequest): Readonly<Record<string, unknown>> {

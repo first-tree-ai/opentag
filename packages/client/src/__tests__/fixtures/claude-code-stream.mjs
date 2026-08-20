@@ -1,6 +1,6 @@
 import process from "node:process";
 
-const scenario = process.env.CLAUDE_CODE_FIXTURE_SCENARIO ?? "normal";
+const scenario = process.argv[2] ?? process.env.CLAUDE_CODE_FIXTURE_SCENARIO ?? "normal";
 let buffer = "";
 
 process.stdin.setEncoding("utf8");
@@ -10,6 +10,16 @@ process.stdin.on("data", (chunk) => {
   if (newline < 0) return;
   const line = buffer.slice(0, newline);
   buffer = buffer.slice(newline + 1);
+  if (scenario === "foreign-init") {
+    process.stdout.write(
+      `${JSON.stringify({
+        type: "system",
+        subtype: "init",
+        session_id: "22222222-2222-4222-8222-222222222222",
+      })}\n`,
+    );
+    return;
+  }
   if (scenario === "malformed") {
     process.stdout.write("not-json\n");
     return;

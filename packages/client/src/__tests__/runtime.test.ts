@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
+import { PROVIDER_READINESS_V1_HEADER, RUNTIME_CLIENT_CAPABILITY_TTL_MS } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
@@ -105,6 +105,56 @@ describe("RuntimeConnection", () => {
     await connection.run();
     expect(frames.find((frame) => frame.type === "computer:register")).not.toHaveProperty("providerReadiness");
     expect(frames.find((frame) => frame.type === "heartbeat")).not.toHaveProperty("providerReadiness");
+  });
+
+  it("keeps negotiated readiness heartbeats fresh past the TTL while a lease owns admission", async () => {
+    const server = await runtimeServer();
+    cleanup.push(server.close);
+    const heartbeats: Array<Record<string, unknown>> = [];
+    let currentTime = Date.now();
+    let releaseReadiness!: () => void;
+    let connection: RuntimeConnection;
+    server.wss.on("connection", (socket) => {
+      socket.on("message", (data) => {
+        const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+        if (frame.type === "auth") {
+          completeAuth(socket, frame, { ...welcome(), providerReadiness: 1 }, RUNTIME_CLIENT_CAPABILITY_TTL_MS * 10);
+        }
+        if (frame.type === "computer:register") {
+          expect(frame).toMatchObject({ providerReadiness: { provider: "codex", status: "ready" } });
+          currentTime += RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1;
+          socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
+        }
+        if (frame.type === "heartbeat") {
+          heartbeats.push(frame);
+          if (heartbeats.length === 1) releaseReadiness();
+          socket.send(
+            JSON.stringify({
+              type: "heartbeat:result",
+              requestId: frame.requestId,
+              ok: true,
+              serverTime: new Date().toISOString(),
+            }),
+          );
+          if (heartbeats.length === 2) connection.stop();
+        }
+      });
+    });
+    connection = new RuntimeConnection({
+      arch: "x64",
+      clientVersion: "0.0.1",
+      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      displayName: "workstation",
+      instanceId: randomUUID(),
+      now: () => currentTime,
+      platform: "linux",
+      tokenProvider: tokenProvider(),
+    });
+    releaseReadiness = connection.leaseProviderReadiness({ provider: "codex", status: "ready" });
+
+    await connection.run();
+    expect(heartbeats[0]).toMatchObject({ providerReadiness: { provider: "codex", status: "ready" } });
+    expect(heartbeats[1]).not.toHaveProperty("providerReadiness");
   });
 
   it("forces token refresh before reconnecting at the proactive refresh boundary", async () => {

@@ -189,14 +189,18 @@ export async function createClientRuntime(
     ? AbortSignal.any([options.signal, capabilityAbort.signal])
     : capabilityAbort.signal;
   const refreshCapability = async (): Promise<void> => {
-    connection.setProviderReadiness({
-      provider: "codex",
-      status: providers.isReady(CODEX_AGENT_RUNTIME_MANIFEST.providerId) ? "ready" : "checking",
-    });
-    const available = await providers.refresh(CODEX_AGENT_RUNTIME_MANIFEST.providerId, readinessSignal);
-    readinessSignal.throwIfAborted();
-    connection.setVerifiedCapabilities({ imMessageTool: available ? 1 : 0 });
-    connection.setProviderReadiness(codexProviderReadiness(available, providers.probeResult("codex")));
+    const releaseReadiness = providers.isReady(CODEX_AGENT_RUNTIME_MANIFEST.providerId)
+      ? connection.leaseProviderReadiness({ provider: "codex", status: "ready" })
+      : undefined;
+    if (!releaseReadiness) connection.setProviderReadiness({ provider: "codex", status: "checking" });
+    try {
+      const available = await providers.refresh(CODEX_AGENT_RUNTIME_MANIFEST.providerId, readinessSignal);
+      readinessSignal.throwIfAborted();
+      connection.setVerifiedCapabilities({ imMessageTool: available ? 1 : 0 });
+      connection.setProviderReadiness(codexProviderReadiness(available, providers.probeResult("codex")));
+    } finally {
+      releaseReadiness?.();
+    }
   };
   try {
     await refreshCapability();

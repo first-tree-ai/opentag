@@ -641,13 +641,14 @@ describe("OpenTag Web App Shell", () => {
       within(screen.getByRole("dialog", { name: "Switch Team" })).getByRole("button", { name: "Invite people" }),
     );
     const dialog = await screen.findByRole("dialog", { name: "Invite people" });
+    expect(screen.getAllByLabelText("Invitation link")).toHaveLength(1);
     fireEvent.click(within(dialog).getByRole("button", { name: "Rotate invitation link" }));
     await waitFor(() =>
       expect((within(dialog).getByLabelText("Invitation link") as HTMLInputElement).value).toContain("/invites/BBB"),
     );
     fireEvent.click(within(dialog).getByRole("button", { name: "Close invitation dialog" }));
 
-    const refreshedPageLink = screen.getByLabelText("Invitation link") as HTMLInputElement;
+    const refreshedPageLink = (await screen.findByLabelText("Invitation link")) as HTMLInputElement;
     expect(refreshedPageLink.value).toContain("/invites/BBB");
     fireEvent.click(screen.getByRole("button", { name: "Copy invitation link" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(refreshedPageLink.value));

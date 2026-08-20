@@ -8,7 +8,6 @@ import type {
   MeMembership,
   MeResponse,
   TeamComputerSummary,
-  TeamInvitation,
   TeamMemberSummary,
   UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
@@ -25,7 +24,18 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  Link,
+  Navigate,
+  NavLink,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useOutletContext,
+  useParams,
+} from "react-router-dom";
 import { ApiError, browserApi } from "./api.js";
 import { ComputerSetup } from "./computer-setup.js";
 import { CreateTeamForm } from "./create-team-form.js";
@@ -81,17 +91,8 @@ interface TeamSession {
   selectTeam: (teamId: string) => void;
 }
 
-interface InvitationState {
-  create: (teamId: string) => Promise<TeamInvitation>;
-  refresh: (teamId: string) => void;
-  rotate: (teamId: string) => Promise<TeamInvitation>;
-  stateByTeam: Readonly<Record<string, LoadState<TeamInvitation | undefined>>>;
-}
-
 const teamContext = createContext<TeamSession | undefined>(undefined);
 const TeamContext = teamContext.Provider;
-const invitationContext = createContext<InvitationState | undefined>(undefined);
-const InvitationContext = invitationContext.Provider;
 
 function useTeam(): TeamSession {
   const value = useContext(teamContext);
@@ -99,81 +100,27 @@ function useTeam(): TeamSession {
   return value;
 }
 
-function useInvitationState(): InvitationState {
-  const value = useContext(invitationContext);
-  if (!value) throw new Error("Invitation context is missing");
-  return value;
-}
-
 export function AppRouter() {
-  const [invitationStates, setInvitationStates] = useState<Record<string, LoadState<TeamInvitation | undefined>>>({});
-  const invitationLoadRequests = useRef(new Map<string, number>());
-  const invitationMutationGenerations = useRef(new Map<string, number>());
-  const refreshInvitation = useCallback((teamId: string) => {
-    const requestId = (invitationLoadRequests.current.get(teamId) ?? 0) + 1;
-    const mutationGeneration = invitationMutationGenerations.current.get(teamId) ?? 0;
-    invitationLoadRequests.current.set(teamId, requestId);
-    setInvitationStates((current) => ({ ...current, [teamId]: { kind: "loading" } }));
-    void browserApi.invitation(teamId).then(
-      (invitation) => {
-        if (
-          invitationLoadRequests.current.get(teamId) !== requestId ||
-          (invitationMutationGenerations.current.get(teamId) ?? 0) !== mutationGeneration
-        )
-          return;
-        setInvitationStates((current) => ({ ...current, [teamId]: { kind: "ready", value: invitation } }));
-      },
-      (error: unknown) => {
-        if (
-          invitationLoadRequests.current.get(teamId) !== requestId ||
-          (invitationMutationGenerations.current.get(teamId) ?? 0) !== mutationGeneration
-        )
-          return;
-        setInvitationStates((current) => ({
-          ...current,
-          [teamId]: { kind: "error", error: error instanceof Error ? error : new Error(String(error)) },
-        }));
-      },
-    );
-  }, []);
-  const mutateInvitation = useCallback(async (teamId: string, action: "create" | "rotate") => {
-    const invitation =
-      action === "create" ? await browserApi.createInvitation(teamId) : await browserApi.rotateInvitation(teamId);
-    invitationMutationGenerations.current.set(teamId, (invitationMutationGenerations.current.get(teamId) ?? 0) + 1);
-    setInvitationStates((current) => ({ ...current, [teamId]: { kind: "ready", value: invitation } }));
-    return invitation;
-  }, []);
-  const createInvitation = useCallback((teamId: string) => mutateInvitation(teamId, "create"), [mutateInvitation]);
-  const rotateInvitation = useCallback((teamId: string) => mutateInvitation(teamId, "rotate"), [mutateInvitation]);
   return (
-    <InvitationContext
-      value={{
-        create: createInvitation,
-        refresh: refreshInvitation,
-        rotate: rotateInvitation,
-        stateByTeam: invitationStates,
-      }}
-    >
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route path="/invites/:token" element={<InvitePage />} />
-        <Route path="/teams/new" element={<NewTeamPage />} />
-        <Route element={<AuthenticatedTeamGate />}>
-          <Route path="/onboarding" element={<OnboardingPage />} />
-          <Route element={<AppShell />}>
-            <Route index element={<Navigate replace to="/agents" />} />
-            <Route path="/agents" element={<AgentsPage />} />
-            <Route path="/agents/new" element={<NewAgentPage />} />
-            <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
-            <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
-            <Route path="/account" element={<AccountPage />} />
-            <Route path="/settings" element={<Navigate replace to="account" />} />
-            <Route path="/settings/:section" element={<SettingsPage />} />
-          </Route>
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/invites/:token" element={<InvitePage />} />
+      <Route path="/teams/new" element={<NewTeamPage />} />
+      <Route element={<AuthenticatedTeamGate />}>
+        <Route path="/onboarding" element={<OnboardingPage />} />
+        <Route element={<AppShell />}>
+          <Route index element={<Navigate replace to="/agents" />} />
+          <Route path="/agents" element={<AgentsPage />} />
+          <Route path="/agents/new" element={<NewAgentPage />} />
+          <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
+          <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
+          <Route path="/account" element={<AccountPage />} />
+          <Route path="/settings" element={<Navigate replace to="account" />} />
+          <Route path="/settings/:section" element={<SettingsPage />} />
         </Route>
-        <Route path="*" element={<NotFoundPage />} />
-      </Routes>
-    </InvitationContext>
+      </Route>
+      <Route path="*" element={<NotFoundPage />} />
+    </Routes>
   );
 }
 
@@ -629,7 +576,7 @@ function AppShell() {
           </button>
         </header>
         <main className="content">
-          <Outlet />
+          <Outlet context={{ invitationOpen }} />
         </main>
       </div>
       {invitationOpen ? (
@@ -1351,6 +1298,7 @@ const settingsSections = [
 
 function SettingsPage() {
   const { section = "team" } = useParams();
+  const { invitationOpen } = useOutletContext<{ invitationOpen: boolean }>();
   const navigate = useNavigate();
   const { me, membership, refreshMe } = useTeam();
   const currentSection = settingsSections.find((item) => item.key === section);
@@ -1390,6 +1338,7 @@ function SettingsPage() {
             <MembersSettings
               canManage={membership.role === "admin"}
               currentUserId={me.user.id}
+              invitationDialogOpen={invitationOpen}
               refreshMe={refreshMe}
               teamId={membership.teamId}
             />
@@ -1534,11 +1483,13 @@ function TeamSettings({ membership, refreshMe }: { membership: MeMembership; ref
 function MembersSettings({
   canManage,
   currentUserId,
+  invitationDialogOpen,
   refreshMe,
   teamId,
 }: {
   canManage: boolean;
   currentUserId: string;
+  invitationDialogOpen: boolean;
   refreshMe: () => void;
   teamId: string;
 }) {
@@ -1568,7 +1519,7 @@ function MembersSettings({
 
   return (
     <>
-      {canManage ? <InvitationSettings teamId={teamId} /> : null}
+      {canManage && !invitationDialogOpen ? <InvitationSettings teamId={teamId} /> : null}
       <section className="panel">
         <h2>Team members</h2>
         <AsyncState state={state}>
@@ -1696,29 +1647,27 @@ function InvitationDialog({
 }
 
 function InvitationSettings({ presentation = "panel", teamId }: { presentation?: "dialog" | "panel"; teamId: string }) {
-  const { create, refresh, rotate, stateByTeam } = useInvitationState();
-  const state = stateByTeam[teamId] ?? ({ kind: "loading" } satisfies LoadState<TeamInvitation | undefined>);
+  const state = useResource(() => browserApi.invitation(teamId), teamId);
+  const [current, setCurrent] = useState<Awaited<ReturnType<typeof browserApi.invitation>>>();
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
 
-  useEffect(() => refresh(teamId), [refresh, teamId]);
-
   async function createInvitation() {
-    await mutateInvitation(() => create(teamId), "Invitation link created.");
+    await mutateInvitation(() => browserApi.createInvitation(teamId), "Invitation link created.");
   }
 
   async function rotateInvitation() {
     if (!window.confirm("Rotate this invitation link? The current link will stop working immediately.")) return;
-    await mutateInvitation(() => rotate(teamId), "Invitation link rotated.");
+    await mutateInvitation(() => browserApi.rotateInvitation(teamId), "Invitation link rotated.");
   }
 
-  async function mutateInvitation(action: () => Promise<TeamInvitation>, successMessage: string) {
+  async function mutateInvitation(action: () => Promise<NonNullable<typeof current>>, successMessage: string) {
     setBusy(true);
     setError(undefined);
     setMessage(undefined);
     try {
-      await action();
+      setCurrent(await action());
       setMessage(successMessage);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Unable to update the invitation link");
@@ -1748,8 +1697,9 @@ function InvitationSettings({ presentation = "panel", teamId }: { presentation?:
         </>
       ) : null}
       <AsyncState state={state}>
-        {(invitation) =>
-          invitation ? (
+        {(loaded) => {
+          const invitation = current ?? loaded;
+          return invitation ? (
             <>
               <label className="invite-link">
                 Invitation link
@@ -1769,8 +1719,8 @@ function InvitationSettings({ presentation = "panel", teamId }: { presentation?:
             <button className="button" disabled={busy} type="button" onClick={() => void createInvitation()}>
               {busy ? "Creating…" : "Create invitation link"}
             </button>
-          )
-        }
+          );
+        }}
       </AsyncState>
       {message ? <p className="notice success">{message}</p> : null}
       {error ? (

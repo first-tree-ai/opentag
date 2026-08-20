@@ -1,7 +1,17 @@
-import { existsSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
-import postcss, { type Container, type Declaration, type Document, type Rule } from "postcss";
 import { describe, expect, it } from "vitest";
+import {
+  atRoot,
+  type Declared,
+  danglingReferences as danglingIn,
+  declarations,
+  definedTokens,
+  type Exception,
+  escapedValues,
+  offTokenValues as offTokenValuesIn,
+  readStylesheet,
+  scopedDefinitions as scopedDefinitionsIn,
+  valuesOf,
+} from "./support/stylesheet";
 
 /**
  * The stylesheet once carried 35 distinct font sizes and 19 font weights as
@@ -9,44 +19,21 @@ import { describe, expect, it } from "vitest";
  * other. These tests keep type flowing through the token layer so the scale
  * cannot drift back apart one component at a time.
  *
- * Surfaces that own a density, and the only selectors allowed to retune a
- * role. Anywhere else, a rebinding is component-local drift: the thing this
- * PR removed.
- */
-const READING_SURFACES = new Set([".settings-page", ".onboarding-shell", ".decorative-page", ".dialog-card"]);
-
-/*
- * Every check reads parsed declarations rather than raw text. Matching CSS
- * with regular expressions cost this guard three separate holes in review —
- * the `font` shorthand read as a longhand, a token defined only inside a
- * comment, and one quoted inside a value — so the parser draws those
- * boundaries now, and the suite below proves each one holds.
+ * The parse layer they read through lives in ./support/stylesheet.
  */
 
-/** The suite runs from apps/web and, under the coverage config, from the repo root. */
-function locateStylesheet(): string {
-  for (const candidate of ["src/styles.css", "apps/web/src/styles.css"]) {
-    const path = resolve(process.cwd(), candidate);
-    if (existsSync(path)) return path;
-  }
-  throw new Error(`The Web stylesheet was not found from ${process.cwd()}`);
-}
-
-const stylesheet = readFileSync(locateStylesheet(), "utf8");
+const stylesheet = readStylesheet();
 
 /** The token families typography flows through. Adding one here extends every check below. */
 const FAMILIES = ["fs", "text", "fw", "track", "font", "lh"] as const;
 
-const TOKEN_REFERENCE = new RegExp(`var\\(\\s*--((?:${FAMILIES.join("|")})-[a-z0-9-]+)`, "g");
-
 /**
- * The declarations that may stand outside the token layer, each pinned to the
- * selectors that earn it. A value alone is not the exception -- `line-height: 1`
- * centres a single glyph in its own line box, which is true of a chevron and
- * not of a paragraph -- so an exception names the property, the value, and
- * where it applies.
+ * Surfaces that own a density, and the only selectors allowed to retune a role.
+ * Anywhere else, a rebinding is component-local drift.
  */
-const EXCEPTIONS: { property: string; value: string; selectors: Set<string> }[] = [
+const READING_SURFACES = new Set([".settings-page", ".onboarding-shell", ".decorative-page", ".dialog-card"]);
+
+const EXCEPTIONS: Exception[] = [
   {
     property: "line-height",
     value: "1",
@@ -56,173 +43,12 @@ const EXCEPTIONS: { property: string; value: string; selectors: Set<string> }[] 
   { property: "font", value: "inherit", selectors: new Set(["button", "input", "select", "textarea"]) },
 ];
 
-/** The selectors a declaration applies under, or none when it sits outside a rule. */
-function selectorsOf(declaration: Declaration): string[] {
-  const parent = declaration.parent;
-  if (parent === undefined || parent.type !== "rule") return [];
-  return (parent as Rule).selector.split(",").map((selector) => selector.trim());
-}
+const offTokenValues = (css: string, property: string, allowed: RegExp): string[] =>
+  offTokenValuesIn(css, property, allowed, EXCEPTIONS);
 
-/** A declaration wrapped in any at-rule applies only when that condition holds. */
-function unconditional(declaration: Declaration): boolean {
-  let node: Container | Document | undefined = declaration.parent;
-  while (node !== undefined) {
-    if (node.type === "atrule") return false;
-    node = node.parent;
-  }
-  return true;
-}
+const danglingReferences = (css: string): string[] => danglingIn(css, FAMILIES);
 
-/**
- * The browser decodes identifier escapes before it matches a property name;
- * PostCSS hands them over as written. `f\6f nt-size` is `font-size` to the
- * page, so it has to be `font-size` here too -- and `--text\2d ui` is the
- * `--text-ui` role, not a name of its own.
- */
-function decodeIdentifier(name: string): string {
-  return name.replace(/\\(?:([0-9a-fA-F]{1,6})[ \t\n\r\f]?|(.))/gs, (_match, hex?: string, literal?: string) => {
-    if (hex === undefined) return literal ?? "";
-    const code = Number.parseInt(hex, 16);
-    const unrepresentable = code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff);
-    return unrepresentable ? "\uFFFD" : String.fromCodePoint(code);
-  });
-}
-
-/**
- * A quoted run is content, not code: `content: "--fs-15: 0.9375rem"` declares
- * no token and references none, so strings drop out before a value is read.
- */
-function withoutStrings(value: string): string {
-  return value.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, "");
-}
-
-/**
- * Strings are ignorable when looking for token references, and only then: to
- * the browser a quoted run is still part of the value it validates.
- */
-function referenceProjection(value: string): string {
-  return withoutStrings(value);
-}
-
-/**
- * What the browser sees: the decoded name, the decoded value exactly as the
- * browser validates it, where it applies, and whether it applies
- * unconditionally.
- *
- * `references` is that value with quoted runs dropped, and is for finding
- * var() references and nothing else. Validating against it would accept
- * `font-size: "poison" var(--text-ui)`, which the browser throws out.
- *
- * Values are recorded as written. A name is one identifier, so decoding it is
- * exact; a value is a sequence of tokens, and CSS resolves escapes inside the
- * token being consumed rather than across it -- `var\28--text-ui\29` is a
- * single identifier, not a call. Rather than reimplement value tokenization to
- * tell those apart, escapes are refused in the values this guard owns.
- *
- * Every check below reads these records. PostCSS nodes stop here on purpose --
- * twice, a check reached past the decoder to the name as written and let an
- * escaped declaration through, so the spelling is no longer reachable.
- */
-type Declared = {
-  name: string;
-  value: string;
-  references: string;
-  selectors: string[];
-  unconditional: boolean;
-};
-
-/** Comments parse as their own nodes, so only declarations the browser applies reach any check. */
-function declarations(css: string): Declared[] {
-  const found: Declared[] = [];
-  postcss.parse(css).walkDecls((declaration) => {
-    found.push({
-      name: decodeIdentifier(declaration.prop),
-      value: declaration.value.trim(),
-      references: referenceProjection(declaration.value),
-      selectors: selectorsOf(declaration),
-      unconditional: unconditional(declaration),
-    });
-  });
-  return found;
-}
-
-/** A baseline definition applies everywhere: unconditional, and :root alone. */
-function atRoot(declaration: Declared): boolean {
-  return (
-    declaration.unconditional &&
-    declaration.selectors.length > 0 &&
-    declaration.selectors.every((selector) => selector === ":root")
-  );
-}
-
-/** Ordinary property names are ASCII case-insensitive; custom property names are not. */
-function propertyName(declaration: Declared): string {
-  const name = declaration.name;
-  return name.startsWith("--") ? name : name.toLowerCase();
-}
-
-/** Values of one property, matched by parsed name so `font` never collects `font-size`. */
-function valuesOf(css: string, property: string): string[] {
-  return declarations(css)
-    .filter((declaration) => propertyName(declaration) === property)
-    .map((declaration) => declaration.value);
-}
-
-function definedTokens(css: string, prefix: string): Set<string> {
-  const pattern = new RegExp(`^--(${prefix}-[a-z0-9-]+)$`);
-  const names = new Set<string>();
-  for (const declaration of declarations(css).filter(atRoot)) {
-    const name = declaration.name.match(pattern)?.[1];
-    if (name !== undefined) names.add(name);
-  }
-  return names;
-}
-
-function definedTypographyTokens(css: string): Set<string> {
-  return new Set(FAMILIES.flatMap((prefix) => [...definedTokens(css, prefix)]));
-}
-
-/** An exception holds only where it was granted: same property, same value, and no other selector. */
-function excepted(declaration: Declared, property: string): boolean {
-  return EXCEPTIONS.some(
-    (exception) =>
-      exception.property === property &&
-      exception.value === declaration.value &&
-      declaration.selectors.length > 0 &&
-      declaration.selectors.every((selector) => exception.selectors.has(selector)),
-  );
-}
-
-function offTokenValues(css: string, property: string, allowed: RegExp): string[] {
-  return declarations(css)
-    .filter((declaration) => propertyName(declaration) === property)
-    .filter((declaration) => !allowed.test(declaration.value) && !excepted(declaration, property))
-    .map((declaration) => declaration.value);
-}
-
-/**
- * An escape inside a value changes which tokens the browser consumes, so the
- * text stops meaning what it looks like. References are read from every
- * declaration, not only the ones this guard owns, so every declaration has to
- * be canonical for that scan to be worth anything -- outside strings, where a
- * backslash is ordinary content and no reference is read. The stylesheet has
- * never contained one.
- */
-function escapedValues(css: string): string[] {
-  return declarations(css)
-    .filter((declaration) => declaration.references.includes("\\"))
-    .map((declaration) => `${declaration.name}: ${declaration.value}`);
-}
-
-function danglingReferences(css: string): string[] {
-  const defined = definedTypographyTokens(css);
-  const referenced = declarations(css).flatMap((declaration) =>
-    [...declaration.references.matchAll(TOKEN_REFERENCE)]
-      .map((match) => match[1])
-      .filter((name): name is string => name !== undefined),
-  );
-  return [...new Set(referenced.filter((name) => !defined.has(name)))];
-}
+const scopedDefinitions = (css: string): { token: string; selectors: string[] }[] => scopedDefinitionsIn(css, FAMILIES);
 
 /** Every role declaration, so a role cannot be counted by one check and skipped by another. */
 function roleDeclarations(css: string): Declared[] {
@@ -279,22 +105,6 @@ function malformedSteps(css: string): string[] {
   return rootStepDeclarations(css)
     .filter((declaration) => stepOf(declaration) === undefined)
     .map((declaration) => `${declaration.name}: ${declaration.value}`);
-}
-
-/**
- * Typography tokens declared somewhere other than :root. A surface may retune a
- * role it inherits; it may not invent a token, because nothing outside that
- * surface could resolve it.
- */
-function scopedDefinitions(css: string): { token: string; selectors: string[] }[] {
-  const pattern = new RegExp(`^--((?:${FAMILIES.join("|")})-[a-z0-9-]+)$`);
-  return declarations(css)
-    .filter((declaration) => !atRoot(declaration))
-    .flatMap((declaration) => {
-      const token = declaration.name.match(pattern)?.[1];
-      if (token === undefined) return [];
-      return [{ token, selectors: declaration.selectors }];
-    });
 }
 
 describe("typography tokens", () => {

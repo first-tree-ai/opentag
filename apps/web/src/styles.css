@@ -32,6 +32,9 @@
   --text-title: var(--fs-24);
   --text-display: var(--fs-30);
 
+  /* The wordmark is fixed: it must not follow a surface's scale. */
+  --text-brand: var(--fs-24);
+
   --fw-regular: 400;
   --fw-medium: 500;
   --fw-semibold: 600;
@@ -67,6 +70,25 @@
   --local-nav-width: 170px;
   --layer-sidebar: 30;
   --layer-backdrop: 20;
+}
+
+/* Density follows the surface, not the reader. Dense surfaces are scanned
+   by operators; configuration and entry surfaces are read, often by
+   non-technical admins, and lose nothing by stepping each role up. Same
+   token names, same steps — only the value each role points at moves. */
+.settings-page,
+.onboarding-shell,
+.decorative-page {
+  --text-meta: var(--fs-13);
+  --text-ui: var(--fs-14);
+  --text-body: var(--fs-16);
+}
+
+/* Entry surfaces are also where the brand voice is spent. */
+.onboarding-shell,
+.decorative-page {
+  --text-title: var(--fs-32);
+  --text-display: var(--fs-44);
 }
 
 * {
@@ -331,7 +353,7 @@ button.danger:hover {
   width: fit-content;
   margin: 0 10px 3px;
   color: var(--foreground);
-  font-size: var(--text-title);
+  font-size: var(--text-brand);
   font-weight: var(--fw-bold);
   letter-spacing: var(--track-tight);
   text-decoration: none;
@@ -1520,7 +1542,7 @@ code {
 
 .center-card h1 {
   margin-bottom: 8px;
-  font-size: var(--text-display);
+  font-size: var(--text-title);
 }
 
 .center-card > p {

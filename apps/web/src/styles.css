@@ -2322,8 +2322,7 @@ textarea:focus {
 }
 
 .settings-member-table,
-.settings-computer-table,
-.settings-policy-table {
+.settings-computer-table {
   display: block;
   width: 100%;
   border-top: 1px solid var(--strong-border);
@@ -2333,18 +2332,14 @@ textarea:focus {
 .settings-member-table thead,
 .settings-member-table tbody,
 .settings-computer-table thead,
-.settings-computer-table tbody,
-.settings-policy-table thead,
-.settings-policy-table tbody {
+.settings-computer-table tbody {
   display: block;
 }
 
 .settings-member-table th,
 .settings-member-table td,
 .settings-computer-table th,
-.settings-computer-table td,
-.settings-policy-table th,
-.settings-policy-table td {
+.settings-computer-table td {
   min-width: 0;
   padding: 0;
   text-align: left;
@@ -2352,8 +2347,7 @@ textarea:focus {
 
 .settings-table-header,
 .settings-member-row,
-.settings-computer-row,
-.settings-policy-row {
+.settings-computer-row {
   display: grid;
   align-items: center;
   border-bottom: 1px solid var(--border);
@@ -2567,27 +2561,6 @@ textarea:focus {
 
 .settings-policy-banner p {
   max-width: 530px;
-}
-
-.settings-policy-table .settings-table-header,
-.settings-policy-row {
-  grid-template-columns: minmax(0, 1fr) 130px 130px;
-}
-
-.settings-policy-row {
-  min-height: 56px;
-  font-size: 0.8rem;
-}
-
-.settings-policy-row > td {
-  width: fit-content;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--surface);
-  color: var(--secondary-foreground);
-  font-size: 0.72rem;
-  font-weight: 620;
-  padding: 5px 8px;
 }
 
 .settings-footnote {
@@ -2860,7 +2833,6 @@ textarea:focus {
   }
 
   .settings-computer-row [data-label]::before,
-  .settings-policy-row [data-label]::before,
   .settings-member-row [data-label]::before {
     display: block;
     margin-bottom: 5px;
@@ -2868,16 +2840,6 @@ textarea:focus {
     content: attr(data-label);
     font-size: 0.68rem;
     font-weight: 600;
-  }
-
-  .settings-policy-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
-    padding: 14px 0;
-  }
-
-  .settings-policy-row > th {
-    grid-column: 1 / -1;
   }
 
   .settings-unavailable {

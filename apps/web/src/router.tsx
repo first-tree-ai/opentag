@@ -1916,10 +1916,9 @@ function SettingsPage() {
           ) : null}
           {section === "resources" ? (
             <SettingsUnavailable
-              action={{ label: "Review Agent resources", to: "/agents" }}
               details={[
                 "This page does not create or infer Team Resource records.",
-                "Resource assignments returned by the server remain visible on each Agent.",
+                "No Resource assignment projection is exposed by the current API.",
               ]}
               title="Team Resources are not enabled"
             >
@@ -1929,10 +1928,10 @@ function SettingsPage() {
           ) : null}
           {section === "integrations" ? (
             <SettingsUnavailable
-              action={{ label: "Review Agent connections", to: "/agents" }}
+              action={{ label: "Open Agents", to: "/agents" }}
               details={[
-                "Connections remain owned by individual Agents.",
-                "Open an Agent's IM or Integrations section to review its current connection state.",
+                "Supported bot connections remain owned by individual Agents.",
+                "Open an Agent's IM tab to review its current Feishu or Slack connection state.",
               ]}
               title="Team Integrations are not enabled"
             >
@@ -2005,48 +2004,34 @@ function SettingsUnavailable({
 }
 
 function AccessSettings({ membership }: { membership: MeMembership }) {
-  const rows = [
-    ["Team profile", "View", "Manage"],
-    ["Team membership", "View", "Manage"],
-    ["Agents", "Use", "Manage"],
-    ["Computers", "Inspect", "Connect"],
-  ] as const;
   return (
     <div className="settings-policy-stack">
       <section className="settings-policy-banner">
         <div>
-          <span className="settings-state-label">Fixed v0.1 policy</span>
-          <h2>Membership defines Team access</h2>
-          <p>Active members can view Team state and use Agents. Admins manage identity and infrastructure.</p>
+          <span className="settings-state-label">Server-returned membership</span>
+          <h2>Authorization follows your active Team membership</h2>
+          <p>OpenTag checks authorization on every request. This page only reports facts exposed by the API.</p>
         </div>
         <span className="settings-role-badge">Your role: {titleCase(membership.role)}</span>
       </section>
       <section className="settings-list-section">
         <header className="settings-subheader">
           <div>
-            <h2>Effective policy</h2>
-            <p>Current server-enforced boundaries for active Team memberships.</p>
+            <h2>Available policy detail</h2>
+            <p>The current API does not publish a complete Team capability matrix.</p>
           </div>
         </header>
-        <table className="settings-policy-table" aria-label="Effective Team access policy">
-          <thead>
-            <tr className="settings-table-header">
-              <th scope="col">Capability</th>
-              <th scope="col">Members</th>
-              <th scope="col">Admins</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map(([capability, memberAccess, adminAccess]) => (
-              <tr className="settings-policy-row" key={capability}>
-                <th scope="row">{capability}</th>
-                <td data-label="Members">{memberAccess}</td>
-                <td data-label="Admins">{adminAccess}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        <p className="settings-footnote">Custom roles and per-resource policies are not enabled in this version.</p>
+        <DefinitionList
+          rows={[
+            ["Selected Team role", titleCase(membership.role)],
+            ["Custom roles", "Not enabled"],
+            ["Per-resource policies", "Not exposed by the API"],
+          ]}
+        />
+        <p className="settings-footnote">
+          Management controls use server-returned capabilities where available; the server remains authoritative for
+          every operation.
+        </p>
       </section>
     </div>
   );
@@ -2899,8 +2884,8 @@ function agentSectionDescription(section: (typeof agentSections)[number]["key"])
     general: "Review identity, readiness dependencies, and the configuration that needs attention.",
     runtime: "Inspect the bound Computer, provider, model, instructions, and execution limits.",
     im: "Manage the Agent-owned Feishu or Slack bot connection and receive policy.",
-    resources: "Review the Team Resources authorized for this Agent.",
-    integrations: "Review external services available to this Agent's runtime.",
+    resources: "Team Resources are not enabled for Agents in this release.",
+    integrations: "Agent Integrations are not enabled; supported bot connections are managed on the IM tab.",
     access: "Understand who can use, inspect, and manage this Agent.",
   } satisfies Record<(typeof agentSections)[number]["key"], string>;
   return descriptions[section];

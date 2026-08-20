@@ -1,4 +1,5 @@
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
+import { hasRequiredFeishuTenantScopes } from "@opentag/shared";
 import { and, eq, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../../db/client.js";
 import { agents, imBindings } from "../../../db/schema/index.js";
@@ -146,7 +147,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
       const identity = await candidate.validateBinding();
       if (identity.externalAppId !== input.appId) throw new FeishuOperationError("FEISHU_APP_IDENTITY_MISMATCH");
       const grantedScopes = await candidate.listGrantedTeamScopes();
-      if (input.requestedScopes.some((scope) => !grantedScopes.includes(scope))) {
+      if (!hasRequiredFeishuTenantScopes(grantedScopes)) {
         throw new FeishuOperationError("FEISHU_SCOPE_REAUTH_REQUIRED");
       }
       if (!(await this.#runtimeReady(input.agentId))) {

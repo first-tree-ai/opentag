@@ -1,8 +1,32 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { FeishuSetupAttemptSchema, ImBindingSummarySchema, SlackBindingActivationSchema } from "../im-binding.js";
+import {
+  FEISHU_REQUIRED_TENANT_SCOPES,
+  FeishuSetupAttemptSchema,
+  hasRequiredFeishuTenantScopes,
+  ImBindingSummarySchema,
+  SlackBindingActivationSchema,
+} from "../im-binding.js";
 import { ImContentV1Schema, NormalizedInboundImEventSchema } from "../im-message.js";
 
 describe("IM binding contracts", () => {
+  it("defines one exact, duplicate-free Feishu tenant scope contract", () => {
+    expect(FEISHU_REQUIRED_TENANT_SCOPES).toHaveLength(66);
+    expect(new Set(FEISHU_REQUIRED_TENANT_SCOPES).size).toBe(FEISHU_REQUIRED_TENANT_SCOPES.length);
+    expect(createHash("sha256").update(FEISHU_REQUIRED_TENANT_SCOPES.join("\n")).digest("hex")).toBe(
+      "d4f0a66168befeed1a43203f55afe238c34ee9f3a50e868d65eec474491c80ac",
+    );
+    expect(FEISHU_REQUIRED_TENANT_SCOPES).toContain("im:message:send_as_bot");
+    expect(FEISHU_REQUIRED_TENANT_SCOPES).toContain("docx:document:write_only");
+    expect(FEISHU_REQUIRED_TENANT_SCOPES).toContain("drive:file:download");
+    expect(FEISHU_REQUIRED_TENANT_SCOPES).toContain("sheets:spreadsheet:write_only");
+    expect(FEISHU_REQUIRED_TENANT_SCOPES).toContain("base:record:update");
+    expect(FEISHU_REQUIRED_TENANT_SCOPES).toContain("calendar:calendar.event:reply");
+    expect(FEISHU_REQUIRED_TENANT_SCOPES).toContain("task:attachment:write");
+    expect(hasRequiredFeishuTenantScopes(FEISHU_REQUIRED_TENANT_SCOPES)).toBe(true);
+    expect(hasRequiredFeishuTenantScopes(FEISHU_REQUIRED_TENANT_SCOPES.slice(1))).toBe(false);
+  });
+
   it("accepts only bounded canonical content", () => {
     expect(
       ImContentV1Schema.parse({

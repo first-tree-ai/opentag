@@ -34,6 +34,7 @@ function installApi(
   role: "admin" | "member",
   options: {
     alreadyJoinedInvitation?: boolean;
+    bindingReauth?: boolean;
     bound?: boolean;
     initialStatus?: "active" | "suspended";
     invitationExists?: boolean;
@@ -41,6 +42,7 @@ function installApi(
     redeemFails?: boolean;
     roleUpdate?: (targetUserId: string, role: "admin" | "member") => Promise<Response> | Response;
     roleUpdateFails?: boolean;
+    setupFailureCode?: string;
     scopeReauth?: boolean;
     unauthenticated?: boolean;
     teamless?: boolean;
@@ -281,7 +283,7 @@ function installApi(
         id: crypto.randomUUID(),
         agentId,
         provider: options.provider ?? "feishu",
-        bindingState: "active",
+        bindingState: options.bindingReauth ? "reauthorization_required" : "active",
         bot: { displayName: "Reviewer", avatarUrl: null },
         receiveMode: "mention_only",
         lastInboundAt: null,
@@ -290,16 +292,17 @@ function installApi(
       });
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts` && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as { intent: "create" | "reauthorize" | "replace" };
       return json(
         {
           id: crypto.randomUUID(),
           agentId,
-          intent: "create",
-          state: "awaiting_user",
-          qrUrl: "https://open.feishu.cn/setup",
+          intent: body.intent,
+          state: options.setupFailureCode ? "failed" : "awaiting_user",
+          qrUrl: options.setupFailureCode ? null : "https://open.feishu.cn/setup",
           expiresAt: "2026-08-20T00:15:00.000Z",
-          errorCode: null,
-          completedAt: null,
+          errorCode: options.setupFailureCode ?? null,
+          completedAt: options.setupFailureCode ? "2026-08-20T00:01:00.000Z" : null,
           createdAt: "2026-08-20T00:00:00.000Z",
         },
         201,
@@ -612,7 +615,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin");
     window.history.replaceState({}, "", `/agents/${agentId}/im`);
     render(<App />);
-    expect(await screen.findByRole("button", { name: "Connect Feishu" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Connect existing or new Feishu Bot" })).toBeTruthy();
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -620,8 +623,9 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin");
     window.history.replaceState({}, "", `/agents/${agentId}/im`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Connect Feishu" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect existing or new Feishu Bot" }));
     expect(await screen.findByText("Feishu setup started")).toBeTruthy();
+    expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
     expect(await screen.findByRole("img", { name: "Scan this QR code in Feishu" })).toBeTruthy();
     await waitFor(() =>
       expect(
@@ -632,6 +636,46 @@ describe("OpenTag Web App Shell", () => {
           ),
       ).toBe(true),
     );
+  });
+
+  it("keeps a legacy Feishu Bot visibly online while offering permission update or replacement", async () => {
+    installApi("admin", { bindingReauth: true, bound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    render(<App />);
+    expect(await screen.findByText("Online · permissions update required")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reauthorize Feishu" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Replace with existing or new Feishu Bot" }));
+    expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
+    const request = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([input, init]) => String(input).endsWith("/im-binding/feishu/setup-attempts") && init?.method === "POST",
+      );
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "replace" });
+  });
+
+  it("shows a safe occupied-App recovery and retries the original replacement intent", async () => {
+    installApi("admin", { bound: true, setupFailureCode: "FEISHU_APP_ALREADY_BOUND" });
+    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Replace with existing or new Feishu Bot" }));
+    const setupNotice = (await screen.findByText("Feishu setup started")).parentElement;
+    expect(setupNotice?.textContent).toContain(
+      "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry Feishu setup" }));
+    await waitFor(() => {
+      const requests = vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([input, init]) => String(input).endsWith("/im-binding/feishu/setup-attempts") && init?.method === "POST",
+        );
+      expect(requests).toHaveLength(2);
+      expect(requests.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+        { intent: "replace" },
+        { intent: "replace" },
+      ]);
+    });
   });
 
   it.each([

@@ -16,7 +16,6 @@ export interface FeishuBindingActivation {
     appId: string;
     appSecret: string;
     teamBrand?: "feishu" | "lark";
-    requestedScopes: string[];
   }): Promise<VerifiedFeishuBinding>;
 }
 
@@ -306,7 +305,6 @@ export class FeishuSetupService {
         appId: result.appId,
         appSecret: result.appSecret,
         teamBrand: result.teamBrand,
-        requestedScopes: result.requestedScopes,
       });
     } catch (error) {
       const code = safeFeishuSetupErrorCode(error);

@@ -13,6 +13,6 @@ export type {
   FeishuRegistrationGateway,
   FeishuRegistrationResult,
 } from "./registration.js";
-export { DefaultFeishuRegistrationGateway, FEISHU_MESSAGE_BASE_SCOPES, feishuMessageScopes } from "./registration.js";
+export { DefaultFeishuRegistrationGateway } from "./registration.js";
 export type { FeishuBindingActivation } from "./setup-service.js";
 export { FeishuSetupService } from "./setup-service.js";

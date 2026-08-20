@@ -5,6 +5,7 @@ import {
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
+  FEISHU_REQUIRED_TENANT_SCOPES,
   HTTP_PATHS,
   type SessionReconcileRequest,
 } from "@opentag/shared";
@@ -584,7 +585,7 @@ describe("background and WebSocket tracing", () => {
             disconnect: vi.fn().mockResolvedValue(undefined),
           },
           validateBinding: vi.fn(() => validation),
-          listGrantedTeamScopes: vi.fn().mockResolvedValue([]),
+          listGrantedTeamScopes: vi.fn().mockResolvedValue([...FEISHU_REQUIRED_TENANT_SCOPES]),
           normalizeInbound,
         }) as never,
     });
@@ -595,7 +596,6 @@ describe("background and WebSocket tracing", () => {
       appId: "cli-test",
       appSecret: "must-not-export",
       teamBrand: "feishu",
-      requestedScopes: [],
     });
     await vi.waitFor(() => expect(messageHandler).toBeTypeOf("function"));
     if (!messageHandler) throw new Error("Feishu callback was not attached");

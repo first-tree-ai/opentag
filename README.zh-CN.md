@@ -69,6 +69,11 @@ pnpm --filter open-tag start agent list
 
 这只会记录 Agent identity 和 Computer binding，不会启动 Codex 或 Claude Code turn。
 
+Team Admin 可在 Codex Agent 的 **Runtime** 页面或对应的 `agent update` 参数中管理 model、reasoning effort 和单个
+Turn 的最长执行时间。model 或 reasoning 留空表示交由 Codex 管理；duration 留空则使用 OpenTag 的 30 分钟默认值。
+显式填写的 Codex-native 值会在绑定 Computer 准备 Runtime 时校验，OpenTag 不会静默替换。Claude Code 的
+Effective Runtime Snapshot 目前尚未支持。
+
 配置 `OPENTAG_GOOGLE_CLIENT_ID` 和 `OPENTAG_GOOGLE_CLIENT_SECRET` 后即可启用 Google 登录，然后打开
 `http://127.0.0.1:8000/`。active Team member 使用同一套 App Shell 和 member-safe 视图；Team Admin 额外管理
 Agent、runtime 配置、IM binding 与 Local Computer setup。Computers 页面列出带时间戳的 Team Computer 观测，

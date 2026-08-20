@@ -4,7 +4,7 @@
 
 ## Scope
 
-Runtime protocol v2 removes the release-time dependency between the OpenTag Client and Server. It keeps the existing v1 dialect frozen for rolling upgrades and adds capability negotiation plus a per-connection fence. Domain delivery, Turn, and Session idempotency remain owned by their existing request identities and hashes.
+Runtime protocol v2 removes the release-time dependency between the OpenTag Client and Server. It keeps the existing v1 dialect and its separately negotiated Provider-readiness extension frozen for rolling upgrades, then adds capability negotiation plus a per-connection fence. Domain delivery, Turn, and Session idempotency remain owned by their existing request identities and hashes.
 
 This phase does not add durable drain state, a minimum secure Client release policy, or a persistent generic request ledger.
 
@@ -13,6 +13,7 @@ This phase does not add durable drain state, a minimum secure Client release pol
 - **Protocol version** changes the handshake, control-frame state machine, or connection fencing. The current version is v2; the Server also accepts frozen v1.
 - **Schema version** belongs to one domain payload or persisted artifact. An additive field does not require a global protocol bump; a semantic or incompatible payload change requires that domain's schema or capability version to change.
 - **Capability version** identifies one namespaced behavior contract, including its request/result schemas and semantics. Offers are inclusive `{min,max}` ranges. Unknown optional offers are ignored.
+- **Provider-readiness version** describes the schema for dynamic Computer-plus-Provider observations. It is negotiated independently from behavior capabilities and never proves authorization or durable support.
 - **Release version** is diagnostic and policy input only. It is not proof of wire compatibility.
 
 ## v2 state machine and handshake
@@ -24,8 +25,8 @@ disconnected -> connecting -> authenticating -> welcoming -> registering -> regi
 ```
 
 1. The Client sends a strict v2 `auth` bootstrap frame with its supported protocol range.
-2. After authentication, the Server sends an extensible v2 `server:welcome` with its protocol range, capability offers, required Client capabilities, and heartbeat policy.
-3. The Client computes the highest version in every capability intersection, validates required capabilities, and sends a strict v2 `computer:register` with its offers and required Server capabilities. Runtime readiness such as `imMessageTool` remains a separate, refreshable fact.
+2. After authentication, the Server sends an extensible v2 `server:welcome` with its protocol range, capability offers, required Client capabilities, heartbeat policy, and an optional acknowledgement of the independently offered Provider-readiness schema.
+3. The Client computes the highest version in every capability intersection, validates required capabilities, and sends a strict v2 `computer:register` with its offers and required Server capabilities. It includes dynamic Computer-plus-Provider readiness only when the Server acknowledged that separate schema.
 4. The Server repeats the intersection, rejects missing requirements, registers the Computer, creates a random `connectionId`, and returns the final negotiated map.
 5. The Client recomputes and compares the final map before entering `registered`.
 
@@ -44,7 +45,7 @@ Roll out Server v2 before Client v2. A v2 Client never falls back after a timeou
 
 ## Parsing and fencing
 
-- v1 handshake and control schemas remain strict and byte-compatible.
+- The base v1 handshake and control schemas remain strict and byte-compatible. A Client offers the optional Provider-readiness v1 extension in the WebSocket header; only an acknowledging Server may add its welcome field and accept readiness on register or heartbeat frames.
 - v2 authentication, registration, required capabilities, and fence fields are strict and fail closed.
 - v2 welcome fields and capability offers are additive. Unknown optional fields and offers do not activate behavior.
 - Unknown required capabilities, unknown control frames, malformed known frames, binary frames, oversized frames, and unknown business frames fail closed.
@@ -54,7 +55,7 @@ Roll out Server v2 before Client v2. A v2 Client never falls back after a timeou
 
 ## Adversarial checks
 
-The implementation and tests cover downgrade attempts with unmatched errors, missing required capabilities, unknown optional capabilities, invalid ranges, out-of-order control frames, stale connection IDs, replacement sockets, frame-size limits, and mismatched negotiated maps. Authentication happens before capability use; capability negotiation cannot grant authorization or readiness.
+The implementation and tests cover downgrade attempts with unmatched errors, missing required capabilities, unknown optional capabilities, invalid ranges, unacknowledged or unadmitted Provider readiness, out-of-order control frames, stale connection IDs, replacement sockets, frame-size limits, and mismatched negotiated maps. Authentication happens before capability use; capability negotiation cannot grant authorization or readiness.
 
 ## Release and rollback
 

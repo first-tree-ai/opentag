@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { HTTP_PATHS } from "@opentag/shared";
+import { ComputerSchema, HTTP_PATHS, PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
@@ -125,6 +125,23 @@ describe("Computer persistence", () => {
         expect(response.statusCode).toBe(200);
         expect(response.json()).toMatchObject({
           computers: [{ id: computerId, ownerUserId: value.bootstrap.userId, connectionStatus: "online" }],
+        });
+        const legacyComputer = ComputerSchema.omit({ providerReadiness: true }).strict();
+        expect(legacyComputer.parse(response.json().computers[0])).not.toHaveProperty("providerReadiness");
+
+        const negotiated = await app.inject({
+          method: "GET",
+          url: HTTP_PATHS.meComputers,
+          headers: {
+            authorization: `Bearer ${credentials.accessToken}`,
+            [PROVIDER_READINESS_V1_HEADER]: "1",
+          },
+        });
+        expect(negotiated.json().computers[0]).toMatchObject({
+          providerReadiness: [
+            { provider: "codex", status: "checking", observedAt: null },
+            { provider: "claude-code", status: "checking", observedAt: null },
+          ],
         });
       } finally {
         await app.close();

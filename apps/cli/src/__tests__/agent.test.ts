@@ -34,6 +34,13 @@ const computer = {
   arch: "x64",
   clientVersion: "0.0.1",
   connectionStatus: "online" as const,
+  providerReadiness: [
+    {
+      provider: "codex" as const,
+      status: "ready" as const,
+      observedAt: "2026-08-19T00:00:01.000Z",
+    },
+  ],
   connectedAt: "2026-08-19T00:00:00.000Z",
   lastSeenAt: "2026-08-19T00:00:01.000Z",
 };
@@ -334,6 +341,11 @@ describe("Agent CLI core", () => {
       ]),
     );
     expect(update?.options.find((option) => option.long === "--display-name")?.mandatory).toBe(false);
+    expect(update?.options.find((option) => option.long === "--model")?.description).toContain("Codex only");
+    expect(update?.options.find((option) => option.long === "--clear-model")?.description).toContain("Codex manage");
+    expect(update?.options.find((option) => option.long === "--clear-max-duration")?.description).toContain(
+      "OpenTag default",
+    );
   });
 
   it("deletes the explicit Agent without an interactive prompt", async () => {

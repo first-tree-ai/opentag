@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
+import { AgentRuntimeProviderSchema } from "./agent.js";
 import {
   runtimeByteString as byteString,
   RUNTIME_ID_MAX_BYTES,
@@ -16,6 +17,7 @@ export {
   OPENTAG_MESSAGE_TOOLS,
   OPENTAG_PLATFORM_INSTRUCTIONS,
   RUNTIME_ALLOWED_TOOLS_MAX_COUNT,
+  RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_ID_MAX_BYTES,
   RUNTIME_INSTRUCTIONS_MAX_BYTES,
   RUNTIME_MAX_DURATION_MS,
@@ -72,7 +74,7 @@ export const EffectiveRuntimeSnapshotSchema = z
       })
       .strict(),
     agentId: RuntimeOpaqueIdSchema,
-    provider: z.literal("codex"),
+    provider: AgentRuntimeProviderSchema,
     model: RuntimeModelSchema.optional(),
     reasoningEffort: RuntimeReasoningEffortSchema.optional(),
     instructions: RuntimeInstructionsSchema,

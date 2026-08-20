@@ -50,6 +50,35 @@ describe("runtime protocol", () => {
       ...register,
       capabilities: { imMessageTool: 0 },
     });
+    expect(
+      ClientRuntimeFrameSchema.parse({
+        ...register,
+        capabilities: { imMessageTool: 1 },
+        providerReadiness: [{ provider: "codex", status: "ready" }],
+      }),
+    ).toMatchObject({
+      capabilities: { imMessageTool: 1 },
+      providerReadiness: [{ provider: "codex", status: "ready" }],
+    });
+    expect(() =>
+      ClientRuntimeFrameSchema.parse({
+        ...register,
+        providerReadiness: [
+          { provider: "claude-code", status: "ready" },
+          { provider: "codex", status: "ready" },
+        ],
+      }),
+    ).toThrow();
+    expect(
+      ServerRuntimeFrameSchema.parse({
+        type: "server:welcome",
+        protocolVersion: RUNTIME_PROTOCOL_V1,
+        capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
+        heartbeatIntervalMs: 30_000,
+        heartbeatTimeoutMs: 90_000,
+        providerReadiness: { version: 1, providers: ["codex"] },
+      }),
+    ).toMatchObject({ providerReadiness: { version: 1, providers: ["codex"] } });
     expect(() => ClientRuntimeFrameSchema.parse({ ...register, teamId: crypto.randomUUID() })).toThrow();
   });
 

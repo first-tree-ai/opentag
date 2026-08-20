@@ -8,3 +8,10 @@ export {
   DEFAULT_AGENT_RUNTIME_CONFIG,
   resolveAgentRuntimeConfig,
 } from "./policy.js";
+export {
+  isServerAdmittedAgentRuntimeProvider,
+  SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS,
+  type ServerAdmittedAgentRuntimeProvider,
+  type ServerAgentRuntimeProviderPolicy,
+  serverAgentRuntimeProviderPolicy,
+} from "./provider-admission.js";

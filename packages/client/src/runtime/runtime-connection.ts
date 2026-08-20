@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import {
+  type AgentRuntimeProvider,
   missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
+  PROVIDER_READINESS_V1_HEADER,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
@@ -14,6 +16,8 @@ import {
   RuntimeFrameEnvelopeSchema,
   type RuntimeNegotiatedCapabilities,
   type RuntimeProtocolVersion,
+  type RuntimeProviderReadinessCollection,
+  type RuntimeProviderReadinessObservation,
   runtimeFrameByteLength,
   runtimeNegotiatedCapabilitiesEqual,
   runtimeWebSocketUrl,
@@ -21,7 +25,7 @@ import {
   ServerRuntimeFrameSchema,
   type ServerWelcomeFrame,
 } from "@opentag/shared";
-import WebSocket, { type RawData } from "ws";
+import WebSocket, { type ClientOptions, type RawData } from "ws";
 import { OpenTagApiError } from "../api.js";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
@@ -112,7 +116,7 @@ export interface RuntimeConnectionOptions {
   scheduler?: RuntimeScheduler;
   tokenProvider: Pick<AccessTokenProvider, "getAccessTokenLease">;
   waitForRetry?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
-  webSocketFactory?: (url: string) => WebSocket;
+  webSocketFactory?: (url: string, options: ClientOptions) => WebSocket;
 }
 
 interface RegisteredWaiter {
@@ -168,6 +172,14 @@ export class RuntimeConnection {
   #protocolVersion: RuntimeProtocolVersion = RUNTIME_PROTOCOL_VERSION;
   #verifiedCapabilities: RuntimeClientCapabilities = { imMessageTool: 0 };
   #verifiedCapabilitiesExpiresAt = 0;
+  readonly #providerReadiness = new Map<
+    AgentRuntimeProvider,
+    { observation: RuntimeProviderReadinessObservation; expiresAt: number }
+  >();
+  readonly #providerReadinessLeases = new Map<
+    AgentRuntimeProvider,
+    { observation: RuntimeProviderReadinessObservation; token: symbol }
+  >();
 
   constructor(options: RuntimeConnectionOptions) {
     this.#options = options;
@@ -208,10 +220,44 @@ export class RuntimeConnection {
     this.#verifiedCapabilitiesExpiresAt = this.#now() + validForMs;
   }
 
+  setProviderReadiness(
+    observation: RuntimeProviderReadinessObservation,
+    validForMs = RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+  ): void {
+    if (!Number.isSafeInteger(validForMs) || validForMs < 1 || validForMs > RUNTIME_CLIENT_CAPABILITY_TTL_MS) {
+      throw new RuntimeConnectionError("Runtime provider readiness validity is invalid", true);
+    }
+    this.#providerReadiness.set(observation.provider, {
+      observation: { ...observation },
+      expiresAt: this.#now() + validForMs,
+    });
+  }
+
+  leaseProviderReadiness(observation: RuntimeProviderReadinessObservation): () => void {
+    this.setProviderReadiness(observation);
+    const lease = { observation: { ...observation }, token: Symbol("provider-readiness-lease") };
+    this.#providerReadinessLeases.set(observation.provider, lease);
+    return () => {
+      if (this.#providerReadinessLeases.get(observation.provider)?.token === lease.token) {
+        this.#providerReadinessLeases.delete(observation.provider);
+      }
+    };
+  }
+
   #currentCapabilities(): RuntimeClientCapabilities {
     return this.#now() <= this.#verifiedCapabilitiesExpiresAt
       ? { ...this.#verifiedCapabilities }
       : { imMessageTool: 0 };
+  }
+
+  #currentProviderReadiness(providers: readonly AgentRuntimeProvider[]): RuntimeProviderReadinessCollection {
+    const now = this.#now();
+    return providers.flatMap((provider) => {
+      const lease = this.#providerReadinessLeases.get(provider);
+      if (lease) return [{ ...lease.observation }];
+      const current = this.#providerReadiness.get(provider);
+      return current && now <= current.expiresAt ? [{ ...current.observation }] : [];
+    });
   }
 
   subscribeState(listener: (state: RuntimeConnectionState) => void): () => void {
@@ -370,9 +416,13 @@ export class RuntimeConnection {
     const lease = await raceWithAbort(this.#options.tokenProvider.getAccessTokenLease(this.#forceRefresh), signal);
     this.#forceRefresh = false;
     signal.throwIfAborted();
+    const socketOptions: ClientOptions = {
+      headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
+      maxPayload: RUNTIME_MAX_FRAME_BYTES,
+    };
+    const socketUrl = runtimeWebSocketUrl(this.#options.computer.serverUrl);
     const socket =
-      this.#options.webSocketFactory?.(runtimeWebSocketUrl(this.#options.computer.serverUrl)) ??
-      new WebSocket(runtimeWebSocketUrl(this.#options.computer.serverUrl), { maxPayload: RUNTIME_MAX_FRAME_BYTES });
+      this.#options.webSocketFactory?.(socketUrl, socketOptions) ?? new WebSocket(socketUrl, socketOptions);
     this.#active = socket;
     this.#connectionId = undefined;
     const instanceId = this.#options.instanceId;
@@ -431,6 +481,11 @@ export class RuntimeConnection {
               instanceId,
               capabilities: this.#currentCapabilities(),
               ...(protocolVersion === RUNTIME_PROTOCOL_V2 ? { protocolVersion: RUNTIME_PROTOCOL_V2 } : {}),
+              ...(heartbeatPolicy.providerReadiness
+                ? {
+                    providerReadiness: this.#currentProviderReadiness(heartbeatPolicy.providerReadiness.providers),
+                  }
+                : {}),
             },
             { priority: "control", deadline: this.#now() + heartbeatPolicy.heartbeatTimeoutMs },
           ).then(
@@ -577,6 +632,9 @@ export class RuntimeConnection {
             arch: this.#options.arch,
             clientVersion: this.#options.clientVersion,
             capabilities: this.#currentCapabilities(),
+            ...(welcome.providerReadiness
+              ? { providerReadiness: this.#currentProviderReadiness(welcome.providerReadiness.providers) }
+              : {}),
           } as const;
           void this.#sendDirect(
             socket,

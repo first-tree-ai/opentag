@@ -1,10 +1,12 @@
 import {
+  type AgentRuntimeProvider,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_V1,
   RUNTIME_PROTOCOL_V2,
   type RuntimeClientCapabilities,
   type RuntimeProtocolVersion,
+  type RuntimeProviderReadinessCollection,
   runtimeFrameByteLength,
 } from "@opentag/shared";
 import WebSocket from "ws";
@@ -28,6 +30,9 @@ export interface RuntimeConnectionEntry {
   instanceId: string;
   lastHeartbeatAt: number;
   protocolVersion?: RuntimeProtocolVersion;
+  providerReadiness?: RuntimeProviderReadinessCollection;
+  providerReadinessObservedAt?: number;
+  providerReadinessProviders?: readonly AgentRuntimeProvider[];
   socket: WebSocket;
   userId: string;
 }
@@ -85,6 +90,44 @@ export class ConnectionRegistry {
     );
   }
 
+  providerReadiness(
+    computerId: string,
+    now = Date.now(),
+  ): readonly { observation: RuntimeProviderReadinessCollection[number]; observedAt: number }[] {
+    const current = this.#entries.get(computerId);
+    if (current?.active === false) return [];
+    const observedAt = current?.providerReadinessObservedAt;
+    if (current?.providerReadinessProviders) {
+      if (
+        !current.providerReadiness ||
+        observedAt === undefined ||
+        now - observedAt > RUNTIME_CLIENT_CAPABILITY_TTL_MS
+      ) {
+        return [];
+      }
+      return current.providerReadiness.map((observation) => ({ observation: { ...observation }, observedAt }));
+    }
+    if (!current || !this.supports(computerId, current.instanceId, "imMessageTool", now)) return [];
+    return [
+      {
+        observation: { provider: "codex", status: "ready" },
+        observedAt: current.capabilitiesUpdatedAt ?? current.lastHeartbeatAt,
+      },
+    ];
+  }
+
+  supportsProvider(computerId: string, instanceId: string, provider: AgentRuntimeProvider, now = Date.now()): boolean {
+    const current = this.#entries.get(computerId);
+    if (!current || current.instanceId !== instanceId || current.active === false) return false;
+    if (!current.providerReadinessProviders) {
+      return provider === "codex" && this.supports(computerId, instanceId, "imMessageTool", now);
+    }
+    if (!current.providerReadinessProviders.includes(provider)) return false;
+    return this.providerReadiness(computerId, now).some(
+      ({ observation }) => observation.provider === provider && observation.status === "ready",
+    );
+  }
+
   async send(computerId: string, instanceId: string, frame: unknown): Promise<void> {
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId) {
@@ -135,6 +178,7 @@ export class ConnectionRegistry {
     socket: WebSocket,
     now = Date.now(),
     capabilities?: RuntimeClientCapabilities,
+    providerReadiness?: RuntimeProviderReadinessCollection,
   ): boolean {
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId || current.socket !== socket || current.active === false) {
@@ -144,6 +188,15 @@ export class ConnectionRegistry {
     if (capabilities) {
       current.capabilities = { ...capabilities };
       current.capabilitiesUpdatedAt = now;
+    }
+    if (providerReadiness !== undefined) {
+      if (providerReadiness.length > 0) {
+        current.providerReadiness = providerReadiness.map((observation) => ({ ...observation }));
+        current.providerReadinessObservedAt = now;
+      } else {
+        delete current.providerReadiness;
+        delete current.providerReadinessObservedAt;
+      }
     }
     return true;
   }

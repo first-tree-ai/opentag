@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { RUNTIME_PROTOCOL_V2 } from "@opentag/shared";
+import { RUNTIME_CLIENT_CAPABILITY_TTL_MS, RUNTIME_PROTOCOL_V2 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
+import { projectComputerProviderReadiness } from "../services/computers/provider-readiness.js";
 
 describe("ConnectionRegistry", () => {
   it("fences replacement close, heartbeat, and stale-instance cleanup by exact socket", async () => {
@@ -106,6 +107,11 @@ describe("ConnectionRegistry", () => {
     );
     expect(registry.supports(computerId, firstInstanceId, "imMessageTool", 2)).toBe(false);
     expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 2)).toBe(true);
+    expect(registry.supportsProvider(computerId, verifiedInstanceId, "codex", 2)).toBe(true);
+    expect(registry.supportsProvider(computerId, verifiedInstanceId, "claude-code", 2)).toBe(false);
+    expect(registry.providerReadiness(computerId, 2)).toEqual([
+      { observation: { provider: "codex", status: "ready" }, observedAt: 2 },
+    ]);
 
     expect(registry.touch(computerId, verifiedInstanceId, verifiedSocket, 3, { imMessageTool: 0 })).toBe(true);
     expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 3)).toBe(false);
@@ -134,6 +140,9 @@ describe("ConnectionRegistry", () => {
         lastHeartbeatAt: 1,
         protocolVersion: RUNTIME_PROTOCOL_V2,
         socket: runtimeSocket,
+        providerReadiness: [{ provider: "codex", status: "ready" }],
+        providerReadinessObservedAt: 1,
+        providerReadinessProviders: ["codex"],
         userId: randomUUID(),
       },
       async () => undefined,
@@ -141,13 +150,122 @@ describe("ConnectionRegistry", () => {
     await expect(
       registry.send(computerId, instanceId, { type: "session:reconcile", requestId: randomUUID() }),
     ).rejects.toMatchObject({ code: "unavailable" });
+    expect(registry.providerReadiness(computerId, 1)).toEqual([]);
     expect(registry.activate(computerId, instanceId, runtimeSocket)).toBe(true);
+    expect(registry.providerReadiness(computerId, 1)).toMatchObject([
+      { observation: { provider: "codex", status: "ready" } },
+    ]);
     await registry.send(computerId, instanceId, { type: "session:reconcile", requestId: randomUUID() });
     const serialized = send.mock.calls[0]?.[0];
     expect(JSON.parse(String(serialized))).toMatchObject({
       type: "session:reconcile",
       connectionId,
     });
+  });
+
+  it("returns only fresh readiness observations from the current Computer instance", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const currentSocket = socket();
+    await registry.register(
+      {
+        computerId,
+        instanceId,
+        lastHeartbeatAt: 1,
+        providerReadiness: [{ provider: "codex", status: "sign-in" }],
+        providerReadinessObservedAt: 1,
+        providerReadinessProviders: ["codex"],
+        socket: currentSocket,
+        userId: randomUUID(),
+      },
+      async () => undefined,
+    );
+
+    expect(registry.providerReadiness(computerId, 1)).toEqual([
+      {
+        observation: { provider: "codex", status: "sign-in" },
+        observedAt: 1,
+      },
+    ]);
+    expect(registry.providerReadiness(computerId, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 2)).toEqual([]);
+
+    expect(
+      registry.touch(computerId, instanceId, currentSocket, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 3, undefined, [
+        { provider: "codex", status: "ready" },
+      ]),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 3)).toMatchObject([
+      {
+        observation: { provider: "codex", status: "ready" },
+      },
+    ]);
+    expect(
+      registry.touch(
+        computerId,
+        instanceId,
+        currentSocket,
+        RUNTIME_CLIENT_CAPABILITY_TTL_MS * 2 + 4,
+        undefined,
+        undefined,
+      ),
+    ).toBe(true);
+    expect(registry.providerReadiness(computerId, RUNTIME_CLIENT_CAPABILITY_TTL_MS * 2 + 4)).toEqual([]);
+    expect(
+      projectComputerProviderReadiness(
+        computerId,
+        "online",
+        new Date(RUNTIME_CLIENT_CAPABILITY_TTL_MS * 2 + 4),
+        registry,
+      ),
+    ).toEqual([
+      { provider: "codex", status: "checking", observedAt: null },
+      { provider: "claude-code", status: "checking", observedAt: null },
+    ]);
+    expect(registry.remove(computerId, instanceId, currentSocket)).toBe(true);
+    expect(registry.providerReadiness(computerId, RUNTIME_CLIENT_CAPABILITY_TTL_MS + 3)).toEqual([]);
+  });
+
+  it("removes an old instance readiness observation when a replacement becomes current", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const oldInstanceId = randomUUID();
+    const newInstanceId = randomUUID();
+    const oldSocket = socket();
+    await registry.register(
+      {
+        computerId,
+        instanceId: oldInstanceId,
+        lastHeartbeatAt: 1,
+        providerReadiness: [{ provider: "codex", status: "ready" }],
+        providerReadinessObservedAt: 1,
+        providerReadinessProviders: ["codex"],
+        socket: oldSocket,
+        userId: randomUUID(),
+      },
+      async () => undefined,
+    );
+    expect(registry.supportsProvider(computerId, oldInstanceId, "codex", 1)).toBe(true);
+
+    await registry.register(
+      {
+        capabilities: { imMessageTool: 0 },
+        capabilitiesUpdatedAt: 2,
+        computerId,
+        instanceId: newInstanceId,
+        lastHeartbeatAt: 2,
+        providerReadiness: [],
+        providerReadinessProviders: ["codex"],
+        socket: socket(),
+        userId: randomUUID(),
+      },
+      async () => undefined,
+    );
+
+    expect(oldSocket.close).toHaveBeenCalledWith(4001, "Replaced by a newer daemon instance");
+    expect(registry.providerReadiness(computerId, 2)).toEqual([]);
+    expect(registry.supportsProvider(computerId, oldInstanceId, "codex", 2)).toBe(false);
+    expect(registry.supportsProvider(computerId, newInstanceId, "codex", 2)).toBe(false);
   });
 });
 

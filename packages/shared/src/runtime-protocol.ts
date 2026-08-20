@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { ComputerPlatformSchema } from "./computer.js";
+import { AGENT_RUNTIME_PROVIDERS, AgentRuntimeProviderSchema } from "./agent.js";
+import { ComputerPlatformSchema, ProviderReadinessStatusSchema } from "./computer.js";
 import { ErrorCodeSchema } from "./errors.js";
 
 export const RUNTIME_PROTOCOL_V1 = 1 as const;
@@ -126,6 +127,26 @@ export const RuntimeClientCapabilitiesSchema = z
   })
   .strict();
 
+export const RuntimeProviderReadinessObservationSchema = z
+  .object({
+    provider: AgentRuntimeProviderSchema,
+    status: ProviderReadinessStatusSchema,
+  })
+  .strict();
+
+export const RuntimeProviderReadinessCollectionSchema = z
+  .array(RuntimeProviderReadinessObservationSchema)
+  .max(AGENT_RUNTIME_PROVIDERS.length)
+  .superRefine(validateCanonicalProviders);
+
+export const RuntimeProviderReadinessNegotiationSchema = z
+  .object({
+    version: z.literal(1),
+    providers: z.array(AgentRuntimeProviderSchema).max(AGENT_RUNTIME_PROVIDERS.length),
+  })
+  .strict()
+  .superRefine((negotiation, context) => validateCanonicalProviderIds(negotiation.providers, context));
+
 const heartbeatPolicyShape = {
   heartbeatIntervalMs: RuntimeHeartbeatIntervalMsSchema,
   heartbeatTimeoutMs: RuntimeHeartbeatTimeoutMsSchema,
@@ -150,6 +171,7 @@ export const ServerWelcomeV1FrameSchema = z
     protocolVersion: z.literal(RUNTIME_PROTOCOL_V1),
     capabilities: RuntimeCapabilitiesSchema,
     ...heartbeatPolicyShape,
+    providerReadiness: RuntimeProviderReadinessNegotiationSchema.optional(),
   })
   .strict()
   .superRefine(validateHeartbeatPolicy);
@@ -162,6 +184,7 @@ export const ServerWelcomeV2FrameSchema = z
     supportedCapabilities: RuntimeCapabilityOffersSchema,
     requiredClientCapabilities: RuntimeRequiredCapabilitiesSchema,
     ...heartbeatPolicyShape,
+    providerReadiness: RuntimeProviderReadinessNegotiationSchema.optional(),
   })
   .passthrough()
   .superRefine((frame, context) => {
@@ -242,6 +265,7 @@ const computerRegistrationShape = {
   arch: z.string().trim().min(1).max(64),
   clientVersion: z.string().trim().min(1).max(64),
   capabilities: RuntimeClientCapabilitiesSchema.default({ imMessageTool: 0 }),
+  providerReadiness: RuntimeProviderReadinessCollectionSchema.optional(),
 };
 
 export const ComputerRegisterV1FrameSchema = z.object(computerRegistrationShape).strict();
@@ -294,6 +318,7 @@ const heartbeatShape = {
   computerId: z.string().uuid(),
   instanceId: z.string().uuid(),
   capabilities: RuntimeClientCapabilitiesSchema.default({ imMessageTool: 0 }),
+  providerReadiness: RuntimeProviderReadinessCollectionSchema.optional(),
 };
 export const HeartbeatV1FrameSchema = z.object(heartbeatShape).strict();
 export const HeartbeatV2FrameSchema = z
@@ -356,6 +381,9 @@ export type ServerWelcomeV1Frame = z.infer<typeof ServerWelcomeV1FrameSchema>;
 export type ServerWelcomeV2Frame = z.infer<typeof ServerWelcomeV2FrameSchema>;
 export type RuntimeCapabilities = z.infer<typeof RuntimeCapabilitiesSchema>;
 export type RuntimeClientCapabilities = z.infer<typeof RuntimeClientCapabilitiesSchema>;
+export type RuntimeProviderReadinessObservation = z.infer<typeof RuntimeProviderReadinessObservationSchema>;
+export type RuntimeProviderReadinessCollection = z.infer<typeof RuntimeProviderReadinessCollectionSchema>;
+export type RuntimeProviderReadinessNegotiation = z.infer<typeof RuntimeProviderReadinessNegotiationSchema>;
 export type RuntimeFrameEnvelope = z.infer<typeof RuntimeFrameEnvelopeSchema>;
 export type AuthFrame = z.infer<typeof AuthFrameSchema>;
 export type AuthResultFrame = z.infer<typeof AuthResultFrameSchema>;
@@ -409,5 +437,38 @@ function validateFailedResult(
 ): void {
   if (!frame.ok && !frame.errorCode) {
     context.addIssue({ code: "custom", message: "A failed result requires an error code" });
+  }
+}
+
+function validateCanonicalProviders(
+  observations: readonly { provider: (typeof AGENT_RUNTIME_PROVIDERS)[number] }[],
+  context: z.RefinementCtx,
+): void {
+  validateCanonicalProviderIds(
+    observations.map((observation) => observation.provider),
+    context,
+  );
+}
+
+function validateCanonicalProviderIds(
+  providers: readonly (typeof AGENT_RUNTIME_PROVIDERS)[number][],
+  context: z.RefinementCtx,
+): void {
+  const seen = new Set<string>();
+  for (const [index, provider] of providers.entries()) {
+    if (seen.has(provider)) {
+      context.addIssue({ code: "custom", path: [index], message: "Provider readiness must be unique" });
+    }
+    seen.add(provider);
+    if (
+      index > 0 &&
+      AGENT_RUNTIME_PROVIDERS.indexOf(provider) < AGENT_RUNTIME_PROVIDERS.indexOf(providers[index - 1] ?? "codex")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: [index],
+        message: "Provider readiness must use canonical Provider order",
+      });
+    }
   }
 }

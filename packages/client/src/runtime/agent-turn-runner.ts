@@ -1,5 +1,6 @@
 import {
   type DirectImMessageDeliveryRequest,
+  RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   type TurnFailureReason,
   type TurnReportHashInput,
@@ -7,11 +8,12 @@ import {
 } from "@opentag/shared";
 import type { AgentInput, AgentRunResult, AgentRuntimeEvent } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
+import { AgentRuntimeProviderUnavailableError } from "./agent-runtime-provider-registry.js";
 import type { ImResourceFetcher } from "./im-resource-fetcher.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import type { RuntimeToolHost } from "./runtime-tool-host.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
-import type { SessionRuntimeManager } from "./session-runtime-manager.js";
+import { ClientRuntimeProviderStartError, type SessionRuntimeManager } from "./session-runtime-manager.js";
 import { TurnTraceBuffer } from "./trace-buffer.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "./turn-custody-owner.js";
 import type { TurnReportOwner } from "./turn-report-owner.js";
@@ -123,7 +125,7 @@ export class AgentTurnRunner {
         owner.turnId,
         "starting",
       );
-      const runtime = this.#runtimeManager.runtime(owner.request.sessionId);
+      const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, signal);
       const cwd = this.#runtimeManager.cwd(owner.request.sessionId);
       const supplementalContext = await this.#resourceFetcher?.fetchForTurn(owner.request, cwd);
       releaseTools = this.#toolHost.activateRun(owner.turnId, owner.request, owner.request.runtime.allowedTools);
@@ -242,7 +244,7 @@ export function turnTimeoutMs(request: DirectImMessageDeliveryRequest, now: numb
   const limits: number[] = [];
   if (request.runtime.budget?.maxDurationMs) limits.push(request.runtime.budget.maxDurationMs);
   if (request.deadlineAt) limits.push(Math.max(1, Date.parse(request.deadlineAt) - now));
-  return Math.max(1, Math.min(...(limits.length > 0 ? limits : [30 * 60 * 1_000])));
+  return Math.max(1, Math.min(...(limits.length > 0 ? limits : [RUNTIME_DEFAULT_MAX_DURATION_MS])));
 }
 
 export function completionForResult(result: AgentRunResult, abortReason: unknown): TurnCompletion {
@@ -272,6 +274,9 @@ export function completionForResult(result: AgentRunResult, abortReason: unknown
       ...(result.usage ? { usage: result.usage } : {}),
     };
   }
+  if (result.error?.code === "provider_start_failed") {
+    return { outcome: "failed", executionEffects: "not_started", errorReason: "provider_start_failed" };
+  }
   return {
     outcome: result.error?.code === "provider_protocol_error" ? "unknown" : "failed",
     executionEffects: "may_have_occurred",
@@ -280,12 +285,24 @@ export function completionForResult(result: AgentRunResult, abortReason: unknown
   };
 }
 
-export function completionForError(_error: unknown, abortReason: unknown): TurnCompletion {
+export function completionForError(error: unknown, abortReason: unknown): TurnCompletion {
   if (abortReason === "client_shutdown") {
     return { outcome: "cancelled", executionEffects: "may_have_occurred", errorReason: "client_shutdown" };
   }
   if (abortReason === "turn_timeout") {
     return { outcome: "failed", executionEffects: "may_have_occurred", errorReason: "turn_timeout" };
+  }
+  if (error instanceof AgentRuntimeProviderUnavailableError) {
+    return {
+      outcome: "failed",
+      executionEffects: "not_started",
+      errorReason: error.result.issues.some((issue) => issue.code === "credential_missing")
+        ? "credential_unavailable"
+        : "provider_start_failed",
+    };
+  }
+  if (error instanceof ClientRuntimeProviderStartError) {
+    return { outcome: "failed", executionEffects: "not_started", errorReason: "provider_start_failed" };
   }
   return { outcome: "unknown", executionEffects: "may_have_occurred", errorReason: "turn_state_unknown" };
 }

@@ -153,13 +153,30 @@ describe("ClaudeCodeProcess", () => {
 
     const erroredChild = fakeChild();
     const errored = fakeProcess(erroredChild);
+    const erroredRun = errored.execute({ type: "user" }, () => undefined, new AbortController().signal);
     erroredChild.emit("error", new Error("child error"));
     erroredChild.emit("error", new Error("second error"));
-    await expect(
-      errored.execute({ type: "user" }, () => undefined, new AbortController().signal),
-    ).rejects.toMatchObject({ code: "spawn" });
+    await expect(erroredRun).rejects.toMatchObject({ code: "spawn" });
     erroredChild.emit("exit", 1, null);
     await errored.close();
+
+    const failedBeforeExecuteChild = fakeChild();
+    const failedBeforeExecute = fakeProcess(failedBeforeExecuteChild);
+    failedBeforeExecuteChild.emit("error", new Error("spawn failed before execute"));
+    await expect(
+      failedBeforeExecute.execute({ type: "user" }, () => undefined, new AbortController().signal),
+    ).rejects.toMatchObject({ code: "spawn" });
+    failedBeforeExecuteChild.emit("exit", 1, null);
+    await failedBeforeExecute.close();
+
+    const startedChild = fakeChild();
+    const started = fakeProcess(startedChild);
+    startedChild.emit("spawn");
+    const startedRun = started.execute({ type: "user" }, () => undefined, new AbortController().signal);
+    startedChild.emit("error", new Error("child failed after spawn"));
+    await expect(startedRun).rejects.toMatchObject({ code: "exited" });
+    startedChild.emit("exit", 1, null);
+    await started.close();
 
     const writeChild = fakeChild();
     writeChild.stdin.write = ((_chunk: unknown, callback: (error?: Error | null) => void) => {

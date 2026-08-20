@@ -11,6 +11,7 @@ export default defineConfig({
       "src/__tests__/agent-turn-runner.test.ts",
       "src/__tests__/claude-code-agent-runtime.test.ts",
       "src/__tests__/claude-code-agent-runtime-exhaustive.test.ts",
+      "src/__tests__/claude-code-hosted-tool-bridge.test.ts",
       "src/__tests__/claude-code-process.test.ts",
       "src/__tests__/codex-agent-runtime.test.ts",
       "src/__tests__/codex-agent-runtime-exhaustive.test.ts",
@@ -31,7 +32,9 @@ export default defineConfig({
       include: [
         "src/agent-runtime/**/*.ts",
         "src/providers/claude-code/agent-runtime.ts",
+        "src/providers/claude-code/hosted-tool-bridge.ts",
         "src/providers/claude-code/process-wire.ts",
+        "src/providers/claude-code/runtime-policy.ts",
         "src/providers/codex/agent-runtime.ts",
         "src/providers/codex/app-server-wire.ts",
         "src/providers/codex/runtime-policy.ts",

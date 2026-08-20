@@ -344,6 +344,7 @@ export function AppRouter() {
           <Route path="/account" element={<AccountPage />} />
           <Route path="/settings" element={<Navigate replace to="team" />} />
           <Route path="/settings/account" element={<Navigate replace to="/account" />} />
+          <Route path="/settings/members" element={<Navigate replace to="/settings/team#members" />} />
           <Route path="/settings/:section" element={<SettingsPage />} />
         </Route>
       </Route>
@@ -734,12 +735,15 @@ function AppShell() {
           </div>
           <nav aria-label="Workspace" className="primary-nav">
             <NavLink to="/agents" onClick={() => setNavigationOpen(false)}>
+              <WorkspaceNavIcon name="agents" />
               Agents
             </NavLink>
             <span className="nav-placeholder" aria-disabled="true">
+              <WorkspaceNavIcon name="tasks" />
               Tasks
             </span>
             <NavLink to="/settings" onClick={() => setNavigationOpen(false)}>
+              <WorkspaceNavIcon name="settings" />
               Settings
             </NavLink>
           </nav>
@@ -821,6 +825,42 @@ function AppShell() {
         />
       ) : null}
     </div>
+  );
+}
+
+function WorkspaceNavIcon({ name }: { name: "agents" | "settings" | "tasks" }) {
+  return (
+    <svg
+      aria-hidden="true"
+      className="primary-nav-icon"
+      fill="none"
+      focusable="false"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.8"
+      viewBox="0 0 24 24"
+    >
+      {name === "agents" ? (
+        <>
+          <circle cx="9" cy="8" r="3" />
+          <path d="M3.5 19v-1.5A4.5 4.5 0 0 1 8 13h2a4.5 4.5 0 0 1 4.5 4.5V19" />
+          <path d="M15.5 5.4a3 3 0 0 1 0 5.2M17 13.4a4.5 4.5 0 0 1 3.5 4.4V19" />
+        </>
+      ) : null}
+      {name === "tasks" ? (
+        <>
+          <rect height="17" rx="2.2" width="17" x="3.5" y="3.5" />
+          <path d="m7.5 12 3 3 6-6" />
+        </>
+      ) : null}
+      {name === "settings" ? (
+        <>
+          <path d="m9.8 3.8.6-1.6h3.2l.6 1.6 1.8.7 1.5-.7 2.3 2.3-.7 1.5.7 1.8 1.6.6v3.2l-1.6.6-.7 1.8.7 1.5-2.3 2.3-1.5-.7-1.8.7-.6 1.6h-3.2l-.6-1.6-1.8-.7-1.5.7-2.3-2.3.7-1.5-.7-1.8-1.6-.6V10l1.6-.6.7-1.8-.7-1.5 2.3-2.3 1.5.7 1.8-.7Z" />
+          <circle cx="12" cy="12" r="3" />
+        </>
+      ) : null}
+    </svg>
   );
 }
 
@@ -1870,8 +1910,7 @@ function AccessTab({ agent }: { agent: AgentDetailView }) {
 }
 
 const settingsSections = [
-  { key: "team", label: "General" },
-  { key: "members", label: "Members" },
+  { key: "team", label: "Team" },
   { key: "computers", label: "Computers" },
   { key: "resources", label: "Resources" },
   { key: "integrations", label: "Integrations" },
@@ -1916,15 +1955,13 @@ function SettingsPage() {
             <h2>{currentSection.label}</h2>
             <p>{settingsSectionDescription(currentSection.key)}</p>
           </header>
-          {section === "team" ? <TeamSettings membership={membership} refreshMe={refreshMe} /> : null}
-          {section === "members" ? (
-            <MembersSettings
-              canManage={membership.role === "admin"}
+          {section === "team" ? (
+            <TeamSettings
               currentUserId={me.user.id}
               invitationDialogOpen={invitationOpen}
+              membership={membership}
               onInvitationMutationPendingChange={setInvitationMutationPending}
               refreshMe={refreshMe}
-              teamId={membership.teamId}
             />
           ) : null}
           {section === "computers" ? (
@@ -2158,7 +2195,35 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
   );
 }
 
-function TeamSettings({ membership, refreshMe }: { membership: MeMembership; refreshMe: () => void }) {
+function TeamSettings({
+  currentUserId,
+  invitationDialogOpen,
+  membership,
+  onInvitationMutationPendingChange,
+  refreshMe,
+}: {
+  currentUserId: string;
+  invitationDialogOpen: boolean;
+  membership: MeMembership;
+  onInvitationMutationPendingChange: (pending: boolean) => void;
+  refreshMe: () => void;
+}) {
+  return (
+    <div className="settings-team-stack">
+      <TeamProfileSettings membership={membership} refreshMe={refreshMe} />
+      <MembersSettings
+        canManage={membership.role === "admin"}
+        currentUserId={currentUserId}
+        invitationDialogOpen={invitationDialogOpen}
+        onInvitationMutationPendingChange={onInvitationMutationPendingChange}
+        refreshMe={refreshMe}
+        teamId={membership.teamId}
+      />
+    </div>
+  );
+}
+
+function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembership; refreshMe: () => void }) {
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
@@ -2334,10 +2399,7 @@ function MembersSettings({
 
   return (
     <>
-      {canManage && !invitationDialogOpen ? (
-        <InvitationSettings teamId={teamId} onMutationPendingChange={onInvitationMutationPendingChange} />
-      ) : null}
-      <section className="settings-list-section">
+      <section className="settings-list-section" id="members">
         <AsyncState state={state}>
           {(value) => {
             const adminCount = value.members.filter((member: TeamMemberSummary) => member.role === "admin").length;
@@ -2404,6 +2466,9 @@ function MembersSettings({
           </p>
         ) : null}
       </section>
+      {canManage && !invitationDialogOpen ? (
+        <InvitationSettings teamId={teamId} onMutationPendingChange={onInvitationMutationPendingChange} />
+      ) : null}
     </>
   );
 }
@@ -2909,8 +2974,7 @@ function agentSectionDescription(section: (typeof agentSections)[number]["key"])
 
 function settingsSectionDescription(section: (typeof settingsSections)[number]["key"]): string {
   const descriptions = {
-    team: "Manage the current Team's stable identity and display name.",
-    members: "Invite people and review the Team membership visible to you.",
+    team: "Manage the current Team's profile, members, and invitation link.",
     computers: "Connect and inspect the Computers available to the current Team.",
     resources: "Review reusable repositories, skills, tools, and prompts.",
     integrations: "Review supported Team and Agent connection surfaces.",

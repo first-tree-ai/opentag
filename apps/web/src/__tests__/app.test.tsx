@@ -430,11 +430,15 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "New Agent" })).toBeTruthy();
     expect(screen.getByText("Tasks").getAttribute("aria-disabled")).toBe("true");
+    const workspaceNavigation = screen.getByRole("navigation", { name: "Workspace" });
     expect(
-      within(screen.getByRole("navigation", { name: "Workspace" }))
+      within(workspaceNavigation)
         .getAllByText(/Agents|Tasks|Settings/)
         .map((item) => item.textContent),
     ).toEqual(["Agents", "Tasks", "Settings"]);
+    const navigationIcons = workspaceNavigation.querySelectorAll(".primary-nav-icon");
+    expect(navigationIcons).toHaveLength(3);
+    expect(Array.from(navigationIcons).every((icon) => icon.getAttribute("aria-hidden") === "true")).toBe(true);
   });
 
   it.each(["/", "/agents"])("redirects unauthenticated protected path %s to login", async (path) => {
@@ -629,12 +633,12 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Ada")).toBeTruthy();
   });
 
-  it("keeps Members free of a second display-name write entry", async () => {
+  it("keeps account profile editing out of the merged Team page", async () => {
     installApi("admin");
-    window.history.replaceState({}, "", "/settings/members");
+    window.history.replaceState({}, "", "/settings/team");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Team members" })).toBeTruthy();
-    expect(screen.queryByLabelText("Display name")).toBeNull();
+    expect(screen.getAllByLabelText("Display name")).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Save account profile" })).toBeNull();
   });
 
@@ -822,12 +826,11 @@ describe("OpenTag Web App Shell", () => {
       within(navigation)
         .getAllByRole("link")
         .map((link) => link.textContent),
-    ).toEqual(["General", "Members", "Computers", "Resources", "Integrations", "Access", "Usage", "Security"]);
+    ).toEqual(["Team", "Computers", "Resources", "Integrations", "Access", "Usage", "Security"]);
     expect(navigation.querySelector(".local-nav-group-label")).toBeNull();
     const mobileNavigation = screen.getByLabelText("Settings section");
     expect(Array.from(mobileNavigation.querySelectorAll("option"), (option) => option.textContent)).toEqual([
-      "General",
-      "Members",
+      "Team",
       "Computers",
       "Resources",
       "Integrations",
@@ -838,17 +841,42 @@ describe("OpenTag Web App Shell", () => {
     expect(mobileNavigation.querySelector("optgroup")).toBeNull();
   });
 
-  it("opens Settings on General and keeps account scope out of the Settings shell", async () => {
+  it("opens Settings on Team and keeps account scope out of the Settings shell", async () => {
     installApi("admin");
     window.history.replaceState({}, "", "/settings");
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "General" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Team" })).toBeTruthy();
     expect(window.location.pathname).toBe("/settings/team");
     expect(screen.getByText("Manage the current Team's identity, infrastructure, access, and security.")).toBeTruthy();
     expect(
       within(screen.getByRole("navigation", { name: "Settings" })).queryByRole("link", { name: "Account" }),
     ).toBeNull();
+  });
+
+  it("combines Team profile, members, and invitations in task order", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/settings/team");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Team members" })).toBeTruthy();
+    const teamSettings = document.querySelector<HTMLElement>(".settings-team-stack");
+    if (!teamSettings) throw new Error("Merged Team settings were not rendered");
+    expect(
+      within(teamSettings)
+        .getAllByRole("heading", { level: 2 })
+        .map((heading) => heading.textContent),
+    ).toEqual(["Team profile", "Team members", "Invite people"]);
+  });
+
+  it("redirects the legacy Members URL to the merged Team page", async () => {
+    installApi("member");
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Team members" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/settings/team");
+    expect(window.location.hash).toBe("#members");
   });
 
   it("redirects the legacy Settings account URL to the editable Account page", async () => {
@@ -971,7 +999,7 @@ describe("OpenTag Web App Shell", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText } });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    window.history.replaceState({}, "", "/settings/members");
+    window.history.replaceState({}, "", "/settings/team");
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Create invitation link" }));
     const link = (await screen.findByLabelText("Invitation link")) as HTMLInputElement;
@@ -1009,7 +1037,7 @@ describe("OpenTag Web App Shell", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText } });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    window.history.replaceState({}, "", "/settings/members");
+    window.history.replaceState({}, "", "/settings/team");
     render(<App />);
 
     const pageLink = (await screen.findByLabelText("Invitation link")) as HTMLInputElement;
@@ -1040,7 +1068,7 @@ describe("OpenTag Web App Shell", () => {
     });
     installApi("admin", { invitationExists: true, invitationRotate: () => pendingRotate });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    window.history.replaceState({}, "", "/settings/members");
+    window.history.replaceState({}, "", "/settings/team");
     render(<App />);
 
     await screen.findByLabelText("Invitation link");
@@ -1155,7 +1183,7 @@ describe("OpenTag Web App Shell", () => {
   it("replaces a locally rotated invitation with a newer successful server read", async () => {
     const api = installApi("admin", { invitationExists: true });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    window.history.replaceState({}, "", "/settings/members");
+    window.history.replaceState({}, "", "/settings/team");
     render(<App />);
 
     expect(((await screen.findByLabelText("Invitation link")) as HTMLInputElement).value).toContain("/invites/AAA");
@@ -1168,7 +1196,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(screen.getByRole("link", { name: "Agents" }));
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
     fireEvent.click(screen.getByRole("link", { name: "Settings" }));
-    fireEvent.click(await screen.findByRole("link", { name: "Members" }));
+    expect(await screen.findByRole("heading", { name: "Team members" })).toBeTruthy();
 
     await waitFor(() =>
       expect((screen.getByLabelText("Invitation link") as HTMLInputElement).value).toContain("/invites/CCC"),
@@ -1186,7 +1214,7 @@ describe("OpenTag Web App Shell", () => {
 
   it("keeps invitation-link management hidden from regular members", async () => {
     installApi("member");
-    window.history.replaceState({}, "", "/settings/members");
+    window.history.replaceState({}, "", "/settings/team");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Team members" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Invite people" })).toBeNull();
@@ -1196,7 +1224,7 @@ describe("OpenTag Web App Shell", () => {
 
   it("lets Team admins update another member role from the member list", async () => {
     installApi("admin");
-    window.history.replaceState({}, "", "/settings/members");
+    window.history.replaceState({}, "", "/settings/team");
     render(<App />);
     const role = (await screen.findByLabelText("Role for Grace")) as HTMLSelectElement;
     fireEvent.change(role, { target: { value: "admin" } });
@@ -1219,7 +1247,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin", {
       roleUpdate: (targetUserId) => (targetUserId === memberUserId ? graceUpdate : linUpdate),
     });
-    window.history.replaceState({}, "", "/settings/members");
+    window.history.replaceState({}, "", "/settings/team");
     render(<App />);
     const graceRole = (await screen.findByLabelText("Role for Grace")) as HTMLSelectElement;
     const linRole = screen.getByLabelText("Role for Lin") as HTMLSelectElement;
@@ -1274,7 +1302,7 @@ describe("OpenTag Web App Shell", () => {
 
   it("refreshes current membership authority after an admin demotes themself", async () => {
     installApi("admin");
-    window.history.replaceState({}, "", "/settings/members");
+    window.history.replaceState({}, "", "/settings/team");
     render(<App />);
     fireEvent.change(await screen.findByLabelText("Role for Ada"), { target: { value: "member" } });
     await waitFor(() =>
@@ -1288,7 +1316,7 @@ describe("OpenTag Web App Shell", () => {
 
   it("keeps the confirmed role and displays the server error when an update is rejected", async () => {
     installApi("admin", { roleUpdateFails: true });
-    window.history.replaceState({}, "", "/settings/members");
+    window.history.replaceState({}, "", "/settings/team");
     render(<App />);
     const role = (await screen.findByLabelText("Role for Ada")) as HTMLSelectElement;
     fireEvent.change(role, { target: { value: "member" } });

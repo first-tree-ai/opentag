@@ -727,7 +727,7 @@ describe("OpenTag Web App Shell", () => {
           ),
       ).toHaveLength(2),
     );
-    expect(await screen.findByText("Agent is suspended")).toBeTruthy();
+    expect(await screen.findByText("Not receiving new work")).toBeTruthy();
     expect(await screen.findByRole("button", { name: "Reactivate Agent" })).toBeTruthy();
     const deleteButton = await screen.findByRole("button", { name: "Delete Agent permanently" });
     fireEvent.click(deleteButton);
@@ -751,7 +751,7 @@ describe("OpenTag Web App Shell", () => {
       within(navigation)
         .getAllByRole("link")
         .map((link) => link.textContent),
-    ).toEqual(["Overview", "Runtime", "IM", "Resources", "Integrations", "Access"]);
+    ).toEqual(["Overview", "Runtime", "Messaging", "Access"]);
   });
 
   it("refreshes Agent availability when the page regains focus", async () => {
@@ -763,33 +763,39 @@ describe("OpenTag Web App Shell", () => {
 
     computerStatus = "offline";
     fireEvent(window, new Event("focus"));
-    expect(await screen.findByText("Computer is offline")).toBeTruthy();
+    expect(await screen.findByText("Cannot receive new work")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Review runtime" })).toBeTruthy();
   });
 
-  it("keeps the Agent list bounded to Team-level evidence", async () => {
+  it("keeps infrastructure details and dependency reads out of the Agent list", async () => {
     installApi("admin", { bound: true, computerEvidenceFails: true });
     window.history.replaceState({}, "", "/agents");
     render(<App />);
 
     expect(await screen.findByText("Reviewer")).toBeTruthy();
-    expect(screen.getByText("Unconfirmed")).toBeTruthy();
-    expect(screen.getByText("Unable to confirm Computer")).toBeTruthy();
+    expect(screen.getByText("Active")).toBeTruthy();
+    expect(screen.queryByText("Ada's Mac")).toBeNull();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/computers"))).toBe(false);
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes(`/agents/${agentId}/im-binding`))).toBe(
       false,
     );
   });
 
-  it("reports one combined handoff dependency without inventing component causes", async () => {
+  it("keeps readiness implementation details out of the Agent overview", async () => {
     installApi("admin", { bound: true, handoffReady: false });
     window.history.replaceState({}, "", `/agents/${agentId}/general`);
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    const handoffCard = screen.getByText("Handoff").closest("article");
-    expect(handoffCard).toBeTruthy();
-    expect(within(handoffCard as HTMLElement).getByText("Needs attention")).toBeTruthy();
-    expect(within(handoffCard as HTMLElement).getByText("Handoff needs attention")).toBeTruthy();
-    expect(screen.queryByText("Runtime capability unavailable")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Use this Agent" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Message @reviewer" })).toBeTruthy();
+    expect(screen.getByText("Send a direct message, or mention @reviewer in a Feishu conversation.")).toBeTruthy();
+    expect(screen.getByText("Cannot receive new work")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Review messaging" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Review runtime" })).toBeNull();
+    expect(screen.queryByText("Handoff")).toBeNull();
+    expect(screen.queryByText("Computer")).toBeNull();
+    expect(screen.queryByText("Ada's Mac")).toBeNull();
   });
 
   it("preserves the Agent detail when handoff evidence cannot be confirmed", async () => {
@@ -798,8 +804,23 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    expect((await screen.findAllByText("Unable to confirm handoff")).length).toBeGreaterThan(0);
+    expect(await screen.findByText("Status temporarily unavailable")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Messaging status unavailable" })).toBeTruthy();
+    expect(screen.getByText("The messaging identity could not be confirmed. Try again in a moment.")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Connect Feishu or Slack" })).toBeNull();
+    expect(screen.queryByText("This Agent needs a messaging identity before teammates can send it work.")).toBeNull();
+    expect(screen.queryByText("Handoff")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("offers messaging setup only when the missing binding is confirmed", async () => {
+    installApi("admin", { bound: false });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Connect Feishu or Slack" })).toBeTruthy();
+    expect(screen.getByText("This Agent needs a messaging identity before teammates can send it work.")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Messaging status unavailable" })).toBeNull();
   });
 
   it("does not overlap focus refreshes while an Agent read is still pending", async () => {
@@ -828,7 +849,7 @@ describe("OpenTag Web App Shell", () => {
     expect(agentReads).toBe(2);
 
     releaseAgentRead();
-    expect(await screen.findByText("Computer is offline")).toBeTruthy();
+    expect(await screen.findByText("Cannot receive new work")).toBeTruthy();
   });
 
   it("invalidates a stale Agent detail after a background not-found response", async () => {
@@ -849,7 +870,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin", { agentListStatus: () => agentListStatus });
     window.history.replaceState({}, "", "/agents");
     render(<App />);
-    expect(await screen.findByText("Computer online")).toBeTruthy();
+    expect(await screen.findByText("Active")).toBeTruthy();
 
     agentListStatus = 503;
     fireEvent(window, new Event("focus"));

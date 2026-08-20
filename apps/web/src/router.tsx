@@ -1837,16 +1837,18 @@ function AccessTab({ agent }: { agent: AgentDetailView }) {
 }
 
 const settingsSections = [
-  { key: "account", label: "Account" },
-  { key: "team", label: "General" },
-  { key: "members", label: "Members" },
-  { key: "computers", label: "Computers" },
-  { key: "resources", label: "Resources" },
-  { key: "integrations", label: "Integrations" },
-  { key: "access", label: "Access" },
-  { key: "usage", label: "Usage" },
-  { key: "security", label: "Security" },
+  { key: "account", label: "Account", group: "Personal" },
+  { key: "team", label: "General", group: "Team" },
+  { key: "members", label: "Members", group: "Team" },
+  { key: "computers", label: "Computers", group: "Team" },
+  { key: "resources", label: "Resources", group: "Capabilities" },
+  { key: "integrations", label: "Integrations", group: "Capabilities" },
+  { key: "access", label: "Access", group: "Governance" },
+  { key: "usage", label: "Usage", group: "Governance" },
+  { key: "security", label: "Security", group: "Governance" },
 ] as const;
+
+const settingsGroups = ["Personal", "Team", "Capabilities", "Governance"] as const;
 
 function SettingsPage() {
   const { section = "team" } = useParams();
@@ -1864,19 +1866,32 @@ function SettingsPage() {
       <label className="local-nav-select">
         <span>Settings section</span>
         <select value={section} onChange={(event) => navigate(`/settings/${event.currentTarget.value}`)}>
-          {settingsSections.map((item) => (
-            <option value={item.key} key={item.key}>
-              {item.label}
-            </option>
+          {settingsGroups.map((group) => (
+            <optgroup label={group} key={group}>
+              {settingsSections
+                .filter((item) => item.group === group)
+                .map((item) => (
+                  <option value={item.key} key={item.key}>
+                    {item.label}
+                  </option>
+                ))}
+            </optgroup>
           ))}
         </select>
       </label>
       <div className="settings-layout">
         <nav className="local-nav" aria-label="Settings">
-          {settingsSections.map((item) => (
-            <NavLink to={`/settings/${item.key}`} key={item.key}>
-              {item.label}
-            </NavLink>
+          {settingsGroups.map((group) => (
+            <div className="local-nav-group" key={group}>
+              <span className="local-nav-group-label">{group}</span>
+              {settingsSections
+                .filter((item) => item.group === group)
+                .map((item) => (
+                  <NavLink to={`/settings/${item.key}`} key={item.key}>
+                    {item.label}
+                  </NavLink>
+                ))}
+            </div>
           ))}
         </nav>
         <div className="settings-content">
@@ -1900,27 +1915,140 @@ function SettingsPage() {
             <ComputersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
           ) : null}
           {section === "resources" ? (
-            <EmptyState title="Team Resources not enabled">No Resource records are created by this page.</EmptyState>
+            <SettingsUnavailable
+              action={{ label: "Review Agent resources", to: "/agents" }}
+              details={[
+                "This page does not create or infer Team Resource records.",
+                "Resource assignments returned by the server remain visible on each Agent.",
+              ]}
+              title="Team Resources are not enabled"
+            >
+              Repositories, skills, tools, and prompts will appear here only after OpenTag has an authoritative Team
+              Resource model.
+            </SettingsUnavailable>
           ) : null}
           {section === "integrations" ? (
-            <EmptyState title="Team Integrations not enabled">
-              Agent-owned connections remain visible from each Agent's IM and Integrations sections.
-            </EmptyState>
+            <SettingsUnavailable
+              action={{ label: "Review Agent connections", to: "/agents" }}
+              details={[
+                "Connections remain owned by individual Agents.",
+                "Open an Agent's IM or Integrations section to review its current connection state.",
+              ]}
+              title="Team Integrations are not enabled"
+            >
+              OpenTag does not promote Agent credentials into shared Team connections or imply that a provider is
+              available Team-wide.
+            </SettingsUnavailable>
           ) : null}
-          {section === "access" ? (
-            <EmptyState title="Team access uses the current membership policy">
-              Team Admins manage membership while Agent access stays visible on each Agent.
-            </EmptyState>
-          ) : null}
+          {section === "access" ? <AccessSettings membership={membership} /> : null}
           {section === "usage" ? (
-            <EmptyState title="Usage reporting not enabled">No inferred or estimated usage is shown.</EmptyState>
+            <SettingsUnavailable
+              details={[
+                "Task, Turn, and provider totals are not estimated from partial activity.",
+                "Cost reporting will require authoritative provider billing metadata.",
+              ]}
+              title="Usage reporting is not enabled"
+            >
+              This page will stay intentionally empty until OpenTag can report complete, measured Team activity.
+            </SettingsUnavailable>
           ) : null}
           {section === "security" ? (
-            <EmptyState title="Security overview">Sensitive credentials are never returned to the browser.</EmptyState>
+            <SettingsUnavailable
+              details={[
+                "Sensitive credentials are never returned to the browser.",
+                "Team administration remains limited to active Admin memberships.",
+                "Browser sessions and audit events are not available in this version.",
+              ]}
+              status="Current safeguards"
+              title="Security data is intentionally limited"
+            >
+              OpenTag only reports security state that the server can verify. It does not show inferred checks or an
+              unsupported all-clear status.
+            </SettingsUnavailable>
           ) : null}
         </div>
       </div>
     </section>
+  );
+}
+
+function SettingsUnavailable({
+  action,
+  children,
+  details,
+  status = "Not enabled",
+  title,
+}: {
+  action?: { label: string; to: string };
+  children: ReactNode;
+  details: readonly string[];
+  status?: string;
+  title: string;
+}) {
+  return (
+    <section className="settings-unavailable">
+      <span className="settings-state-label">{status}</span>
+      <h2>{title}</h2>
+      <p>{children}</p>
+      <ul>
+        {details.map((detail) => (
+          <li key={detail}>{detail}</li>
+        ))}
+      </ul>
+      {action ? (
+        <Link className="settings-state-action" to={action.to}>
+          {action.label} <span aria-hidden="true">→</span>
+        </Link>
+      ) : null}
+    </section>
+  );
+}
+
+function AccessSettings({ membership }: { membership: MeMembership }) {
+  const rows = [
+    ["Team profile", "View", "Manage"],
+    ["Team membership", "View", "Manage"],
+    ["Agents", "Use", "Manage"],
+    ["Computers", "Inspect", "Connect"],
+  ] as const;
+  return (
+    <div className="settings-policy-stack">
+      <section className="settings-policy-banner">
+        <div>
+          <span className="settings-state-label">Fixed v0.1 policy</span>
+          <h2>Membership defines Team access</h2>
+          <p>Active members can view Team state and use Agents. Admins manage identity and infrastructure.</p>
+        </div>
+        <span className="settings-role-badge">Your role: {titleCase(membership.role)}</span>
+      </section>
+      <section className="settings-list-section">
+        <header className="settings-subheader">
+          <div>
+            <h2>Effective policy</h2>
+            <p>Current server-enforced boundaries for active Team memberships.</p>
+          </div>
+        </header>
+        <table className="settings-policy-table" aria-label="Effective Team access policy">
+          <thead>
+            <tr className="settings-table-header">
+              <th scope="col">Capability</th>
+              <th scope="col">Members</th>
+              <th scope="col">Admins</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map(([capability, memberAccess, adminAccess]) => (
+              <tr className="settings-policy-row" key={capability}>
+                <th scope="row">{capability}</th>
+                <td data-label="Members">{memberAccess}</td>
+                <td data-label="Admins">{adminAccess}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p className="settings-footnote">Custom roles and per-resource policies are not enabled in this version.</p>
+      </section>
+    </div>
   );
 }
 
@@ -1930,8 +2058,11 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
+  const dirty = displayName !== user.displayName;
 
-  useEffect(() => setDisplayName(user.displayName), [user.displayName]);
+  useEffect(() => {
+    setDisplayName(user.displayName);
+  }, [user.displayName]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1955,27 +2086,68 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
   }
 
   return (
-    <form className="form-card" onSubmit={submit}>
+    <form className="settings-profile-form" onSubmit={submit}>
       <h2>Account profile</h2>
-      <label>
-        Email
-        <input name="email" readOnly type="email" value={user.email} />
-      </label>
-      <label>
-        Display name
-        <input
-          maxLength={255}
-          name="displayName"
-          onChange={(event) => setDisplayName(event.currentTarget.value)}
-          required
-          value={displayName}
-        />
-      </label>
-      <p className="muted">This name is shared across every Team you belong to.</p>
-      <button className="button commit" disabled={saving} type="submit">
-        {saving ? "Saving…" : "Save account profile"}
-      </button>
-      {message ? <p role="status">{message}</p> : null}
+      <div className="settings-field-list">
+        <div className="settings-field-row">
+          <div className="settings-field-copy">
+            <strong>Email</strong>
+            <p>Your sign-in email cannot be changed here.</p>
+          </div>
+          <div className="settings-readonly-value">
+            <input aria-label="Email" name="email" readOnly type="email" value={user.email} />
+            <small>Read only</small>
+          </div>
+        </div>
+        <div className="settings-field-row">
+          <div className="settings-field-copy">
+            <strong>Display name</strong>
+            <p>This identity is shared across every Team you belong to.</p>
+          </div>
+          <label>
+            Display name
+            <input
+              autoComplete="name"
+              maxLength={255}
+              name="displayName"
+              onChange={(event) => {
+                setDisplayName(event.currentTarget.value);
+                setMessage(undefined);
+                setError(undefined);
+              }}
+              required
+              value={displayName}
+            />
+          </label>
+        </div>
+      </div>
+      {dirty ? (
+        <div className="dirty-bar">
+          <span>Unsaved changes</span>
+          <div className="dirty-actions">
+            <button
+              className="tertiary"
+              disabled={saving}
+              type="button"
+              onClick={() => {
+                setDisplayName(user.displayName);
+                setMessage(undefined);
+                setError(undefined);
+              }}
+            >
+              Discard
+            </button>
+            <button className="button commit" disabled={saving} type="submit">
+              {saving ? "Saving…" : "Save account profile"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {message ? (
+        <p className="settings-inline-status success" role="status">
+          {message}
+        </p>
+      ) : null}
       {error ? (
         <p className="notice error" role="alert">
           {error}
@@ -1986,67 +2158,100 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
 }
 
 function TeamSettings({ membership, refreshMe }: { membership: MeMembership; refreshMe: () => void }) {
-  const formRef = useRef<HTMLFormElement>(null);
   const [message, setMessage] = useState<string>();
-  const [dirty, setDirty] = useState(false);
+  const [error, setError] = useState<string>();
+  const [saving, setSaving] = useState(false);
+  const [teamName, setTeamName] = useState(membership.teamName);
+  const [teamDisplayName, setTeamDisplayName] = useState(membership.teamDisplayName);
+  const dirty = teamName !== membership.teamName || teamDisplayName !== membership.teamDisplayName;
+
+  useEffect(() => {
+    setTeamName(membership.teamName);
+    setTeamDisplayName(membership.teamDisplayName);
+  }, [membership.teamDisplayName, membership.teamName]);
+
   if (membership.role !== "admin") {
     return (
-      <DefinitionList
-        rows={[
-          ["Canonical name", membership.teamName],
-          ["Display name", membership.teamDisplayName],
-          ["Your role", membership.role],
-        ]}
-      />
+      <section className="settings-readonly-panel">
+        <div className="settings-readonly-heading">
+          <div>
+            <h2>Team profile</h2>
+            <p>Only Team Admins can change these fields.</p>
+          </div>
+          <span className="settings-role-badge">Your role: {titleCase(membership.role)}</span>
+        </div>
+        <DefinitionList
+          rows={[
+            ["Canonical name", membership.teamName],
+            ["Display name", membership.teamDisplayName],
+          ]}
+        />
+      </section>
     );
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
+    setSaving(true);
     try {
       setMessage(undefined);
+      setError(undefined);
       await browserApi.updateTeam(membership.teamId, {
-        name: String(data.get("name") ?? ""),
-        displayName: String(data.get("displayName") ?? ""),
+        name: teamName,
+        displayName: teamDisplayName,
       });
-      setDirty(false);
       refreshMe();
       setMessage("Team profile saved.");
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to save the Team profile");
+      setError(cause instanceof Error ? cause.message : "Unable to save the Team profile");
+    } finally {
+      setSaving(false);
     }
   }
   return (
-    <form
-      className="form-card team-profile-form"
-      key={`${membership.teamName}:${membership.teamDisplayName}`}
-      ref={formRef}
-      onChange={() => {
-        setDirty(true);
-        setMessage(undefined);
-      }}
-      onSubmit={submit}
-    >
+    <form className="settings-profile-form" onSubmit={submit}>
       <h2>Team profile</h2>
-      <div className="team-profile-fields">
-        <div className="team-profile-row">
-          <div className="team-profile-copy">
+      <div className="settings-field-list">
+        <div className="settings-field-row">
+          <div className="settings-field-copy">
             <strong>Canonical name</strong>
             <p>Changing this immediately changes the CLI --team selector. The Team ID stays stable.</p>
           </div>
           <label>
             Canonical name
-            <input defaultValue={membership.teamName} name="name" pattern="[A-Za-z0-9][A-Za-z0-9-]*" required />
+            <input
+              aria-label="Canonical name"
+              name="name"
+              pattern="[A-Za-z0-9][A-Za-z0-9-]*"
+              required
+              value={teamName}
+              onChange={(event) => {
+                setTeamName(event.currentTarget.value);
+                setMessage(undefined);
+                setError(undefined);
+              }}
+            />
+            <small className="settings-field-hint">
+              CLI selector: <code>--team {teamName.toLocaleLowerCase() || "team-name"}</code>
+            </small>
           </label>
         </div>
-        <div className="team-profile-row">
-          <div className="team-profile-copy">
+        <div className="settings-field-row">
+          <div className="settings-field-copy">
             <strong>Display name</strong>
             <p>The human-readable Team name shown in navigation and invitations.</p>
           </div>
           <label>
             Display name
-            <input defaultValue={membership.teamDisplayName} name="displayName" required />
+            <input
+              name="displayName"
+              required
+              value={teamDisplayName}
+              onChange={(event) => {
+                setTeamDisplayName(event.currentTarget.value);
+                setMessage(undefined);
+                setError(undefined);
+              }}
+            />
           </label>
         </div>
       </div>
@@ -2056,22 +2261,33 @@ function TeamSettings({ membership, refreshMe }: { membership: MeMembership; ref
           <div className="dirty-actions">
             <button
               className="tertiary"
+              disabled={saving}
               type="button"
               onClick={() => {
-                formRef.current?.reset();
-                setDirty(false);
+                setTeamName(membership.teamName);
+                setTeamDisplayName(membership.teamDisplayName);
                 setMessage(undefined);
+                setError(undefined);
               }}
             >
               Discard
             </button>
-            <button className="button commit" type="submit">
-              Save Team profile
+            <button className="button commit" disabled={saving} type="submit">
+              {saving ? "Saving…" : "Save Team profile"}
             </button>
           </div>
         </div>
       ) : null}
-      {message ? <p role="status">{message}</p> : null}
+      {message ? (
+        <p className="settings-inline-status success" role="status">
+          {message}
+        </p>
+      ) : null}
+      {error ? (
+        <p className="notice error" role="alert">
+          {error}
+        </p>
+      ) : null}
     </form>
   );
 }
@@ -2120,34 +2336,66 @@ function MembersSettings({
       {canManage && !invitationDialogOpen ? (
         <InvitationSettings teamId={teamId} onMutationPendingChange={onInvitationMutationPendingChange} />
       ) : null}
-      <section className="panel">
-        <h2>Team members</h2>
+      <section className="settings-list-section">
         <AsyncState state={state}>
-          {(value) => (
-            <div className="list">
-              {value.members.map((member: TeamMemberSummary) => (
-                <div className="row" key={member.userId}>
-                  <strong>{member.displayName}</strong>
-                  {canManage ? (
-                    <select
-                      aria-label={`Role for ${member.displayName}`}
-                      disabled={pendingUserIds.has(member.userId)}
-                      value={member.role}
-                      onChange={(event) => void changeRole(member, event.currentTarget.value)}
-                    >
-                      {MembershipRoleSchema.options.map((role) => (
-                        <option value={role} key={role}>
-                          {role}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <span>{member.role}</span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
+          {(value) => {
+            const adminCount = value.members.filter((member: TeamMemberSummary) => member.role === "admin").length;
+            return (
+              <>
+                <header className="settings-subheader">
+                  <div>
+                    <h2>Team members</h2>
+                    <p>
+                      {value.members.length} {value.members.length === 1 ? "member" : "members"} · {adminCount}{" "}
+                      {adminCount === 1 ? "admin" : "admins"}
+                    </p>
+                  </div>
+                  {!canManage ? <span className="settings-role-badge">Read only</span> : null}
+                </header>
+                <table className="settings-member-table" aria-label="Team members">
+                  <thead>
+                    <tr className="settings-table-header">
+                      <th scope="col">Team member</th>
+                      <th scope="col">Role</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {value.members.map((member: TeamMemberSummary) => (
+                      <tr className="settings-member-row" key={member.userId}>
+                        <th className="settings-member-identity" scope="row">
+                          <span className="settings-member-avatar" aria-hidden="true">
+                            {initials(member.displayName)}
+                          </span>
+                          <span>
+                            <strong>{member.displayName}</strong>
+                            {member.userId === currentUserId ? <small>You</small> : null}
+                          </span>
+                        </th>
+                        <td data-label="Role">
+                          {canManage ? (
+                            <select
+                              aria-label={`Role for ${member.displayName}`}
+                              disabled={pendingUserIds.has(member.userId)}
+                              value={member.role}
+                              onChange={(event) => void changeRole(member, event.currentTarget.value)}
+                            >
+                              {MembershipRoleSchema.options.map((role) => (
+                                <option value={role} key={role}>
+                                  {role}
+                                </option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="settings-value-badge">{member.role}</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            );
+          }}
         </AsyncState>
         {error ? (
           <p className="notice error" role="alert">
@@ -2331,7 +2579,7 @@ function InvitationSettings({
   }
 
   return (
-    <section className={presentation === "dialog" ? "invitation-dialog-content" : "panel"}>
+    <section className={presentation === "dialog" ? "invitation-dialog-content" : "settings-invitation-panel"}>
       {presentation === "panel" ? (
         <>
           <h2>Invite people</h2>
@@ -2382,22 +2630,70 @@ function ComputersSettings({ canManage, teamId }: { canManage: boolean; teamId: 
       {canManage ? <ComputerSetup teamId={teamId} onConnected={() => setReload((current) => current + 1)} /> : null}
       <AsyncState state={state}>
         {(value) => (
-          <div className="list">
-            {value.computers.map((computer: TeamComputerSummary) => (
-              <div className="row" key={computer.id}>
-                <span>
-                  <strong>{computer.displayName}</strong>
-                  <small>
-                    {computer.ownerDisplayName} ({computer.platform})
-                  </small>
-                </span>
-                <span className="cell-stack align-end">
-                  <strong>{titleCase(computer.connectionStatus)}</strong>
-                  <small>Observed {formatDate(computer.observedAt)}</small>
-                </span>
+          <section className="settings-list-section">
+            <header className="settings-subheader">
+              <div>
+                <h2>Team computers</h2>
+                <p>
+                  {value.computers.length} {value.computers.length === 1 ? "computer" : "computers"} ·{" "}
+                  {
+                    value.computers.filter((computer: TeamComputerSummary) => computer.connectionStatus === "online")
+                      .length
+                  }{" "}
+                  online
+                </p>
               </div>
-            ))}
-          </div>
+              {!canManage ? <span className="settings-role-badge">Read only</span> : null}
+            </header>
+            {value.computers.length === 0 ? (
+              <div className="settings-compact-empty">
+                <strong>No computers connected</strong>
+                <p>
+                  {canManage ? "Use the connection flow above to add one." : "A Team Admin must connect a computer."}
+                </p>
+              </div>
+            ) : (
+              <table className="settings-computer-table" aria-label="Team computers">
+                <thead>
+                  <tr className="settings-table-header">
+                    <th scope="col">Computer</th>
+                    <th scope="col">Owner &amp; system</th>
+                    <th scope="col">Status</th>
+                    <th scope="col">Last seen</th>
+                    <th scope="col">Agents</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {value.computers.map((computer: TeamComputerSummary) => (
+                    <tr className="settings-computer-row" key={computer.id}>
+                      <th className="settings-computer-identity" scope="row">
+                        <span className="settings-computer-icon" aria-hidden="true" />
+                        <strong>{computer.displayName}</strong>
+                      </th>
+                      <td data-label="Owner & system">
+                        <strong>{computer.ownerDisplayName}</strong>
+                        <small>
+                          {computer.platform === "darwin"
+                            ? "macOS"
+                            : computer.platform === "win32"
+                              ? "Windows"
+                              : "Linux"}
+                        </small>
+                      </td>
+                      <td data-label="Status">
+                        <span className="settings-status">
+                          <span className={`settings-status-dot ${computer.connectionStatus}`} aria-hidden="true" />
+                          {titleCase(computer.connectionStatus)}
+                        </span>
+                      </td>
+                      <td data-label="Last seen">{formatDate(computer.lastSeenAt)}</td>
+                      <td data-label="Agents">{computer.agentIds.length}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
         )}
       </AsyncState>
     </>

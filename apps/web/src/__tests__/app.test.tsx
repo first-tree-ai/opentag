@@ -826,6 +826,37 @@ describe("OpenTag Web App Shell", () => {
       "Usage",
       "Security",
     ]);
+    expect(Array.from(navigation.querySelectorAll(".local-nav-group-label"), (label) => label.textContent)).toEqual([
+      "Personal",
+      "Team",
+      "Capabilities",
+      "Governance",
+    ]);
+  });
+
+  it("keeps unavailable Team capabilities explicit instead of inventing records", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/settings/resources");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Team Resources are not enabled" })).toBeTruthy();
+    expect(screen.getByText("This page does not create or infer Team Resource records.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("link", { name: "Integrations" }));
+    expect(await screen.findByRole("heading", { name: "Team Integrations are not enabled" })).toBeTruthy();
+    expect(screen.getByText("Connections remain owned by individual Agents.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("link", { name: "Usage" }));
+    expect(await screen.findByRole("heading", { name: "Usage reporting is not enabled" })).toBeTruthy();
+  });
+
+  it("shows the fixed Team access policy as read-only server boundaries", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/settings/access");
+    render(<App />);
+
+    expect(await screen.findByText("Fixed v0.1 policy")).toBeTruthy();
+    const policy = screen.getByRole("table", { name: "Effective Team access policy" });
+    expect(within(policy).getByRole("rowheader", { name: "Agents" })).toBeTruthy();
+    expect(screen.getByText("Custom roles and per-resource policies are not enabled in this version.")).toBeTruthy();
   });
 
   it("lets admins rename a Team and refreshes the UUID-selected Team context from /me", async () => {

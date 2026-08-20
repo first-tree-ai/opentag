@@ -67,6 +67,7 @@ describe("Feishu registration", () => {
     expect(options.appId).toBe("cli_existing");
     expect(options.createOnly).toBeUndefined();
     expect(options.addons.scopes.tenant).toEqual(FEISHU_REQUIRED_TENANT_SCOPES);
+    expect(options.addons.scopes.tenant).toContain("im:message.group_msg");
     registration.abort();
     await expect(registration.result).rejects.toMatchObject({ code: "abort" });
   });

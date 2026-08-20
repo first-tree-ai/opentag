@@ -61,6 +61,7 @@ export class DefaultFeishuRegistrationGateway implements FeishuRegistrationGatew
       },
       addons: {
         preset: true,
+        // receiveMode gates Agent delivery, not the Bot authority ceiling or durable ImMessage history.
         scopes: { tenant: [...FEISHU_REQUIRED_TENANT_SCOPES] },
         events: { items: { tenant: ["im.message.receive_v1", "im.message.recalled_v1"] } },
       },

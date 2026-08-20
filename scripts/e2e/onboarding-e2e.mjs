@@ -91,11 +91,47 @@ async function waitFor(description, predicate, { timeoutMs = 60_000, intervalMs 
   throw new Error(`Timed out waiting for ${description}${lastError ? `: ${lastError.message}` : ""}`);
 }
 
+/** Keeps the password out of argv, where any local process could read it. */
+function connectionTarget(url) {
+  const target = new URL(String(url));
+  const password = target.password;
+  target.password = "";
+  return { dsn: target.href, password };
+}
+
+function redactSecrets(message, ...secrets) {
+  return secrets.filter(Boolean).reduce((text, secret) => text.split(secret).join("[redacted]"), String(message));
+}
+
 async function psql(url, sql) {
-  const { stdout } = await execFileAsync("psql", [String(url), "-v", "ON_ERROR_STOP=1", "-Atc", sql], {
-    env: { ...process.env, PGPASSWORD: new URL(String(url)).password },
-  });
-  return stdout.trim();
+  const { dsn, password } = connectionTarget(url);
+  try {
+    const { stdout } = await execFileAsync("psql", [dsn, "-v", "ON_ERROR_STOP=1", "-Atc", sql], {
+      env: { ...process.env, PGPASSWORD: password },
+    });
+    return stdout.trim();
+  } catch (error) {
+    // execFile puts the whole command, and psql echoes the target, into the failure text.
+    throw new Error(redactSecrets(error.message, password));
+  }
+}
+
+/**
+ * This check drops its database on every run, so the target must be
+ * unmistakably disposable and safe to interpolate as an SQL identifier.
+ */
+function disposableDatabaseName(name, adminUrl) {
+  if (!/^[a-z][a-z0-9_]{0,61}$/.test(name)) {
+    throw new Error(`OPENTAG_E2E_DATABASE must be a lowercase identifier, received "${name}"`);
+  }
+  if (!name.includes("e2e")) {
+    throw new Error(`OPENTAG_E2E_DATABASE must name an E2E database, received "${name}"`);
+  }
+  const administered = new URL(String(adminUrl)).pathname.replace(/^\//, "");
+  if (name === administered) {
+    throw new Error(`OPENTAG_E2E_DATABASE must differ from the administrative database "${administered}"`);
+  }
+  return name;
 }
 
 function loadChromium() {
@@ -109,6 +145,41 @@ function loadChromium() {
       }`,
     );
   }
+}
+
+/**
+ * Provider readiness must come from this check's own configuration, not from
+ * whatever the developer's shell exports. The stub run sees only the stubbed
+ * executable and an empty provider home; the installed run deliberately points
+ * Claude Code at a real configuration directory and still keeps Codex out, so
+ * the asserted route is the same in both modes.
+ */
+function providerEnvironment(clientHome, openTagHome, stubBin) {
+  const {
+    CLAUDE_CONFIG_DIR: configuredClaudeHome,
+    CODEX_HOME: _codexHome,
+    HOME: realHome,
+    PATH: inheritedPath,
+    ...inherited
+  } = process.env;
+  const systemPath = "/usr/local/bin:/usr/bin:/bin";
+  if (PROVIDER_STUB) {
+    return {
+      ...inherited,
+      HOME: clientHome,
+      OPENTAG_HOME: openTagHome,
+      CLAUDE_CONFIG_DIR: join(clientHome, ".claude"),
+      PATH: `${stubBin}:${systemPath}`,
+    };
+  }
+  const claudeHome = configuredClaudeHome ?? (realHome ? join(realHome, ".claude") : join(clientHome, ".claude"));
+  return {
+    ...inherited,
+    HOME: clientHome,
+    OPENTAG_HOME: openTagHome,
+    CLAUDE_CONFIG_DIR: claudeHome,
+    PATH: inheritedPath ?? systemPath,
+  };
 }
 
 /** Answers exactly the probe contract in the Claude Code provider adapter. */
@@ -161,9 +232,10 @@ async function main() {
 
   try {
     await step("reset the E2E database", async () => {
-      await psql(ADMIN_DATABASE_URL, `drop database if exists ${DATABASE_NAME} with (force)`);
-      await psql(ADMIN_DATABASE_URL, `create database ${DATABASE_NAME}`);
-      return DATABASE_NAME;
+      const database = disposableDatabaseName(DATABASE_NAME, ADMIN_DATABASE_URL);
+      await psql(ADMIN_DATABASE_URL, `drop database if exists "${database}" with (force)`);
+      await psql(ADMIN_DATABASE_URL, `create database "${database}"`);
+      return database;
     });
 
     await step("start the Server with the real Web build", async () => {
@@ -267,12 +339,7 @@ async function main() {
       const log = createWriteStream(daemonLogPath);
       daemon = spawn(process.execPath, [cli, "daemon", "service-run"], {
         cwd: workspace,
-        env: {
-          ...process.env,
-          HOME: clientHome,
-          OPENTAG_HOME: openTagHome,
-          PATH: PROVIDER_STUB ? `${stubBin}:${process.env.PATH ?? ""}` : (process.env.PATH ?? ""),
-        },
+        env: providerEnvironment(clientHome, openTagHome, stubBin),
         stdio: ["ignore", "pipe", "pipe"],
       });
       daemon.stdout.pipe(log);

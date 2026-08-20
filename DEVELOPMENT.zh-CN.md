@@ -282,17 +282,20 @@ OPENTAG_E2E_PLAYWRIGHT_PATH=/path/to/playwright-core node scripts/e2e/onboarding
 ```
 
 该检查需要可访问的 PostgreSQL 超级用户地址和 Chromium 可执行文件。它会自行创建并删除数据库、监听独立端口，并把
-截图、Server 与 daemon 日志、记录到的 console 条目写入 artifact 目录。
+截图、Server 与 daemon 日志、记录到的 console 条目写入 artifact 目录。由于每次运行都会删库，它会拒绝任何不是一望即知
+可丢弃的 E2E 标识符的库名。daemon 拿到的是显式构造的 Provider 环境，而不是调用者的 shell 环境，因此在任何开发机上
+readiness 都一致。
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
 | `OPENTAG_E2E_ADMIN_DATABASE_URL` | `postgresql://opentag:opentag@127.0.0.1:5432/postgres` | 创建 E2E 数据库使用的超级用户地址 |
-| `OPENTAG_E2E_DATABASE` | `opentag_e2e` | E2E 数据库名，每次运行都会删除并重建 |
+| `OPENTAG_E2E_DATABASE` | `opentag_e2e` | E2E 数据库名，每次运行都会删除并重建；必须是包含 `e2e` 的小写标识符 |
 | `OPENTAG_E2E_PORT` | `8123` | 本次运行的 Server 监听端口 |
 | `OPENTAG_E2E_CHROMIUM` | `/opt/pw-browsers/chromium` | Chromium 可执行文件 |
 | `OPENTAG_E2E_PLAYWRIGHT_PATH` | `playwright-core` | `playwright-core` 的模块标识或路径 |
 | `OPENTAG_E2E_ARTIFACTS` | `$TMPDIR/opentag-onboarding-e2e` | 截图与日志输出目录 |
 | `OPENTAG_E2E_PROVIDER_STUB` | `on` | 设为 `off` 时改用 `PATH` 上已安装的 Claude Code CLI，而不是 stub |
+| `CLAUDE_CONFIG_DIR` | `$HOME/.claude` | stub 关闭时守护进程读取的 Claude Code 配置目录 |
 
 流程中有两部分无法离线执行。Provider readiness 使用一个 stub 可执行文件，它满足与 Claude Code CLI 相同的 probe
 契约，因为 CI 中没有已登录的 Codex 或 Claude Code 安装。Feishu 授权需要访问 `open.feishu.cn`，因此该检查会真实发起一次

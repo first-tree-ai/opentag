@@ -21,7 +21,7 @@ import { type AgentService, AgentServiceError } from "./services/agents/index.js
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
 import type { ComputerService } from "./services/computers/index.js";
 import type { ImResourceService } from "./services/im/index.js";
-import type { FeishuSetupService } from "./services/im-bindings/feishu/index.js";
+import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
 import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
 import type { InvitationService } from "./services/invitations/index.js";
 import type { TeamMembershipService } from "./services/teams/index.js";
@@ -211,6 +211,18 @@ export function createApp(options: CreateAppOptions = {}) {
   );
 
   app.setErrorHandler((error, request, reply) => {
+    const feishuFailure = feishuPublicFailure(error);
+    if (feishuFailure) {
+      const envelope = ErrorEnvelopeSchema.parse({
+        error: {
+          code: feishuFailure.code,
+          category: feishuFailure.category,
+          message: feishuFailure.message,
+          requestId: request.id,
+        },
+      });
+      return reply.code(feishuFailure.statusCode).send(envelope);
+    }
     if (
       error instanceof AuthServiceError ||
       error instanceof AgentServiceError ||

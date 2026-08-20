@@ -1509,13 +1509,6 @@ code {
   margin-top: 24px;
 }
 
-.account-page-actions {
-  display: grid;
-  justify-items: start;
-  gap: 14px;
-  margin-top: 28px;
-}
-
 /* Product surfaces use spacing and tonal grouping instead of repeated rules. */
 .page-header,
 .settings-title {

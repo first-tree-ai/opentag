@@ -61,6 +61,10 @@ describe("CodexAppServerProcess exhaustive behavior", () => {
     );
     expect(process.pid).toBe(child.pid);
     await process.initialize("1.2.3");
+    expect(child.messages[0]).toMatchObject({
+      method: "initialize",
+      params: { capabilities: { experimentalApi: true } },
+    });
     expect(child.messages.at(-1)).toEqual({ method: "initialized", params: {} });
     await process.interrupt("thread", "turn");
     await expect(process.request("fixture/error", {})).rejects.toMatchObject({

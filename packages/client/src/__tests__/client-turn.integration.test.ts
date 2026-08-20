@@ -9,13 +9,21 @@ import type {
   TurnReportRequest,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodexAdapter } from "../providers/codex/adapter.js";
-import type { CodexAppServerClient, CodexAppServerMessage } from "../providers/codex/app-server-wire.js";
+import { CodexAgentRuntimeFactory } from "../providers/codex/agent-runtime.js";
+import type {
+  CodexAppServerMessage,
+  CodexAppServerRequest,
+  CodexDynamicToolHandler,
+  InteractiveCodexAppServerClient,
+} from "../providers/codex/app-server-wire.js";
+import { AgentTurnRunner } from "../runtime/agent-turn-runner.js";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
-import { CodexTurnRunner } from "../runtime/codex-turn-runner.js";
-import type { RuntimeConnectionState } from "../runtime/runtime-connection.js";
+import { MvpTurnReportRecovery } from "../runtime/mvp-turn-report-recovery.js";
+import type { RuntimeBusinessFrame, RuntimeConnectionState } from "../runtime/runtime-connection.js";
+import { RuntimeToolHost } from "../runtime/runtime-tool-host.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
+import { SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import { TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
 import { TurnReportOwner } from "../runtime/turn-report-owner.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
@@ -26,8 +34,8 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-describe("Codex Client Turn vertical", () => {
-  it("E-01/E-02 completes a first Turn, records it, then resumes the same Thread in a new process", async () => {
+describe("Agent Runtime Client Turn vertical", () => {
+  it("E-01/E-02 completes sequential Turns on one Session-scoped Provider runtime", async () => {
     const fixture = await runtimeFixture();
     const first = await fixture.custody.accept(delivery(fixture.runtime, "delivery-1", "first"));
     await first.onAcceptedSent?.();
@@ -62,7 +70,7 @@ describe("Codex Client Turn vertical", () => {
     expect(fixture.clients[0]?.methods).toContain("thread/start");
     expect(fixture.clients[0]?.methods).not.toContain("thread/resume");
     expect(await fixture.store.read("agent-1", "session-1")).toMatchObject({
-      providerThreadId: "thread-1",
+      runtimeBinding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "thread-1" } },
       unresolvedTurn: { phase: "reporting", report: firstReport, resultHash: firstReport.resultHash },
     });
     expect(fixture.custody.admission.snapshot().client).toBe(1);
@@ -77,16 +85,15 @@ describe("Codex Client Turn vertical", () => {
     await second.onAcceptedSent?.();
     const secondReport = await fixture.waitForReport(1);
     expect(secondReport.finalText).toBe("answer-2");
-    expect(fixture.clients).toHaveLength(2);
-    expect(fixture.clients[1]?.methods).toContain("thread/resume");
-    expect(fixture.clients[1]?.threadId).toBe("thread-1");
-    expect(fixture.clients[0]?.cwd).toBe(fixture.clients[1]?.cwd);
+    expect(fixture.clients).toHaveLength(1);
+    expect(fixture.clients[0]?.methods.filter((method) => method === "turn/start")).toHaveLength(2);
 
     await fixture.record(secondReport);
     await vi.waitFor(() => expect(fixture.custody.admission.snapshot().client).toBe(0));
     const recorded = (await fixture.store.read("agent-1", "session-1"))?.recentRecordedInputs;
     expect(recorded).toHaveLength(2);
     expect(recorded?.at(-1)?.report).toEqual(secondReport);
+    await fixture.runtimeManager.close();
   });
 
   it("D-19/D-26 keeps the Provider alive across a mid-turn socket outage and reports after reconnect", async () => {
@@ -106,37 +113,111 @@ describe("Codex Client Turn vertical", () => {
     await vi.waitFor(() => expect(fixture.reportOwner.pendingCount).toBe(1));
     expect(fixture.connection.reports()).toHaveLength(0);
     expect(fixture.clients[0]?.interrupts).toBe(0);
-    expect(fixture.clients[0]?.closed).toBe(true);
+    expect(fixture.clients[0]?.closed).toBe(false);
 
     fixture.connection.setState("registered");
     const report = await fixture.waitForReport(0);
     expect(report.finalText).toBe("answer-1");
     await fixture.record(report);
     await vi.waitFor(() => expect(fixture.custody.admission.snapshot().client).toBe(0));
+    await fixture.runtimeManager.close();
+  });
+
+  it("does not synthesize recovery Reports while the exact accepted, starting, or running Turn is live", async () => {
+    let releaseStarting!: () => void;
+    const startingGate = new Promise<void>((resolveStarting) => {
+      releaseStarting = resolveStarting;
+    });
+    let releaseTerminal!: () => void;
+    const terminalGate = new Promise<void>((resolveTerminal) => {
+      releaseTerminal = resolveTerminal;
+    });
+    const fixture = await runtimeFixture(terminalGate, startingGate);
+    const accepted = await fixture.custody.accept(delivery(fixture.runtime, "delivery-live", "live"));
+
+    const assertLivePhaseIsUntouched = async (phase: "accepted" | "starting" | "running") => {
+      const requests: SessionReconcileRequest[] = [
+        { ...fixture.reconcileRequest, requestId: randomUUID() },
+        {
+          ...fixture.reconcileRequest,
+          requestId: randomUUID(),
+          runtime: snapshot(2),
+        },
+        {
+          ...fixture.reconcileRequest,
+          requestId: randomUUID(),
+          desired: "stopped",
+          runtime: undefined,
+        },
+      ];
+      for (const request of requests) {
+        const reconciled = await fixture.reconciler.reconcile(request);
+        const prepared = await fixture.recovery.prepare(request, reconciled);
+        expect(prepared.retainedReports).toBeUndefined();
+      }
+      const unresolved = (await fixture.store.read("agent-1", "session-1"))?.unresolvedTurn;
+      expect(unresolved).toMatchObject({ phase });
+      expect(unresolved).not.toHaveProperty("report");
+      expect(fixture.connection.reports()).toHaveLength(0);
+      expect(fixture.reportOwner.pendingCount).toBe(0);
+    };
+
+    await assertLivePhaseIsUntouched("accepted");
+    await accepted.onAcceptedSent?.();
+    await vi.waitFor(async () => {
+      expect((await fixture.store.read("agent-1", "session-1"))?.unresolvedTurn?.phase).toBe("starting");
+    });
+    await assertLivePhaseIsUntouched("starting");
+    releaseStarting();
+    await vi.waitFor(async () => {
+      expect((await fixture.store.read("agent-1", "session-1"))?.unresolvedTurn?.phase).toBe("running");
+    });
+    await assertLivePhaseIsUntouched("running");
+
+    releaseTerminal();
+    const report = await fixture.waitForReport(0);
+    expect(report).toMatchObject({ outcome: "completed", finalText: "answer-1" });
+    expect((await fixture.store.read("agent-1", "session-1"))?.unresolvedTurn).toMatchObject({
+      phase: "reporting",
+      report,
+    });
+    await fixture.record(report);
+    await fixture.runtimeManager.close();
   });
 });
 
-async function runtimeFixture(terminalGate: Promise<void> = Promise.resolve()) {
+async function runtimeFixture(
+  terminalGate: Promise<void> = Promise.resolve(),
+  startingGate: Promise<void> = Promise.resolve(),
+) {
   const home = await mkdtemp(resolve(tmpdir(), "opentag-turn-integration-"));
   directories.push(home);
   const computerId = randomUUID();
   const runtime = snapshot();
   const store = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
   const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
-  const reconciler = new SessionReconciler({ computerId, preparation: workspace });
   const connection = new FakeConnection();
   const reportOwner = new TurnReportOwner({ connection });
+  const toolHost = new RuntimeToolHost(connection);
   const clients: ScriptedTurnClient[] = [];
   const logs: RecordedLog[] = [];
-  const adapter = new CodexAdapter({
+  const factory = new CodexAgentRuntimeFactory({
     clientVersion: "0.0.1",
     createClient: (cwd) => {
-      const client = new ScriptedTurnClient(cwd, clients.length + 1, terminalGate);
+      const client = new ScriptedTurnClient(cwd, terminalGate);
       clients.push(client);
       return client;
     },
+    probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "test" }),
   });
-  let runner: CodexTurnRunner;
+  const runtimeManager = new SessionRuntimeManager({
+    bindingStore: store,
+    factories: new Map([["codex", factory]]),
+    toolHost,
+    workspace,
+  });
+  const reconciler = new SessionReconciler({ computerId, preparation: runtimeManager, localPolicy: runtimeManager });
+  let runner: AgentTurnRunner;
   const custody = new TurnCustodyOwner({
     bindingStore: store,
     reconciler,
@@ -149,13 +230,19 @@ async function runtimeFixture(terminalGate: Promise<void> = Promise.resolve()) {
     })(),
     start: (owner) => runner.start(owner),
   });
-  runner = new CodexTurnRunner({
-    adapter,
+  runner = new AgentTurnRunner({
     bindingStore: store,
     connection,
     custody,
     reportOwner,
-    workspace,
+    resourceFetcher: {
+      fetchForTurn: async () => {
+        await startingGate;
+        return undefined;
+      },
+    } as never,
+    runtimeManager,
+    toolHost,
     logger: recordingLogger(logs, { computerId, instanceId: "instance-1" }),
   });
   const reconcile: SessionReconcileRequest = {
@@ -169,6 +256,7 @@ async function runtimeFixture(terminalGate: Promise<void> = Promise.resolve()) {
     runtime,
   };
   await reconciler.reconcile(reconcile);
+  const recovery = new MvpTurnReportRecovery({ bindingStore: store, reconciler, reportOwner });
 
   const waitForReport = async (index: number): Promise<TurnReportRequest> => {
     await vi.waitFor(() => expect(connection.reports().length).toBeGreaterThan(index));
@@ -191,8 +279,11 @@ async function runtimeFixture(terminalGate: Promise<void> = Promise.resolve()) {
     logs,
     record,
     reconciler,
+    reconcileRequest: reconcile,
+    recovery,
     reportOwner,
     runner,
+    runtimeManager,
     runtime,
     store,
     waitForReport,
@@ -203,12 +294,18 @@ async function runtimeFixture(terminalGate: Promise<void> = Promise.resolve()) {
 class FakeConnection {
   readonly sent: unknown[] = [];
   readonly #listeners = new Set<(state: RuntimeConnectionState) => void>();
+  readonly #businessListeners = new Set<(frame: RuntimeBusinessFrame) => void | Promise<void>>();
   state: RuntimeConnectionState = "registered";
 
   subscribeState(listener: (state: RuntimeConnectionState) => void): () => void {
     this.#listeners.add(listener);
     listener(this.state);
     return () => this.#listeners.delete(listener);
+  }
+
+  subscribeBusinessFrames(listener: (frame: RuntimeBusinessFrame) => void | Promise<void>): () => void {
+    this.#businessListeners.add(listener);
+    return () => this.#businessListeners.delete(listener);
   }
 
   async send(frame: unknown): Promise<void> {
@@ -228,19 +325,18 @@ class FakeConnection {
   }
 }
 
-class ScriptedTurnClient implements CodexAppServerClient {
+class ScriptedTurnClient implements InteractiveCodexAppServerClient {
   readonly cwd: string;
   readonly methods: string[] = [];
-  readonly #number: number;
   readonly #terminalGate: Promise<void>;
   #listener?: (message: CodexAppServerMessage) => void;
+  #turn = 0;
   closed = false;
   interrupts = 0;
   threadId?: string;
 
-  constructor(cwd: string, number: number, terminalGate: Promise<void>) {
+  constructor(cwd: string, terminalGate: Promise<void>) {
     this.cwd = cwd;
-    this.#number = number;
     this.#terminalGate = terminalGate;
   }
 
@@ -263,7 +359,9 @@ class ScriptedTurnClient implements CodexAppServerClient {
       };
     }
     if (method === "turn/start") {
-      const turnId = `provider-turn-${this.#number}`;
+      this.#turn += 1;
+      const turnId = `provider-turn-${this.#turn}`;
+      const answer = `answer-${this.#turn}`;
       void this.#terminalGate.then(() => {
         this.#listener?.({
           method: "turn/completed",
@@ -274,10 +372,10 @@ class ScriptedTurnClient implements CodexAppServerClient {
               status: "completed",
               items: [
                 {
-                  id: `answer-${this.#number}`,
+                  id: answer,
                   type: "agentMessage",
                   phase: "final_answer",
-                  text: `answer-${this.#number}`,
+                  text: answer,
                 },
               ],
             },
@@ -298,6 +396,16 @@ class ScriptedTurnClient implements CodexAppServerClient {
     };
   }
 
+  subscribeServerRequests(_listener: (request: CodexAppServerRequest) => void): () => void {
+    return () => undefined;
+  }
+
+  setDynamicToolHandler(_handler: CodexDynamicToolHandler | undefined): void {}
+
+  async respondServerRequest(): Promise<void> {}
+
+  async rejectServerRequest(): Promise<void> {}
+
   async interrupt(): Promise<void> {
     this.interrupts += 1;
   }
@@ -307,14 +415,15 @@ class ScriptedTurnClient implements CodexAppServerClient {
   }
 }
 
-function snapshot(): EffectiveRuntimeSnapshot {
+function snapshot(revision = 1): EffectiveRuntimeSnapshot {
   return {
     revision: {
-      agent: { sequence: 1, id: "agent-revision-1" },
-      session: { sequence: 1, id: "session-revision-1" },
+      agent: { sequence: revision, id: `agent-revision-${revision}` },
+      session: { sequence: revision, id: `session-revision-${revision}` },
     },
     agentId: "agent-1",
     provider: "codex",
+    model: `model-${revision}`,
     instructions: { platform: "platform", agent: "agent", session: "session" },
     allowedTools: [],
     execution: { approvalPolicy: "never", networkAccess: false },

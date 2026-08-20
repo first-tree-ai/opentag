@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const clientMocks = vi.hoisted(() => ({
   configureClientLoggerForService: vi.fn(),
-  createCodexClientRuntime: vi.fn(),
+  createClientRuntime: vi.fn(),
   getAccessTokenLease: vi.fn(),
   me: vi.fn(),
   readCredentials: vi.fn(),
@@ -28,7 +28,7 @@ vi.mock("@opentag/client", async (importOriginal) => {
     OpenTagApi: class {
       me = clientMocks.me;
     },
-    createCodexClientRuntime: clientMocks.createCodexClientRuntime,
+    createClientRuntime: clientMocks.createClientRuntime,
     readCredentials: clientMocks.readCredentials,
     resolveComputerIdentity: clientMocks.resolveComputerIdentity,
   };
@@ -165,13 +165,13 @@ describe("daemon service runtime", () => {
       serverUrl: "http://127.0.0.1:3000",
       userId: "user-1",
     });
-    clientMocks.createCodexClientRuntime.mockResolvedValue({ run, stop });
+    clientMocks.createClientRuntime.mockResolvedValue({ run, stop });
 
     await runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process });
 
-    expect(clientMocks.createCodexClientRuntime).toHaveBeenCalledOnce();
-    expect(clientMocks.createCodexClientRuntime.mock.calls[0]?.[1]).toMatchObject({ home, clientVersion: "0.0.1" });
-    expect(clientMocks.createCodexClientRuntime.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal);
+    expect(clientMocks.createClientRuntime).toHaveBeenCalledOnce();
+    expect(clientMocks.createClientRuntime.mock.calls[0]?.[1]).toMatchObject({ home, clientVersion: "0.0.1" });
+    expect(clientMocks.createClientRuntime.mock.calls[0]?.[1].signal).toBeInstanceOf(AbortSignal);
     expect(run).toHaveBeenCalledOnce();
     expect(stop).not.toHaveBeenCalled();
   });
@@ -202,7 +202,7 @@ describe("daemon service runtime", () => {
       serverUrl: "http://127.0.0.1:3000",
       userId: "user-1",
     });
-    clientMocks.createCodexClientRuntime.mockResolvedValue({
+    clientMocks.createClientRuntime.mockResolvedValue({
       run: vi.fn(async () => undefined),
       stop: vi.fn(),
     });
@@ -303,7 +303,7 @@ describe("daemon service runtime", () => {
       serverUrl: "http://127.0.0.1:3000",
       userId: "user-1",
     });
-    clientMocks.createCodexClientRuntime.mockImplementation(async (_connection, options) => {
+    clientMocks.createClientRuntime.mockImplementation(async (_connection, options) => {
       delayedLogger = options.logger.child({ module: "report-recovery" });
       return { run: vi.fn(async () => undefined), stop: vi.fn() };
     });
@@ -342,7 +342,7 @@ describe("daemon service runtime", () => {
       serverUrl: "http://127.0.0.1:3000",
       userId: "user-1",
     });
-    clientMocks.createCodexClientRuntime.mockResolvedValue({
+    clientMocks.createClientRuntime.mockResolvedValue({
       run: vi.fn(async () => {
         throw new Error("sensitive provider failure");
       }),

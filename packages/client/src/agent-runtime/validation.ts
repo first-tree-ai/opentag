@@ -3,10 +3,12 @@ import {
   AGENT_RUNTIME_BINDING_MAX_BYTES,
   AGENT_RUNTIME_ID_MAX_BYTES,
   AGENT_RUNTIME_TEXT_MAX_BYTES,
+  type AgentHostedTools,
   type AgentInput,
   type AgentPromptRequest,
   type AgentRuntimeBinding,
   type AgentRuntimeManifest,
+  type AgentRuntimePolicy,
 } from "./types.js";
 
 export function assertIdentifier(value: string, field: string): void {
@@ -52,6 +54,52 @@ export function assertPromptRequest(request: AgentPromptRequest): void {
   if (configuration?.provider !== undefined) assertJsonValue(configuration.provider, "configuration.provider");
 }
 
+export function assertHostedTools(policy: AgentRuntimePolicy, hostedTools: AgentHostedTools | undefined): void {
+  if (policy.tools.mode === "provider-default") {
+    if (hostedTools !== undefined) {
+      throw new AgentRuntimeError("configuration_invalid", "provider-default policy cannot declare hosted tools");
+    }
+    return;
+  }
+  if (!hostedTools || typeof hostedTools.handler !== "function" || !Array.isArray(hostedTools.definitions)) {
+    throw new AgentRuntimeError(
+      "configuration_invalid",
+      "allow-list policy requires hosted tool definitions and a handler",
+    );
+  }
+
+  const allowed = new Set<string>();
+  for (const name of policy.tools.names) {
+    assertToolName(name, "policy.tools.names");
+    if (allowed.has(name)) throw new AgentRuntimeError("configuration_invalid", "tool allow-list contains duplicates");
+    allowed.add(name);
+  }
+
+  const defined = new Set<string>();
+  for (const definition of hostedTools.definitions) {
+    if (!definition || typeof definition !== "object") {
+      throw new AgentRuntimeError("configuration_invalid", "hosted tool definition is invalid");
+    }
+    assertToolName(definition.name, "hostedTools.definitions.name");
+    if (defined.has(definition.name)) {
+      throw new AgentRuntimeError("configuration_invalid", "hosted tool definitions contain duplicates");
+    }
+    defined.add(definition.name);
+    if (definition.description !== undefined) {
+      assertIdentifier(definition.description, "hostedTools.definitions.description");
+    }
+    assertJsonValue(definition.inputSchema, "hostedTools.definitions.inputSchema");
+    assertToolInputSchema(definition.inputSchema);
+  }
+
+  if (allowed.size !== defined.size || [...allowed].some((name) => !defined.has(name))) {
+    throw new AgentRuntimeError(
+      "configuration_invalid",
+      "hosted tool definitions must exactly match the tool allow-list",
+    );
+  }
+}
+
 export function assertBinding(binding: AgentRuntimeBinding, manifest: AgentRuntimeManifest): void {
   if (!binding || typeof binding !== "object") {
     throw new AgentRuntimeError("binding_incompatible", "binding is required");
@@ -92,4 +140,83 @@ export function assertJsonValue(
 
 export function sameBinding(left: AgentRuntimeBinding | undefined, right: AgentRuntimeBinding): boolean {
   return left !== undefined && JSON.stringify(left) === JSON.stringify(right);
+}
+
+const TOOL_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+const SCHEMA_PROPERTY_PATTERN = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/;
+const SCHEMA_KEYS = new Set([
+  "additionalProperties",
+  "description",
+  "format",
+  "items",
+  "properties",
+  "required",
+  "type",
+]);
+const SCHEMA_TYPES = new Set(["array", "boolean", "integer", "null", "number", "object", "string"]);
+
+function assertToolName(value: unknown, field: string): asserts value is string {
+  if (typeof value !== "string" || !TOOL_NAME_PATTERN.test(value)) {
+    throw new AgentRuntimeError(
+      "configuration_invalid",
+      `${field} must use portable tool-name characters and start with a letter`,
+    );
+  }
+}
+
+function assertToolInputSchema(value: unknown): void {
+  if (!isRecord(value) || value.type !== "object") {
+    throw new AgentRuntimeError("configuration_invalid", "hosted tool input schema must be an object JSON Schema");
+  }
+  validateSchema(value, 0);
+}
+
+function validateSchema(schema: Record<string, unknown>, depth: number): void {
+  if (depth > 16 || Object.keys(schema).some((key) => !SCHEMA_KEYS.has(key))) invalidSchema();
+  if (typeof schema.type !== "string" || !SCHEMA_TYPES.has(schema.type)) invalidSchema();
+  if (schema.description !== undefined && (typeof schema.description !== "string" || schema.description.length === 0)) {
+    invalidSchema();
+  }
+  if (schema.format !== undefined && (schema.type !== "string" || schema.format !== "uuid")) invalidSchema();
+
+  if (schema.type === "object") {
+    if (schema.items !== undefined || schema.format !== undefined) invalidSchema();
+    if (schema.additionalProperties !== undefined && typeof schema.additionalProperties !== "boolean") invalidSchema();
+    const properties = schema.properties ?? {};
+    if (!isRecord(properties)) invalidSchema();
+    for (const [name, property] of Object.entries(properties)) {
+      if (!SCHEMA_PROPERTY_PATTERN.test(name) || !isRecord(property)) invalidSchema();
+      validateSchema(property, depth + 1);
+    }
+    if (schema.required !== undefined) {
+      if (!Array.isArray(schema.required)) invalidSchema();
+      const required = new Set<string>();
+      for (const name of schema.required) {
+        if (typeof name !== "string" || required.has(name) || !Object.hasOwn(properties, name)) invalidSchema();
+        required.add(name);
+      }
+    }
+    return;
+  }
+
+  if (schema.properties !== undefined || schema.required !== undefined || schema.additionalProperties !== undefined) {
+    invalidSchema();
+  }
+  if (schema.type === "array") {
+    if (!isRecord(schema.items)) invalidSchema();
+    validateSchema(schema.items, depth + 1);
+  } else if (schema.items !== undefined) {
+    invalidSchema();
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function invalidSchema(): never {
+  throw new AgentRuntimeError(
+    "configuration_invalid",
+    "hosted tool input schema is not in the portable JSON Schema subset",
+  );
 }

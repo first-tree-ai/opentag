@@ -2,7 +2,7 @@
 
 Status: active quality gate
 
-Last updated: 2026-08-19
+Last updated: 2026-08-20
 
 ## Goal and Scope
 
@@ -17,9 +17,18 @@ layer. It covers these production boundaries:
 - `src/providers/codex/agent-runtime.ts`
 - `src/providers/codex/app-server-wire.ts`
 
+Production Client execution now uses this contract through:
+
+- `src/runtime/runtime-tool-host.ts`
+- `src/runtime/session-runtime-manager.ts`
+- `src/runtime/agent-turn-runner.ts`
+- `src/runtime/client-runtime-composition.ts`
+
 The coverage gate requires 100% statements, branches, functions, and lines for
-that exact source set. Coverage is a floor, not the acceptance criterion by
-itself: protocol behavior and a live local Codex session are tested separately.
+the contract, Codex translation, hosted-tool host, Session Runtime manager, and
+Turn runner. Coverage is a floor, not the acceptance criterion by itself:
+production composition, crash recovery, protocol behavior, and a live local
+Codex session are tested separately.
 
 There are no file-level or broad range exclusions. Five local V8 annotations in
 the Codex implementation document non-executable invariant branches: one
@@ -80,6 +89,13 @@ A scripted interactive App Server client verifies:
 - foreign Thread/Turn events, duplicate requests, malformed data, and process failure;
 - probe outcomes, credential discovery, process environment allow-listing, and cleanup.
 
+The same suite verifies the experimental hosted-tool protocol: initialization
+advertises experimental API support, `thread/start` receives the exact canonical
+dynamic-tool definitions, `thread/resume` restores persisted definitions, and
+unknown, duplicate, late, cancelled, malformed, or failed calls settle with a
+deterministic fail-closed response. A Codex artifact without this protocol is
+reported unavailable; there is no provider-default tool fallback.
+
 ### 3. Real JSONL process tests
 
 The wire client runs against a child-process fixture rather than an in-memory
@@ -108,6 +124,31 @@ The live test uses a temporary read-only workspace, disabled network policy,
 model requests and is therefore intentionally excluded from the default test
 command.
 
+### 5. Production Client Runtime integration and recovery
+
+The production-path tests verify:
+
+- daemon composition constructs the provider-neutral `createClientRuntime`
+  entry point and registers only the supported Codex factory;
+- a new Session creates a Provider Runtime and durably writes an opaque v2
+  binding before Run admission;
+- legacy v1 Codex bindings migrate on read and resume the exact Provider Thread;
+- effective configuration or tool-policy changes close the old Runtime and
+  create a new Provider session instead of silently reusing stale definitions;
+- IM hosted tools remain scoped to the active Run identity, allow-list, Session,
+  placement generation, and idempotent request correlation;
+- Agent Runtime events feed generic traces and typed results feed the existing
+  Turn Report path while Client Runtime retains custody;
+- restart recovery reports accepted-but-not-started work as `not_started` and
+  starting/running work as `turn_state_unknown`, without replaying the Run;
+- stop, shutdown, repeated reconcile, binding-write failures, and reporting
+  failures do not admit an unbound Run or leak a Runtime owner.
+
+Repository acceptance also audits that `CodexAdapter`, `CodexTurnRunner`,
+`createCodexClientRuntime`, and their old smoke path have no remaining source,
+export, test, or production consumer. The Agent Runtime live E2E is the sole
+Codex live smoke.
+
 ## Commands and Acceptance
 
 ```bash
@@ -117,6 +158,8 @@ pnpm check
 pnpm build
 pnpm typecheck
 pnpm test
+pnpm --filter @opentag/server test:integration
+git diff --check
 ```
 
 Acceptance requires all commands to pass, all four scoped coverage metrics to
@@ -127,8 +170,8 @@ failure; it is never converted into a skipped success.
 
 ## Latest Local Execution
 
-On 2026-08-19 the final scoped suite passed 80 tests with 100% statements,
-branches, functions, and lines. The live test passed against `codex-cli 0.144.1`:
+On 2026-08-20 the converged scoped suite passed 111 tests with 100% statements,
+branches, functions, and lines. The live test passed against `codex-cli 0.147.0`:
 both create and resumed Runs completed, the opaque binding was preserved, and
-each Run produced 16 ordered events. The monorepo formatting, build, and
-type-check commands also passed after the live run.
+each Run produced 16 ordered events. The monorepo checks, build, type-check,
+offline tests, and Server PostgreSQL integration also passed.

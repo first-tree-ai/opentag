@@ -6,7 +6,7 @@ import {
   RUNTIME_TRACE_BATCH_MAX_EVENTS,
   type RuntimeUsage,
 } from "@opentag/shared";
-import type { CodexTraceItemType, CodexTraceSink, CodexTurnOutcome } from "../providers/codex/adapter.js";
+import type { AgentRuntimeEvent } from "../agent-runtime/types.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 
 export const TURN_TRACE_MAX_BUFFER_BYTES = 256 * 1024;
@@ -34,14 +34,14 @@ type TraceEventInput =
   | { kind: "turn_started" }
   | {
       kind: "item_completed";
-      itemType: CodexTraceItemType;
+      itemType: "agent_message" | "command" | "file_change" | "tool" | "other";
       status: "completed" | "failed";
     }
   | { kind: "usage_updated"; usage: RuntimeUsage }
   | { kind: "warning"; code: string; message: string }
-  | { kind: "turn_completed"; outcome: CodexTurnOutcome };
+  | { kind: "turn_completed"; outcome: "completed" | "failed" | "cancelled" | "unknown" };
 
-export class TurnTraceBuffer implements CodexTraceSink {
+export class TurnTraceBuffer {
   readonly #id: () => string;
   readonly #maxBufferBytes: number;
   readonly #maxBufferEvents: number;
@@ -85,7 +85,10 @@ export class TurnTraceBuffer implements CodexTraceSink {
     this.#append({ kind: "turn_started" });
   }
 
-  itemCompleted(itemType: CodexTraceItemType, status: "completed" | "failed"): void {
+  itemCompleted(
+    itemType: "agent_message" | "command" | "file_change" | "tool" | "other",
+    status: "completed" | "failed",
+  ): void {
     this.#append({ kind: "item_completed", itemType, status });
   }
 
@@ -97,14 +100,40 @@ export class TurnTraceBuffer implements CodexTraceSink {
     this.#append({
       kind: "warning",
       code: /^[A-Za-z0-9:_-]{1,128}$/.test(code) ? code : "provider_warning",
-      message: "Codex reported a provider warning",
+      message: "Provider reported a runtime warning",
     });
   }
 
-  turnCompleted(outcome: CodexTurnOutcome): void {
+  turnCompleted(outcome: "completed" | "failed" | "cancelled" | "unknown"): void {
     if (this.#turnCompleted) return;
     this.#turnCompleted = true;
     this.#append({ kind: "turn_completed", outcome });
+  }
+
+  record(event: AgentRuntimeEvent): void {
+    if (event.type === "run_started") {
+      this.turnStarted();
+      return;
+    }
+    if (event.type === "message_completed") {
+      this.itemCompleted("agent_message", "completed");
+      return;
+    }
+    if (event.type === "tool_completed") {
+      this.itemCompleted("tool", event.status === "completed" ? "completed" : "failed");
+      return;
+    }
+    if (event.type === "usage_updated") {
+      this.usageUpdated(event.usage);
+      return;
+    }
+    if (event.type === "provider_warning") {
+      this.warning(event.code, event.message);
+      return;
+    }
+    if (event.type === "run_completed") this.turnCompleted("completed");
+    else if (event.type === "run_aborted" || event.type === "run_cancelled") this.turnCompleted("cancelled");
+    else if (event.type === "run_failed") this.turnCompleted("failed");
   }
 
   summary(): TurnTraceSummary {

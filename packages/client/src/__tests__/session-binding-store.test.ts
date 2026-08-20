@@ -24,7 +24,7 @@ describe("SessionBindingStore", () => {
     const fixture = await bindingFixture();
     const binding = await fixture.store.read("agent-1", "session-1");
     expect(binding).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       agentId: "agent-1",
       sessionId: "session-1",
       workspaceId: "workspace-1",
@@ -67,9 +67,7 @@ describe("SessionBindingStore", () => {
     const request = delivery(fixture.runtime, 1);
     const inputHash = computeDirectInputHash(request);
     await fixture.store.recordAccepted(request, inputHash, "turn-1");
-    await fixture.store.updateUnresolved("agent-1", "session-1", "turn-1", "starting", {
-      providerThreadId: "thread-1",
-    });
+    await fixture.store.updateUnresolved("agent-1", "session-1", "turn-1", "starting");
     await fixture.store.updateUnresolved("agent-1", "session-1", "turn-1", "running", {
       providerTurnId: "provider-turn-1",
     });
@@ -121,6 +119,33 @@ describe("SessionBindingStore", () => {
     const fixture = await bindingFixture();
     await writeFile(sessionBindingPath(fixture.home, "agent-1", "session-1"), "{not-json", "utf8");
     await expect(fixture.store.read("agent-1", "session-1")).rejects.toThrow(/invalid JSON/);
+  });
+
+  it("reads a legacy v1 Codex thread and rewrites only the opaque v2 binding", async () => {
+    const fixture = await bindingFixture();
+    const path = sessionBindingPath(fixture.home, "agent-1", "session-1");
+    const current = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    delete current.runtimeBinding;
+    current.schemaVersion = 1;
+    current.providerThreadId = "legacy-thread";
+    await writeFile(path, `${JSON.stringify(current)}\n`, "utf8");
+
+    expect((await fixture.store.read("agent-1", "session-1"))?.runtimeBinding).toEqual({
+      providerId: "codex",
+      schemaVersion: 1,
+      payload: { threadId: "legacy-thread" },
+    });
+    const reopenedWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: fixture.store });
+    const reopened = new SessionReconciler({ computerId: fixture.computerId, preparation: reopenedWorkspace });
+    await expect(reopened.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "ready",
+    });
+    const rewritten = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    expect(rewritten).toMatchObject({
+      schemaVersion: 2,
+      runtimeBinding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "legacy-thread" } },
+    });
+    expect(rewritten).not.toHaveProperty("providerThreadId");
   });
 });
 

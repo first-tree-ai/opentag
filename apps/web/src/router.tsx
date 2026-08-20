@@ -25,6 +25,7 @@ import {
 } from "react";
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ApiError, browserApi } from "./api.js";
+import { CreateTeamForm } from "./create-team-form.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
 
@@ -89,7 +90,7 @@ export function AppRouter() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/invites/:token" element={<InvitePage />} />
-      <Route path="/teams/new" element={<UnavailablePage title="Create Team" />} />
+      <Route path="/teams/new" element={<NewTeamPage />} />
       <Route element={<AuthenticatedTeamGate />}>
         <Route path="/onboarding" element={<OnboardingPage />} />
         <Route element={<AppShell />}>
@@ -241,6 +242,24 @@ function clearPendingInvitation(token: string): void {
   }
 }
 
+function NewTeamPage() {
+  const navigate = useNavigate();
+  return (
+    <main className="center-card">
+      <span className="eyebrow">OpenTag</span>
+      <h1>Create Team</h1>
+      <p>A Team holds your members, Agents and permissions. You become its first Team Admin.</p>
+      <CreateTeamForm
+        onCreated={(created) => {
+          window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, created.id);
+          navigate("/agents");
+        }}
+        onUnauthenticated={() => navigate(`/login?next=${encodeURIComponent("/teams/new")}`)}
+      />
+    </main>
+  );
+}
+
 function AuthenticatedTeamGate() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -255,7 +274,8 @@ function AuthenticatedTeamGate() {
       {(me) => {
         const stored = readTeamPreference();
         const membership = me.memberships.find((item: MeMembership) => item.teamId === stored) ?? me.memberships[0];
-        if (!membership) return <UnavailablePage title="No active Team" />;
+        // Creating or joining a Team is the first onboarding step, so a Team-less session is sent there.
+        if (!membership) return <Navigate replace to="/teams/new" />;
         const selectTeam = (teamId: string) => {
           if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
           window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, teamId);
@@ -285,16 +305,21 @@ function AppShell() {
         <Link className="brand" to="/agents">
           OpenTag
         </Link>
-        <label className="team-picker">
-          <span>Team</span>
-          <select value={membership.teamId} onChange={(event) => selectTeam(event.currentTarget.value)}>
-            {me.memberships.map((item: MeMembership) => (
-              <option value={item.teamId} key={item.teamId}>
-                {item.teamDisplayName}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="team-picker-group">
+          <label className="team-picker">
+            <span>Team</span>
+            <select value={membership.teamId} onChange={(event) => selectTeam(event.currentTarget.value)}>
+              {me.memberships.map((item: MeMembership) => (
+                <option value={item.teamId} key={item.teamId}>
+                  {item.teamDisplayName}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Link className="team-picker-action" to="/teams/new">
+            Create Team
+          </Link>
+        </div>
         <nav>
           <NavLink to="/agents">Agents</NavLink>
           <NavLink to="/settings/team">Settings</NavLink>

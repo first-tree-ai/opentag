@@ -26,8 +26,24 @@ export class ComputerService {
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
   }
 
+  /**
+   * A Computer is only meaningful inside a Team. A session can legitimately hold no membership while the
+   * user has yet to create or join one, so membership is asserted here instead of inferred from the session.
+   */
+  async #requireTeamMember(userId: string): Promise<void> {
+    const me = await this.#auth.getActiveUserById(userId);
+    if (me.memberships.length === 0) {
+      throw new AuthServiceError(
+        "AUTH_MEMBERSHIP_REQUIRED",
+        "deterministic",
+        "An active team membership is required",
+        403,
+      );
+    }
+  }
+
   async register(userId: string, frame: ComputerRegisterFrame): Promise<void> {
-    await this.#auth.getActiveUserById(userId);
+    await this.#requireTeamMember(userId);
     const now = this.#now();
     await this.#database.transaction(async (transaction) => {
       await transaction
@@ -73,7 +89,7 @@ export class ComputerService {
   }
 
   async heartbeat(userId: string, computerId: string, instanceId: string): Promise<boolean> {
-    await this.#auth.getActiveUserById(userId);
+    await this.#requireTeamMember(userId);
     const now = this.#now();
     const updated = await this.#database
       .update(computers)
@@ -100,7 +116,7 @@ export class ComputerService {
   }
 
   async listForUser(userId: string): Promise<ListComputersResponse> {
-    await this.#auth.getActiveUserById(userId);
+    await this.#requireTeamMember(userId);
     const rows = await this.#database.select().from(computers).where(eq(computers.ownerUserId, userId));
     const freshnessCutoff = this.#now().getTime() - this.#presenceTimeoutMs;
     return {

@@ -53,15 +53,6 @@ const LINE_HEIGHT_LITERALS = new Set(["1", "38px"]);
  */
 const FONT_SHORTHAND_LITERALS = new Set(["inherit"]);
 
-/** Comments parse as their own nodes, so only declarations the browser applies reach any check. */
-function declarations(css: string): Declaration[] {
-  const found: Declaration[] = [];
-  postcss.parse(css).walkDecls((declaration) => {
-    found.push(declaration);
-  });
-  return found;
-}
-
 /** The selectors a declaration applies under, or none when it sits outside a rule. */
 function selectorsOf(declaration: Declaration): string[] {
   const parent = declaration.parent;
@@ -80,17 +71,6 @@ function unconditional(declaration: Declaration): boolean {
 }
 
 /**
- * A custom property exists only where its selector matches and its conditions
- * hold. A step parked under another rule -- or under a media query that a normal
- * viewport never satisfies -- is invisible to a :root role, so the baseline
- * scale has to be declared at an unconditional :root to count as declared.
- */
-function atRoot(declaration: Declaration): boolean {
-  const selectors = selectorsOf(declaration);
-  return unconditional(declaration) && selectors.length > 0 && selectors.every((selector) => selector === ":root");
-}
-
-/**
  * The browser decodes identifier escapes before it matches a property name;
  * PostCSS hands them over as written. `f\6f nt-size` is `font-size` to the
  * page, so it has to be `font-size` here too -- and `--text\2d ui` is the
@@ -103,11 +83,6 @@ function decodeIdentifier(name: string): string {
     const unrepresentable = code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff);
     return unrepresentable ? "\uFFFD" : String.fromCodePoint(code);
   });
-}
-
-/** The name a declaration carries once decoded: what the browser matches against. */
-function declaredName(declaration: Declaration): string {
-  return decodeIdentifier(declaration.prop);
 }
 
 /**
@@ -123,9 +98,42 @@ function readableValue(value: string): string {
   return decodeIdentifier(withoutStrings(value));
 }
 
+/**
+ * What the browser sees: the decoded name, the value with strings removed and
+ * escapes resolved, where it applies, and whether it applies unconditionally.
+ *
+ * Every check below reads these records. PostCSS nodes stop here on purpose --
+ * twice, a check reached past the decoder to the name as written and let an
+ * escaped declaration through, so the spelling is no longer reachable.
+ */
+type Declared = { name: string; value: string; selectors: string[]; unconditional: boolean };
+
+/** Comments parse as their own nodes, so only declarations the browser applies reach any check. */
+function declarations(css: string): Declared[] {
+  const found: Declared[] = [];
+  postcss.parse(css).walkDecls((declaration) => {
+    found.push({
+      name: decodeIdentifier(declaration.prop),
+      value: readableValue(declaration.value).trim(),
+      selectors: selectorsOf(declaration),
+      unconditional: unconditional(declaration),
+    });
+  });
+  return found;
+}
+
+/** A baseline definition applies everywhere: unconditional, and :root alone. */
+function atRoot(declaration: Declared): boolean {
+  return (
+    declaration.unconditional &&
+    declaration.selectors.length > 0 &&
+    declaration.selectors.every((selector) => selector === ":root")
+  );
+}
+
 /** Ordinary property names are ASCII case-insensitive; custom property names are not. */
-function propertyName(declaration: Declaration): string {
-  const name = declaredName(declaration);
+function propertyName(declaration: Declared): string {
+  const name = declaration.name;
   return name.startsWith("--") ? name : name.toLowerCase();
 }
 
@@ -133,14 +141,14 @@ function propertyName(declaration: Declaration): string {
 function valuesOf(css: string, property: string): string[] {
   return declarations(css)
     .filter((declaration) => propertyName(declaration) === property)
-    .map((declaration) => declaration.value.trim());
+    .map((declaration) => declaration.value);
 }
 
 function definedTokens(css: string, prefix: string): Set<string> {
   const pattern = new RegExp(`^--(${prefix}-[a-z0-9-]+)$`);
   const names = new Set<string>();
   for (const declaration of declarations(css).filter(atRoot)) {
-    const name = declaredName(declaration).match(pattern)?.[1];
+    const name = declaration.name.match(pattern)?.[1];
     if (name !== undefined) names.add(name);
   }
   return names;
@@ -157,21 +165,35 @@ function offTokenValues(css: string, property: string, allowed: RegExp, literals
 function danglingReferences(css: string): string[] {
   const defined = definedTypographyTokens(css);
   const referenced = declarations(css).flatMap((declaration) =>
-    [...readableValue(declaration.value).matchAll(TOKEN_REFERENCE)]
+    [...declaration.value.matchAll(TOKEN_REFERENCE)]
       .map((match) => match[1])
       .filter((name): name is string => name !== undefined),
   );
   return [...new Set(referenced.filter((name) => !defined.has(name)))];
 }
 
+/** Every role declaration, so a role cannot be counted by one check and skipped by another. */
+function roleDeclarations(css: string): Declared[] {
+  return declarations(css).filter((declaration) => /^--text-[a-z]+$/.test(declaration.name));
+}
+
+/** A role names one raw step; anything else is not a role binding. */
+function stepNamedBy(declaration: Declared): string | undefined {
+  return declaration.value.match(/^var\(\s*--(fs-[a-z0-9-]+)\s*\)$/)?.[1];
+}
+
 /** Steps named by a role, paired with the role, so a broken edge names both ends. */
 function roleEdges(css: string): { role: string; step: string }[] {
-  return declarations(css)
-    .filter((declaration) => /^--text-[a-z]+$/.test(declaredName(declaration)))
-    .flatMap((declaration) => {
-      const step = readableValue(declaration.value).match(/^var\(\s*--(fs-[a-z0-9-]+)\s*\)$/)?.[1];
-      return step === undefined ? [] : [{ role: declaredName(declaration), step }];
-    });
+  return roleDeclarations(css).flatMap((declaration) => {
+    const step = stepNamedBy(declaration);
+    return step === undefined ? [] : [{ role: declaration.name, step }];
+  });
+}
+
+function malformedRoles(css: string): string[] {
+  return roleDeclarations(css)
+    .filter((declaration) => stepNamedBy(declaration) === undefined)
+    .map((declaration) => `${declaration.name}: ${declaration.value}`);
 }
 
 function unresolvedRoles(css: string): string[] {
@@ -182,16 +204,14 @@ function unresolvedRoles(css: string): string[] {
 }
 
 /** Every baseline step declaration, well-formed or not, so none is skipped silently. */
-function rootStepDeclarations(css: string): Declaration[] {
-  return declarations(css).filter(
-    (declaration) => atRoot(declaration) && declaredName(declaration).startsWith("--fs-"),
-  );
+function rootStepDeclarations(css: string): Declared[] {
+  return declarations(css).filter((declaration) => atRoot(declaration) && declaration.name.startsWith("--fs-"));
 }
 
 /** A step is a numeric name and a rem value; anything else does not describe one. */
-function stepOf(declaration: Declaration): { name: number; px: number } | undefined {
-  const name = declaredName(declaration).match(/^--fs-([0-9]+)$/)?.[1];
-  const rem = readableValue(declaration.value).match(/^([0-9.]+)rem$/)?.[1];
+function stepOf(declaration: Declared): { name: number; px: number } | undefined {
+  const name = declaration.name.match(/^--fs-([0-9]+)$/)?.[1];
+  const rem = declaration.value.match(/^([0-9.]+)rem$/)?.[1];
   if (name === undefined || rem === undefined) return undefined;
   return { name: Number(name), px: Number(rem) * 16 };
 }
@@ -206,7 +226,7 @@ function rawSteps(css: string): { name: number; px: number }[] {
 function malformedSteps(css: string): string[] {
   return rootStepDeclarations(css)
     .filter((declaration) => stepOf(declaration) === undefined)
-    .map((declaration) => `${declaredName(declaration)}: ${declaration.value}`);
+    .map((declaration) => `${declaration.name}: ${declaration.value}`);
 }
 
 /**
@@ -219,9 +239,9 @@ function scopedDefinitions(css: string): { token: string; selectors: string[] }[
   return declarations(css)
     .filter((declaration) => !atRoot(declaration))
     .flatMap((declaration) => {
-      const token = declaredName(declaration).match(pattern)?.[1];
+      const token = declaration.name.match(pattern)?.[1];
       if (token === undefined) return [];
-      return [{ token, selectors: selectorsOf(declaration) }];
+      return [{ token, selectors: declaration.selectors }];
     });
 }
 
@@ -259,9 +279,8 @@ describe("typography tokens", () => {
   });
 
   it("resolves every role to a raw step rather than a bare length", () => {
-    const roles = declarations(stylesheet).filter((declaration) => /^--text-[a-z]+$/.test(declaration.prop));
-    expect(roles.length).toBeGreaterThan(0);
-    expect(roleEdges(stylesheet).length).toBe(roles.length);
+    expect(malformedRoles(stylesheet)).toEqual([]);
+    expect(roleEdges(stylesheet).length).toBeGreaterThan(0);
   });
 
   it("retunes roles only on the reading surfaces, and never a raw step", () => {
@@ -404,6 +423,11 @@ describe("the guard itself", () => {
     const css =
       ":root { --fs-13: 0.8125rem; --text-ui: var(--fs-14); --fs-14: 0.875rem; }\n:root, .row { --text-ui: var(--fs-13); }";
     expect(scopedDefinitions(css)).toEqual([{ token: "text-ui", selectors: [":root", ".row"] }]);
+  });
+
+  it("reports an escaped root role that overrides a good one", () => {
+    const css = ":root { --fs-13: 0.8125rem; --text-ui: var(--fs-13); }\n:root { --text\\2d ui: 13.5px; }";
+    expect(malformedRoles(css)).toEqual(["--text-ui: 13.5px"]);
   });
 
   it("does not read a commented-out declaration as a violation", () => {

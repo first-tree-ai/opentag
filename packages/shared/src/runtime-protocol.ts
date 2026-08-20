@@ -3,7 +3,11 @@ import { AGENT_RUNTIME_PROVIDERS, AgentRuntimeProviderSchema } from "./agent.js"
 import { ComputerPlatformSchema, ProviderReadinessStatusSchema } from "./computer.js";
 import { ErrorCodeSchema } from "./errors.js";
 
-export const RUNTIME_PROTOCOL_VERSION = 1 as const;
+export const RUNTIME_PROTOCOL_V1 = 1 as const;
+export const RUNTIME_PROTOCOL_V2 = 2 as const;
+export const RUNTIME_PROTOCOL_VERSION = RUNTIME_PROTOCOL_V2;
+export const RUNTIME_SUPPORTED_PROTOCOL_VERSIONS = { min: RUNTIME_PROTOCOL_V1, max: RUNTIME_PROTOCOL_V2 } as const;
+
 export const RUNTIME_V0_CAPABILITIES = {
   sessionReconcile: 1,
   imDelivery: 1,
@@ -11,6 +15,27 @@ export const RUNTIME_V0_CAPABILITIES = {
   agentTrace: 1,
   imMessageTool: 1,
 } as const;
+
+export const RUNTIME_CAPABILITY = {
+  agentTrace: "runtime.agentTrace",
+  imDelivery: "runtime.imDelivery",
+  imMessageTool: "runtime.imMessageTool",
+  sessionReconcile: "runtime.sessionReconcile",
+  turnReport: "runtime.turnReport",
+} as const;
+
+export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
+  [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.imDelivery]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.imMessageTool]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 1 },
+} as const;
+
+export const RUNTIME_CLIENT_CAPABILITY_OFFERS = RUNTIME_SERVER_CAPABILITY_OFFERS;
+export const RUNTIME_REQUIRED_CLIENT_CAPABILITIES: readonly string[] = [];
+export const RUNTIME_REQUIRED_SERVER_CAPABILITIES: readonly string[] = [];
+
 export const RUNTIME_MAX_FRAME_BYTES = 64 * 1024;
 export const RUNTIME_HEARTBEAT_INTERVAL_MIN_MS = 10;
 export const RUNTIME_HEARTBEAT_INTERVAL_MAX_MS = 5 * 60 * 1_000;
@@ -18,12 +43,15 @@ export const RUNTIME_HEARTBEAT_TIMEOUT_MIN_MS = 100;
 export const RUNTIME_HEARTBEAT_TIMEOUT_MAX_MS = 15 * 60 * 1_000;
 export const RUNTIME_CLIENT_CAPABILITY_TTL_MS = 60_000;
 export const RuntimeRequestIdSchema = z.string().uuid();
+export const RuntimeConnectionIdSchema = z.string().uuid();
 
 export const RuntimeFrameEnvelopeSchema = z
   .object({
     type: z.string().min(1).max(128),
     requestId: RuntimeRequestIdSchema.optional(),
     protocolVersion: z.number().int().safe().optional(),
+    connectionId: RuntimeConnectionIdSchema.optional(),
+    critical: z.boolean().optional(),
   })
   .passthrough();
 
@@ -38,6 +66,50 @@ export const RuntimeHeartbeatTimeoutMsSchema = z
   .int()
   .min(RUNTIME_HEARTBEAT_TIMEOUT_MIN_MS)
   .max(RUNTIME_HEARTBEAT_TIMEOUT_MAX_MS);
+
+export const RuntimeProtocolRangeSchema = z
+  .object({
+    min: z.number().int().safe().positive(),
+    max: z.number().int().safe().positive(),
+  })
+  .strict()
+  .superRefine((range, context) => {
+    if (range.min > range.max) {
+      context.addIssue({ code: "custom", path: ["min"], message: "Protocol range minimum exceeds maximum" });
+    }
+  });
+
+export const RuntimeCapabilityRangeSchema = z
+  .object({
+    min: z.number().int().safe().positive(),
+    max: z.number().int().safe().positive(),
+  })
+  .strict()
+  .superRefine((range, context) => {
+    if (range.min > range.max) {
+      context.addIssue({ code: "custom", path: ["min"], message: "Capability range minimum exceeds maximum" });
+    }
+  });
+
+export const RuntimeCapabilityNameSchema = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[a-z][A-Za-z0-9]*(?:\.[a-z][A-Za-z0-9]*)+$/, "Capability names must be namespaced identifiers");
+
+export const RuntimeCapabilityOffersSchema = z.record(RuntimeCapabilityNameSchema, RuntimeCapabilityRangeSchema);
+export const RuntimeRequiredCapabilitiesSchema = z
+  .array(RuntimeCapabilityNameSchema)
+  .max(128)
+  .superRefine((capabilities, context) => {
+    if (new Set(capabilities).size !== capabilities.length) {
+      context.addIssue({ code: "custom", message: "Required capabilities must be unique" });
+    }
+  });
+export const RuntimeNegotiatedCapabilitiesSchema = z.record(
+  RuntimeCapabilityNameSchema,
+  z.number().int().safe().positive(),
+);
 
 export const RuntimeCapabilitiesSchema = z
   .object({
@@ -75,34 +147,95 @@ export const RuntimeProviderReadinessNegotiationSchema = z
   .strict()
   .superRefine((negotiation, context) => validateCanonicalProviderIds(negotiation.providers, context));
 
-export const ServerWelcomeFrameSchema = z
+const heartbeatPolicyShape = {
+  heartbeatIntervalMs: RuntimeHeartbeatIntervalMsSchema,
+  heartbeatTimeoutMs: RuntimeHeartbeatTimeoutMsSchema,
+};
+
+function validateHeartbeatPolicy(
+  frame: { heartbeatIntervalMs: number; heartbeatTimeoutMs: number },
+  context: z.RefinementCtx,
+): void {
+  if (frame.heartbeatTimeoutMs < frame.heartbeatIntervalMs * 2) {
+    context.addIssue({
+      code: "custom",
+      path: ["heartbeatTimeoutMs"],
+      message: "Heartbeat timeout must be at least twice the interval",
+    });
+  }
+}
+
+export const ServerWelcomeV1FrameSchema = z
   .object({
     type: z.literal("server:welcome"),
-    protocolVersion: z.literal(RUNTIME_PROTOCOL_VERSION),
+    protocolVersion: z.literal(RUNTIME_PROTOCOL_V1),
     capabilities: RuntimeCapabilitiesSchema,
-    heartbeatIntervalMs: RuntimeHeartbeatIntervalMsSchema,
-    heartbeatTimeoutMs: RuntimeHeartbeatTimeoutMsSchema,
+    ...heartbeatPolicyShape,
     providerReadiness: RuntimeProviderReadinessNegotiationSchema.optional(),
   })
   .strict()
+  .superRefine(validateHeartbeatPolicy);
+
+export const ServerWelcomeV2FrameSchema = z
+  .object({
+    type: z.literal("server:welcome"),
+    protocolVersion: z.literal(RUNTIME_PROTOCOL_V2),
+    supportedProtocolVersions: RuntimeProtocolRangeSchema,
+    supportedCapabilities: RuntimeCapabilityOffersSchema,
+    requiredClientCapabilities: RuntimeRequiredCapabilitiesSchema,
+    ...heartbeatPolicyShape,
+    providerReadiness: RuntimeProviderReadinessNegotiationSchema.optional(),
+  })
+  .passthrough()
   .superRefine((frame, context) => {
-    if (frame.heartbeatTimeoutMs < frame.heartbeatIntervalMs * 2) {
+    validateHeartbeatPolicy(frame, context);
+    if (
+      frame.supportedProtocolVersions.min > RUNTIME_PROTOCOL_V2 ||
+      frame.supportedProtocolVersions.max < RUNTIME_PROTOCOL_V2
+    ) {
       context.addIssue({
         code: "custom",
-        path: ["heartbeatTimeoutMs"],
-        message: "Heartbeat timeout must be at least twice the interval",
+        path: ["supportedProtocolVersions"],
+        message: "The selected protocol is outside the Server-supported range",
       });
     }
   });
 
-export const AuthFrameSchema = z
+export const ServerWelcomeFrameSchema = z.union([ServerWelcomeV1FrameSchema, ServerWelcomeV2FrameSchema]);
+
+export const AuthV1FrameSchema = z
   .object({
     type: z.literal("auth"),
     requestId: RuntimeRequestIdSchema,
-    protocolVersion: z.literal(RUNTIME_PROTOCOL_VERSION),
+    protocolVersion: z.literal(RUNTIME_PROTOCOL_V1),
     accessToken: z.string().min(1).max(4096),
   })
   .strict();
+
+export const AuthV2FrameSchema = z
+  .object({
+    type: z.literal("auth"),
+    requestId: RuntimeRequestIdSchema,
+    protocolVersion: z.literal(RUNTIME_PROTOCOL_V2),
+    supportedProtocolVersions: RuntimeProtocolRangeSchema,
+    accessToken: z.string().min(1).max(4096),
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if (
+      frame.supportedProtocolVersions.min > RUNTIME_PROTOCOL_V2 ||
+      frame.supportedProtocolVersions.max < RUNTIME_PROTOCOL_V2
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["supportedProtocolVersions"],
+        message: "The bootstrap protocol is outside the Client-supported range",
+      });
+    }
+  });
+
+export const AuthFrameSchema = z.union([AuthV1FrameSchema, AuthV2FrameSchema]);
+
 export const AuthResultFrameSchema = z
   .object({
     type: z.literal("auth:result"),
@@ -121,57 +254,100 @@ export const AuthResultFrameSchema = z
       context.addIssue({ code: "custom", message: "A failed auth result requires an error code" });
     }
   });
-export const ComputerRegisterFrameSchema = z
+
+const computerRegistrationShape = {
+  type: z.literal("computer:register"),
+  requestId: RuntimeRequestIdSchema,
+  computerId: z.string().uuid(),
+  instanceId: z.string().uuid(),
+  displayName: z.string().trim().min(1).max(255),
+  platform: ComputerPlatformSchema,
+  arch: z.string().trim().min(1).max(64),
+  clientVersion: z.string().trim().min(1).max(64),
+  capabilities: RuntimeClientCapabilitiesSchema.default({ imMessageTool: 0 }),
+  providerReadiness: RuntimeProviderReadinessCollectionSchema.optional(),
+};
+
+export const ComputerRegisterV1FrameSchema = z.object(computerRegistrationShape).strict();
+export const ComputerRegisterV2FrameSchema = z
   .object({
-    type: z.literal("computer:register"),
-    requestId: RuntimeRequestIdSchema,
-    computerId: z.string().uuid(),
-    instanceId: z.string().uuid(),
-    displayName: z.string().trim().min(1).max(255),
-    platform: ComputerPlatformSchema,
-    arch: z.string().trim().min(1).max(64),
-    clientVersion: z.string().trim().min(1).max(64),
-    capabilities: RuntimeClientCapabilitiesSchema.default({ imMessageTool: 0 }),
-    providerReadiness: RuntimeProviderReadinessCollectionSchema.optional(),
+    ...computerRegistrationShape,
+    protocolVersion: z.literal(RUNTIME_PROTOCOL_V2),
+    supportedCapabilities: RuntimeCapabilityOffersSchema,
+    requiredServerCapabilities: RuntimeRequiredCapabilitiesSchema,
   })
   .strict();
-export const ComputerRegisterResultFrameSchema = z
+export const ComputerRegisterFrameSchema = z.union([ComputerRegisterV1FrameSchema, ComputerRegisterV2FrameSchema]);
+
+const computerRegisterResultShape = {
+  type: z.literal("computer:register:result"),
+  requestId: RuntimeRequestIdSchema,
+  ok: z.boolean(),
+  errorCode: ErrorCodeSchema.optional(),
+};
+
+export const ComputerRegisterResultV1FrameSchema = z
+  .object(computerRegisterResultShape)
+  .strict()
+  .superRefine(validateFailedResult);
+export const ComputerRegisterResultV2FrameSchema = z
   .object({
-    type: z.literal("computer:register:result"),
-    requestId: RuntimeRequestIdSchema,
-    ok: z.boolean(),
-    errorCode: ErrorCodeSchema.optional(),
+    ...computerRegisterResultShape,
+    protocolVersion: z.literal(RUNTIME_PROTOCOL_V2),
+    connectionId: RuntimeConnectionIdSchema.optional(),
+    negotiatedCapabilities: RuntimeNegotiatedCapabilitiesSchema.optional(),
   })
   .strict()
   .superRefine((frame, context) => {
-    if (!frame.ok && !frame.errorCode) {
-      context.addIssue({ code: "custom", message: "A failed register result requires an error code" });
+    validateFailedResult(frame, context);
+    if (frame.ok && (!frame.connectionId || !frame.negotiatedCapabilities)) {
+      context.addIssue({ code: "custom", message: "A successful v2 registration requires negotiated fencing state" });
+    }
+    if (!frame.ok && (frame.connectionId || frame.negotiatedCapabilities)) {
+      context.addIssue({ code: "custom", message: "A failed v2 registration forbids negotiated fencing state" });
     }
   });
-export const HeartbeatFrameSchema = z
+export const ComputerRegisterResultFrameSchema = z.union([
+  ComputerRegisterResultV1FrameSchema,
+  ComputerRegisterResultV2FrameSchema,
+]);
+
+const heartbeatShape = {
+  type: z.literal("heartbeat"),
+  requestId: RuntimeRequestIdSchema,
+  computerId: z.string().uuid(),
+  instanceId: z.string().uuid(),
+  capabilities: RuntimeClientCapabilitiesSchema.default({ imMessageTool: 0 }),
+  providerReadiness: RuntimeProviderReadinessCollectionSchema.optional(),
+};
+export const HeartbeatV1FrameSchema = z.object(heartbeatShape).strict();
+export const HeartbeatV2FrameSchema = z
   .object({
-    type: z.literal("heartbeat"),
-    requestId: RuntimeRequestIdSchema,
-    computerId: z.string().uuid(),
-    instanceId: z.string().uuid(),
-    capabilities: RuntimeClientCapabilitiesSchema.default({ imMessageTool: 0 }),
-    providerReadiness: RuntimeProviderReadinessCollectionSchema.optional(),
+    ...heartbeatShape,
+    protocolVersion: z.literal(RUNTIME_PROTOCOL_V2),
+    connectionId: RuntimeConnectionIdSchema,
   })
   .strict();
-export const HeartbeatResultFrameSchema = z
+export const HeartbeatFrameSchema = z.union([HeartbeatV1FrameSchema, HeartbeatV2FrameSchema]);
+
+const heartbeatResultShape = {
+  type: z.literal("heartbeat:result"),
+  requestId: RuntimeRequestIdSchema,
+  ok: z.boolean(),
+  serverTime: z.string().datetime(),
+  errorCode: ErrorCodeSchema.optional(),
+};
+export const HeartbeatResultV1FrameSchema = z.object(heartbeatResultShape).strict().superRefine(validateFailedResult);
+export const HeartbeatResultV2FrameSchema = z
   .object({
-    type: z.literal("heartbeat:result"),
-    requestId: RuntimeRequestIdSchema,
-    ok: z.boolean(),
-    serverTime: z.string().datetime(),
-    errorCode: ErrorCodeSchema.optional(),
+    ...heartbeatResultShape,
+    protocolVersion: z.literal(RUNTIME_PROTOCOL_V2),
+    connectionId: RuntimeConnectionIdSchema,
   })
   .strict()
-  .superRefine((frame, context) => {
-    if (!frame.ok && !frame.errorCode) {
-      context.addIssue({ code: "custom", message: "A failed heartbeat result requires an error code" });
-    }
-  });
+  .superRefine(validateFailedResult);
+export const HeartbeatResultFrameSchema = z.union([HeartbeatResultV1FrameSchema, HeartbeatResultV2FrameSchema]);
+
 export const RuntimeErrorFrameSchema = z
   .object({
     type: z.literal("error"),
@@ -181,13 +357,13 @@ export const RuntimeErrorFrameSchema = z
   })
   .strict();
 
-export const ClientRuntimeFrameSchema = z.discriminatedUnion("type", [
+export const ClientRuntimeFrameSchema = z.union([
   AuthFrameSchema,
   ComputerRegisterFrameSchema,
   HeartbeatFrameSchema,
   RuntimeErrorFrameSchema,
 ]);
-export const ServerRuntimeFrameSchema = z.discriminatedUnion("type", [
+export const ServerRuntimeFrameSchema = z.union([
   ServerWelcomeFrameSchema,
   AuthResultFrameSchema,
   ComputerRegisterResultFrameSchema,
@@ -195,7 +371,14 @@ export const ServerRuntimeFrameSchema = z.discriminatedUnion("type", [
   RuntimeErrorFrameSchema,
 ]);
 
+export type RuntimeProtocolVersion = typeof RUNTIME_PROTOCOL_V1 | typeof RUNTIME_PROTOCOL_V2;
+export type RuntimeProtocolRange = z.infer<typeof RuntimeProtocolRangeSchema>;
+export type RuntimeCapabilityRange = z.infer<typeof RuntimeCapabilityRangeSchema>;
+export type RuntimeCapabilityOffers = z.infer<typeof RuntimeCapabilityOffersSchema>;
+export type RuntimeNegotiatedCapabilities = z.infer<typeof RuntimeNegotiatedCapabilitiesSchema>;
 export type ServerWelcomeFrame = z.infer<typeof ServerWelcomeFrameSchema>;
+export type ServerWelcomeV1Frame = z.infer<typeof ServerWelcomeV1FrameSchema>;
+export type ServerWelcomeV2Frame = z.infer<typeof ServerWelcomeV2FrameSchema>;
 export type RuntimeCapabilities = z.infer<typeof RuntimeCapabilitiesSchema>;
 export type RuntimeClientCapabilities = z.infer<typeof RuntimeClientCapabilitiesSchema>;
 export type RuntimeProviderReadinessObservation = z.infer<typeof RuntimeProviderReadinessObservationSchema>;
@@ -212,8 +395,49 @@ export type RuntimeErrorFrame = z.infer<typeof RuntimeErrorFrameSchema>;
 export type ClientRuntimeFrame = z.infer<typeof ClientRuntimeFrameSchema>;
 export type ServerRuntimeFrame = z.infer<typeof ServerRuntimeFrameSchema>;
 
+export function negotiateRuntimeCapabilities(
+  local: RuntimeCapabilityOffers,
+  remote: RuntimeCapabilityOffers,
+): RuntimeNegotiatedCapabilities {
+  const negotiated: RuntimeNegotiatedCapabilities = {};
+  for (const name of Object.keys(local).sort()) {
+    const localRange = local[name];
+    const remoteRange = remote[name];
+    if (!localRange || !remoteRange) continue;
+    const minimum = Math.max(localRange.min, remoteRange.min);
+    const maximum = Math.min(localRange.max, remoteRange.max);
+    if (minimum <= maximum) negotiated[name] = maximum;
+  }
+  return negotiated;
+}
+
+export function missingRuntimeCapabilities(
+  required: readonly string[],
+  negotiated: RuntimeNegotiatedCapabilities,
+): string[] {
+  return required.filter((name) => negotiated[name] === undefined);
+}
+
+export function runtimeNegotiatedCapabilitiesEqual(
+  left: RuntimeNegotiatedCapabilities,
+  right: RuntimeNegotiatedCapabilities,
+): boolean {
+  const leftEntries = Object.entries(left).sort(([leftName], [rightName]) => leftName.localeCompare(rightName));
+  const rightEntries = Object.entries(right).sort(([leftName], [rightName]) => leftName.localeCompare(rightName));
+  return JSON.stringify(leftEntries) === JSON.stringify(rightEntries);
+}
+
 export function runtimeFrameByteLength(serializedFrame: string): number {
   return new TextEncoder().encode(serializedFrame).byteLength;
+}
+
+function validateFailedResult(
+  frame: { ok: boolean; errorCode?: z.infer<typeof ErrorCodeSchema> },
+  context: z.RefinementCtx,
+): void {
+  if (!frame.ok && !frame.errorCode) {
+    context.addIssue({ code: "custom", message: "A failed result requires an error code" });
+  }
 }
 
 function validateCanonicalProviders(

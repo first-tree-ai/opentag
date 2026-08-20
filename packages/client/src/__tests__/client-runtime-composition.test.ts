@@ -11,7 +11,7 @@ import type {
   SessionReconcileRequest,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WebSocketServer } from "ws";
+import { type WebSocket, WebSocketServer } from "ws";
 import type { AgentRuntime, AgentRuntimeFactory } from "../agent-runtime/types.js";
 import { createLogger } from "../observability/logger.js";
 import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
@@ -453,24 +453,7 @@ describe("createClientRuntime production composition", () => {
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          socket.send(
-            JSON.stringify({
-              type: "auth:result",
-              requestId: frame.requestId,
-              ok: true,
-              userId: randomUUID(),
-              tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-            }),
-          );
-          socket.send(
-            JSON.stringify({
-              type: "server:welcome",
-              protocolVersion: 1,
-              capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
-              heartbeatIntervalMs: 10,
-              heartbeatTimeoutMs: 100,
-            }),
-          );
+          completeLegacyAuth(socket, frame);
           return;
         }
         if (frame.type === "computer:register") {
@@ -548,25 +531,7 @@ describe("createClientRuntime production composition", () => {
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          socket.send(
-            JSON.stringify({
-              type: "auth:result",
-              requestId: frame.requestId,
-              ok: true,
-              userId: randomUUID(),
-              tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-            }),
-          );
-          socket.send(
-            JSON.stringify({
-              type: "server:welcome",
-              protocolVersion: 1,
-              capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
-              providerReadiness: { version: 1, providers: ["codex"] },
-              heartbeatIntervalMs: 10,
-              heartbeatTimeoutMs: 100,
-            }),
-          );
+          completeLegacyAuth(socket, frame, true);
           return;
         }
         if (frame.type === "computer:register") {
@@ -670,24 +635,7 @@ describe("createClientRuntime production composition", () => {
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          socket.send(
-            JSON.stringify({
-              type: "auth:result",
-              requestId: frame.requestId,
-              ok: true,
-              userId: randomUUID(),
-              tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-            }),
-          );
-          socket.send(
-            JSON.stringify({
-              type: "server:welcome",
-              protocolVersion: 1,
-              capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
-              heartbeatIntervalMs: 10,
-              heartbeatTimeoutMs: 100,
-            }),
-          );
+          completeLegacyAuth(socket, frame);
           return;
         }
         if (frame.type === "computer:register") {
@@ -743,24 +691,7 @@ describe("createClientRuntime production composition", () => {
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          socket.send(
-            JSON.stringify({
-              type: "auth:result",
-              requestId: frame.requestId,
-              ok: true,
-              userId: randomUUID(),
-              tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-            }),
-          );
-          socket.send(
-            JSON.stringify({
-              type: "server:welcome",
-              protocolVersion: 1,
-              capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
-              heartbeatIntervalMs: 10,
-              heartbeatTimeoutMs: 100,
-            }),
-          );
+          completeLegacyAuth(socket, frame);
           return;
         }
         if (frame.type === "computer:register") {
@@ -857,6 +788,40 @@ function runtimeConnection(serverUrl = "http://127.0.0.1:3000"): RuntimeConnecti
       }),
     },
   });
+}
+
+function completeLegacyAuth(socket: WebSocket, frame: Record<string, unknown>, providerReadiness = false): void {
+  if (frame.protocolVersion !== 1) {
+    socket.send(
+      JSON.stringify({
+        type: "error",
+        requestId: frame.requestId,
+        code: "PROTOCOL_VERSION_UNSUPPORTED",
+        message: "The test Server supports runtime protocol v1 only",
+      }),
+    );
+    socket.close(4400, "Protocol version unsupported");
+    return;
+  }
+  socket.send(
+    JSON.stringify({
+      type: "auth:result",
+      requestId: frame.requestId,
+      ok: true,
+      userId: randomUUID(),
+      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    }),
+  );
+  socket.send(
+    JSON.stringify({
+      type: "server:welcome",
+      protocolVersion: 1,
+      capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
+      ...(providerReadiness ? { providerReadiness: { version: 1, providers: ["codex"] } } : {}),
+      heartbeatIntervalMs: 10,
+      heartbeatTimeoutMs: 100,
+    }),
+  );
 }
 
 async function runtimeServer(): Promise<{ close(): Promise<void>; url: string; wss: WebSocketServer }> {

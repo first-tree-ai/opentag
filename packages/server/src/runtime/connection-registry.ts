@@ -2,7 +2,10 @@ import {
   type AgentRuntimeProvider,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
+  RUNTIME_PROTOCOL_V1,
+  RUNTIME_PROTOCOL_V2,
   type RuntimeClientCapabilities,
+  type RuntimeProtocolVersion,
   type RuntimeProviderReadinessCollection,
   runtimeFrameByteLength,
 } from "@opentag/shared";
@@ -19,11 +22,14 @@ export class RuntimeRegistrySendError extends Error {
 }
 
 export interface RuntimeConnectionEntry {
+  active?: boolean;
   capabilities?: RuntimeClientCapabilities;
   capabilitiesUpdatedAt?: number;
   computerId: string;
+  connectionId?: string;
   instanceId: string;
   lastHeartbeatAt: number;
+  protocolVersion?: RuntimeProtocolVersion;
   providerReadiness?: RuntimeProviderReadinessCollection;
   providerReadinessObservedAt?: number;
   providerReadinessProviders?: readonly AgentRuntimeProvider[];
@@ -35,7 +41,7 @@ export class ConnectionRegistry {
   readonly #entries = new Map<string, RuntimeConnectionEntry>();
   readonly #registrationTails = new Map<string, Promise<void>>();
 
-  async register(entry: RuntimeConnectionEntry, persist: () => Promise<void>): Promise<void> {
+  async register(entry: RuntimeConnectionEntry, persist: () => Promise<void>, publish?: () => void): Promise<void> {
     const previousRegistration = this.#registrationTails.get(entry.computerId) ?? Promise.resolve();
     let releaseRegistration: (() => void) | undefined;
     const currentRegistration = new Promise<void>((resolve) => {
@@ -50,6 +56,7 @@ export class ConnectionRegistry {
       if (previous && previous.socket !== entry.socket) {
         previous.socket.close(4001, "Replaced by a newer daemon instance");
       }
+      publish?.();
     } finally {
       releaseRegistration?.();
       if (this.#registrationTails.get(entry.computerId) === currentRegistration) {
@@ -64,7 +71,8 @@ export class ConnectionRegistry {
   }
 
   currentInstanceId(computerId: string): string | undefined {
-    return this.#entries.get(computerId)?.instanceId;
+    const current = this.#entries.get(computerId);
+    return current?.active === false ? undefined : current?.instanceId;
   }
 
   supports(
@@ -76,6 +84,7 @@ export class ConnectionRegistry {
     const current = this.#entries.get(computerId);
     return (
       current?.instanceId === instanceId &&
+      current.active !== false &&
       now - (current.capabilitiesUpdatedAt ?? Number.NEGATIVE_INFINITY) <= RUNTIME_CLIENT_CAPABILITY_TTL_MS &&
       current.capabilities?.[capability] === 1
     );
@@ -86,6 +95,7 @@ export class ConnectionRegistry {
     now = Date.now(),
   ): readonly { observation: RuntimeProviderReadinessCollection[number]; observedAt: number }[] {
     const current = this.#entries.get(computerId);
+    if (current?.active === false) return [];
     const observedAt = current?.providerReadinessObservedAt;
     if (current?.providerReadinessProviders) {
       if (
@@ -108,7 +118,7 @@ export class ConnectionRegistry {
 
   supportsProvider(computerId: string, instanceId: string, provider: AgentRuntimeProvider, now = Date.now()): boolean {
     const current = this.#entries.get(computerId);
-    if (!current || current.instanceId !== instanceId) return false;
+    if (!current || current.instanceId !== instanceId || current.active === false) return false;
     if (!current.providerReadinessProviders) {
       return provider === "codex" && this.supports(computerId, instanceId, "imMessageTool", now);
     }
@@ -123,12 +133,23 @@ export class ConnectionRegistry {
     if (!current || current.instanceId !== instanceId) {
       throw new RuntimeRegistrySendError("instance_replaced", "The Computer instance is not current");
     }
+    if (current.active === false) {
+      throw new RuntimeRegistrySendError("unavailable", "The Computer runtime registration is not active");
+    }
     if (current.socket.readyState !== WebSocket.OPEN) {
       throw new RuntimeRegistrySendError("unavailable", "The Computer runtime socket is unavailable");
     }
+    let outbound = frame;
+    if ((current.protocolVersion ?? RUNTIME_PROTOCOL_V1) === RUNTIME_PROTOCOL_V2) {
+      try {
+        outbound = withConnectionId(frame, current.connectionId);
+      } catch {
+        throw new RuntimeRegistrySendError("instance_replaced", "The runtime connection fence is unavailable");
+      }
+    }
     let serialized: string;
     try {
-      serialized = JSON.stringify(frame);
+      serialized = JSON.stringify(outbound);
     } catch {
       throw new RuntimeRegistrySendError("frame_too_large", "The runtime frame cannot be serialized");
     }
@@ -160,7 +181,7 @@ export class ConnectionRegistry {
     providerReadiness?: RuntimeProviderReadinessCollection,
   ): boolean {
     const current = this.#entries.get(computerId);
-    if (!current || current.instanceId !== instanceId || current.socket !== socket) {
+    if (!current || current.instanceId !== instanceId || current.socket !== socket || current.active === false) {
       return false;
     }
     current.lastHeartbeatAt = now;
@@ -177,6 +198,13 @@ export class ConnectionRegistry {
         delete current.providerReadinessObservedAt;
       }
     }
+    return true;
+  }
+
+  activate(computerId: string, instanceId: string, socket: WebSocket): boolean {
+    const current = this.#entries.get(computerId);
+    if (!current || current.instanceId !== instanceId || current.socket !== socket) return false;
+    current.active = true;
     return true;
   }
 
@@ -200,4 +228,15 @@ export class ConnectionRegistry {
       entry.socket.close(1001, "Server shutting down");
     }
   }
+}
+
+function withConnectionId(frame: unknown, connectionId?: string): unknown {
+  if (!connectionId || !frame || typeof frame !== "object" || Array.isArray(frame)) {
+    throw new Error("A v2 runtime frame requires a connection fence");
+  }
+  const record = frame as Readonly<Record<string, unknown>>;
+  if (record.connectionId !== undefined && record.connectionId !== connectionId) {
+    throw new Error("The runtime frame carries a stale connection fence");
+  }
+  return { ...record, connectionId };
 }

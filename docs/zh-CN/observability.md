@@ -50,7 +50,9 @@ Server 自行管理显式的 OpenTelemetry trace provider 和 OTLP exporter，�
 - `opentag.session.id`
 - `opentag.agent.id`
 - `opentag.computer.id`
+- `opentag.runtime.connection.id`
 - `opentag.runtime.instance.id`
+- `opentag.runtime.protocol.version`
 
 消息正文、raw provider event、mentions、resources、sender identity、provider response body、prompt、模型输出、tool payload、authorization header、cookie、token、secret 和 credential 均不会上传或会被 scrub。
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { RUNTIME_CLIENT_CAPABILITY_TTL_MS } from "@opentag/shared";
+import { RUNTIME_CLIENT_CAPABILITY_TTL_MS, RUNTIME_PROTOCOL_V2 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
-import type WebSocket from "ws";
+import WebSocket from "ws";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { projectComputerProviderReadiness } from "../services/computers/provider-readiness.js";
 
@@ -117,6 +117,50 @@ describe("ConnectionRegistry", () => {
     expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 3)).toBe(false);
     expect(registry.touch(computerId, verifiedInstanceId, verifiedSocket, 4, { imMessageTool: 1 })).toBe(true);
     expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 4)).toBe(true);
+  });
+
+  it("adds the current v2 connection fence without changing the domain frame", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const connectionId = randomUUID();
+    const instanceId = randomUUID();
+    const send = vi.fn((_data: string, callback: (error?: Error) => void) => callback());
+    const runtimeSocket = {
+      close: vi.fn(),
+      readyState: WebSocket.OPEN,
+      send,
+      terminate: vi.fn(),
+    } as unknown as WebSocket;
+    await registry.register(
+      {
+        active: false,
+        computerId,
+        connectionId,
+        instanceId,
+        lastHeartbeatAt: 1,
+        protocolVersion: RUNTIME_PROTOCOL_V2,
+        socket: runtimeSocket,
+        providerReadiness: [{ provider: "codex", status: "ready" }],
+        providerReadinessObservedAt: 1,
+        providerReadinessProviders: ["codex"],
+        userId: randomUUID(),
+      },
+      async () => undefined,
+    );
+    await expect(
+      registry.send(computerId, instanceId, { type: "session:reconcile", requestId: randomUUID() }),
+    ).rejects.toMatchObject({ code: "unavailable" });
+    expect(registry.providerReadiness(computerId, 1)).toEqual([]);
+    expect(registry.activate(computerId, instanceId, runtimeSocket)).toBe(true);
+    expect(registry.providerReadiness(computerId, 1)).toMatchObject([
+      { observation: { provider: "codex", status: "ready" } },
+    ]);
+    await registry.send(computerId, instanceId, { type: "session:reconcile", requestId: randomUUID() });
+    const serialized = send.mock.calls[0]?.[0];
+    expect(JSON.parse(String(serialized))).toMatchObject({
+      type: "session:reconcile",
+      connectionId,
+    });
   });
 
   it("returns only fresh readiness observations from the current Computer instance", async () => {

@@ -22,21 +22,6 @@ const agentSummary = {
   runtimeProvider: "codex",
   receiveMode: "mention_only",
   status: "active",
-  availability: {
-    state: "ready",
-    reason: null,
-    lastConfirmedAt: "2026-08-20T00:00:00.000Z",
-    dependencies: {
-      computer: { state: "ready", lastConfirmedAt: "2026-08-20T00:00:00.000Z" },
-      runtime: { state: "ready", lastConfirmedAt: "2026-08-20T00:00:00.000Z" },
-      im: {
-        state: "ready",
-        provider: "feishu",
-        botDisplayName: "Reviewer",
-        lastConfirmedAt: "2026-08-20T00:00:00.000Z",
-      },
-    },
-  },
   createdAt: "2026-08-20T00:00:00.000Z",
   updatedAt: "2026-08-20T00:00:00.000Z",
 };
@@ -51,6 +36,7 @@ function installApi(
     alreadyJoinedInvitation?: boolean;
     bindingReauth?: boolean;
     bound?: boolean;
+    computerStatus?: () => "online" | "offline";
     initialStatus?: "active" | "suspended";
     invitationExists?: boolean;
     provider?: "feishu" | "slack";
@@ -70,14 +56,6 @@ function installApi(
   const teamProfile = { name: "example", displayName: "Example" };
   let lifecycleStatus = options.initialStatus ?? "active";
   let revision = lifecycleStatus === "active" ? 1 : 2;
-  const availability = () =>
-    lifecycleStatus === "suspended"
-      ? {
-          ...agentSummary.availability,
-          state: "suspended",
-          reason: "agent_suspended",
-        }
-      : agentSummary.availability;
   const adminConfig = () => ({
     id: agentId,
     teamId,
@@ -202,8 +180,8 @@ function installApi(
       return json({
         agents: [
           path.includes(invitedTeamId)
-            ? { ...agentSummary, teamId: invitedTeamId, status: lifecycleStatus, availability: availability() }
-            : { ...agentSummary, status: lifecycleStatus, availability: availability() },
+            ? { ...agentSummary, teamId: invitedTeamId, status: lifecycleStatus }
+            : { ...agentSummary, status: lifecycleStatus },
         ],
       });
     }
@@ -271,7 +249,24 @@ function installApi(
         },
       });
     }
-    if (/^\/api\/v1\/teams\/[^/]+\/computers$/.test(path)) return json({ computers: [] });
+    if (/^\/api\/v1\/teams\/[^/]+\/computers$/.test(path)) {
+      return json({
+        computers: [
+          {
+            id: computerId,
+            ownerUserId: userId,
+            ownerDisplayName: "Ada",
+            displayName: "Ada's Mac",
+            platform: "darwin",
+            connectionStatus: options.computerStatus?.() ?? "online",
+            connectedAt: "2026-08-20T00:00:00.000Z",
+            lastSeenAt: "2026-08-20T00:00:00.000Z",
+            observedAt: "2026-08-20T00:00:00.000Z",
+            agentIds: [agentId],
+          },
+        ],
+      });
+    }
     if (path === "/api/v1/me/computers") return json({ computers: [] });
     if (path === "/api/v1/me/connect-codes" && init?.method === "POST") {
       return json(
@@ -296,11 +291,11 @@ function installApi(
           409,
         );
       }
+      if (init?.method === "PATCH") return json(adminConfig());
       if (init?.method === "DELETE") return new Response(null, { status: 204 });
       return json({
         ...agentSummary,
         status: lifecycleStatus,
-        availability: availability(),
         viewerCapabilities: { canManage: currentRole === "admin" },
       });
     }
@@ -316,6 +311,11 @@ function installApi(
       lifecycleStatus = "active";
       revision += 1;
       return json(adminConfig());
+    }
+    if (path === `/api/v1/agents/${agentId}/im-binding/handoff`) {
+      if (!options.bound) return new Response(null, { status: 204 });
+      const bindingState = options.bindingReauth ? "reauthorization_required" : "active";
+      return json({ bindingState, handoffReady: bindingState === "active" });
     }
     if (path === `/api/v1/agents/${agentId}/im-binding`) {
       if (!options.bound) return new Response(null, { status: 204 });
@@ -512,6 +512,36 @@ describe("OpenTag Web App Shell", () => {
         .getAllByRole("link")
         .map((link) => link.textContent),
     ).toEqual(["Overview", "Runtime", "IM", "Resources", "Integrations", "Access"]);
+  });
+
+  it("refreshes Agent availability when the page regains focus", async () => {
+    let computerStatus: "online" | "offline" = "online";
+    installApi("admin", { bound: true, computerStatus: () => computerStatus });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+    expect((await screen.findAllByText("Ready")).length).toBeGreaterThan(0);
+
+    computerStatus = "offline";
+    fireEvent(window, new Event("focus"));
+    expect(await screen.findByText("Computer is offline")).toBeTruthy();
+  });
+
+  it("refreshes the parent Agent projection after an IM mutation", async () => {
+    installApi("admin", { bound: true });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enable all messages" }));
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([input, init]) => String(input) === `/api/v1/agents/${agentId}` && (init?.method ?? "GET") === "GET",
+          ),
+      ).toHaveLength(2),
+    );
+    confirm.mockRestore();
   });
 
   it("uses a flat local navigation for Settings", async () => {

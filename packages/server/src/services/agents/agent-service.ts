@@ -33,7 +33,6 @@ import { TeamMembershipService } from "../teams/index.js";
 import { AgentServiceError, resourceNotFound } from "./errors.js";
 
 type AgentRow = typeof agents.$inferSelect;
-type ImBindingRow = typeof imBindings.$inferSelect;
 type AgentRuntimeConfigRow = typeof agentRuntimeConfigs.$inferSelect;
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
@@ -50,8 +49,6 @@ interface AgentSafeRow {
   computerId: string;
   computerDisplayName: string;
   computerPlatform: "darwin" | "linux" | "win32";
-  computerCurrentInstanceId: string | null;
-  computerLastSeenAt: Date;
   name: string;
   displayName: string;
   runtimeProvider: "codex" | "claude-code";
@@ -59,14 +56,6 @@ interface AgentSafeRow {
   status: AgentRow["status"];
   createdAt: Date;
   updatedAt: Date;
-  imProvider: ImBindingRow["provider"] | null;
-  imStatus: ImBindingRow["status"] | null;
-  imBotDisplayName: string | null;
-  imGrantedCapabilities: string[] | null;
-  imConnectionLeaseExpiresAt: Date | null;
-  imObservedConnectedAt: Date | null;
-  imObservedAt: Date | null;
-  imActivatedAt: Date | null;
 }
 
 export interface AgentSessionStopTarget {
@@ -106,113 +95,8 @@ function toAgentAdminConfig(row: AgentRow, runtimeConfig: AgentRuntimeConfigRow)
   };
 }
 
-function earlierDate(left: Date, right: Date): Date {
-  return left.getTime() <= right.getTime() ? left : right;
-}
-
-function toAgentSummary(row: AgentSafeRow, now: Date, runtimeReady: boolean): AgentSummary {
+function toAgentSummary(row: AgentSafeRow): AgentSummary {
   if (row.status === "deleted") throw new Error("Deleted Agent cannot be projected as a summary");
-  const computerReady =
-    row.computerCurrentInstanceId !== null && row.computerLastSeenAt.getTime() >= now.getTime() - 90_000;
-  const imConfirmedAt = row.imObservedAt ?? row.imActivatedAt;
-  const missingCapabilities =
-    row.imProvider === "feishu" && !hasRequiredFeishuTenantScopes(row.imGrantedCapabilities ?? []);
-  const feishuConnectionConfirmed =
-    row.imProvider !== "feishu" ||
-    (row.imObservedConnectedAt !== null &&
-      row.imConnectionLeaseExpiresAt !== null &&
-      row.imConnectionLeaseExpiresAt.getTime() > now.getTime());
-
-  const computerDependency = {
-    state: computerReady ? ("ready" as const) : ("action_required" as const),
-    lastConfirmedAt: row.computerLastSeenAt.toISOString(),
-  };
-  const runtimeDependency = {
-    state: runtimeReady ? ("ready" as const) : ("action_required" as const),
-    lastConfirmedAt: runtimeReady ? now.toISOString() : null,
-  };
-  const imDependency = {
-    state:
-      row.imStatus === null
-        ? ("not_connected" as const)
-        : row.imStatus === "provisioning"
-          ? ("setting_up" as const)
-          : row.imStatus === "active" && !missingCapabilities && feishuConnectionConfirmed
-            ? ("ready" as const)
-            : ("action_required" as const),
-    provider: row.imProvider,
-    botDisplayName: row.imBotDisplayName,
-    lastConfirmedAt: imConfirmedAt?.toISOString() ?? null,
-  };
-
-  let availability: AgentSummary["availability"];
-  if (row.status === "suspended") {
-    availability = {
-      state: "suspended",
-      reason: "agent_suspended",
-      lastConfirmedAt: row.updatedAt.toISOString(),
-      dependencies: { computer: computerDependency, runtime: runtimeDependency, im: imDependency },
-    };
-  } else if (!computerReady) {
-    availability = {
-      state: "action_required",
-      reason: "computer_offline",
-      lastConfirmedAt: row.computerLastSeenAt.toISOString(),
-      dependencies: { computer: computerDependency, runtime: runtimeDependency, im: imDependency },
-    };
-  } else if (row.imStatus === null) {
-    availability = {
-      state: "not_connected",
-      reason: "im_not_connected",
-      lastConfirmedAt: null,
-      dependencies: { computer: computerDependency, runtime: runtimeDependency, im: imDependency },
-    };
-  } else if (row.imStatus === "provisioning") {
-    availability = {
-      state: "setting_up",
-      reason: "im_provisioning",
-      lastConfirmedAt: imConfirmedAt?.toISOString() ?? null,
-      dependencies: { computer: computerDependency, runtime: runtimeDependency, im: imDependency },
-    };
-  } else if (row.imStatus === "reauthorization_required" || missingCapabilities) {
-    availability = {
-      state: "action_required",
-      reason: "im_reauthorization_required",
-      lastConfirmedAt: imConfirmedAt?.toISOString() ?? null,
-      dependencies: { computer: computerDependency, runtime: runtimeDependency, im: imDependency },
-    };
-  } else if (row.imStatus === "error") {
-    availability = {
-      state: "action_required",
-      reason: "im_error",
-      lastConfirmedAt: imConfirmedAt?.toISOString() ?? null,
-      dependencies: { computer: computerDependency, runtime: runtimeDependency, im: imDependency },
-    };
-  } else if (!runtimeReady) {
-    availability = {
-      state: "action_required",
-      reason: "runtime_unavailable",
-      lastConfirmedAt: row.computerLastSeenAt.toISOString(),
-      dependencies: { computer: computerDependency, runtime: runtimeDependency, im: imDependency },
-    };
-  } else if (!feishuConnectionConfirmed) {
-    availability = {
-      state: "action_required",
-      reason: "im_connection_unconfirmed",
-      lastConfirmedAt: imConfirmedAt?.toISOString() ?? null,
-      dependencies: { computer: computerDependency, runtime: runtimeDependency, im: imDependency },
-    };
-  } else {
-    const lastConfirmedAt = imConfirmedAt
-      ? earlierDate(earlierDate(row.computerLastSeenAt, imConfirmedAt), now).toISOString()
-      : row.computerLastSeenAt.toISOString();
-    availability = {
-      state: "ready",
-      reason: null,
-      lastConfirmedAt,
-      dependencies: { computer: computerDependency, runtime: runtimeDependency, im: imDependency },
-    };
-  }
   return {
     id: row.id,
     teamId: row.teamId,
@@ -227,7 +111,6 @@ function toAgentSummary(row: AgentSafeRow, now: Date, runtimeReady: boolean): Ag
     runtimeProvider: row.runtimeProvider,
     receiveMode: row.receiveMode,
     status: row.status,
-    availability,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -293,7 +176,6 @@ export class AgentService {
   readonly #now: () => Date;
   readonly #onDiagnostic: (code: string) => void;
   readonly #stopSessions: (targets: AgentSessionStopTarget[]) => Promise<void>;
-  readonly #runtimeReady: (agentId: string, computerId: string) => boolean;
 
   constructor(
     database: DatabaseClient,
@@ -304,7 +186,6 @@ export class AgentService {
       now?: () => Date;
       onDiagnostic?: (code: string) => void;
       stopSessions?: (targets: AgentSessionStopTarget[]) => Promise<void>;
-      runtimeReady?: (agentId: string, computerId: string) => boolean;
     } = {},
   ) {
     this.#afterAgentLocked = options.afterAgentLocked;
@@ -314,7 +195,6 @@ export class AgentService {
     this.#now = options.now ?? (() => new Date());
     this.#onDiagnostic = options.onDiagnostic ?? (() => undefined);
     this.#stopSessions = options.stopSessions ?? (async () => undefined);
-    this.#runtimeReady = options.runtimeReady ?? (() => false);
   }
 
   async createForTeam(callerUserId: string, teamId: string, rawInput: CreateAgentRequest): Promise<AgentAdminConfig> {
@@ -434,8 +314,6 @@ export class AgentService {
         computerId: agents.computerId,
         computerDisplayName: computers.displayName,
         computerPlatform: computers.platform,
-        computerCurrentInstanceId: computers.currentInstanceId,
-        computerLastSeenAt: computers.lastSeenAt,
         name: agents.name,
         displayName: agents.displayName,
         runtimeProvider: agents.runtimeProvider,
@@ -443,21 +321,12 @@ export class AgentService {
         status: agents.status,
         createdAt: agents.createdAt,
         updatedAt: agents.updatedAt,
-        imProvider: imBindings.provider,
-        imStatus: imBindings.status,
-        imBotDisplayName: imBindings.botDisplayName,
-        imGrantedCapabilities: imBindings.grantedCapabilities,
-        imConnectionLeaseExpiresAt: imBindings.connectionLeaseExpiresAt,
-        imObservedConnectedAt: imBindings.observedConnectedAt,
-        imObservedAt: imBindings.observedAt,
-        imActivatedAt: imBindings.activatedAt,
       })
       .from(memberships)
       .innerJoin(users, eq(users.id, memberships.userId))
       .leftJoin(agents, and(eq(agents.teamId, memberships.teamId), ne(agents.status, "deleted")))
       .leftJoin(manager, eq(manager.id, agents.managerUserId))
       .leftJoin(computers, eq(computers.id, agents.computerId))
-      .leftJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
       .where(
         and(
           eq(memberships.teamId, teamId),
@@ -474,8 +343,7 @@ export class AgentService {
         if (!row.managerDisplayName || !row.computerId || !row.computerDisplayName || !row.computerPlatform) {
           throw new Error("Active Agent is missing its manager or Computer");
         }
-        const safeRow = row as AgentSafeRow;
-        return [toAgentSummary(safeRow, this.#now(), this.#runtimeReady(safeRow.id, safeRow.computerId))];
+        return [toAgentSummary(row as AgentSafeRow)];
       }),
     };
   }
@@ -491,8 +359,6 @@ export class AgentService {
         computerId: agents.computerId,
         computerDisplayName: computers.displayName,
         computerPlatform: computers.platform,
-        computerCurrentInstanceId: computers.currentInstanceId,
-        computerLastSeenAt: computers.lastSeenAt,
         name: agents.name,
         displayName: agents.displayName,
         runtimeProvider: agents.runtimeProvider,
@@ -500,27 +366,15 @@ export class AgentService {
         status: agents.status,
         createdAt: agents.createdAt,
         updatedAt: agents.updatedAt,
-        imProvider: imBindings.provider,
-        imStatus: imBindings.status,
-        imBotDisplayName: imBindings.botDisplayName,
-        imGrantedCapabilities: imBindings.grantedCapabilities,
-        imConnectionLeaseExpiresAt: imBindings.connectionLeaseExpiresAt,
-        imObservedConnectedAt: imBindings.observedConnectedAt,
-        imObservedAt: imBindings.observedAt,
-        imActivatedAt: imBindings.activatedAt,
       })
       .from(agents)
       .innerJoin(manager, eq(manager.id, agents.managerUserId))
       .innerJoin(computers, eq(computers.id, agents.computerId))
-      .leftJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row) throw resourceNotFound();
     const role = await this.#requireTeamMembership(this.#database, callerUserId, row.teamId);
-    return {
-      ...toAgentSummary(row, this.#now(), this.#runtimeReady(row.id, row.computerId)),
-      viewerCapabilities: { canManage: role === "admin" },
-    };
+    return { ...toAgentSummary(row), viewerCapabilities: { canManage: role === "admin" } };
   }
 
   async getConfigById(callerUserId: string, agentId: string): Promise<AgentAdminConfig> {

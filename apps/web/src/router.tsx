@@ -4,6 +4,8 @@ import type {
   AgentSummary,
   AuthProvidersResponse,
   Computer,
+  ImBindingHandoffStatus,
+  ImBindingSummary,
   MeMembership,
   MeResponse,
   TeamComputerSummary,
@@ -30,7 +32,156 @@ import { FeishuSetup } from "./im/feishu-setup.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
 
-function useResource<T>(loader: () => Promise<T>, key: string): LoadState<T> {
+type AgentAvailability = {
+  state: "ready" | "action_required" | "setting_up" | "not_connected" | "suspended";
+  reason:
+    | "agent_suspended"
+    | "computer_offline"
+    | "runtime_unavailable"
+    | "im_not_connected"
+    | "im_provisioning"
+    | "im_reauthorization_required"
+    | "im_error"
+    | "handoff_unavailable"
+    | null;
+  lastConfirmedAt: string | null;
+  dependencies: {
+    computer: { state: "ready" | "action_required"; lastConfirmedAt: string | null };
+    runtime: { state: "ready" | "action_required"; lastConfirmedAt: string | null };
+    im: {
+      state: "ready" | "action_required" | "setting_up" | "not_connected";
+      provider: "feishu" | "slack" | null;
+      botDisplayName: string | null;
+      lastConfirmedAt: string | null;
+    };
+  };
+};
+
+type AgentListItem = AgentSummary & { availability: AgentAvailability };
+type AgentDetailView = AgentDetail & { availability: AgentAvailability };
+
+function projectAgentAvailability(
+  agent: AgentSummary,
+  computer: TeamComputerSummary | undefined,
+  binding: ImBindingSummary | undefined,
+  handoff: ImBindingHandoffStatus | undefined,
+): AgentAvailability {
+  const computerReady = computer?.connectionStatus === "online";
+  const runtimeReady = agent.runtimeProvider === "codex" && handoff?.handoffReady === true;
+  const imState = !binding
+    ? ("not_connected" as const)
+    : binding.bindingState === "provisioning"
+      ? ("setting_up" as const)
+      : binding.bindingState === "active" && handoff?.handoffReady
+        ? ("ready" as const)
+        : ("action_required" as const);
+  const dependencies: AgentAvailability["dependencies"] = {
+    computer: {
+      state: computerReady ? "ready" : "action_required",
+      lastConfirmedAt: computer?.lastSeenAt ?? null,
+    },
+    runtime: {
+      state: runtimeReady ? "ready" : "action_required",
+      lastConfirmedAt: runtimeReady ? (binding?.lastConfirmedAt ?? null) : null,
+    },
+    im: {
+      state: imState,
+      provider: binding?.provider ?? null,
+      botDisplayName: binding?.bot.displayName ?? null,
+      lastConfirmedAt: binding?.lastConfirmedAt ?? null,
+    },
+  };
+  if (agent.status === "suspended") {
+    return { state: "suspended", reason: "agent_suspended", lastConfirmedAt: agent.updatedAt, dependencies };
+  }
+  if (!computerReady) {
+    return {
+      state: "action_required",
+      reason: "computer_offline",
+      lastConfirmedAt: computer?.lastSeenAt ?? null,
+      dependencies,
+    };
+  }
+  if (agent.runtimeProvider !== "codex") {
+    return { state: "action_required", reason: "runtime_unavailable", lastConfirmedAt: null, dependencies };
+  }
+  if (!binding) return { state: "not_connected", reason: "im_not_connected", lastConfirmedAt: null, dependencies };
+  if (binding.bindingState === "provisioning") {
+    return {
+      state: "setting_up",
+      reason: "im_provisioning",
+      lastConfirmedAt: binding.lastConfirmedAt,
+      dependencies,
+    };
+  }
+  if (binding.bindingState === "reauthorization_required") {
+    return {
+      state: "action_required",
+      reason: "im_reauthorization_required",
+      lastConfirmedAt: binding.lastConfirmedAt,
+      dependencies,
+    };
+  }
+  if (binding.bindingState === "error" || binding.bindingState === "disabled") {
+    return { state: "action_required", reason: "im_error", lastConfirmedAt: binding.lastConfirmedAt, dependencies };
+  }
+  if (!handoff?.handoffReady) {
+    return {
+      state: "action_required",
+      reason: "handoff_unavailable",
+      lastConfirmedAt: binding.lastConfirmedAt,
+      dependencies,
+    };
+  }
+  return { state: "ready", reason: null, lastConfirmedAt: binding.lastConfirmedAt, dependencies };
+}
+
+async function loadAgentList(teamId: string): Promise<{ agents: AgentListItem[] }> {
+  const [{ agents }, { computers }] = await Promise.all([browserApi.agents(teamId), browserApi.computers(teamId)]);
+  return {
+    agents: await Promise.all(
+      agents.map(async (agent) => {
+        const [binding, handoff] = await Promise.all([
+          browserApi.imBinding(agent.id),
+          browserApi.imBindingHandoff(agent.id),
+        ]);
+        return {
+          ...agent,
+          availability: projectAgentAvailability(
+            agent,
+            computers.find((computer) => computer.id === agent.computer.id),
+            binding,
+            handoff,
+          ),
+        };
+      }),
+    ),
+  };
+}
+
+async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
+  const agent = await browserApi.agent(agentId);
+  const [{ computers }, binding, handoff] = await Promise.all([
+    browserApi.computers(agent.teamId),
+    browserApi.imBinding(agent.id),
+    browserApi.imBindingHandoff(agent.id),
+  ]);
+  return {
+    ...agent,
+    availability: projectAgentAvailability(
+      agent,
+      computers.find((computer) => computer.id === agent.computer.id),
+      binding,
+      handoff,
+    ),
+  };
+}
+
+function useResource<T>(
+  loader: () => Promise<T>,
+  key: string,
+  options: { revalidateMs?: number; refreshOnFocus?: boolean } = {},
+): LoadState<T> {
   const [state, setState] = useState<LoadState<T>>({ kind: "loading" });
   const loaderRef = useRef(loader);
   const keyRef = useRef(key);
@@ -38,19 +189,38 @@ function useResource<T>(loader: () => Promise<T>, key: string): LoadState<T> {
   keyRef.current = key;
   useEffect(() => {
     let active = true;
+    let request = 0;
     const activeKey = key;
-    setState({ kind: "loading" });
-    void loaderRef.current().then(
-      (value) => active && keyRef.current === activeKey && setState({ kind: "ready", value }),
-      (error: unknown) =>
-        active &&
-        keyRef.current === activeKey &&
-        setState({ kind: "error", error: error instanceof Error ? error : new Error(String(error)) }),
-    );
+    const load = (showLoading: boolean) => {
+      const currentRequest = ++request;
+      if (showLoading) setState({ kind: "loading" });
+      void loaderRef.current().then(
+        (value) =>
+          active && keyRef.current === activeKey && request === currentRequest && setState({ kind: "ready", value }),
+        (error: unknown) =>
+          active &&
+          keyRef.current === activeKey &&
+          request === currentRequest &&
+          setState({ kind: "error", error: error instanceof Error ? error : new Error(String(error)) }),
+      );
+    };
+    const revalidate = () => load(false);
+    load(true);
+    const interval = options.revalidateMs ? window.setInterval(revalidate, options.revalidateMs) : undefined;
+    const refreshVisible = () => {
+      if (document.visibilityState === "visible") revalidate();
+    };
+    if (options.refreshOnFocus) {
+      window.addEventListener("focus", revalidate);
+      document.addEventListener("visibilitychange", refreshVisible);
+    }
     return () => {
       active = false;
+      if (interval !== undefined) window.clearInterval(interval);
+      window.removeEventListener("focus", revalidate);
+      document.removeEventListener("visibilitychange", refreshVisible);
     };
-  }, [key]);
+  }, [key, options.refreshOnFocus, options.revalidateMs]);
   return state;
 }
 
@@ -581,7 +751,10 @@ function AppShell() {
 
 function AgentsPage() {
   const { membership } = useTeam();
-  const state = useResource(() => browserApi.agents(membership.teamId), membership.teamId);
+  const state = useResource(() => loadAgentList(membership.teamId), membership.teamId, {
+    revalidateMs: 30_000,
+    refreshOnFocus: true,
+  });
   return (
     <Page
       title="Agents"
@@ -599,7 +772,7 @@ function AgentsPage() {
   );
 }
 
-function AgentsContent({ agents }: { agents: AgentSummary[] }) {
+function AgentsContent({ agents }: { agents: AgentListItem[] }) {
   return agents.length === 0 ? (
     <EmptyState title="No Agents yet">A Team Admin can create the first Agent.</EmptyState>
   ) : (
@@ -607,7 +780,7 @@ function AgentsContent({ agents }: { agents: AgentSummary[] }) {
   );
 }
 
-function AgentList({ agents }: { agents: AgentSummary[] }) {
+function AgentList({ agents }: { agents: AgentListItem[] }) {
   const readyCount = agents.filter((agent) => agent.availability.state === "ready").length;
   const attentionCount = agents.length - readyCount;
   return (
@@ -643,9 +816,8 @@ function AgentList({ agents }: { agents: AgentSummary[] }) {
   );
 }
 
-function AgentRow({ agent }: { agent: AgentSummary }) {
+function AgentRow({ agent }: { agent: AgentListItem }) {
   const channelProvider = agent.availability.dependencies.im.provider;
-  const action = availabilityAction(agent);
   return (
     <div className="agent-row">
       <Link aria-label={`Open ${agent.displayName}`} className="agent-row-link" to={`/agents/${agent.id}/general`} />
@@ -678,15 +850,9 @@ function AgentRow({ agent }: { agent: AgentSummary }) {
           {agent.computer.displayName} · {titleCase(agent.computer.platform)}
         </small>
       </span>
-      {action.prominent ? (
-        <Link className="agent-row-action prominent" to={action.to}>
-          {action.label}
-        </Link>
-      ) : (
-        <span className="agent-row-action" aria-hidden="true">
-          ›
-        </span>
-      )}
+      <span className="agent-row-action" aria-hidden="true">
+        ›
+      </span>
     </div>
   );
 }
@@ -777,7 +943,10 @@ function AgentDetailPage() {
   const { agentId = "", tab = "general" } = useParams();
   const [refreshVersion, setRefreshVersion] = useState(0);
   const navigate = useNavigate();
-  const state = useResource(() => browserApi.agent(agentId), `${agentId}:${refreshVersion}`);
+  const state = useResource(() => loadAgentDetail(agentId), `${agentId}:${refreshVersion}`, {
+    revalidateMs: 30_000,
+    refreshOnFocus: true,
+  });
   const currentSection = agentSections.find((section) => section.key === tab);
   if (!currentSection) return <NotFoundPage />;
   return (
@@ -795,7 +964,10 @@ function AgentDetailPage() {
                 </span>
                 <div>
                   <h1>{agent.displayName}</h1>
-                  <p>@{agent.name}</p>
+                  <p>
+                    <span>@{agent.name}</span>
+                    <span>Managed by {agent.manager.displayName}</span>
+                  </p>
                 </div>
               </div>
               <AgentAvailabilityAction agent={agent} />
@@ -871,10 +1043,10 @@ function AccountPage() {
   );
 }
 
-function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetail; tab: string; onAgentChanged: () => void }) {
+function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetailView; tab: string; onAgentChanged: () => void }) {
   if (tab === "general") return <GeneralTab agent={agent} onAgentChanged={onAgentChanged} />;
   if (tab === "runtime") return <RuntimeTab agent={agent} />;
-  if (tab === "im") return <ImTab agent={agent} />;
+  if (tab === "im") return <ImTab agent={agent} onAgentChanged={onAgentChanged} />;
   if (tab === "resources")
     return (
       <EmptyState title="No Team Resources assigned">
@@ -891,11 +1063,14 @@ function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetail; tab: str
   return <NotFoundPage />;
 }
 
-function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetail; onAgentChanged: () => void }) {
+function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   return (
     <div className="overview-stack">
       <section className="overview-section" aria-labelledby="availability-heading">
         <h3 id="availability-heading">Availability</h3>
+        <p className="overview-section-copy">
+          These dependencies jointly determine whether {agent.displayName} can receive work.
+        </p>
         <div className="dependency-grid">
           <DependencyCard
             title="Computer"
@@ -946,8 +1121,7 @@ function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetail; onAgentChan
   );
 }
 
-function AgentAvailabilityAction({ agent }: { agent: AgentDetail }) {
-  const action = availabilityAction(agent);
+function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
   return (
     <div className={`availability-action ${availabilityTone(agent.availability.state)}`}>
       <span>
@@ -957,11 +1131,6 @@ function AgentAvailabilityAction({ agent }: { agent: AgentDetail }) {
         </strong>
         <small>{availabilityReasonLabel(agent.availability.reason)}</small>
       </span>
-      {action.prominent ? (
-        <Link className="button secondary compact-button" to={action.to}>
-          {action.label}
-        </Link>
-      ) : null}
     </div>
   );
 }
@@ -973,7 +1142,7 @@ function DependencyCard({
   secondary,
 }: {
   title: string;
-  state: AgentSummary["availability"]["dependencies"]["computer"]["state"];
+  state: AgentAvailability["dependencies"]["im"]["state"];
   primary: string;
   secondary: string;
 }) {
@@ -990,7 +1159,7 @@ function DependencyCard({
   );
 }
 
-function AdminControls({ agent, onAgentChanged }: { agent: AgentDetail; onAgentChanged: () => void }) {
+function AdminControls({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="admin-controls" id="admin-controls">
@@ -1007,7 +1176,7 @@ function AdminControls({ agent, onAgentChanged }: { agent: AgentDetail; onAgentC
   );
 }
 
-function GeneralAdminForm({ agent, onAgentChanged }: { agent: AgentDetail; onAgentChanged: () => void }) {
+function GeneralAdminForm({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   const configState = useResource(() => browserApi.agentConfig(agent.id), agent.id);
   return (
     <AsyncState state={configState}>
@@ -1069,12 +1238,12 @@ function GeneralConfigForm({
         Display name
         <input defaultValue={config.displayName} key={config.revision} name="displayName" required />
       </label>
-      <button className="button" type="submit">
+      <button className="button commit" type="submit">
         Save General settings
       </button>
       <div className="actions">
         {config.status === "active" ? (
-          <button type="button" onClick={() => void changeLifecycle("suspend")}>
+          <button className="secondary" type="button" onClick={() => void changeLifecycle("suspend")}>
             Suspend Agent
           </button>
         ) : (
@@ -1093,7 +1262,7 @@ function GeneralConfigForm({
   );
 }
 
-function RuntimeTab({ agent }: { agent: AgentDetail }) {
+function RuntimeTab({ agent }: { agent: AgentDetailView }) {
   const state = useResource(
     () => (agent.viewerCapabilities.canManage ? browserApi.agentConfig(agent.id) : Promise.resolve(undefined)),
     `${agent.id}:${agent.viewerCapabilities.canManage}`,
@@ -1167,7 +1336,7 @@ function RuntimeConfigForm({ initialConfig }: { initialConfig: AgentAdminConfig 
         <input defaultValue={config.runtimeConfig.maxDurationMs ?? ""} min="1" name="maxDurationMs" type="number" />
       </label>
       <p className="muted">Allowed message tools: {config.runtimeConfig.allowedTools.join(", ") || "None"}</p>
-      <button className="button" type="submit">
+      <button className="button commit" type="submit">
         Save Runtime settings
       </button>
       {message ? <p role="status">{message}</p> : null}
@@ -1180,7 +1349,7 @@ function nullableText(value: FormDataEntryValue | null): string | null {
   return text || null;
 }
 
-function ImTab({ agent }: { agent: AgentDetail }) {
+function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   const [reload, setReload] = useState(0);
   const [error, setError] = useState<string>();
   const [reauthorizationNeeded, setReauthorizationNeeded] = useState(false);
@@ -1197,6 +1366,7 @@ function ImTab({ agent }: { agent: AgentDetail }) {
       const config = await browserApi.agentConfig(agent.id);
       await browserApi.updateAgent(agent.id, { expectedRevision: config.revision, receiveMode });
       setReload((value) => value + 1);
+      onAgentChanged();
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === "IM_BINDING_SCOPE_REAUTH_REQUIRED") {
         setReauthorizationNeeded(true);
@@ -1205,7 +1375,13 @@ function ImTab({ agent }: { agent: AgentDetail }) {
     }
   }
   return (
-    <FeishuSetup agentId={agent.id} onSuccess={() => setReload((value) => value + 1)}>
+    <FeishuSetup
+      agentId={agent.id}
+      onSuccess={() => {
+        setReload((value) => value + 1);
+        onAgentChanged();
+      }}
+    >
       {(setup) => {
         const connect = async (intent: "create" | "reauthorize" | "replace" = "create") => {
           setError(undefined);
@@ -1277,7 +1453,10 @@ function ImTab({ agent }: { agent: AgentDetail }) {
                           )
                             return;
                           void browserApi.disableImBinding(binding.id).then(
-                            () => setReload((value) => value + 1),
+                            () => {
+                              setReload((value) => value + 1);
+                              onAgentChanged();
+                            },
                             (cause: unknown) =>
                               setError(cause instanceof Error ? cause.message : "Unable to disable IM binding"),
                           );
@@ -1305,7 +1484,7 @@ function ImTab({ agent }: { agent: AgentDetail }) {
   );
 }
 
-function AccessTab({ agent }: { agent: AgentDetail }) {
+function AccessTab({ agent }: { agent: AgentDetailView }) {
   return (
     <DefinitionList
       rows={[
@@ -1450,7 +1629,7 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
         />
       </label>
       <p className="muted">This name is shared across every Team you belong to.</p>
-      <button className="button" disabled={saving} type="submit">
+      <button className="button commit" disabled={saving} type="submit">
         {saving ? "Saving…" : "Save account profile"}
       </button>
       {message ? <p role="status">{message}</p> : null}
@@ -1464,7 +1643,9 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
 }
 
 function TeamSettings({ membership, refreshMe }: { membership: MeMembership; refreshMe: () => void }) {
+  const formRef = useRef<HTMLFormElement>(null);
   const [message, setMessage] = useState<string>();
+  const [dirty, setDirty] = useState(false);
   if (membership.role !== "admin") {
     return (
       <DefinitionList
@@ -1485,6 +1666,7 @@ function TeamSettings({ membership, refreshMe }: { membership: MeMembership; ref
         name: String(data.get("name") ?? ""),
         displayName: String(data.get("displayName") ?? ""),
       });
+      setDirty(false);
       refreshMe();
       setMessage("Team profile saved.");
     } catch (cause) {
@@ -1492,20 +1674,60 @@ function TeamSettings({ membership, refreshMe }: { membership: MeMembership; ref
     }
   }
   return (
-    <form className="form-card" key={`${membership.teamName}:${membership.teamDisplayName}`} onSubmit={submit}>
+    <form
+      className="form-card team-profile-form"
+      key={`${membership.teamName}:${membership.teamDisplayName}`}
+      ref={formRef}
+      onChange={() => {
+        setDirty(true);
+        setMessage(undefined);
+      }}
+      onSubmit={submit}
+    >
       <h2>Team profile</h2>
-      <label>
-        Canonical name
-        <input defaultValue={membership.teamName} name="name" pattern="[A-Za-z0-9][A-Za-z0-9-]*" required />
-      </label>
-      <p className="muted">Changing this name immediately changes the CLI --team selector. The Team ID stays stable.</p>
-      <label>
-        Display name
-        <input defaultValue={membership.teamDisplayName} name="displayName" required />
-      </label>
-      <button className="button" type="submit">
-        Save Team profile
-      </button>
+      <div className="team-profile-fields">
+        <div className="team-profile-row">
+          <div className="team-profile-copy">
+            <strong>Canonical name</strong>
+            <p>Changing this immediately changes the CLI --team selector. The Team ID stays stable.</p>
+          </div>
+          <label>
+            Canonical name
+            <input defaultValue={membership.teamName} name="name" pattern="[A-Za-z0-9][A-Za-z0-9-]*" required />
+          </label>
+        </div>
+        <div className="team-profile-row">
+          <div className="team-profile-copy">
+            <strong>Display name</strong>
+            <p>The human-readable Team name shown in navigation and invitations.</p>
+          </div>
+          <label>
+            Display name
+            <input defaultValue={membership.teamDisplayName} name="displayName" required />
+          </label>
+        </div>
+      </div>
+      {dirty ? (
+        <div className="dirty-bar">
+          <span>Unsaved changes</span>
+          <div className="dirty-actions">
+            <button
+              className="tertiary"
+              type="button"
+              onClick={() => {
+                formRef.current?.reset();
+                setDirty(false);
+                setMessage(undefined);
+              }}
+            >
+              Discard
+            </button>
+            <button className="button commit" type="submit">
+              Save Team profile
+            </button>
+          </div>
+        </div>
+      ) : null}
       {message ? <p role="status">{message}</p> : null}
     </form>
   );
@@ -1902,7 +2124,7 @@ function receiveModeLabel(receiveMode: AgentSummary["receiveMode"]): string {
   return receiveMode === "all_message" ? "All messages" : "Mentions only";
 }
 
-function availabilityTone(state: AgentSummary["availability"]["state"] | "not_connected"): string {
+function availabilityTone(state: AgentAvailability["state"]): string {
   if (state === "ready") return "ready";
   if (state === "setting_up") return "setting-up";
   if (state === "suspended") return "suspended";
@@ -1910,28 +2132,28 @@ function availabilityTone(state: AgentSummary["availability"]["state"] | "not_co
   return "action-required";
 }
 
-function availabilityStateLabel(state: AgentSummary["availability"]["state"]): string {
+function availabilityStateLabel(state: AgentAvailability["state"]): string {
   const labels = {
     ready: "Ready",
     action_required: "Action required",
     setting_up: "Setting up",
     not_connected: "Not connected",
     suspended: "Suspended",
-  } satisfies Record<AgentSummary["availability"]["state"], string>;
+  } satisfies Record<AgentAvailability["state"], string>;
   return labels[state];
 }
 
-function dependencyStateLabel(state: AgentSummary["availability"]["dependencies"]["computer"]["state"]): string {
+function dependencyStateLabel(state: AgentAvailability["dependencies"]["im"]["state"]): string {
   const labels = {
     ready: "Ready",
     action_required: "Needs attention",
     setting_up: "Setting up",
     not_connected: "Not connected",
-  } satisfies Record<AgentSummary["availability"]["dependencies"]["computer"]["state"], string>;
+  } satisfies Record<AgentAvailability["dependencies"]["im"]["state"], string>;
   return labels[state];
 }
 
-function availabilityReasonLabel(reason: AgentSummary["availability"]["reason"]): string {
+function availabilityReasonLabel(reason: AgentAvailability["reason"]): string {
   if (!reason) return "All dependencies healthy";
   const labels = {
     agent_suspended: "Agent is suspended",
@@ -1941,8 +2163,8 @@ function availabilityReasonLabel(reason: AgentSummary["availability"]["reason"])
     im_provisioning: "IM connection is being prepared",
     im_reauthorization_required: "IM permissions need updating",
     im_error: "IM connection needs attention",
-    im_connection_unconfirmed: "Unable to confirm IM connection",
-  } satisfies Record<NonNullable<AgentSummary["availability"]["reason"]>, string>;
+    handoff_unavailable: "Unable to confirm runtime and IM handoff",
+  } satisfies Record<NonNullable<AgentAvailability["reason"]>, string>;
   return labels[reason];
 }
 
@@ -1957,28 +2179,6 @@ function lastConfirmedLabel(value: string | null): string {
   const elapsedHours = Math.round(elapsedMinutes / 60);
   if (Math.abs(elapsedHours) < 24) return `Confirmed ${formatter.format(elapsedHours, "hour")}`;
   return `Confirmed ${formatter.format(Math.round(elapsedHours / 24), "day")}`;
-}
-
-function availabilityAction(agent: AgentSummary): { label: string; to: string; prominent: boolean } {
-  if (agent.availability.state === "ready" || agent.availability.state === "suspended") {
-    return { label: "›", to: `/agents/${agent.id}/general`, prominent: false };
-  }
-  if (agent.availability.reason === "im_reauthorization_required") {
-    return { label: "Reauthorize", to: `/agents/${agent.id}/im`, prominent: true };
-  }
-  if (agent.availability.reason === "im_not_connected") {
-    return { label: "Connect IM", to: `/agents/${agent.id}/im`, prominent: true };
-  }
-  if (agent.availability.reason?.startsWith("im_")) {
-    return { label: "Review IM", to: `/agents/${agent.id}/im`, prominent: true };
-  }
-  if (agent.availability.reason === "computer_offline") {
-    return { label: "Check Computer", to: "/settings/computers", prominent: true };
-  }
-  if (agent.availability.reason === "runtime_unavailable") {
-    return { label: "Check Runtime", to: `/agents/${agent.id}/runtime`, prominent: true };
-  }
-  return { label: "Review", to: `/agents/${agent.id}/general`, prominent: true };
 }
 
 function initials(value: string): string {

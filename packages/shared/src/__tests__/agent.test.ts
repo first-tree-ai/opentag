@@ -141,21 +141,6 @@ describe("Agent contracts", () => {
       ...base,
       manager: { userId: managerUserId, displayName: "Manager" },
       computer: { id: computerId, displayName: "Laptop", platform: "darwin" },
-      availability: {
-        state: "ready",
-        reason: null,
-        lastConfirmedAt: "2026-03-15T10:00:00.000Z",
-        dependencies: {
-          computer: { state: "ready", lastConfirmedAt: "2026-03-15T10:00:00.000Z" },
-          runtime: { state: "ready", lastConfirmedAt: "2026-03-15T10:00:00.000Z" },
-          im: {
-            state: "ready",
-            provider: "feishu",
-            botDisplayName: "Reviewer",
-            lastConfirmedAt: "2026-03-15T10:00:00.000Z",
-          },
-        },
-      },
     };
     expect(AgentSummarySchema.parse(summary)).toEqual(summary);
     expect(ListAgentsResponseSchema.parse({ agents: [summary] })).toEqual({ agents: [summary] });

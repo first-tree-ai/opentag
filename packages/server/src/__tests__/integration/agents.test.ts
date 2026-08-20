@@ -204,15 +204,6 @@ describe("Agent persistence and authorization", () => {
           id: created.id,
           manager: expect.objectContaining({ userId: value.bootstrap.userId }),
           computer: expect.objectContaining({ id: computer.id }),
-          availability: expect.objectContaining({
-            state: "action_required",
-            reason: "computer_offline",
-            dependencies: expect.objectContaining({
-              computer: expect.objectContaining({ state: "action_required" }),
-              runtime: expect.objectContaining({ state: "action_required" }),
-              im: expect.objectContaining({ state: "not_connected", provider: null }),
-            }),
-          }),
         }),
       ]);
       await expect(value.service.getById(value.bootstrap.userId, created.id)).resolves.toMatchObject({

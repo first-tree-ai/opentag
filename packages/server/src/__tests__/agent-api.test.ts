@@ -51,21 +51,6 @@ const agentSummary = {
   ...agentBase,
   manager: { userId: managerUserId, displayName: "Admin" },
   computer: { id: safeComputerId, displayName: "Laptop", platform: "linux" as const },
-  availability: {
-    state: "ready" as const,
-    reason: null,
-    lastConfirmedAt: "2026-08-19T00:00:00.000Z",
-    dependencies: {
-      computer: { state: "ready" as const, lastConfirmedAt: "2026-08-19T00:00:00.000Z" },
-      runtime: { state: "ready" as const, lastConfirmedAt: "2026-08-19T00:00:00.000Z" },
-      im: {
-        state: "ready" as const,
-        provider: "feishu" as const,
-        botDisplayName: "Reviewer",
-        lastConfirmedAt: "2026-08-19T00:00:00.000Z",
-      },
-    },
-  },
 };
 const agentDetail = { ...agentSummary, viewerCapabilities: { canManage: true } };
 

@@ -38,21 +38,6 @@ const agentSummary = {
   ...agentBase,
   manager: { userId: managerUserId, displayName: "Manager" },
   computer: { id: safeComputerId, displayName: "Laptop", platform: "linux" },
-  availability: {
-    state: "ready",
-    reason: null,
-    lastConfirmedAt: "2026-08-19T00:00:00.000Z",
-    dependencies: {
-      computer: { state: "ready", lastConfirmedAt: "2026-08-19T00:00:00.000Z" },
-      runtime: { state: "ready", lastConfirmedAt: "2026-08-19T00:00:00.000Z" },
-      im: {
-        state: "ready",
-        provider: "feishu",
-        botDisplayName: "Code Reviewer",
-        lastConfirmedAt: "2026-08-19T00:00:00.000Z",
-      },
-    },
-  },
 };
 const agentDetail = { ...agentSummary, viewerCapabilities: { canManage: true } };
 

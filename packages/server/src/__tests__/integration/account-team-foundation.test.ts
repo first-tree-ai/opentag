@@ -211,7 +211,10 @@ describe("account identity and Team foundation persistence", () => {
       expect(computerResult.computers.find((candidate) => candidate.id === computer.id)).toMatchObject({
         ownerUserId: userId,
         ownerDisplayName: "Product Name",
-        providerReadiness: [{ provider: "codex", status: "unavailable", observedAt: null }],
+        providerReadiness: [
+          { provider: "codex", status: "unavailable", observedAt: null },
+          { provider: "claude-code", status: "unavailable", observedAt: null },
+        ],
       });
       const agentService = new AgentService(value.database, { membershipService: value.teamService, now: () => now });
       await agentService.createForTeam(userId, primaryTeam.id, {

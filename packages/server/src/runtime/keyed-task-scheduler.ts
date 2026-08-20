@@ -5,7 +5,7 @@ export interface KeyedTaskSchedulerOptions {
 }
 
 interface TaskLane {
-  queue: Array<() => Promise<void>>;
+  queue: Array<{ run: () => Promise<void>; onDrop?: () => void }>;
   running: boolean;
 }
 
@@ -25,14 +25,14 @@ export class KeyedTaskScheduler {
     this.#options = options;
   }
 
-  enqueue(key: string, task: () => Promise<void>): boolean {
+  enqueue(key: string, task: () => Promise<void>, onDrop?: () => void): boolean {
     if (this.#closed || !key) return false;
     const lane = this.#lanes.get(key) ?? { queue: [], running: false };
     if (lane.queue.length >= this.#options.maxQueuedPerKey || this.#queued >= this.#options.maxQueuedTotal) {
       return false;
     }
     if (!this.#lanes.has(key)) this.#lanes.set(key, lane);
-    lane.queue.push(task);
+    lane.queue.push({ run: task, onDrop });
     this.#queued += 1;
     this.#pump();
     return true;
@@ -42,7 +42,13 @@ export class KeyedTaskScheduler {
     this.#closed = true;
     for (const lane of this.#lanes.values()) {
       this.#queued -= lane.queue.length;
-      lane.queue.splice(0);
+      for (const task of lane.queue.splice(0)) {
+        try {
+          task.onDrop?.();
+        } catch {
+          // Dropped-task observation must not interrupt scheduler shutdown.
+        }
+      }
     }
     for (const [key, lane] of this.#lanes) {
       if (!lane.running) this.#lanes.delete(key);
@@ -61,7 +67,7 @@ export class KeyedTaskScheduler {
       lane.running = true;
       this.#active += 1;
       void Promise.resolve()
-        .then(task)
+        .then(task.run)
         .catch(() => undefined)
         .finally(() => {
           lane.running = false;

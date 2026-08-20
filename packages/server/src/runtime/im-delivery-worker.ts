@@ -22,6 +22,13 @@ import {
   sessions,
 } from "../db/schema/index.js";
 import {
+  imAttrs,
+  outcomeAttrs,
+  runtimeAttrs,
+  setActiveSpanAttributes,
+  traceDeliveryClaim,
+} from "../observability/index.js";
+import {
   type EffectiveRuntimeSnapshotAssembler,
   EffectiveRuntimeSnapshotAssemblerError,
 } from "../services/runtime-config/index.js";
@@ -89,10 +96,10 @@ export class ImDeliveryWorker {
     this.#running = true;
     try {
       const claimed = await this.#claim();
-      if (claimed) {
-        if (claimed.kind === "pending") await this.#deliver(claimed.id, claimed.claimToken);
-        else await this.#recover(claimed.id);
-      }
+      await traceDeliveryClaim(claimed, async (claim) => {
+        if (claim.kind === "pending") await this.#deliver(claim.id, claim.claimToken);
+        else await this.#recover(claim.id);
+      });
     } finally {
       this.#running = false;
     }
@@ -273,9 +280,27 @@ export class ImDeliveryWorker {
       )
       .limit(1);
     if (!row) {
+      setActiveSpanAttributes(outcomeAttrs("failed", "IM_DELIVERY_RUNTIME_AUTHORITY_UNAVAILABLE"));
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_AUTHORITY_UNAVAILABLE", claimToken);
       return;
     }
+    setActiveSpanAttributes({
+      ...imAttrs({
+        provider: row.imBinding.provider,
+        bindingId: row.imBinding.id,
+        deliveryId: row.delivery.id,
+        messageId: row.message.id,
+      }),
+      ...runtimeAttrs({
+        deliveryId: row.delivery.id,
+        messageId: row.message.id,
+        sessionId: row.session.id,
+        agentId: row.agent.id,
+        computerId: row.placement.computerId,
+        placementGeneration: row.placement.generation,
+        attempt: row.delivery.attemptCount,
+      }),
+    });
     if (row.delivery.placementGeneration !== row.placement.generation) {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_PLACEMENT_STALE", claimToken);
       return;
@@ -401,6 +426,7 @@ export class ImDeliveryWorker {
       fitDeliveryFrame(request);
       if (!(await lease.assertOwned())) return;
       const result = await this.#domain.requestDelivery(row.placement.computerId, instanceId, request);
+      setActiveSpanAttributes(outcomeAttrs(result.status, result.reason));
       if (
         result.status === "rejected" &&
         ["configuration_unsupported", "invalid_input"].includes(result.reason ?? "")
@@ -442,6 +468,23 @@ export class ImDeliveryWorker {
       )
       .limit(1);
     if (!row) return;
+    setActiveSpanAttributes({
+      ...imAttrs({
+        provider: row.imBinding.provider,
+        bindingId: row.imBinding.id,
+        deliveryId: row.delivery.id,
+        messageId: row.delivery.messageId,
+      }),
+      ...runtimeAttrs({
+        deliveryId: row.delivery.id,
+        messageId: row.delivery.messageId,
+        sessionId: row.session.id,
+        agentId: row.agent.id,
+        computerId: row.placement.computerId,
+        placementGeneration: row.placement.generation,
+        attempt: row.delivery.attemptCount,
+      }),
+    });
     if (row.delivery.placementGeneration !== row.placement.generation) {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_PLACEMENT_STALE");
       return;
@@ -486,6 +529,7 @@ export class ImDeliveryWorker {
         desired: "ready",
         runtime,
       });
+      setActiveSpanAttributes(outcomeAttrs("recovered"));
     } catch {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RECOVERY_FAILED");
     }
@@ -525,6 +569,7 @@ export class ImDeliveryWorker {
 
   async #recordFailure(deliveryId: string, code: string, claimToken?: string): Promise<void> {
     const bounded = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/.test(code) ? code : "IM_DELIVERY_FAILED";
+    setActiveSpanAttributes(outcomeAttrs("failed", bounded));
     const [updated] = await this.#database
       .update(imMessageDeliveries)
       .set({ lastErrorCode: bounded, ...(claimToken ? { nextAttemptAt: new Date(Date.now() + RETRY_DELAY_MS) } : {}) })
@@ -541,6 +586,7 @@ export class ImDeliveryWorker {
 
   async #releaseDispatch(deliveryId: string, requestId: string, code: string, claimToken: string): Promise<void> {
     const bounded = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/.test(code) ? code : "IM_DELIVERY_FAILED";
+    setActiveSpanAttributes(outcomeAttrs("released", bounded));
     const [released] = await this.#database
       .update(imMessageDeliveries)
       .set({
@@ -563,6 +609,7 @@ export class ImDeliveryWorker {
   }
 
   async #reject(deliveryId: string, reason: string, claimToken?: string): Promise<void> {
+    setActiveSpanAttributes(outcomeAttrs("terminal_rejected", reason));
     await this.#database
       .update(imMessageDeliveries)
       .set({

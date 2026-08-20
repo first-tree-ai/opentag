@@ -5,6 +5,7 @@ import type { DatabaseClient } from "../../../db/client.js";
 import { agents, imBindings } from "../../../db/schema/index.js";
 import type { ApplicationCipher } from "../../crypto.js";
 import type { ImBindingService, VerifiedFeishuBinding } from "../im-binding-service.js";
+import { FeishuOperationError, safeFeishuSetupErrorCode } from "./errors.js";
 import type { FeishuAppProfile, FeishuRegistration, FeishuRegistrationGateway } from "./registration.js";
 
 export interface FeishuBindingActivation {
@@ -25,16 +26,6 @@ interface AttemptSecret {
 
 const OWNER_HEARTBEAT_MS = 5_000;
 const OWNER_STALE_MS = 15_000;
-
-function errorCode(error: unknown): string {
-  if (typeof error === "object" && error !== null && "code" in error && typeof error.code === "string") {
-    if (error.code === "access_denied") return "FEISHU_SETUP_DENIED";
-    if (error.code === "expired_token") return "FEISHU_SETUP_EXPIRED";
-    if (error.code === "abort") return "FEISHU_SETUP_CANCELED";
-  }
-  if (error instanceof Error && /^FEISHU_[A-Z0-9_]+$/.test(error.message)) return error.message.slice(0, 120);
-  return "FEISHU_SETUP_FAILED";
-}
 
 export class FeishuSetupService {
   readonly #activation: FeishuBindingActivation;
@@ -140,19 +131,24 @@ export class FeishuSetupService {
       name: agent.displayName,
       description: `OpenTag Agent: ${agent.displayName}`,
     };
-    const registration = this.#registrations.start({
-      profile,
-      intent,
-      existingAppId: intent === "reauthorize" ? (existing?.externalAppId ?? undefined) : undefined,
-      receiveMode: agent.receiveMode,
-    });
+    let registration: FeishuRegistration;
+    try {
+      registration = this.#registrations.start({
+        profile,
+        intent,
+        existingAppId: intent === "reauthorize" ? (existing?.externalAppId ?? undefined) : undefined,
+        receiveMode: agent.receiveMode,
+      });
+    } catch {
+      throw new FeishuOperationError("FEISHU_SETUP_FAILED");
+    }
     let qr: Awaited<FeishuRegistration["qrReady"]>;
     try {
       qr = await registration.qrReady;
-    } catch (error) {
+    } catch {
       void registration.result.catch(() => undefined);
       registration.abort();
-      throw error;
+      throw new FeishuOperationError("FEISHU_SETUP_FAILED");
     }
 
     const attemptId = randomUUID();
@@ -313,7 +309,7 @@ export class FeishuSetupService {
         requestedScopes: result.requestedScopes,
       });
     } catch (error) {
-      const code = errorCode(error);
+      const code = safeFeishuSetupErrorCode(error);
       const state =
         code === "FEISHU_SETUP_EXPIRED" ? "expired" : code === "FEISHU_SETUP_CANCELED" ? "canceled" : "failed";
       try {

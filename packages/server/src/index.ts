@@ -7,6 +7,7 @@ import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
 import { agents } from "./db/schema/index.js";
+import { createServerDiagnosticReporter, initTelemetry, shutdownTelemetry } from "./observability/index.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
@@ -79,6 +80,7 @@ export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
   const knownSecrets: string[] = [];
+  const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
 
   try {
     knownSecrets.push(
@@ -86,8 +88,11 @@ export async function startServer(): Promise<void> {
       process.env.OPENTAG_JWT_SECRET ?? "",
       process.env.OPENTAG_GOOGLE_CLIENT_SECRET ?? "",
       process.env.OPENTAG_ENCRYPTION_KEY ?? "",
+      process.env.OPENTAG_OTEL_HEADERS ?? "",
     );
     const config = parseServerConfig(process.env);
+    const instanceId = randomUUID();
+    await initTelemetry(config.observability.tracing, instanceId);
     readiness.complete("configuration");
     if (config.autoMigrate) {
       await migrateDatabase(config.databaseUrl, config.migrationsDirectory);
@@ -122,7 +127,6 @@ export async function startServer(): Promise<void> {
       },
     });
     const imMessageInbox = new ImMessageInbox(database);
-    const instanceId = randomUUID();
     let outboundMessageService: OutboundMessageService;
     const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
       onImToolRequest: async (request, context) => {
@@ -164,6 +168,7 @@ export async function startServer(): Promise<void> {
           computerId && currentInstanceId && registry.supports(computerId, currentInstanceId, "imMessageTool"),
         );
       },
+      onDiagnostic: reportDiagnostic,
     });
     const feishuSetupService = new FeishuSetupService({
       database,
@@ -172,6 +177,7 @@ export async function startServer(): Promise<void> {
       imBindings: imBindingService,
       registrations: new DefaultFeishuRegistrationGateway(),
       activation: feishuConnections,
+      onDiagnostic: reportDiagnostic,
     });
     const slackApi = new DefaultSlackApiClient();
     const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
@@ -183,7 +189,7 @@ export async function startServer(): Promise<void> {
       database,
       domain: domainOwner,
       registry,
-      onDiagnostic: (code) => app?.log.error({ code }, "IM delivery worker diagnostic"),
+      onDiagnostic: reportDiagnostic,
     });
     const identityService = new AuthIdentityService(database);
     const postAuthentication = new PostAuthenticationService(database, invitationService, {
@@ -241,11 +247,19 @@ export async function startServer(): Promise<void> {
     feishuSetupService.start();
     feishuConnections.start();
     imDeliveryWorker.start();
+    const closeForSignal = () => {
+      void app?.close();
+    };
+    process.once("SIGINT", closeForSignal);
+    process.once("SIGTERM", closeForSignal);
     app.addHook("onClose", async () => {
+      process.off("SIGINT", closeForSignal);
+      process.off("SIGTERM", closeForSignal);
       imDeliveryWorker.stop();
       await feishuSetupService.stop();
       await feishuConnections.stop();
       await sql.end();
+      await shutdownTelemetry();
     });
     app.log.info(serverEnvironmentSummary(config), "Resolved OpenTag environment");
     readiness.complete("application");
@@ -258,6 +272,7 @@ export async function startServer(): Promise<void> {
     } else {
       process.stderr.write(`Failed to start OpenTag server: ${formatStartupError(error, knownSecrets)}\n`);
     }
+    await shutdownTelemetry();
     process.exitCode = 1;
   }
 }

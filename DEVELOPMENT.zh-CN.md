@@ -278,6 +278,10 @@ fail-closed 原则拒绝读取。
 | `OPENTAG_DEV_AUTH_BYPASS_ENABLED` | `false` | 显式启用仅限 loopback 的开发登录，必须同时配置 email |
 | `OPENTAG_DEV_AUTH_EMAIL` | 无 | development bypass 选择的已有唯一 bootstrap 用户 |
 | `OPENTAG_AUTO_MIGRATE` | `true` | 监听前执行已入库的 migration |
+| `OPENTAG_OTEL_ENDPOINT` | 空 | 可选 OTLP/HTTP traces endpoint；参阅 [Server 可观测性](./docs/zh-CN/observability.md) |
+| `OPENTAG_OTEL_HEADERS` | 空 | 逗号分隔 `key=value` 格式的 secret OTLP headers |
+| `OPENTAG_OTEL_ENVIRONMENT` | `OPENTAG_ENV` | Trace deployment environment 标签 |
+| `OPENTAG_OTEL_SAMPLE_RATE` | `1` | `0` 到 `1` 的全局 trace head sample rate |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | access token 有效期 |
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | refresh JWT 有效期 |
 | `OPENTAG_HOME` | 随 channel 而定 | 按生命周期分层的 `config/`、`data/`、`state/`、`logs/` 根目录（源码默认为 `~/.opentag-dev`） |

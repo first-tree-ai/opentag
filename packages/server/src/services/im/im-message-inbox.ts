@@ -9,6 +9,7 @@ import {
   sessionPlacements,
   sessions,
 } from "../../db/schema/index.js";
+import { imAttrs, outcomeAttrs, setActiveSpanAttributes, withSpan } from "../../observability/index.js";
 
 const DIRECT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const AMBIENT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -17,6 +18,26 @@ export interface IngestResult {
   duplicate: boolean;
   messageId?: string;
   deliveryIds: string[];
+}
+
+export type ImInboundPersistenceErrorCode =
+  | "IM_INBOUND_BINDING_STALE"
+  | "IM_INBOUND_DATABASE_FAILED"
+  | "IM_INBOUND_FENCE_STALE"
+  | "IM_INBOUND_IDENTITY_MISMATCH";
+
+export class ImInboundPersistenceError extends Error {
+  constructor(
+    readonly code: Exclude<ImInboundPersistenceErrorCode, "IM_INBOUND_DATABASE_FAILED">,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ImInboundPersistenceError";
+  }
+}
+
+export function classifyImInboundPersistenceError(error: unknown): ImInboundPersistenceErrorCode {
+  return error instanceof ImInboundPersistenceError ? error.code : "IM_INBOUND_DATABASE_FAILED";
 }
 
 export class ImMessageInbox {
@@ -47,261 +68,306 @@ export class ImMessageInbox {
     credentialGeneration: number,
     rawEvent: NormalizedInboundImEvent,
     admissionFence?: { provider: "feishu"; holderInstanceId: string; fencingEpoch: number },
+    telemetry?: { provider: "feishu" | "slack" },
   ): Promise<IngestResult> {
     const event = NormalizedInboundImEventSchema.parse(rawEvent);
-    return this.#database.transaction(async (transaction) => {
-      const now = this.#now();
-      await transaction
-        .update(imBindings)
-        .set({ externalTeamId: event.externalTeamId, updatedAt: now })
-        .where(
-          and(
-            eq(imBindings.id, imBindingId),
-            eq(imBindings.provider, "feishu"),
-            eq(imBindings.status, "active"),
-            eq(imBindings.credentialGeneration, credentialGeneration),
-            eq(imBindings.externalAppId, event.externalAppId),
-            isNull(imBindings.externalTeamId),
-          ),
-        );
-      const [scope] = await transaction
-        .select({ imBinding: imBindings, agent: agents })
-        .from(imBindings)
-        .innerJoin(agents, eq(agents.id, imBindings.agentId))
-        .where(
-          and(
-            eq(imBindings.id, imBindingId),
-            eq(imBindings.status, "active"),
-            eq(imBindings.credentialGeneration, credentialGeneration),
-            isNull(agents.deletedAt),
-          ),
-        )
-        .limit(1)
-        .for("share", { of: imBindings });
-      if (!scope) throw new Error("IM_BINDING_GENERATION_STALE");
-      if (admissionFence) {
-        if (
-          scope.imBinding.provider !== "feishu" ||
-          scope.imBinding.connectionOwnerInstanceId !== admissionFence.holderInstanceId ||
-          scope.imBinding.connectionFencingEpoch !== admissionFence.fencingEpoch ||
-          !scope.imBinding.connectionLeaseExpiresAt ||
-          scope.imBinding.connectionLeaseExpiresAt <= now
-        ) {
-          throw new Error("FEISHU_CONNECTION_LEASE_STALE");
-        }
-        await this.#afterAdmissionFence?.();
-      }
-      if (scope.imBinding.externalAppId !== event.externalAppId) {
-        throw new Error("IM_BINDING_BINDING_IDENTITY_MISMATCH");
-      }
-      if (scope.imBinding.externalTeamId !== null && scope.imBinding.externalTeamId !== event.externalTeamId) {
-        throw new Error("IM_BINDING_TEAM_IDENTITY_MISMATCH");
-      }
-      await transaction.execute(
-        sql`select pg_advisory_xact_lock(hashtextextended(${`im-message:${imBindingId}:${event.conversation.externalId}:${event.message.externalId}`}, 0))`,
-      );
-      await this.#afterMessageAuthority?.();
-      const [previousCurrent] = await transaction
-        .select({
-          id: imMessages.id,
-          threadKey: imMessages.threadKey,
-        })
-        .from(imMessages)
-        .where(
-          and(
-            eq(imMessages.imBindingId, imBindingId),
-            eq(imMessages.channelId, event.conversation.externalId),
-            eq(imMessages.externalMessageId, event.message.externalId),
-          ),
-        )
-        .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
-        .limit(1);
-      const previousConversationKind = previousCurrent
-        ? await this.#findConversationKind(transaction, imBindingId, event.conversation.externalId)
-        : undefined;
-      const inheritedDeliveries =
-        previousCurrent && event.conversation.kind === "unknown"
-          ? await transaction
-              .select({
-                sessionId: imMessageDeliveries.sessionId,
-                attention: imMessageDeliveries.attention,
-                generation: sessionPlacements.generation,
-              })
-              .from(imMessageDeliveries)
-              .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-              .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+    const provider = telemetry?.provider ?? admissionFence?.provider;
+    return withSpan(
+      "im.inbound.persist",
+      imAttrs({
+        provider,
+        bindingId: imBindingId,
+        providerEventId: event.providerEventId,
+        externalMessageId: event.message.externalId,
+      }),
+      async () => {
+        try {
+          return await this.#database.transaction(async (transaction) => {
+            const finish = (result: IngestResult, outcome: string): IngestResult => {
+              setActiveSpanAttributes({
+                ...imAttrs({
+                  messageId: result.messageId,
+                  deliveryCount: result.deliveryIds.length,
+                  duplicate: result.duplicate,
+                }),
+                ...outcomeAttrs(outcome),
+              });
+              return result;
+            };
+            const now = this.#now();
+            await transaction
+              .update(imBindings)
+              .set({ externalTeamId: event.externalTeamId, updatedAt: now })
               .where(
                 and(
-                  eq(imMessageDeliveries.messageId, previousCurrent.id),
-                  eq(sessions.imBindingId, imBindingId),
-                  eq(sessions.channelId, event.conversation.externalId),
-                  isNull(sessions.endedAt),
+                  eq(imBindings.id, imBindingId),
+                  eq(imBindings.provider, "feishu"),
+                  eq(imBindings.status, "active"),
+                  eq(imBindings.credentialGeneration, credentialGeneration),
+                  eq(imBindings.externalAppId, event.externalAppId),
+                  isNull(imBindings.externalTeamId),
+                ),
+              );
+            const [scope] = await transaction
+              .select({ imBinding: imBindings, agent: agents })
+              .from(imBindings)
+              .innerJoin(agents, eq(agents.id, imBindings.agentId))
+              .where(
+                and(
+                  eq(imBindings.id, imBindingId),
+                  eq(imBindings.status, "active"),
+                  eq(imBindings.credentialGeneration, credentialGeneration),
+                  isNull(agents.deletedAt),
                 ),
               )
-          : [];
-      const conversationKind =
-        event.conversation.kind === "unknown" ? (previousConversationKind ?? null) : event.conversation.kind;
-      const threadKey =
-        event.conversation.kind === "unknown"
-          ? (previousCurrent?.threadKey ?? null)
-          : (event.message.threadKey ?? null);
-      const content = ImContentV1Schema.parse({
-        ...event.message.content,
-        resources: event.message.resources.map((resource, ordinal) => ({
-          ...resource,
-          ordinal,
-          availability: resource.sizeBytes != null && resource.sizeBytes > 25 * 1024 * 1024 ? "too_large" : "available",
-        })),
-      });
-      const [created] = await transaction
-        .insert(imMessages)
-        .values({
-          imBindingId,
-          providerEventId: event.providerEventId,
-          channelId: event.conversation.externalId,
-          externalMessageId: event.message.externalId,
-          providerRevisionKey: event.message.revisionKey,
-          operation: event.message.operation,
-          direction: "inbound",
-          threadKey,
-          replyToExternalId: event.message.replyToExternalId ?? null,
-          authorKind: event.message.author.kind,
-          authorExternalId: event.message.author.externalId,
-          authorDisplayName: event.message.author.displayName ?? null,
-          content,
-          occurredAt: event.message.occurredAt,
-          receivedAt: now,
-        })
-        .onConflictDoNothing()
-        .returning();
-      if (!created) {
-        const [existing] = await transaction
-          .select({ id: imMessages.id })
-          .from(imMessages)
-          .where(
-            and(
-              eq(imMessages.imBindingId, imBindingId),
-              or(
-                eq(imMessages.providerEventId, event.providerEventId),
+              .limit(1)
+              .for("share", { of: imBindings });
+            if (!scope) {
+              throw new ImInboundPersistenceError("IM_INBOUND_BINDING_STALE", "IM_BINDING_GENERATION_STALE");
+            }
+            if (admissionFence) {
+              if (
+                scope.imBinding.provider !== "feishu" ||
+                scope.imBinding.connectionOwnerInstanceId !== admissionFence.holderInstanceId ||
+                scope.imBinding.connectionFencingEpoch !== admissionFence.fencingEpoch ||
+                !scope.imBinding.connectionLeaseExpiresAt ||
+                scope.imBinding.connectionLeaseExpiresAt <= now
+              ) {
+                throw new ImInboundPersistenceError("IM_INBOUND_FENCE_STALE", "FEISHU_CONNECTION_LEASE_STALE");
+              }
+              await this.#afterAdmissionFence?.();
+            }
+            if (scope.imBinding.externalAppId !== event.externalAppId) {
+              throw new ImInboundPersistenceError(
+                "IM_INBOUND_IDENTITY_MISMATCH",
+                "IM_BINDING_BINDING_IDENTITY_MISMATCH",
+              );
+            }
+            if (scope.imBinding.externalTeamId !== null && scope.imBinding.externalTeamId !== event.externalTeamId) {
+              throw new ImInboundPersistenceError("IM_INBOUND_IDENTITY_MISMATCH", "IM_BINDING_TEAM_IDENTITY_MISMATCH");
+            }
+            await transaction.execute(
+              sql`select pg_advisory_xact_lock(hashtextextended(${`im-message:${imBindingId}:${event.conversation.externalId}:${event.message.externalId}`}, 0))`,
+            );
+            await this.#afterMessageAuthority?.();
+            const [previousCurrent] = await transaction
+              .select({
+                id: imMessages.id,
+                threadKey: imMessages.threadKey,
+              })
+              .from(imMessages)
+              .where(
                 and(
+                  eq(imMessages.imBindingId, imBindingId),
                   eq(imMessages.channelId, event.conversation.externalId),
                   eq(imMessages.externalMessageId, event.message.externalId),
-                  eq(imMessages.providerRevisionKey, event.message.revisionKey),
                 ),
-              ),
-            ),
-          )
-          .limit(1);
-        return { duplicate: true, messageId: existing?.id, deliveryIds: [] };
-      }
+              )
+              .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
+              .limit(1);
+            const previousConversationKind = previousCurrent
+              ? await this.#findConversationKind(transaction, imBindingId, event.conversation.externalId)
+              : undefined;
+            const inheritedDeliveries =
+              previousCurrent && event.conversation.kind === "unknown"
+                ? await transaction
+                    .select({
+                      sessionId: imMessageDeliveries.sessionId,
+                      attention: imMessageDeliveries.attention,
+                      generation: sessionPlacements.generation,
+                    })
+                    .from(imMessageDeliveries)
+                    .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+                    .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+                    .where(
+                      and(
+                        eq(imMessageDeliveries.messageId, previousCurrent.id),
+                        eq(sessions.imBindingId, imBindingId),
+                        eq(sessions.channelId, event.conversation.externalId),
+                        isNull(sessions.endedAt),
+                      ),
+                    )
+                : [];
+            const conversationKind =
+              event.conversation.kind === "unknown" ? (previousConversationKind ?? null) : event.conversation.kind;
+            const threadKey =
+              event.conversation.kind === "unknown"
+                ? (previousCurrent?.threadKey ?? null)
+                : (event.message.threadKey ?? null);
+            const content = ImContentV1Schema.parse({
+              ...event.message.content,
+              resources: event.message.resources.map((resource, ordinal) => ({
+                ...resource,
+                ordinal,
+                availability:
+                  resource.sizeBytes != null && resource.sizeBytes > 25 * 1024 * 1024 ? "too_large" : "available",
+              })),
+            });
+            const [created] = await transaction
+              .insert(imMessages)
+              .values({
+                imBindingId,
+                providerEventId: event.providerEventId,
+                channelId: event.conversation.externalId,
+                externalMessageId: event.message.externalId,
+                providerRevisionKey: event.message.revisionKey,
+                operation: event.message.operation,
+                direction: "inbound",
+                threadKey,
+                replyToExternalId: event.message.replyToExternalId ?? null,
+                authorKind: event.message.author.kind,
+                authorExternalId: event.message.author.externalId,
+                authorDisplayName: event.message.author.displayName ?? null,
+                content,
+                occurredAt: event.message.occurredAt,
+                receivedAt: now,
+              })
+              .onConflictDoNothing()
+              .returning();
+            if (!created) {
+              const [existing] = await transaction
+                .select({ id: imMessages.id })
+                .from(imMessages)
+                .where(
+                  and(
+                    eq(imMessages.imBindingId, imBindingId),
+                    or(
+                      eq(imMessages.providerEventId, event.providerEventId),
+                      and(
+                        eq(imMessages.channelId, event.conversation.externalId),
+                        eq(imMessages.externalMessageId, event.message.externalId),
+                        eq(imMessages.providerRevisionKey, event.message.revisionKey),
+                      ),
+                    ),
+                  ),
+                )
+                .limit(1);
+              return finish({ duplicate: true, messageId: existing?.id, deliveryIds: [] }, "duplicate");
+            }
 
-      const [currentRevision] = await transaction
-        .select({ id: imMessages.id })
-        .from(imMessages)
-        .where(
-          and(
-            eq(imMessages.imBindingId, imBindingId),
-            eq(imMessages.channelId, event.conversation.externalId),
-            eq(imMessages.externalMessageId, event.message.externalId),
-          ),
-        )
-        .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
-        .limit(1);
-      if (currentRevision?.id !== created.id) {
-        return { duplicate: false, messageId: created.id, deliveryIds: [] };
-      }
-      await this.#beforeSupersedeDeliveries?.();
-      const supersededMessageIds = transaction
-        .select({ id: imMessages.id })
-        .from(imMessages)
-        .where(
-          and(
-            eq(imMessages.imBindingId, imBindingId),
-            eq(imMessages.channelId, event.conversation.externalId),
-            eq(imMessages.externalMessageId, event.message.externalId),
-            ne(imMessages.id, created.id),
-          ),
-        );
-      await transaction
-        .update(imMessageDeliveries)
-        .set({ state: "expired", reason: "superseded_revision" })
-        .where(
-          and(eq(imMessageDeliveries.state, "pending"), inArray(imMessageDeliveries.messageId, supersededMessageIds)),
-        );
+            const [currentRevision] = await transaction
+              .select({ id: imMessages.id })
+              .from(imMessages)
+              .where(
+                and(
+                  eq(imMessages.imBindingId, imBindingId),
+                  eq(imMessages.channelId, event.conversation.externalId),
+                  eq(imMessages.externalMessageId, event.message.externalId),
+                ),
+              )
+              .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
+              .limit(1);
+            if (currentRevision?.id !== created.id) {
+              return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "stale_revision");
+            }
+            await this.#beforeSupersedeDeliveries?.();
+            const supersededMessageIds = transaction
+              .select({ id: imMessages.id })
+              .from(imMessages)
+              .where(
+                and(
+                  eq(imMessages.imBindingId, imBindingId),
+                  eq(imMessages.channelId, event.conversation.externalId),
+                  eq(imMessages.externalMessageId, event.message.externalId),
+                  ne(imMessages.id, created.id),
+                ),
+              );
+            await transaction
+              .update(imMessageDeliveries)
+              .set({ state: "expired", reason: "superseded_revision" })
+              .where(
+                and(
+                  eq(imMessageDeliveries.state, "pending"),
+                  inArray(imMessageDeliveries.messageId, supersededMessageIds),
+                ),
+              );
 
-      const isSelf =
-        event.message.author.kind === "bot" && event.message.author.externalId === scope.imBinding.externalBotId;
-      if (isSelf) return { duplicate: false, messageId: created.id, deliveryIds: [] };
-      if (conversationKind === null) return { duplicate: false, messageId: created.id, deliveryIds: [] };
-      const direct =
-        conversationKind === "dm" ||
-        event.mentions.some((mention) => mention.externalId === scope.imBinding.externalBotId);
-      const deliveries: Array<{ sessionId: string; attention: "direct" | "ambient"; generation: number }> = [];
-      if (event.conversation.kind === "unknown") {
-        deliveries.push(...inheritedDeliveries);
-      } else {
-        const channel = await this.#ensureChatSession(
-          transaction,
-          imBindingId,
-          event.conversation.externalId,
-          conversationKind,
-          "channel",
-          null,
-          scope.agent.computerId,
-          now,
-        );
-        if (threadKey) {
-          const existingThread = await this.#findChatSession(
-            transaction,
-            imBindingId,
-            event.conversation.externalId,
-            "thread",
-            threadKey,
-          );
-          if (existingThread || direct) {
-            const thread =
-              existingThread ??
-              (await this.#ensureChatSession(
+            const isSelf =
+              event.message.author.kind === "bot" && event.message.author.externalId === scope.imBinding.externalBotId;
+            if (isSelf) return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "self_message");
+            if (conversationKind === null) {
+              return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "no_delivery");
+            }
+            const direct =
+              conversationKind === "dm" ||
+              event.mentions.some((mention) => mention.externalId === scope.imBinding.externalBotId);
+            const deliveries: Array<{ sessionId: string; attention: "direct" | "ambient"; generation: number }> = [];
+            if (event.conversation.kind === "unknown") {
+              deliveries.push(...inheritedDeliveries);
+            } else {
+              const channel = await this.#ensureChatSession(
                 transaction,
                 imBindingId,
                 event.conversation.externalId,
                 conversationKind,
-                "thread",
-                threadKey,
+                "channel",
+                null,
                 scope.agent.computerId,
                 now,
-              ));
-            deliveries.push({ sessionId: thread.id, attention: "direct", generation: thread.generation });
-          }
-          if (scope.agent.receiveMode === "all_message") {
-            deliveries.push({ sessionId: channel.id, attention: "ambient", generation: channel.generation });
-          }
-        } else if (direct) {
-          deliveries.push({ sessionId: channel.id, attention: "direct", generation: channel.generation });
-        } else if (scope.agent.receiveMode === "all_message") {
-          deliveries.push({ sessionId: channel.id, attention: "ambient", generation: channel.generation });
-        }
-      }
+              );
+              if (threadKey) {
+                const existingThread = await this.#findChatSession(
+                  transaction,
+                  imBindingId,
+                  event.conversation.externalId,
+                  "thread",
+                  threadKey,
+                );
+                if (existingThread || direct) {
+                  const thread =
+                    existingThread ??
+                    (await this.#ensureChatSession(
+                      transaction,
+                      imBindingId,
+                      event.conversation.externalId,
+                      conversationKind,
+                      "thread",
+                      threadKey,
+                      scope.agent.computerId,
+                      now,
+                    ));
+                  deliveries.push({ sessionId: thread.id, attention: "direct", generation: thread.generation });
+                }
+                if (scope.agent.receiveMode === "all_message") {
+                  deliveries.push({ sessionId: channel.id, attention: "ambient", generation: channel.generation });
+                }
+              } else if (direct) {
+                deliveries.push({ sessionId: channel.id, attention: "direct", generation: channel.generation });
+              } else if (scope.agent.receiveMode === "all_message") {
+                deliveries.push({ sessionId: channel.id, attention: "ambient", generation: channel.generation });
+              }
+            }
 
-      const deliveryIds: string[] = [];
-      for (const delivery of deliveries) {
-        const [deliveryRow] = await transaction
-          .insert(imMessageDeliveries)
-          .values({
-            messageId: created.id,
-            sessionId: delivery.sessionId,
-            attention: delivery.attention,
-            placementGeneration: delivery.generation,
-            nextAttemptAt: now,
-            expiresAt: new Date(now.getTime() + (delivery.attention === "direct" ? DIRECT_TTL_MS : AMBIENT_TTL_MS)),
-          })
-          .onConflictDoNothing()
-          .returning({ id: imMessageDeliveries.id });
-        if (deliveryRow) deliveryIds.push(deliveryRow.id);
-        await this.#expireOverflow(transaction, delivery.sessionId, delivery.attention);
-      }
-      return { duplicate: false, messageId: created.id, deliveryIds };
-    });
+            const deliveryIds: string[] = [];
+            for (const delivery of deliveries) {
+              const [deliveryRow] = await transaction
+                .insert(imMessageDeliveries)
+                .values({
+                  messageId: created.id,
+                  sessionId: delivery.sessionId,
+                  attention: delivery.attention,
+                  placementGeneration: delivery.generation,
+                  nextAttemptAt: now,
+                  expiresAt: new Date(
+                    now.getTime() + (delivery.attention === "direct" ? DIRECT_TTL_MS : AMBIENT_TTL_MS),
+                  ),
+                })
+                .onConflictDoNothing()
+                .returning({ id: imMessageDeliveries.id });
+              if (deliveryRow) deliveryIds.push(deliveryRow.id);
+              await this.#expireOverflow(transaction, delivery.sessionId, delivery.attention);
+            }
+            return finish(
+              { duplicate: false, messageId: created.id, deliveryIds },
+              deliveryIds.length > 0 ? "persisted" : "no_delivery",
+            );
+          });
+        } catch (error) {
+          setActiveSpanAttributes(outcomeAttrs("failed", classifyImInboundPersistenceError(error)));
+          throw error;
+        }
+      },
+    );
   }
 
   async #expireOverflow(

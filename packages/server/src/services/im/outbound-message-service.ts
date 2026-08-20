@@ -12,6 +12,7 @@ import {
   sessionPlacements,
   sessions,
 } from "../../db/schema/index.js";
+import { imAttrs, outcomeAttrs, runtimeAttrs, setActiveSpanAttributes, withSpan } from "../../observability/index.js";
 import type { ImProviderAdapter } from "../im-bindings/index.js";
 import { ProviderAdapterResolutionError } from "../im-bindings/provider-adapter-resolver.js";
 
@@ -73,6 +74,34 @@ export class OutboundMessageService {
 
   async execute(rawInput: OutboundRequest): Promise<OutboundResult> {
     const input = OutboundRequestSchema.parse(rawInput);
+    return withSpan(
+      "im.outbound.execute",
+      {
+        ...imAttrs({
+          messageId: input.targetImMessageId ?? input.replyToImMessageId ?? input.expectedLatestImMessageId,
+        }),
+        ...runtimeAttrs({
+          requestId: input.requestId,
+          sessionId: input.sessionId,
+          agentId: input.agentId,
+          computerId: input.computerId,
+          instanceId: input.computerInstanceId,
+          placementGeneration: input.placementGeneration,
+        }),
+        "opentag.im.outbound.operation": input.operation,
+      },
+      async () => {
+        try {
+          return await this.#execute(input);
+        } catch (error) {
+          setActiveSpanAttributes(outcomeAttrs("failed", "IM_OUTBOUND_FAILED"));
+          throw error;
+        }
+      },
+    );
+  }
+
+  async #execute(input: OutboundRequest): Promise<OutboundResult> {
     const normalizedPayload = stableOutboundIntent(input);
     const payloadHash = createHash("sha256").update(JSON.stringify(normalizedPayload)).digest("hex");
 
@@ -207,11 +236,16 @@ export class OutboundMessageService {
     });
 
     if ("existing" in prepared && prepared.existing) {
-      return prepared.existing.state === "prepared"
-        ? this.#awaitExisting(prepared.existing.requestId)
-        : this.#existingResult(prepared.existing);
+      const existing =
+        prepared.existing.state === "prepared"
+          ? this.#awaitExisting(prepared.existing.requestId)
+          : this.#existingResult(prepared.existing);
+      const result = await existing;
+      setActiveSpanAttributes(outcomeAttrs(result.state, result.code));
+      return result;
     }
     const { request, scope, targetExternalId } = prepared;
+    setActiveSpanAttributes(imAttrs({ provider: scope.imBinding.provider, bindingId: scope.imBinding.id }));
     let providerResult: ProviderWriteResult;
     try {
       const adapter = await this.#resolveAdapter(scope.imBinding.id, request.admittedCredentialGeneration).catch(
@@ -294,6 +328,14 @@ export class OutboundMessageService {
         occurredAt: providerResult.occurredAt,
         receivedAt: this.#now(),
       });
+    });
+    setActiveSpanAttributes({
+      ...imAttrs({
+        provider: scope.imBinding.provider,
+        bindingId: scope.imBinding.id,
+        externalMessageId: providerResult.ok ? providerResult.externalMessageId : undefined,
+      }),
+      ...outcomeAttrs(mapped.state, mapped.code),
     });
     return mapped;
   }

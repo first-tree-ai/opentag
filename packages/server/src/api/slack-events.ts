@@ -89,7 +89,9 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
       event: envelope.event,
       eventTime: envelope.event_time,
     });
-    for (const event of events) await options.inbox.ingest(binding.imBindingId, binding.generation, event);
+    for (const event of events) {
+      await options.inbox.ingest(binding.imBindingId, binding.generation, event, undefined, { provider: "slack" });
+    }
     return reply.code(200).send({ ok: true });
   });
 }

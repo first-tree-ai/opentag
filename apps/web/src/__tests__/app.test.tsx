@@ -697,6 +697,44 @@ describe("OpenTag Web App Shell", () => {
     confirm.mockRestore();
   });
 
+  it("keeps focus inside the invitation dialog while a rotation is pending", async () => {
+    let resolveRotate: (response: Response) => void = () => undefined;
+    const pendingRotate = new Promise<Response>((resolve) => {
+      resolveRotate = resolve;
+    });
+    installApi("admin", { invitationExists: true, invitationRotate: () => pendingRotate });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+
+    const teamTrigger = await screen.findByRole("button", { name: "Example" });
+    fireEvent.click(teamTrigger);
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Switch Team" })).getByRole("button", { name: "Invite people" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Invite people" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Rotate invitation link" }));
+
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(teamTrigger);
+    fireEvent.keyDown(document.activeElement ?? dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Invite people" })).toBe(dialog);
+
+    resolveRotate(
+      json({
+        token: "B".repeat(43),
+        inviteUrl: `https://opentag.example.com/invites/${"B".repeat(43)}`,
+        role: "member",
+        expiresAt: "2026-08-27T00:00:00.000Z",
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        (within(dialog).getByRole("button", { name: "Close invitation dialog" }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    confirm.mockRestore();
+  });
+
   it("replaces a locally rotated invitation with a newer successful server read", async () => {
     const api = installApi("admin", { invitationExists: true });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);

@@ -1509,14 +1509,27 @@ function InvitationDialog({
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const mutationPendingRef = useRef(mutationPending);
+  const onCloseRef = useRef(onClose);
+  mutationPendingRef.current = mutationPending;
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    if (!mutationPending || dialogRef.current?.contains(document.activeElement)) return;
+    dialogRef.current
+      ?.querySelector<HTMLElement>(
+        "button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled])",
+      )
+      ?.focus();
+  }, [mutationPending]);
 
   useEffect(() => {
     closeButtonRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        if (mutationPending) return;
-        onClose();
+        if (mutationPendingRef.current) return;
+        onCloseRef.current();
         return;
       }
       if (event.key !== "Tab") return;
@@ -1528,7 +1541,10 @@ function InvitationDialog({
       if (focusable.length === 0) return;
       const first = focusable[0];
       const last = focusable.at(-1);
-      if (event.shiftKey && document.activeElement === first) {
+      if (!dialogRef.current?.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last?.focus();
       } else if (!event.shiftKey && document.activeElement === last) {
@@ -1541,7 +1557,7 @@ function InvitationDialog({
       document.removeEventListener("keydown", onKeyDown);
       returnFocusRef.current?.focus();
     };
-  }, [mutationPending, onClose, returnFocusRef]);
+  }, [returnFocusRef]);
 
   return (
     <div className="dialog-layer">

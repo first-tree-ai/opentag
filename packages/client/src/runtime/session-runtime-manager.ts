@@ -1,22 +1,15 @@
-import {
-  type EffectiveRuntimeSnapshot,
-  type InputRejectReason,
-  OPENTAG_MESSAGE_TOOLS,
-  type RuntimeSnapshotHashes,
-  type SessionReconcileRequest,
-} from "@opentag/shared";
 import type {
-  AgentRuntime,
-  AgentRuntimeEventSink,
-  AgentRuntimeFactory,
-  AgentRuntimePolicy,
-} from "../agent-runtime/types.js";
+  EffectiveRuntimeSnapshot,
+  InputRejectReason,
+  RuntimeSnapshotHashes,
+  SessionReconcileRequest,
+} from "@opentag/shared";
+import type { AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
+import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-registry.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
 import type { RuntimeToolHost } from "./runtime-tool-host.js";
 import type { SessionBindingStore, SessionPreparationResult } from "./session-binding-store.js";
 import type { RuntimeLocalPolicy, RuntimePreparation } from "./session-reconciler.js";
-
-const OPENTAG_TOOL_SET: ReadonlySet<string> = new Set(OPENTAG_MESSAGE_TOOLS);
 
 interface ManagedSessionRuntime {
   readonly agentId: string;
@@ -29,16 +22,14 @@ interface ManagedSessionRuntime {
 
 export interface SessionRuntimeManagerOptions {
   readonly bindingStore: SessionBindingStore;
-  readonly factories: ReadonlyMap<string, AgentRuntimeFactory>;
-  readonly providerAvailable?: () => boolean;
+  readonly providers: AgentRuntimeProviderRegistry;
   readonly toolHost: RuntimeToolHost;
   readonly workspace: AgentWorkspaceManager;
 }
 
 export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPolicy {
   readonly #bindingStore: SessionBindingStore;
-  readonly #factories: ReadonlyMap<string, AgentRuntimeFactory>;
-  readonly #providerAvailable: () => boolean;
+  readonly #providers: AgentRuntimeProviderRegistry;
   readonly #toolHost: RuntimeToolHost;
   readonly #workspace: AgentWorkspaceManager;
   readonly #sessions = new Map<string, ManagedSessionRuntime>();
@@ -49,20 +40,13 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
 
   constructor(options: SessionRuntimeManagerOptions) {
     this.#bindingStore = options.bindingStore;
-    this.#factories = options.factories;
-    this.#providerAvailable = options.providerAvailable ?? (() => true);
+    this.#providers = options.providers;
     this.#toolHost = options.toolHost;
     this.#workspace = options.workspace;
   }
 
   validate(snapshot: EffectiveRuntimeSnapshot): InputRejectReason | undefined {
-    if (!this.#factories.has(snapshot.provider)) return "configuration_unsupported";
-    if (!this.#providerAvailable()) return "provider_unavailable";
-    if (snapshot.execution.approvalPolicy !== "never" || snapshot.execution.networkAccess) {
-      return "configuration_unsupported";
-    }
-    if (snapshot.allowedTools.some((tool) => !OPENTAG_TOOL_SET.has(tool))) return "configuration_unsupported";
-    return undefined;
+    return this.#providers.validate(snapshot);
   }
 
   prepareAgent(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void> {
@@ -111,8 +95,8 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       this.#assertOpen();
     }
 
-    const factory = this.#factories.get(snapshot.provider);
-    if (!factory) throw new Error(`Agent Runtime provider is unavailable: ${snapshot.provider}`);
+    const provider = this.#providers.registration(snapshot.provider);
+    if (!provider) throw new Error(`Agent Runtime provider is unavailable: ${snapshot.provider}`);
     const cwd = await this.#workspace.cwd(request.agentId);
     this.#assertOpen();
     let ready: ManagedSessionRuntime | undefined;
@@ -133,7 +117,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       eventSink,
       hostedTools: this.#toolHost.hostedTools(snapshot.allowedTools),
       workspace: { cwd, writableRoots: [cwd] },
-      policy: runtimePolicy(snapshot),
+      policy: provider.policy(snapshot),
       configuration: {
         ...(snapshot.model ? { model: snapshot.model } : {}),
         ...(snapshot.reasoningEffort ? { reasoningEffort: snapshot.reasoningEffort } : {}),
@@ -142,8 +126,8 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     let runtime: AgentRuntime | undefined;
     try {
       runtime = prepared.binding.runtimeBinding
-        ? await factory.resume({ ...common, binding: prepared.binding.runtimeBinding })
-        : await factory.create(common);
+        ? await provider.factory.resume({ ...common, binding: prepared.binding.runtimeBinding })
+        : await provider.factory.create(common);
       this.#assertOpen();
       if (!runtime.binding) throw new Error("Agent Runtime did not produce a durable binding");
       const binding = await this.#bindingStore.saveRuntimeBinding(
@@ -233,13 +217,4 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   #assertOpen(): void {
     if (this.#closing) throw new Error("The Session Runtime manager is closing");
   }
-}
-
-function runtimePolicy(snapshot: EffectiveRuntimeSnapshot): AgentRuntimePolicy {
-  return {
-    fileSystem: "workspace-write",
-    network: snapshot.execution.networkAccess ? "enabled" : "disabled",
-    approvals: "never",
-    tools: { mode: "allow-list", names: snapshot.allowedTools },
-  };
 }

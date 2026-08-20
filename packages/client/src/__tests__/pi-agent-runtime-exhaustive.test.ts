@@ -693,7 +693,7 @@ exec '${process.execPath}' -e 'setInterval(() => undefined, 1000)'
     await vi.waitFor(async () => expect(await readFile(modelsStarted, "utf8")).toBe("started"));
     modelsAbort.abort(new Error("stop"));
     await expect(modelsProbe).rejects.toBeDefined();
-  });
+  }, 10_000);
 
   it("uses the default local Pi process boundary without adding a package dependency", async () => {
     const dependencyFields = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"] as const;

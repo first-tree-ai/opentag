@@ -136,6 +136,10 @@ export {
   AdmissionReservation,
   type AdmissionSnapshot,
 } from "./runtime/admission-controller.js";
+export {
+  type AgentRuntimeProviderRegistration,
+  AgentRuntimeProviderRegistry,
+} from "./runtime/agent-runtime-provider-registry.js";
 export { AgentTurnRunner, type AgentTurnRunnerOptions, buildAgentInput } from "./runtime/agent-turn-runner.js";
 export {
   AgentWorkspaceManager,

@@ -1,4 +1,5 @@
 import {
+  type AgentRuntimeProvider,
   ClientRuntimeFrameSchema,
   type ComputerRegisterFrame,
   RUNTIME_MAX_FRAME_BYTES,
@@ -7,7 +8,7 @@ import {
   type RuntimeClientCapabilities,
   type RuntimeErrorFrame,
   RuntimeFrameEnvelopeSchema,
-  type RuntimeProviderReadinessObservation,
+  type RuntimeProviderReadinessCollection,
   runtimeFrameByteLength,
   type ServerRuntimeFrame,
   ServerWelcomeFrameSchema,
@@ -55,7 +56,7 @@ export interface RuntimeSessionOptions {
   heartbeatIntervalMs?: number;
   heartbeatTimeoutMs?: number;
   now?: () => Date;
-  providerReadiness?: boolean;
+  providerReadiness?: readonly AgentRuntimeProvider[];
   registerTimeoutMs?: number;
 }
 
@@ -103,7 +104,7 @@ export class RuntimeSession {
       heartbeatIntervalMs: heartbeat.heartbeatIntervalMs,
       heartbeatTimeoutMs: heartbeat.heartbeatTimeoutMs,
       now: options.now ?? (() => new Date()),
-      providerReadiness: options.providerReadiness ?? false,
+      providerReadiness: Object.freeze([...(options.providerReadiness ?? [])]),
       registerTimeoutMs: positiveTimeout(options.registerTimeoutMs ?? 5_000, "registerTimeoutMs"),
     };
     if (options.business) {
@@ -239,7 +240,9 @@ export class RuntimeSession {
         capabilities: RUNTIME_V0_CAPABILITIES,
         heartbeatIntervalMs: this.#options.heartbeatIntervalMs,
         heartbeatTimeoutMs: this.#options.heartbeatTimeoutMs,
-        ...(this.#options.providerReadiness ? { providerReadiness: 1 as const } : {}),
+        ...(this.#options.providerReadiness.length > 0
+          ? { providerReadiness: { version: 1 as const, providers: [...this.#options.providerReadiness] } }
+          : {}),
       });
       const untilExpiry = authenticated.tokenExpiresAt.getTime() - this.#options.now().getTime();
       this.#tokenTimer = setTimeout(
@@ -256,7 +259,7 @@ export class RuntimeSession {
       this.#fail("PROTOCOL_ERROR", "Missing authenticated runtime user", 4400, frame.requestId);
       return;
     }
-    if (frame.providerReadiness && !this.#options.providerReadiness) {
+    if (!this.#acceptsProviderReadiness(frame.providerReadiness)) {
       this.#fail("PROTOCOL_ERROR", "Provider readiness was not negotiated", 4400, frame.requestId);
       return;
     }
@@ -269,8 +272,11 @@ export class RuntimeSession {
           computerId: frame.computerId,
           instanceId: frame.instanceId,
           lastHeartbeatAt: this.#options.now().getTime(),
-          providerReadiness: frame.providerReadiness,
-          providerReadinessObservedAt: frame.providerReadiness ? this.#options.now().getTime() : undefined,
+          providerReadiness: this.#options.providerReadiness.length > 0 ? (frame.providerReadiness ?? []) : undefined,
+          providerReadinessObservedAt:
+            frame.providerReadiness && frame.providerReadiness.length > 0 ? this.#options.now().getTime() : undefined,
+          providerReadinessProviders:
+            this.#options.providerReadiness.length > 0 ? [...this.#options.providerReadiness] : undefined,
           socket: this.#socket,
           userId,
         },
@@ -301,14 +307,14 @@ export class RuntimeSession {
     computerId: string,
     instanceId: string,
     capabilities: RuntimeClientCapabilities,
-    providerReadiness?: RuntimeProviderReadinessObservation,
+    providerReadiness?: RuntimeProviderReadinessCollection,
   ): Promise<void> {
     try {
       if (!this.#userId || computerId !== this.#computerId || instanceId !== this.#instanceId) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance is not registered", 4409, requestId);
         return;
       }
-      if (providerReadiness && !this.#options.providerReadiness) {
+      if (!this.#acceptsProviderReadiness(providerReadiness)) {
         this.#fail("PROTOCOL_ERROR", "Provider readiness was not negotiated", 4400, requestId);
         return;
       }
@@ -327,7 +333,7 @@ export class RuntimeSession {
           this.#socket,
           this.#options.now().getTime(),
           capabilities,
-          providerReadiness,
+          this.#options.providerReadiness.length > 0 ? (providerReadiness ?? []) : undefined,
         )
       ) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, requestId);
@@ -338,6 +344,13 @@ export class RuntimeSession {
     } catch (error) {
       this.#handleRequestError(error, requestId);
     }
+  }
+
+  #acceptsProviderReadiness(providerReadiness: RuntimeProviderReadinessCollection | undefined): boolean {
+    if (providerReadiness === undefined) return true;
+    if (this.#options.providerReadiness.length === 0) return false;
+    const admitted = new Set(this.#options.providerReadiness);
+    return providerReadiness.every((observation) => admitted.has(observation.provider));
   }
 
   #scheduleBusinessFrame(decoded: unknown, requestId?: string): void {

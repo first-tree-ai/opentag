@@ -318,20 +318,22 @@ describe("createClientRuntime production composition", () => {
     const refreshGate = new Promise<void>((resolveRefresh) => {
       finishRefresh = resolveRefresh;
     });
+    const refreshCapability = vi.fn(() => {
+      startRefresh();
+      return refreshGate;
+    });
     const refreshing = new ComposedClientRuntime(
       { run: () => runtimeGate, stop: vi.fn() } as never,
       {
         ...components,
         capabilityAbort: new AbortController(),
-        refreshCapability: () => {
-          startRefresh();
-          return refreshGate;
-        },
+        refreshCapability,
       } as never,
     );
     const running = refreshing.run();
     await refreshStarted;
     await new Promise((resolveWait) => setTimeout(resolveWait, 25));
+    expect(refreshCapability).toHaveBeenCalledOnce();
     finishRuntime();
     await Promise.resolve();
     finishRefresh();
@@ -429,7 +431,15 @@ describe("createClientRuntime production composition", () => {
     const connection = runtimeConnection(server.url);
     const capabilityUpdates = vi.spyOn(connection, "setVerifiedCapabilities");
     const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
-    const readinessLeases = vi.spyOn(connection, "leaseProviderReadiness");
+    const releaseLease = vi.fn();
+    const leaseProviderReadiness = connection.leaseProviderReadiness.bind(connection);
+    const readinessLeases = vi.spyOn(connection, "leaseProviderReadiness").mockImplementation((observation) => {
+      const release = leaseProviderReadiness(observation);
+      return () => {
+        release();
+        releaseLease();
+      };
+    });
     let probeCount = 0;
     let refreshStarted!: () => void;
     const started = new Promise<void>((resolveStarted) => {
@@ -520,6 +530,7 @@ describe("createClientRuntime production composition", () => {
     runtime.stop();
     await expect(running).resolves.toBeUndefined();
     expect(probeOwnerClosed).toBe(true);
+    expect(releaseLease).toHaveBeenCalledOnce();
     expect(factory.probe).toHaveBeenCalledTimes(2);
     const updatesAfterStop = capabilityUpdates.mock.calls.length;
     await new Promise((resolveWait) => setTimeout(resolveWait, 30));

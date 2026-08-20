@@ -113,18 +113,21 @@ export async function startServer(): Promise<void> {
     const teamService = new TeamMembershipService(database, { providerReadiness: registry });
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
     const invitationService = new InvitationService(database, teamService, applicationCipher, config.publicUrl);
+    const runtimeReadyForAgent = async (agentId: string): Promise<boolean> => {
+      const [agent] = await database
+        .select({ computerId: agents.computerId, runtimeProvider: agents.runtimeProvider })
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .limit(1);
+      const currentInstanceId = agent ? registry.currentInstanceId(agent.computerId) : undefined;
+      return Boolean(
+        agent &&
+          currentInstanceId &&
+          registry.supportsProvider(agent.computerId, currentInstanceId, agent.runtimeProvider),
+      );
+    };
     const imBindingService = new ImBindingService(database, applicationCipher, {
-      runtimeReady: async (agentId) => {
-        const [agent] = await database
-          .select({ computerId: agents.computerId })
-          .from(agents)
-          .where(eq(agents.id, agentId))
-          .limit(1);
-        const currentInstanceId = agent ? registry.currentInstanceId(agent.computerId) : undefined;
-        return Boolean(
-          agent && currentInstanceId && registry.supports(agent.computerId, currentInstanceId, "imMessageTool"),
-        );
-      },
+      runtimeReady: runtimeReadyForAgent,
     });
     const imMessageInbox = new ImMessageInbox(database);
     let outboundMessageService: OutboundMessageService;
@@ -171,13 +174,7 @@ export async function startServer(): Promise<void> {
       inbox: imMessageInbox,
       instanceId,
       imBindings: imBindingService,
-      runtimeReady: async (agentId) => {
-        const computerId = await imBindingService.getAgentComputerId(agentId);
-        const currentInstanceId = computerId ? registry.currentInstanceId(computerId) : undefined;
-        return Boolean(
-          computerId && currentInstanceId && registry.supports(computerId, currentInstanceId, "imMessageTool"),
-        );
-      },
+      runtimeReady: runtimeReadyForAgent,
       onDiagnostic: reportDiagnostic,
     });
     const feishuSetupService = new FeishuSetupService({

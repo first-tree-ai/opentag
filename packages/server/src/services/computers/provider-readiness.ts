@@ -1,14 +1,15 @@
 import type {
   ComputerConnectionStatus,
-  ComputerProviderReadiness,
+  ComputerProviderReadinessCollection,
   RuntimeProviderReadinessObservation,
 } from "@opentag/shared";
+import { SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS } from "../runtime-config/index.js";
 
 export interface ProviderReadinessSource {
   providerReadiness(
     computerId: string,
     now: number,
-  ): { observation: RuntimeProviderReadinessObservation; observedAt: number } | undefined;
+  ): readonly { observation: RuntimeProviderReadinessObservation; observedAt: number }[];
 }
 
 export function projectComputerProviderReadiness(
@@ -16,15 +17,24 @@ export function projectComputerProviderReadiness(
   connectionStatus: ComputerConnectionStatus,
   observedAt: Date,
   source?: ProviderReadinessSource,
-): ComputerProviderReadiness {
+): ComputerProviderReadinessCollection {
   if (connectionStatus === "offline") {
-    return { provider: "codex", status: "unavailable", observedAt: null };
+    return SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS.map((provider) => ({
+      provider,
+      status: "unavailable",
+      observedAt: null,
+    }));
   }
-  const snapshot = source?.providerReadiness(computerId, observedAt.getTime());
-  if (!snapshot) return { provider: "codex", status: "checking", observedAt: null };
-  return {
-    provider: "codex",
-    status: snapshot.observation.status,
-    observedAt: new Date(snapshot.observedAt).toISOString(),
-  };
+  const snapshots = source?.providerReadiness(computerId, observedAt.getTime()) ?? [];
+  const byProvider = new Map(snapshots.map((snapshot) => [snapshot.observation.provider, snapshot]));
+  return SERVER_ADMITTED_AGENT_RUNTIME_PROVIDERS.map((provider) => {
+    const snapshot = byProvider.get(provider);
+    return snapshot
+      ? {
+          provider,
+          status: snapshot.observation.status,
+          observedAt: new Date(snapshot.observedAt).toISOString(),
+        }
+      : { provider, status: "checking", observedAt: null };
+  });
 }

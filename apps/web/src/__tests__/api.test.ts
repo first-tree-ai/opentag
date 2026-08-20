@@ -287,11 +287,13 @@ describe("BrowserApi", () => {
       arch: "x64",
       clientVersion: "0.0.1",
       connectionStatus: "online",
-      providerReadiness: {
-        provider: "codex",
-        status: "ready",
-        observedAt: "2030-01-01T00:00:01.000Z",
-      },
+      providerReadiness: [
+        {
+          provider: "codex",
+          status: "ready",
+          observedAt: "2030-01-01T00:00:01.000Z",
+        },
+      ],
       connectedAt: "2030-01-01T00:00:00.000Z",
       lastSeenAt: "2030-01-01T00:00:01.000Z",
     };

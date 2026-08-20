@@ -34,11 +34,13 @@ const computer = {
   arch: "x64",
   clientVersion: "0.0.1",
   connectionStatus: "online" as const,
-  providerReadiness: {
-    provider: "codex" as const,
-    status: "ready" as const,
-    observedAt: "2026-08-19T00:00:01.000Z",
-  },
+  providerReadiness: [
+    {
+      provider: "codex" as const,
+      status: "ready" as const,
+      observedAt: "2026-08-19T00:00:01.000Z",
+    },
+  ],
   connectedAt: "2026-08-19T00:00:00.000Z",
   lastSeenAt: "2026-08-19T00:00:01.000Z",
 };

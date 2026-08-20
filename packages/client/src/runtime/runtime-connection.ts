@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import {
+  type AgentRuntimeProvider,
   PROVIDER_READINESS_V1_HEADER,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_VERSION,
   type RuntimeClientCapabilities,
   RuntimeFrameEnvelopeSchema,
+  type RuntimeProviderReadinessCollection,
   type RuntimeProviderReadinessObservation,
   runtimeFrameByteLength,
   runtimeWebSocketUrl,
@@ -151,12 +153,14 @@ export class RuntimeConnection {
   #stopped = false;
   #verifiedCapabilities: RuntimeClientCapabilities = { imMessageTool: 0 };
   #verifiedCapabilitiesExpiresAt = 0;
-  #providerReadiness?: RuntimeProviderReadinessObservation;
-  #providerReadinessExpiresAt = 0;
-  #providerReadinessLease?: {
-    observation: RuntimeProviderReadinessObservation;
-    token: symbol;
-  };
+  readonly #providerReadiness = new Map<
+    AgentRuntimeProvider,
+    { observation: RuntimeProviderReadinessObservation; expiresAt: number }
+  >();
+  readonly #providerReadinessLeases = new Map<
+    AgentRuntimeProvider,
+    { observation: RuntimeProviderReadinessObservation; token: symbol }
+  >();
 
   constructor(options: RuntimeConnectionOptions) {
     this.#options = options;
@@ -204,16 +208,20 @@ export class RuntimeConnection {
     if (!Number.isSafeInteger(validForMs) || validForMs < 1 || validForMs > RUNTIME_CLIENT_CAPABILITY_TTL_MS) {
       throw new RuntimeConnectionError("Runtime provider readiness validity is invalid", true);
     }
-    this.#providerReadiness = { ...observation };
-    this.#providerReadinessExpiresAt = this.#now() + validForMs;
+    this.#providerReadiness.set(observation.provider, {
+      observation: { ...observation },
+      expiresAt: this.#now() + validForMs,
+    });
   }
 
   leaseProviderReadiness(observation: RuntimeProviderReadinessObservation): () => void {
     this.setProviderReadiness(observation);
     const lease = { observation: { ...observation }, token: Symbol("provider-readiness-lease") };
-    this.#providerReadinessLease = lease;
+    this.#providerReadinessLeases.set(observation.provider, lease);
     return () => {
-      if (this.#providerReadinessLease?.token === lease.token) this.#providerReadinessLease = undefined;
+      if (this.#providerReadinessLeases.get(observation.provider)?.token === lease.token) {
+        this.#providerReadinessLeases.delete(observation.provider);
+      }
     };
   }
 
@@ -223,11 +231,14 @@ export class RuntimeConnection {
       : { imMessageTool: 0 };
   }
 
-  #currentProviderReadiness(): RuntimeProviderReadinessObservation | undefined {
-    if (this.#providerReadinessLease) return { ...this.#providerReadinessLease.observation };
-    return this.#providerReadiness && this.#now() <= this.#providerReadinessExpiresAt
-      ? { ...this.#providerReadiness }
-      : undefined;
+  #currentProviderReadiness(providers: readonly AgentRuntimeProvider[]): RuntimeProviderReadinessCollection {
+    const now = this.#now();
+    return providers.flatMap((provider) => {
+      const lease = this.#providerReadinessLeases.get(provider);
+      if (lease) return [{ ...lease.observation }];
+      const current = this.#providerReadiness.get(provider);
+      return current && now <= current.expiresAt ? [{ ...current.observation }] : [];
+    });
   }
 
   subscribeState(listener: (state: RuntimeConnectionState) => void): () => void {
@@ -437,8 +448,10 @@ export class RuntimeConnection {
               computerId: this.#options.computer.computerId,
               instanceId,
               capabilities: this.#currentCapabilities(),
-              ...(heartbeatPolicy.providerReadiness === 1
-                ? { providerReadiness: this.#currentProviderReadiness() }
+              ...(heartbeatPolicy.providerReadiness
+                ? {
+                    providerReadiness: this.#currentProviderReadiness(heartbeatPolicy.providerReadiness.providers),
+                  }
                 : {}),
             },
             { priority: "control", deadline: this.#now() + heartbeatPolicy.heartbeatTimeoutMs },
@@ -548,7 +561,9 @@ export class RuntimeConnection {
             arch: this.#options.arch,
             clientVersion: this.#options.clientVersion,
             capabilities: this.#currentCapabilities(),
-            ...(welcome.providerReadiness === 1 ? { providerReadiness: this.#currentProviderReadiness() } : {}),
+            ...(welcome.providerReadiness
+              ? { providerReadiness: this.#currentProviderReadiness(welcome.providerReadiness.providers) }
+              : {}),
           }).catch((error: unknown) => finish(asError(error)));
           return;
         }

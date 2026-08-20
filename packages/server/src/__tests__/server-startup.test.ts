@@ -7,7 +7,7 @@ const state = vi.hoisted(() => ({
   appOptions: undefined as unknown,
   onClose: undefined as (() => Promise<void>) | undefined,
   database: undefined as unknown,
-  selectedAgents: [] as Array<{ computerId: string }>,
+  selectedAgents: [] as Array<{ computerId: string; runtimeProvider: "codex" | "claude-code" }>,
   sql: { end: vi.fn() },
   parseServerConfig: vi.fn(),
   migrateDatabase: vi.fn(),
@@ -15,7 +15,7 @@ const state = vi.hoisted(() => ({
   createDatabaseClient: vi.fn(),
   createApp: vi.fn(),
   registryCurrentInstanceId: vi.fn(),
-  registrySupports: vi.fn(),
+  registrySupportsProvider: vi.fn(),
   imBindingOptions: undefined as unknown,
   imBindingGetAgentComputerId: vi.fn(),
   feishuConnectionOptions: undefined as unknown,
@@ -60,8 +60,8 @@ vi.mock("../runtime/connection-registry.js", () => ({
     currentInstanceId(computerId: string) {
       return state.registryCurrentInstanceId(computerId);
     }
-    supports(computerId: string, instanceId: string, capability: string) {
-      return state.registrySupports(computerId, instanceId, capability);
+    supportsProvider(computerId: string, instanceId: string, provider: string) {
+      return state.registrySupportsProvider(computerId, instanceId, provider);
     }
   },
   RuntimeRegistrySendError: class extends Error {},
@@ -231,7 +231,7 @@ beforeEach(() => {
   state.config = defaultConfig();
   state.appOptions = undefined;
   state.onClose = undefined;
-  state.selectedAgents = [{ computerId: "computer-1" }];
+  state.selectedAgents = [{ computerId: "computer-1", runtimeProvider: "codex" }];
   state.imBindingOptions = undefined;
   state.feishuConnectionOptions = undefined;
   state.feishuSetupOptions = undefined;
@@ -255,7 +255,7 @@ beforeEach(() => {
   state.verifyDatabaseMigrations.mockImplementation(async () => state.events.push("migration:verify"));
   state.createDatabaseClient.mockImplementation(() => ({ database: state.database, sql: state.sql }));
   state.registryCurrentInstanceId.mockReturnValue("instance-1");
-  state.registrySupports.mockReturnValue(true);
+  state.registrySupportsProvider.mockReturnValue(true);
   state.imBindingGetAgentComputerId.mockResolvedValue("computer-1");
   state.outboundExecute.mockResolvedValue({ status: "succeeded" });
   const log = { info: vi.fn(), error: vi.fn() };
@@ -337,10 +337,10 @@ describe("Server startup", () => {
 
     const runtimeReady = (state.imBindingOptions as { runtimeReady(agentId: string): Promise<boolean> }).runtimeReady;
     await expect(runtimeReady("agent-1")).resolves.toBe(true);
-    expect(state.registrySupports).toHaveBeenCalledWith("computer-1", "instance-1", "imMessageTool");
-    state.registrySupports.mockReturnValue(false);
+    expect(state.registrySupportsProvider).toHaveBeenCalledWith("computer-1", "instance-1", "codex");
+    state.registrySupportsProvider.mockReturnValue(false);
     await expect(runtimeReady("agent-1")).resolves.toBe(false);
-    state.registrySupports.mockReturnValue(true);
+    state.registrySupportsProvider.mockReturnValue(true);
     state.registryCurrentInstanceId.mockReturnValue(undefined);
     await expect(runtimeReady("agent-1")).resolves.toBe(false);
 
@@ -348,7 +348,7 @@ describe("Server startup", () => {
       .runtimeReady;
     state.registryCurrentInstanceId.mockReturnValue("instance-1");
     await expect(feishuRuntimeReady("agent-1")).resolves.toBe(true);
-    state.imBindingGetAgentComputerId.mockResolvedValue(undefined);
+    state.selectedAgents = [];
     await expect(feishuRuntimeReady("agent-1")).resolves.toBe(false);
 
     const onImToolRequest = (

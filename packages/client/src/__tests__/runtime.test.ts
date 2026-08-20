@@ -26,7 +26,10 @@ describe("RuntimeConnection", () => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         frames.push(frame);
         if (frame.type === "auth") {
-          completeAuth(socket, frame, { ...welcome(), providerReadiness: 1 });
+          completeAuth(socket, frame, {
+            ...welcome(),
+            providerReadiness: { version: 1, providers: ["codex"] },
+          });
         } else if (frame.type === "computer:register") {
           socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
         } else if (frame.type === "heartbeat") {
@@ -53,16 +56,20 @@ describe("RuntimeConnection", () => {
       tokenProvider: tokenProvider(),
     });
     connection.setProviderReadiness({ provider: "codex", status: "ready" });
+    connection.setProviderReadiness({ provider: "claude-code", status: "ready" });
 
     await connection.run();
     expect(frames.map((frame) => frame.type)).toEqual(["auth", "computer:register", "heartbeat"]);
     expect(frames[0]).toMatchObject({ protocolVersion: 1 });
     const register = frames[1];
     expect(register).toMatchObject({ computerId, displayName: "workstation", platform: "linux" });
-    expect(register).toMatchObject({ providerReadiness: { provider: "codex", status: "ready" } });
+    expect(register).toMatchObject({ providerReadiness: [{ provider: "codex", status: "ready" }] });
+    expect(register).not.toEqual(
+      expect.objectContaining({ providerReadiness: expect.arrayContaining([{ provider: "claude-code" }]) }),
+    );
     expect(register).not.toHaveProperty("teamId");
     expect(register?.instanceId).toBe(instanceId);
-    expect(frames[2]).toMatchObject({ providerReadiness: { provider: "codex", status: "ready" } });
+    expect(frames[2]).toMatchObject({ providerReadiness: [{ provider: "codex", status: "ready" }] });
   });
 
   it("keeps readiness fields off v1 frames when an older Server does not acknowledge them", async () => {
@@ -118,10 +125,15 @@ describe("RuntimeConnection", () => {
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeAuth(socket, frame, { ...welcome(), providerReadiness: 1 }, RUNTIME_CLIENT_CAPABILITY_TTL_MS * 10);
+          completeAuth(
+            socket,
+            frame,
+            { ...welcome(), providerReadiness: { version: 1, providers: ["codex"] } },
+            RUNTIME_CLIENT_CAPABILITY_TTL_MS * 10,
+          );
         }
         if (frame.type === "computer:register") {
-          expect(frame).toMatchObject({ providerReadiness: { provider: "codex", status: "ready" } });
+          expect(frame).toMatchObject({ providerReadiness: [{ provider: "codex", status: "ready" }] });
           currentTime += RUNTIME_CLIENT_CAPABILITY_TTL_MS + 1;
           socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
         }
@@ -153,8 +165,8 @@ describe("RuntimeConnection", () => {
     releaseReadiness = connection.leaseProviderReadiness({ provider: "codex", status: "ready" });
 
     await connection.run();
-    expect(heartbeats[0]).toMatchObject({ providerReadiness: { provider: "codex", status: "ready" } });
-    expect(heartbeats[1]).not.toHaveProperty("providerReadiness");
+    expect(heartbeats[0]).toMatchObject({ providerReadiness: [{ provider: "codex", status: "ready" }] });
+    expect(heartbeats[1]).toMatchObject({ providerReadiness: [] });
   });
 
   it("forces token refresh before reconnecting at the proactive refresh boundary", async () => {

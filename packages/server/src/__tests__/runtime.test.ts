@@ -80,7 +80,11 @@ describe("Computer runtime WebSocket", () => {
     const authRequestId = randomUUID();
     socket.send(JSON.stringify({ type: "auth", requestId: authRequestId, protocolVersion: 1, accessToken: "access" }));
     expect(await frames.next()).toMatchObject({ type: "auth:result", requestId: authRequestId, ok: true });
-    expect(await frames.next()).toMatchObject({ type: "server:welcome", protocolVersion: 1, providerReadiness: 1 });
+    expect(await frames.next()).toMatchObject({
+      type: "server:welcome",
+      protocolVersion: 1,
+      providerReadiness: { version: 1, providers: ["codex"] },
+    });
 
     const register = {
       type: "computer:register",
@@ -91,7 +95,7 @@ describe("Computer runtime WebSocket", () => {
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.1",
-      providerReadiness: { provider: "codex", status: "install" },
+      providerReadiness: [{ provider: "codex", status: "install" }],
     };
     socket.send(JSON.stringify(register));
     expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
@@ -99,9 +103,11 @@ describe("Computer runtime WebSocket", () => {
       ...register,
       capabilities: { imMessageTool: 0 },
     });
-    expect(registry.providerReadiness(register.computerId)).toMatchObject({
-      observation: { provider: "codex", status: "install" },
-    });
+    expect(registry.providerReadiness(register.computerId)).toMatchObject([
+      {
+        observation: { provider: "codex", status: "install" },
+      },
+    ]);
     expect(JSON.stringify(register)).not.toContain("team");
 
     const heartbeat = {
@@ -109,7 +115,7 @@ describe("Computer runtime WebSocket", () => {
       requestId: randomUUID(),
       computerId: register.computerId,
       instanceId: register.instanceId,
-      providerReadiness: { provider: "codex", status: "sign-in" },
+      providerReadiness: [{ provider: "codex", status: "sign-in" }],
     };
     socket.send(JSON.stringify(heartbeat));
     expect(await frames.next()).toMatchObject({
@@ -117,9 +123,11 @@ describe("Computer runtime WebSocket", () => {
       requestId: heartbeat.requestId,
       ok: true,
     });
-    expect(registry.providerReadiness(register.computerId)).toMatchObject({
-      observation: { provider: "codex", status: "sign-in" },
-    });
+    expect(registry.providerReadiness(register.computerId)).toMatchObject([
+      {
+        observation: { provider: "codex", status: "sign-in" },
+      },
+    ]);
     socket.close();
     await new Promise((resolve) => socket.once("close", resolve));
     await vi.waitFor(() => expect(computers.disconnect).toHaveBeenCalledWith(register.computerId, register.instanceId));
@@ -153,6 +161,30 @@ describe("Computer runtime WebSocket", () => {
     socket.close();
   });
 
+  it("rejects readiness for a Provider outside the exact Server-admitted set", async () => {
+    const app = createApp({
+      authService: authService(),
+      computerService: computerService() as unknown as ComputerService,
+      runtime: { authTimeoutMs: 1_000 },
+    });
+    apps.push(app);
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`, {
+      headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
+    });
+    const frames = frameQueue(socket);
+    await authenticate(socket, frames);
+    socket.send(
+      JSON.stringify({
+        ...registerFrame(randomUUID(), randomUUID()),
+        providerReadiness: [{ provider: "claude-code", status: "ready" }],
+      }),
+    );
+
+    expect(await frames.next()).toMatchObject({ type: "error", code: "PROTOCOL_ERROR" });
+    await expect(closeCode(socket)).resolves.toBe(4400);
+  });
+
   it("does not publish a readiness observation rejected by the durable heartbeat guard", async () => {
     const computers = computerService();
     let resolveHeartbeat!: (accepted: boolean) => void;
@@ -172,7 +204,7 @@ describe("Computer runtime WebSocket", () => {
     await authenticate(socket, frames);
     const register = {
       ...registerFrame(randomUUID(), randomUUID()),
-      providerReadiness: { provider: "codex", status: "install" },
+      providerReadiness: [{ provider: "codex", status: "install" }],
     };
     socket.send(JSON.stringify(register));
     await frames.next();
@@ -182,17 +214,19 @@ describe("Computer runtime WebSocket", () => {
       requestId: randomUUID(),
       computerId: register.computerId,
       instanceId: register.instanceId,
-      providerReadiness: { provider: "codex", status: "ready" },
+      providerReadiness: [{ provider: "codex", status: "ready" }],
     };
     socket.send(JSON.stringify(heartbeat));
     await vi.waitFor(() => expect(computers.heartbeat).toHaveBeenCalled());
-    expect(registry.providerReadiness(register.computerId)).toMatchObject({
-      observation: { provider: "codex", status: "install" },
-    });
+    expect(registry.providerReadiness(register.computerId)).toMatchObject([
+      {
+        observation: { provider: "codex", status: "install" },
+      },
+    ]);
 
     resolveHeartbeat(false);
     expect(await frames.next()).toMatchObject({ type: "error", code: "COMPUTER_NOT_REGISTERED" });
-    expect(registry.providerReadiness(register.computerId)?.observation.status).not.toBe("ready");
+    expect(registry.providerReadiness(register.computerId)[0]?.observation.status).not.toBe("ready");
   });
 
   it("rejects registration before authentication", async () => {

@@ -9,6 +9,7 @@ import { eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agentRuntimeConfigs, agents, imBindings, sessions } from "../../db/schema/index.js";
 import { EffectiveRuntimeSnapshotAssemblerError } from "./errors.js";
+import { isServerAdmittedAgentRuntimeProvider } from "./provider-admission.js";
 
 interface EffectiveRuntimeSnapshotAuthority {
   agentStatus: string;
@@ -44,7 +45,7 @@ export class EffectiveRuntimeSnapshotAssembler {
     ) {
       throw new EffectiveRuntimeSnapshotAssemblerError("AUTHORITY_INACTIVE");
     }
-    if (authority.runtimeProvider !== "codex") {
+    if (!isServerAdmittedAgentRuntimeProvider(authority.runtimeProvider)) {
       throw new EffectiveRuntimeSnapshotAssemblerError("UNSUPPORTED_PROVIDER");
     }
     if (authority.runtimeConfig === null) {
@@ -80,7 +81,7 @@ export class EffectiveRuntimeSnapshotAssembler {
         session: { sequence: config.revision, id: sessionRevisionId },
       },
       agentId: authority.agentId,
-      provider: "codex",
+      provider: authority.runtimeProvider,
       ...(config.model !== null ? { model: config.model } : {}),
       ...(config.reasoningEffort !== null ? { reasoningEffort: config.reasoningEffort } : {}),
       instructions: {

@@ -9,7 +9,7 @@ const computer = {
   arch: "x64",
   clientVersion: "0.0.1",
   connectionStatus: "online",
-  providerReadiness: { provider: "codex", status: "ready", observedAt: "2026-08-18T00:00:01.000Z" },
+  providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-18T00:00:01.000Z" }],
   connectedAt: "2026-08-18T00:00:00.000Z",
   lastSeenAt: "2026-08-18T00:00:01.000Z",
 };
@@ -27,7 +27,13 @@ describe("computer contracts", () => {
     expect(() => ComputerSchema.parse({ ...computer, teamId: crypto.randomUUID() })).toThrow();
     expect(() => ComputerSchema.parse({ ...computer, platform: "freebsd" })).toThrow();
     expect(() =>
-      ComputerSchema.parse({ ...computer, providerReadiness: { provider: "claude-code", status: "ready" } }),
+      ComputerSchema.parse({
+        ...computer,
+        providerReadiness: [
+          { provider: "claude-code", status: "ready", observedAt: null },
+          { provider: "codex", status: "ready", observedAt: null },
+        ],
+      }),
     ).toThrow();
   });
 });

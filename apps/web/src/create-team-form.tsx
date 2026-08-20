@@ -2,7 +2,7 @@ import type { CreateTeamResponse } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
 import { ApiError, browserApi } from "./api.js";
 
-/** Derives the canonical Team handle a display name suggests; the user stays free to replace it. */
+/** Derives the internal Team handle suggested by a user-facing name. */
 export function toTeamHandle(displayName: string): string {
   return displayName
     .normalize("NFKD")
@@ -12,13 +12,9 @@ export function toTeamHandle(displayName: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-/**
- * Canonical names are ASCII, so derivation drops anything else. Latin accents survive as their base letter,
- * but other scripts leave nothing behind: the suggestion silently empties or keeps only an ASCII fragment,
- * which the user has to be told rather than left to notice.
- */
-function dropsCharactersFromHandle(displayName: string): boolean {
-  return /[^\p{ASCII}]/u.test(displayName.normalize("NFKD").replace(/\p{M}/gu, ""));
+function handleWithSuffix(handle: string, suffix: string): string {
+  const base = (handle || "team").slice(0, 64 - suffix.length - 1).replace(/-+$/g, "") || "team";
+  return `${base}-${suffix}`;
 }
 
 /**
@@ -36,8 +32,7 @@ export function CreateTeamForm({
   submitLabel?: string;
 }) {
   const [displayName, setDisplayName] = useState("");
-  const [name, setName] = useState("");
-  const [nameEdited, setNameEdited] = useState(false);
+  const [handleSuffix] = useState(() => crypto.randomUUID().replaceAll("-", "").slice(0, 8));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -46,13 +41,26 @@ export function CreateTeamForm({
     setSubmitting(true);
     try {
       setError(undefined);
-      onCreated(await browserApi.createTeam({ name, displayName }));
+      const suggestedHandle = toTeamHandle(displayName);
+      const initialHandle = suggestedHandle || handleWithSuffix(suggestedHandle, handleSuffix);
+      try {
+        onCreated(await browserApi.createTeam({ name: initialHandle, displayName }));
+      } catch (cause) {
+        if (!(cause instanceof ApiError) || cause.code !== "TEAM_NAME_CONFLICT") throw cause;
+        onCreated(await browserApi.createTeam({ name: handleWithSuffix(suggestedHandle, handleSuffix), displayName }));
+      }
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401 && onUnauthenticated) {
         onUnauthenticated();
         return;
       }
-      setError(cause instanceof Error ? cause.message : "The Team could not be created");
+      setError(
+        cause instanceof ApiError && cause.code === "TEAM_NAME_CONFLICT"
+          ? "We couldn't create a unique team address. Try again."
+          : cause instanceof Error
+            ? cause.message
+            : "The Team could not be created",
+      );
     } finally {
       setSubmitting(false);
     }
@@ -61,46 +69,19 @@ export function CreateTeamForm({
   return (
     <form className="form-card" onSubmit={submit}>
       <label>
-        Display name
+        Team name
         <input
           name="displayName"
+          autoComplete="organization"
+          maxLength={120}
+          placeholder="e.g. Platform team"
           required
           value={displayName}
-          onChange={(event) => {
-            const value = event.currentTarget.value;
-            setDisplayName(value);
-            if (!nameEdited) setName(toTeamHandle(value));
-          }}
+          onChange={(event) => setDisplayName(event.currentTarget.value)}
         />
       </label>
-      <label>
-        Canonical name
-        <input
-          name="name"
-          required
-          pattern="[a-z0-9][a-z0-9-]*"
-          maxLength={64}
-          value={name}
-          onChange={(event) => {
-            const value = event.currentTarget.value;
-            // Emptying the field hands control back to the display name instead of latching it off.
-            setNameEdited(value.length > 0);
-            setName(value);
-          }}
-        />
-      </label>
-      {displayName && dropsCharactersFromHandle(displayName) ? (
-        <p className="notice" role="status">
-          A canonical name can only use lowercase letters, digits and hyphens, so the suggestion above leaves out the
-          rest of “{displayName}”. Write the name you want teammates to type in the CLI.
-        </p>
-      ) : null}
-      <p className="muted">
-        Lowercase letters, digits and hyphens. This is the CLI --team selector and must be unique across OpenTag; Team
-        Admins can change it later.
-      </p>
       <button className="button" type="submit" disabled={submitting}>
-        {submitLabel}
+        {submitting ? "Creating…" : submitLabel}
       </button>
       {error ? (
         <div className="notice error" role="alert">

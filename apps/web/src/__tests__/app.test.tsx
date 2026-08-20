@@ -81,6 +81,7 @@ function installApi(
   let invitationExists = options.invitationExists ?? false;
   let invitationVersion: "A" | "B" = "A";
   let joinedInvitation = options.alreadyJoinedInvitation ?? false;
+  let teamNameConflict = options.teamNameConflict ?? false;
   const invitation = () => ({
     token: invitationVersion.repeat(43),
     inviteUrl: `https://opentag.example.com/invites/${invitationVersion.repeat(43)}`,
@@ -116,7 +117,8 @@ function installApi(
       });
     }
     if (path === "/api/v1/teams" && init?.method === "POST") {
-      if (options.teamNameConflict) {
+      if (teamNameConflict) {
+        teamNameConflict = false;
         return json(
           {
             error: {
@@ -721,68 +723,49 @@ describe("OpenTag Web App Shell", () => {
   it("sends a Team-less session to Team creation and lands it on Agents", async () => {
     installApi("admin", { teamless: true });
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Create Team" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Create your team" })).toBeTruthy();
     expect(window.location.pathname).toBe("/teams/new");
-    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "First Tree AI" } });
-    expect((screen.getByLabelText("Canonical name") as HTMLInputElement).value).toBe("first-tree-ai");
+    expect(screen.getAllByRole("textbox")).toHaveLength(1);
+    expect(screen.queryByText(/canonical name/i)).toBeNull();
+    fireEvent.change(screen.getByLabelText("Team name"), { target: { value: "First Tree AI" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Team" }));
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
     expect(window.location.pathname).toBe("/agents");
     expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(createdTeamId);
   });
 
-  it("keeps a canonical name collision on the form with a readable message", async () => {
+  it("resolves an internal Team handle collision without asking the user for another name", async () => {
     installApi("admin", { teamless: true, teamNameConflict: true });
     window.history.replaceState({}, "", "/teams/new");
     render(<App />);
-    fireEvent.change(await screen.findByLabelText("Display name"), { target: { value: "Example" } });
+    fireEvent.change(await screen.findByLabelText("Team name"), { target: { value: "Example" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Team" }));
-    expect(await screen.findByText("Another Team already uses this canonical name")).toBeTruthy();
-    expect(window.location.pathname).toBe("/teams/new");
-    expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Example");
-    expect(window.localStorage.getItem("opentag.selectedTeamId")).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    const createRequests = vi
+      .mocked(fetch)
+      .mock.calls.filter(([path, init]) => path === "/api/v1/teams" && init?.method === "POST");
+    expect(createRequests).toHaveLength(2);
+    expect(JSON.parse(String(createRequests[0]?.[1]?.body))).toEqual({ name: "example", displayName: "Example" });
+    expect(JSON.parse(String(createRequests[1]?.[1]?.body))).toMatchObject({
+      displayName: "Example",
+      name: expect.stringMatching(/^example-[a-f0-9]{8}$/),
+    });
   });
 
-  it("stops deriving the canonical name once the user writes their own", async () => {
+  it("creates a safe internal handle for a Team name written without ASCII characters", async () => {
     installApi("admin", { teamless: true });
     window.history.replaceState({}, "", "/teams/new");
     render(<App />);
-    fireEvent.change(await screen.findByLabelText("Display name"), { target: { value: "First Tree" } });
-    fireEvent.change(screen.getByLabelText("Canonical name"), { target: { value: "ft" } });
-    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "First Tree AI" } });
-    expect((screen.getByLabelText("Canonical name") as HTMLInputElement).value).toBe("ft");
-  });
-
-  it("resumes deriving the canonical name after the user empties the field", async () => {
-    installApi("admin", { teamless: true });
-    window.history.replaceState({}, "", "/teams/new");
-    render(<App />);
-    fireEvent.change(await screen.findByLabelText("Display name"), { target: { value: "First Tree" } });
-    fireEvent.change(screen.getByLabelText("Canonical name"), { target: { value: "ft" } });
-    fireEvent.change(screen.getByLabelText("Canonical name"), { target: { value: "" } });
-    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "First Tree AI" } });
-    expect((screen.getByLabelText("Canonical name") as HTMLInputElement).value).toBe("first-tree-ai");
-  });
-
-  it.each([
-    ["示例团队", ""],
-    ["OpenTag 中文团队", "opentag"],
-  ])("says which characters the canonical name drops for %s", async (displayName, derived) => {
-    installApi("admin", { teamless: true });
-    window.history.replaceState({}, "", "/teams/new");
-    render(<App />);
-    fireEvent.change(await screen.findByLabelText("Display name"), { target: { value: displayName } });
-    expect((screen.getByLabelText("Canonical name") as HTMLInputElement).value).toBe(derived);
-    expect(await screen.findByText(new RegExp(`leaves out the rest of “${displayName}”`))).toBeTruthy();
-  });
-
-  it("keeps quiet when the display name maps cleanly onto a canonical name", async () => {
-    installApi("admin", { teamless: true });
-    window.history.replaceState({}, "", "/teams/new");
-    render(<App />);
-    fireEvent.change(await screen.findByLabelText("Display name"), { target: { value: "Café Ops" } });
-    expect((screen.getByLabelText("Canonical name") as HTMLInputElement).value).toBe("cafe-ops");
-    expect(screen.queryByText(/leaves out the rest of/)).toBeNull();
+    fireEvent.change(await screen.findByLabelText("Team name"), { target: { value: "示例团队" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Team" }));
+    await screen.findByRole("heading", { name: "Agents" });
+    const request = vi
+      .mocked(fetch)
+      .mock.calls.find(([path, init]) => path === "/api/v1/teams" && init?.method === "POST");
+    expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({
+      displayName: "示例团队",
+      name: expect.stringMatching(/^team-[a-f0-9]{8}$/),
+    });
   });
 
   it("lets an existing member create a second Team and offers both in the picker", async () => {
@@ -790,7 +773,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Example" }));
     fireEvent.click(screen.getByRole("link", { name: "Create Team" }));
-    fireEvent.change(await screen.findByLabelText("Display name"), { target: { value: "Second Team" } });
+    fireEvent.change(await screen.findByLabelText("Team name"), { target: { value: "Second Team" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Team" }));
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Second Team" }));

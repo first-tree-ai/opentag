@@ -1114,7 +1114,7 @@ code {
   display: block;
   width: 38px;
   height: 38px;
-  margin-bottom: 36px;
+  margin-bottom: 28px;
   border: 1px solid var(--brand-ink);
   border-radius: 50%;
   background: var(--success);
@@ -1128,11 +1128,21 @@ code {
 }
 
 .center-card h1 {
+  margin-bottom: 8px;
   font-size: clamp(2rem, 6vw, 2.5rem);
 }
 
-.center-card p {
+.center-card > p {
+  max-width: 38ch;
+  margin: 0;
   color: var(--muted);
+  font-size: 0.94rem;
+}
+
+.center-card > .form-card {
+  gap: 18px;
+  border-top: 0;
+  padding: 28px 0 0;
 }
 
 .center-card .actions {

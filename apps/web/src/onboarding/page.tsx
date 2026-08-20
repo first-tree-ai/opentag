@@ -28,6 +28,11 @@ import {
 
 const FEISHU_BOT_APP_LINK = "https://applink.feishu.cn/client/bot/open";
 const CREATE_INTENT_VERSION = 1;
+/** A Computer republishes Provider readiness about twice a minute, so a slower poll loses nothing. */
+const RUNTIME_POLL_INTERVAL_MS = 5_000;
+const RUNTIME_POLL_LIMIT_MS = 10 * 60 * 1_000;
+/** States that only an action taken outside this page can advance, and that no child polls for. */
+const RUNTIME_WAIT_STATES: readonly OnboardingCurrentState["kind"][] = ["provider", "agent-runtime"];
 
 type PageLoadState =
   | { readonly kind: "loading" }
@@ -135,6 +140,22 @@ export function OnboardingPage({
     if (loadState.kind !== "ready") return undefined;
     return resolveSnapshot(membership, loadState.snapshot);
   }, [loadState, membership]);
+
+  const waitingForRuntime = resolved !== undefined && RUNTIME_WAIT_STATES.includes(resolved.state.currentState.kind);
+  useEffect(() => {
+    if (!waitingForRuntime) return;
+    let elapsedMs = 0;
+    const timer = window.setInterval(() => {
+      elapsedMs += RUNTIME_POLL_INTERVAL_MS;
+      // A page left open indefinitely stops polling; focus, visibility, and the explicit control still reload.
+      if (elapsedMs >= RUNTIME_POLL_LIMIT_MS) {
+        window.clearInterval(timer);
+        return;
+      }
+      if (document.visibilityState !== "hidden") reload();
+    }, RUNTIME_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [reload, waitingForRuntime]);
 
   const runAgentCreation = useCallback(
     (request: Omit<CreateAgentRequest, "creationIntentId">) => {

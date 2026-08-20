@@ -19,9 +19,9 @@ describe("normalizeOnboardingProviders", () => {
         },
       ]),
     ).toEqual([
-      { computerId: "computer-a", provider: "codex", runtimeReady: true },
-      { computerId: "computer-a", provider: "claude-code", runtimeReady: false },
-      { computerId: "computer-b", provider: "codex", runtimeReady: false },
+      { computerId: "computer-a", provider: "codex", runtimeReady: true, status: "ready" },
+      { computerId: "computer-a", provider: "claude-code", runtimeReady: false, status: "sign-in" },
+      { computerId: "computer-b", provider: "codex", runtimeReady: false, status: "checking" },
     ]);
   });
 

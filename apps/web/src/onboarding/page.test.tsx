@@ -174,6 +174,35 @@ describe("OnboardingPage", () => {
     expect(screen.queryByText("Preparing OpenTag")).toBeNull();
   });
 
+  it("shows the exact action from the production Provider readiness projection", async () => {
+    installFacts({
+      computers: [
+        {
+          ...computerA,
+          providerReadiness: [{ provider: "codex", status: "install", observedAt: null }],
+        },
+      ],
+    });
+    render(<OnboardingPage membership={admin} user={user} />);
+    expect(await screen.findByRole("heading", { name: "Install Codex" })).toBeTruthy();
+    expect(screen.getByText("Install Codex on Ada's Mac, then check again.")).toBeTruthy();
+  });
+
+  it("reaches Ready from production runtime and authoritative handoff facts", async () => {
+    installFacts({
+      agents: [agent],
+      computers: [
+        {
+          ...computerA,
+          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+        },
+      ],
+      handoff: { bindingState: "active", handoffReady: true },
+    });
+    render(<OnboardingPage membership={admin} user={user} />);
+    expect(await screen.findByRole("heading", { name: "OpenTag is ready" })).toBeTruthy();
+  });
+
   it("shows Provider recovery when authoritative facts say no route is runnable", async () => {
     installFacts({ computers: [computerA] });
     renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false }]) });

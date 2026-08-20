@@ -1,5 +1,6 @@
 import type { AgentSummary, TeamComputerSummary } from "@opentag/shared/browser";
 import type { OnboardingProvider } from "./flow.js";
+import { normalizeOnboardingProviders } from "./provider-readiness.js";
 
 export interface RuntimeFactsInput {
   readonly teamId: string;
@@ -24,16 +25,18 @@ export type RuntimeFactsResult =
 
 /**
  * The only Web seam for authoritative Computer + Provider runtime readiness.
- * The production implementation intentionally reports no fact until the
- * Server endpoint owned by #73 is available on main. An online Computer is
- * never promoted to a runnable Provider locally.
+ * An older Server that omits the negotiated projection remains unavailable;
+ * an online Computer is never promoted to a runnable Provider locally.
  */
 export interface RuntimeFactsAdapter {
   load(input: RuntimeFactsInput): Promise<RuntimeFactsResult>;
 }
 
 export const productionRuntimeFactsAdapter: RuntimeFactsAdapter = {
-  async load() {
-    return { kind: "unavailable" };
+  async load({ computers }) {
+    if (!computers.some((computer) => computer.providerReadiness !== undefined)) {
+      return { kind: "unavailable" };
+    }
+    return { kind: "available", providers: normalizeOnboardingProviders(computers) };
   },
 };

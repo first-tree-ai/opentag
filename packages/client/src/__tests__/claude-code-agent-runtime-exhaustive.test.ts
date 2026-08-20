@@ -174,6 +174,33 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
   });
 
+  it("rejects a resumed foreign init before translating any following Provider events", async () => {
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await factory(
+      new ManualClaudeCodeProcess([
+        { type: "system", subtype: "init", session_id: "22222222-2222-4222-8222-222222222222" },
+        { type: "foreign_event", value: true },
+      ]),
+    ).resume({
+      ...createRequest((event) => {
+        events.push(event);
+      }),
+      binding: { providerId: "claude-code", schemaVersion: 1, payload: { sessionId: SESSION_ID } },
+    });
+
+    await expect(runtime.prompt({ runId: "run-foreign-resume", input: input("continue") })).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error", message: "Claude Code initialized another session" },
+    });
+    expect(events.map((event) => event.type)).toEqual([
+      "binding_changed",
+      "run_started",
+      "run_failed",
+      "runtime_closed",
+    ]);
+    await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
+  });
+
   it("maps process construction, execution, and close failures without leaking them", async () => {
     const construction = new ClaudeCodeAgentRuntimeFactory({
       createSessionId: () => SESSION_ID,
@@ -265,27 +292,17 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       },
       { request: withPolicy({ approvals: "on-request" }), message: "approvals=never" },
       {
-        request: withPolicy({ fileSystem: "read-only" }, { writableRoots: ["/workspace"] }),
-        message: "read-only policy",
-      },
-      { request: withPolicy({ fileSystem: "read-only", network: "enabled" }), message: "enabled network" },
-      { request: withPolicy({ fileSystem: "unrestricted" }), message: "restrict network" },
-      {
-        request: withPolicy({ fileSystem: "workspace-write" }, { writableRoots: ["/other"] }),
-        message: "include workspace.cwd",
+        request: withPolicy({ fileSystem: "read-only" }),
+        message: "constrained filesystem",
       },
       {
-        request: withPolicy({ fileSystem: "read-only", tools: { mode: "allow-list", names: ["Edit"] } }),
-        message: "cannot allow tool",
+        request: withPolicy({ fileSystem: "workspace-write" }),
+        message: "constrained filesystem",
       },
+      { request: withPolicy({ network: "disabled" }), message: "disabled network" },
       { request: withPolicy({ tools: { mode: "allow-list", names: [] } }), message: "must not be empty" },
       { request: withPolicy({ tools: { mode: "allow-list", names: ["*"] } }), message: "bounded identifiers" },
       { request: withPolicy({ tools: { mode: "allow-list", names: [42 as unknown as string] } }), message: "bounded" },
-      { request: withPolicy({ tools: { mode: "allow-list", names: ["WebFetch"] } }), message: "network-disabled" },
-      {
-        request: withPolicy({ tools: { mode: "allow-list", names: ["mcp__server__tool"] } }),
-        message: "network-disabled",
-      },
       { request: withConfiguration({ model: " " }), message: "model" },
       { request: withConfiguration({ reasoningEffort: "extreme" }), message: "reasoning effort" },
       { request: withConfiguration({ provider: [] }), message: "must be an object" },
@@ -349,41 +366,16 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     });
   });
 
-  it("maps read-only, allow-list, extra-root, network-enabled, unrestricted, and override arguments", async () => {
+  it("maps unrestricted policy, tool allow-list, and configuration override arguments", async () => {
     const cases: Array<{
       request: CreateAgentRuntimeRequest;
       promptConfiguration?: AgentRunConfiguration;
       expected: (args: readonly string[]) => void;
     }> = [
       {
-        request: withPolicy({ fileSystem: "read-only" }),
-        expected: (args) => {
-          expect(argumentAfter(args, "--tools")).toBe("Read,Glob,Grep");
-          expect(argumentAfter(args, "--permission-mode")).toBe("dontAsk");
-          expect(JSON.parse(argumentAfter(args, "--settings") ?? "{}")).toMatchObject({
-            sandbox: { filesystem: { allowWrite: [], denyWrite: ["/"] } },
-          });
-        },
-      },
-      {
-        request: withPolicy({ fileSystem: "read-only", tools: { mode: "allow-list", names: ["Read"] } }),
-        expected: (args) => expect(argumentAfter(args, "--tools")).toBe("Read"),
-      },
-      {
-        request: withPolicy(
-          { tools: { mode: "allow-list", names: ["Read", "Edit"] } },
-          { writableRoots: ["/workspace", "/extra"] },
-        ),
+        request: withPolicy({ tools: { mode: "allow-list", names: ["Read", "Edit"] } }),
         expected: (args) => {
           expect(argumentAfter(args, "--tools")).toBe("Read,Edit");
-          expect(argumentAfter(args, "--add-dir")).toBe("/extra");
-        },
-      },
-      {
-        request: withPolicy({ network: "enabled" }),
-        expected: (args) => {
-          expect(args).not.toContain("--disallowedTools");
-          expect(JSON.parse(argumentAfter(args, "--settings") ?? "{}").sandbox).not.toHaveProperty("network");
         },
       },
       {
@@ -391,6 +383,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         expected: (args) => {
           expect(argumentAfter(args, "--permission-mode")).toBe("bypassPermissions");
           expect(args).not.toContain("--settings");
+          expect(args).not.toContain("--tools");
         },
       },
       {
@@ -445,7 +438,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       process: {
         command: process.execPath,
         args: [fixture],
-        env: { PATH: process.env.PATH, CLAUDE_CODE_FIXTURE_SCENARIO: "normal" },
+        env: { PATH: process.env.PATH },
       },
       probeRunner: async () => ({ credential: true, streamJson: true, version: "fixture" }),
     }).create({ ...createRequest(() => undefined), workspace: { cwd: process.cwd() } });
@@ -457,7 +450,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     const command = join(directory, "claude-fixture");
     await writeFile(
       command,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume\\n"; exit 0; fi\nif [ "$CLAUDE_CODE_PROBE_AUTH_MODE" = "logged-out" ]; then printf \'{"loggedIn":false}\\n\'; exit 1; fi\nif [ "$CLAUDE_CODE_PROBE_AUTH_MODE" = "invalid" ]; then printf \'not-json\\n\'; exit 0; fi\nif [ "$CLAUDE_CODE_PROBE_AUTH_MODE" = "empty" ]; then exit 1; fi\nprintf \'{"loggedIn":true}\\n\'\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume\\n"; exit 0; fi\nif [ -n "$CLAUDE_CODE_SKIP_PROMPT_HISTORY" ]; then printf \'{"loggedIn":false}\\n\'; exit 1; fi\nprintf \'{"loggedIn":true}\\n\'\n',
       "utf8",
     );
     await chmod(command, 0o755);
@@ -467,6 +460,13 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       version: "2.1.210 (Claude Code)",
       issues: [],
     });
+    const persistenceSafe = new ClaudeCodeAgentRuntimeFactory({
+      process: {
+        command,
+        env: { PATH: process.env.PATH, CLAUDE_CODE_SKIP_PROMPT_HISTORY: "1" },
+      },
+    });
+    await expect(persistenceSafe.probe({})).resolves.toMatchObject({ ready: true });
 
     for (const credential of [
       { ANTHROPIC_API_KEY: "key" },
@@ -477,15 +477,28 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       const environmentCredential = new ClaudeCodeAgentRuntimeFactory({
         process: {
           command,
-          env: { PATH: process.env.PATH, ...credential, CLAUDE_CODE_PROBE_AUTH_MODE: "logged-out" },
+          env: { PATH: process.env.PATH, ...credential },
         },
       });
       await expect(environmentCredential.probe({})).resolves.toMatchObject({ ready: true });
     }
 
     for (const mode of ["logged-out", "invalid", "empty"]) {
+      const missingCommand = join(directory, `claude-${mode}`);
+      const authResponse =
+        mode === "logged-out"
+          ? "printf '{\"loggedIn\":false}\\n'; exit 1"
+          : mode === "invalid"
+            ? "printf 'not-json\\n'; exit 0"
+            : "exit 1";
+      await writeFile(
+        missingCommand,
+        `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume\\n"; exit 0; fi\n${authResponse}\n`,
+        "utf8",
+      );
+      await chmod(missingCommand, 0o755);
       const missingCredential = new ClaudeCodeAgentRuntimeFactory({
-        process: { command, env: { PATH: process.env.PATH, CLAUDE_CODE_PROBE_AUTH_MODE: mode } },
+        process: { command: missingCommand, env: { PATH: process.env.PATH } },
       });
       await expect(missingCredential.probe({})).resolves.toMatchObject({
         ready: false,
@@ -610,8 +623,8 @@ function createRequest(eventSink: CreateAgentRuntimeRequest["eventSink"]): Creat
     eventSink,
     workspace: { cwd: "/workspace" },
     policy: {
-      fileSystem: "workspace-write",
-      network: "disabled",
+      fileSystem: "unrestricted",
+      network: "enabled",
       approvals: "never",
       tools: { mode: "provider-default" },
     },

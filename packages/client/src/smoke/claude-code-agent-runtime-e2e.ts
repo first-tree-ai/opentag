@@ -25,8 +25,8 @@ try {
     },
     workspace: { cwd: workspace },
     policy: {
-      fileSystem: "read-only",
-      network: "disabled",
+      fileSystem: "unrestricted",
+      network: "enabled",
       approvals: "never",
       tools: { mode: "provider-default" },
     },
@@ -57,8 +57,8 @@ try {
     },
     workspace: { cwd: workspace },
     policy: {
-      fileSystem: "read-only",
-      network: "disabled",
+      fileSystem: "unrestricted",
+      network: "enabled",
       approvals: "never",
       tools: { mode: "provider-default" },
     },

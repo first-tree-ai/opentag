@@ -1,6 +1,6 @@
 import { type ChildProcessWithoutNullStreams, execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
@@ -18,7 +18,6 @@ import {
   type AgentRuntimePolicy,
   type AgentRuntimeProbeRequest,
   type AgentRuntimeProbeResult,
-  type AgentRuntimeWorkspace,
   type CreateAgentRuntimeRequest,
   type JsonValue,
   type ResumeAgentRuntimeRequest,
@@ -30,8 +29,6 @@ const execFileAsync = promisify(execFile);
 const CLAUDE_CODE_BINDING_SCHEMA_VERSION = 1;
 const CLAUDE_CODE_PROVIDER_ID = "claude-code";
 const CLAUDE_CODE_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultracode"]);
-const CLAUDE_CODE_READ_ONLY_TOOLS = ["Read", "Glob", "Grep"] as const;
-const CLAUDE_CODE_NETWORK_TOOLS = new Set(["WebFetch", "WebSearch"]);
 
 export const CLAUDE_CODE_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
   providerId: CLAUDE_CODE_PROVIDER_ID,
@@ -52,7 +49,6 @@ interface ClaudeCodeRuntimeOptions {
   readonly createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
   readonly eventSink: AgentRuntimeEventSink;
   readonly resume: boolean;
-  readonly workspace: AgentRuntimeWorkspace;
   readonly policy: AgentRuntimePolicy;
 }
 
@@ -108,7 +104,6 @@ interface ToolState {
 
 export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #sessionId: string;
-  readonly #workspace: AgentRuntimeWorkspace;
   readonly #policy: AgentRuntimePolicy;
   readonly #configuration?: AgentRunConfiguration;
   readonly #createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
@@ -134,7 +129,6 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       binding: options.binding,
     });
     this.#sessionId = parseClaudeCodeBinding(options.binding);
-    this.#workspace = options.workspace;
     this.#policy = options.policy;
     this.#configuration = options.configuration;
     this.#createProcess = options.createProcess;
@@ -211,7 +205,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       "--setting-sources",
       "",
       ...(this.#sessionExists ? ["--resume", this.#sessionId] : ["--session-id", this.#sessionId]),
-      ...claudeCodePolicyArguments(this.#workspace, this.#policy),
+      ...claudeCodePolicyArguments(this.#policy),
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--effort", configuration.reasoningEffort] : []),
       ...(provider.appendSystemPrompt ? ["--append-system-prompt", provider.appendSystemPrompt] : []),
@@ -224,7 +218,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   #enqueue(message: Readonly<Record<string, unknown>>): void {
     this.#claimTerminalAtIngress(message);
     const next = this.#eventTail.then(async () => {
-      if (!this.#context) return;
+      if (!this.#context || this.#providerFailure) return;
       await this.#handleMessage(message);
     });
     this.#eventTail = next.catch((error: unknown) => {
@@ -259,7 +253,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
     if (type === "system" && message.subtype === "init") {
       const sessionId = requireString(message.session_id, "Claude Code init has no session id");
-      if (!this.#sessionExists && sessionId !== this.#sessionId) {
+      if (sessionId !== this.#sessionId) {
         throw protocolError("Claude Code initialized another session");
       }
       this.#sessionExists = true;
@@ -519,7 +513,6 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   }
 
   #failProvider(error: Error): void {
-    if (this.#providerFailure) return;
     this.#providerFailure = error;
     void this.#process?.close().catch(() => undefined);
     this.closeForProviderFailure();
@@ -538,7 +531,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
 
   constructor(options: ClaudeCodeAgentRuntimeFactoryOptions = {}) {
     this.#createSessionId = options.createSessionId ?? randomUUID;
-    const environment = options.process?.env ?? claudeCodeAgentRuntimeEnvironment();
+    const environment = claudeCodeAgentRuntimeEnvironment(options.process?.env);
     const command = options.process?.command ?? "claude";
     const prefix = options.process?.args ?? [];
     this.#createProcess =
@@ -607,7 +600,6 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
         createProcess: (args) => this.#createProcess(request.workspace.cwd, args),
         eventSink: request.eventSink,
         resume: mode === "resume",
-        workspace: request.workspace,
         policy: request.policy,
       });
     } catch (error) {
@@ -621,6 +613,10 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
 export function claudeCodeAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const exact = new Set([
     "APPDATA",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_FOUNDRY",
+    "CLAUDE_CODE_USE_VERTEX",
     "CLOUD_ML_REGION",
     "COMSPEC",
     "GCLOUD_PROJECT",
@@ -647,7 +643,7 @@ export function claudeCodeAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = pr
     "https_proxy",
     "http_proxy",
   ]);
-  const prefixes = ["ANTHROPIC_", "AWS_", "CLAUDE_CODE_", "GOOGLE_"];
+  const prefixes = ["ANTHROPIC_", "AWS_", "GOOGLE_"];
   const environment: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(source)) {
     if (value !== undefined && (exact.has(key) || prefixes.some((prefix) => key.startsWith(prefix)))) {
@@ -723,7 +719,6 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
   if (!request.workspace || !isAbsolute(request.workspace.cwd)) {
     throw new AgentRuntimeError("configuration_invalid", "workspace.cwd must be absolute");
   }
-  const cwd = resolve(request.workspace.cwd);
   for (const root of request.workspace.writableRoots ?? []) {
     if (!isAbsolute(root)) throw new AgentRuntimeError("configuration_invalid", "writable roots must be absolute");
   }
@@ -733,34 +728,17 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
       "Claude Code requires approvals=never because interactive control is unsupported",
     );
   }
-  if (request.policy.fileSystem === "read-only" && (request.workspace.writableRoots?.length ?? 0) > 0) {
-    throw new AgentRuntimeError("configuration_invalid", "read-only policy cannot have writable roots");
-  }
-  if (request.policy.fileSystem === "read-only" && request.policy.network === "enabled") {
+  if (request.policy.fileSystem !== "unrestricted") {
     throw new AgentRuntimeError(
       "configuration_invalid",
-      "Claude Code cannot guarantee read-only filesystem with enabled network",
+      "Claude Code cannot guarantee a constrained filesystem because managed settings override CLI sandbox settings",
     );
   }
-  if (request.policy.fileSystem === "unrestricted" && request.policy.network === "disabled") {
+  if (request.policy.network !== "enabled") {
     throw new AgentRuntimeError(
       "configuration_invalid",
-      "Claude Code cannot restrict network in unrestricted filesystem mode",
+      "Claude Code cannot guarantee disabled network because managed settings override CLI sandbox settings",
     );
-  }
-  const roots = request.workspace.writableRoots;
-  if (request.policy.fileSystem === "workspace-write" && roots && !roots.some((root) => resolve(root) === cwd)) {
-    throw new AgentRuntimeError(
-      "configuration_invalid",
-      "Claude Code workspace-write policy must include workspace.cwd in writable roots",
-    );
-  }
-  if (request.policy.fileSystem === "read-only" && request.policy.tools.mode === "allow-list") {
-    for (const tool of request.policy.tools.names) {
-      if (!(CLAUDE_CODE_READ_ONLY_TOOLS as readonly string[]).includes(tool)) {
-        throw new AgentRuntimeError("configuration_invalid", `Claude Code read-only policy cannot allow tool: ${tool}`);
-      }
-    }
   }
   validateToolPolicy(request.policy);
 }
@@ -773,12 +751,6 @@ function validateToolPolicy(policy: AgentRuntimePolicy): void {
   for (const name of policy.tools.names) {
     if (typeof name !== "string" || !/^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/.test(name)) {
       throw new AgentRuntimeError("configuration_invalid", "Claude Code tool names must be bounded identifiers");
-    }
-    if (policy.network === "disabled" && (CLAUDE_CODE_NETWORK_TOOLS.has(name) || name.startsWith("mcp__"))) {
-      throw new AgentRuntimeError(
-        "configuration_invalid",
-        `Claude Code network-disabled policy cannot allow tool: ${name}`,
-      );
     }
   }
 }
@@ -850,53 +822,11 @@ function mergeConfiguration(
   return merged;
 }
 
-function claudeCodePolicyArguments(workspace: AgentRuntimeWorkspace, policy: AgentRuntimePolicy): readonly string[] {
+function claudeCodePolicyArguments(policy: AgentRuntimePolicy): readonly string[] {
   const arguments_: string[] = [];
-  const tools =
-    policy.fileSystem === "read-only"
-      ? policy.tools.mode === "allow-list"
-        ? policy.tools.names
-        : CLAUDE_CODE_READ_ONLY_TOOLS
-      : policy.tools.mode === "allow-list"
-        ? policy.tools.names
-        : undefined;
+  const tools = policy.tools.mode === "allow-list" ? policy.tools.names : undefined;
   if (tools) arguments_.push("--tools", tools.join(","));
-  if (policy.network === "disabled") {
-    arguments_.push(
-      "--disallowedTools",
-      "WebFetch,WebSearch,mcp__*",
-      "--strict-mcp-config",
-      "--mcp-config",
-      JSON.stringify({ mcpServers: {} }),
-    );
-  }
-  if (policy.fileSystem === "unrestricted") {
-    arguments_.push("--permission-mode", "bypassPermissions");
-    return arguments_;
-  }
-  const writableRoots = policy.fileSystem === "workspace-write" ? (workspace.writableRoots ?? [workspace.cwd]) : [];
-  const settings = {
-    sandbox: {
-      enabled: true,
-      failIfUnavailable: true,
-      autoAllowBashIfSandboxed: true,
-      allowUnsandboxedCommands: false,
-      filesystem: {
-        allowWrite: writableRoots,
-        ...(policy.fileSystem === "read-only" ? { denyWrite: ["/"] } : {}),
-      },
-      ...(policy.network === "disabled" ? { network: { allowedDomains: [] } } : {}),
-    },
-  };
-  arguments_.push(
-    "--permission-mode",
-    policy.fileSystem === "read-only" ? "dontAsk" : "acceptEdits",
-    "--settings",
-    JSON.stringify(settings),
-  );
-  for (const root of writableRoots) {
-    if (resolve(root) !== resolve(workspace.cwd)) arguments_.push("--add-dir", root);
-  }
+  arguments_.push("--permission-mode", "bypassPermissions");
   return arguments_;
 }
 

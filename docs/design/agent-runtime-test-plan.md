@@ -103,7 +103,8 @@ A scripted `stream-json` process verifies:
 
 - generated UUID session binding and exact `--resume` continuation;
 - FIFO follow-ups with `steer` and interactive callbacks explicitly unsupported;
-- fail-closed workspace, sandbox, network, approval, and tool policy mapping;
+- fail-closed rejection of filesystem and network constraints that managed settings can override;
+- unrestricted filesystem, enabled network, approval, and tool policy mapping;
 - streamed model turn, text, tool, usage, warning, extension, and result events;
 - terminal ingress precedence over a following Abort while prior delivery is blocked;
 - parallel tool-delta ownership by content-block index;
@@ -123,10 +124,10 @@ authenticated local Codex CLI. It performs:
 6. a second prompt proving conversation continuity;
 7. ordered-event and clean-close assertions.
 
-The live test uses a temporary read-only workspace, disabled network policy,
-`approvalPolicy: never`, no tool request, and bounded Run timeouts. It makes real
-model requests and is therefore intentionally excluded from the default test
-command.
+The live Codex test uses a temporary read-only workspace, disabled network
+policy, `approvalPolicy: never`, no tool request, and bounded Run timeouts. It
+makes real model requests and is therefore intentionally excluded from the
+default test command.
 
 The explicit `test:e2e:claude-code-agent-runtime` command applies the same
 shape to the user-installed `claude`: it creates a UUID-bound session, records a
@@ -134,6 +135,11 @@ nonce, closes the process, resumes that exact binding in a new process, and
 requires the resumed Run to return the nonce. The Claude Code Provider uses only
 documented CLI `stream-json`, `--session-id`, and `--resume` surfaces. It does not
 depend on the Agent SDK or an undocumented control protocol.
+
+Because Claude Code managed settings outrank CLI sandbox settings, the Claude
+Code live test explicitly requests unrestricted filesystem and enabled network
+with `approvals: never`. The Provider rejects stricter common policies rather
+than claiming a boundary it cannot guarantee.
 
 ## Commands and Acceptance
 
@@ -155,17 +161,15 @@ failure; it is never converted into a skipped success.
 
 ## Latest Local Execution
 
-On 2026-08-19 the scoped Agent Runtime, Codex, and Claude Code suite passed 133
-tests with 100% statements, branches, functions, and lines. All 231 Client tests
+On 2026-08-20 the scoped Agent Runtime, Codex, and Claude Code suite passed 134
+tests with 100% statements, branches, functions, and lines. All 232 Client tests
 passed. Repository formatting, notice, build, and type-check gates passed. The
 Codex live test passed against `codex-cli 0.144.1`: both create and resumed Runs
 completed, the opaque binding was preserved, and each Run produced 16 ordered
 events.
 
-The local `claude` 2.1.210 executable accepted the Provider's documented
-`stream-json`, session, policy, and tool arguments, and its real output was
-translated into the expected ordered failed-Run sequence. The create/resume
-success E2E remains blocked because `claude auth status --json` reports an
-expired local OAuth session; readiness reports `credential_missing` and does
-not skip the gate. The monorepo test command also retains two unrelated existing
+The local `claude` 2.1.210 executable was discovered from the user `PATH`. The
+create/resume success E2E remains blocked because `claude auth status --json`
+reports no active login; readiness reports `credential_missing` and does not
+skip the gate. The monorepo test command also retains two unrelated existing
 macOS CLI failures caused solely by `/tmp` versus `/private/tmp` path spelling.

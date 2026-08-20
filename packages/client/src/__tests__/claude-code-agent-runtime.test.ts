@@ -65,8 +65,8 @@ describe("ClaudeCodeAgentRuntime", () => {
     });
     expect(processes[0]?.args).toContain("--session-id");
     expect(processes[0]?.args).toContain(SESSION_ID);
-    expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("acceptEdits");
-    expect(argumentAfter(processes[0]?.args ?? [], "--disallowedTools")).toBe("WebFetch,WebSearch,mcp__*");
+    expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("bypassPermissions");
+    expect(processes[0]?.args).not.toContain("--settings");
     await runtime.close();
   });
 
@@ -161,6 +161,8 @@ describe("ClaudeCodeAgentRuntime", () => {
         HTTPS_PROXY: "https://proxy.example",
         NODE_EXTRA_CA_CERTS: "/certificate.pem",
         ANTHROPIC_API_KEY: "provider-key",
+        CLAUDE_CODE_OAUTH_TOKEN: "oauth-token",
+        CLAUDE_CODE_SKIP_PROMPT_HISTORY: "1",
         CLAUDE_CODE_USE_BEDROCK: "1",
         AWS_PROFILE: "provider",
         GOOGLE_APPLICATION_CREDENTIALS: "/credential.json",
@@ -173,6 +175,7 @@ describe("ClaudeCodeAgentRuntime", () => {
       HTTPS_PROXY: "https://proxy.example",
       NODE_EXTRA_CA_CERTS: "/certificate.pem",
       ANTHROPIC_API_KEY: "provider-key",
+      CLAUDE_CODE_OAUTH_TOKEN: "oauth-token",
       CLAUDE_CODE_USE_BEDROCK: "1",
       AWS_PROFILE: "provider",
       GOOGLE_APPLICATION_CREDENTIALS: "/credential.json",
@@ -240,8 +243,8 @@ function createRequest(eventSink: CreateAgentRuntimeRequest["eventSink"]): Creat
     eventSink,
     workspace: { cwd: "/workspace" },
     policy: {
-      fileSystem: "workspace-write",
-      network: "disabled",
+      fileSystem: "unrestricted",
+      network: "enabled",
       approvals: "never",
       tools: { mode: "provider-default" },
     },

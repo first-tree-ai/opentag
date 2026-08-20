@@ -102,7 +102,7 @@ export function AppRouter() {
           <Route path="/agents/new" element={<NewAgentPage />} />
           <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
           <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
-          <Route path="/account" element={<AccountPage />} />
+          <Route path="/account" element={<Navigate replace to="/settings/account" />} />
           <Route path="/settings" element={<Navigate replace to="account" />} />
           <Route path="/settings/:section" element={<SettingsPage />} />
         </Route>
@@ -517,7 +517,7 @@ function AppShell() {
               >
                 <Link
                   role="menuitem"
-                  to="/account"
+                  to="/settings/account"
                   onClick={() => {
                     setOpenMenu(undefined);
                     setNavigationOpen(false);
@@ -778,44 +778,6 @@ function AgentDetailPage() {
         </section>
       )}
     </AsyncState>
-  );
-}
-
-function AccountPage() {
-  const { me } = useTeam();
-  const navigate = useNavigate();
-  const [loggingOut, setLoggingOut] = useState(false);
-  const [error, setError] = useState<string>();
-  async function logout() {
-    setLoggingOut(true);
-    setError(undefined);
-    try {
-      await browserApi.logout();
-      navigate("/login", { replace: true });
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to sign out");
-      setLoggingOut(false);
-    }
-  }
-  return (
-    <Page title="Account" description="Review the identity used to access OpenTag.">
-      <DefinitionList
-        rows={[
-          ["Display name", me.user.displayName],
-          ["Email", me.user.email],
-        ]}
-      />
-      <div className="account-page-actions">
-        <button className="secondary" disabled={loggingOut} type="button" onClick={() => void logout()}>
-          {loggingOut ? "Signing out…" : "Sign out"}
-        </button>
-        {error ? (
-          <div className="notice error" role="alert">
-            {error}
-          </div>
-        ) : null}
-      </div>
-    </Page>
   );
 }
 

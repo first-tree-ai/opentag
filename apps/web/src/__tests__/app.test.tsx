@@ -889,6 +889,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Account settings" }));
     expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Save account profile" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();

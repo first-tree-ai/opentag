@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { browserApi } from "./api.js";
 
 const COMPUTER_POLL_INTERVAL_MS = 1_500;
+const CONNECT_CODE_EXPIRED_MESSAGE = "This Computer connection command expired. Generate a new one to continue.";
 
 export interface ComputerSetupProps {
   teamId: string;
@@ -21,7 +22,9 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
   const [bootstrapCommand, setBootstrapCommand] = useState<string>();
   const [error, setError] = useState<string>();
   const [waitingForComputer, setWaitingForComputer] = useState(false);
-  const baselineComputers = useRef<Map<string, string>>(new Map());
+  const [computerConnected, setComputerConnected] = useState(false);
+  const baselineConnections = useRef<Map<string, string | null>>(new Map());
+  const connectCodeExpiresAt = useRef(0);
   const connectAttempt = useRef(0);
   const mounted = useRef(false);
   const onConnectedRef = useRef(onConnected);
@@ -41,13 +44,15 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
     setError(undefined);
     try {
       const baseline = new Map(
-        (await browserApi.ownComputers()).computers.map((computer: Computer) => [computer.id, computer.lastSeenAt]),
+        (await browserApi.ownComputers()).computers.map((computer: Computer) => [computer.id, computer.connectedAt]),
       );
       if (!mounted.current || connectAttempt.current !== attempt) return;
-      baselineComputers.current = baseline;
       const issued = await browserApi.issueConnectCode(teamId);
       if (!mounted.current || connectAttempt.current !== attempt) return;
+      baselineConnections.current = baseline;
+      connectCodeExpiresAt.current = Date.parse(issued.issuedAt) + issued.expiresIn * 1_000;
       setBootstrapCommand(issued.bootstrapCommand);
+      setComputerConnected(false);
       setWaitingForComputer(true);
     } catch (cause) {
       if (!mounted.current || connectAttempt.current !== attempt) return;
@@ -59,17 +64,36 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
     if (!waitingForComputer) return;
     let active = true;
     let completed = false;
-    const timer = window.setInterval(() => {
+    let pollTimer = 0;
+    const expiryTimer = window.setTimeout(
+      () => {
+        if (!active || completed) return;
+        completed = true;
+        window.clearInterval(pollTimer);
+        setWaitingForComputer(false);
+        setComputerConnected(false);
+        setError(CONNECT_CODE_EXPIRED_MESSAGE);
+      },
+      Math.max(0, connectCodeExpiresAt.current - Date.now()),
+    );
+    pollTimer = window.setInterval(() => {
       void browserApi.ownComputers().then(
         (value) => {
           if (!active || completed) return;
           const connected = value.computers.some(
-            (computer: Computer) => baselineComputers.current.get(computer.id) !== computer.lastSeenAt,
+            (computer: Computer) =>
+              computer.connectionStatus === "online" &&
+              ((!baselineConnections.current.has(computer.id) && computer.connectedAt !== null) ||
+                (baselineConnections.current.has(computer.id) &&
+                  computer.connectedAt !== null &&
+                  baselineConnections.current.get(computer.id) !== computer.connectedAt)),
           );
           if (!connected) return;
           completed = true;
-          window.clearInterval(timer);
+          window.clearInterval(pollTimer);
+          window.clearTimeout(expiryTimer);
           setWaitingForComputer(false);
+          setComputerConnected(true);
           onConnectedRef.current?.();
         },
         (cause: unknown) => {
@@ -79,7 +103,8 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
     }, COMPUTER_POLL_INTERVAL_MS);
     return () => {
       active = false;
-      window.clearInterval(timer);
+      window.clearInterval(pollTimer);
+      window.clearTimeout(expiryTimer);
     };
   }, [waitingForComputer]);
 
@@ -95,7 +120,9 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
           <pre>
             <code>{bootstrapCommand}</code>
           </pre>
-          <p role="status">{waitingForComputer ? "Waiting for the Computer to connect…" : "Computer connected."}</p>
+          {waitingForComputer || computerConnected ? (
+            <p role="status">{waitingForComputer ? "Waiting for the Computer to connect…" : "Computer connected."}</p>
+          ) : null}
         </>
       ) : null}
       {error ? (

@@ -34,6 +34,7 @@ async function clickGenerate(): Promise<void> {
 describe("ComputerSetup", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.setSystemTime(connectedAt);
   });
 
   afterEach(() => {
@@ -62,7 +63,7 @@ describe("ComputerSetup", () => {
 
   it.each([
     ["new", [existingComputer, newComputer]],
-    ["refreshed", [{ ...existingComputer, lastSeenAt: "2026-08-20T00:00:02.000Z" }]],
+    ["refreshed", [{ ...existingComputer, connectedAt: "2026-08-20T00:00:02.000Z" }]],
   ])("detects a %s Computer and cleans up polling on completion", async (_kind, polledComputers) => {
     const onConnected = vi.fn();
     vi.spyOn(browserApi, "ownComputers")
@@ -76,7 +77,7 @@ describe("ComputerSetup", () => {
 
     render(<ComputerSetup teamId={teamId} onConnected={onConnected} />);
     await clickGenerate();
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(2);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_500);
@@ -87,9 +88,13 @@ describe("ComputerSetup", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("does not report an unchanged Computer as connected", async () => {
+  it("does not report an existing Computer heartbeat as connected", async () => {
     const onConnected = vi.fn();
-    vi.spyOn(browserApi, "ownComputers").mockResolvedValue({ computers: [existingComputer] });
+    vi.spyOn(browserApi, "ownComputers")
+      .mockResolvedValueOnce({ computers: [existingComputer] })
+      .mockResolvedValue({
+        computers: [{ ...existingComputer, lastSeenAt: "2026-08-20T00:00:10.000Z" }],
+      });
     vi.spyOn(browserApi, "issueConnectCode").mockResolvedValue({
       bootstrapCommand,
       expiresIn: 900,
@@ -104,7 +109,7 @@ describe("ComputerSetup", () => {
 
     expect(screen.getByRole("status").textContent).toBe("Waiting for the Computer to connect…");
     expect(onConnected).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(2);
   });
 
   it("cleans up polling when unmounted", async () => {
@@ -117,10 +122,35 @@ describe("ComputerSetup", () => {
 
     const view = render(<ComputerSetup teamId={teamId} />);
     await clickGenerate();
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(2);
 
     view.unmount();
 
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("stops polling when the connect code expires", async () => {
+    const onConnected = vi.fn();
+    vi.spyOn(browserApi, "ownComputers").mockResolvedValue({ computers: [] });
+    vi.spyOn(browserApi, "issueConnectCode").mockResolvedValue({
+      bootstrapCommand,
+      expiresIn: 2,
+      issuedAt: connectedAt,
+    });
+
+    render(<ComputerSetup teamId={teamId} onConnected={onConnected} />);
+    await clickGenerate();
+    expect(vi.getTimerCount()).toBe(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "This Computer connection command expired. Generate a new one to continue.",
+    );
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(onConnected).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -155,6 +185,6 @@ describe("ComputerSetup", () => {
 
     expect(screen.getByRole("alert").textContent).toBe("Unable to refresh Computers");
     expect(screen.getByRole("status").textContent).toBe("Waiting for the Computer to connect…");
-    expect(vi.getTimerCount()).toBe(1);
+    expect(vi.getTimerCount()).toBe(2);
   });
 });

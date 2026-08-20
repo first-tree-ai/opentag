@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   type AgentAdminConfig,
   type AgentDetail,
@@ -128,22 +129,42 @@ function runtimeConfigsEqual(
   );
 }
 
-function isAgentNameConflict(error: unknown): boolean {
+function creationIntentFingerprint(input: CreateAgentRequest): string {
+  const runtimeConfig = input.runtimeConfig;
+  const explicitRuntimeConfig =
+    runtimeConfig && Object.values(runtimeConfig).some((value) => value !== undefined)
+      ? {
+          allowedTools: runtimeConfig.allowedTools,
+          instructions: runtimeConfig.instructions,
+          maxDurationMs: runtimeConfig.maxDurationMs,
+          model: runtimeConfig.model,
+          reasoningEffort: runtimeConfig.reasoningEffort,
+        }
+      : undefined;
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        computerId: input.computerId,
+        displayName: input.displayName,
+        name: input.name,
+        runtimeConfig: explicitRuntimeConfig,
+        runtimeProvider: input.runtimeProvider,
+      }),
+    )
+    .digest("hex");
+}
+
+function uniqueConstraintName(error: unknown): string | undefined {
   let current = error;
   const visited = new Set<unknown>();
   while (typeof current === "object" && current !== null && !visited.has(current)) {
     visited.add(current);
-    if (
-      "code" in current &&
-      current.code === "23505" &&
-      "constraint_name" in current &&
-      current.constraint_name === "agents_team_name_active_unique"
-    ) {
-      return true;
+    if ("code" in current && current.code === "23505" && "constraint_name" in current) {
+      return typeof current.constraint_name === "string" ? current.constraint_name : undefined;
     }
     current = "cause" in current ? current.cause : undefined;
   }
-  return false;
+  return undefined;
 }
 
 export class AgentService {
@@ -178,6 +199,7 @@ export class AgentService {
   async createForTeam(callerUserId: string, teamId: string, rawInput: CreateAgentRequest): Promise<AgentAdminConfig> {
     const input = CreateAgentRequestSchema.parse(rawInput);
     const runtimeConfig = resolveAgentRuntimeConfig(input.runtimeConfig);
+    const intentFingerprint = input.creationIntentId ? creationIntentFingerprint(input) : undefined;
     try {
       return await this.#database.transaction(async (transaction) => {
         await this.#requireTeamMembershipForMutation(transaction, callerUserId, teamId, "admin");
@@ -202,6 +224,8 @@ export class AgentService {
           .values({
             teamId,
             managerUserId: callerUserId,
+            creationIntentId: input.creationIntentId,
+            creationIntentFingerprint: intentFingerprint,
             computerId: input.computerId,
             name: input.name,
             displayName: input.displayName,
@@ -219,7 +243,17 @@ export class AgentService {
         return toAgentAdminConfig(created, createdRuntimeConfig);
       });
     } catch (error) {
-      if (isAgentNameConflict(error)) {
+      const constraintName = uniqueConstraintName(error);
+      if (constraintName && input.creationIntentId) {
+        const replay = await this.#replayCreationIntent(
+          callerUserId,
+          teamId,
+          input.creationIntentId,
+          creationIntentFingerprint(input),
+        );
+        if (replay) return replay;
+      }
+      if (constraintName === "agents_team_name_active_unique") {
         throw new AgentServiceError(
           "AGENT_NAME_CONFLICT",
           "deterministic",
@@ -229,6 +263,47 @@ export class AgentService {
       }
       throw error;
     }
+  }
+
+  async #replayCreationIntent(
+    callerUserId: string,
+    teamId: string,
+    creationIntentId: string,
+    intentFingerprint: string,
+  ): Promise<AgentAdminConfig | undefined> {
+    return this.#database.transaction(async (transaction) => {
+      await this.#requireTeamMembershipForMutation(transaction, callerUserId, teamId, "admin");
+      const [agent] = await transaction
+        .select()
+        .from(agents)
+        .where(
+          and(
+            eq(agents.teamId, teamId),
+            eq(agents.managerUserId, callerUserId),
+            eq(agents.creationIntentId, creationIntentId),
+          ),
+        )
+        .limit(1);
+      if (!agent) return undefined;
+      const [storedRuntimeConfig] = await transaction
+        .select()
+        .from(agentRuntimeConfigs)
+        .where(eq(agentRuntimeConfigs.agentId, agent.id))
+        .limit(1);
+      const matchesIntent =
+        agent.status !== "deleted" &&
+        agent.creationIntentFingerprint === intentFingerprint &&
+        storedRuntimeConfig !== undefined;
+      if (!matchesIntent) {
+        throw new AgentServiceError(
+          "AGENT_CREATION_INTENT_CONFLICT",
+          "deterministic",
+          "This Agent creation intent was already used for a different request",
+          409,
+        );
+      }
+      return toAgentAdminConfig(agent, storedRuntimeConfig);
+    });
   }
 
   async listForTeam(callerUserId: string, teamId: string): Promise<ListAgentsResponse> {

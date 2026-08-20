@@ -95,7 +95,7 @@ function deferred<T>() {
 }
 
 describe("Agent persistence and authorization", () => {
-  it("installs the Agent enum, revision check, active-name index, and restrictive foreign keys", async () => {
+  it("installs Agent constraints, creation-intent uniqueness, and restrictive foreign keys", async () => {
     const value = await fixture();
     try {
       const enumValues = await value.sql<{ enumlabel: string }[]>`
@@ -137,6 +137,7 @@ describe("Agent persistence and authorization", () => {
             conname: "agents_manager_computer_owner_fk",
             definition: expect.stringContaining("ON DELETE RESTRICT"),
           }),
+          expect.objectContaining({ conname: "agents_creation_intent_pair" }),
         ]),
       );
 
@@ -148,6 +149,15 @@ describe("Agent persistence and authorization", () => {
       expect(activeNameIndex?.indexdef).toContain("UNIQUE INDEX");
       expect(activeNameIndex?.indexdef).toContain("lower(name)");
       expect(activeNameIndex?.indexdef).toContain("status <> 'deleted'::agent_status");
+
+      const [creationIntentIndex] = await value.sql<{ indexdef: string }[]>`
+        select indexdef
+        from pg_indexes
+        where schemaname = 'public' and indexname = 'agents_creation_intent_unique'
+      `;
+      expect(creationIntentIndex?.indexdef).toContain("UNIQUE INDEX");
+      expect(creationIntentIndex?.indexdef).toContain("team_id, manager_user_id, creation_intent_id");
+      expect(creationIntentIndex?.indexdef).toContain("creation_intent_id IS NOT NULL");
 
       const runtimeConfigConstraints = await value.sql<{ conname: string; definition: string }[]>`
         select conname, pg_get_constraintdef(oid) as definition
@@ -201,6 +211,112 @@ describe("Agent persistence and authorization", () => {
         viewerCapabilities: { canManage: true },
       });
       await expect(value.service.getConfigById(value.bootstrap.userId, created.id)).resolves.toEqual(created);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("replays one creation intent without creating a second Agent", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const input = {
+        ...createInput(computer.id),
+        creationIntentId: "a3adbe5e-8e8e-4ac2-a013-b026684ab185",
+        runtimeConfig: { instructions: "Review carefully", model: "gpt-5.6" },
+      };
+      const created = await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, input);
+      await expect(value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, input)).resolves.toEqual(
+        created,
+      );
+      await expect(value.service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).resolves.toMatchObject({
+        agents: [{ id: created.id }],
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("serializes concurrent submissions of one creation intent", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const input = {
+        ...createInput(computer.id),
+        creationIntentId: "a3adbe5e-8e8e-4ac2-a013-b026684ab185",
+      };
+      const [left, right] = await Promise.all([
+        value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, input),
+        value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, input),
+      ]);
+      expect(right).toEqual(left);
+      await expect(value.service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).resolves.toMatchObject({
+        agents: [{ id: left.id }],
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("replays the original intent after the Agent changes", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const input = {
+        ...createInput(computer.id),
+        creationIntentId: "a3adbe5e-8e8e-4ac2-a013-b026684ab185",
+      };
+      const created = await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, input);
+      const updated = await value.service.updateById(value.bootstrap.userId, created.id, {
+        displayName: "Updated elsewhere",
+        expectedRevision: 1,
+        runtimeConfig: { instructions: "Updated instructions" },
+      });
+      await expect(value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, input)).resolves.toEqual(
+        updated,
+      );
+      await expect(
+        value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, { ...input, runtimeConfig: {} }),
+      ).resolves.toEqual(updated);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("rejects reuse of a creation intent for different Agent inputs", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const creationIntentId = "a3adbe5e-8e8e-4ac2-a013-b026684ab185";
+      await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, {
+        ...createInput(computer.id),
+        creationIntentId,
+      });
+      await expect(
+        value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, {
+          ...createInput(computer.id, "different-agent"),
+          creationIntentId,
+        }),
+      ).rejects.toMatchObject({ code: "AGENT_CREATION_INTENT_CONFLICT", statusCode: 409 });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("keeps ordinary same-name creation conflicts distinct from intent replay", async () => {
+    const value = await fixture();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, {
+        ...createInput(computer.id),
+        creationIntentId: "a3adbe5e-8e8e-4ac2-a013-b026684ab185",
+      });
+      await expect(
+        value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, {
+          ...createInput(computer.id),
+          creationIntentId: "e778fc37-5052-4c83-99cc-bfe1f4aa1bd9",
+        }),
+      ).rejects.toMatchObject({ code: "AGENT_NAME_CONFLICT", statusCode: 409 });
     } finally {
       await value.sql.end();
     }

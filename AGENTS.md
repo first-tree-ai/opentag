@@ -42,6 +42,8 @@ pnpm check
 pnpm build
 pnpm typecheck
 pnpm test
+pnpm --filter @opentag/client test:agent-runtime:coverage
+pnpm test:coverage
 ```
 
 Run directly affected tests during development and all commands above before opening a pull request. Unit tests must not

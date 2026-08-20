@@ -24,10 +24,20 @@ pnpm check
 pnpm build
 pnpm typecheck
 pnpm test
+pnpm --filter @opentag/client test:agent-runtime:coverage
+pnpm test:coverage
 pnpm --filter @opentag/server test:integration
 ```
 
 Use `pnpm lint` for lint-only feedback. Use `pnpm format` to apply Biome formatting.
+
+`pnpm test:coverage` builds the workspaces and measures the offline unit tests for CLI, Web, Shared, Client, and Server.
+It includes production source files that tests do not import, but excludes root `scripts/`, Server PostgreSQL integration
+tests, and Provider end-to-end tests. The unified report is a measurement baseline for finding and prioritizing gaps; it
+does not yet enforce repository-wide or per-workspace coverage thresholds. Add regression thresholds only after the
+measurement is stable across repeated runs. Agent Runtime keeps its separate 100% gate in
+`packages/client/vitest.agent-runtime.config.ts`, enforced by
+`pnpm --filter @opentag/client test:agent-runtime:coverage`.
 
 The required pull request check is the stable `CI` fan-in job. It covers the commands above, source and staging CLI
 tarball installation, a production-container health smoke, and the supported Node.js lines. Full validation and releases

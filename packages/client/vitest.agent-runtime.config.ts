@@ -13,6 +13,9 @@ export default defineConfig({
       "src/__tests__/codex-agent-runtime-exhaustive.test.ts",
       "src/__tests__/codex-app-server.test.ts",
       "src/__tests__/codex-app-server-exhaustive.test.ts",
+      "src/__tests__/pi-agent-runtime.test.ts",
+      "src/__tests__/pi-agent-runtime-exhaustive.test.ts",
+      "src/__tests__/pi-rpc-wire.test.ts",
     ],
     maxWorkers: 1,
     coverage: {
@@ -24,6 +27,8 @@ export default defineConfig({
         "src/providers/claude-code/process-wire.ts",
         "src/providers/codex/agent-runtime.ts",
         "src/providers/codex/app-server-wire.ts",
+        "src/providers/pi/agent-runtime.ts",
+        "src/providers/pi/rpc-wire.ts",
       ],
       reporter: ["text", "json", "json-summary", "html"],
       thresholds: {

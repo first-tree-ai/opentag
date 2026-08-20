@@ -124,6 +124,23 @@ export {
   type InteractiveCodexAppServerClient,
 } from "./providers/codex/app-server-wire.js";
 export {
+  PI_AGENT_RUNTIME_MANIFEST,
+  PiAgentRuntime,
+  PiAgentRuntimeFactory,
+  type PiAgentRuntimeFactoryOptions,
+  piAgentRuntimeEnvironment,
+} from "./providers/pi/agent-runtime.js";
+export {
+  PI_RPC_MAX_LINE_BYTES,
+  PI_RPC_MAX_STDERR_BYTES,
+  PI_RPC_REQUEST_TIMEOUT_MS,
+  type PiRpcClient,
+  PiRpcError,
+  PiRpcProcess,
+  type PiRpcProcessSpawnOptions,
+  type PiRpcSpawnOptions,
+} from "./providers/pi/rpc-wire.js";
+export {
   AdmissionController,
   type AdmissionDecision,
   type AdmissionLimits,

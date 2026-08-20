@@ -77,7 +77,7 @@ supported.
 Configure `OPENTAG_GOOGLE_CLIENT_ID` and `OPENTAG_GOOGLE_CLIENT_SECRET` to enable Google sign-in, then open
 `http://127.0.0.1:8000/`. Active Team members share the same App Shell and member-safe views; Team Admins additionally
 manage Agents, runtime configuration, IM bindings, and Local Computer setup. The Computers page lists timestamped Team
-Computer observations, and Admins can generate a short-lived install/login command. **Settings → Members** lets Team
+Computer observations, and Admins can generate a short-lived install/login command. **Settings → Team** lets Team
 Admins create, copy, and rotate the bearer invitation link. Invitees can preview the link before signing in; after
 redemption, the Web selects the joined Team. Membership role and lifecycle changes remain explicit CLI operations:
 

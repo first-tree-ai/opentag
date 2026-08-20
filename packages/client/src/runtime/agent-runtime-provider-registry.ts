@@ -109,6 +109,7 @@ export class AgentRuntimeProviderRegistry {
       probe.waiters -= 1;
       if (probe.waiters === 0 && !probe.settled) {
         probe.controller.abort(new Error(`Agent Runtime provider probe has no waiters: ${providerId}`));
+        if (this.#probes.get(providerId) === probe) this.#probes.delete(providerId);
       }
     }
   }

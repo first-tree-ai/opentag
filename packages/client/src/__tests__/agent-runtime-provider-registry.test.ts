@@ -114,6 +114,39 @@ describe("AgentRuntimeProviderRegistry", () => {
     expect(providers.isReady("codex")).toBe(true);
   });
 
+  it("starts a fresh probe while a cancelled no-waiter probe is still draining", async () => {
+    let releaseFirst!: () => void;
+    let firstSettled = false;
+    const firstDrain = new Promise<void>((resolveDrain) => {
+      releaseFirst = resolveDrain;
+    });
+    const probe = vi.fn(async (request: Parameters<AgentRuntimeFactory["probe"]>[0]) => {
+      if (probe.mock.calls.length === 1) {
+        await new Promise<void>((resolveAborted) => {
+          request.signal?.addEventListener("abort", () => resolveAborted(), { once: true });
+        });
+        await firstDrain;
+        firstSettled = true;
+        throw request.signal?.reason;
+      }
+      return { ready: true as const, issues: [] };
+    });
+    const providers = new AgentRuntimeProviderRegistry([registration(factory("codex", probe))]);
+    const firstController = new AbortController();
+    const first = providers.refresh("codex", firstController.signal);
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledOnce());
+
+    firstController.abort(new Error("stop first refresh"));
+    await expect(first).rejects.toThrow("stop first refresh");
+    await expect(providers.refresh("codex")).resolves.toBe(true);
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(providers.isReady("codex")).toBe(true);
+
+    releaseFirst();
+    await vi.waitFor(() => expect(firstSettled).toBe(true));
+    expect(providers.isReady("codex")).toBe(true);
+  });
+
   it("fails closed for missing registrations, artifact verification errors, and caller abort", async () => {
     const empty = new AgentRuntimeProviderRegistry();
     await expect(empty.ensureReady("missing")).rejects.toThrow("not registered");

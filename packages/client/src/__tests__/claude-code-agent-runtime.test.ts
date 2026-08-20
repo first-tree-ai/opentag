@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRuntimeEvent, CreateAgentRuntimeRequest } from "../agent-runtime/types.js";
 import {
@@ -66,7 +67,30 @@ describe("ClaudeCodeAgentRuntime", () => {
     expect(processes[0]?.args).toContain("--session-id");
     expect(processes[0]?.args).toContain(SESSION_ID);
     expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("bypassPermissions");
+    expect(processes[0]?.args).toContain("--strict-mcp-config");
+    const mcpConfig = argumentAfter(processes[0]?.args ?? [], "--mcp-config");
+    expect(mcpConfig).toContain("opentag-claude-mcp-");
+    await expect(readFile(mcpConfig ?? "", "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect(processes[0]?.args).not.toContain("--allowedTools");
     expect(processes[0]?.args).not.toContain("--settings");
+    await runtime.close();
+  });
+
+  it("allows only the exact OpenTag hosted tools through the strict MCP bridge", async () => {
+    const processes: ScriptedClaudeCodeProcess[] = [];
+    const request = createRequest(() => undefined);
+    const runtime = await claudeFactory(processes, "complete").create({
+      ...request,
+      hostedTools: {
+        definitions: [{ name: "opentag_message_reply", inputSchema: { type: "object" } }],
+        handler: async () => ({ success: true, content: [] }),
+      },
+    });
+
+    await runtime.prompt({ runId: "run-hosted", input: input("reply") });
+    expect(processes[0]?.args).toContain("--allowedTools");
+    expect(processes[0]?.args).toContain("mcp__opentag__opentag_message_reply");
+    expect(processes[0]?.args).not.toContain("mcp__opentag__Read");
     await runtime.close();
   });
 
@@ -169,6 +193,7 @@ describe("ClaudeCodeAgentRuntime", () => {
         NODE_EXTRA_CA_CERTS: "/certificate.pem",
         ANTHROPIC_API_KEY: "provider-key",
         CLAUDE_CODE_OAUTH_TOKEN: "oauth-token",
+        CLAUDE_CONFIG_DIR: "/home/provider/.claude",
         CLAUDE_CODE_SKIP_PROMPT_HISTORY: "1",
         CLAUDE_CODE_USE_BEDROCK: "1",
         AWS_PROFILE: "provider",
@@ -183,6 +208,7 @@ describe("ClaudeCodeAgentRuntime", () => {
       NODE_EXTRA_CA_CERTS: "/certificate.pem",
       ANTHROPIC_API_KEY: "provider-key",
       CLAUDE_CODE_OAUTH_TOKEN: "oauth-token",
+      CLAUDE_CONFIG_DIR: "/home/provider/.claude",
       CLAUDE_CODE_USE_BEDROCK: "1",
       AWS_PROFILE: "provider",
       GOOGLE_APPLICATION_CREDENTIALS: "/credential.json",

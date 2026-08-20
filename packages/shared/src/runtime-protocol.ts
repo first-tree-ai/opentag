@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { ComputerPlatformSchema } from "./computer.js";
+import { AGENT_RUNTIME_PROVIDERS, AgentRuntimeProviderSchema } from "./agent.js";
+import { ComputerPlatformSchema, ProviderReadinessStatusSchema } from "./computer.js";
 import { ErrorCodeSchema } from "./errors.js";
 
 export const RUNTIME_PROTOCOL_VERSION = 1 as const;
@@ -54,6 +55,26 @@ export const RuntimeClientCapabilitiesSchema = z
   })
   .strict();
 
+export const RuntimeProviderReadinessObservationSchema = z
+  .object({
+    provider: AgentRuntimeProviderSchema,
+    status: ProviderReadinessStatusSchema,
+  })
+  .strict();
+
+export const RuntimeProviderReadinessCollectionSchema = z
+  .array(RuntimeProviderReadinessObservationSchema)
+  .max(AGENT_RUNTIME_PROVIDERS.length)
+  .superRefine(validateCanonicalProviders);
+
+export const RuntimeProviderReadinessNegotiationSchema = z
+  .object({
+    version: z.literal(1),
+    providers: z.array(AgentRuntimeProviderSchema).max(AGENT_RUNTIME_PROVIDERS.length),
+  })
+  .strict()
+  .superRefine((negotiation, context) => validateCanonicalProviderIds(negotiation.providers, context));
+
 export const ServerWelcomeFrameSchema = z
   .object({
     type: z.literal("server:welcome"),
@@ -61,6 +82,7 @@ export const ServerWelcomeFrameSchema = z
     capabilities: RuntimeCapabilitiesSchema,
     heartbeatIntervalMs: RuntimeHeartbeatIntervalMsSchema,
     heartbeatTimeoutMs: RuntimeHeartbeatTimeoutMsSchema,
+    providerReadiness: RuntimeProviderReadinessNegotiationSchema.optional(),
   })
   .strict()
   .superRefine((frame, context) => {
@@ -110,6 +132,7 @@ export const ComputerRegisterFrameSchema = z
     arch: z.string().trim().min(1).max(64),
     clientVersion: z.string().trim().min(1).max(64),
     capabilities: RuntimeClientCapabilitiesSchema.default({ imMessageTool: 0 }),
+    providerReadiness: RuntimeProviderReadinessCollectionSchema.optional(),
   })
   .strict();
 export const ComputerRegisterResultFrameSchema = z
@@ -132,6 +155,7 @@ export const HeartbeatFrameSchema = z
     computerId: z.string().uuid(),
     instanceId: z.string().uuid(),
     capabilities: RuntimeClientCapabilitiesSchema.default({ imMessageTool: 0 }),
+    providerReadiness: RuntimeProviderReadinessCollectionSchema.optional(),
   })
   .strict();
 export const HeartbeatResultFrameSchema = z
@@ -174,6 +198,9 @@ export const ServerRuntimeFrameSchema = z.discriminatedUnion("type", [
 export type ServerWelcomeFrame = z.infer<typeof ServerWelcomeFrameSchema>;
 export type RuntimeCapabilities = z.infer<typeof RuntimeCapabilitiesSchema>;
 export type RuntimeClientCapabilities = z.infer<typeof RuntimeClientCapabilitiesSchema>;
+export type RuntimeProviderReadinessObservation = z.infer<typeof RuntimeProviderReadinessObservationSchema>;
+export type RuntimeProviderReadinessCollection = z.infer<typeof RuntimeProviderReadinessCollectionSchema>;
+export type RuntimeProviderReadinessNegotiation = z.infer<typeof RuntimeProviderReadinessNegotiationSchema>;
 export type RuntimeFrameEnvelope = z.infer<typeof RuntimeFrameEnvelopeSchema>;
 export type AuthFrame = z.infer<typeof AuthFrameSchema>;
 export type AuthResultFrame = z.infer<typeof AuthResultFrameSchema>;
@@ -187,4 +214,37 @@ export type ServerRuntimeFrame = z.infer<typeof ServerRuntimeFrameSchema>;
 
 export function runtimeFrameByteLength(serializedFrame: string): number {
   return new TextEncoder().encode(serializedFrame).byteLength;
+}
+
+function validateCanonicalProviders(
+  observations: readonly { provider: (typeof AGENT_RUNTIME_PROVIDERS)[number] }[],
+  context: z.RefinementCtx,
+): void {
+  validateCanonicalProviderIds(
+    observations.map((observation) => observation.provider),
+    context,
+  );
+}
+
+function validateCanonicalProviderIds(
+  providers: readonly (typeof AGENT_RUNTIME_PROVIDERS)[number][],
+  context: z.RefinementCtx,
+): void {
+  const seen = new Set<string>();
+  for (const [index, provider] of providers.entries()) {
+    if (seen.has(provider)) {
+      context.addIssue({ code: "custom", path: [index], message: "Provider readiness must be unique" });
+    }
+    seen.add(provider);
+    if (
+      index > 0 &&
+      AGENT_RUNTIME_PROVIDERS.indexOf(provider) < AGENT_RUNTIME_PROVIDERS.indexOf(providers[index - 1] ?? "codex")
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: [index],
+        message: "Provider readiness must use canonical Provider order",
+      });
+    }
+  }
 }

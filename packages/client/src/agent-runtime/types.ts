@@ -105,6 +105,7 @@ export type AgentRunErrorCode =
   | "event_delivery_failed"
   | "provider_error"
   | "provider_protocol_error"
+  | "provider_start_failed"
   | "runtime_closed"
   | "run_aborted"
   | "run_cancelled";

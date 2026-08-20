@@ -9,6 +9,7 @@ import { eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agentRuntimeConfigs, agents, imBindings, sessions } from "../../db/schema/index.js";
 import { EffectiveRuntimeSnapshotAssemblerError } from "./errors.js";
+import { isServerAdmittedAgentRuntimeProvider, serverAgentRuntimeProviderPolicy } from "./provider-admission.js";
 
 interface EffectiveRuntimeSnapshotAuthority {
   agentStatus: string;
@@ -44,9 +45,10 @@ export class EffectiveRuntimeSnapshotAssembler {
     ) {
       throw new EffectiveRuntimeSnapshotAssemblerError("AUTHORITY_INACTIVE");
     }
-    if (authority.runtimeProvider !== "codex") {
+    if (!isServerAdmittedAgentRuntimeProvider(authority.runtimeProvider)) {
       throw new EffectiveRuntimeSnapshotAssemblerError("UNSUPPORTED_PROVIDER");
     }
+    const providerPolicy = serverAgentRuntimeProviderPolicy(authority.runtimeProvider);
     if (authority.runtimeConfig === null) {
       throw new EffectiveRuntimeSnapshotAssemblerError("RUNTIME_CONFIG_MISSING");
     }
@@ -70,8 +72,8 @@ export class EffectiveRuntimeSnapshotAssembler {
       config.reasoningEffort,
       null,
       config.allowedTools,
-      "never",
-      false,
+      providerPolicy.execution.approvalPolicy,
+      providerPolicy.execution.networkAccess,
       config.maxDurationMs,
     ]);
     const snapshot = EffectiveRuntimeSnapshotSchema.safeParse({
@@ -80,7 +82,7 @@ export class EffectiveRuntimeSnapshotAssembler {
         session: { sequence: config.revision, id: sessionRevisionId },
       },
       agentId: authority.agentId,
-      provider: "codex",
+      provider: authority.runtimeProvider,
       ...(config.model !== null ? { model: config.model } : {}),
       ...(config.reasoningEffort !== null ? { reasoningEffort: config.reasoningEffort } : {}),
       instructions: {
@@ -88,7 +90,7 @@ export class EffectiveRuntimeSnapshotAssembler {
         agent: config.instructions,
       },
       allowedTools: config.allowedTools,
-      execution: { approvalPolicy: "never", networkAccess: false },
+      execution: providerPolicy.execution,
       workspace: { workspaceId: authority.agentId, mode: "empty_on_create", sharing: "agent" },
       ...(config.maxDurationMs !== null ? { budget: { maxDurationMs: config.maxDurationMs } } : {}),
     });

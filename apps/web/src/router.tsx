@@ -104,26 +104,32 @@ function useInvitationState(): InvitationState {
 }
 
 export function AppRouter() {
+  const [publishedInvitations, setPublishedInvitations] = useState<Record<string, TeamInvitation>>({});
+  const publishInvitation = useCallback((teamId: string, invitation: TeamInvitation) => {
+    setPublishedInvitations((current) => ({ ...current, [teamId]: invitation }));
+  }, []);
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
-      <Route path="/invites/:token" element={<InvitePage />} />
-      <Route path="/teams/new" element={<NewTeamPage />} />
-      <Route element={<AuthenticatedTeamGate />}>
-        <Route path="/onboarding" element={<OnboardingPage />} />
-        <Route element={<AppShell />}>
-          <Route index element={<Navigate replace to="/agents" />} />
-          <Route path="/agents" element={<AgentsPage />} />
-          <Route path="/agents/new" element={<NewAgentPage />} />
-          <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
-          <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
-          <Route path="/account" element={<AccountPage />} />
-          <Route path="/settings" element={<Navigate replace to="account" />} />
-          <Route path="/settings/:section" element={<SettingsPage />} />
+    <InvitationContext value={{ publishedByTeam: publishedInvitations, publish: publishInvitation }}>
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/invites/:token" element={<InvitePage />} />
+        <Route path="/teams/new" element={<NewTeamPage />} />
+        <Route element={<AuthenticatedTeamGate />}>
+          <Route path="/onboarding" element={<OnboardingPage />} />
+          <Route element={<AppShell />}>
+            <Route index element={<Navigate replace to="/agents" />} />
+            <Route path="/agents" element={<AgentsPage />} />
+            <Route path="/agents/new" element={<NewAgentPage />} />
+            <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
+            <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
+            <Route path="/account" element={<AccountPage />} />
+            <Route path="/settings" element={<Navigate replace to="account" />} />
+            <Route path="/settings/:section" element={<SettingsPage />} />
+          </Route>
         </Route>
-      </Route>
-      <Route path="*" element={<NotFoundPage />} />
-    </Routes>
+        <Route path="*" element={<NotFoundPage />} />
+      </Routes>
+    </InvitationContext>
   );
 }
 
@@ -322,7 +328,6 @@ function AppShell() {
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [openMenu, setOpenMenu] = useState<"team" | "account">();
   const [invitationOpen, setInvitationOpen] = useState(false);
-  const [publishedInvitations, setPublishedInvitations] = useState<Record<string, TeamInvitation>>({});
   const [teamQuery, setTeamQuery] = useState("");
   const [loggingOut, setLoggingOut] = useState(false);
   const [accountError, setAccountError] = useState<string>();
@@ -393,212 +398,205 @@ function AppShell() {
       setLoggingOut(false);
     }
   }
-  const publishInvitation = useCallback((teamId: string, invitation: TeamInvitation) => {
-    setPublishedInvitations((current) => ({ ...current, [teamId]: invitation }));
-  }, []);
   return (
-    <InvitationContext value={{ publishedByTeam: publishedInvitations, publish: publishInvitation }}>
-      <div className="shell">
-        {navigationOpen ? (
-          <button
-            aria-label="Close navigation"
-            className="sidebar-backdrop is-visible"
-            type="button"
-            onClick={() => setNavigationOpen(false)}
-          />
-        ) : null}
-        <aside className={`sidebar${navigationOpen ? " is-open" : ""}`} aria-label="Primary navigation">
-          <div className="sidebar-top">
-            <Link className="brand" to="/agents" onClick={() => setNavigationOpen(false)}>
-              OpenTag
-            </Link>
-            <div className="team-menu" ref={teamMenuRef}>
-              <button
-                aria-controls="team-menu-popover"
-                aria-expanded={openMenu === "team"}
-                aria-haspopup="dialog"
-                className="team-switcher"
-                ref={teamTriggerRef}
-                type="button"
-                onClick={() => {
-                  setTeamQuery("");
-                  setOpenMenu((value) => (value === "team" ? undefined : "team"));
-                }}
-              >
-                <span className="team-avatar" aria-hidden="true">
-                  {initials(membership.teamDisplayName)}
-                </span>
-                <span>{membership.teamDisplayName}</span>
-                <span className="team-menu-chevron" aria-hidden="true">
-                  {openMenu === "team" ? "⌃" : "⌄"}
-                </span>
-              </button>
-              {openMenu === "team" ? (
-                <section aria-label="Switch Team" className="team-menu-popover" id="team-menu-popover" role="dialog">
-                  <span className="menu-label">Switch Team</span>
-                  {me.memberships.length > 6 ? (
-                    <label className="team-search">
-                      <span className="visually-hidden">Search Teams</span>
-                      <input
-                        placeholder="Search Teams"
-                        type="search"
-                        value={teamQuery}
-                        onChange={(event) => setTeamQuery(event.currentTarget.value)}
-                      />
-                    </label>
-                  ) : null}
-                  <div className="team-menu-list">
-                    {filteredMemberships.map((item: MeMembership) => {
-                      const current = item.teamId === membership.teamId;
-                      return (
-                        <button
-                          aria-current={current ? "true" : undefined}
-                          className="team-menu-option"
-                          key={item.teamId}
-                          type="button"
-                          onClick={() => {
-                            setOpenMenu(undefined);
-                            setNavigationOpen(false);
-                            if (!current) selectTeam(item.teamId);
-                          }}
-                        >
-                          <span className="team-avatar" aria-hidden="true">
-                            {initials(item.teamDisplayName)}
-                          </span>
-                          <span className="team-option-copy">
-                            <strong>{item.teamDisplayName}</strong>
-                            <small>{titleCase(item.role)}</small>
-                          </span>
-                          {current ? (
-                            <span className="team-option-check" aria-hidden="true">
-                              ✓
-                            </span>
-                          ) : null}
-                        </button>
-                      );
-                    })}
-                    {filteredMemberships.length === 0 ? (
-                      <span className="team-menu-empty">No matching Teams</span>
-                    ) : null}
-                  </div>
-                  <div className="team-menu-actions">
-                    {membership.role === "admin" ? (
+    <div className="shell">
+      {navigationOpen ? (
+        <button
+          aria-label="Close navigation"
+          className="sidebar-backdrop is-visible"
+          type="button"
+          onClick={() => setNavigationOpen(false)}
+        />
+      ) : null}
+      <aside className={`sidebar${navigationOpen ? " is-open" : ""}`} aria-label="Primary navigation">
+        <div className="sidebar-top">
+          <Link className="brand" to="/agents" onClick={() => setNavigationOpen(false)}>
+            OpenTag
+          </Link>
+          <div className="team-menu" ref={teamMenuRef}>
+            <button
+              aria-controls="team-menu-popover"
+              aria-expanded={openMenu === "team"}
+              aria-haspopup="dialog"
+              className="team-switcher"
+              ref={teamTriggerRef}
+              type="button"
+              onClick={() => {
+                setTeamQuery("");
+                setOpenMenu((value) => (value === "team" ? undefined : "team"));
+              }}
+            >
+              <span className="team-avatar" aria-hidden="true">
+                {initials(membership.teamDisplayName)}
+              </span>
+              <span>{membership.teamDisplayName}</span>
+              <span className="team-menu-chevron" aria-hidden="true">
+                {openMenu === "team" ? "⌃" : "⌄"}
+              </span>
+            </button>
+            {openMenu === "team" ? (
+              <section aria-label="Switch Team" className="team-menu-popover" id="team-menu-popover" role="dialog">
+                <span className="menu-label">Switch Team</span>
+                {me.memberships.length > 6 ? (
+                  <label className="team-search">
+                    <span className="visually-hidden">Search Teams</span>
+                    <input
+                      placeholder="Search Teams"
+                      type="search"
+                      value={teamQuery}
+                      onChange={(event) => setTeamQuery(event.currentTarget.value)}
+                    />
+                  </label>
+                ) : null}
+                <div className="team-menu-list">
+                  {filteredMemberships.map((item: MeMembership) => {
+                    const current = item.teamId === membership.teamId;
+                    return (
                       <button
-                        className="team-menu-action"
+                        aria-current={current ? "true" : undefined}
+                        className="team-menu-option"
+                        key={item.teamId}
                         type="button"
                         onClick={() => {
                           setOpenMenu(undefined);
                           setNavigationOpen(false);
-                          setInvitationOpen(true);
+                          if (!current) selectTeam(item.teamId);
                         }}
                       >
-                        <span aria-hidden="true">↗</span>
-                        Invite people
+                        <span className="team-avatar" aria-hidden="true">
+                          {initials(item.teamDisplayName)}
+                        </span>
+                        <span className="team-option-copy">
+                          <strong>{item.teamDisplayName}</strong>
+                          <small>{titleCase(item.role)}</small>
+                        </span>
+                        {current ? (
+                          <span className="team-option-check" aria-hidden="true">
+                            ✓
+                          </span>
+                        ) : null}
                       </button>
-                    ) : null}
-                    <Link
+                    );
+                  })}
+                  {filteredMemberships.length === 0 ? <span className="team-menu-empty">No matching Teams</span> : null}
+                </div>
+                <div className="team-menu-actions">
+                  {membership.role === "admin" ? (
+                    <button
                       className="team-menu-action"
-                      to="/teams/new"
+                      type="button"
                       onClick={() => {
                         setOpenMenu(undefined);
                         setNavigationOpen(false);
+                        setInvitationOpen(true);
                       }}
                     >
-                      <span aria-hidden="true">＋</span>
-                      Create Team
-                    </Link>
-                  </div>
-                </section>
-              ) : null}
-            </div>
-            <nav aria-label="Workspace" className="primary-nav">
-              <NavLink to="/agents" onClick={() => setNavigationOpen(false)}>
-                Agents
-              </NavLink>
-              <span className="nav-placeholder" aria-disabled="true">
-                Tasks
-              </span>
-              <NavLink to="/settings" onClick={() => setNavigationOpen(false)}>
-                Settings
-              </NavLink>
-            </nav>
-          </div>
-          <div className="sidebar-bottom">
-            <div className="account-menu" ref={accountMenuRef}>
-              <button
-                aria-label="Account menu"
-                aria-controls="account-menu-popover"
-                aria-expanded={openMenu === "account"}
-                aria-haspopup="menu"
-                className="account-row"
-                ref={accountTriggerRef}
-                type="button"
-                onClick={() => setOpenMenu((value) => (value === "account" ? undefined : "account"))}
-              >
-                <span className="account-avatar" aria-hidden="true">
-                  {initials(me.user.displayName)}
-                </span>
-                <span className="account-copy">
-                  <strong>{me.user.displayName}</strong>
-                </span>
-                <span className="account-menu-dots" aria-hidden="true">
-                  ⋮
-                </span>
-              </button>
-              {openMenu === "account" ? (
-                <div
-                  aria-label="Account"
-                  className="account-menu-popover"
-                  id="account-menu-popover"
-                  role="menu"
-                  onKeyDown={handleAccountMenuKeyDown}
-                >
+                      <span aria-hidden="true">↗</span>
+                      Invite people
+                    </button>
+                  ) : null}
                   <Link
-                    role="menuitem"
-                    to="/account"
+                    className="team-menu-action"
+                    to="/teams/new"
                     onClick={() => {
                       setOpenMenu(undefined);
                       setNavigationOpen(false);
                     }}
                   >
-                    Account settings
+                    <span aria-hidden="true">＋</span>
+                    Create Team
                   </Link>
-                  <button disabled={loggingOut} role="menuitem" type="button" onClick={() => void logout()}>
-                    {loggingOut ? "Signing out…" : "Sign out"}
-                  </button>
-                  {accountError ? (
-                    <span className="account-menu-error" role="alert">
-                      {accountError}
-                    </span>
-                  ) : null}
                 </div>
-              ) : null}
-            </div>
+              </section>
+            ) : null}
           </div>
-        </aside>
-        <div className="app-main">
-          <header className="mobile-shell-bar">
-            <Link className="mobile-brand" to="/agents" onClick={() => setNavigationOpen(false)}>
-              OpenTag
-            </Link>
-            <button className="secondary compact-button" type="button" onClick={() => setNavigationOpen(true)}>
-              Menu
-            </button>
-          </header>
-          <main className="content">
-            <Outlet />
-          </main>
+          <nav aria-label="Workspace" className="primary-nav">
+            <NavLink to="/agents" onClick={() => setNavigationOpen(false)}>
+              Agents
+            </NavLink>
+            <span className="nav-placeholder" aria-disabled="true">
+              Tasks
+            </span>
+            <NavLink to="/settings" onClick={() => setNavigationOpen(false)}>
+              Settings
+            </NavLink>
+          </nav>
         </div>
-        {invitationOpen ? (
-          <InvitationDialog
-            returnFocusRef={teamTriggerRef}
-            teamDisplayName={membership.teamDisplayName}
-            teamId={membership.teamId}
-            onClose={() => setInvitationOpen(false)}
-          />
-        ) : null}
+        <div className="sidebar-bottom">
+          <div className="account-menu" ref={accountMenuRef}>
+            <button
+              aria-label="Account menu"
+              aria-controls="account-menu-popover"
+              aria-expanded={openMenu === "account"}
+              aria-haspopup="menu"
+              className="account-row"
+              ref={accountTriggerRef}
+              type="button"
+              onClick={() => setOpenMenu((value) => (value === "account" ? undefined : "account"))}
+            >
+              <span className="account-avatar" aria-hidden="true">
+                {initials(me.user.displayName)}
+              </span>
+              <span className="account-copy">
+                <strong>{me.user.displayName}</strong>
+              </span>
+              <span className="account-menu-dots" aria-hidden="true">
+                ⋮
+              </span>
+            </button>
+            {openMenu === "account" ? (
+              <div
+                aria-label="Account"
+                className="account-menu-popover"
+                id="account-menu-popover"
+                role="menu"
+                onKeyDown={handleAccountMenuKeyDown}
+              >
+                <Link
+                  role="menuitem"
+                  to="/account"
+                  onClick={() => {
+                    setOpenMenu(undefined);
+                    setNavigationOpen(false);
+                  }}
+                >
+                  Account settings
+                </Link>
+                <button disabled={loggingOut} role="menuitem" type="button" onClick={() => void logout()}>
+                  {loggingOut ? "Signing out…" : "Sign out"}
+                </button>
+                {accountError ? (
+                  <span className="account-menu-error" role="alert">
+                    {accountError}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </div>
+      </aside>
+      <div className="app-main">
+        <header className="mobile-shell-bar">
+          <Link className="mobile-brand" to="/agents" onClick={() => setNavigationOpen(false)}>
+            OpenTag
+          </Link>
+          <button className="secondary compact-button" type="button" onClick={() => setNavigationOpen(true)}>
+            Menu
+          </button>
+        </header>
+        <main className="content">
+          <Outlet />
+        </main>
       </div>
-    </InvitationContext>
+      {invitationOpen ? (
+        <InvitationDialog
+          returnFocusRef={teamTriggerRef}
+          teamDisplayName={membership.teamDisplayName}
+          teamId={membership.teamId}
+          onClose={() => setInvitationOpen(false)}
+        />
+      ) : null}
+    </div>
   );
 }
 

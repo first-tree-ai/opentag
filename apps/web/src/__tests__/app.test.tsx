@@ -44,7 +44,9 @@ function installApi(
     computerStatus?: () => "online" | "offline";
     handoffReady?: boolean;
     initialStatus?: "active" | "suspended";
+    invitationCreate?: () => Promise<Response> | Response;
     invitationExists?: boolean;
+    invitationRotate?: () => Promise<Response> | Response;
     provider?: "feishu" | "slack";
     profileUpdate?: (displayName: string) => Promise<Response> | Response;
     profileUpdateFails?: boolean;
@@ -90,7 +92,7 @@ function installApi(
   let memberRole: "admin" | "member" = "member";
   let otherMemberRole: "admin" | "member" = "member";
   let invitationExists = options.invitationExists ?? false;
-  let invitationVersion: "A" | "B" = "A";
+  let invitationVersion: "A" | "B" | "C" = "A";
   let joinedInvitation = options.alreadyJoinedInvitation ?? false;
   let teamNameConflicts = options.teamNameConflicts ?? (options.teamNameConflict ? 1 : 0);
   const invitation = () => ({
@@ -234,10 +236,20 @@ function installApi(
       return invitationExists ? json(invitation()) : new Response(null, { status: 204 });
     }
     if (path === `/api/v1/teams/${teamId}/invitation` && init?.method === "POST") {
+      if (options.invitationCreate) {
+        const response = await options.invitationCreate();
+        if (response.ok) invitationExists = true;
+        return response;
+      }
       invitationExists = true;
       return json(invitation(), 201);
     }
     if (path === `/api/v1/teams/${teamId}/invitation/rotate` && init?.method === "POST") {
+      if (options.invitationRotate) {
+        const response = await options.invitationRotate();
+        if (response.ok) invitationVersion = "B";
+        return response;
+      }
       invitationVersion = "B";
       return json(invitation());
     }
@@ -365,6 +377,11 @@ function installApi(
     if (path === "/api/v1/auth/browser/logout" && init?.method === "POST") return new Response(null, { status: 204 });
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
   });
+  return {
+    setInvitationVersion(value: "A" | "B" | "C") {
+      invitationVersion = value;
+    },
+  };
 }
 
 describe("OpenTag Web App Shell", () => {
@@ -780,6 +797,178 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.keyDown(closeButton, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Invite people" })).toBeNull();
     expect(document.activeElement).toBe(teamTrigger);
+  });
+
+  it("keeps the Members invitation panel in sync after rotating from the Team-picker dialog", async () => {
+    installApi("admin", { invitationExists: true });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText } });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+
+    const pageLink = (await screen.findByLabelText("Invitation link")) as HTMLInputElement;
+    expect(pageLink.value).toContain("/invites/AAA");
+    fireEvent.click(screen.getByRole("button", { name: "Example" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Switch Team" })).getByRole("button", { name: "Invite people" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Invite people" });
+    expect(screen.getAllByLabelText("Invitation link")).toHaveLength(1);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Rotate invitation link" }));
+    await waitFor(() =>
+      expect((within(dialog).getByLabelText("Invitation link") as HTMLInputElement).value).toContain("/invites/BBB"),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close invitation dialog" }));
+
+    const refreshedPageLink = (await screen.findByLabelText("Invitation link")) as HTMLInputElement;
+    expect(refreshedPageLink.value).toContain("/invites/BBB");
+    fireEvent.click(screen.getByRole("button", { name: "Copy invitation link" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(refreshedPageLink.value));
+    confirm.mockRestore();
+  });
+
+  it("prevents switching invitation surfaces while a rotation is pending", async () => {
+    let resolveRotate: (response: Response) => void = () => undefined;
+    const pendingRotate = new Promise<Response>((resolve) => {
+      resolveRotate = resolve;
+    });
+    installApi("admin", { invitationExists: true, invitationRotate: () => pendingRotate });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+
+    await screen.findByLabelText("Invitation link");
+    fireEvent.click(screen.getByRole("button", { name: "Rotate invitation link" }));
+    fireEvent.click(screen.getByRole("button", { name: "Example" }));
+    const teamPicker = screen.getByRole("dialog", { name: "Switch Team" });
+    const inviteAction = within(teamPicker).getByRole("button", { name: "Invite people" }) as HTMLButtonElement;
+    expect(inviteAction.disabled).toBe(true);
+    fireEvent.click(inviteAction);
+    expect(screen.queryByRole("dialog", { name: "Invite people" })).toBeNull();
+
+    resolveRotate(
+      json({
+        token: "B".repeat(43),
+        inviteUrl: `https://opentag.example.com/invites/${"B".repeat(43)}`,
+        role: "member",
+        expiresAt: "2026-08-27T00:00:00.000Z",
+      }),
+    );
+    await waitFor(() => expect(inviteAction.disabled).toBe(false));
+    fireEvent.click(inviteAction);
+    const dialog = await screen.findByRole("dialog", { name: "Invite people" });
+    await waitFor(() =>
+      expect((within(dialog).getByLabelText("Invitation link") as HTMLInputElement).value).toContain("/invites/BBB"),
+    );
+    confirm.mockRestore();
+  });
+
+  it("keeps focus inside the invitation dialog while a rotation is pending", async () => {
+    let resolveRotate: (response: Response) => void = () => undefined;
+    const pendingRotate = new Promise<Response>((resolve) => {
+      resolveRotate = resolve;
+    });
+    installApi("admin", { invitationExists: true, invitationRotate: () => pendingRotate });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+
+    const teamTrigger = await screen.findByRole("button", { name: "Example" });
+    fireEvent.click(teamTrigger);
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Switch Team" })).getByRole("button", { name: "Invite people" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Invite people" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Rotate invitation link" }));
+
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(teamTrigger);
+    fireEvent.keyDown(document.activeElement ?? dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Invite people" })).toBe(dialog);
+
+    resolveRotate(
+      json({
+        token: "B".repeat(43),
+        inviteUrl: `https://opentag.example.com/invites/${"B".repeat(43)}`,
+        role: "member",
+        expiresAt: "2026-08-27T00:00:00.000Z",
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        (within(dialog).getByRole("button", { name: "Close invitation dialog" }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    confirm.mockRestore();
+  });
+
+  it("uses the dialog card as the focus fallback while invitation creation is pending", async () => {
+    let resolveCreate: (response: Response) => void = () => undefined;
+    const pendingCreate = new Promise<Response>((resolve) => {
+      resolveCreate = resolve;
+    });
+    installApi("admin", { invitationCreate: () => pendingCreate });
+    render(<App />);
+
+    const teamTrigger = await screen.findByRole("button", { name: "Example" });
+    fireEvent.click(teamTrigger);
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Switch Team" })).getByRole("button", { name: "Invite people" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Invite people" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Create invitation link" }));
+
+    teamTrigger.focus();
+    fireEvent.keyDown(teamTrigger, { key: "Tab" });
+    expect(document.activeElement).toBe(dialog);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Invite people" })).toBe(dialog);
+
+    resolveCreate(
+      json(
+        {
+          token: "A".repeat(43),
+          inviteUrl: `https://opentag.example.com/invites/${"A".repeat(43)}`,
+          role: "member",
+          expiresAt: "2026-08-27T00:00:00.000Z",
+        },
+        201,
+      ),
+    );
+    expect(await within(dialog).findByLabelText("Invitation link")).toBeTruthy();
+    await waitFor(() => {
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      expect(document.activeElement).not.toBe(dialog);
+    });
+
+    dialog.focus();
+    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(teamTrigger);
+  });
+
+  it("replaces a locally rotated invitation with a newer successful server read", async () => {
+    const api = installApi("admin", { invitationExists: true });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+
+    expect(((await screen.findByLabelText("Invitation link")) as HTMLInputElement).value).toContain("/invites/AAA");
+    fireEvent.click(screen.getByRole("button", { name: "Rotate invitation link" }));
+    await waitFor(() =>
+      expect((screen.getByLabelText("Invitation link") as HTMLInputElement).value).toContain("/invites/BBB"),
+    );
+
+    api.setInvitationVersion("C");
+    fireEvent.click(screen.getByRole("link", { name: "Agents" }));
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("link", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("link", { name: "Members" }));
+
+    await waitFor(() =>
+      expect((screen.getByLabelText("Invitation link") as HTMLInputElement).value).toContain("/invites/CCC"),
+    );
+    confirm.mockRestore();
   });
 
   it("does not expose the Team-picker invitation shortcut to regular members", async () => {

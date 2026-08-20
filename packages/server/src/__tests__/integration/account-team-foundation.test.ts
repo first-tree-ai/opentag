@@ -74,10 +74,7 @@ async function fixture() {
     teamService,
     invitations,
     identities: new AuthIdentityService(client.database, { now: () => now }),
-    postAuthentication: new PostAuthenticationService(client.database, invitations, {
-      membershipService: teamService,
-      now: () => now,
-    }),
+    postAuthentication: new PostAuthenticationService(client.database, invitations),
   };
 }
 
@@ -110,8 +107,9 @@ describe("account identity and Team foundation persistence", () => {
         .values({ email: "unassigned@example.com", displayName: "Unassigned" })
         .returning();
       if (!unassigned) throw new Error("Unassigned user fixture was not created");
-      await expect(new DevBrowserAuthService(value.database, auth, unassigned.email).signIn()).rejects.toMatchObject({
-        code: "AUTH_MEMBERSHIP_REQUIRED",
+      const unassignedTokens = await new DevBrowserAuthService(value.database, auth, unassigned.email).signIn();
+      await expect(auth.getAuthenticatedUser(unassignedTokens.accessToken)).resolves.toMatchObject({
+        me: { user: { id: unassigned.id }, memberships: [] },
       });
 
       await value.database.update(users).set({ suspendedAt: now }).where(eq(users.id, value.bootstrap.userId));
@@ -148,20 +146,69 @@ describe("account identity and Team foundation persistence", () => {
     }
   });
 
-  it("atomically creates one personal Team for a solo sign-in and no duplicate for a returning user", async () => {
+  it("never provisions a Team for a solo sign-in, leaving creation an explicit user action", async () => {
     const value = await fixture();
     try {
       const userId = await value.identities.resolveOrCreate(google("solo", "solo@example.com"));
-      const first = await value.postAuthentication.complete(userId);
-      expect(first.selectedTeamId).toBeDefined();
       expect(await value.postAuthentication.complete(userId)).toEqual({ userId });
+      expect(await value.postAuthentication.complete(userId)).toEqual({ userId });
+      expect(await value.database.select().from(memberships).where(eq(memberships.userId, userId))).toHaveLength(0);
+      expect(await value.database.select().from(teams)).toHaveLength(1);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("creates a Team and its first admin membership in a single transaction", async () => {
+    const value = await fixture();
+    try {
+      const userId = await value.identities.resolveOrCreate(google("solo", "solo@example.com"));
+      await value.postAuthentication.complete(userId);
+      const created = await value.teamService.createTeam(userId, {
+        name: "  First-Tree  ",
+        displayName: "  First Tree AI  ",
+      });
+      expect(created).toMatchObject({ name: "first-tree", displayName: "First Tree AI", role: "admin" });
       const active = await value.database
         .select()
         .from(memberships)
         .where(and(eq(memberships.userId, userId), eq(memberships.status, "active")));
       expect(active).toHaveLength(1);
-      expect(active[0]).toMatchObject({ role: "admin" });
+      expect(active[0]).toMatchObject({ teamId: created.id, role: "admin", status: "active" });
       expect(await value.database.select().from(teams)).toHaveLength(2);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("rejects a case-insensitive Team name collision without leaving a half-created Team", async () => {
+    const value = await fixture();
+    try {
+      const userId = await value.identities.resolveOrCreate(google("solo", "solo@example.com"));
+      await expect(
+        value.teamService.createTeam(userId, { name: "  EXAMPLE  ", displayName: "Collides With Bootstrap" }),
+      ).rejects.toMatchObject({ code: "TEAM_NAME_CONFLICT", statusCode: 409 });
+      expect(await value.database.select().from(teams)).toHaveLength(1);
+      expect(await value.database.select().from(memberships).where(eq(memberships.userId, userId))).toHaveLength(0);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("lets an existing member create an additional Team and hold both memberships", async () => {
+    const value = await fixture();
+    try {
+      const created = await value.teamService.createTeam(value.bootstrap.userId, {
+        name: "second-team",
+        displayName: "Second Team",
+      });
+      const active = await value.database
+        .select()
+        .from(memberships)
+        .where(and(eq(memberships.userId, value.bootstrap.userId), eq(memberships.status, "active")));
+      expect(active).toHaveLength(2);
+      expect(active.map((membership) => membership.teamId).sort()).toEqual([value.bootstrap.teamId, created.id].sort());
+      expect(active.every((membership) => membership.role === "admin")).toBe(true);
     } finally {
       await value.sql.end();
     }

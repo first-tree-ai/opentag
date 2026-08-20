@@ -1,4 +1,7 @@
 import {
+  type CreateTeamRequest,
+  CreateTeamRequestSchema,
+  type CreateTeamResponse,
   type ListTeamComputersConfigResponse,
   type ListTeamComputersResponse,
   type ListTeamMembersConfigResponse,
@@ -162,6 +165,53 @@ export class TeamMembershipService {
       createdAt: now,
       updatedAt: now,
     });
+  }
+
+  /**
+   * Creates a Team and installs its creator as the first admin in one transaction.
+   * Team creation is always an explicit user action; no caller may provision a Team implicitly.
+   */
+  async createTeam(callerUserId: string, rawInput: CreateTeamRequest): Promise<CreateTeamResponse> {
+    const input = CreateTeamRequestSchema.parse(rawInput);
+    try {
+      return await this.#database.transaction(async (transaction) => {
+        const [user] = await transaction
+          .select({ suspendedAt: users.suspendedAt })
+          .from(users)
+          .where(eq(users.id, callerUserId))
+          .limit(1)
+          .for("update");
+        if (!user) throw new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "The token is invalid", 401);
+        if (user.suspendedAt) {
+          throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
+        }
+        const now = this.#now();
+        const [team] = await transaction
+          .insert(teams)
+          .values({ name: input.name, displayName: input.displayName, createdAt: now, updatedAt: now })
+          .returning();
+        if (!team) throw new Error("Team insert did not return a row");
+        await this.bootstrapAdminInTransaction(transaction, callerUserId, team.id);
+        return {
+          id: team.id,
+          name: team.name,
+          displayName: team.displayName,
+          role: "admin",
+          createdAt: team.createdAt.toISOString(),
+          updatedAt: team.updatedAt.toISOString(),
+        };
+      });
+    } catch (error) {
+      if (isTeamNameConflict(error)) {
+        throw new AuthServiceError(
+          "TEAM_NAME_CONFLICT",
+          "deterministic",
+          "Another Team already uses this canonical name",
+          409,
+        );
+      }
+      throw error;
+    }
   }
 
   async updateTeamProfile(

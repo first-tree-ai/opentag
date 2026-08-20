@@ -88,7 +88,7 @@ export function AppRouter() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/invites/:token" element={<InvitePage />} />
-      <Route path="/teams/new" element={<UnavailablePage title="Create Team" />} />
+      <Route path="/teams/new" element={<NewTeamPage />} />
       <Route element={<AuthenticatedTeamGate />}>
         <Route path="/onboarding" element={<OnboardingPage />} />
         <Route element={<AppShell />}>
@@ -171,6 +171,93 @@ function InvitePage() {
   );
 }
 
+/** Derives the canonical Team handle a display name suggests; the user stays free to replace it. */
+function toTeamHandle(displayName: string): string {
+  return displayName
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .slice(0, 64)
+    .replace(/^-+|-+$/g, "");
+}
+
+function NewTeamPage() {
+  const navigate = useNavigate();
+  const [displayName, setDisplayName] = useState("");
+  const [name, setName] = useState("");
+  const [nameEdited, setNameEdited] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string>();
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    try {
+      setError(undefined);
+      const created = await browserApi.createTeam({ name, displayName });
+      window.localStorage.setItem("opentag.selectedTeamId", created.id);
+      navigate("/agents");
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 401) {
+        navigate(`/login?next=${encodeURIComponent("/teams/new")}`);
+        return;
+      }
+      setError(cause instanceof Error ? cause.message : "The Team could not be created");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <main className="center-card">
+      <span className="eyebrow">OpenTag</span>
+      <h1>Create Team</h1>
+      <p>A Team holds your members, Agents and permissions. You become its first Team Admin.</p>
+      <form className="form-card" onSubmit={submit}>
+        <label>
+          Display name
+          <input
+            name="displayName"
+            required
+            value={displayName}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              setDisplayName(value);
+              if (!nameEdited) setName(toTeamHandle(value));
+            }}
+          />
+        </label>
+        <label>
+          Canonical name
+          <input
+            name="name"
+            required
+            pattern="[a-z0-9][a-z0-9-]*"
+            maxLength={64}
+            value={name}
+            onChange={(event) => {
+              setNameEdited(true);
+              setName(event.currentTarget.value);
+            }}
+          />
+        </label>
+        <p className="muted">
+          Lowercase letters, digits and hyphens. This is the CLI --team selector and must be unique across OpenTag; Team
+          Admins can change it later.
+        </p>
+        <button className="button" type="submit" disabled={submitting}>
+          Create Team
+        </button>
+        {error ? (
+          <div className="notice error" role="alert">
+            {error}
+          </div>
+        ) : null}
+      </form>
+    </main>
+  );
+}
+
 function AuthenticatedTeamGate() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -185,7 +272,8 @@ function AuthenticatedTeamGate() {
       {(me) => {
         const stored = readTeamPreference();
         const membership = me.memberships.find((item: MeMembership) => item.teamId === stored) ?? me.memberships[0];
-        if (!membership) return <UnavailablePage title="No active Team" />;
+        // Creating or joining a Team is the first onboarding step, so a Team-less session is sent there.
+        if (!membership) return <Navigate replace to="/teams/new" />;
         const selectTeam = (teamId: string) => {
           if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
           window.localStorage.setItem("opentag.selectedTeamId", teamId);
@@ -215,16 +303,21 @@ function AppShell() {
         <Link className="brand" to="/agents">
           OpenTag
         </Link>
-        <label className="team-picker">
-          <span>Team</span>
-          <select value={membership.teamId} onChange={(event) => selectTeam(event.currentTarget.value)}>
-            {me.memberships.map((item: MeMembership) => (
-              <option value={item.teamId} key={item.teamId}>
-                {item.teamDisplayName}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="team-picker-group">
+          <label className="team-picker">
+            <span>Team</span>
+            <select value={membership.teamId} onChange={(event) => selectTeam(event.currentTarget.value)}>
+              {me.memberships.map((item: MeMembership) => (
+                <option value={item.teamId} key={item.teamId}>
+                  {item.teamDisplayName}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Link className="team-picker-action" to="/teams/new">
+            Create Team
+          </Link>
+        </div>
         <nav>
           <NavLink to="/agents">Agents</NavLink>
           <NavLink to="/settings/team">Settings</NavLink>

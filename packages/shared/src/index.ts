@@ -118,6 +118,7 @@ export {
   TEAM_MEMBER_TEMPLATE,
   TEAM_MEMBERS_CONFIG_TEMPLATE,
   TEAM_MEMBERS_TEMPLATE,
+  TEAMS_TEMPLATE,
   teamAgentsPath,
   teamByIdPath,
   teamComputersConfigPath,
@@ -256,6 +257,10 @@ export {
 } from "./runtime-protocol.js";
 export * from "./session.js";
 export {
+  type CreateTeamRequest,
+  CreateTeamRequestSchema,
+  type CreateTeamResponse,
+  CreateTeamResponseSchema,
   type ListTeamComputersConfigResponse,
   ListTeamComputersConfigResponseSchema,
   type ListTeamComputersResponse,

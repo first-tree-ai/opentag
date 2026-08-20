@@ -13,6 +13,9 @@ import {
   type ConnectCodeIssueResponse,
   ConnectCodeIssueResponseSchema,
   type CreateAgentRequest,
+  type CreateTeamRequest,
+  type CreateTeamResponse,
+  CreateTeamResponseSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
   feishuSetupAttemptPath,
@@ -82,6 +85,14 @@ export class BrowserApi {
 
   members(teamId: string): Promise<ListTeamMembersResponse> {
     return this.request(teamMembersPath(teamId), ListTeamMembersResponseSchema);
+  }
+
+  createTeam(input: CreateTeamRequest): Promise<CreateTeamResponse> {
+    return this.request(HTTP_PATHS.teams, CreateTeamResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
   }
 
   updateTeam(teamId: string, input: UpdateTeamProfileRequest): Promise<TeamProfile> {

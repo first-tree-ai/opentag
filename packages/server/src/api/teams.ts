@@ -1,4 +1,6 @@
 import {
+  CreateTeamRequestSchema,
+  CreateTeamResponseSchema,
   ListTeamComputersConfigResponseSchema,
   ListTeamComputersResponseSchema,
   ListTeamMembersConfigResponseSchema,
@@ -10,6 +12,7 @@ import {
   TEAM_MEMBER_TEMPLATE,
   TEAM_MEMBERS_CONFIG_TEMPLATE,
   TEAM_MEMBERS_TEMPLATE,
+  TEAMS_TEMPLATE,
   TeamMemberAdminConfigSchema,
   TeamProfileSchema,
   UpdateTeamMemberRequestSchema,
@@ -38,6 +41,11 @@ export function registerTeamRoutes(
   publicOrigin?: string,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
+
+  app.post(TEAMS_TEMPLATE, { preHandler }, async (request, reply) => {
+    const input = parseRequest(CreateTeamRequestSchema, request.body);
+    return reply.code(201).send(CreateTeamResponseSchema.parse(await teamService.createTeam(userId(request), input)));
+  });
 
   app.patch(TEAM_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
     const { teamId } = parseRequest(TeamParamsSchema, request.params);

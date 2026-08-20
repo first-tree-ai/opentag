@@ -11,6 +11,24 @@ export const TeamProfileSchema = z
   })
   .strict();
 
+export const CreateTeamRequestSchema = z
+  .object({
+    name: z.string().trim().toLowerCase().max(64).pipe(TeamNameSchema),
+    displayName: z.string().trim().min(1).max(120),
+  })
+  .strict();
+
+export const CreateTeamResponseSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: TeamNameSchema,
+    displayName: z.string().min(1),
+    role: MembershipRoleSchema,
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+
 export const UpdateTeamProfileRequestSchema = z
   .object({
     name: z.string().trim().toLowerCase().pipe(TeamNameSchema).optional(),
@@ -86,6 +104,8 @@ export const ListTeamComputersConfigResponseSchema = z
 
 export type TeamMemberSummary = z.infer<typeof TeamMemberSummarySchema>;
 export type TeamProfile = z.infer<typeof TeamProfileSchema>;
+export type CreateTeamRequest = z.infer<typeof CreateTeamRequestSchema>;
+export type CreateTeamResponse = z.infer<typeof CreateTeamResponseSchema>;
 export type UpdateTeamProfileRequest = z.infer<typeof UpdateTeamProfileRequestSchema>;
 export type TeamMemberAdminConfig = z.infer<typeof TeamMemberAdminConfigSchema>;
 export type ListTeamMembersResponse = z.infer<typeof ListTeamMembersResponseSchema>;

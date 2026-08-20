@@ -5,6 +5,7 @@ import type {
   AuthProvidersResponse,
   Computer,
   FeishuSetupAttempt,
+  ImBindingSummary,
   MeMembership,
   MeResponse,
   TeamComputerSummary,
@@ -54,9 +55,11 @@ function useResource<T>(loader: () => Promise<T>, key: string): LoadState<T> {
 function AsyncState<T>({ state, children }: { state: LoadState<T>; children: (value: T) => ReactNode }) {
   if (state.kind === "loading")
     return (
-      <p className="muted" role="status">
-        Loading current server state…
-      </p>
+      <div aria-label="Loading current server state" className="loading-state" role="status">
+        <span />
+        <span />
+        <span />
+      </div>
     );
   if (state.kind === "error")
     return (
@@ -148,7 +151,7 @@ function InvitePage() {
       try {
         if (serverSelectedTeamId) {
           const me = await browserApi.me();
-          if (me.memberships.some((membership) => membership.teamId === serverSelectedTeamId)) {
+          if (me.memberships.some((membership: MeMembership) => membership.teamId === serverSelectedTeamId)) {
             clearPendingInvitation(token);
             window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, serverSelectedTeamId);
             navigate("/agents", { replace: true });
@@ -157,7 +160,7 @@ function InvitePage() {
         }
         const redemption = await browserApi.redeemInvitation(token);
         const me = await browserApi.me();
-        if (!me.memberships.some((membership) => membership.teamId === redemption.membership.teamId)) {
+        if (!me.memberships.some((membership: MeMembership) => membership.teamId === redemption.membership.teamId)) {
           throw new Error("The invited Team is not available to the signed-in account");
         }
         clearPendingInvitation(token);
@@ -278,31 +281,67 @@ function readTeamPreference(): string | undefined {
 
 function AppShell() {
   const { me, membership, selectTeam } = useTeam();
+  const [navigationOpen, setNavigationOpen] = useState(false);
   return (
     <div className="shell">
-      <aside aria-label="Primary navigation">
-        <Link className="brand" to="/agents">
-          OpenTag
-        </Link>
-        <label className="team-picker">
-          <span>Team</span>
-          <select value={membership.teamId} onChange={(event) => selectTeam(event.currentTarget.value)}>
-            {me.memberships.map((item: MeMembership) => (
-              <option value={item.teamId} key={item.teamId}>
-                {item.teamDisplayName}
-              </option>
-            ))}
-          </select>
-        </label>
-        <nav>
-          <NavLink to="/agents">Agents</NavLink>
-          <NavLink to="/settings/team">Settings</NavLink>
-        </nav>
+      {navigationOpen ? (
+        <button
+          aria-label="Close navigation"
+          className="sidebar-backdrop is-visible"
+          type="button"
+          onClick={() => setNavigationOpen(false)}
+        />
+      ) : null}
+      <aside className={`sidebar${navigationOpen ? " is-open" : ""}`} aria-label="Primary navigation">
+        <div className="sidebar-top">
+          <Link className="brand" to="/agents" onClick={() => setNavigationOpen(false)}>
+            OpenTag
+          </Link>
+          <label className="team-switcher">
+            <span className="visually-hidden">Team</span>
+            <span className="team-avatar" aria-hidden="true">
+              {initials(membership.teamDisplayName)}
+            </span>
+            <select value={membership.teamId} onChange={(event) => selectTeam(event.currentTarget.value)}>
+              {me.memberships.map((item: MeMembership) => (
+                <option value={item.teamId} key={item.teamId}>
+                  {item.teamDisplayName}
+                </option>
+              ))}
+            </select>
+          </label>
+          <nav className="primary-nav">
+            <NavLink to="/agents" onClick={() => setNavigationOpen(false)}>
+              Agents
+            </NavLink>
+            <span className="nav-placeholder" aria-disabled="true">
+              Tasks
+            </span>
+          </nav>
+        </div>
+        <div className="sidebar-bottom">
+          <NavLink className="settings-link" to="/settings/team" onClick={() => setNavigationOpen(false)}>
+            Settings
+          </NavLink>
+          <div className="account-row">
+            <span className="account-avatar" aria-hidden="true">
+              {initials(me.user.displayName)}
+            </span>
+            <span>
+              <strong>{me.user.displayName}</strong>
+              <small>{membership.role === "admin" ? "Team Admin" : "Member"}</small>
+            </span>
+          </div>
+        </div>
       </aside>
       <div className="app-main">
-        <header className="topbar">
-          <span>{membership.role === "admin" ? "Team Admin" : "Member · read only"}</span>
-          <span>{me.user.displayName}</span>
+        <header className="mobile-shell-bar">
+          <Link className="mobile-brand" to="/agents" onClick={() => setNavigationOpen(false)}>
+            OpenTag
+          </Link>
+          <button className="secondary compact-button" type="button" onClick={() => setNavigationOpen(true)}>
+            Menu
+          </button>
         </header>
         <main className="content">
           <Outlet />
@@ -318,6 +357,7 @@ function AgentsPage() {
   return (
     <Page
       title="Agents"
+      description="Configure and monitor your team's long-lived Agent identities."
       action={
         membership.role === "admin" ? (
           <Link className="button" to="/agents/new">
@@ -327,44 +367,158 @@ function AgentsPage() {
       }
     >
       <AsyncState state={state}>
-        {(value) =>
-          value.agents.length === 0 ? (
-            <EmptyState title="No Agents yet">A Team Admin can create the first Agent.</EmptyState>
-          ) : (
-            <div className="card-grid">
-              {value.agents.map((agent: AgentSummary) => (
-                <AgentCard agent={agent} key={agent.id} />
-              ))}
-            </div>
-          )
-        }
+        {(value) => <AgentsContent agents={value.agents} teamId={membership.teamId} />}
       </AsyncState>
     </Page>
   );
 }
 
-function AgentCard({ agent }: { agent: AgentSummary }) {
+interface AgentOperationalState {
+  bindings: Map<string, ImBindingSummary | undefined>;
+  computers: Map<string, TeamComputerSummary>;
+}
+
+function AgentsContent({ agents, teamId }: { agents: AgentSummary[]; teamId: string }) {
+  const operationalState = useAgentOperationalState(agents, teamId);
   return (
-    <Link className="agent-card" to={`/agents/${agent.id}/general`}>
-      <div>
-        <strong>{agent.displayName}</strong>
-        <small>{agent.name}</small>
+    <>
+      <TeamSetupChecklist agents={agents} state={operationalState} />
+      {agents.length === 0 ? (
+        <EmptyState title="No Agents yet">A Team Admin can create the first Agent.</EmptyState>
+      ) : (
+        <AgentList agents={agents} state={operationalState} />
+      )}
+    </>
+  );
+}
+
+function useAgentOperationalState(agents: AgentSummary[], teamId: string): LoadState<AgentOperationalState> {
+  const agentKey = agents.map((agent) => agent.id).join(",");
+  return useResource(async () => {
+    const [computerResponse, bindingRows] = await Promise.all([
+      browserApi.computers(teamId),
+      Promise.all(agents.map(async (agent) => [agent.id, await browserApi.imBinding(agent.id)] as const)),
+    ]);
+    return {
+      bindings: new Map(bindingRows),
+      computers: new Map(computerResponse.computers.map((computer: TeamComputerSummary) => [computer.id, computer])),
+    };
+  }, `${teamId}:${agentKey}`);
+}
+
+function TeamSetupChecklist({ agents, state }: { agents: AgentSummary[]; state: LoadState<AgentOperationalState> }) {
+  if (state.kind !== "ready") return null;
+  const hasComputer = [...state.value.computers.values()].some((computer) => computer.connectionStatus === "online");
+  const hasAgent = agents.length > 0;
+  const hasMessaging = [...state.value.bindings.values()].some((binding) => binding?.bindingState === "active");
+  if (hasComputer && hasAgent && hasMessaging) return null;
+  const steps = [
+    { label: "Connect computer", complete: hasComputer },
+    { label: "Create agent", complete: hasAgent },
+    { label: "Connect messaging", complete: hasMessaging },
+    { label: "Send first @mention", complete: false, unavailable: true },
+  ];
+  const completed = steps.filter((step) => step.complete).length;
+  return (
+    <section className="setup-checklist" aria-labelledby="team-setup-title">
+      <div className="setup-checklist-heading">
+        <div>
+          <span className="section-kicker">Team setup</span>
+          <h2 id="team-setup-title">Finish the path to your first mention</h2>
+        </div>
+        <span className="setup-progress">{completed} confirmed</span>
       </div>
-      <dl>
-        <div>
-          <dt>Provider</dt>
-          <dd>{agent.runtimeProvider}</dd>
+      <ol className="setup-steps">
+        {steps.map((step) => (
+          <li className={step.complete ? "is-complete" : ""} key={step.label}>
+            <span className="step-marker" aria-hidden="true">
+              {step.complete ? "✓" : ""}
+            </span>
+            <span>
+              <strong>{step.label}</strong>
+              <small>{step.complete ? "Complete" : step.unavailable ? "Not tracked yet" : "Action required"}</small>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function AgentList({ agents, state }: { agents: AgentSummary[]; state: LoadState<AgentOperationalState> }) {
+  return (
+    <section className="agent-list-section" aria-labelledby="agent-list-title">
+      <div className="list-heading">
+        <h2 id="agent-list-title">Team Agents</h2>
+        <span>{agents.length}</span>
+      </div>
+      <div className="agent-table">
+        <div className="agent-table-header" aria-hidden="true">
+          <span>Agent</span>
+          <span>Readiness</span>
+          <span>Runtime</span>
+          <span>Messaging</span>
+          <span>Computer</span>
+          <span>Last active</span>
         </div>
-        <div>
-          <dt>Computer</dt>
-          <dd>{agent.computer.displayName}</dd>
-        </div>
-        <div>
-          <dt>IM policy</dt>
-          <dd>{agent.receiveMode}</dd>
-        </div>
-      </dl>
+        <AsyncState state={state}>
+          {(operational) => (
+            <div className="agent-table-body">
+              {agents.map((agent) => (
+                <AgentRow agent={agent} operational={operational} key={agent.id} />
+              ))}
+            </div>
+          )}
+        </AsyncState>
+      </div>
+    </section>
+  );
+}
+
+function AgentRow({ agent, operational }: { agent: AgentSummary; operational: AgentOperationalState }) {
+  const binding = operational.bindings.get(agent.id);
+  const computer = operational.computers.get(agent.computer.id);
+  const needsSetup = binding?.bindingState !== "active" || computer?.connectionStatus !== "online";
+  return (
+    <Link className="agent-row" to={`/agents/${agent.id}/general`}>
+      <span className="agent-identity">
+        <span className="agent-avatar" aria-hidden="true">
+          {initials(agent.displayName)}
+        </span>
+        <span>
+          <strong>{agent.displayName}</strong>
+          <small>{agent.name}</small>
+        </span>
+      </span>
+      <span data-label="Readiness">
+        <StatusLabel tone={needsSetup ? "neutral" : "success"}>{needsSetup ? "Needs setup" : "Ready"}</StatusLabel>
+      </span>
+      <span className="cell-stack" data-label="Runtime">
+        <strong>{providerLabel(agent.runtimeProvider)}</strong>
+        <small>Status unavailable</small>
+      </span>
+      <span data-label="Messaging">
+        <StatusLabel tone={binding?.bindingState === "active" ? "success" : "neutral"}>
+          {binding?.bindingState === "active" ? "Connected" : "Not connected"}
+        </StatusLabel>
+      </span>
+      <span className="cell-stack" data-label="Computer">
+        <strong>{agent.computer.displayName}</strong>
+        <small>{computer ? titleCase(computer.connectionStatus) : "Unable to confirm"}</small>
+      </span>
+      <span className="muted" data-label="Last active">
+        Unavailable
+      </span>
     </Link>
+  );
+}
+
+function StatusLabel({ tone, children }: { tone: "success" | "neutral"; children: ReactNode }) {
+  return (
+    <span className={`status-label ${tone}`}>
+      <span className="status-indicator" aria-hidden="true" />
+      {children}
+    </span>
   );
 }
 
@@ -390,7 +544,7 @@ function NewAgentPage() {
     }
   }
   return (
-    <Page title="Create Agent">
+    <Page title="Create Agent" description="Create the identity first. Complete its setup from the Agent overview.">
       <AsyncState state={computers}>
         {(value) =>
           value.computers.length === 0 ? (
@@ -441,25 +595,73 @@ function NewAgentPage() {
   );
 }
 
-const agentTabs = ["general", "runtime", "im", "resources", "integrations", "access"] as const;
+const agentSections = [
+  { key: "general", label: "Overview" },
+  { key: "runtime", label: "Runtime" },
+  { key: "im", label: "Messaging" },
+  { key: "resources", label: "Resources" },
+  { key: "integrations", label: "Integrations" },
+  { key: "access", label: "Access" },
+] as const;
 
 function AgentDetailPage() {
   const { agentId = "", tab = "general" } = useParams();
+  const navigate = useNavigate();
   const state = useResource(() => browserApi.agent(agentId), agentId);
-  if (!agentTabs.includes(tab as (typeof agentTabs)[number])) return <NotFoundPage />;
+  const currentSection = agentSections.find((section) => section.key === tab);
+  if (!currentSection) return <NotFoundPage />;
   return (
     <AsyncState state={state}>
       {(agent) => (
-        <Page title={agent.displayName} eyebrow={agent.name}>
-          <nav className="tabs" aria-label="Agent settings">
-            {agentTabs.map((item) => (
-              <NavLink to={`/agents/${agentId}/${item}`} key={item}>
-                {titleCase(item)}
-              </NavLink>
-            ))}
-          </nav>
-          <AgentTab agent={agent} tab={tab} />
-        </Page>
+        <section className="object-page">
+          <header className="object-header">
+            <Link className="breadcrumb" to="/agents">
+              Agents
+            </Link>
+            <div className="object-title-row">
+              <div className="object-identity">
+                <span className="agent-avatar large" aria-hidden="true">
+                  {initials(agent.displayName)}
+                </span>
+                <div>
+                  <h1>{agent.displayName}</h1>
+                  <p>
+                    <span className="mono">{agent.name}</span>
+                    <span>{providerLabel(agent.runtimeProvider)}</span>
+                    <span>{agent.computer.displayName}</span>
+                  </p>
+                </div>
+              </div>
+              <StatusLabel tone="neutral">Readiness unavailable</StatusLabel>
+            </div>
+          </header>
+          <label className="local-nav-select">
+            <span>Agent section</span>
+            <select value={tab} onChange={(event) => navigate(`/agents/${agentId}/${event.currentTarget.value}`)}>
+              {agentSections.map((section) => (
+                <option value={section.key} key={section.key}>
+                  {section.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="object-layout">
+            <nav className="local-nav" aria-label="Agent settings">
+              {agentSections.map((section) => (
+                <NavLink to={`/agents/${agentId}/${section.key}`} key={section.key}>
+                  {section.label}
+                </NavLink>
+              ))}
+            </nav>
+            <div className="object-content">
+              <header className="section-header">
+                <h2>{currentSection.label}</h2>
+                <p>{agentSectionDescription(currentSection.key)}</p>
+              </header>
+              <AgentTab agent={agent} tab={tab} />
+            </div>
+          </div>
+        </section>
       )}
     </AsyncState>
   );
@@ -796,40 +998,87 @@ function AccessTab({ agent }: { agent: AgentDetail }) {
       rows={[
         ["Safe read", "All active Team members"],
         ["Use", "All active Team members (fixed v0.1 policy)"],
-        ["Manage", agent.viewerCapabilities.canManage ? "Team Admins · you can manage" : "Team Admins"],
+        ["Manage", agent.viewerCapabilities.canManage ? "Team Admins (you can manage)" : "Team Admins"],
       ]}
     />
   );
 }
 
+const settingsSections = [
+  { key: "team", label: "General" },
+  { key: "members", label: "Members" },
+  { key: "computers", label: "Computers" },
+  { key: "resources", label: "Resources" },
+  { key: "integrations", label: "Integrations" },
+  { key: "access", label: "Access" },
+  { key: "usage", label: "Usage" },
+  { key: "security", label: "Security" },
+] as const;
+
 function SettingsPage() {
   const { section = "team" } = useParams();
+  const navigate = useNavigate();
   const { membership, refreshMe } = useTeam();
-  const allowed = ["team", "computers", "resources", "members", "security"];
-  if (!allowed.includes(section)) return <NotFoundPage />;
+  const currentSection = settingsSections.find((item) => item.key === section);
+  if (!currentSection) return <NotFoundPage />;
   return (
-    <Page title="Settings">
-      <nav className="tabs" aria-label="Team settings">
-        {allowed.map((item) => (
-          <NavLink to={`/settings/${item}`} key={item}>
-            {titleCase(item)}
-          </NavLink>
-        ))}
-      </nav>
-      {section === "team" ? <TeamSettings membership={membership} refreshMe={refreshMe} /> : null}
-      {section === "members" ? (
-        <MembersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
-      ) : null}
-      {section === "computers" ? (
-        <ComputersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
-      ) : null}
-      {section === "resources" ? (
-        <EmptyState title="Team Resources not enabled">No Resource records are created by this page.</EmptyState>
-      ) : null}
-      {section === "security" ? (
-        <EmptyState title="Security overview">Sensitive credentials are never returned to the browser.</EmptyState>
-      ) : null}
-    </Page>
+    <section className="settings-page">
+      <header className="settings-title">
+        <h1>Settings</h1>
+        <p>Manage the current Team's identity, infrastructure, access, and security.</p>
+      </header>
+      <label className="local-nav-select">
+        <span>Settings section</span>
+        <select value={section} onChange={(event) => navigate(`/settings/${event.currentTarget.value}`)}>
+          {settingsSections.map((item) => (
+            <option value={item.key} key={item.key}>
+              {item.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="settings-layout">
+        <nav className="local-nav" aria-label="Team settings">
+          {settingsSections.map((item) => (
+            <NavLink to={`/settings/${item.key}`} key={item.key}>
+              {item.label}
+            </NavLink>
+          ))}
+        </nav>
+        <div className="settings-content">
+          <header className="section-header">
+            <h2>{currentSection.label}</h2>
+            <p>{settingsSectionDescription(currentSection.key)}</p>
+          </header>
+          {section === "team" ? <TeamSettings membership={membership} refreshMe={refreshMe} /> : null}
+          {section === "members" ? (
+            <MembersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
+          ) : null}
+          {section === "computers" ? (
+            <ComputersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
+          ) : null}
+          {section === "resources" ? (
+            <EmptyState title="Team Resources not enabled">No Resource records are created by this page.</EmptyState>
+          ) : null}
+          {section === "integrations" ? (
+            <EmptyState title="Team Integrations not enabled">
+              Agent-owned connections remain visible from each Agent's Messaging and Integrations sections.
+            </EmptyState>
+          ) : null}
+          {section === "access" ? (
+            <EmptyState title="Team access uses the current membership policy">
+              Team Admins manage membership while Agent access stays visible on each Agent.
+            </EmptyState>
+          ) : null}
+          {section === "usage" ? (
+            <EmptyState title="Usage reporting not enabled">No inferred or estimated usage is shown.</EmptyState>
+          ) : null}
+          {section === "security" ? (
+            <EmptyState title="Security overview">Sensitive credentials are never returned to the browser.</EmptyState>
+          ) : null}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1058,11 +1307,12 @@ function ComputersSettings({ canManage, teamId }: { canManage: boolean; teamId: 
                 <span>
                   <strong>{computer.displayName}</strong>
                   <small>
-                    {computer.ownerDisplayName} · {computer.platform}
+                    {computer.ownerDisplayName} ({computer.platform})
                   </small>
                 </span>
-                <span>
-                  {computer.connectionStatus} · observed {formatDate(computer.observedAt)}
+                <span className="cell-stack align-end">
+                  <strong>{titleCase(computer.connectionStatus)}</strong>
+                  <small>Observed {formatDate(computer.observedAt)}</small>
                 </span>
               </div>
             ))}
@@ -1076,7 +1326,7 @@ function ComputersSettings({ canManage, teamId }: { canManage: boolean; teamId: 
 function OnboardingPage() {
   const { membership } = useTeam();
   return (
-    <Page title="Set up OpenTag">
+    <Page title="Set up OpenTag" description="Connect the runtime path before inviting the Team to mention an Agent.">
       {membership.role === "admin" ? (
         <>
           <ol className="steps">
@@ -1102,25 +1352,28 @@ function OnboardingPage() {
 function Page({
   title,
   eyebrow,
+  description,
   action,
   children,
 }: {
   title: string;
   eyebrow?: string;
+  description?: string;
   action?: ReactNode;
   children: ReactNode;
 }) {
   return (
-    <>
+    <section className="page">
       <header className="page-header">
         <div>
           {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
           <h1>{title}</h1>
+          {description ? <p>{description}</p> : null}
         </div>
         {action}
       </header>
       {children}
-    </>
+    </section>
   );
 }
 
@@ -1167,7 +1420,49 @@ function NotFoundPage() {
 }
 
 function titleCase(value: string) {
-  return value.charAt(0).toUpperCase() + value.slice(1);
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function providerLabel(provider: AgentSummary["runtimeProvider"]): string {
+  return provider === "claude-code" ? "Claude Code" : "Codex";
+}
+
+function initials(value: string): string {
+  const parts = value.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "OT";
+  return parts
+    .slice(0, 2)
+    .map((part) => part.charAt(0).toUpperCase())
+    .join("");
+}
+
+function agentSectionDescription(section: (typeof agentSections)[number]["key"]): string {
+  const descriptions = {
+    general: "Review identity, readiness dependencies, and the configuration that needs attention.",
+    runtime: "Inspect the bound Computer, provider, model, instructions, and execution limits.",
+    im: "Manage the Agent-owned Feishu or Slack bot connection and receive policy.",
+    resources: "Review the Team Resources authorized for this Agent.",
+    integrations: "Review external services available to this Agent's runtime.",
+    access: "Understand who can use, inspect, and manage this Agent.",
+  } satisfies Record<(typeof agentSections)[number]["key"], string>;
+  return descriptions[section];
+}
+
+function settingsSectionDescription(section: (typeof settingsSections)[number]["key"]): string {
+  const descriptions = {
+    team: "Manage the current Team's stable identity and display name.",
+    members: "Invite people and review the Team membership visible to you.",
+    computers: "Connect and inspect the Computers available to the current Team.",
+    resources: "Review reusable repositories, skills, tools, and prompts.",
+    integrations: "Review supported Team and Agent connection surfaces.",
+    access: "Review Team-wide access and administration boundaries.",
+    usage: "Review measured Task, Turn, and provider usage when available.",
+    security: "Review authorization health without exposing credentials.",
+  } satisfies Record<(typeof settingsSections)[number]["key"], string>;
+  return descriptions[section];
 }
 
 function formatDate(value: string) {

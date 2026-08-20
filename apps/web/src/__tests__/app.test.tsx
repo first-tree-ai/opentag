@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
 
@@ -31,6 +31,7 @@ function installApi(
   options: {
     alreadyJoinedInvitation?: boolean;
     bound?: boolean;
+    computerOnline?: boolean;
     invitationExists?: boolean;
     provider?: "feishu" | "slack";
     redeemFails?: boolean;
@@ -118,7 +119,26 @@ function installApi(
         },
       });
     }
-    if (path === `/api/v1/teams/${teamId}/computers`) return json({ computers: [] });
+    if (path === `/api/v1/teams/${teamId}/computers`) {
+      return json({
+        computers: options.computerOnline
+          ? [
+              {
+                id: computerId,
+                ownerUserId: userId,
+                ownerDisplayName: "Ada",
+                displayName: "Ada's Mac",
+                platform: "darwin",
+                connectionStatus: "online",
+                connectedAt: "2026-08-20T00:00:00.000Z",
+                lastSeenAt: "2026-08-20T00:00:00.000Z",
+                observedAt: "2026-08-20T00:00:00.000Z",
+                agentIds: [agentId],
+              },
+            ]
+          : [],
+      });
+    }
     if (path === "/api/v1/me/computers") return json({ computers: [] });
     if (path === "/api/v1/me/connect-codes" && init?.method === "POST") {
       return json(
@@ -216,7 +236,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("link", { name: "Agents" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Create Agent" })).toBeTruthy();
-    expect(screen.queryByText("Tasks")).toBeNull();
+    expect(screen.getByText("Tasks").getAttribute("aria-disabled")).toBe("true");
   });
 
   it.each(["/", "/agents"])("redirects unauthenticated protected path %s to login", async (path) => {
@@ -232,9 +252,44 @@ describe("OpenTag Web App Shell", () => {
     installApi("member");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    expect(screen.getByText("Member · read only")).toBeTruthy();
+    expect(screen.getByText("Member")).toBeTruthy();
     expect(await screen.findByText("Reviewer")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Create Agent" })).toBeNull();
+  });
+
+  it("uses a flat local navigation for Agent detail", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    const navigation = screen.getByRole("navigation", { name: "Agent settings" });
+    expect(
+      within(navigation)
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+    ).toEqual(["Overview", "Runtime", "Messaging", "Resources", "Integrations", "Access"]);
+  });
+
+  it("marks an Agent ready only when messaging is active and its Computer is online", async () => {
+    installApi("admin", { bound: true, computerOnline: true });
+    render(<App />);
+    expect(await screen.findByText("Ready")).toBeTruthy();
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === `/api/v1/teams/${teamId}/computers`),
+    ).toHaveLength(1);
+  });
+
+  it("uses a flat local navigation for Settings", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/settings/team");
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Settings" })).toBeTruthy();
+    const navigation = screen.getByRole("navigation", { name: "Team settings" });
+    expect(
+      within(navigation)
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+    ).toEqual(["General", "Members", "Computers", "Resources", "Integrations", "Access", "Usage", "Security"]);
   });
 
   it("lets admins rename a Team and refreshes the UUID-selected Team context from /me", async () => {

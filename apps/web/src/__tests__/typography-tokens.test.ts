@@ -86,7 +86,28 @@ function unconditional(declaration: Declaration): boolean {
  * scale has to be declared at an unconditional :root to count as declared.
  */
 function atRoot(declaration: Declaration): boolean {
-  return unconditional(declaration) && selectorsOf(declaration).includes(":root");
+  const selectors = selectorsOf(declaration);
+  return unconditional(declaration) && selectors.length > 0 && selectors.every((selector) => selector === ":root");
+}
+
+/**
+ * The browser decodes identifier escapes before it matches a property name;
+ * PostCSS hands them over as written. `f\6f nt-size` is `font-size` to the
+ * page, so it has to be `font-size` here too -- and `--text\2d ui` is the
+ * `--text-ui` role, not a name of its own.
+ */
+function decodeIdentifier(name: string): string {
+  return name.replace(/\\(?:([0-9a-fA-F]{1,6})[ \t\n\r\f]?|(.))/gs, (_match, hex?: string, literal?: string) => {
+    if (hex === undefined) return literal ?? "";
+    const code = Number.parseInt(hex, 16);
+    const unrepresentable = code === 0 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff);
+    return unrepresentable ? "\uFFFD" : String.fromCodePoint(code);
+  });
+}
+
+/** The name a declaration carries once decoded: what the browser matches against. */
+function declaredName(declaration: Declaration): string {
+  return decodeIdentifier(declaration.prop);
 }
 
 /**
@@ -97,9 +118,15 @@ function withoutStrings(value: string): string {
   return value.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, "");
 }
 
+/** Strings go first, then escapes: decoding first could manufacture a quote. */
+function readableValue(value: string): string {
+  return decodeIdentifier(withoutStrings(value));
+}
+
 /** Ordinary property names are ASCII case-insensitive; custom property names are not. */
 function propertyName(declaration: Declaration): string {
-  return declaration.prop.startsWith("--") ? declaration.prop : declaration.prop.toLowerCase();
+  const name = declaredName(declaration);
+  return name.startsWith("--") ? name : name.toLowerCase();
 }
 
 /** Values of one property, matched by parsed name so `font` never collects `font-size`. */
@@ -113,7 +140,7 @@ function definedTokens(css: string, prefix: string): Set<string> {
   const pattern = new RegExp(`^--(${prefix}-[a-z0-9-]+)$`);
   const names = new Set<string>();
   for (const declaration of declarations(css).filter(atRoot)) {
-    const name = declaration.prop.match(pattern)?.[1];
+    const name = declaredName(declaration).match(pattern)?.[1];
     if (name !== undefined) names.add(name);
   }
   return names;
@@ -130,7 +157,7 @@ function offTokenValues(css: string, property: string, allowed: RegExp, literals
 function danglingReferences(css: string): string[] {
   const defined = definedTypographyTokens(css);
   const referenced = declarations(css).flatMap((declaration) =>
-    [...withoutStrings(declaration.value).matchAll(TOKEN_REFERENCE)]
+    [...readableValue(declaration.value).matchAll(TOKEN_REFERENCE)]
       .map((match) => match[1])
       .filter((name): name is string => name !== undefined),
   );
@@ -140,10 +167,10 @@ function danglingReferences(css: string): string[] {
 /** Steps named by a role, paired with the role, so a broken edge names both ends. */
 function roleEdges(css: string): { role: string; step: string }[] {
   return declarations(css)
-    .filter((declaration) => /^--text-[a-z]+$/.test(declaration.prop))
+    .filter((declaration) => /^--text-[a-z]+$/.test(declaredName(declaration)))
     .flatMap((declaration) => {
-      const step = withoutStrings(declaration.value).match(/^var\(\s*--(fs-[a-z0-9-]+)\s*\)$/)?.[1];
-      return step === undefined ? [] : [{ role: declaration.prop, step }];
+      const step = readableValue(declaration.value).match(/^var\(\s*--(fs-[a-z0-9-]+)\s*\)$/)?.[1];
+      return step === undefined ? [] : [{ role: declaredName(declaration), step }];
     });
 }
 
@@ -156,13 +183,15 @@ function unresolvedRoles(css: string): string[] {
 
 /** Every baseline step declaration, well-formed or not, so none is skipped silently. */
 function rootStepDeclarations(css: string): Declaration[] {
-  return declarations(css).filter((declaration) => atRoot(declaration) && declaration.prop.startsWith("--fs-"));
+  return declarations(css).filter(
+    (declaration) => atRoot(declaration) && declaredName(declaration).startsWith("--fs-"),
+  );
 }
 
 /** A step is a numeric name and a rem value; anything else does not describe one. */
 function stepOf(declaration: Declaration): { name: number; px: number } | undefined {
-  const name = declaration.prop.match(/^--fs-([0-9]+)$/)?.[1];
-  const rem = withoutStrings(declaration.value).match(/^([0-9.]+)rem$/)?.[1];
+  const name = declaredName(declaration).match(/^--fs-([0-9]+)$/)?.[1];
+  const rem = readableValue(declaration.value).match(/^([0-9.]+)rem$/)?.[1];
   if (name === undefined || rem === undefined) return undefined;
   return { name: Number(name), px: Number(rem) * 16 };
 }
@@ -177,7 +206,7 @@ function rawSteps(css: string): { name: number; px: number }[] {
 function malformedSteps(css: string): string[] {
   return rootStepDeclarations(css)
     .filter((declaration) => stepOf(declaration) === undefined)
-    .map((declaration) => `${declaration.prop}: ${declaration.value}`);
+    .map((declaration) => `${declaredName(declaration)}: ${declaration.value}`);
 }
 
 /**
@@ -190,7 +219,7 @@ function scopedDefinitions(css: string): { token: string; selectors: string[] }[
   return declarations(css)
     .filter((declaration) => !atRoot(declaration))
     .flatMap((declaration) => {
-      const token = declaration.prop.match(pattern)?.[1];
+      const token = declaredName(declaration).match(pattern)?.[1];
       if (token === undefined) return [];
       return [{ token, selectors: selectorsOf(declaration) }];
     });
@@ -354,6 +383,27 @@ describe("the guard itself", () => {
         !definition.selectors.every((selector) => READING_SURFACES.has(selector)),
     );
     expect(stray).toEqual([{ token: "text-ui", selectors: [".row"] }]);
+  });
+
+  it("decodes an escaped ordinary property name the way the browser does", () => {
+    const css = String.raw`body { f\6f nt-size: 23px; }`;
+    expect(offTokenValues(css, "font-size", /^var\(--text-[a-z]+\)$/)).toEqual(["23px"]);
+  });
+
+  it("decodes an escaped custom property name, which names an existing role", () => {
+    const css = String.raw`.row { --text\2d ui: var(--fs-30); }`;
+    expect(scopedDefinitions(css)).toEqual([{ token: "text-ui", selectors: [".row"] }]);
+  });
+
+  it("keeps a decoded custom property name case-sensitive, as CSS defines it", () => {
+    const css = String.raw`:root { --TEXT\2d UI: 13px; --text-ui: var(--fs-13); --fs-13: 0.8125rem; }`;
+    expect([...definedTokens(css, "text")]).toEqual(["text-ui"]);
+  });
+
+  it("refuses a baseline that shares its rule with another selector", () => {
+    const css =
+      ":root { --fs-13: 0.8125rem; --text-ui: var(--fs-14); --fs-14: 0.875rem; }\n:root, .row { --text-ui: var(--fs-13); }";
+    expect(scopedDefinitions(css)).toEqual([{ token: "text-ui", selectors: [":root", ".row"] }]);
   });
 
   it("does not read a commented-out declaration as a violation", () => {

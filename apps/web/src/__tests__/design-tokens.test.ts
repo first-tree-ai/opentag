@@ -13,8 +13,8 @@ import {
 
 /**
  * Radius, elevation and motion, held to the same rule as type: a value that
- * carries a design decision resolves through a token, and the exceptions name
- * where they apply.
+ * carries a design decision resolves through a token of the family that owns
+ * that decision, and the exceptions name where they apply.
  *
  * Before this, the stylesheet had 17 radius literals for what is five steps,
  * five shadows with five different formulations across three shadow hues, and
@@ -46,42 +46,100 @@ function excepted(declaration: Declared, property: string): boolean {
   );
 }
 
-const TOKEN_REFERENCE = /var\(\s*--[a-z0-9-]+\s*\)/g;
+/**
+ * A property is owned by the family that answers for it. Ownership is matched
+ * by shape rather than by a list of property names: every corner property ends
+ * in `-radius`, physical and logical alike, and a longhand nobody has heard of
+ * yet still fails closed instead of slipping past an enumeration.
+ */
+type Owner = { owns: (property: string) => boolean; families: string[]; inert: ReadonlySet<string> };
+
+const RADIUS: Owner = {
+  owns: (property) => /(^|-)radius$/.test(property),
+  families: ["radius"],
+  inert: new Set(["0"]),
+};
+
+const SHADOW: Owner = {
+  owns: (property) => /(^|-)shadow$/.test(property),
+  families: ["shadow"],
+  inert: new Set(["none"]),
+};
+
+const MOTION: Owner = {
+  owns: (property) =>
+    property === "transition" ||
+    property === "animation" ||
+    /^(transition|animation)-(duration|delay|timing-function)$/.test(property),
+  families: ["motion", "ease"],
+  inert: new Set(),
+};
 
 /**
- * What is left of a value once its token references are removed. A shorthand
- * composes several -- `var(--radius-md) 0 0 var(--radius-md)` is four corners --
- * so a value cannot be matched whole; what matters is that nothing carrying a
- * decision survives the removal.
+ * References to the families that own this property. Erasing every `var(--...)`
+ * instead would accept `--corner: 11px; border-radius: var(--corner)`, which is
+ * the component-local source of truth this whole change removes.
  */
-function residue(declaration: Declared): string[] {
-  return declaration.value.replace(TOKEN_REFERENCE, " ").trim().split(/\s+/).filter(Boolean);
+function ownedReferences(owner: Owner): RegExp {
+  return new RegExp(`var\\(\\s*--(?:${owner.families.join("|")})-[a-z0-9-]+\\s*\\)`, "g");
 }
 
-/** Values of one property that still carry something the token layer should own. */
-function untokenized(css: string, property: string, inert: ReadonlySet<string>): string[] {
+/** Any reference at all, so a foreign one can be told apart from no reference. */
+const ANY_REFERENCE = /var\(\s*--[a-z0-9-]+\s*\)/;
+
+/** Values of an owned property still carrying something the token layer should own. */
+function untokenized(css: string, owner: Owner): string[] {
   return declarations(css)
-    .filter((declaration) => propertyName(declaration) === property)
-    .filter((declaration) => !excepted(declaration, property))
-    .filter((declaration) => !residue(declaration).every((word) => inert.has(word)))
+    .filter((declaration) => owner.owns(propertyName(declaration)))
+    .filter((declaration) => !excepted(declaration, propertyName(declaration)))
+    .filter((declaration) => {
+      const residue = declaration.value.replace(ownedReferences(owner), " ").trim().split(/\s+/).filter(Boolean);
+      return !residue.every((word) => owner.inert.has(word));
+    })
     .map((declaration) => `${declaration.name}: ${declaration.value}`);
 }
 
 /**
- * A duration or an easing written into a transition is a decision made twice.
- * Property names are ordinary words in these values, so the residue is read for
- * what a decision looks like rather than for what is left over.
+ * A duration or an easing written into a transition is a decision made twice,
+ * and a variable from another family is that decision under a different name.
+ * Property names are ordinary words here, so the residue is read for what a
+ * decision looks like rather than for what is left over.
  */
 const TIME = /\d+(\.\d+)?\s*m?s\b/;
 const EASING = /\b(ease|ease-in|ease-out|ease-in-out|linear|step-start|step-end|steps|cubic-bezier)\b/;
 
-function untokenizedMotion(css: string, property: string): string[] {
+function untokenizedMotion(css: string): string[] {
   return declarations(css)
-    .filter((declaration) => propertyName(declaration) === property)
+    .filter((declaration) => MOTION.owns(propertyName(declaration)))
     .filter((declaration) => {
-      const rest = declaration.value.replace(TOKEN_REFERENCE, " ");
-      return TIME.test(rest) || EASING.test(rest);
+      const residue = declaration.value.replace(ownedReferences(MOTION), " ");
+      return TIME.test(residue) || EASING.test(residue) || ANY_REFERENCE.test(residue);
     })
+    .map((declaration) => `${declaration.name}: ${declaration.value}`);
+}
+
+/**
+ * One elevation layer: offsets and blur as lengths, and its colour drawn from
+ * the single shadow hue. Checking that a token merely mentions --shadow-color
+ * would accept a second hue sitting beside it.
+ */
+const SHADOW_LAYER = /^(inset\s+)?((-?[0-9.]+px|0)\s+){2,4}rgb\(var\(--shadow-color\)\s*\/\s*[0-9.]+%\)$/;
+
+function elevationTokens(css: string): Declared[] {
+  return declarations(css).filter(
+    (declaration) =>
+      atRoot(declaration) && declaration.name.startsWith("--shadow-") && declaration.name !== "--shadow-color",
+  );
+}
+
+function malformedElevations(css: string): string[] {
+  return elevationTokens(css)
+    .filter((declaration) =>
+      declaration.value
+        .split(",")
+        .map((layer) => layer.trim())
+        .some((layer) => !SHADOW_LAYER.test(layer)),
+    )
     .map((declaration) => `${declaration.name}: ${declaration.value}`);
 }
 
@@ -94,16 +152,15 @@ function baselineTokens(css: string, family: string): string[] {
 
 describe("radius, elevation and motion tokens", () => {
   it("resolves every corner through a --radius-* token", () => {
-    expect(untokenized(stylesheet, "border-radius", new Set(["0"]))).toEqual([]);
+    expect(untokenized(stylesheet, RADIUS)).toEqual([]);
   });
 
   it("resolves every shadow through a --shadow-* token", () => {
-    expect(untokenized(stylesheet, "box-shadow", new Set(["none"]))).toEqual([]);
+    expect(untokenized(stylesheet, SHADOW)).toEqual([]);
   });
 
-  it("writes no duration or easing into a transition or an animation", () => {
-    expect(untokenizedMotion(stylesheet, "transition")).toEqual([]);
-    expect(untokenizedMotion(stylesheet, "animation")).toEqual([]);
+  it("writes no duration, easing or foreign variable into a transition or an animation", () => {
+    expect(untokenizedMotion(stylesheet)).toEqual([]);
   });
 
   it("declares the three scales at the baseline", () => {
@@ -112,18 +169,13 @@ describe("radius, elevation and motion tokens", () => {
     expect(baselineTokens(stylesheet, "motion").length).toBeGreaterThan(0);
   });
 
-  it("draws every shadow in one colour, so elevation reads as one system", () => {
-    const shadows = declarations(stylesheet).filter(
-      (declaration) =>
-        atRoot(declaration) && declaration.name.startsWith("--shadow-") && declaration.name !== "--shadow-color",
-    );
-    expect(shadows.length).toBeGreaterThan(0);
-    expect(shadows.filter((declaration) => !declaration.value.includes("var(--shadow-color)"))).toEqual([]);
+  it("draws every elevation layer in the one shadow colour", () => {
+    expect(elevationTokens(stylesheet).length).toBeGreaterThan(0);
+    expect(malformedElevations(stylesheet)).toEqual([]);
   });
 
   it("keeps radius, elevation and motion out of surface rebindings", () => {
-    const scoped = scopedDefinitions(stylesheet, ["radius", "shadow", "motion", "ease"]);
-    expect(scoped).toEqual([]);
+    expect(scopedDefinitions(stylesheet, ["radius", "shadow", "motion", "ease"])).toEqual([]);
   });
 });
 
@@ -139,60 +191,92 @@ describe("every design token", () => {
 
 describe("the guard itself", () => {
   it("rejects a literal corner", () => {
-    const css = ".row { border-radius: 11px; }";
-    expect(untokenized(css, "border-radius", new Set(["0"]))).toEqual(["border-radius: 11px"]);
+    expect(untokenized(".row { border-radius: 11px; }", RADIUS)).toEqual(["border-radius: 11px"]);
   });
 
   it("accepts a corner composed of tokens, and a plain reset", () => {
     const css = ".row { border-radius: var(--radius-md) 0 0 var(--radius-md); }\n.flat { border-radius: 0; }";
-    expect(untokenized(css, "border-radius", new Set(["0"]))).toEqual([]);
+    expect(untokenized(css, RADIUS)).toEqual([]);
   });
 
   it("rejects a literal hiding among tokens in a shorthand", () => {
     const css = ".row { border-radius: var(--radius-md) 11px 0 var(--radius-md); }";
-    expect(untokenized(css, "border-radius", new Set(["0"]))).toEqual([
-      "border-radius: var(--radius-md) 11px 0 var(--radius-md)",
+    expect(untokenized(css, RADIUS)).toEqual(["border-radius: var(--radius-md) 11px 0 var(--radius-md)"]);
+  });
+
+  it("rejects a component-local variable standing in for a token", () => {
+    const corner = ".row { --corner: 11px; border-radius: var(--corner); }";
+    expect(untokenized(corner, RADIUS)).toEqual(["border-radius: var(--corner)"]);
+
+    const depth = ".deep { --depth: 0 1px 4px red; box-shadow: var(--depth); }";
+    expect(untokenized(depth, SHADOW)).toEqual(["box-shadow: var(--depth)"]);
+
+    const timing = ".slow { transition: opacity var(--pace) var(--curve); }";
+    expect(untokenizedMotion(timing)).toEqual(["transition: opacity var(--pace) var(--curve)"]);
+  });
+
+  it("rejects a token borrowed from the wrong family", () => {
+    const css = ".row { border-radius: var(--shadow-raised); }";
+    expect(untokenized(css, RADIUS)).toEqual(["border-radius: var(--shadow-raised)"]);
+  });
+
+  it("reads the corner longhands, physical and logical alike", () => {
+    const physical = ".row { border-top-left-radius: 11px; }";
+    expect(untokenized(physical, RADIUS)).toEqual(["border-top-left-radius: 11px"]);
+
+    const logical = ".row { border-start-start-radius: 11px; }";
+    expect(untokenized(logical, RADIUS)).toEqual(["border-start-start-radius: 11px"]);
+  });
+
+  it("reads the motion longhands", () => {
+    const css = ".row { transition-duration: 130ms; transition-timing-function: ease-in-out; transition-delay: 40ms; }";
+    expect(untokenizedMotion(css)).toEqual([
+      "transition-duration: 130ms",
+      "transition-timing-function: ease-in-out",
+      "transition-delay: 40ms",
     ]);
   });
 
+  it("reads text-shadow as elevation too", () => {
+    expect(untokenized(".row { text-shadow: 0 1px 2px red; }", SHADOW)).toEqual(["text-shadow: 0 1px 2px red"]);
+  });
+
   it("holds the icon exception to the selectors that earn it", () => {
-    const granted = ".settings-computer-icon { border-radius: 3px; }";
-    expect(untokenized(granted, "border-radius", new Set(["0"]))).toEqual([]);
-
-    const elsewhere = ".card { border-radius: 3px; }";
-    expect(untokenized(elsewhere, "border-radius", new Set(["0"]))).toEqual(["border-radius: 3px"]);
-
-    const widened = ".settings-computer-icon, .card { border-radius: 3px; }";
-    expect(untokenized(widened, "border-radius", new Set(["0"]))).toEqual(["border-radius: 3px"]);
+    expect(untokenized(".settings-computer-icon { border-radius: 3px; }", RADIUS)).toEqual([]);
+    expect(untokenized(".card { border-radius: 3px; }", RADIUS)).toEqual(["border-radius: 3px"]);
+    expect(untokenized(".settings-computer-icon, .card { border-radius: 3px; }", RADIUS)).toEqual([
+      "border-radius: 3px",
+    ]);
   });
 
   it("rejects a literal shadow, and accepts none", () => {
     const literal = ".card { box-shadow: 0 1px 4px rgb(22 33 27 / 8%); }";
-    expect(untokenized(literal, "box-shadow", new Set(["none"]))).toEqual(["box-shadow: 0 1px 4px rgb(22 33 27 / 8%)"]);
-    expect(untokenized(".card { box-shadow: none; }", "box-shadow", new Set(["none"]))).toEqual([]);
+    expect(untokenized(literal, SHADOW)).toEqual(["box-shadow: 0 1px 4px rgb(22 33 27 / 8%)"]);
+    expect(untokenized(".card { box-shadow: none; }", SHADOW)).toEqual([]);
   });
 
-  it("rejects a duration or an easing written by hand", () => {
-    const duration = ".row { transition: background-color 130ms var(--ease-standard); }";
-    expect(untokenizedMotion(duration, "transition")).toEqual([
-      "transition: background-color 130ms var(--ease-standard)",
+  it("rejects a second hue sitting beside the shadow colour", () => {
+    const css = ":root { --shadow-raised: 0 1px 4px red, 0 1px 4px rgb(var(--shadow-color) / 8%); }";
+    expect(malformedElevations(css)).toEqual([
+      "--shadow-raised: 0 1px 4px red, 0 1px 4px rgb(var(--shadow-color) / 8%)",
     ]);
+  });
 
-    const easing = ".row { transition: background-color var(--motion-fast) ease-in-out; }";
-    expect(untokenizedMotion(easing, "transition")).toEqual([
-      "transition: background-color var(--motion-fast) ease-in-out",
-    ]);
+  it("accepts a two-layer elevation drawn in one colour", () => {
+    const css =
+      ":root { --shadow-overlay: 0 1px 2px rgb(var(--shadow-color) / 6%), 0 12px 32px rgb(var(--shadow-color) / 10%); }";
+    expect(malformedElevations(css)).toEqual([]);
   });
 
   it("accepts a fully tokenized transition, and the reduced-motion reset", () => {
     const css =
       ".row { transition: background-color var(--motion-fast) var(--ease-standard); }\n.still { transition: none; }";
-    expect(untokenizedMotion(css, "transition")).toEqual([]);
+    expect(untokenizedMotion(css)).toEqual([]);
   });
 
   it("does not mistake a property name for an easing keyword", () => {
     const css = ".row { transition: border-color var(--motion-fast) var(--ease-standard); }";
-    expect(untokenizedMotion(css, "transition")).toEqual([]);
+    expect(untokenizedMotion(css)).toEqual([]);
   });
 
   it("reports a reference to a token no baseline declares", () => {

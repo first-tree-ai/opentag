@@ -7,7 +7,7 @@ export interface WatchedProcessOptions {
 }
 
 // The wrapper owns the provider process group. If the daemon disappears, its stdin
-// closes and the wrapper terminates the whole group instead of orphaning Codex.
+// closes and the wrapper terminates the whole group instead of orphaning the Provider.
 const WATCHDOG_SOURCE = `
 const { spawn, spawnSync } = require("node:child_process");
 const command = process.argv[1];

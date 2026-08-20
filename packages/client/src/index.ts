@@ -76,6 +76,23 @@ export {
   createLogger,
 } from "./observability/logger.js";
 export {
+  CLAUDE_CODE_AGENT_RUNTIME_MANIFEST,
+  ClaudeCodeAgentRuntime,
+  ClaudeCodeAgentRuntimeFactory,
+  type ClaudeCodeAgentRuntimeFactoryOptions,
+  claudeCodeAgentRuntimeEnvironment,
+} from "./providers/claude-code/agent-runtime.js";
+export {
+  CLAUDE_CODE_MAX_LINE_BYTES,
+  CLAUDE_CODE_MAX_STDERR_BYTES,
+  ClaudeCodeProcess,
+  type ClaudeCodeProcessClient,
+  ClaudeCodeProcessError,
+  type ClaudeCodeProcessResult,
+  type ClaudeCodeProcessSpawnOptions,
+  type ClaudeCodeSpawnOptions,
+} from "./providers/claude-code/process-wire.js";
+export {
   CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
   CODEX_AGENT_RUNTIME_MANIFEST,
   CodexAgentRuntime,

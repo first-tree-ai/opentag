@@ -316,6 +316,53 @@ describe("CodexAppServerProcess exhaustive behavior", () => {
     await process.close();
   });
 
+  it("fails closed for unavailable and malformed dynamic tools while accepting a string namespace", async () => {
+    const child = new FakeChild();
+    const process = processWith(child);
+    const params = {
+      arguments: { text: "hello" },
+      callId: "call-1",
+      namespace: null,
+      threadId: "thread-1",
+      tool: "opentag_message_send",
+      turnId: "turn-1",
+    };
+
+    child.send({ id: "unavailable", method: "item/tool/call", params });
+    await vi.waitFor(() =>
+      expect(child.messages).toContainEqual({
+        id: "unavailable",
+        result: {
+          contentItems: [{ type: "inputText", text: "OpenTag tool is unavailable." }],
+          success: false,
+        },
+      }),
+    );
+
+    const handler = vi.fn(async () => ({ success: true, text: "handled" }));
+    process.setDynamicToolHandler(handler);
+    child.send({ id: "malformed", method: "item/tool/call", params: { ...params, namespace: 42 } });
+    await vi.waitFor(() =>
+      expect(child.messages).toContainEqual({
+        id: "malformed",
+        result: {
+          contentItems: [{ type: "inputText", text: "OpenTag tool request failed." }],
+          success: false,
+        },
+      }),
+    );
+
+    child.send({ id: "namespaced", method: "item/tool/call", params: { ...params, namespace: "opentag" } });
+    await vi.waitFor(() =>
+      expect(child.messages).toContainEqual({
+        id: "namespaced",
+        result: { contentItems: [{ type: "inputText", text: "handled" }], success: true },
+      }),
+    );
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ namespace: "opentag" }));
+    await process.close();
+  });
+
   it("fails when notification listeners throw and tolerates failure listeners throwing", async () => {
     const child = new FakeChild();
     const process = processWith(child);

@@ -970,6 +970,22 @@ function NewAgentDialog({
   onCloseRef.current = onClose;
 
   useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const target = dialog.querySelector<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled])",
+    );
+    if (submitting) {
+      if (!activeElement || !dialog.contains(activeElement) || activeElement.matches(":disabled")) {
+        (target ?? dialog).focus();
+      }
+    } else if (activeElement === dialog) {
+      target?.focus();
+    }
+  }, [submitting]);
+
+  useEffect(() => {
     closeButtonRef.current?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -1077,6 +1093,8 @@ function AgentCreationContent({
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
   const firstFieldRef = useRef<HTMLInputElement>(null);
+  const inFlightRef = useRef(false);
+  const creationIntentRef = useRef<{ fingerprint: string; id: string } | null>(null);
 
   useEffect(() => {
     if (presentation === "dialog" && computers.kind === "ready") firstFieldRef.current?.focus();
@@ -1084,22 +1102,32 @@ function AgentCreationContent({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submitting) return;
+    if (inFlightRef.current) return;
     const data = new FormData(event.currentTarget);
+    const input = {
+      name: String(data.get("name") ?? ""),
+      displayName: String(data.get("displayName") ?? ""),
+      runtimeProvider: String(data.get("runtimeProvider") ?? "codex") as "codex" | "claude-code",
+      computerId: String(data.get("computerId") ?? ""),
+    };
+    const fingerprint = JSON.stringify(input);
+    if (creationIntentRef.current?.fingerprint !== fingerprint) {
+      creationIntentRef.current = { fingerprint, id: crypto.randomUUID() };
+    }
+    inFlightRef.current = true;
     setError(undefined);
     setSubmitting(true);
     onSubmittingChange?.(true);
     try {
       const created = await browserApi.createAgent(teamId, {
-        name: String(data.get("name") ?? ""),
-        displayName: String(data.get("displayName") ?? ""),
-        runtimeProvider: String(data.get("runtimeProvider") ?? "codex") as "codex" | "claude-code",
-        computerId: String(data.get("computerId") ?? ""),
+        creationIntentId: creationIntentRef.current.id,
+        ...input,
       });
       onCreated(created.id);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Agent creation failed");
     } finally {
+      inFlightRef.current = false;
       setSubmitting(false);
       onSubmittingChange?.(false);
     }

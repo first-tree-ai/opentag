@@ -36,6 +36,7 @@ function installApi(
     agentRead?: () => Promise<void> | void;
     agentReadStatus?: () => number | undefined;
     agentListStatus?: () => number | undefined;
+    agentCreate?: (input: Record<string, unknown>) => Promise<void> | void;
     alreadyJoinedInvitation?: boolean;
     bindingReauth?: boolean;
     bindingEvidenceFails?: boolean;
@@ -185,6 +186,7 @@ function installApi(
       });
     }
     if (path === `/api/v1/teams/${teamId}/agents` && init?.method === "POST") {
+      await options.agentCreate?.(JSON.parse(String(init.body)) as Record<string, unknown>);
       return json(adminConfig(), 201);
     }
     // Any Team id, so a Team created during the test is served like the seeded and invited ones.
@@ -477,18 +479,83 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Create Agent" }));
 
     await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}/general`));
-    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
-      `/api/v1/teams/${teamId}/agents`,
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({
-          name: "research-assistant",
-          displayName: "Research Assistant",
-          runtimeProvider: "codex",
-          computerId,
-        }),
-      }),
+    const createCall = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([input, init]) => String(input) === `/api/v1/teams/${teamId}/agents` && init?.method === "POST",
+      );
+    expect(createCall).toBeTruthy();
+    expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
+      creationIntentId: expect.any(String),
+      name: "research-assistant",
+      displayName: "Research Assistant",
+      runtimeProvider: "codex",
+      computerId,
+    });
+  });
+
+  it("blocks duplicate Agent submissions synchronously and repairs focus while creation is pending", async () => {
+    let resolveCreate: () => void = () => undefined;
+    const pendingCreate = new Promise<void>((resolve) => {
+      resolveCreate = resolve;
+    });
+    installApi("admin", { ownComputer: true, agentCreate: () => pendingCreate });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
+    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    fireEvent.change(within(dialog).getByLabelText("Display name"), { target: { value: "Research Assistant" } });
+    fireEvent.change(within(dialog).getByLabelText("Agent name"), { target: { value: "research-assistant" } });
+    const form = within(dialog).getByRole("button", { name: "Create Agent" }).closest("form");
+    const submitButton = within(dialog).getByRole("button", { name: "Create Agent" });
+    submitButton.focus();
+
+    if (!form) throw new Error("Expected the New Agent form");
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([input, init]) => String(input) === `/api/v1/teams/${teamId}/agents` && init?.method === "POST",
+          ),
+      ).toHaveLength(1),
     );
+    await waitFor(() => expect(within(dialog).getByLabelText("Display name")).toBe(document.activeElement));
+    expect(within(dialog).getByRole("button", { name: "Creating…" }).hasAttribute("disabled")).toBe(true);
+    expect(within(dialog).getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(true);
+    expect(within(dialog).getByRole("button", { name: "Close new Agent dialog" }).hasAttribute("disabled")).toBe(true);
+    fireEvent.keyDown(document.activeElement ?? dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "New Agent" })).toBe(dialog);
+
+    resolveCreate();
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}/general`));
+  });
+
+  it("reuses one creation intent when an unchanged Agent request is retried", async () => {
+    const attempts: Record<string, unknown>[] = [];
+    installApi("admin", {
+      ownComputer: true,
+      agentCreate: (input) => {
+        attempts.push(input);
+        if (attempts.length === 1) throw new Error("Connection lost after creation");
+      },
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
+    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    fireEvent.change(within(dialog).getByLabelText("Display name"), { target: { value: "Research Assistant" } });
+    fireEvent.change(within(dialog).getByLabelText("Agent name"), { target: { value: "research-assistant" } });
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create Agent" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Connection lost after creation");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create Agent" }));
+
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}/general`));
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]?.creationIntentId).toMatch(/^[0-9a-f-]{36}$/i);
+    expect(attempts[1]?.creationIntentId).toBe(attempts[0]?.creationIntentId);
   });
 
   it.each(["admin", "member"] as const)("lets a %s update their global account display name", async (role) => {

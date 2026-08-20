@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -158,24 +158,57 @@ describe("Computer identity", () => {
     const home = await temporaryHome();
     const first = await resolveComputerIdentity(home, "https://opentag.example", crypto.randomUUID());
     expect(await resolveComputerIdentity(home, first.serverUrl, first.userId)).toEqual(first);
+    expect(computerIdentityPath(home)).toBe(join(home, "config", "computer.json"));
     expect((await stat(computerIdentityPath(home))).mode & 0o777).toBe(0o600);
     await expect(resolveComputerIdentity(home, "https://other.example", first.userId)).rejects.toThrow(
       "bound to another server or user",
     );
   });
 
-  it("does not read a legacy root Computer identity", async () => {
+  it("does not read, migrate, or delete legacy Computer identities", async () => {
     const home = await temporaryHome();
-    const legacy = {
+    const rootLegacy = {
       version: 1,
       computerId: crypto.randomUUID(),
-      serverUrl: "https://legacy.example",
+      serverUrl: "https://root-legacy.example",
       userId: crypto.randomUUID(),
     };
-    await writeFile(join(home, "computer.json"), `${JSON.stringify(legacy)}\n`, { mode: 0o600 });
+    const dataLegacy = {
+      version: 1,
+      computerId: crypto.randomUUID(),
+      serverUrl: "https://data-legacy.example",
+      userId: crypto.randomUUID(),
+    };
+    const rootLegacyPath = join(home, "computer.json");
+    const dataLegacyPath = join(home, "data", "computer.json");
+    await mkdir(join(home, "data"), { mode: 0o700 });
+    await writeFile(rootLegacyPath, `${JSON.stringify(rootLegacy)}\n`, { mode: 0o600 });
+    await writeFile(dataLegacyPath, `${JSON.stringify(dataLegacy)}\n`, { mode: 0o600 });
 
     const current = await resolveComputerIdentity(home, "https://opentag.example", crypto.randomUUID());
-    expect(current.computerId).not.toBe(legacy.computerId);
-    expect(computerIdentityPath(home)).toBe(join(home, "data", "computer.json"));
+    expect(current.computerId).not.toBe(rootLegacy.computerId);
+    expect(current.computerId).not.toBe(dataLegacy.computerId);
+    expect(await readFile(rootLegacyPath, "utf8")).toBe(`${JSON.stringify(rootLegacy)}\n`);
+    expect(await readFile(dataLegacyPath, "utf8")).toBe(`${JSON.stringify(dataLegacy)}\n`);
+  });
+
+  it("rejects a symlinked nested config directory", async () => {
+    const home = await temporaryHome();
+    const external = await temporaryHome();
+    await symlink(external, join(home, "config"), "dir");
+
+    await expect(resolveComputerIdentity(home, "https://opentag.example", crypto.randomUUID())).rejects.toThrow(
+      /real director/i,
+    );
+    expect(await readdir(external)).toEqual([]);
+  });
+
+  it("rejects a non-directory nested config path", async () => {
+    const home = await temporaryHome();
+    await writeFile(join(home, "config"), "not-a-directory", "utf8");
+
+    await expect(resolveComputerIdentity(home, "https://opentag.example", crypto.randomUUID())).rejects.toThrow(
+      /real director/i,
+    );
   });
 });

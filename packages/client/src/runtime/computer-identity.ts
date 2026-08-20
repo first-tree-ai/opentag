@@ -13,7 +13,7 @@ export interface ComputerIdentity {
 export const COMPUTER_IDENTITY_FILE_NAME = "computer.json";
 
 export function computerIdentityPath(home: string): string {
-  return join(resolveOpenTagHomeLayout(home).data, COMPUTER_IDENTITY_FILE_NAME);
+  return join(resolveOpenTagHomeLayout(home).config, COMPUTER_IDENTITY_FILE_NAME);
 }
 
 export function readComputerIdentity(home: string): Promise<ComputerIdentity | undefined> {

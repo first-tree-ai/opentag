@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import {
   computeRuntimeSnapshotHashes,
   type DirectImMessageDeliveryRequest,
@@ -15,6 +16,7 @@ import {
   ensurePrivateDirectory,
   RuntimeStorageError,
   readDurableJson,
+  validatePrivateDirectory,
   writeDurableJson,
 } from "../storage/durable-file.js";
 import { agentRuntimePaths, sessionBindingPath, snapshotPath } from "./runtime-paths.js";
@@ -103,7 +105,7 @@ export class SessionBindingStore {
   }
 
   read(agentId: string, sessionId: string): Promise<LocalSessionBinding | undefined> {
-    return readDurableJson(sessionBindingPath(this.#home, agentId, sessionId), parseLocalSessionBinding);
+    return this.#readBinding(sessionBindingPath(this.#home, agentId, sessionId));
   }
 
   prepare(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): Promise<SessionPreparationResult> {
@@ -114,7 +116,7 @@ export class SessionBindingStore {
       await ensurePrivateDirectory(this.#home, paths.sessions);
       await ensurePrivateDirectory(this.#home, paths.snapshots);
       const bindingPath = sessionBindingPath(this.#home, request.agentId, request.sessionId);
-      const current = await readDurableJson(bindingPath, parseLocalSessionBinding);
+      const current = await this.#readBinding(bindingPath);
       if (current) this.#validateIdentity(current, request);
       if (current?.unresolvedTurn) {
         if (
@@ -173,7 +175,7 @@ export class SessionBindingStore {
         lastEffectiveSnapshotHash: hashes.effectiveSnapshotHash,
         recentRecordedInputs: current?.recentRecordedInputs ?? [],
       };
-      await writeDurableJson(bindingPath, binding);
+      await this.#writeBinding(bindingPath, binding);
       return { binding };
     });
   }
@@ -209,7 +211,7 @@ export class SessionBindingStore {
         phase: "accepted",
       };
       const updated = { ...binding, unresolvedTurn };
-      await writeDurableJson(path, updated);
+      await this.#writeBinding(path, updated);
       return { status: "committed", binding: updated, unresolvedTurn };
     });
   }
@@ -256,7 +258,7 @@ export class SessionBindingStore {
           ...(fields.resultHash ? { resultHash: fields.resultHash } : {}),
         },
       };
-      await writeDurableJson(path, updated);
+      await this.#writeBinding(path, updated);
       return updated;
     });
   }
@@ -279,7 +281,7 @@ export class SessionBindingStore {
         throw new SessionBindingConflictError("conflict", "The Agent Runtime binding does not match the Session");
       }
       const updated = { ...binding, runtimeBinding };
-      await writeDurableJson(path, updated);
+      await this.#writeBinding(path, updated);
       return updated;
     });
   }
@@ -315,7 +317,7 @@ export class SessionBindingStore {
       ].slice(-this.#recordedInputLimit);
       const updated = { ...binding, recentRecordedInputs };
       delete updated.unresolvedTurn;
-      await writeDurableJson(path, updated);
+      await this.#writeBinding(path, updated);
       return updated;
     });
   }
@@ -324,6 +326,18 @@ export class SessionBindingStore {
     const binding = await this.read(agentId, sessionId);
     if (!binding) throw new SessionBindingConflictError("conflict", "The Session binding does not exist");
     return binding;
+  }
+
+  async #readBinding(path: string): Promise<LocalSessionBinding | undefined> {
+    if (!(await validatePrivateDirectory(this.#home, dirname(path)))) return undefined;
+    return readDurableJson(path, parseLocalSessionBinding);
+  }
+
+  async #writeBinding(path: string, binding: LocalSessionBinding): Promise<void> {
+    if (!(await validatePrivateDirectory(this.#home, dirname(path)))) {
+      throw new RuntimeStorageError("unsafe", "The Session binding directory does not exist");
+    }
+    await writeDurableJson(path, binding);
   }
 
   #validateIdentity(binding: LocalSessionBinding, request: SessionReconcileRequest): void {

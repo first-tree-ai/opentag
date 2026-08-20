@@ -8,31 +8,33 @@ export function deriveRuntimeKey(kind: "agent" | "session" | "snapshot", id: str
 }
 
 export interface AgentRuntimePaths {
-  agentControl: string;
   agentsFile: string;
-  controlRoot: string;
+  effectiveSnapshotsRoot: string;
   files: string;
+  runtimeRoot: string;
+  sessionBindingsRoot: string;
   sessions: string;
   snapshots: string;
   workspaceRoot: string;
   workspaceState: string;
+  workspaceStatesRoot: string;
 }
 
 export function agentRuntimePaths(home: string, agentId: string): AgentRuntimePaths {
   const layout = resolveOpenTagHomeLayout(home);
-  const controlRoot = layout.runtimeAgents;
   const key = deriveRuntimeKey("agent", agentId);
-  const agentControl = resolve(controlRoot, key);
   const workspaceRoot = resolve(layout.workspaces, key);
   return {
-    agentControl,
     agentsFile: resolve(workspaceRoot, "AGENTS.md"),
-    controlRoot,
+    effectiveSnapshotsRoot: layout.runtimeEffectiveSnapshots,
     files: resolve(workspaceRoot, "files"),
-    sessions: resolve(agentControl, "sessions"),
-    snapshots: resolve(agentControl, "snapshots"),
+    runtimeRoot: layout.runtime,
+    sessionBindingsRoot: layout.runtimeSessionBindings,
+    sessions: resolve(layout.runtimeSessionBindings, key),
+    snapshots: resolve(layout.runtimeEffectiveSnapshots, key),
     workspaceRoot,
-    workspaceState: resolve(agentControl, "workspace.json"),
+    workspaceState: resolve(layout.runtimeWorkspaceStates, `${key}.json`),
+    workspaceStatesRoot: layout.runtimeWorkspaceStates,
   };
 }
 

@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
   computeDirectInputHash,
+  computeRuntimeSnapshotHashes,
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
@@ -12,7 +13,7 @@ import {
 } from "@opentag/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
-import { sessionBindingPath } from "../runtime/runtime-paths.js";
+import { agentRuntimePaths, deriveRuntimeKey, sessionBindingPath, snapshotPath } from "../runtime/runtime-paths.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 
@@ -41,6 +42,38 @@ describe("SessionBindingStore", () => {
     await expect(mismatched.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).rejects.toThrow(
       /identity|binding/i,
     );
+  });
+
+  it("stores each Session in an independent private file and isolates Agents", async () => {
+    const fixture = await bindingFixture();
+    const secondSession = { ...fixture.reconcile, requestId: randomUUID(), sessionId: "session-2" };
+    const secondAgentRuntime = {
+      ...snapshot(),
+      agentId: "agent-2",
+      workspace: { ...snapshot().workspace, workspaceId: "workspace-2" },
+    };
+    const secondAgent = {
+      ...fixture.reconcile,
+      requestId: randomUUID(),
+      sessionId: "session-3",
+      agentId: "agent-2",
+      runtime: secondAgentRuntime,
+    };
+
+    await expect(
+      Promise.all([fixture.reconciler.reconcile(secondSession), fixture.reconciler.reconcile(secondAgent)]),
+    ).resolves.toEqual([expect.objectContaining({ status: "ready" }), expect.objectContaining({ status: "ready" })]);
+
+    const firstPath = sessionBindingPath(fixture.home, "agent-1", "session-1");
+    const secondPath = sessionBindingPath(fixture.home, "agent-1", "session-2");
+    const otherAgentPath = sessionBindingPath(fixture.home, "agent-2", "session-3");
+    expect(new Set([firstPath, secondPath, otherAgentPath]).size).toBe(3);
+    await expect(readdir(agentRuntimePaths(fixture.home, "agent-1").sessions)).resolves.toHaveLength(2);
+    await expect(readdir(agentRuntimePaths(fixture.home, "agent-2").sessions)).resolves.toHaveLength(1);
+    if (process.platform !== "win32") {
+      expect((await stat(firstPath)).mode & 0o777).toBe(0o600);
+      expect((await stat(agentRuntimePaths(fixture.home, "agent-1").sessions)).mode & 0o777).toBe(0o700);
+    }
   });
 
   it("C-18 retains only the most recent 64 recorded input tombstones", async () => {
@@ -85,6 +118,21 @@ describe("SessionBindingStore", () => {
       status: "recovery_required",
       turn: { deliveryId: "delivery-1", turnId: "turn-1" },
     });
+  });
+
+  it("recreates a missing effective snapshot from the next Server reconcile", async () => {
+    const fixture = await bindingFixture();
+    const hashes = computeRuntimeSnapshotHashes(fixture.runtime);
+    const path = snapshotPath(fixture.home, "agent-1", hashes.effectiveSnapshotHash);
+    await rm(path);
+
+    const reopenedStore = new SessionBindingStore({ home: fixture.home, providerHomeIdentity: fixture.homeIdentity });
+    const reopenedWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: reopenedStore });
+    const reopened = new SessionReconciler({ computerId: fixture.computerId, preparation: reopenedWorkspace });
+    await expect(reopened.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual(fixture.runtime);
   });
 
   it("keeps the immutable full Turn Report durable before and after acknowledgement", async () => {
@@ -147,9 +195,144 @@ describe("SessionBindingStore", () => {
     });
     expect(rewritten).not.toHaveProperty("providerThreadId");
   });
+
+  it("ignores the legacy runtime/agents binding without migrating or deleting it", async () => {
+    const fixture = await unpreparedBindingFixture();
+    const legacyPath = resolve(
+      fixture.home,
+      "data",
+      "runtime",
+      "agents",
+      deriveRuntimeKey("agent", "agent-1"),
+      "sessions",
+      `${deriveRuntimeKey("session", "session-1")}.json`,
+    );
+    await mkdir(resolve(legacyPath, ".."), { recursive: true, mode: 0o700 });
+    await writeFile(legacyPath, '{"legacy":true}\n', { mode: 0o600 });
+
+    await expect(fixture.reconciler.reconcile(fixture.reconcile)).resolves.toMatchObject({ status: "ready" });
+    expect(await readFile(legacyPath, "utf8")).toBe('{"legacy":true}\n');
+    await expect(fixture.store.read("agent-1", "session-1")).resolves.toMatchObject({ schemaVersion: 2 });
+  });
+
+  it.each(["type root", "Agent directory"] as const)(
+    "fails closed when a direct binding read crosses a symlinked %s",
+    async (linkLevel) => {
+      const source = await bindingFixture();
+      const fixture = await unpreparedBindingFixture();
+      const external = await mkdtemp(resolve(tmpdir(), "opentag-binding-read-external-"));
+      homes.push(external);
+      const raw = await readFile(sessionBindingPath(source.home, "agent-1", "session-1"), "utf8");
+      const agentKey = deriveRuntimeKey("agent", "agent-1");
+      const sessionFile = `${deriveRuntimeKey("session", "session-1")}.json`;
+      const paths = agentRuntimePaths(fixture.home, "agent-1");
+      const externalBinding =
+        linkLevel === "type root" ? resolve(external, agentKey, sessionFile) : resolve(external, sessionFile);
+
+      if (linkLevel === "type root") {
+        await mkdir(resolve(fixture.home, "data", "runtime"), { recursive: true, mode: 0o700 });
+        await mkdir(resolve(external, agentKey), { recursive: true, mode: 0o700 });
+        await symlink(external, resolve(fixture.home, "data", "runtime", "session-bindings"), "dir");
+      } else {
+        await mkdir(resolve(paths.sessions, ".."), { recursive: true, mode: 0o700 });
+        await symlink(external, paths.sessions, "dir");
+      }
+      await writeFile(externalBinding, raw, { mode: 0o600 });
+
+      await expect(fixture.store.read("agent-1", "session-1")).rejects.toThrow(/real director|directories/i);
+      expect(await readFile(externalBinding, "utf8")).toBe(raw);
+    },
+  );
+
+  it("does not mutate an external binding through a symlinked type root", async () => {
+    const source = await bindingFixture();
+    const fixture = await unpreparedBindingFixture();
+    const external = await mkdtemp(resolve(tmpdir(), "opentag-binding-mutation-external-"));
+    homes.push(external);
+    const raw = await readFile(sessionBindingPath(source.home, "agent-1", "session-1"), "utf8");
+    const agentKey = deriveRuntimeKey("agent", "agent-1");
+    const sessionFile = `${deriveRuntimeKey("session", "session-1")}.json`;
+    const externalAgent = resolve(external, agentKey);
+    const externalBinding = resolve(externalAgent, sessionFile);
+    const runtimeRoot = resolve(fixture.home, "data", "runtime");
+    await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
+    await mkdir(externalAgent, { recursive: true, mode: 0o700 });
+    await writeFile(externalBinding, raw, { mode: 0o600 });
+    await symlink(external, resolve(runtimeRoot, "session-bindings"), "dir");
+    const request = delivery(fixture.runtime, 77);
+
+    await expect(
+      fixture.store.recordAccepted(request, computeDirectInputHash(request), "turn-external"),
+    ).rejects.toThrow(/real director|directories/i);
+    expect(await readFile(externalBinding, "utf8")).toBe(raw);
+  });
+
+  it.each(["session-bindings", "effective-snapshots"] as const)(
+    "fails closed on a symlinked %s type root",
+    async (typeRoot) => {
+      const fixture = await unpreparedBindingFixture();
+      const external = await mkdtemp(resolve(tmpdir(), "opentag-binding-external-"));
+      homes.push(external);
+      const runtimeRoot = resolve(fixture.home, "data", "runtime");
+      await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
+      await symlink(external, resolve(runtimeRoot, typeRoot), "dir");
+
+      await expect(
+        fixture.store.prepare(fixture.reconcile, computeRuntimeSnapshotHashes(fixture.runtime)),
+      ).rejects.toThrow(/real director|directories/i);
+      expect(await readdir(external)).toEqual([]);
+    },
+  );
+
+  it.each(["session-bindings", "effective-snapshots"] as const)(
+    "fails closed on a non-directory %s type root",
+    async (typeRoot) => {
+      const fixture = await unpreparedBindingFixture();
+      const runtimeRoot = resolve(fixture.home, "data", "runtime");
+      await mkdir(runtimeRoot, { recursive: true, mode: 0o700 });
+      await writeFile(resolve(runtimeRoot, typeRoot), "not-a-directory", "utf8");
+
+      await expect(
+        fixture.store.prepare(fixture.reconcile, computeRuntimeSnapshotHashes(fixture.runtime)),
+      ).rejects.toThrow(/real director|directories/i);
+    },
+  );
+
+  it.each(["sessions", "snapshots"] as const)("fails closed on a symlinked Agent %s directory", async (pathKey) => {
+    const fixture = await unpreparedBindingFixture();
+    const external = await mkdtemp(resolve(tmpdir(), "opentag-binding-agent-external-"));
+    homes.push(external);
+    const paths = agentRuntimePaths(fixture.home, "agent-1");
+    const target = paths[pathKey];
+    await mkdir(resolve(target, ".."), { recursive: true, mode: 0o700 });
+    await symlink(external, target, "dir");
+
+    await expect(
+      fixture.store.prepare(fixture.reconcile, computeRuntimeSnapshotHashes(fixture.runtime)),
+    ).rejects.toThrow(/real director|directories/i);
+    expect(await readdir(external)).toEqual([]);
+  });
+
+  it.each(["sessions", "snapshots"] as const)("fails closed on a non-directory Agent %s path", async (pathKey) => {
+    const fixture = await unpreparedBindingFixture();
+    const paths = agentRuntimePaths(fixture.home, "agent-1");
+    const target = paths[pathKey];
+    await mkdir(resolve(target, ".."), { recursive: true, mode: 0o700 });
+    await writeFile(target, "not-a-directory", "utf8");
+
+    await expect(
+      fixture.store.prepare(fixture.reconcile, computeRuntimeSnapshotHashes(fixture.runtime)),
+    ).rejects.toThrow(/real director|directories/i);
+  });
 });
 
 async function bindingFixture() {
+  const fixture = await unpreparedBindingFixture();
+  await fixture.reconciler.reconcile(fixture.reconcile);
+  return fixture;
+}
+
+async function unpreparedBindingFixture() {
   const home = await mkdtemp(resolve(tmpdir(), "opentag-binding-test-"));
   homes.push(home);
   const computerId = randomUUID();
@@ -168,7 +351,6 @@ async function bindingFixture() {
     desired: "ready",
     runtime,
   };
-  await reconciler.reconcile(reconcile);
   return { computerId, home, homeIdentity, reconcile, reconciler, runtime, store, workspace };
 }
 

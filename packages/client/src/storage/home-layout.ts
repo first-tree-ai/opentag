@@ -7,7 +7,10 @@ export interface OpenTagHomeLayout {
   data: string;
   home: string;
   logs: string;
-  runtimeAgents: string;
+  runtime: string;
+  runtimeEffectiveSnapshots: string;
+  runtimeSessionBindings: string;
+  runtimeWorkspaceStates: string;
   serviceState: string;
   state: string;
   workspaces: string;
@@ -21,6 +24,7 @@ export function resolveOpenTagHomeLayout(home = resolveOpenTagHome()): OpenTagHo
   const resolvedHome = resolve(home);
   const config = join(resolvedHome, "config");
   const data = join(resolvedHome, "data");
+  const runtime = join(data, "runtime");
   const state = join(resolvedHome, "state");
   return {
     config,
@@ -28,7 +32,10 @@ export function resolveOpenTagHomeLayout(home = resolveOpenTagHome()): OpenTagHo
     data,
     home: resolvedHome,
     logs: join(resolvedHome, "logs"),
-    runtimeAgents: join(data, "runtime", "agents"),
+    runtime,
+    runtimeEffectiveSnapshots: join(runtime, "effective-snapshots"),
+    runtimeSessionBindings: join(runtime, "session-bindings"),
+    runtimeWorkspaceStates: join(runtime, "workspace-states"),
     serviceState: join(state, "service"),
     state,
     workspaces: join(data, "workspaces"),

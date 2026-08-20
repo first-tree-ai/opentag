@@ -113,18 +113,23 @@ opentag-dev daemon status
 opentag-dev computer list
 ```
 
-daemon 会复用 `${OPENTAG_HOME}/data/computer.json` 中的稳定 Computer ID，每次服务启动创建新的进程
+daemon 会复用 `${OPENTAG_HOME}/config/computer.json` 中的稳定 Computer ID，每次服务启动创建新的进程
 instance，并连接 `/api/v1/computer/ws`。OpenTag Home 按生命周期组织：
 
 ```text
 ${OPENTAG_HOME}/
 ├── config/
 │   ├── credentials.json
+│   ├── computer.json
 │   └── daemon.env
 ├── data/
-│   ├── computer.json
-│   ├── runtime/agents/<agent-key>/
+│   ├── runtime/
+│   │   ├── workspace-states/<agent-key>.json
+│   │   ├── session-bindings/<agent-key>/<session-key>.json
+│   │   └── effective-snapshots/<agent-key>/<snapshot-key>.json
 │   └── workspaces/<agent-key>/
+│       ├── AGENTS.md
+│       └── files/
 ├── state/
 │   ├── daemon/owner.json
 │   └── service/
@@ -139,8 +144,26 @@ ${OPENTAG_HOME}/
 `config/credentials.json`；runtime recovery record 和 Workspace 在首次相关 reconcile 时才出现。
 
 此布局采用 clean break：OpenTag 不会读取、迁移、删除或回退到根目录的 `credentials.json`、
-`computer.json`、`daemon-owner.json`、`runtime/`、`service/` 或 `~/.opentag-service-targets`。请使用全新
-Home，或先移走旧 Home 再重新登录；否则旧文件会原样保留，但新版不会使用它们。
+`computer.json`、`daemon-owner.json`、`runtime/`、`service/`，也不会读取 `data/computer.json`、
+`data/runtime/agents` 或 `~/.opentag-service-targets`。请使用全新 Home，或先移走旧 Home 再重新登录；
+否则旧文件会原样保留，但新版不会使用它们。
+
+### 本地数据丢失与恢复
+
+重新登录只能恢复连接，不能恢复原有的本地执行连续性。Server 可以重新签发 credentials，并重建 effective
+snapshot、托管 `AGENTS.md` 以及可由 snapshot 推导的 workspace-state 字段；重新签发的 credentials 不是原值。
+如果 `config/computer.json` 丢失，当前 Client 会创建新的 Computer identity。Server 虽保留旧 Computer 与
+placement 记录，但 Client 不会自动认领旧 identity 或修复旧 binding。
+
+Provider binding、尚未成功上报的 Turn 证据、Workspace 文件和本机 `daemon.env` 值仅存在于本地。Session
+binding 丢失会破坏 Provider 精确续接，并可能使已 accepted 但尚未上报的工作需要显式修复。Workspace 非空
+但 workspace state 丢失时，Client 会 fail closed，不会在无提示的情况下认领这些文件。Workspace 文件只能依赖
+Git、外部存储或本机备份，OpenTag Server 无法恢复。Effective snapshot 可重新生成，不属于主要备份目标。
+
+daemon/service owner、lease state 与日志只有在 daemon 已停止且没有 service mutation 时才可视为本机可重新
+生成数据；操作仍在运行时删除 owner 或 lease 证据，会破坏单 daemon 和 service 互斥。备份应重点保护
+`config/computer.json`、本机 `config/daemon.env`、`data/runtime/session-bindings`，以及成对保存的
+`data/runtime/workspace-states` 与 `data/workspaces`。
 
 使用 `daemon install/start/stop/restart/status/uninstall` 管理服务；`uninstall` 会保留 `config/` 与
 `data/`。v0.1 不支持 Windows daemon 服务。Linux 日志通过

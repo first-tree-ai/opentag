@@ -47,7 +47,7 @@ export class AgentWorkspaceManager implements RuntimePreparation {
 
   async prepareAgent(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void> {
     const paths = agentRuntimePaths(this.#home, snapshot.agentId);
-    await ensurePrivateDirectory(this.#home, paths.agentControl);
+    await ensurePrivateDirectory(this.#home, paths.workspaceStatesRoot);
     const state = await readDurableJson(paths.workspaceState, parseAgentWorkspaceState);
     const workspaceExists = await realDirectoryExists(paths.workspaceRoot);
     if (!state && workspaceExists && (await readdir(paths.workspaceRoot)).length > 0) {
@@ -68,8 +68,6 @@ export class AgentWorkspaceManager implements RuntimePreparation {
     if (!state) await writeDurableJson(paths.workspaceState, next);
     await ensurePrivateDirectory(this.#home, paths.workspaceRoot);
     await ensurePrivateDirectory(this.#home, paths.files);
-    await ensurePrivateDirectory(this.#home, paths.sessions);
-    await ensurePrivateDirectory(this.#home, paths.snapshots);
 
     if (state) {
       validateWorkspaceIdentity(state, snapshot);

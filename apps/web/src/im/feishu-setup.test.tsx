@@ -115,6 +115,8 @@ describe("FeishuSetup", () => {
 
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
     expect(poll).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText(/State: succeeded/)).toBeTruthy();
     expect(onSuccess).toHaveBeenCalledTimes(1);
   });
 

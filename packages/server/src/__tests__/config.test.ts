@@ -17,6 +17,9 @@ describe("parseServerConfig", () => {
       host: "127.0.0.1",
       publicUrl: "http://localhost:8000",
       port: 8000,
+      observability: {
+        tracing: { endpoint: "", environment: "dev", headers: "", sampleRate: 1 },
+      },
       refreshTokenTtlSeconds: 2_592_000,
     });
     expect(parseServerConfig(required).devAuth).toBeUndefined();
@@ -112,6 +115,26 @@ describe("parseServerConfig", () => {
     expect(() => parseServerConfig({ ...required, OPENTAG_PORT: "0" })).toThrow();
     expect(() => parseServerConfig({ ...required, OPENTAG_JWT_SECRET: "short" })).toThrow();
     expect(() => parseServerConfig({ ...required, OPENTAG_DATABASE_URL: "https://example.com" })).toThrow();
+  });
+
+  it("parses optional OTLP tracing configuration and validates its bounds", () => {
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_OTEL_ENDPOINT: "https://logfire-us.pydantic.dev/v1/traces",
+        OPENTAG_OTEL_HEADERS: "Authorization=Bearer pylf_test",
+        OPENTAG_OTEL_ENVIRONMENT: "production",
+        OPENTAG_OTEL_SAMPLE_RATE: "0.25",
+      }).observability.tracing,
+    ).toEqual({
+      endpoint: "https://logfire-us.pydantic.dev/v1/traces",
+      headers: "Authorization=Bearer pylf_test",
+      environment: "production",
+      sampleRate: 0.25,
+    });
+    expect(() => parseServerConfig({ ...required, OPENTAG_OTEL_SAMPLE_RATE: "1.1" })).toThrow();
+    expect(() => parseServerConfig({ ...required, OPENTAG_OTEL_ENDPOINT: "file:///tmp/traces" })).toThrow();
+    expect(() => parseServerConfig({ ...required, OPENTAG_OTEL_ENDPOINT: "https://user:pass@example.com" })).toThrow();
   });
 
   it("allows migration commands to parse only their database dependency", () => {

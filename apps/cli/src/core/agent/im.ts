@@ -77,6 +77,7 @@ export function formatImBindingDiagnostics(value: ImBindingDiagnostics): string 
     `ready\t${value.ready}`,
     `credentialGeneration\t${value.credentialGeneration}`,
     `reauthorizationRequired\t${value.reauthorizationRequired}`,
+    `runtimeToolAvailable\t${value.runtimeToolAvailable}`,
     `connection\t${value.connection ? `${value.connection.state} (observed ${value.connection.observedAt})` : "not applicable"}`,
     `lastInboundAt\t${value.lastInboundAt ?? "-"}`,
     `lastOutboundAt\t${value.lastOutboundAt ?? "-"}`,

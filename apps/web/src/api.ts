@@ -50,6 +50,7 @@ import {
   ListTeamMembersResponseSchema,
   type MeResponse,
   MeResponseSchema,
+  PROVIDER_READINESS_V1_HEADER,
   type TeamInvitation,
   TeamInvitationSchema,
   type TeamMemberAdminConfig,
@@ -224,11 +225,15 @@ export class BrowserApi {
   }
 
   computers(teamId: string): Promise<ListTeamComputersResponse> {
-    return this.request(teamComputersPath(teamId), ListTeamComputersResponseSchema);
+    return this.request(teamComputersPath(teamId), ListTeamComputersResponseSchema, {
+      headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
+    });
   }
 
   ownComputers(): Promise<ListComputersResponse> {
-    return this.request(HTTP_PATHS.meComputers, ListComputersResponseSchema);
+    return this.request(HTTP_PATHS.meComputers, ListComputersResponseSchema, {
+      headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
+    });
   }
 
   issueConnectCode(teamId: string): Promise<ConnectCodeIssueResponse> {

@@ -21,6 +21,13 @@ import {
 describe("runtime domain contract", () => {
   it("B-01 validates every V0 domain request and result through the public schema surface", () => {
     const runtime = snapshot();
+    expect(
+      EffectiveRuntimeSnapshotSchema.parse({
+        ...runtime,
+        provider: "claude-code",
+        execution: { approvalPolicy: "never", networkAccess: true },
+      }),
+    ).toMatchObject({ provider: "claude-code" });
     const reconcile = {
       type: "session:reconcile",
       requestId: randomUUID(),

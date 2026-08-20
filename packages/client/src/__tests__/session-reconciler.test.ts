@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type {
   DirectImMessageDeliveryRequest,
   EffectiveRuntimeSnapshot,
+  InputRejectReason,
   SessionReconcileRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
@@ -193,6 +194,21 @@ describe("SessionReconciler", () => {
     });
     expect(preparation.prepareAgent).not.toHaveBeenCalled();
     expect(preparation.prepareSession).not.toHaveBeenCalled();
+  });
+
+  it("separates stable delivery policy from transient readiness validation", async () => {
+    const computerId = randomUUID();
+    const validate = vi.fn(
+      (_snapshot: EffectiveRuntimeSnapshot): InputRejectReason | undefined => "provider_unavailable",
+    );
+    const validateDelivery = vi.fn(() => undefined);
+    const reconciler = new SessionReconciler({ computerId, localPolicy: { validate, validateDelivery } });
+    const request = reconcileRequest(computerId, "session-1", snapshot("agent-1", "workspace-1"));
+
+    validate.mockReturnValueOnce(undefined);
+    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    expect(reconciler.checkDelivery(directDelivery(request))).toBeUndefined();
+    expect(validateDelivery).toHaveBeenCalledWith(request.runtime);
   });
 });
 

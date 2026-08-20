@@ -9,6 +9,20 @@ const booleanString = (defaultValue: "true" | "false") =>
     .default(defaultValue)
     .transform((value) => value === "true");
 
+const OtlpEndpointSchema = z
+  .string()
+  .trim()
+  .default("")
+  .refine((value) => {
+    if (!value) return true;
+    try {
+      const url = new URL(value);
+      return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password;
+    } catch {
+      return false;
+    }
+  }, "Must be an HTTP(S) URL without credentials");
+
 const DatabaseUrlSchema = z
   .string()
   .url()
@@ -65,6 +79,10 @@ const ServerEnvironmentSchema = z
     OPENTAG_JWT_SECRET: z.string().min(32),
     OPENTAG_PORT: z.coerce.number().int().min(1).max(65_535).default(8000),
     OPENTAG_PUBLIC_URL: PublicUrlSchema,
+    OPENTAG_OTEL_ENDPOINT: OtlpEndpointSchema,
+    OPENTAG_OTEL_ENVIRONMENT: z.string().trim().min(1).optional(),
+    OPENTAG_OTEL_HEADERS: z.string().default(""),
+    OPENTAG_OTEL_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
     OPENTAG_REFRESH_TOKEN_TTL_SECONDS: z.coerce
       .number()
       .int()
@@ -119,6 +137,14 @@ export interface ServerConfig {
   host: string;
   jwtSecret: string;
   migrationsDirectory: string;
+  observability: {
+    tracing: {
+      endpoint: string;
+      environment: string;
+      headers: string;
+      sampleRate: number;
+    };
+  };
   port: number;
   publicUrl: string;
   refreshTokenTtlSeconds: number;
@@ -162,6 +188,10 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_JWT_SECRET: environment.OPENTAG_JWT_SECRET,
     OPENTAG_PORT: environment.OPENTAG_PORT,
     OPENTAG_PUBLIC_URL: environment.OPENTAG_PUBLIC_URL,
+    OPENTAG_OTEL_ENDPOINT: environment.OPENTAG_OTEL_ENDPOINT,
+    OPENTAG_OTEL_ENVIRONMENT: environment.OPENTAG_OTEL_ENVIRONMENT,
+    OPENTAG_OTEL_HEADERS: environment.OPENTAG_OTEL_HEADERS,
+    OPENTAG_OTEL_SAMPLE_RATE: environment.OPENTAG_OTEL_SAMPLE_RATE,
     OPENTAG_REFRESH_TOKEN_TTL_SECONDS: environment.OPENTAG_REFRESH_TOKEN_TTL_SECONDS,
   });
 
@@ -181,6 +211,14 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     host: parsed.OPENTAG_HOST,
     jwtSecret: parsed.OPENTAG_JWT_SECRET,
     migrationsDirectory: parseDatabaseConfig(environment).migrationsDirectory,
+    observability: {
+      tracing: {
+        endpoint: parsed.OPENTAG_OTEL_ENDPOINT,
+        environment: parsed.OPENTAG_OTEL_ENVIRONMENT ?? parsed.OPENTAG_ENV,
+        headers: parsed.OPENTAG_OTEL_HEADERS,
+        sampleRate: parsed.OPENTAG_OTEL_SAMPLE_RATE,
+      },
+    },
     port: parsed.OPENTAG_PORT,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
     refreshTokenTtlSeconds: parsed.OPENTAG_REFRESH_TOKEN_TTL_SECONDS,

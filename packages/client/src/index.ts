@@ -139,6 +139,7 @@ export {
 export {
   type AgentRuntimeProviderRegistration,
   AgentRuntimeProviderRegistry,
+  AgentRuntimeProviderUnavailableError,
 } from "./runtime/agent-runtime-provider-registry.js";
 export { AgentTurnRunner, type AgentTurnRunnerOptions, buildAgentInput } from "./runtime/agent-turn-runner.js";
 export {
@@ -156,7 +157,10 @@ export {
   ComposedClientRuntime,
   type CreateClientRuntimeOptions,
   createClientRuntime,
+  providerReadiness,
+  type ResolvedClaudeCodeFactoryOptions,
   resolveCodexHome,
+  resolvedClaudeCodeFactory,
 } from "./runtime/client-runtime-composition.js";
 export {
   COMPUTER_IDENTITY_FILE_NAME,
@@ -210,7 +214,11 @@ export {
   type SessionRuntimeState,
   type SessionTurnIdentity,
 } from "./runtime/session-reconciler.js";
-export { SessionRuntimeManager, type SessionRuntimeManagerOptions } from "./runtime/session-runtime-manager.js";
+export {
+  ClientRuntimeProviderStartError,
+  SessionRuntimeManager,
+  type SessionRuntimeManagerOptions,
+} from "./runtime/session-runtime-manager.js";
 export {
   TURN_TRACE_BATCH_SOFT_LIMIT_BYTES,
   TURN_TRACE_MAX_BUFFER_BYTES,

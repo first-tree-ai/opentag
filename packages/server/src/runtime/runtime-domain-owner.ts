@@ -14,13 +14,16 @@ import {
   type TurnReportRequest,
   type TurnReportResult,
 } from "@opentag/shared";
-import type { ConnectionRegistry } from "./connection-registry.js";
+import { outcomeAttrs, runtimeAttrs, setActiveSpanAttributes, tracePromise, withSpan } from "../observability/index.js";
+import { type ConnectionRegistry, RuntimeRegistrySendError } from "./connection-registry.js";
 import type { AcceptedDeliveryRecord, RecordedTurnRecord, RuntimeCustodyStore } from "./runtime-custody-store.js";
 import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-session.js";
 
 export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custody-store.js";
 
 export class RuntimeDomainConflictError extends Error {
+  readonly code = "conflict" as const;
+
   constructor(message: string) {
     super(message);
     this.name = "RuntimeDomainConflictError";
@@ -28,7 +31,10 @@ export class RuntimeDomainConflictError extends Error {
 }
 
 export class RuntimeDomainRequestError extends Error {
-  constructor(message: string) {
+  constructor(
+    readonly code: "capacity" | "not_pending" | "send_unavailable" | "stale_placement" | "stopped" | "timeout",
+    message: string,
+  ) {
     super(message);
     this.name = "RuntimeDomainRequestError";
   }
@@ -96,6 +102,7 @@ export class RuntimeDomainOwner {
   readonly #startingDeliveries = new Map<string, StartingDelivery>();
   readonly #expiredDeliveries = new Map<string, ExpiredDelivery>();
   readonly #completed = new Map<string, CompletedRequest>();
+  readonly #tracedPromises = new WeakMap<Promise<unknown>, Promise<unknown>>();
 
   constructor(registry: ConnectionRegistry, custody: RuntimeCustodyStore, options: RuntimeDomainOwnerOptions = {}) {
     this.#registry = registry;
@@ -125,7 +132,7 @@ export class RuntimeDomainOwner {
   close(): void {
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer);
-      pending.reject(new RuntimeDomainRequestError("The runtime domain owner stopped"));
+      pending.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
     }
     this.#pending.clear();
     this.#startingDeliveries.clear();
@@ -139,18 +146,99 @@ export class RuntimeDomainOwner {
     request: SessionReconcileRequest,
     onDispatched?: () => void,
   ): Promise<SessionReconcileResult> {
-    return this.#request(
-      "reconcile",
+    const attrs = runtimeAttrs({
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      agentId: request.agentId,
       computerId,
       instanceId,
-      request,
-      computeReconcilePayloadHash(request),
-      undefined,
-      onDispatched,
-    ) as Promise<SessionReconcileResult>;
+      placementGeneration: request.placementGeneration,
+    });
+    let operation: Promise<SessionReconcileResult>;
+    try {
+      operation = this.#request(
+        "reconcile",
+        computerId,
+        instanceId,
+        request,
+        computeReconcilePayloadHash(request),
+        undefined,
+        onDispatched,
+      ) as Promise<SessionReconcileResult>;
+    } catch (error) {
+      return tracePromise(
+        "runtime.reconcile",
+        attrs,
+        () => {
+          throw error;
+        },
+        undefined,
+        runtimeDomainFailureAttrs,
+      );
+    }
+    return this.#traceOnce(
+      "runtime.reconcile",
+      attrs,
+      operation,
+      (result) => outcomeAttrs(result.status, result.reason),
+      runtimeDomainFailureAttrs,
+    );
   }
 
   requestDelivery(
+    computerId: string,
+    instanceId: string,
+    request: DirectImMessageDeliveryRequest,
+    onDispatched?: () => void,
+  ): Promise<ImMessageDeliveryResult> {
+    const attrs = runtimeAttrs({
+      requestId: request.requestId,
+      deliveryId: request.deliveryId,
+      messageId: request.imMessageId,
+      sessionId: request.sessionId,
+      agentId: request.agentId,
+      computerId,
+      instanceId,
+      placementGeneration: request.placementGeneration,
+    });
+    let operation: Promise<ImMessageDeliveryResult>;
+    try {
+      operation = this.#requestDelivery(computerId, instanceId, request, onDispatched);
+    } catch (error) {
+      return tracePromise(
+        "runtime.delivery",
+        attrs,
+        () => {
+          throw error;
+        },
+        undefined,
+        runtimeDomainFailureAttrs,
+      );
+    }
+    return this.#traceOnce(
+      "runtime.delivery",
+      attrs,
+      operation,
+      (result) => outcomeAttrs(result.status, result.reason),
+      runtimeDomainFailureAttrs,
+    );
+  }
+
+  #traceOnce<T>(
+    name: string,
+    attrs: Record<string, unknown>,
+    operation: Promise<T>,
+    resultAttrs: (result: T) => Record<string, unknown>,
+    errorAttrs: (error: unknown) => Record<string, unknown>,
+  ): Promise<T> {
+    const existing = this.#tracedPromises.get(operation);
+    if (existing) return existing as Promise<T>;
+    const traced = tracePromise(name, attrs, () => operation, resultAttrs, errorAttrs);
+    this.#tracedPromises.set(operation, traced);
+    return traced;
+  }
+
+  #requestDelivery(
     computerId: string,
     instanceId: string,
     request: DirectImMessageDeliveryRequest,
@@ -208,7 +296,7 @@ export class RuntimeDomainOwner {
     const dispatch = await this.#custody.beginDeliveryDispatch(request, inputHash, { computerId, instanceId });
     if (dispatch === "conflict") throw new RuntimeDomainConflictError("The delivery dispatch conflicts");
     if (dispatch === "stale_generation") {
-      throw new RuntimeDomainRequestError("The delivery dispatch placement is stale");
+      throw new RuntimeDomainRequestError("stale_placement", "The delivery dispatch placement is stale");
     }
     return this.#request(
       "delivery",
@@ -223,7 +311,7 @@ export class RuntimeDomainOwner {
 
   async resend(requestId: string): Promise<void> {
     const pending = this.#pending.get(requestId);
-    if (!pending) throw new RuntimeDomainRequestError("The runtime request is not pending");
+    if (!pending) throw new RuntimeDomainRequestError("not_pending", "The runtime request is not pending");
     await this.#registry.send(pending.computerId, pending.instanceId, pending.request);
   }
 
@@ -284,7 +372,23 @@ export class RuntimeDomainOwner {
       if (!this.#options.onImToolRequest) return toolFailureResult(frame, "IM_TOOL_UNAVAILABLE");
       return this.#options.onImToolRequest(frame, context);
     }
-    return this.#recordTurn(frame, context);
+    return withSpan(
+      "runtime.report",
+      runtimeAttrs({
+        requestId: frame.requestId,
+        deliveryId: frame.deliveryId,
+        sessionId: frame.sessionId,
+        agentId: frame.agentId,
+        computerId: context.computerId,
+        instanceId: context.instanceId,
+        placementGeneration: frame.placementGeneration,
+      }),
+      async () => {
+        const result = await this.#recordTurn(frame, context);
+        setActiveSpanAttributes(outcomeAttrs(result?.status ?? "ignored"));
+        return result;
+      },
+    );
   }
 
   #request(
@@ -334,7 +438,7 @@ export class RuntimeDomainOwner {
       }
     }
     if (this.#pending.size >= this.#options.maxPendingRequests) {
-      throw new RuntimeDomainRequestError("The runtime request owner is full");
+      throw new RuntimeDomainRequestError("capacity", "The runtime request owner is full");
     }
     if (expired) this.#expiredDeliveries.delete(request.requestId);
 
@@ -348,7 +452,7 @@ export class RuntimeDomainOwner {
       if (this.#pending.get(request.requestId)?.promise !== promise) return;
       this.#pending.delete(request.requestId);
       if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
-      rejectPromise(new RuntimeDomainRequestError("The runtime domain request timed out"));
+      rejectPromise(new RuntimeDomainRequestError("timeout", "The runtime domain request timed out"));
     }, this.#options.requestTimeoutMs);
     timer.unref();
     const base = {
@@ -379,7 +483,9 @@ export class RuntimeDomainOwner {
       clearTimeout(timer);
       if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
       pending.reject(
-        error instanceof Error ? error : new RuntimeDomainRequestError("The runtime request could not be sent"),
+        error instanceof Error
+          ? error
+          : new RuntimeDomainRequestError("send_unavailable", "The runtime request could not be sent"),
       );
     });
     return promise;
@@ -532,6 +638,31 @@ export class RuntimeDomainOwner {
       this.#expiredDeliveries.delete(oldest);
     }
   }
+}
+
+function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
+  let code = "RUNTIME_REQUEST_FAILED";
+  if (error instanceof RuntimeDomainConflictError) {
+    code = "RUNTIME_REQUEST_CONFLICT";
+  } else if (error instanceof RuntimeDomainRequestError) {
+    code =
+      {
+        capacity: "RUNTIME_OWNER_CAPACITY",
+        not_pending: "RUNTIME_REQUEST_NOT_PENDING",
+        send_unavailable: "RUNTIME_SEND_UNAVAILABLE",
+        stale_placement: "RUNTIME_PLACEMENT_STALE",
+        stopped: "RUNTIME_OWNER_STOPPED",
+        timeout: "RUNTIME_REQUEST_TIMEOUT",
+      }[error.code] ?? code;
+  } else if (error instanceof RuntimeRegistrySendError) {
+    code =
+      {
+        frame_too_large: "RUNTIME_FRAME_TOO_LARGE",
+        instance_replaced: "RUNTIME_INSTANCE_REPLACED",
+        unavailable: "RUNTIME_SEND_UNAVAILABLE",
+      }[error.code] ?? code;
+  }
+  return outcomeAttrs("failed", code);
 }
 
 function runtimeFailureResult(frame: unknown, code: string): RuntimeImToolResult | undefined {

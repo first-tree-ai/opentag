@@ -42,6 +42,7 @@ import {
   ListTeamMembersResponseSchema,
   type MeResponse,
   MeResponseSchema,
+  PROVIDER_READINESS_V1_HEADER,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
   type RestoreTeamMemberRequest,
@@ -128,7 +129,7 @@ export class OpenTagApi {
 
   listComputers(accessToken: string): Promise<ListComputersResponse> {
     return this.#request(HTTP_PATHS.meComputers, ListComputersResponseSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
+      headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
   }
 
@@ -206,13 +207,13 @@ export class OpenTagApi {
 
   listTeamComputers(accessToken: string, teamId: string): Promise<ListTeamComputersResponse> {
     return this.#request(teamComputersPath(teamId), ListTeamComputersResponseSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
+      headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
   }
 
   listTeamComputersConfig(accessToken: string, teamId: string): Promise<ListTeamComputersConfigResponse> {
     return this.#request(teamComputersConfigPath(teamId), ListTeamComputersConfigResponseSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
+      headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
   }
 

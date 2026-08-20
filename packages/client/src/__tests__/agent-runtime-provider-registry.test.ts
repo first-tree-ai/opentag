@@ -155,6 +155,11 @@ describe("AgentRuntimeProviderRegistry", () => {
     const preAborted = new AbortController();
     preAborted.abort(new Error("stop ready lookup"));
     await expect(aborting.ensureReady("codex", preAborted.signal)).rejects.toThrow("stop ready lookup");
+
+    const preAbortedRefresh = new AbortController();
+    preAbortedRefresh.abort(new Error("stop before refresh"));
+    await expect(aborting.refresh("codex", preAbortedRefresh.signal)).rejects.toThrow("stop before refresh");
+    expect(probe).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -67,6 +67,7 @@ export class AgentRuntimeProviderRegistry {
   }
 
   async refresh(providerId: string, signal?: AbortSignal): Promise<boolean> {
+    signal?.throwIfAborted();
     try {
       await this.#probe(providerId, signal);
       return true;

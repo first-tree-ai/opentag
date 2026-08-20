@@ -111,6 +111,34 @@ describe("GoogleBrowserAuthService", () => {
     expect(exchangeCode).toHaveBeenCalledOnce();
   });
 
+  it("returns the Team selected while redeeming an invitation in the callback transaction", async () => {
+    const token = "A".repeat(43);
+    const selectedTeamId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
+    const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
+    const completeInTransaction = vi.fn().mockResolvedValue({ selectedTeamId, userId });
+    const issueTokensForUser = vi.fn().mockResolvedValue({
+      accessToken: "access-secret",
+      refreshToken: "refresh-secret",
+      tokenType: "Bearer",
+      expiresIn: 900,
+    });
+    const service = new GoogleBrowserAuthService({
+      database: { transaction: (callback: (transaction: object) => unknown) => callback({}) } as never,
+      flow: { verify: vi.fn().mockResolvedValue({ next: `/invites/${token}`, oidcNonce: "oidc-nonce" }) } as never,
+      google: { exchangeCode: vi.fn().mockResolvedValue({ provider: "google" }) } as never,
+      identities: { resolveOrCreateInTransaction: vi.fn().mockResolvedValue(userId) } as never,
+      postAuthentication: { completeInTransaction } as never,
+      publicUrl: "https://opentag.example.com",
+      tokenIssuer: { issueTokensForUser } as never,
+    });
+
+    await expect(
+      service.callback({ code: "code", state: "state" }, "signed-context", { onVerified: vi.fn() }),
+    ).resolves.toMatchObject({ next: `/invites/${token}`, selectedTeamId });
+    expect(completeInTransaction).toHaveBeenCalledWith(expect.anything(), userId, token, {});
+    expect(issueTokensForUser).toHaveBeenCalledWith(userId);
+  });
+
   it("preserves invalid or expired flow errors before interpreting the provider result", async () => {
     const flowError = new AuthServiceError(
       "AUTH_OAUTH_FAILED",

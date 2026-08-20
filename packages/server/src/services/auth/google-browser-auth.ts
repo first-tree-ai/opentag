@@ -15,6 +15,7 @@ export interface GoogleAuthStartResult {
 
 export interface GoogleAuthCallbackResult {
   next: string;
+  selectedTeamId?: string;
   tokens: RefreshTokenResponse;
 }
 
@@ -91,16 +92,21 @@ export class GoogleBrowserAuthService {
       nonce: flow.oidcNonce,
       redirectUri: this.#redirectUri,
     });
-    const userId = await this.#database.transaction(async (transaction) => {
+    const invitationToken = invitationTokenFromNext(flow.next);
+    const completion = await this.#database.transaction(async (transaction) => {
       const resolvedUserId = await this.#identities.resolveOrCreateInTransaction(transaction, identity);
-      await this.#postAuthentication.completeInTransaction(
+      const result = await this.#postAuthentication.completeInTransaction(
         transaction,
         resolvedUserId,
-        invitationTokenFromNext(flow.next),
+        invitationToken,
         options.audit ?? {},
       );
-      return resolvedUserId;
+      return { selectedTeamId: result.selectedTeamId, userId: resolvedUserId };
     });
-    return { next: flow.next, tokens: await this.#tokenIssuer.issueTokensForUser(userId) };
+    return {
+      next: flow.next,
+      ...(invitationToken && completion.selectedTeamId ? { selectedTeamId: completion.selectedTeamId } : {}),
+      tokens: await this.#tokenIssuer.issueTokensForUser(completion.userId),
+    };
   }
 }

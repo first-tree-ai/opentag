@@ -82,6 +82,13 @@ function audit(request: FastifyRequest) {
   return { ip: request.ip.slice(0, 255), ...(userAgent ? { userAgent: userAgent.slice(0, 1024) } : {}) };
 }
 
+function withSelectedTeamHint(next: string, selectedTeamId: string | undefined, publicOrigin: string): string {
+  if (!selectedTeamId) return next;
+  const destination = new URL(next, publicOrigin);
+  destination.searchParams.set("joinedTeamId", selectedTeamId);
+  return `${destination.pathname}${destination.search}${destination.hash}`;
+}
+
 export function registerBrowserAuthRoutes(
   app: FastifyInstance,
   authService: UserAuthService,
@@ -171,7 +178,7 @@ export function registerBrowserAuthRoutes(
       refreshTtlSeconds: options.refreshTokenTtlSeconds,
       secure: options.secureCookies,
     });
-    return reply.redirect(result.next, 302);
+    return reply.redirect(withSelectedTeamHint(result.next, result.selectedTeamId, options.publicOrigin), 302);
   });
 
   app.post(HTTP_PATHS.authBrowserRefresh, async (request, reply) => {

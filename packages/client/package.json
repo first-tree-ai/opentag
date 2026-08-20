@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --maxWorkers=1",
     "test:agent-runtime:coverage": "vitest run --config vitest.agent-runtime.config.ts",
+    "test:e2e:claude-code-agent-runtime": "tsx src/smoke/claude-code-agent-runtime-e2e.ts",
     "test:e2e:codex-agent-runtime": "tsx src/smoke/codex-agent-runtime-e2e.ts",
     "test:smoke:codex": "tsx src/smoke/codex-smoke.ts"
   },

@@ -1,7 +1,12 @@
 import { HTTP_PATHS } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
-import type { DevBrowserAuthService, GoogleBrowserAuthService, UserAuthService } from "../services/auth/index.js";
+import {
+  AuthServiceError,
+  type DevBrowserAuthService,
+  type GoogleBrowserAuthService,
+  type UserAuthService,
+} from "../services/auth/index.js";
 
 const apps: ReturnType<typeof createApp>[] = [];
 afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
@@ -150,9 +155,96 @@ describe("browser authentication routes", () => {
     const cookies = String(response.headers["set-cookie"]);
     expect(cookies).toContain("opentag_access=access-secret");
     expect(cookies).toContain("opentag_refresh=refresh-secret");
+    expect(cookies).toContain("opentag_oauth_context=; Path=/api/v1/auth/google/callback");
+    expect(cookies).toContain("Max-Age=0");
     expect(cookies).toContain("HttpOnly");
     expect(response.body).not.toContain("access-secret");
-    expect(googleService?.callback).toHaveBeenCalledWith("code", "state", "signed-context", expect.any(Object));
+    expect(googleService?.callback).toHaveBeenCalledWith(
+      { code: "code", state: "state" },
+      "signed-context",
+      expect.any(Object),
+    );
+  });
+
+  it("accepts provider-owned callback fields but passes only supported values to the Google service", async () => {
+    const { app, googleService } = createBrowserApp();
+    const response = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.authGoogleCallback}?code=code&state=state&scope=openid%20email&authuser=0&prompt=consent`,
+      headers: { cookie: "opentag_oauth_context=signed-context" },
+    });
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe("/admin");
+    expect(googleService?.callback).toHaveBeenCalledWith(
+      { code: "code", state: "state" },
+      "signed-context",
+      expect.any(Object),
+    );
+  });
+
+  it("rejects callbacks without exactly one provider result before invoking the Google service", async () => {
+    const { app, googleService } = createBrowserApp();
+
+    for (const query of ["state=state", "code=code", "code=code&error=access_denied&state=state"]) {
+      const response = await app.inject({
+        method: "GET",
+        url: `${HTTP_PATHS.authGoogleCallback}?${query}`,
+        headers: { cookie: "opentag_oauth_context=signed-context" },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json()).toMatchObject({
+        error: { code: "VALIDATION_ERROR", category: "validation", message: "The request payload is invalid" },
+      });
+    }
+
+    expect(googleService?.callback).not.toHaveBeenCalled();
+  });
+
+  it("returns a stable cancellation error and clears the OAuth context without reflecting provider text", async () => {
+    const googleService = google();
+    googleService.callback.mockRejectedValueOnce(
+      new AuthServiceError("AUTH_OAUTH_FAILED", "credential", "Google sign-in was cancelled", 401),
+    );
+    const { app } = createBrowserApp({ googleService });
+    const response = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.authGoogleCallback}?error=access_denied&error_description=private-provider-text&state=state`,
+      headers: { cookie: "opentag_oauth_context=signed-context" },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toMatchObject({
+      error: { code: "AUTH_OAUTH_FAILED", category: "credential", message: "Google sign-in was cancelled" },
+    });
+    expect(response.body).not.toContain("private-provider-text");
+    const cookies = String(response.headers["set-cookie"]);
+    expect(cookies).toContain("opentag_oauth_context=; Path=/api/v1/auth/google/callback");
+    expect(cookies).toContain("Max-Age=0");
+    expect(googleService.callback).toHaveBeenCalledWith(
+      { error: "access_denied", state: "state" },
+      "signed-context",
+      expect.any(Object),
+    );
+  });
+
+  it("clears the OAuth context when Google code exchange fails", async () => {
+    const googleService = google();
+    googleService.callback.mockRejectedValueOnce(
+      new AuthServiceError("AUTH_OAUTH_FAILED", "credential", "Google sign-in could not be verified", 401),
+    );
+    const { app } = createBrowserApp({ googleService });
+    const response = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.authGoogleCallback}?code=code&state=state`,
+      headers: { cookie: "opentag_oauth_context=signed-context" },
+    });
+
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toMatchObject({ error: { code: "AUTH_OAUTH_FAILED" } });
+    const cookies = String(response.headers["set-cookie"]);
+    expect(cookies).toContain("opentag_oauth_context=; Path=/api/v1/auth/google/callback");
+    expect(cookies).toContain("Max-Age=0");
   });
 
   it("requires same-origin double-submit CSRF for refresh while bearer API auth remains unaffected", async () => {

@@ -2,6 +2,7 @@ import type { RefreshTokenResponse } from "@opentag/shared";
 import type { DatabaseClient } from "../../db/client.js";
 import type { InvitationAuditContext } from "../invitations/index.js";
 import type { ResolvedUserTokenIssuer } from "./auth-service.js";
+import { AuthServiceError } from "./errors.js";
 import type { AuthIdentityService } from "./identity-service.js";
 import type { GoogleIdentityClient } from "./oauth/google.js";
 import { invitationTokenFromNext, type OAuthFlowService } from "./oauth/state.js";
@@ -15,6 +16,12 @@ export interface GoogleAuthStartResult {
 export interface GoogleAuthCallbackResult {
   next: string;
   tokens: RefreshTokenResponse;
+}
+
+export interface GoogleAuthCallbackInput {
+  code?: string;
+  error?: string;
+  state: string;
 }
 
 export class GoogleBrowserAuthService {
@@ -57,13 +64,27 @@ export class GoogleBrowserAuthService {
   }
 
   async callback(
-    code: string,
-    state: string,
+    input: GoogleAuthCallbackInput,
     context: string,
     audit: InvitationAuditContext = {},
   ): Promise<GoogleAuthCallbackResult> {
-    const flow = await this.#flow.verify(state, context);
-    const identity = await this.#google.exchangeCode({ code, nonce: flow.oidcNonce, redirectUri: this.#redirectUri });
+    const flow = await this.#flow.verify(input.state, context);
+    if (input.error) {
+      throw new AuthServiceError(
+        "AUTH_OAUTH_FAILED",
+        "credential",
+        input.error === "access_denied" ? "Google sign-in was cancelled" : "Google sign-in failed",
+        401,
+      );
+    }
+    if (!input.code) {
+      throw new AuthServiceError("AUTH_OAUTH_FAILED", "credential", "Google sign-in failed", 401);
+    }
+    const identity = await this.#google.exchangeCode({
+      code: input.code,
+      nonce: flow.oidcNonce,
+      redirectUri: this.#redirectUri,
+    });
     const userId = await this.#database.transaction(async (transaction) => {
       const resolvedUserId = await this.#identities.resolveOrCreateInTransaction(transaction, identity);
       await this.#postAuthentication.completeInTransaction(

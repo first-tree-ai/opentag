@@ -1,5 +1,6 @@
 import {
   type DirectImMessageDeliveryRequest,
+  RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
   type TurnFailureReason,
   type TurnReportHashInput,
@@ -243,7 +244,7 @@ export function turnTimeoutMs(request: DirectImMessageDeliveryRequest, now: numb
   const limits: number[] = [];
   if (request.runtime.budget?.maxDurationMs) limits.push(request.runtime.budget.maxDurationMs);
   if (request.deadlineAt) limits.push(Math.max(1, Date.parse(request.deadlineAt) - now));
-  return Math.max(1, Math.min(...(limits.length > 0 ? limits : [30 * 60 * 1_000])));
+  return Math.max(1, Math.min(...(limits.length > 0 ? limits : [RUNTIME_DEFAULT_MAX_DURATION_MS])));
 }
 
 export function completionForResult(result: AgentRunResult, abortReason: unknown): TurnCompletion {

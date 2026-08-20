@@ -341,6 +341,11 @@ describe("Agent CLI core", () => {
       ]),
     );
     expect(update?.options.find((option) => option.long === "--display-name")?.mandatory).toBe(false);
+    expect(update?.options.find((option) => option.long === "--model")?.description).toContain("Codex only");
+    expect(update?.options.find((option) => option.long === "--clear-model")?.description).toContain("Codex manage");
+    expect(update?.options.find((option) => option.long === "--clear-max-duration")?.description).toContain(
+      "OpenTag default",
+    );
   });
 
   it("deletes the explicit Agent without an interactive prompt", async () => {

@@ -68,6 +68,12 @@ pnpm --filter open-tag start agent list
 
 This records the Agent identity and Computer binding only; it does not start a Codex or Claude Code turn.
 
+Team Admins manage model, reasoning effort, and the maximum Turn duration for Codex Agents from the Agent's **Runtime**
+tab or the corresponding `agent update` flags. A blank model or reasoning value leaves the choice to Codex; a blank
+duration uses OpenTag's 30-minute default. Explicit Codex-native values are validated by the bound Computer when it
+prepares the Runtime and never silently replaced by OpenTag. Claude Code Effective Runtime Snapshots are not yet
+supported.
+
 Configure `OPENTAG_GOOGLE_CLIENT_ID` and `OPENTAG_GOOGLE_CLIENT_SECRET` to enable Google sign-in, then open
 `http://127.0.0.1:8000/`. Active Team members share the same App Shell and member-safe views; Team Admins additionally
 manage Agents, runtime configuration, IM bindings, and Local Computer setup. The Computers page lists timestamped Team

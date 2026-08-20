@@ -90,6 +90,12 @@ interface TeamSession {
   selectTeam: (teamId: string) => void;
 }
 
+interface AppShellOutletContext {
+  invitationMutationPending: boolean;
+  invitationOpen: boolean;
+  setInvitationMutationPending: (pending: boolean) => void;
+}
+
 const teamContext = createContext<TeamSession | undefined>(undefined);
 const TeamContext = teamContext.Provider;
 
@@ -318,6 +324,7 @@ function AppShell() {
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [openMenu, setOpenMenu] = useState<"team" | "account">();
   const [invitationOpen, setInvitationOpen] = useState(false);
+  const [invitationMutationPending, setInvitationMutationPending] = useState(false);
   const [teamQuery, setTeamQuery] = useState("");
   const [loggingOut, setLoggingOut] = useState(false);
   const [accountError, setAccountError] = useState<string>();
@@ -474,8 +481,10 @@ function AppShell() {
                   {membership.role === "admin" ? (
                     <button
                       className="team-menu-action"
+                      disabled={invitationMutationPending}
                       type="button"
                       onClick={() => {
+                        if (invitationMutationPending) return;
                         setOpenMenu(undefined);
                         setNavigationOpen(false);
                         setInvitationOpen(true);
@@ -575,11 +584,13 @@ function AppShell() {
           </button>
         </header>
         <main className="content">
-          <Outlet context={{ invitationOpen }} />
+          <Outlet context={{ invitationMutationPending, invitationOpen, setInvitationMutationPending }} />
         </main>
       </div>
       {invitationOpen ? (
         <InvitationDialog
+          mutationPending={invitationMutationPending}
+          onMutationPendingChange={setInvitationMutationPending}
           returnFocusRef={teamTriggerRef}
           teamDisplayName={membership.teamDisplayName}
           teamId={membership.teamId}
@@ -1215,7 +1226,7 @@ const settingsSections = [
 
 function SettingsPage() {
   const { section = "team" } = useParams();
-  const { invitationOpen } = useOutletContext<{ invitationOpen: boolean }>();
+  const { invitationOpen, setInvitationMutationPending } = useOutletContext<AppShellOutletContext>();
   const navigate = useNavigate();
   const { me, membership, refreshMe } = useTeam();
   const currentSection = settingsSections.find((item) => item.key === section);
@@ -1256,6 +1267,7 @@ function SettingsPage() {
               canManage={membership.role === "admin"}
               currentUserId={me.user.id}
               invitationDialogOpen={invitationOpen}
+              onInvitationMutationPendingChange={setInvitationMutationPending}
               refreshMe={refreshMe}
               teamId={membership.teamId}
             />
@@ -1401,12 +1413,14 @@ function MembersSettings({
   canManage,
   currentUserId,
   invitationDialogOpen,
+  onInvitationMutationPendingChange,
   refreshMe,
   teamId,
 }: {
   canManage: boolean;
   currentUserId: string;
   invitationDialogOpen: boolean;
+  onInvitationMutationPendingChange: (pending: boolean) => void;
   refreshMe: () => void;
   teamId: string;
 }) {
@@ -1436,7 +1450,9 @@ function MembersSettings({
 
   return (
     <>
-      {canManage && !invitationDialogOpen ? <InvitationSettings teamId={teamId} /> : null}
+      {canManage && !invitationDialogOpen ? (
+        <InvitationSettings teamId={teamId} onMutationPendingChange={onInvitationMutationPendingChange} />
+      ) : null}
       <section className="panel">
         <h2>Team members</h2>
         <AsyncState state={state}>
@@ -1477,12 +1493,16 @@ function MembersSettings({
 }
 
 function InvitationDialog({
+  mutationPending,
   onClose,
+  onMutationPendingChange,
   returnFocusRef,
   teamDisplayName,
   teamId,
 }: {
+  mutationPending: boolean;
   onClose: () => void;
+  onMutationPendingChange: (pending: boolean) => void;
   returnFocusRef: { current: HTMLButtonElement | null };
   teamDisplayName: string;
   teamId: string;
@@ -1495,6 +1515,7 @@ function InvitationDialog({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
+        if (mutationPending) return;
         onClose();
         return;
       }
@@ -1520,13 +1541,14 @@ function InvitationDialog({
       document.removeEventListener("keydown", onKeyDown);
       returnFocusRef.current?.focus();
     };
-  }, [onClose, returnFocusRef]);
+  }, [mutationPending, onClose, returnFocusRef]);
 
   return (
     <div className="dialog-layer">
       <button
         aria-label="Dismiss invitation dialog"
         className="dialog-backdrop"
+        disabled={mutationPending}
         tabIndex={-1}
         type="button"
         onClick={onClose}
@@ -1547,6 +1569,7 @@ function InvitationDialog({
           <button
             aria-label="Close invitation dialog"
             className="dialog-close"
+            disabled={mutationPending}
             ref={closeButtonRef}
             type="button"
             onClick={onClose}
@@ -1557,13 +1580,21 @@ function InvitationDialog({
         <p className="dialog-description" id="invitation-dialog-description">
           Anyone with the active link can join this Team as a member until the link expires.
         </p>
-        <InvitationSettings presentation="dialog" teamId={teamId} />
+        <InvitationSettings presentation="dialog" teamId={teamId} onMutationPendingChange={onMutationPendingChange} />
       </div>
     </div>
   );
 }
 
-function InvitationSettings({ presentation = "panel", teamId }: { presentation?: "dialog" | "panel"; teamId: string }) {
+function InvitationSettings({
+  onMutationPendingChange,
+  presentation = "panel",
+  teamId,
+}: {
+  onMutationPendingChange: (pending: boolean) => void;
+  presentation?: "dialog" | "panel";
+  teamId: string;
+}) {
   const state = useResource(() => browserApi.invitation(teamId), teamId);
   const [current, setCurrent] = useState<Awaited<ReturnType<typeof browserApi.invitation>>>();
   const [busy, setBusy] = useState(false);
@@ -1581,6 +1612,7 @@ function InvitationSettings({ presentation = "panel", teamId }: { presentation?:
 
   async function mutateInvitation(action: () => Promise<NonNullable<typeof current>>, successMessage: string) {
     setBusy(true);
+    onMutationPendingChange(true);
     setError(undefined);
     setMessage(undefined);
     try {
@@ -1590,6 +1622,7 @@ function InvitationSettings({ presentation = "panel", teamId }: { presentation?:
       setError(cause instanceof Error ? cause.message : "Unable to update the invitation link");
     } finally {
       setBusy(false);
+      onMutationPendingChange(false);
     }
   }
 

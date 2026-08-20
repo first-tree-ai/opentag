@@ -38,6 +38,7 @@ function installApi(
     bound?: boolean;
     initialStatus?: "active" | "suspended";
     invitationExists?: boolean;
+    invitationRotate?: () => Promise<Response> | Response;
     provider?: "feishu" | "slack";
     profileUpdate?: (displayName: string) => Promise<Response> | Response;
     profileUpdateFails?: boolean;
@@ -229,6 +230,11 @@ function installApi(
       return json(invitation(), 201);
     }
     if (path === `/api/v1/teams/${teamId}/invitation/rotate` && init?.method === "POST") {
+      if (options.invitationRotate) {
+        const response = await options.invitationRotate();
+        if (response.ok) invitationVersion = "B";
+        return response;
+      }
       invitationVersion = "B";
       return json(invitation());
     }
@@ -652,6 +658,42 @@ describe("OpenTag Web App Shell", () => {
     expect(refreshedPageLink.value).toContain("/invites/BBB");
     fireEvent.click(screen.getByRole("button", { name: "Copy invitation link" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(refreshedPageLink.value));
+    confirm.mockRestore();
+  });
+
+  it("prevents switching invitation surfaces while a rotation is pending", async () => {
+    let resolveRotate: (response: Response) => void = () => undefined;
+    const pendingRotate = new Promise<Response>((resolve) => {
+      resolveRotate = resolve;
+    });
+    installApi("admin", { invitationExists: true, invitationRotate: () => pendingRotate });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+
+    await screen.findByLabelText("Invitation link");
+    fireEvent.click(screen.getByRole("button", { name: "Rotate invitation link" }));
+    fireEvent.click(screen.getByRole("button", { name: "Example" }));
+    const teamPicker = screen.getByRole("dialog", { name: "Switch Team" });
+    const inviteAction = within(teamPicker).getByRole("button", { name: "Invite people" }) as HTMLButtonElement;
+    expect(inviteAction.disabled).toBe(true);
+    fireEvent.click(inviteAction);
+    expect(screen.queryByRole("dialog", { name: "Invite people" })).toBeNull();
+
+    resolveRotate(
+      json({
+        token: "B".repeat(43),
+        inviteUrl: `https://opentag.example.com/invites/${"B".repeat(43)}`,
+        role: "member",
+        expiresAt: "2026-08-27T00:00:00.000Z",
+      }),
+    );
+    await waitFor(() => expect(inviteAction.disabled).toBe(false));
+    fireEvent.click(inviteAction);
+    const dialog = await screen.findByRole("dialog", { name: "Invite people" });
+    await waitFor(() =>
+      expect((within(dialog).getByLabelText("Invitation link") as HTMLInputElement).value).toContain("/invites/BBB"),
+    );
     confirm.mockRestore();
   });
 

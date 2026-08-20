@@ -209,6 +209,84 @@ describe("OnboardingPage", () => {
     expect(await screen.findByRole("heading", { name: "Prepare Codex or Claude Code" })).toBeTruthy();
   });
 
+  it("advances from Provider setup without asking the user to check again", async () => {
+    vi.useFakeTimers();
+    installFacts({ computers: [computerA] });
+    const computers = vi.spyOn(browserApi, "computers");
+    let runtimeReady = false;
+    const runtime: RuntimeFactsAdapter = {
+      load: vi.fn(
+        async (): Promise<RuntimeFactsResult> => ({
+          kind: "available",
+          providers: [
+            {
+              computerId: computerAId,
+              provider: "codex",
+              runtimeReady,
+              status: runtimeReady ? "ready" : "install",
+            },
+          ],
+        }),
+      ),
+    };
+    renderPage({ runtime });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole("heading", { name: "Install Codex" })).toBeTruthy();
+    const loadsBeforePolling = computers.mock.calls.length;
+
+    runtimeReady = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(computers.mock.calls.length).toBeGreaterThan(loadsBeforePolling);
+    expect(screen.getByRole("heading", { name: "Create your Agent" })).toBeTruthy();
+  });
+
+  it("leaves a state that waits on this user alone", async () => {
+    vi.useFakeTimers();
+    installFacts({ computers: [computerA] });
+    const computers = vi.spyOn(browserApi, "computers");
+    renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]) });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole("heading", { name: "Create your Agent" })).toBeTruthy();
+    const loads = computers.mock.calls.length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(computers.mock.calls.length).toBe(loads);
+  });
+
+  it("stops polling a page that nobody has acted on for ten minutes", async () => {
+    vi.useFakeTimers();
+    installFacts({ computers: [computerA] });
+    const computers = vi.spyOn(browserApi, "computers");
+    renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false }]) });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole("heading", { name: "Prepare Codex or Claude Code" })).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1_000);
+    });
+    const loads = computers.mock.calls.length;
+    expect(loads).toBeGreaterThan(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+
+    expect(computers.mock.calls.length).toBe(loads);
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+  });
+
   it.each([
     ["checking", "Checking Codex", "OpenTag is checking Codex readiness on Ada's Mac."],
     ["install", "Install Codex", "Install Codex on Ada's Mac, then check again."],

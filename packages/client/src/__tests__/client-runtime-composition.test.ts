@@ -213,7 +213,9 @@ describe("createClientRuntime production composition", () => {
       canonicalCommand,
     );
     await expect(resolveExecutable("missing", {})).rejects.toThrow("PATH is unavailable");
-    await expect(resolveExecutable("missing", { PATH: empty })).rejects.toThrow("compatible Codex executable");
+    await expect(resolveExecutable("missing", { PATH: empty })).rejects.toThrow(
+      "compatible Agent Runtime provider executable",
+    );
 
     const factory = resolvedCodexFactory({
       clientVersion: "0.0.1",

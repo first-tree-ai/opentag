@@ -181,6 +181,32 @@ pre {
   border: 0;
 }
 
+.status-chip {
+  display: inline-flex;
+  width: fit-content;
+  margin-top: 3px;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--strong-border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 620;
+}
+
+.status-chip.suspended {
+  border-color: #9a5b18;
+  color: #7b4510;
+}
+
+button.danger {
+  border-color: #9b2c2c;
+  background: #9b2c2c;
+}
+
+button.danger:hover {
+  border-color: #7f1d1d;
+  background: #7f1d1d;
+}
 .shell {
   display: grid;
   min-height: 100dvh;

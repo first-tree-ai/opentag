@@ -38,40 +38,58 @@ export class ImResourceService {
     imMessageId: string,
     ordinal: number,
   ): Promise<AuthorizedImResource> {
-    const [scope] = await this.#database
-      .select({ message: imMessages, imBinding: imBindings })
-      .from(imMessages)
-      .innerJoin(imBindings, eq(imBindings.id, imMessages.imBindingId))
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(imMessageDeliveries, eq(imMessageDeliveries.messageId, imMessages.id))
-      .innerJoin(
-        sessions,
-        and(
-          eq(sessions.id, runtime.sessionId),
-          eq(sessions.id, imMessageDeliveries.sessionId),
-          eq(sessions.imBindingId, imMessages.imBindingId),
-          eq(sessions.channelId, imMessages.channelId),
-          isNull(sessions.endedAt),
-        ),
-      )
-      .innerJoin(
-        sessionPlacements,
-        and(
-          eq(sessionPlacements.sessionId, sessions.id),
-          eq(sessionPlacements.computerId, runtime.computerId),
-          eq(sessionPlacements.generation, runtime.placementGeneration),
-        ),
-      )
-      .innerJoin(
-        computers,
-        and(
-          eq(computers.id, sessionPlacements.computerId),
-          eq(computers.ownerUserId, userId),
-          eq(computers.currentInstanceId, runtime.instanceId),
-        ),
-      )
-      .where(and(eq(imMessages.id, imMessageId), eq(imBindings.status, "active"), isNull(agents.deletedAt)))
-      .limit(1);
+    const scope = await this.#database.transaction(async (transaction) => {
+      const [candidate] = await transaction
+        .select({ agentId: agents.id })
+        .from(imMessages)
+        .innerJoin(imBindings, eq(imBindings.id, imMessages.imBindingId))
+        .innerJoin(agents, eq(agents.id, imBindings.agentId))
+        .where(eq(imMessages.id, imMessageId))
+        .limit(1);
+      if (!candidate) return undefined;
+      const [agent] = await transaction
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.id, candidate.agentId), eq(agents.status, "active")))
+        .limit(1)
+        .for("update");
+      if (!agent) return undefined;
+      const [authorized] = await transaction
+        .select({ message: imMessages, imBinding: imBindings })
+        .from(imMessages)
+        .innerJoin(imBindings, eq(imBindings.id, imMessages.imBindingId))
+        .innerJoin(agents, eq(agents.id, imBindings.agentId))
+        .innerJoin(imMessageDeliveries, eq(imMessageDeliveries.messageId, imMessages.id))
+        .innerJoin(
+          sessions,
+          and(
+            eq(sessions.id, runtime.sessionId),
+            eq(sessions.id, imMessageDeliveries.sessionId),
+            eq(sessions.imBindingId, imMessages.imBindingId),
+            eq(sessions.channelId, imMessages.channelId),
+            isNull(sessions.endedAt),
+          ),
+        )
+        .innerJoin(
+          sessionPlacements,
+          and(
+            eq(sessionPlacements.sessionId, sessions.id),
+            eq(sessionPlacements.computerId, runtime.computerId),
+            eq(sessionPlacements.generation, runtime.placementGeneration),
+          ),
+        )
+        .innerJoin(
+          computers,
+          and(
+            eq(computers.id, sessionPlacements.computerId),
+            eq(computers.ownerUserId, userId),
+            eq(computers.currentInstanceId, runtime.instanceId),
+          ),
+        )
+        .where(and(eq(imMessages.id, imMessageId), eq(imBindings.status, "active"), eq(agents.status, "active")))
+        .limit(1);
+      return authorized;
+    });
     if (!scope) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The IM resource was not found");
     const resource = scope.message.content.resources?.find(
       (candidate, index) => (candidate.ordinal ?? index) === ordinal,

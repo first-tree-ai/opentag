@@ -9,6 +9,7 @@ import { migrateDatabase } from "../../db/migrate.js";
 import { agents, computers, memberships, teams, users } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../services/runtime-config/index.js";
+import { TeamMembershipService } from "../../services/teams/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 let container: StartedPostgreSqlContainer;
@@ -85,6 +86,14 @@ async function waitUntil(predicate: () => Promise<boolean>, timeoutMs = 5_000): 
   throw new Error("Timed out waiting for the database barrier");
 }
 
+function deferred<T>() {
+  let resolve: (value: T | PromiseLike<T>) => void = () => undefined;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 describe("Agent persistence and authorization", () => {
   it("installs the Agent enum, revision check, active-name index, and restrictive foreign keys", async () => {
     const value = await fixture();
@@ -138,7 +147,7 @@ describe("Agent persistence and authorization", () => {
       `;
       expect(activeNameIndex?.indexdef).toContain("UNIQUE INDEX");
       expect(activeNameIndex?.indexdef).toContain("lower(name)");
-      expect(activeNameIndex?.indexdef).toContain("WHERE (deleted_at IS NULL)");
+      expect(activeNameIndex?.indexdef).toContain("status <> 'deleted'::agent_status");
 
       const runtimeConfigConstraints = await value.sql<{ conname: string; definition: string }[]>`
         select conname, pg_get_constraintdef(oid) as definition
@@ -337,6 +346,11 @@ describe("Agent persistence and authorization", () => {
         code: "AGENT_FORBIDDEN",
         statusCode: 403,
       });
+      await expect(value.service.deleteById(value.bootstrap.userId, created.id)).rejects.toMatchObject({
+        code: "AGENT_LIFECYCLE_CONFLICT",
+        statusCode: 409,
+      });
+      await value.service.suspendById(value.bootstrap.userId, created.id);
       await value.service.deleteById(value.bootstrap.userId, created.id);
       await expect(value.service.deleteById(member.id, created.id)).rejects.toMatchObject({
         code: "RESOURCE_NOT_FOUND",
@@ -346,7 +360,9 @@ describe("Agent persistence and authorization", () => {
         code: "RESOURCE_NOT_FOUND",
         statusCode: 404,
       });
-      await expect(value.service.deleteById(value.bootstrap.userId, created.id)).resolves.toBeUndefined();
+      await expect(value.service.deleteById(value.bootstrap.userId, created.id)).rejects.toMatchObject({
+        code: "RESOURCE_NOT_FOUND",
+      });
     } finally {
       await value.sql.end();
     }
@@ -440,7 +456,99 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
-  it("soft-deletes idempotently and permits active name reuse without reviving the old UUID", async () => {
+  it("enforces the active-suspended-deleted lifecycle without blocking suspended administration", async () => {
+    const value = await fixture();
+    try {
+      const member = await createUser(value.database, value.bootstrap.teamId, "member-lifecycle@example.com");
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const created = await value.service.createForTeam(
+        value.bootstrap.userId,
+        value.bootstrap.teamId,
+        createInput(computer.id),
+      );
+
+      await expect(value.service.deleteById(value.bootstrap.userId, created.id)).rejects.toMatchObject({
+        code: "AGENT_LIFECYCLE_CONFLICT",
+        statusCode: 409,
+      });
+      await expect(value.service.suspendById(member.id, created.id)).rejects.toMatchObject({
+        code: "AGENT_FORBIDDEN",
+        statusCode: 403,
+      });
+      const suspended = await value.service.suspendById(value.bootstrap.userId, created.id);
+      expect(suspended).toMatchObject({ status: "suspended", revision: 2 });
+      await expect(value.service.suspendById(value.bootstrap.userId, created.id)).rejects.toMatchObject({
+        code: "AGENT_LIFECYCLE_CONFLICT",
+        statusCode: 409,
+      });
+      await expect(value.service.getById(member.id, created.id)).resolves.toMatchObject({ status: "suspended" });
+      await expect(
+        value.service.updateById(value.bootstrap.userId, created.id, {
+          displayName: "Suspended but configurable",
+          expectedRevision: 2,
+        }),
+      ).resolves.toMatchObject({ displayName: "Suspended but configurable", status: "suspended", revision: 3 });
+      const active = await value.service.reactivateById(value.bootstrap.userId, created.id);
+      expect(active).toMatchObject({ status: "active", revision: 4 });
+      await expect(value.service.reactivateById(value.bootstrap.userId, created.id)).rejects.toMatchObject({
+        code: "AGENT_LIFECYCLE_CONFLICT",
+        statusCode: 409,
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("holds live Admin authority through a lifecycle mutation before a concurrent downgrade", async () => {
+    const value = await fixture();
+    const authorityLocked = deferred<void>();
+    const releaseMutation = deferred<void>();
+    try {
+      const secondAdmin = await createUser(
+        value.database,
+        value.bootstrap.teamId,
+        "lifecycle-admin@example.com",
+        "admin",
+      );
+      const computer = await createComputer(value.database, secondAdmin.id);
+      const created = await value.service.createForTeam(
+        secondAdmin.id,
+        value.bootstrap.teamId,
+        createInput(computer.id),
+      );
+      const lifecycle = new AgentService(value.database, {
+        afterAgentLocked: async () => {
+          authorityLocked.resolve();
+          await releaseMutation.promise;
+        },
+      });
+      const suspend = lifecycle.suspendById(secondAdmin.id, created.id);
+      await authorityLocked.promise;
+      const downgrade = new TeamMembershipService(value.database).changeRole(
+        value.bootstrap.userId,
+        value.bootstrap.teamId,
+        secondAdmin.id,
+        "member",
+      );
+      let downgradeSettled = false;
+      void downgrade.finally(() => {
+        downgradeSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(downgradeSettled).toBe(false);
+      releaseMutation.resolve();
+      await expect(suspend).resolves.toMatchObject({ status: "suspended" });
+      await expect(downgrade).resolves.toMatchObject({ role: "member" });
+      await expect(lifecycle.reactivateById(secondAdmin.id, created.id)).rejects.toMatchObject({
+        code: "AGENT_FORBIDDEN",
+      });
+    } finally {
+      releaseMutation.resolve();
+      await value.sql.end();
+    }
+  });
+
+  it("deletes only from suspended and permits active name reuse without reviving the old UUID", async () => {
     const value = await fixture();
     try {
       const computer = await createComputer(value.database, value.bootstrap.userId);
@@ -449,14 +557,16 @@ describe("Agent persistence and authorization", () => {
         value.bootstrap.teamId,
         createInput(computer.id),
       );
+      await value.service.suspendById(value.bootstrap.userId, created.id);
       await value.service.deleteById(value.bootstrap.userId, created.id);
-      await value.service.deleteById(value.bootstrap.userId, created.id);
+      await expect(value.service.deleteById(value.bootstrap.userId, created.id)).rejects.toMatchObject({
+        code: "RESOURCE_NOT_FOUND",
+      });
       await expect(value.service.getById(value.bootstrap.userId, created.id)).rejects.toMatchObject({
         code: "RESOURCE_NOT_FOUND",
       });
       const [deleted] = await value.database.select().from(agents);
-      expect(deleted).toMatchObject({ id: created.id, revision: 2 });
-      expect(deleted?.deletedAt).toBeInstanceOf(Date);
+      expect(deleted).toMatchObject({ id: created.id, revision: 3, status: "deleted" });
 
       const replacement = await value.service.createForTeam(
         value.bootstrap.userId,

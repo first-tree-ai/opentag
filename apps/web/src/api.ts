@@ -10,6 +10,8 @@ import {
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
   agentImBindingPath,
+  agentReactivatePath,
+  agentSuspendPath,
   type ConnectCodeIssueResponse,
   ConnectCodeIssueResponseSchema,
   type CreateAgentRequest,
@@ -142,6 +144,27 @@ export class BrowserApi {
       method: "PATCH",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  suspendAgent(agentId: string): Promise<AgentAdminConfig> {
+    return this.request(agentSuspendPath(agentId), AgentAdminConfigSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  reactivateAgent(agentId: string): Promise<AgentAdminConfig> {
+    return this.request(agentReactivatePath(agentId), AgentAdminConfigSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  deleteAgent(agentId: string): Promise<void> {
+    return this.requestNoContent(agentByIdPath(agentId), {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
     });
   }
 

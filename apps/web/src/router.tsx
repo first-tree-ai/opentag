@@ -2519,7 +2519,7 @@ function InvitationDialog({
           </button>
         </header>
         <p className="dialog-description" id="invitation-dialog-description">
-          Anyone with the active link can join this Team as a member until the link expires.
+          This link lets anyone join the Team as a member until it expires.
         </p>
         <InvitationSettings presentation="dialog" teamId={teamId} onMutationPendingChange={onMutationPendingChange} />
       </div>
@@ -2543,12 +2543,12 @@ function InvitationSettings({
   const [error, setError] = useState<string>();
 
   async function createInvitation() {
-    await mutateInvitation(() => browserApi.createInvitation(teamId), "Invitation link created.");
+    await mutateInvitation(() => browserApi.createInvitation(teamId), "Invite link created.");
   }
 
   async function rotateInvitation() {
-    if (!window.confirm("Rotate this invitation link? The current link will stop working immediately.")) return;
-    await mutateInvitation(() => browserApi.rotateInvitation(teamId), "Invitation link rotated.");
+    if (!window.confirm("Replace this invite link? The current link will stop working immediately.")) return;
+    await mutateInvitation(() => browserApi.rotateInvitation(teamId), "Invite link replaced.");
   }
 
   async function mutateInvitation(action: () => Promise<NonNullable<typeof current>>, successMessage: string) {
@@ -2560,7 +2560,7 @@ function InvitationSettings({
       setCurrent(await action());
       setMessage(successMessage);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to update the invitation link");
+      setError(cause instanceof Error ? cause.message : "Unable to update the invite link");
     } finally {
       setBusy(false);
       onMutationPendingChange(false);
@@ -2573,9 +2573,9 @@ function InvitationSettings({
     try {
       if (!window.navigator.clipboard) throw new Error("Clipboard access is unavailable in this browser");
       await window.navigator.clipboard.writeText(inviteUrl);
-      setMessage("Invitation link copied.");
+      setMessage("Invite link copied.");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to copy the invitation link");
+      setError(cause instanceof Error ? cause.message : "Unable to copy the invite link");
     }
   }
 
@@ -2584,7 +2584,7 @@ function InvitationSettings({
       {presentation === "panel" ? (
         <>
           <h2>Invite people</h2>
-          <p>Anyone with the active link can join this Team as a member until the link expires.</p>
+          <p>This link lets anyone join the Team as a member until it expires.</p>
         </>
       ) : null}
       <AsyncState state={state}>
@@ -2593,22 +2593,22 @@ function InvitationSettings({
           return invitation ? (
             <>
               <label className="invite-link">
-                Invitation link
-                <input aria-label="Invitation link" readOnly type="url" value={invitation.inviteUrl} />
+                Invite link
+                <input aria-label="Invite link" readOnly type="url" value={invitation.inviteUrl} />
               </label>
               <p className="muted">Expires {formatDate(invitation.expiresAt)}.</p>
               <div className={presentation === "dialog" ? "actions dialog-actions" : "actions"}>
                 <button type="button" onClick={() => void copyInvitation(invitation.inviteUrl)}>
-                  Copy invitation link
+                  Copy link
                 </button>
                 <button className="secondary" disabled={busy} type="button" onClick={() => void rotateInvitation()}>
-                  {busy ? "Rotating…" : "Rotate invitation link"}
+                  {busy ? "Replacing…" : "Replace link"}
                 </button>
               </div>
             </>
           ) : (
             <button className="button" disabled={busy} type="button" onClick={() => void createInvitation()}>
-              {busy ? "Creating…" : "Create invitation link"}
+              {busy ? "Creating…" : "Create invite link"}
             </button>
           );
         }}
@@ -2922,5 +2922,8 @@ function settingsSectionDescription(section: (typeof settingsSections)[number]["
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+  const date = new Date(value);
+  const day = new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(date);
+  const time = new Intl.DateTimeFormat("en-US", { timeStyle: "short" }).format(date);
+  return `${day} at ${time}`;
 }

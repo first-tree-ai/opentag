@@ -7,6 +7,7 @@ import {
   type CreateAgentRequest,
   CreateAgentRequestSchema,
   type CreateAgentRuntimeConfig,
+  hasRequiredFeishuTenantScopes,
   type ListAgentsResponse,
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
@@ -330,13 +331,15 @@ export class AgentService {
           .from(imBindings)
           .where(and(eq(imBindings.agentId, agentId), isNull(imBindings.disabledAt)))
           .limit(1);
-        const required =
+        const missingRequiredCapabilities =
           imBinding?.provider === "feishu"
-            ? ["im:message.group_msg"]
+            ? !hasRequiredFeishuTenantScopes(imBinding.capabilities)
             : imBinding?.provider === "slack"
-              ? ["channels:history", "groups:history", "mpim:history"]
-              : [];
-        if (imBinding && required.some((capability) => !imBinding.capabilities.includes(capability))) {
+              ? ["channels:history", "groups:history", "mpim:history"].some(
+                  (capability) => !imBinding.capabilities.includes(capability),
+                )
+              : false;
+        if (imBinding && missingRequiredCapabilities) {
           throw new AgentServiceError(
             "IM_BINDING_SCOPE_REAUTH_REQUIRED",
             "deterministic",

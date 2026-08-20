@@ -13,7 +13,8 @@
     "@opentag/shared": "workspace:*",
     "qrcode": "^1.5.4",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1"
+    "react-dom": "^19.1.1",
+    "react-router-dom": "^7.18.2"
   },
   "devDependencies": {
     "@testing-library/react": "^16.3.0",

@@ -69,12 +69,10 @@ pnpm --filter open-tag start agent list
 This records the Agent identity and Computer binding only; it does not start a Codex or Claude Code turn.
 
 Configure `OPENTAG_GOOGLE_CLIENT_ID` and `OPENTAG_GOOGLE_CLIENT_SECRET` to enable Google sign-in, then open
-`http://127.0.0.1:8000/admin/`. Team admins can inspect current members, Agents, the current invitation, and timestamped
-diagnostics. On the Computers page, **Your computers** lists every Computer owned by the current user, while **Team
-computers** lists every Computer owned by other active, non-suspended Team members. Agent bindings are supplementary
-information, not a condition for listing a Computer. Every active member can generate a short-lived Computer
-install/login command from the user-scoped admin landing page; admins also have the same action on the Computers page.
-Membership and invitation changes remain explicit CLI operations:
+`http://127.0.0.1:8000/`. Active Team members share the same App Shell and member-safe views; Team Admins additionally
+manage Agents, runtime configuration, IM bindings, and Local Computer setup. The Computers page lists timestamped Team
+Computer observations, and Admins can generate a short-lived install/login command. Membership and invitation changes
+remain explicit CLI operations:
 
 For loopback development without Google credentials, set `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true` and
 `OPENTAG_DEV_AUTH_EMAIL` to the unique email of an existing bootstrap user. This bypass is rejected outside the

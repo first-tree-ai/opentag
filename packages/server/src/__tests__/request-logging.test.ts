@@ -9,7 +9,7 @@ describe("request logging", () => {
     expect(sanitizeRequestUrl("/api/v1/auth/google/start?next=%2Finvite%2Fsecret-token")).toBe(
       "/api/v1/auth/google/start",
     );
-    expect(sanitizeRequestUrl("/invite/secret-token")).toBe("/invite/[REDACTED]");
+    expect(sanitizeRequestUrl("/invites/secret-token")).toBe("/invites/[REDACTED]");
     expect(sanitizeRequestUrl("/api/v1/invitations/secret-token/redeem")).toBe("/api/v1/invitations/[REDACTED]/redeem");
     expect(sanitizeRequestUrl("/api/v1/invitations/secret-token/redeem/")).toBe(
       "/api/v1/invitations/[REDACTED]/redeem/",
@@ -17,7 +17,7 @@ describe("request logging", () => {
     expect(sanitizeRequestUrl("/api/v1/invitations/secret-token/unknown")).toBe(
       "/api/v1/invitations/[REDACTED]/unknown",
     );
-    expect(sanitizeRequestUrl("/invite/secret-token/unknown")).toBe("/invite/[REDACTED]/unknown");
+    expect(sanitizeRequestUrl("/invites/secret-token/unknown")).toBe("/invites/[REDACTED]/unknown");
   });
 
   it("does not emit URL credentials in Fastify request logs", async () => {
@@ -28,11 +28,11 @@ describe("request logging", () => {
         method: "GET",
         url: "/api/v1/auth/google/callback?code=secret-code&state=secret-state",
       });
-      await app.inject({ method: "GET", url: "/invite/secret-invitation-token" });
+      await app.inject({ method: "GET", url: "/invites/secret-invitation-token" });
       await app.inject({ method: "POST", url: "/api/v1/invitations/secret-api-token/redeem" });
       await app.inject({ method: "POST", url: "/api/v1/invitations/secret-trailing-token/redeem/" });
       await app.inject({ method: "GET", url: "/api/v1/invitations/secret-unknown-api-token/unknown" });
-      await app.inject({ method: "GET", url: "/invite/secret-unknown-web-token/unknown" });
+      await app.inject({ method: "GET", url: "/invites/secret-unknown-web-token/unknown" });
     } finally {
       await app.close();
     }
@@ -46,6 +46,6 @@ describe("request logging", () => {
     expect(logs).not.toContain("secret-unknown-api-token");
     expect(logs).not.toContain("secret-unknown-web-token");
     expect(logs).toContain("/api/v1/auth/google/callback");
-    expect(logs).toContain("/invite/[REDACTED]");
+    expect(logs).toContain("/invites/[REDACTED]");
   });
 });

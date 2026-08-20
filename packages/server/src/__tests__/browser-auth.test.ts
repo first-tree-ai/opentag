@@ -39,7 +39,7 @@ function google() {
     callback: vi.fn().mockImplementation(async (_input: unknown, _context: string, options: { onVerified(): void }) => {
       options.onVerified();
       return {
-        next: "/admin",
+        next: "/agents",
         tokens: {
           accessToken: "access-secret",
           refreshToken: "refresh-secret",
@@ -97,11 +97,11 @@ describe("browser authentication routes", () => {
         { id: "dev", enabled: false, startUrl: null },
       ],
     });
-    const response = await app.inject({ method: "GET", url: `${HTTP_PATHS.authGoogleStart}?next=%2Fadmin` });
+    const response = await app.inject({ method: "GET", url: `${HTTP_PATHS.authGoogleStart}?next=%2Fagents` });
     expect(response.statusCode).toBe(302);
     expect(response.headers.location).toBe("https://accounts.google.com/auth");
     expect(String(response.headers["set-cookie"])).toContain("opentag_oauth_context=signed-context");
-    expect(googleService?.start).toHaveBeenCalledWith("/admin");
+    expect(googleService?.start).toHaveBeenCalledWith("/agents");
   });
 
   it("signs in the configured development user only from a loopback request", async () => {
@@ -126,12 +126,12 @@ describe("browser authentication routes", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: `${HTTP_PATHS.authDevCallback}?next=%2Fadmin`,
+      url: `${HTTP_PATHS.authDevCallback}?next=%2Fagents`,
       headers: { host: "localhost:8000" },
       remoteAddress: "127.0.0.1",
     });
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe("/admin");
+    expect(response.headers.location).toBe("/agents");
     expect(String(response.headers["set-cookie"])).toContain("opentag_access=dev-access-secret");
     expect(devService.signIn).toHaveBeenCalledOnce();
 
@@ -166,7 +166,7 @@ describe("browser authentication routes", () => {
       headers: { cookie: "opentag_oauth_context=signed-context" },
     });
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe("/admin");
+    expect(response.headers.location).toBe("/agents");
     const cookies = String(response.headers["set-cookie"]);
     expect(cookies).toContain("opentag_access=access-secret");
     expect(cookies).toContain("opentag_refresh=refresh-secret");
@@ -190,7 +190,7 @@ describe("browser authentication routes", () => {
     });
 
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe("/admin");
+    expect(response.headers.location).toBe("/agents");
     expect(googleService?.callback).toHaveBeenCalledWith(
       { code: "code", state: "state" },
       "signed-context",

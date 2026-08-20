@@ -2,13 +2,12 @@ import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, ServerHealthSchema } from "@opentag/shared";
 import Fastify, { type FastifyLoggerOptions } from "fastify";
-import { registerAdminWeb } from "./admin-web.js";
 import { registerAgentRoutes } from "./api/agents.js";
 import { registerAuthRoutes } from "./api/auth.js";
 import { type BrowserAuthRoutesOptions, registerBrowserAuthRoutes } from "./api/browser-auth.js";
 import { registerComputerRoutes } from "./api/computers.js";
+import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
-import { registerIntegrationRoutes } from "./api/integrations.js";
 import { registerInvitationRoutes } from "./api/invitations.js";
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
@@ -20,14 +19,15 @@ import { type AgentService, AgentServiceError } from "./services/agents/index.js
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
 import type { ComputerService } from "./services/computers/index.js";
 import type { ImResourceService } from "./services/im/index.js";
-import type { FeishuSetupService } from "./services/integrations/feishu/index.js";
-import { type IntegrationService, IntegrationServiceError } from "./services/integrations/index.js";
+import type { FeishuSetupService } from "./services/im-bindings/feishu/index.js";
+import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
 import type { InvitationService } from "./services/invitations/index.js";
 import type { TeamMembershipService } from "./services/teams/index.js";
+import { registerWebApp } from "./web-app.js";
 
 export interface CreateAppOptions {
   authService?: UserAuthService;
-  adminWebRoot?: string;
+  webAppRoot?: string;
   agentService?: AgentService;
   computerService?: ComputerService;
   connectCode?: {
@@ -37,7 +37,7 @@ export interface CreateAppOptions {
   };
   browserAuth?: BrowserAuthRoutesOptions;
   invitationService?: InvitationService;
-  integrationService?: IntegrationService;
+  imBindingService?: ImBindingService;
   imResourceService?: ImResourceService;
   feishuSetupService?: FeishuSetupService;
   loggerStream?: FastifyLoggerOptions["stream"];
@@ -49,7 +49,9 @@ export interface CreateAppOptions {
 
 export function sanitizeRequestUrl(url: string): string {
   const path = url.split("?", 1)[0] ?? "/";
-  return path.replace(/^(\/invite\/)[^/]+/, "$1[REDACTED]").replace(/^(\/api\/v1\/invitations\/)[^/]+/, "$1[REDACTED]");
+  return path
+    .replace(/^(\/invites\/)[^/]+/, "$1[REDACTED]")
+    .replace(/^(\/api\/v1\/invitations\/)[^/]+/, "$1[REDACTED]");
 }
 
 function contentTypeParserErrorStatus(error: unknown): number | undefined {
@@ -101,7 +103,6 @@ export function createApp(options: CreateAppOptions = {}) {
     return reply.code(200).send({ status: "ready" });
   });
 
-  if (options.adminWebRoot) registerAdminWeb(app, options.adminWebRoot);
   const slackEvents = options.slackEvents;
   if (slackEvents) {
     app.register(async (slackApp) => registerSlackEventsRoute(slackApp, slackEvents));
@@ -131,8 +132,8 @@ export function createApp(options: CreateAppOptions = {}) {
     if (options.invitationService) {
       registerInvitationRoutes(app, authService, options.invitationService, publicOrigin);
     }
-    if (options.integrationService) {
-      registerIntegrationRoutes(app, authService, options.integrationService, options.feishuSetupService, publicOrigin);
+    if (options.imBindingService) {
+      registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, publicOrigin);
     }
     if (options.imResourceService) {
       registerImResourceRoute(app, authService, options.imResourceService, publicOrigin);
@@ -146,6 +147,8 @@ export function createApp(options: CreateAppOptions = {}) {
       });
     }
   }
+
+  if (options.webAppRoot) registerWebApp(app, options.webAppRoot);
 
   app.setNotFoundHandler((request, reply) =>
     reply.code(404).send(
@@ -164,7 +167,7 @@ export function createApp(options: CreateAppOptions = {}) {
     if (
       error instanceof AuthServiceError ||
       error instanceof AgentServiceError ||
-      error instanceof IntegrationServiceError
+      error instanceof ImBindingServiceError
     ) {
       const envelope = ErrorEnvelopeSchema.parse({
         error: {

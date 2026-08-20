@@ -1,26 +1,33 @@
 import {
-  type Agent,
-  AgentSchema,
+  type AgentAdminConfig,
+  AgentAdminConfigSchema,
+  type AgentDetail,
+  AgentDetailSchema,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
   agentByIdPath,
+  agentConfigPath,
   agentFeishuSetupAttemptsPath,
-  agentIntegrationPath,
+  agentImBindingConfigPath,
+  agentImBindingPath,
   type ConnectCodeIssueResponse,
   ConnectCodeIssueResponseSchema,
+  type CreateAgentRequest,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
   feishuSetupAttemptPath,
   HTTP_PATHS,
-  type IntegrationDiagnostics,
-  IntegrationDiagnosticsSchema,
-  type IntegrationSummary,
-  IntegrationSummarySchema,
+  type ImBindingAdminDetail,
+  ImBindingAdminDetailSchema,
+  type ImBindingDiagnostics,
+  ImBindingDiagnosticsSchema,
+  type ImBindingSummary,
+  ImBindingSummarySchema,
   type InvitationPreview,
   InvitationPreviewSchema,
   InvitationRedemptionResponseSchema,
-  integrationDiagnosticsPath,
-  integrationDisablePath,
+  imBindingDiagnosticsPath,
+  imBindingDisablePath,
   invitationPreviewPath,
   invitationRedeemPath,
   type ListAgentsResponse,
@@ -39,6 +46,7 @@ import {
   teamComputersPath,
   teamInvitationPath,
   teamMembersPath,
+  type UpdateAgentRequest,
 } from "@opentag/shared/browser";
 
 interface RuntimeSchema<T> {
@@ -49,6 +57,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly code?: string,
+    readonly category?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -74,12 +84,36 @@ export class BrowserApi {
     return this.request(teamAgentsPath(teamId), ListAgentsResponseSchema);
   }
 
-  agent(agentId: string): Promise<Agent> {
-    return this.request(agentByIdPath(agentId), AgentSchema);
+  agent(agentId: string): Promise<AgentDetail> {
+    return this.request(agentByIdPath(agentId), AgentDetailSchema);
   }
 
-  integration(agentId: string): Promise<IntegrationSummary | undefined> {
-    return this.requestOptional(agentIntegrationPath(agentId), IntegrationSummarySchema);
+  agentConfig(agentId: string): Promise<AgentAdminConfig> {
+    return this.request(agentConfigPath(agentId), AgentAdminConfigSchema);
+  }
+
+  createAgent(teamId: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
+    return this.request(teamAgentsPath(teamId), AgentAdminConfigSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  updateAgent(agentId: string, input: UpdateAgentRequest): Promise<AgentAdminConfig> {
+    return this.request(agentByIdPath(agentId), AgentAdminConfigSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  imBinding(agentId: string): Promise<ImBindingSummary | undefined> {
+    return this.requestOptional(agentImBindingPath(agentId), ImBindingSummarySchema);
+  }
+
+  imBindingConfig(agentId: string): Promise<ImBindingAdminDetail | undefined> {
+    return this.requestOptional(agentImBindingConfigPath(agentId), ImBindingAdminDetailSchema);
   }
 
   createFeishuSetupAttempt(
@@ -97,12 +131,12 @@ export class BrowserApi {
     return this.request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema);
   }
 
-  integrationDiagnostics(integrationId: string): Promise<IntegrationDiagnostics> {
-    return this.request(integrationDiagnosticsPath(integrationId), IntegrationDiagnosticsSchema);
+  imBindingDiagnostics(imBindingId: string): Promise<ImBindingDiagnostics> {
+    return this.request(imBindingDiagnosticsPath(imBindingId), ImBindingDiagnosticsSchema);
   }
 
-  disableIntegration(integrationId: string): Promise<void> {
-    return this.requestNoContent(integrationDisablePath(integrationId), {
+  disableImBinding(imBindingId: string): Promise<void> {
+    return this.requestNoContent(imBindingDisablePath(imBindingId), {
       method: "POST",
       headers: this.csrfHeaders(),
     });
@@ -116,15 +150,23 @@ export class BrowserApi {
     return this.request(HTTP_PATHS.meComputers, ListComputersResponseSchema);
   }
 
-  issueConnectCode(): Promise<ConnectCodeIssueResponse> {
+  issueConnectCode(teamId: string): Promise<ConnectCodeIssueResponse> {
     return this.request(HTTP_PATHS.meConnectCodes, ConnectCodeIssueResponseSchema, {
       method: "POST",
-      headers: this.csrfHeaders(),
+      body: JSON.stringify({ teamId }),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }
 
-  invitation(teamId: string): Promise<TeamInvitation> {
-    return this.request(teamInvitationPath(teamId), TeamInvitationSchema);
+  invitation(teamId: string): Promise<TeamInvitation | undefined> {
+    return this.requestOptional(teamInvitationPath(teamId), TeamInvitationSchema);
+  }
+
+  createInvitation(teamId: string): Promise<TeamInvitation> {
+    return this.request(teamInvitationPath(teamId), TeamInvitationSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
   }
 
   invitationPreview(token: string): Promise<InvitationPreview> {
@@ -151,57 +193,64 @@ export class BrowserApi {
   }
 
   async logout(): Promise<void> {
-    const response = await this.fetchImpl("/api/v1/auth/browser/logout", {
+    return this.requestNoContent("/api/v1/auth/browser/logout", {
       method: "POST",
-      credentials: "same-origin",
       headers: this.csrfHeaders(),
     });
-    if (!response.ok) throw new ApiError(response.status, "Logout failed");
   }
 
   private async request<T>(path: string, schema: RuntimeSchema<T>, init: RequestInit = {}, retry = true): Promise<T> {
-    const response = await this.fetchImpl(path, { ...init, credentials: "same-origin" });
-    if (response.status === 401 && retry && this.csrfToken()) {
-      const refreshed = await this.fetchImpl("/api/v1/auth/browser/refresh", {
-        method: "POST",
-        credentials: "same-origin",
-        headers: this.csrfHeaders(),
-      });
-      if (refreshed.ok) {
-        const headers = new Headers(init.headers);
-        const csrf = this.csrfToken();
-        if (csrf && !["GET", "HEAD", "OPTIONS"].includes(init.method?.toUpperCase() ?? "GET")) {
-          headers.set("X-OpenTag-CSRF", csrf);
-        }
-        return this.request(path, schema, { ...init, headers }, false);
-      }
-    }
+    const response = await this.fetchWithRefresh(path, init, retry);
     const body = await response.json().catch(() => undefined);
-    if (!response.ok) {
-      const message =
-        typeof body === "object" && body !== null && "error" in body
-          ? String((body as { error?: { message?: unknown } }).error?.message ?? "Request failed")
-          : "Request failed";
-      throw new ApiError(response.status, message);
-    }
+    if (!response.ok) throw this.apiError(response, body);
     const parsed = schema.safeParse(body);
     if (!parsed.success) throw new ApiError(503, "The server returned an invalid response");
     return parsed.data;
   }
 
   private async requestOptional<T>(path: string, schema: RuntimeSchema<T>): Promise<T | undefined> {
-    const response = await this.fetchImpl(path, { credentials: "same-origin" });
+    const response = await this.fetchWithRefresh(path);
     if (response.status === 204) return undefined;
     const body = await response.json().catch(() => undefined);
-    if (!response.ok) throw new ApiError(response.status, "Request failed");
+    if (!response.ok) throw this.apiError(response, body);
     const parsed = schema.safeParse(body);
     if (!parsed.success) throw new ApiError(503, "The server returned an invalid response");
     return parsed.data;
   }
 
   private async requestNoContent(path: string, init: RequestInit): Promise<void> {
+    const response = await this.fetchWithRefresh(path, init);
+    if (!response.ok) throw this.apiError(response, await response.json().catch(() => undefined));
+  }
+
+  private async fetchWithRefresh(path: string, init: RequestInit = {}, retry = true): Promise<Response> {
     const response = await this.fetchImpl(path, { ...init, credentials: "same-origin" });
-    if (!response.ok) throw new ApiError(response.status, "Request failed");
+    if (response.status !== 401 || !retry || !this.csrfToken()) return response;
+    const refreshed = await this.fetchImpl("/api/v1/auth/browser/refresh", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: this.csrfHeaders(),
+    });
+    if (!refreshed.ok) return response;
+    const headers = new Headers(init.headers);
+    const csrf = this.csrfToken();
+    if (csrf && !["GET", "HEAD", "OPTIONS"].includes(init.method?.toUpperCase() ?? "GET")) {
+      headers.set("X-OpenTag-CSRF", csrf);
+    }
+    return this.fetchWithRefresh(path, { ...init, headers }, false);
+  }
+
+  private apiError(response: Response, body: unknown): ApiError {
+    const envelope =
+      typeof body === "object" && body !== null && "error" in body
+        ? (body as { error?: { category?: unknown; code?: unknown; message?: unknown } }).error
+        : undefined;
+    return new ApiError(
+      response.status,
+      typeof envelope?.message === "string" ? envelope.message : "Request failed",
+      typeof envelope?.code === "string" ? envelope.code : undefined,
+      typeof envelope?.category === "string" ? envelope.category : undefined,
+    );
   }
 
   private csrfHeaders(): HeadersInit {

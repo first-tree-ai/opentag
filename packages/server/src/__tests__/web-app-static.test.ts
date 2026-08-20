@@ -7,31 +7,35 @@ import { createApp } from "../app.js";
 let root: string;
 
 beforeAll(async () => {
-  root = await mkdtemp(join(tmpdir(), "opentag-admin-static-"));
+  root = await mkdtemp(join(tmpdir(), "opentag-web-app-static-"));
   await mkdir(join(root, "assets"));
-  await writeFile(join(root, "index.html"), "<!doctype html><title>OpenTag Admin</title>");
-  await writeFile(join(root, "assets", "app.js"), "globalThis.OPENTAG_ADMIN = true;");
+  await writeFile(join(root, "index.html"), "<!doctype html><title>OpenTag</title>");
+  await writeFile(join(root, "assets", "app.js"), "globalThis.OPENTAG_APP = true;");
 });
 
 afterAll(async () => rm(root, { recursive: true, force: true }));
 
-describe("Admin Web static serving", () => {
+describe("Web App static serving", () => {
   it("serves SPA routes with security headers without swallowing API or health paths", async () => {
-    const app = createApp({ adminWebRoot: root });
+    const app = createApp({ webAppRoot: root });
     try {
-      const spa = await app.inject({ method: "GET", url: "/admin/teams/example/members" });
+      expect((await app.inject({ method: "GET", url: "/" })).body).toContain("OpenTag");
+      const spa = await app.inject({ method: "GET", url: "/agents/example/runtime" });
       expect(spa.statusCode).toBe(200);
-      expect(spa.body).toContain("OpenTag Admin");
+      expect(spa.body).toContain("OpenTag");
       expect(spa.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
       expect(spa.headers["cache-control"]).toBe("no-store");
 
-      const asset = await app.inject({ method: "GET", url: "/admin/assets/app.js" });
+      const asset = await app.inject({ method: "GET", url: "/assets/app.js" });
       expect(asset.statusCode).toBe(200);
       expect(asset.headers["cache-control"]).toContain("immutable");
+      expect((await app.inject({ method: "GET", url: `/invites/${"A".repeat(43)}` })).statusCode).toBe(200);
+      expect((await app.inject({ method: "GET", url: "/admin" })).statusCode).toBe(404);
+      expect((await app.inject({ method: "GET", url: "/invite/legacy-token" })).statusCode).toBe(404);
       expect((await app.inject({ method: "GET", url: "/healthz" })).statusCode).toBe(200);
       const api = await app.inject({ method: "GET", url: "/api/v1/not-a-route" });
       expect(api.statusCode).toBe(404);
-      expect(api.body).not.toContain("OpenTag Admin");
+      expect(api.body).not.toContain("<!doctype html>");
     } finally {
       await app.close();
     }

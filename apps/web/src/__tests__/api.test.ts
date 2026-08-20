@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { BrowserApi } from "../api.js";
+import { ApiError, BrowserApi } from "../api.js";
 
 const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 
@@ -80,6 +80,47 @@ describe("BrowserApi", () => {
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 
+  it("shares refresh behavior across optional and no-content requests", async () => {
+    setDocumentCookie("opentag_csrf=shared-refresh; Path=/");
+    let protectedCalls = 0;
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      if (String(input) === "/api/v1/auth/browser/refresh") return new Response(null, { status: 204 });
+      protectedCalls += 1;
+      if (protectedCalls === 1 || protectedCalls === 3) return new Response(null, { status: 401 });
+      return new Response(null, { status: 204 });
+    });
+    const api = new BrowserApi(fetchImpl);
+    await expect(api.imBinding("1a63a21e-f6c7-4474-91ea-4dabf0566a24")).resolves.toBeUndefined();
+    await expect(api.disableImBinding("2a63a21e-f6c7-4474-91ea-4dabf0566a24")).resolves.toBeUndefined();
+    expect(fetchImpl.mock.calls.filter(([input]) => String(input) === "/api/v1/auth/browser/refresh")).toHaveLength(2);
+    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
+
+  it("preserves structured server error codes for recovery actions", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: "IM_BINDING_SCOPE_REAUTH_REQUIRED",
+              category: "deterministic",
+              message: "Additional scopes are required",
+            },
+          }),
+          { status: 409, headers: { "content-type": "application/json" } },
+        ),
+    );
+    const error = await new BrowserApi(fetchImpl)
+      .agentConfig("1a63a21e-f6c7-4474-91ea-4dabf0566a24")
+      .catch((cause) => cause);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({
+      status: 409,
+      code: "IM_BINDING_SCOPE_REAUTH_REQUIRED",
+      category: "deterministic",
+    });
+  });
+
   it("mints a connect command with CSRF and lists only the current user's Computers", async () => {
     setDocumentCookie("opentag_csrf=connect-csrf; Path=/");
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
@@ -92,6 +133,7 @@ describe("BrowserApi", () => {
       expect(String(input)).toBe("/api/v1/me/connect-codes");
       expect(init?.method).toBe("POST");
       expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("connect-csrf");
+      expect(init?.body).toBe(JSON.stringify({ teamId }));
       return new Response(
         JSON.stringify({
           bootstrapCommand: `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login code --server http://127.0.0.1:8000`,
@@ -103,7 +145,7 @@ describe("BrowserApi", () => {
     });
     const api = new BrowserApi(fetchImpl);
     await expect(api.ownComputers()).resolves.toEqual({ computers: [] });
-    await expect(api.issueConnectCode()).resolves.toMatchObject({ expiresIn: 900 });
+    await expect(api.issueConnectCode(teamId)).resolves.toMatchObject({ expiresIn: 900 });
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 });

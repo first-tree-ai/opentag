@@ -6,5 +6,5 @@ vi.stubGlobal("fetch", vi.fn());
 afterEach(() => {
   cleanup();
   vi.mocked(fetch).mockReset();
-  window.history.replaceState({}, "", "/admin");
+  window.history.replaceState({}, "", "/");
 });

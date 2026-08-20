@@ -286,6 +286,14 @@ describe("Agent Runtime validation", () => {
       value = true;
     }
     const withGetter = Object.defineProperty({}, "value", { enumerable: true, get: () => true });
+    let arrayGetterReads = 0;
+    const arrayWithGetter = Object.defineProperty([true], "0", {
+      enumerable: true,
+      get: () => {
+        arrayGetterReads += 1;
+        return true;
+      },
+    });
     const withHidden = Object.defineProperty({}, "value", { enumerable: false, value: true });
     const withSymbol = { [Symbol("value")]: true };
     const sparse: unknown[] = [];
@@ -303,6 +311,7 @@ describe("Agent Runtime validation", () => {
       new Map(),
       new CustomJsonObject(),
       withGetter,
+      arrayWithGetter,
       withHidden,
       withSymbol,
       sparse,
@@ -310,6 +319,7 @@ describe("Agent Runtime validation", () => {
     ]) {
       expect(() => assertJsonValue(value, "value")).toThrowError(expect.objectContaining({ code: "invalid_request" }));
     }
+    expect(arrayGetterReads).toBe(0);
     const cycle: { self?: unknown } = {};
     cycle.self = cycle;
     expect(() => assertJsonValue(cycle, "value", "binding_incompatible")).toThrowError(

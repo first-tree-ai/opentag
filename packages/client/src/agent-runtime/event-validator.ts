@@ -7,6 +7,8 @@ interface ToolLifecycle {
   readonly name: string;
 }
 
+const TOOL_COMPLETION_STATUSES: ReadonlySet<unknown> = new Set(["completed", "failed", "declined"]);
+
 /**
  * Validates the provider-neutral event grammar for one Run. Provider adapters
  * remain responsible only for translating their wire protocol into this grammar.
@@ -74,6 +76,9 @@ export class AgentRunEventValidator {
         const tool = this.#requireTool(event.toolCallId);
         assertIdentifier(event.name, "tool name");
         if (tool.name !== event.name) throw protocolError("provider changed a tool name during its lifecycle");
+        if (!TOOL_COMPLETION_STATUSES.has(event.status)) {
+          throw protocolError("provider emitted an invalid tool completion status");
+        }
         if (event.output !== undefined) assertJsonValue(event.output, "tool output");
         this.#activeTools.delete(event.toolCallId);
         return;

@@ -407,6 +407,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       [8, "completed", "failed"],
       [9, "failed", "completed"],
       [10, "interrupted", "completed"],
+      [11, "completed", "completed"],
     ] as const) {
       const toolRun = runtime.prompt({ runId: `open-tool-${index}`, input: input("tool") });
       await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(index));
@@ -421,6 +422,15 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       });
     }
     expect(events.find((event) => event.type === "tool_completed" && event.toolCallId === "tool-10")).toMatchObject({
+      status: "failed",
+    });
+
+    const missingTool = runtime.prompt({ runId: "open-tool-12", input: input("tool") });
+    await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(12));
+    client.emitItem("item/started", { id: "tool-12", type: "commandExecution" });
+    client.complete({ id: "turn-12", status: "completed", items: [] });
+    await expect(missingTool).resolves.toMatchObject({ status: "completed" });
+    expect(events.find((event) => event.type === "tool_completed" && event.toolCallId === "tool-12")).toMatchObject({
       status: "failed",
     });
     await runtime.close();

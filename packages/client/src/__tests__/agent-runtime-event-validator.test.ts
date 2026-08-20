@@ -115,6 +115,22 @@ describe("AgentRunEventValidator", () => {
     ).toThrow();
   });
 
+  it("rejects an invalid tool completion status without consuming the active lifecycle", () => {
+    const validator = new AgentRunEventValidator();
+    validator.accept({ type: "tool_started", toolCallId: "tool", name: "read" });
+    expect(() =>
+      validator.accept({
+        type: "tool_completed",
+        toolCallId: "tool",
+        name: "read",
+        status: "unknown" as never,
+      }),
+    ).toThrowError(expect.objectContaining({ code: "provider_protocol_error" }));
+    expect(() =>
+      validator.accept({ type: "tool_completed", toolCallId: "tool", name: "read", status: "failed" }),
+    ).not.toThrow();
+  });
+
   it("normalizes non-Error validation failures into protocol errors", () => {
     const event = new Proxy<AgentProviderRunEvent>(
       { type: "message_started", messageId: "message" },

@@ -537,7 +537,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       const status =
         item?.status === "declined"
           ? "declined"
-          : item?.status === "failed" || turn.status !== "completed"
+          : !item || item.status === "failed" || turn.status !== "completed"
             ? "failed"
             : "completed";
       await context.emit({

@@ -140,7 +140,13 @@ export function assertJsonValue(
       ) {
         throw new AgentRuntimeError(code, `${field} must contain dense JSON arrays without custom properties`);
       }
-      for (const item of candidate) visit(item);
+      for (let index = 0; index < candidate.length; index += 1) {
+        const descriptor = Object.getOwnPropertyDescriptor(candidate, String(index));
+        if (!descriptor?.enumerable || !("value" in descriptor)) {
+          throw new AgentRuntimeError(code, `${field} must contain enumerable data properties`);
+        }
+        visit(descriptor.value);
+      }
     } else {
       const prototype = Object.getPrototypeOf(candidate);
       if (prototype !== Object.prototype && prototype !== null) {

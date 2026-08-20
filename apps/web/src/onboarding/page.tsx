@@ -151,6 +151,7 @@ export function OnboardingPage({
   }, [loadState, membership]);
 
   const waitingForRuntime = resolved !== undefined && RUNTIME_WAIT_STATES.includes(resolved.state.currentState.kind);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attendedWindow deliberately restarts the bounded window.
   useEffect(() => {
     if (!waitingForRuntime) return;
     let elapsedMs = 0;

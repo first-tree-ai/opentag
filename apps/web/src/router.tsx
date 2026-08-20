@@ -4,91 +4,37 @@ import type {
   AgentSummary,
   AuthProvidersResponse,
   Computer,
-  FeishuSetupAttempt,
+  FeishuSetupIntent,
   MeMembership,
-  MeResponse,
   TeamComputerSummary,
   TeamMemberSummary,
   UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
-import { toString as qrToString } from "qrcode";
-import {
-  createContext,
-  type FormEvent,
-  type ReactNode,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
+import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ApiError, browserApi } from "./api.js";
-
-type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
-
-function useResource<T>(loader: () => Promise<T>, key: string): LoadState<T> {
-  const [state, setState] = useState<LoadState<T>>({ kind: "loading" });
-  const loaderRef = useRef(loader);
-  const keyRef = useRef(key);
-  loaderRef.current = loader;
-  keyRef.current = key;
-  useEffect(() => {
-    let active = true;
-    const activeKey = key;
-    setState({ kind: "loading" });
-    void loaderRef.current().then(
-      (value) => active && keyRef.current === activeKey && setState({ kind: "ready", value }),
-      (error: unknown) =>
-        active &&
-        keyRef.current === activeKey &&
-        setState({ kind: "error", error: error instanceof Error ? error : new Error(String(error)) }),
-    );
-    return () => {
-      active = false;
-    };
-  }, [key]);
-  return state;
-}
-
-function AsyncState<T>({ state, children }: { state: LoadState<T>; children: (value: T) => ReactNode }) {
-  if (state.kind === "loading")
-    return (
-      <p className="muted" role="status">
-        Loading current server state…
-      </p>
-    );
-  if (state.kind === "error")
-    return (
-      <div className="notice error" role="alert">
-        {state.error.message}
-      </div>
-    );
-  return children(state.value);
-}
-
-interface TeamSession {
-  me: MeResponse;
-  membership: MeMembership;
-  refreshMe: () => void;
-  selectTeam: (teamId: string) => void;
-}
-
-const teamContext = createContext<TeamSession | undefined>(undefined);
-const TeamContext = teamContext.Provider;
-
-function useTeam(): TeamSession {
-  const value = useContext(teamContext);
-  if (!value) throw new Error("Team context is missing");
-  return value;
-}
+import { FeishuSetupAttemptPanel, useFeishuSetup } from "./feishu-setup.js";
+import { OnboardingPage } from "./onboarding/onboarding-page.js";
+import { readTeamPreference, SELECTED_TEAM_STORAGE_KEY, TeamContext, useTeam } from "./team-context.js";
+import {
+  AsyncState,
+  DefinitionList,
+  EmptyState,
+  formatDate,
+  NotFoundPage,
+  Page,
+  titleCase,
+  UnavailablePage,
+  useResource,
+} from "./ui.js";
 
 export function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/invites/:token" element={<InvitePage />} />
-      <Route path="/teams/new" element={<UnavailablePage title="Create Team" />} />
+      {/* Onboarding owns Team creation so the zero-Team path has a single destination. */}
+      <Route path="/teams/new" element={<Navigate replace to="/onboarding" />} />
       <Route element={<AuthenticatedTeamGate />}>
         <Route path="/onboarding" element={<OnboardingPage />} />
         <Route element={<AppShell />}>
@@ -185,10 +131,12 @@ function AuthenticatedTeamGate() {
       {(me) => {
         const stored = readTeamPreference();
         const membership = me.memberships.find((item: MeMembership) => item.teamId === stored) ?? me.memberships[0];
-        if (!membership) return <UnavailablePage title="No active Team" />;
+        // A signed-in user with no Team cannot use any Team-scoped page. Onboarding
+        // owns that state and creates the first Team, so it is the only destination.
+        if (!membership && location.pathname !== "/onboarding") return <Navigate replace to="/onboarding" />;
         const selectTeam = (teamId: string) => {
           if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
-          window.localStorage.setItem("opentag.selectedTeamId", teamId);
+          window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, teamId);
           navigate(location.pathname, { replace: true });
           window.location.reload();
         };
@@ -200,11 +148,6 @@ function AuthenticatedTeamGate() {
       }}
     </AsyncState>
   );
-}
-
-function readTeamPreference(): string | undefined {
-  const value = window.localStorage.getItem("opentag.selectedTeamId");
-  return value && value.length <= 64 ? value : undefined;
 }
 
 function AppShell() {
@@ -554,35 +497,21 @@ function nullableText(value: FormDataEntryValue | null): string | null {
 
 function ImTab({ agent }: { agent: AgentDetail }) {
   const [reload, setReload] = useState(0);
-  const [attempt, setAttempt] = useState<FeishuSetupAttempt>();
   const [error, setError] = useState<string>();
   const [reauthorizationNeeded, setReauthorizationNeeded] = useState(false);
   const state = useResource(() => browserApi.imBinding(agent.id), `${agent.id}:${reload}`);
+  const onSucceeded = useCallback(() => setReload((value) => value + 1), []);
+  const setup = useFeishuSetup(agent.id, onSucceeded);
+  const startSetup = setup.start;
   const connect = useCallback(
-    async (intent: "create" | "reauthorize" = "create") => {
-      try {
-        setError(undefined);
-        setAttempt(await browserApi.createFeishuSetupAttempt(agent.id, intent));
-        setReauthorizationNeeded(false);
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "Unable to start setup");
-      }
+    async (intent: FeishuSetupIntent = "create") => {
+      setError(undefined);
+      // Only a started attempt clears the pending reauthorization; a failed one must
+      // leave the retry affordance in place.
+      if (await startSetup(intent)) setReauthorizationNeeded(false);
     },
-    [agent.id],
+    [startSetup],
   );
-  useEffect(() => {
-    if (!attempt || !["awaiting_user", "validating"].includes(attempt.state)) return;
-    const timer = window.setInterval(() => {
-      void browserApi.feishuSetupAttempt(attempt.id).then(
-        (next) => {
-          setAttempt(next);
-          if (next.state === "succeeded") setReload((value) => value + 1);
-        },
-        (cause: unknown) => setError(cause instanceof Error ? cause.message : "Unable to refresh setup"),
-      );
-    }, 1_500);
-    return () => window.clearInterval(timer);
-  }, [attempt]);
   async function changeReceiveMode(receiveMode: "mention_only" | "all_message") {
     if (
       receiveMode === "all_message" &&
@@ -668,57 +597,18 @@ function ImTab({ agent }: { agent: AgentDetail }) {
           ) : (
             <p className="muted">IM setup is managed by Team Admins.</p>
           )}
-          {attempt ? (
-            <div className="notice">
-              <strong>Feishu setup started</strong>
-              <br />
-              State: {attempt.state}. Expires {formatDate(attempt.expiresAt)}.
-              {attempt.qrUrl ? (
-                <>
-                  <br />
-                  <FeishuQrCode value={attempt.qrUrl} />
-                  <a href={attempt.qrUrl} rel="noreferrer" target="_blank">
-                    Open Feishu authorization
-                  </a>
-                </>
-              ) : null}
-              {["expired", "failed", "canceled"].includes(attempt.state) ? (
-                <>
-                  <br />
-                  <button
-                    className="button"
-                    type="button"
-                    onClick={() => void connect(attempt.intent === "reauthorize" ? "reauthorize" : "create")}
-                  >
-                    Retry Feishu setup
-                  </button>
-                </>
-              ) : null}
-            </div>
+          {setup.attempt ? (
+            <FeishuSetupAttemptPanel attempt={setup.attempt} onRetry={(intent) => void connect(intent)} />
           ) : null}
-          {error ? (
+          {(error ?? setup.error) ? (
             <div className="notice error" role="alert">
-              {error}
+              {error ?? setup.error}
             </div>
           ) : null}
         </>
       )}
     </AsyncState>
   );
-}
-
-function FeishuQrCode({ value }: { value: string }) {
-  const [source, setSource] = useState<string>();
-  useEffect(() => {
-    let active = true;
-    void qrToString(value, { margin: 1, type: "svg", width: 240 }).then(
-      (svg) => active && setSource(`data:image/svg+xml,${encodeURIComponent(svg)}`),
-    );
-    return () => {
-      active = false;
-    };
-  }, [value]);
-  return source ? <img alt="Scan this QR code in Feishu" className="setup-qr" src={source} /> : null;
 }
 
 function AccessTab({ agent }: { agent: AgentDetail }) {
@@ -912,105 +802,4 @@ function ComputersSettings({ canManage, teamId }: { canManage: boolean; teamId: 
       </AsyncState>
     </>
   );
-}
-
-function OnboardingPage() {
-  const { membership } = useTeam();
-  return (
-    <Page title="Set up OpenTag">
-      {membership.role === "admin" ? (
-        <>
-          <ol className="steps">
-            <li>Team: {membership.teamDisplayName}</li>
-            <li>Connect a Local Computer</li>
-            <li>Confirm the provider CLI</li>
-            <li>Create an Agent</li>
-            <li>Connect IM</li>
-          </ol>
-          <Link className="button" to="/settings/computers">
-            Start with a Computer
-          </Link>
-        </>
-      ) : (
-        <EmptyState title="Team Admin setup required">
-          You can browse the Team after an Admin completes setup.
-        </EmptyState>
-      )}
-    </Page>
-  );
-}
-
-function Page({
-  title,
-  eyebrow,
-  action,
-  children,
-}: {
-  title: string;
-  eyebrow?: string;
-  action?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <>
-      <header className="page-header">
-        <div>
-          {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
-          <h1>{title}</h1>
-        </div>
-        {action}
-      </header>
-      {children}
-    </>
-  );
-}
-
-function DefinitionList({ rows }: { rows: [string, string][] }) {
-  return (
-    <dl className="definition-list">
-      {rows.map(([term, value]) => (
-        <div key={term}>
-          <dt>{term}</dt>
-          <dd>{value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
-function EmptyState({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="empty-state">
-      <h2>{title}</h2>
-      <p>{children}</p>
-    </section>
-  );
-}
-
-function UnavailablePage({ title }: { title: string }) {
-  return (
-    <main className="center-card">
-      <h1>{title}</h1>
-      <p>This capability is not available in the current release.</p>
-      <Link to="/agents">Back to Agents</Link>
-    </main>
-  );
-}
-
-function NotFoundPage() {
-  return (
-    <main className="center-card">
-      <h1>Page not found</h1>
-      <p>The requested OpenTag page is not available.</p>
-      <Link to="/agents">Back to Agents</Link>
-    </main>
-  );
-}
-
-function titleCase(value: string) {
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
-function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }

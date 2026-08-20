@@ -26,7 +26,13 @@ function json(value: unknown, status = 200) {
 
 function installApi(
   role: "admin" | "member",
-  options: { bound?: boolean; provider?: "feishu" | "slack"; scopeReauth?: boolean; unauthenticated?: boolean } = {},
+  options: {
+    bound?: boolean;
+    provider?: "feishu" | "slack";
+    scopeReauth?: boolean;
+    unauthenticated?: boolean;
+    setupAttemptFails?: boolean;
+  } = {},
 ) {
   const teamProfile = { name: "example", displayName: "Example" };
   vi.mocked(fetch).mockImplementation(async (input, init) => {
@@ -118,6 +124,14 @@ function installApi(
       });
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts` && init?.method === "POST") {
+      if (options.setupAttemptFails) {
+        return json(
+          {
+            error: { code: "FEISHU_SETUP_UNAVAILABLE", category: "transient", message: "Feishu setup is unavailable" },
+          },
+          503,
+        );
+      }
       return json(
         {
           id: crypto.randomUUID(),
@@ -237,6 +251,33 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByText("Additional IM scopes are required")).toBeTruthy();
     expect(await screen.findByText(recovery)).toBeTruthy();
     if (provider === "slack") expect(screen.queryByRole("button", { name: "Reauthorize Feishu" })).toBeNull();
+    confirm.mockRestore();
+  });
+
+  it("keeps the reauthorization retry available when the setup attempt fails to start", async () => {
+    installApi("admin", { bound: true, provider: "feishu", scopeReauth: true, setupAttemptFails: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enable all messages" }));
+    const retry = await screen.findByRole("button", { name: "Reauthorize Feishu" });
+    fireEvent.click(retry);
+    expect(await screen.findByText("Feishu setup is unavailable")).toBeTruthy();
+    // A failed start must not retract the affordance that is the only way to recover.
+    expect(screen.getByRole("button", { name: "Reauthorize Feishu" })).toBeTruthy();
+    confirm.mockRestore();
+  });
+
+  it("clears a stale receive-mode error once a Feishu setup starts", async () => {
+    installApi("admin", { bound: true, provider: "feishu", scopeReauth: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enable all messages" }));
+    expect(await screen.findByText("Additional IM scopes are required")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Reauthorize Feishu" }));
+    expect(await screen.findByText("Feishu setup started")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText("Additional IM scopes are required")).toBeNull());
     confirm.mockRestore();
   });
 

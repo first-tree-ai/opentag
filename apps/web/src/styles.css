@@ -165,8 +165,7 @@ p {
 
 .mono,
 code,
-pre,
-.setup-progress {
+pre {
   font-family: "Geist Mono Variable", "SFMono-Regular", Consolas, monospace;
 }
 
@@ -439,108 +438,6 @@ pre,
   font-weight: 720;
   letter-spacing: 0.11em;
   text-transform: uppercase;
-}
-
-.setup-checklist {
-  position: relative;
-  overflow: hidden;
-  margin-bottom: 34px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background-color: var(--surface);
-  background-image:
-    linear-gradient(to right, rgb(201 204 187 / 16%) 1px, transparent 1px),
-    linear-gradient(to bottom, rgb(201 204 187 / 16%) 1px, transparent 1px);
-  background-size: 28px 28px;
-}
-
-.setup-checklist::before {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, rgb(253 252 246 / 92%), rgb(253 252 246 / 70%));
-  content: "";
-  pointer-events: none;
-}
-
-.setup-checklist > * {
-  position: relative;
-}
-
-.setup-checklist-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
-  border-bottom: 1px solid var(--border);
-  padding: 18px 20px;
-}
-
-.setup-checklist-heading h2 {
-  margin: 0;
-  font-size: 1.02rem;
-}
-
-.setup-progress {
-  color: var(--muted);
-  font-size: 0.75rem;
-  white-space: nowrap;
-}
-
-.setup-steps {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.setup-steps li {
-  display: grid;
-  min-width: 0;
-  align-items: center;
-  grid-template-columns: 28px minmax(0, 1fr);
-  gap: 10px;
-  padding: 17px 18px;
-}
-
-.setup-steps li + li {
-  border-left: 1px solid var(--border);
-}
-
-.step-marker {
-  display: grid;
-  width: 26px;
-  height: 26px;
-  place-items: center;
-  border: 1px solid var(--strong-border);
-  border-radius: 50%;
-  background: var(--surface);
-  color: var(--brand-ink);
-  font-size: 0.8rem;
-  font-weight: 800;
-}
-
-.setup-steps .is-complete .step-marker {
-  border-color: var(--brand-ink);
-  background: var(--success);
-}
-
-.setup-steps strong,
-.setup-steps small {
-  display: block;
-}
-
-.setup-steps strong {
-  overflow: hidden;
-  font-size: 0.82rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.setup-steps small {
-  margin-top: 3px;
-  color: var(--muted);
-  font-size: 0.72rem;
 }
 
 .agent-list-section {
@@ -1067,19 +964,6 @@ code {
   .agent-row > :last-child {
     display: none;
   }
-
-  .setup-steps {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .setup-steps li:nth-child(3) {
-    border-top: 1px solid var(--border);
-    border-left: 0;
-  }
-
-  .setup-steps li:nth-child(4) {
-    border-top: 1px solid var(--border);
-  }
 }
 
 @media (max-width: 900px) {
@@ -1177,29 +1061,13 @@ code {
 
 @media (max-width: 720px) {
   .page-header,
-  .object-title-row,
-  .setup-checklist-heading {
+  .object-title-row {
     align-items: stretch;
     flex-direction: column;
   }
 
   .page-header .button {
     align-self: flex-start;
-  }
-
-  .setup-progress {
-    align-self: flex-start;
-  }
-
-  .setup-steps {
-    grid-template-columns: 1fr;
-  }
-
-  .setup-steps li + li,
-  .setup-steps li:nth-child(3),
-  .setup-steps li:nth-child(4) {
-    border-top: 1px solid var(--border);
-    border-left: 0;
   }
 
   .agent-table-header {

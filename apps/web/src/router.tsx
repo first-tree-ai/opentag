@@ -399,47 +399,10 @@ function AgentsPage() {
 }
 
 function AgentsContent({ agents }: { agents: AgentSummary[] }) {
-  return (
-    <>
-      <TeamSetupChecklist agents={agents} />
-      {agents.length === 0 ? (
-        <EmptyState title="No Agents yet">A Team Admin can create the first Agent.</EmptyState>
-      ) : (
-        <AgentList agents={agents} />
-      )}
-    </>
-  );
-}
-
-function TeamSetupChecklist({ agents }: { agents: AgentSummary[] }) {
-  if (agents.length > 0) return null;
-  const steps = [
-    { label: "Connect computer", status: "Not confirmed" },
-    { label: "Create agent", status: "Action required" },
-    { label: "Connect messaging", status: "Not confirmed" },
-    { label: "Send first @mention", status: "Not tracked yet" },
-  ];
-  return (
-    <section className="setup-checklist" aria-labelledby="team-setup-title">
-      <div className="setup-checklist-heading">
-        <div>
-          <span className="section-kicker">Team setup</span>
-          <h2 id="team-setup-title">Finish the path to your first mention</h2>
-        </div>
-        <span className="setup-progress">Setup preview</span>
-      </div>
-      <ol className="setup-steps">
-        {steps.map((step) => (
-          <li key={step.label}>
-            <span className="step-marker" aria-hidden="true" />
-            <span>
-              <strong>{step.label}</strong>
-              <small>{step.status}</small>
-            </span>
-          </li>
-        ))}
-      </ol>
-    </section>
+  return agents.length === 0 ? (
+    <EmptyState title="No Agents yet">A Team Admin can create the first Agent.</EmptyState>
+  ) : (
+    <AgentList agents={agents} />
   );
 }
 

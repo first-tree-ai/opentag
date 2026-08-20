@@ -62,6 +62,7 @@ describe("AgentRuntimeProviderRegistry", () => {
     const providers = new AgentRuntimeProviderRegistry([{ ...registration(factory("codex", probe)), verifyArtifact }]);
 
     await expect(providers.refresh("codex", new AbortController().signal)).resolves.toBe(true);
+    expect(providers.probeResult("codex")).toEqual({ ready: true, version: "fixture", issues: [] });
     expect(providers.isReady("codex")).toBe(true);
     expect(providers.validate(snapshot())).toBeUndefined();
     expect(verifyArtifact).toHaveBeenCalledOnce();
@@ -70,6 +71,10 @@ describe("AgentRuntimeProviderRegistry", () => {
 
     ready = false;
     await expect(providers.refresh("codex")).resolves.toBe(false);
+    expect(providers.probeResult("codex")).toEqual({
+      ready: false,
+      issues: [{ code: "artifact_missing", message: "missing" }],
+    });
     expect(providers.isReady("codex")).toBe(false);
     expect(providers.validate(snapshot())).toBe("provider_unavailable");
     await expect(providers.ensureReady("codex")).rejects.toThrow("artifact_missing: missing");

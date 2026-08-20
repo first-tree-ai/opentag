@@ -3,7 +3,11 @@ import { constants } from "node:fs";
 import { access, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
-import { computeRuntimeSnapshotHashes, RUNTIME_CLIENT_CAPABILITY_TTL_MS } from "@opentag/shared";
+import {
+  computeRuntimeSnapshotHashes,
+  RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+  type RuntimeProviderReadinessObservation,
+} from "@opentag/shared";
 import type {
   AgentRuntimeFactory,
   AgentRuntimeProbeRequest,
@@ -185,9 +189,11 @@ export async function createClientRuntime(
     ? AbortSignal.any([options.signal, capabilityAbort.signal])
     : capabilityAbort.signal;
   const refreshCapability = async (): Promise<void> => {
+    connection.setProviderReadiness({ provider: "codex", status: "checking" });
     const available = await providers.refresh(CODEX_AGENT_RUNTIME_MANIFEST.providerId, readinessSignal);
     readinessSignal.throwIfAborted();
     connection.setVerifiedCapabilities({ imMessageTool: available ? 1 : 0 });
+    connection.setProviderReadiness(codexProviderReadiness(available, providers.probeResult("codex")));
   };
   try {
     await refreshCapability();
@@ -272,6 +278,20 @@ export async function createClientRuntime(
       options.capabilityRefreshIntervalMs ?? DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS,
     ),
   });
+}
+
+export function codexProviderReadiness(
+  available: boolean,
+  result: AgentRuntimeProbeResult | undefined,
+): RuntimeProviderReadinessObservation {
+  if (available) return { provider: "codex", status: "ready" };
+  if (result?.issues.some((issue) => issue.code === "artifact_missing")) {
+    return { provider: "codex", status: "install" };
+  }
+  if (result?.issues.some((issue) => issue.code === "credential_missing")) {
+    return { provider: "codex", status: "sign-in" };
+  }
+  return { provider: "codex", status: "unavailable" };
 }
 
 export interface ResolvedCodexFactoryOptions {

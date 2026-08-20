@@ -5,6 +5,7 @@ import {
   RUNTIME_PROTOCOL_VERSION,
   type RuntimeClientCapabilities,
   RuntimeFrameEnvelopeSchema,
+  type RuntimeProviderReadinessObservation,
   runtimeFrameByteLength,
   runtimeWebSocketUrl,
   ServerRuntimeBusinessFrameSchema,
@@ -149,6 +150,8 @@ export class RuntimeConnection {
   #stopped = false;
   #verifiedCapabilities: RuntimeClientCapabilities = { imMessageTool: 0 };
   #verifiedCapabilitiesExpiresAt = 0;
+  #providerReadiness?: RuntimeProviderReadinessObservation;
+  #providerReadinessExpiresAt = 0;
 
   constructor(options: RuntimeConnectionOptions) {
     this.#options = options;
@@ -189,10 +192,27 @@ export class RuntimeConnection {
     this.#verifiedCapabilitiesExpiresAt = this.#now() + validForMs;
   }
 
+  setProviderReadiness(
+    observation: RuntimeProviderReadinessObservation,
+    validForMs = RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+  ): void {
+    if (!Number.isSafeInteger(validForMs) || validForMs < 1 || validForMs > RUNTIME_CLIENT_CAPABILITY_TTL_MS) {
+      throw new RuntimeConnectionError("Runtime provider readiness validity is invalid", true);
+    }
+    this.#providerReadiness = { ...observation };
+    this.#providerReadinessExpiresAt = this.#now() + validForMs;
+  }
+
   #currentCapabilities(): RuntimeClientCapabilities {
     return this.#now() <= this.#verifiedCapabilitiesExpiresAt
       ? { ...this.#verifiedCapabilities }
       : { imMessageTool: 0 };
+  }
+
+  #currentProviderReadiness(): RuntimeProviderReadinessObservation | undefined {
+    return this.#providerReadiness && this.#now() <= this.#providerReadinessExpiresAt
+      ? { ...this.#providerReadiness }
+      : undefined;
   }
 
   subscribeState(listener: (state: RuntimeConnectionState) => void): () => void {
@@ -398,6 +418,7 @@ export class RuntimeConnection {
               computerId: this.#options.computer.computerId,
               instanceId,
               capabilities: this.#currentCapabilities(),
+              providerReadiness: this.#currentProviderReadiness(),
             },
             { priority: "control", deadline: this.#now() + heartbeatPolicy.heartbeatTimeoutMs },
           ).then(
@@ -506,6 +527,7 @@ export class RuntimeConnection {
             arch: this.#options.arch,
             clientVersion: this.#options.clientVersion,
             capabilities: this.#currentCapabilities(),
+            providerReadiness: this.#currentProviderReadiness(),
           }).catch((error: unknown) => finish(asError(error)));
           return;
         }

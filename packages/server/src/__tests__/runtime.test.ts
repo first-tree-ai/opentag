@@ -42,10 +42,17 @@ describe("Computer runtime WebSocket", () => {
   it("requires auth, registers without Team authority, and heartbeats", async () => {
     const auth = authService();
     const computers = computerService();
+    const registry = new ConnectionRegistry();
     const app = createApp({
       authService: auth,
       computerService: computers as unknown as ComputerService,
-      runtime: { authTimeoutMs: 1_000, heartbeatIntervalMs: 20, heartbeatTimeoutMs: 2_000, registerTimeoutMs: 1_000 },
+      runtime: {
+        authTimeoutMs: 1_000,
+        heartbeatIntervalMs: 20,
+        heartbeatTimeoutMs: 2_000,
+        registerTimeoutMs: 1_000,
+        registry,
+      },
     });
     apps.push(app);
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
@@ -73,12 +80,16 @@ describe("Computer runtime WebSocket", () => {
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.1",
+      providerReadiness: { provider: "codex", status: "install" },
     };
     socket.send(JSON.stringify(register));
     expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
     expect(computers.register).toHaveBeenCalledWith(me.user.id, {
       ...register,
       capabilities: { imMessageTool: 0 },
+    });
+    expect(registry.providerReadiness(register.computerId)).toMatchObject({
+      observation: { provider: "codex", status: "install" },
     });
     expect(JSON.stringify(register)).not.toContain("team");
 
@@ -87,12 +98,16 @@ describe("Computer runtime WebSocket", () => {
       requestId: randomUUID(),
       computerId: register.computerId,
       instanceId: register.instanceId,
+      providerReadiness: { provider: "codex", status: "sign-in" },
     };
     socket.send(JSON.stringify(heartbeat));
     expect(await frames.next()).toMatchObject({
       type: "heartbeat:result",
       requestId: heartbeat.requestId,
       ok: true,
+    });
+    expect(registry.providerReadiness(register.computerId)).toMatchObject({
+      observation: { provider: "codex", status: "sign-in" },
     });
     socket.close();
     await new Promise((resolve) => socket.once("close", resolve));

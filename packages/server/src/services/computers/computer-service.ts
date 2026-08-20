@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { computers } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
+import { type ProviderReadinessSource, projectComputerProviderReadiness } from "./provider-readiness.js";
 
 export interface ActiveUserResolver {
   getActiveUserById(userId: string): Promise<MeResponse>;
@@ -11,6 +12,7 @@ export interface ActiveUserResolver {
 export interface ComputerServiceOptions {
   now?: () => Date;
   presenceTimeoutMs?: number;
+  providerReadiness?: ProviderReadinessSource;
 }
 
 export class ComputerService {
@@ -18,12 +20,14 @@ export class ComputerService {
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
   readonly #presenceTimeoutMs: number;
+  readonly #providerReadiness?: ProviderReadinessSource;
 
   constructor(database: DatabaseClient, auth: ActiveUserResolver, options: ComputerServiceOptions = {}) {
     this.#database = database;
     this.#auth = auth;
     this.#now = options.now ?? (() => new Date());
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
+    this.#providerReadiness = options.providerReadiness;
   }
 
   /**
@@ -118,22 +122,30 @@ export class ComputerService {
   async listForUser(userId: string): Promise<ListComputersResponse> {
     await this.#requireTeamMember(userId);
     const rows = await this.#database.select().from(computers).where(eq(computers.ownerUserId, userId));
-    const freshnessCutoff = this.#now().getTime() - this.#presenceTimeoutMs;
+    const observedAt = this.#now();
+    const freshnessCutoff = observedAt.getTime() - this.#presenceTimeoutMs;
     return {
-      computers: rows.map(
-        (row): Computer => ({
+      computers: rows.map((row): Computer => {
+        const connectionStatus =
+          row.currentInstanceId !== null && row.lastSeenAt.getTime() >= freshnessCutoff ? "online" : "offline";
+        return {
           id: row.id,
           ownerUserId: row.ownerUserId,
           displayName: row.displayName,
           platform: row.platform,
           arch: row.arch,
           clientVersion: row.clientVersion,
-          connectionStatus:
-            row.currentInstanceId !== null && row.lastSeenAt.getTime() >= freshnessCutoff ? "online" : "offline",
+          connectionStatus,
+          providerReadiness: projectComputerProviderReadiness(
+            row.id,
+            connectionStatus,
+            observedAt,
+            this.#providerReadiness,
+          ),
           connectedAt: row.connectedAt?.toISOString() ?? null,
           lastSeenAt: row.lastSeenAt.toISOString(),
-        }),
-      ),
+        };
+      }),
     };
   }
 }

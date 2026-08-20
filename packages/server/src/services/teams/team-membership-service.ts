@@ -19,6 +19,7 @@ import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agents, computers, memberships, teams, users } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
+import { type ProviderReadinessSource, projectComputerProviderReadiness } from "../computers/provider-readiness.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
@@ -58,6 +59,7 @@ export class TeamMembershipService {
   readonly #afterTeamProfileAuthorityLocked: (() => Promise<void>) | undefined;
   readonly #now: () => Date;
   readonly #presenceTimeoutMs: number;
+  readonly #providerReadiness?: ProviderReadinessSource;
 
   constructor(
     database: DatabaseClient,
@@ -66,6 +68,7 @@ export class TeamMembershipService {
       afterTeamProfileAuthorityLocked?: () => Promise<void>;
       now?: () => Date;
       presenceTimeoutMs?: number;
+      providerReadiness?: ProviderReadinessSource;
     } = {},
   ) {
     this.#database = database;
@@ -73,6 +76,7 @@ export class TeamMembershipService {
     this.#afterTeamProfileAuthorityLocked = options.afterTeamProfileAuthorityLocked;
     this.#now = options.now ?? (() => new Date());
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
+    this.#providerReadiness = options.providerReadiness;
   }
 
   async requireActiveMembership(
@@ -428,14 +432,21 @@ export class TeamMembershipService {
         if (row.agentId) existing.agentIds.push(row.agentId);
         continue;
       }
+      const connectionStatus =
+        row.computer.currentInstanceId !== null && row.computer.lastSeenAt.getTime() >= cutoff ? "online" : "offline";
       byId.set(row.computer.id, {
         id: row.computer.id,
         ownerUserId: row.computer.ownerUserId,
         ownerDisplayName: row.ownerDisplayName,
         displayName: row.computer.displayName,
         platform: row.computer.platform,
-        connectionStatus:
-          row.computer.currentInstanceId !== null && row.computer.lastSeenAt.getTime() >= cutoff ? "online" : "offline",
+        connectionStatus,
+        providerReadiness: projectComputerProviderReadiness(
+          row.computer.id,
+          connectionStatus,
+          observedAt,
+          this.#providerReadiness,
+        ),
         connectedAt: row.computer.connectedAt?.toISOString() ?? null,
         lastSeenAt: row.computer.lastSeenAt.toISOString(),
         observedAt: observedAt.toISOString(),
@@ -457,6 +468,8 @@ export class TeamMembershipService {
         if (row.agentId) existing.agentIds.push(row.agentId);
         continue;
       }
+      const connectionStatus =
+        row.computer.currentInstanceId !== null && row.computer.lastSeenAt.getTime() >= cutoff ? "online" : "offline";
       byId.set(row.computer.id, {
         id: row.computer.id,
         ownerUserId: row.computer.ownerUserId,
@@ -465,8 +478,13 @@ export class TeamMembershipService {
         platform: row.computer.platform,
         arch: row.computer.arch,
         clientVersion: row.computer.clientVersion,
-        connectionStatus:
-          row.computer.currentInstanceId !== null && row.computer.lastSeenAt.getTime() >= cutoff ? "online" : "offline",
+        connectionStatus,
+        providerReadiness: projectComputerProviderReadiness(
+          row.computer.id,
+          connectionStatus,
+          observedAt,
+          this.#providerReadiness,
+        ),
         connectedAt: row.computer.connectedAt?.toISOString() ?? null,
         lastSeenAt: row.computer.lastSeenAt.toISOString(),
         observedAt: observedAt.toISOString(),

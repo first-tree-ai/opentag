@@ -17,6 +17,7 @@ import { createLogger } from "../observability/logger.js";
 import { CODEX_AGENT_RUNTIME_APP_SERVER_ARGS } from "../providers/codex/agent-runtime.js";
 import {
   ComposedClientRuntime,
+  codexProviderReadiness,
   createClientRuntime,
   createClientRuntimeHandlers,
   createClientRuntimePreflight,
@@ -37,6 +38,28 @@ afterEach(async () => {
 });
 
 describe("createClientRuntime production composition", () => {
+  it("projects Codex probe outcomes without exposing provider diagnostics", () => {
+    expect(
+      codexProviderReadiness(false, { ready: false, issues: [{ code: "artifact_missing", message: "secret" }] }),
+    ).toEqual({ provider: "codex", status: "install" });
+    expect(
+      codexProviderReadiness(false, {
+        ready: false,
+        issues: [{ code: "credential_missing", message: "secret" }],
+      }),
+    ).toEqual({ provider: "codex", status: "sign-in" });
+    expect(codexProviderReadiness(true, { ready: true, issues: [] })).toEqual({
+      provider: "codex",
+      status: "ready",
+    });
+    expect(
+      codexProviderReadiness(false, {
+        ready: false,
+        issues: [{ code: "temporarily_unavailable", message: "secret" }],
+      }),
+    ).toEqual({ provider: "codex", status: "unavailable" });
+  });
+
   it("runs readiness and Session creation through the resolved, hardened Codex Agent Runtime factory", async () => {
     const home = await temporaryDirectory("opentag-client-composition-");
     const codexHome = resolve(home, "codex-home");

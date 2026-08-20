@@ -2,6 +2,7 @@ import {
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
   type RuntimeClientCapabilities,
+  type RuntimeProviderReadinessObservation,
   runtimeFrameByteLength,
 } from "@opentag/shared";
 import WebSocket from "ws";
@@ -22,6 +23,8 @@ export interface RuntimeConnectionEntry {
   computerId: string;
   instanceId: string;
   lastHeartbeatAt: number;
+  providerReadiness?: RuntimeProviderReadinessObservation;
+  providerReadinessObservedAt?: number;
   socket: WebSocket;
   userId: string;
 }
@@ -76,6 +79,25 @@ export class ConnectionRegistry {
     );
   }
 
+  providerReadiness(
+    computerId: string,
+    now = Date.now(),
+  ): { observation: RuntimeProviderReadinessObservation; observedAt: number } | undefined {
+    const current = this.#entries.get(computerId);
+    const observedAt = current?.providerReadinessObservedAt;
+    if (
+      !current?.providerReadiness ||
+      observedAt === undefined ||
+      now - observedAt > RUNTIME_CLIENT_CAPABILITY_TTL_MS
+    ) {
+      return undefined;
+    }
+    return {
+      observation: { ...current.providerReadiness },
+      observedAt,
+    };
+  }
+
   async send(computerId: string, instanceId: string, frame: unknown): Promise<void> {
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId) {
@@ -115,6 +137,7 @@ export class ConnectionRegistry {
     socket: WebSocket,
     now = Date.now(),
     capabilities?: RuntimeClientCapabilities,
+    providerReadiness?: RuntimeProviderReadinessObservation,
   ): boolean {
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId || current.socket !== socket) {
@@ -124,6 +147,10 @@ export class ConnectionRegistry {
     if (capabilities) {
       current.capabilities = { ...capabilities };
       current.capabilitiesUpdatedAt = now;
+    }
+    if (providerReadiness) {
+      current.providerReadiness = { ...providerReadiness };
+      current.providerReadinessObservedAt = now;
     }
     return true;
   }

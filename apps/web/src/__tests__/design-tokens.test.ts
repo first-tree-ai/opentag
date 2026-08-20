@@ -71,22 +71,42 @@ const SHADOW: Owner = {
  * describe, because drop-shadow takes no spread and cannot accept a composed
  * token. Rather than teach the guard a second shadow grammar, the stylesheet
  * does not use it -- and may not start.
+ *
+ * The scan reads every declaration rather than the filter properties, because
+ * `--depth: drop-shadow(...)` followed by `filter: var(--depth)` applies after
+ * substitution while neither declaration alone looks like a filtered shadow.
+ * Strings are dropped first: a quoted drop-shadow draws nothing.
  */
 function droppedShadows(css: string): string[] {
   return declarations(css)
-    .filter((declaration) => /(^|-)filter$/.test(propertyName(declaration)))
-    .filter((declaration) => /drop-shadow\s*\(/.test(declaration.value))
+    .filter((declaration) => /drop-shadow\s*\(/.test(declaration.references))
     .map((declaration) => `${declaration.name}: ${declaration.value}`);
 }
 
-const MOTION: Owner = {
-  owns: (property) =>
-    property === "transition" ||
-    property === "animation" ||
-    /^(transition|animation)-(duration|delay|timing-function)$/.test(property),
+/**
+ * A longhand names one grammar, so it answers to one family: the browser
+ * cannot read a duration as an easing or the reverse. Only the shorthands,
+ * which carry both, accept both.
+ */
+const MOTION_SHORTHAND: Owner = {
+  owns: (property) => property === "transition" || property === "animation",
   families: ["motion", "ease"],
   inert: new Set(),
 };
+
+const MOTION_TIME: Owner = {
+  owns: (property) => /^(transition|animation)-(duration|delay)$/.test(property),
+  families: ["motion"],
+  inert: new Set(),
+};
+
+const MOTION_EASING: Owner = {
+  owns: (property) => /^(transition|animation)-timing-function$/.test(property),
+  families: ["ease"],
+  inert: new Set(),
+};
+
+const MOTION_OWNERS = [MOTION_SHORTHAND, MOTION_TIME, MOTION_EASING];
 
 /**
  * References to the families that own this property. Erasing every `var(--...)`
@@ -122,13 +142,13 @@ const TIME = /\d+(\.\d+)?\s*m?s\b/;
 const EASING = /\b(ease|ease-in|ease-out|ease-in-out|linear|step-start|step-end|steps|cubic-bezier)\b/;
 
 function untokenizedMotion(css: string): string[] {
-  return declarations(css)
-    .filter((declaration) => MOTION.owns(propertyName(declaration)))
-    .filter((declaration) => {
-      const residue = declaration.value.replace(ownedReferences(MOTION), " ");
-      return TIME.test(residue) || EASING.test(residue) || ANY_REFERENCE.test(residue);
-    })
-    .map((declaration) => `${declaration.name}: ${declaration.value}`);
+  return declarations(css).flatMap((declaration) => {
+    const owner = MOTION_OWNERS.find((candidate) => candidate.owns(propertyName(declaration)));
+    if (owner === undefined) return [];
+    const residue = declaration.value.replace(ownedReferences(owner), " ");
+    if (!TIME.test(residue) && !EASING.test(residue) && !ANY_REFERENCE.test(residue)) return [];
+    return [`${declaration.name}: ${declaration.value}`];
+  });
 }
 
 /**
@@ -243,6 +263,27 @@ describe("the guard itself", () => {
 
     const logical = ".row { border-start-start-radius: 11px; }";
     expect(untokenized(logical, RADIUS)).toEqual(["border-start-start-radius: 11px"]);
+  });
+
+  it("rejects a drop shadow reached through a variable", () => {
+    const css = ".row { --depth: drop-shadow(0 1px 4px red); filter: var(--depth); }";
+    expect(droppedShadows(css)).toEqual(["--depth: drop-shadow(0 1px 4px red)"]);
+  });
+
+  it("leaves a quoted drop-shadow alone, since it draws nothing", () => {
+    expect(droppedShadows('.row::after { content: "drop-shadow(0 1px 4px red)"; }')).toEqual([]);
+  });
+
+  it("holds each motion longhand to the one family its grammar accepts", () => {
+    const asDuration = ".row { transition-duration: var(--ease-standard); }";
+    expect(untokenizedMotion(asDuration)).toEqual(["transition-duration: var(--ease-standard)"]);
+
+    const asEasing = ".row { transition-timing-function: var(--motion-fast); }";
+    expect(untokenizedMotion(asEasing)).toEqual(["transition-timing-function: var(--motion-fast)"]);
+
+    const correct =
+      ".row { transition-duration: var(--motion-fast); transition-timing-function: var(--ease-standard); }";
+    expect(untokenizedMotion(correct)).toEqual([]);
   });
 
   it("reads the motion longhands", () => {

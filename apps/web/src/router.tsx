@@ -36,6 +36,7 @@ type AgentAvailability = {
   state: "ready" | "action_required" | "setting_up" | "not_connected" | "suspended" | "unconfirmed";
   reason:
     | "agent_suspended"
+    | "agent_unconfirmed"
     | "computer_offline"
     | "runtime_unavailable"
     | "im_not_connected"
@@ -177,16 +178,43 @@ async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
   };
 }
 
+function markAgentListUnconfirmed(value: { agents: AgentListItem[] }): { agents: AgentListItem[] } {
+  return { agents: value.agents.map((agent) => ({ ...agent, computerState: undefined })) };
+}
+
+function markAgentDetailUnconfirmed(agent: AgentDetailView): AgentDetailView {
+  return {
+    ...agent,
+    availability: {
+      ...agent.availability,
+      state: "unconfirmed",
+      reason: "agent_unconfirmed",
+      lastConfirmedAt: null,
+      dependencies: {
+        ...agent.availability.dependencies,
+        computer: { state: "unconfirmed", lastConfirmedAt: null },
+        handoff: { state: "unconfirmed", lastConfirmedAt: null },
+      },
+    },
+  };
+}
+
 function useResource<T>(
   loader: () => Promise<T>,
   key: string,
-  options: { revalidateMs?: number; refreshOnFocus?: boolean } = {},
+  options: {
+    onBackgroundError?: (value: T, error: Error) => T;
+    revalidateMs?: number;
+    refreshOnFocus?: boolean;
+  } = {},
 ): LoadState<T> {
   const [state, setState] = useState<LoadState<T>>({ kind: "loading" });
   const loaderRef = useRef(loader);
   const keyRef = useRef(key);
+  const optionsRef = useRef(options);
   loaderRef.current = loader;
   keyRef.current = key;
+  optionsRef.current = options;
   useEffect(() => {
     let active = true;
     let request = 0;
@@ -202,12 +230,23 @@ function useResource<T>(
         .then(
           (value) =>
             active && keyRef.current === activeKey && request === currentRequest && setState({ kind: "ready", value }),
-          (error: unknown) =>
-            active &&
-            showLoading &&
-            keyRef.current === activeKey &&
-            request === currentRequest &&
-            setState({ kind: "error", error: error instanceof Error ? error : new Error(String(error)) }),
+          (error: unknown) => {
+            if (!active || keyRef.current !== activeKey || request !== currentRequest) return;
+            const resolvedError = error instanceof Error ? error : new Error(String(error));
+            if (showLoading || isTerminalResourceError(resolvedError)) {
+              setState({ kind: "error", error: resolvedError });
+              return;
+            }
+            setState((current) => {
+              if (current.kind !== "ready" || !optionsRef.current.onBackgroundError) {
+                return { kind: "error", error: resolvedError };
+              }
+              return {
+                kind: "ready",
+                value: optionsRef.current.onBackgroundError(current.value, resolvedError),
+              };
+            });
+          },
         )
         .finally(() => {
           if (active && keyRef.current === activeKey && request === currentRequest) inFlight = false;
@@ -231,6 +270,10 @@ function useResource<T>(
     };
   }, [key, options.refreshOnFocus, options.revalidateMs]);
   return state;
+}
+
+function isTerminalResourceError(error: Error): boolean {
+  return error instanceof ApiError && [401, 403, 404, 410].includes(error.status);
 }
 
 function AsyncState<T>({ state, children }: { state: LoadState<T>; children: (value: T) => ReactNode }) {
@@ -761,6 +804,7 @@ function AppShell() {
 function AgentsPage() {
   const { membership } = useTeam();
   const state = useResource(() => loadAgentList(membership.teamId), membership.teamId, {
+    onBackgroundError: markAgentListUnconfirmed,
     revalidateMs: 30_000,
     refreshOnFocus: true,
   });
@@ -951,6 +995,7 @@ function AgentDetailPage() {
   const [refreshVersion, setRefreshVersion] = useState(0);
   const navigate = useNavigate();
   const state = useResource(() => loadAgentDetail(agentId), `${agentId}:${refreshVersion}`, {
+    onBackgroundError: markAgentDetailUnconfirmed,
     revalidateMs: 30_000,
     refreshOnFocus: true,
   });
@@ -1394,7 +1439,6 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                       </div>
                       <div className="binding-status">
                         <div className="binding-status-main">
-                          <i className={`availability-dot ${imBindingTone(binding)}`} aria-hidden="true" />
                           <span>
                             <strong>{binding.bot.displayName}</strong>
                             <small>
@@ -1533,22 +1577,15 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
 
 function imBindingStateLabel(binding: ImBindingSummary): string {
   if (binding.bindingState === "reauthorization_required" && binding.provider === "feishu") {
-    return "Online · permissions update required";
+    return "Permissions update required";
   }
   return {
-    active: "Online",
+    active: "Configured",
     provisioning: "Setting up",
     reauthorization_required: "Permissions update required",
     error: "Needs attention",
     disabled: "Disabled",
   }[binding.bindingState];
-}
-
-function imBindingTone(binding: ImBindingSummary): string {
-  if (binding.bindingState === "active") return "ready";
-  if (binding.bindingState === "provisioning") return "setting-up";
-  if (binding.bindingState === "disabled") return "not-connected";
-  return "action-required";
 }
 
 function AccessTab({ agent }: { agent: AgentDetailView }) {
@@ -2238,6 +2275,7 @@ function availabilityReasonLabel(reason: AgentAvailability["reason"]): string {
   if (!reason) return "All dependencies healthy";
   const labels = {
     agent_suspended: "Agent is suspended",
+    agent_unconfirmed: "Unable to refresh Agent status",
     computer_offline: "Computer is offline",
     runtime_unavailable: "Runtime message tools unavailable",
     im_not_connected: "Connect Feishu or Slack",

@@ -34,6 +34,8 @@ function installApi(
   role: "admin" | "member",
   options: {
     agentRead?: () => Promise<void> | void;
+    agentReadStatus?: () => number | undefined;
+    agentListStatus?: () => number | undefined;
     alreadyJoinedInvitation?: boolean;
     bindingReauth?: boolean;
     bindingEvidenceFails?: boolean;
@@ -181,6 +183,8 @@ function installApi(
     }
     // Any Team id, so a Team created during the test is served like the seeded and invited ones.
     if (/^\/api\/v1\/teams\/[^/]+\/agents$/.test(path)) {
+      const failureStatus = options.agentListStatus?.();
+      if (failureStatus) return json({ error: { message: "Agent list unavailable" } }, failureStatus);
       return json({
         agents: [
           path.includes(invitedTeamId)
@@ -299,6 +303,8 @@ function installApi(
       if (init?.method === "PATCH") return json(adminConfig());
       if (init?.method === "DELETE") return new Response(null, { status: 204 });
       await options.agentRead?.();
+      const failureStatus = options.agentReadStatus?.();
+      if (failureStatus) return json({ error: { message: "Agent unavailable" } }, failureStatus);
       return json({
         ...agentSummary,
         status: lifecycleStatus,
@@ -599,6 +605,33 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByText("Computer is offline")).toBeTruthy();
   });
 
+  it("invalidates a stale Agent detail after a background not-found response", async () => {
+    let agentReadStatus: number | undefined;
+    installApi("admin", { agentReadStatus: () => agentReadStatus, bound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+    expect((await screen.findAllByText("Ready")).length).toBeGreaterThan(0);
+
+    agentReadStatus = 404;
+    fireEvent(window, new Event("focus"));
+    expect((await screen.findByRole("alert")).textContent).toContain("Agent unavailable");
+    expect(screen.queryByText("Ready")).toBeNull();
+  });
+
+  it("marks retained Agent rows unconfirmed after a transient primary refresh failure", async () => {
+    let agentListStatus: number | undefined;
+    installApi("admin", { agentListStatus: () => agentListStatus });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+    expect(await screen.findByText("Computer online")).toBeTruthy();
+
+    agentListStatus = 503;
+    fireEvent(window, new Event("focus"));
+    expect(await screen.findByText("Unconfirmed")).toBeTruthy();
+    expect(screen.getByText("Reviewer")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("refreshes the parent Agent projection after an IM mutation", async () => {
     installApi("admin", { bound: true });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -896,11 +929,12 @@ describe("OpenTag Web App Shell", () => {
     );
   });
 
-  it("keeps a legacy Feishu Bot visibly online while offering permission update or replacement", async () => {
+  it("offers a legacy Feishu Bot permission update without claiming live connectivity", async () => {
     installApi("admin", { bindingReauth: true, bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}/im`);
     render(<App />);
-    expect(await screen.findByText("Online · permissions update required")).toBeTruthy();
+    expect(await screen.findByText("Permissions update required")).toBeTruthy();
+    expect(screen.queryByText(/Online/)).toBeNull();
     expect(screen.getByRole("button", { name: "Reauthorize Feishu" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Replace with existing or new Feishu Bot" }));
     expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
@@ -910,6 +944,15 @@ describe("OpenTag Web App Shell", () => {
         ([input, init]) => String(input).endsWith("/im-binding/feishu/setup-attempts") && init?.method === "POST",
       );
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "replace" });
+  });
+
+  it("describes an active binding as configured when handoff is unavailable", async () => {
+    installApi("admin", { bound: true, handoffReady: false });
+    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    render(<App />);
+
+    expect(await screen.findByText("Configured")).toBeTruthy();
+    expect(screen.queryByText(/Online/)).toBeNull();
   });
 
   it("shows a safe occupied-App recovery and retries the original replacement intent", async () => {

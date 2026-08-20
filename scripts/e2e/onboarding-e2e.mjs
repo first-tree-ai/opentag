@@ -57,16 +57,16 @@ const KEEP_DATABASE = process.env.OPENTAG_E2E_KEEP_DATABASE === "on";
 
 /** The database this run created, so the same run can drop it again. */
 let createdDatabase;
-/** Set once the Server this run spawned exits, which invalidates every later fact. */
-let serverExitCode;
+/** Rejects once the Server this run spawned exits, which invalidates every later fact. */
+let serverExited;
 
 /**
- * Endpoint ownership has to hold for the whole run, not only until the first
- * listening line: once this child is gone, anything answering on its port is
- * someone else's Server.
+ * Endpoint ownership has to hold across every await, not only at its start:
+ * once this child is gone, anything answering on its port is someone else's
+ * Server, so awaited work loses to the exit that invalidated it.
  */
-function assertServerRunning() {
-  if (serverExitCode !== undefined) throw new Error(`Server exited with ${serverExitCode} before this step`);
+function raceServerExit(work) {
+  return serverExited ? Promise.race([work, serverExited]) : work;
 }
 
 const steps = [];
@@ -77,8 +77,7 @@ async function step(name, run) {
   const label = `${String(stepIndex).padStart(2, "0")} ${name}`;
   const startedAt = Date.now();
   try {
-    assertServerRunning();
-    const value = await run();
+    const value = await raceServerExit(run());
     const detail = typeof value === "string" ? value : typeof value?.detail === "string" ? value.detail : "";
     steps.push({ label, ok: true, detail, ms: Date.now() - startedAt });
     process.stdout.write(`PASS ${label}${detail ? ` — ${detail}` : ""}\n`);
@@ -326,20 +325,16 @@ async function main() {
           if (announced.includes(`Server listening at ${BASE_URL}`)) settle(undefined);
         });
       });
-      const exited = new Promise((_, fail) => {
+      serverExited = new Promise((_, fail) => {
         server.once("exit", (code) => {
-          serverExitCode = code;
           log.write(`\nserver exited with ${code}\n`);
           fail(new Error(`Server exited with ${code}; see ${serverLogPath}`));
         });
       });
-      // The exit signal outlives the listening line, so ownership stays attributable.
-      exited.catch(() => undefined);
-      await withTimeout(Promise.race([listening, exited]), 60_000, `Server did not bind ${BASE_URL} within 60s`);
-      await waitFor("the Server health endpoint", async () => {
-        assertServerRunning();
-        return (await fetch(`${BASE_URL}/healthz`)).ok;
-      });
+      // The signal outlives the listening line and never becomes an unhandled rejection.
+      serverExited.catch(() => undefined);
+      await withTimeout(Promise.race([listening, serverExited]), 60_000, `Server did not bind ${BASE_URL} within 60s`);
+      await raceServerExit(waitFor("the Server health endpoint", async () => (await fetch(`${BASE_URL}/healthz`)).ok));
       return `${BASE_URL} (migrations applied, log: ${serverLogPath})`;
     });
 

@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
@@ -9,7 +9,19 @@ import { describe, expect, it } from "vitest";
  * cannot drift back apart one component at a time.
  */
 
-const stylesheet = readFileSync(resolve(process.cwd(), "src/styles.css"), "utf8");
+/** The suite runs from apps/web and, under the coverage config, from the repo root. */
+function locateStylesheet(): string {
+  for (const candidate of ["src/styles.css", "apps/web/src/styles.css"]) {
+    const path = resolve(process.cwd(), candidate);
+    if (existsSync(path)) return path;
+  }
+  throw new Error(`The Web stylesheet was not found from ${process.cwd()}`);
+}
+
+const stylesheet = readFileSync(locateStylesheet(), "utf8");
+
+/** Every typography token reference, wherever it appears — including one role pointing at another. */
+const TOKEN_REFERENCE = /var\(--((?:fs|text|fw|track|font)-[a-z0-9-]+)\)/g;
 
 function captures(pattern: RegExp, group = 1): string[] {
   return [...stylesheet.matchAll(pattern)]
@@ -26,10 +38,8 @@ function definedTokens(prefix: string): Set<string> {
   return new Set(captures(new RegExp(`--(${prefix}-[a-z0-9-]+):`, "g")));
 }
 
-function referencedTokens(property: string): string[] {
-  return declarations(property)
-    .map((value) => /^var\(--([a-z0-9-]+)\)$/.exec(value)?.[1])
-    .filter((name): name is string => name !== undefined);
+function definedTypographyTokens(): Set<string> {
+  return new Set(["fs", "text", "fw", "track", "font"].flatMap((prefix) => [...definedTokens(prefix)]));
 }
 
 describe("typography tokens", () => {
@@ -48,20 +58,10 @@ describe("typography tokens", () => {
     expect(literals).toEqual([]);
   });
 
-  it("references only tokens that exist", () => {
-    const defined = new Set([
-      ...definedTokens("text"),
-      ...definedTokens("fw"),
-      ...definedTokens("track"),
-      ...definedTokens("font"),
-    ]);
-    const referenced = [
-      ...referencedTokens("font-size"),
-      ...referencedTokens("font-weight"),
-      ...referencedTokens("letter-spacing"),
-      ...referencedTokens("font-family"),
-    ];
-    expect(referenced.filter((name) => !defined.has(name))).toEqual([]);
+  it("references only tokens that exist, including one role pointing at a step", () => {
+    const defined = definedTypographyTokens();
+    const dangling = captures(TOKEN_REFERENCE).filter((name) => !defined.has(name));
+    expect([...new Set(dangling)]).toEqual([]);
   });
 
   it("keeps every raw step on a whole pixel", () => {
@@ -75,6 +75,12 @@ describe("typography tokens", () => {
     const values = captures(/--fs-([0-9]+):\s*([0-9.]+)rem;/g, 2);
     const mismatched = named.filter((name, index) => Number(name) !== Number(values[index]) * 16);
     expect(mismatched).toEqual([]);
+  });
+
+  it("resolves each role to a step that is actually declared", () => {
+    const steps = definedTokens("fs");
+    const unresolved = captures(/--text-[a-z]+:\s*var\(--(fs-[a-z0-9-]+)\);/g).filter((step) => !steps.has(step));
+    expect(unresolved).toEqual([]);
   });
 
   it("resolves each role to a raw step rather than a bare length", () => {

@@ -4,7 +4,6 @@ import type {
   AgentSummary,
   AuthProvidersResponse,
   Computer,
-  FeishuSetupAttempt,
   MeMembership,
   MeResponse,
   TeamComputerSummary,
@@ -12,7 +11,6 @@ import type {
   UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
 import { MembershipRoleSchema } from "@opentag/shared/browser";
-import { toString as qrToString } from "qrcode";
 import {
   createContext,
   type FormEvent,
@@ -28,6 +26,7 @@ import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigat
 import { ApiError, browserApi } from "./api.js";
 import { ComputerSetup } from "./computer-setup.js";
 import { CreateTeamForm } from "./create-team-form.js";
+import { FeishuSetup } from "./im/feishu-setup.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
 
@@ -1030,59 +1029,11 @@ function nullableText(value: FormDataEntryValue | null): string | null {
   return text || null;
 }
 
-function feishuSetupRecovery(attempt: FeishuSetupAttempt): string | undefined {
-  const messages: Record<string, string> = {
-    FEISHU_APP_ALREADY_BOUND:
-      "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",
-    FEISHU_SCOPE_REAUTH_REQUIRED:
-      "Feishu did not grant every required permission. Retry and approve all requested permissions.",
-    IM_BINDING_SCOPE_REAUTH_REQUIRED:
-      "Feishu did not grant every required permission. Retry and approve all requested permissions.",
-    FEISHU_SETUP_DENIED: "Feishu authorization was declined. Retry and approve the requested permissions.",
-    FEISHU_SETUP_EXPIRED: "This Feishu authorization expired. Retry to scan a new QR code.",
-    FEISHU_SETUP_CANCELED: "Feishu setup was canceled. Retry when you are ready.",
-    FEISHU_SETUP_OWNER_RESTARTED: "The server restarted during Feishu setup. Retry to generate a new QR code.",
-    FEISHU_BINDING_IDENTITY_MISMATCH:
-      "The authorized Feishu Bot identity does not match the current binding. Retry with the current Bot or use Replace.",
-  };
-  if (attempt.errorCode && messages[attempt.errorCode]) return messages[attempt.errorCode];
-  if (attempt.state === "expired") return messages.FEISHU_SETUP_EXPIRED;
-  if (attempt.state === "canceled") return messages.FEISHU_SETUP_CANCELED;
-  if (attempt.state === "failed") return "Feishu setup failed. Retry or contact a Team admin for help.";
-  return undefined;
-}
-
 function ImTab({ agent }: { agent: AgentDetail }) {
   const [reload, setReload] = useState(0);
-  const [attempt, setAttempt] = useState<FeishuSetupAttempt>();
   const [error, setError] = useState<string>();
   const [reauthorizationNeeded, setReauthorizationNeeded] = useState(false);
   const state = useResource(() => browserApi.imBinding(agent.id), `${agent.id}:${reload}`);
-  const connect = useCallback(
-    async (intent: "create" | "reauthorize" | "replace" = "create") => {
-      try {
-        setError(undefined);
-        setAttempt(await browserApi.createFeishuSetupAttempt(agent.id, intent));
-        setReauthorizationNeeded(false);
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "Unable to start setup");
-      }
-    },
-    [agent.id],
-  );
-  useEffect(() => {
-    if (!attempt || !["awaiting_user", "validating"].includes(attempt.state)) return;
-    const timer = window.setInterval(() => {
-      void browserApi.feishuSetupAttempt(attempt.id).then(
-        (next) => {
-          setAttempt(next);
-          if (next.state === "succeeded") setReload((value) => value + 1);
-        },
-        (cause: unknown) => setError(cause instanceof Error ? cause.message : "Unable to refresh setup"),
-      );
-    }, 1_500);
-    return () => window.clearInterval(timer);
-  }, [attempt]);
   async function changeReceiveMode(receiveMode: "mention_only" | "all_message") {
     if (
       receiveMode === "all_message" &&
@@ -1103,138 +1054,104 @@ function ImTab({ agent }: { agent: AgentDetail }) {
     }
   }
   return (
-    <AsyncState state={state}>
-      {(binding) => (
-        <>
-          {binding ? (
-            <DefinitionList
-              rows={[
-                ["Provider", binding.provider],
-                [
-                  "Binding state",
-                  binding.bindingState === "reauthorization_required" && binding.provider === "feishu"
-                    ? "Online · permissions update required"
-                    : binding.bindingState,
-                ],
-                ["Receive mode", binding.receiveMode],
-                ["Last confirmed", binding.lastConfirmedAt ? formatDate(binding.lastConfirmedAt) : "Unable to confirm"],
-              ]}
-            />
-          ) : (
-            <EmptyState title="No IM binding">Connect a supported IM bot when the Agent is ready.</EmptyState>
-          )}
-          {agent.viewerCapabilities.canManage ? (
-            <div className="actions">
-              {!binding ? (
-                <button className="button" type="button" onClick={() => void connect()}>
-                  Connect existing or new Feishu Bot
-                </button>
-              ) : null}
-              {(binding?.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
-              binding?.provider === "feishu" ? (
-                <button className="button" type="button" onClick={() => void connect("reauthorize")}>
-                  Reauthorize Feishu
-                </button>
-              ) : null}
-              {(binding?.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
-              binding?.provider === "slack" ? (
-                <span className="notice">Slack reauthorization is not available in this release.</span>
-              ) : null}
-              {binding?.receiveMode === "mention_only" ? (
-                <button type="button" onClick={() => void changeReceiveMode("all_message")}>
-                  Enable all messages
-                </button>
-              ) : binding ? (
-                <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
-                  Use mentions only
-                </button>
-              ) : null}
-              {binding?.provider === "feishu" ? (
-                <button type="button" onClick={() => void connect("replace")}>
-                  Replace with existing or new Feishu Bot
-                </button>
-              ) : null}
-              {binding ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (
-                      !window.confirm(
-                        "Disable this IM binding? New IM work will stop until another binding is connected.",
-                      )
-                    )
-                      return;
-                    void browserApi.disableImBinding(binding.id).then(
-                      () => setReload((value) => value + 1),
-                      (cause: unknown) =>
-                        setError(cause instanceof Error ? cause.message : "Unable to disable IM binding"),
-                    );
-                  }}
-                >
-                  Disable IM binding
-                </button>
-              ) : null}
-            </div>
-          ) : (
-            <p className="muted">IM setup is managed by Team Admins.</p>
-          )}
-          {attempt ? (
-            <div className="notice">
-              <strong>Feishu setup started</strong>
-              <br />
-              {attempt.intent === "reauthorize"
-                ? "Confirm the updated permissions for the current Feishu Bot."
-                : "Choose an existing Feishu Bot or create a new one, then confirm the requested permissions."}
-              <br />
-              State: {attempt.state}. Expires {formatDate(attempt.expiresAt)}.
-              {feishuSetupRecovery(attempt) ? (
-                <>
-                  <br />
-                  {feishuSetupRecovery(attempt)}
-                </>
-              ) : null}
-              {attempt.qrUrl ? (
-                <>
-                  <br />
-                  <FeishuQrCode value={attempt.qrUrl} />
-                  <a href={attempt.qrUrl} rel="noreferrer" target="_blank">
-                    Open Feishu authorization
-                  </a>
-                </>
-              ) : null}
-              {["expired", "failed", "canceled"].includes(attempt.state) ? (
-                <>
-                  <br />
-                  <button className="button" type="button" onClick={() => void connect(attempt.intent)}>
-                    Retry Feishu setup
-                  </button>
-                </>
-              ) : null}
-            </div>
-          ) : null}
-          {error ? (
-            <div className="notice error" role="alert">
-              {error}
-            </div>
-          ) : null}
-        </>
-      )}
-    </AsyncState>
+    <FeishuSetup agentId={agent.id} onSuccess={() => setReload((value) => value + 1)}>
+      {(setup) => {
+        const connect = async (intent: "create" | "reauthorize" | "replace" = "create") => {
+          setError(undefined);
+          if (await setup.start(intent)) setReauthorizationNeeded(false);
+        };
+        return (
+          <AsyncState state={state}>
+            {(binding) => (
+              <>
+                {binding ? (
+                  <DefinitionList
+                    rows={[
+                      ["Provider", binding.provider],
+                      [
+                        "Binding state",
+                        binding.bindingState === "reauthorization_required" && binding.provider === "feishu"
+                          ? "Online · permissions update required"
+                          : binding.bindingState,
+                      ],
+                      ["Receive mode", binding.receiveMode],
+                      [
+                        "Last confirmed",
+                        binding.lastConfirmedAt ? formatDate(binding.lastConfirmedAt) : "Unable to confirm",
+                      ],
+                    ]}
+                  />
+                ) : (
+                  <EmptyState title="No IM binding">Connect a supported IM bot when the Agent is ready.</EmptyState>
+                )}
+                {agent.viewerCapabilities.canManage ? (
+                  <div className="actions">
+                    {!binding ? (
+                      <button className="button" type="button" onClick={() => void connect()}>
+                        Connect existing or new Feishu Bot
+                      </button>
+                    ) : null}
+                    {(binding?.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                    binding?.provider === "feishu" ? (
+                      <button className="button" type="button" onClick={() => void connect("reauthorize")}>
+                        Reauthorize Feishu
+                      </button>
+                    ) : null}
+                    {(binding?.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                    binding?.provider === "slack" ? (
+                      <span className="notice">Slack reauthorization is not available in this release.</span>
+                    ) : null}
+                    {binding?.receiveMode === "mention_only" ? (
+                      <button type="button" onClick={() => void changeReceiveMode("all_message")}>
+                        Enable all messages
+                      </button>
+                    ) : binding ? (
+                      <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
+                        Use mentions only
+                      </button>
+                    ) : null}
+                    {binding?.provider === "feishu" ? (
+                      <button type="button" onClick={() => void connect("replace")}>
+                        Replace with existing or new Feishu Bot
+                      </button>
+                    ) : null}
+                    {binding ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (
+                            !window.confirm(
+                              "Disable this IM binding? New IM work will stop until another binding is connected.",
+                            )
+                          )
+                            return;
+                          void browserApi.disableImBinding(binding.id).then(
+                            () => setReload((value) => value + 1),
+                            (cause: unknown) =>
+                              setError(cause instanceof Error ? cause.message : "Unable to disable IM binding"),
+                          );
+                        }}
+                      >
+                        Disable IM binding
+                      </button>
+                    ) : null}
+                  </div>
+                ) : (
+                  <p className="muted">IM setup is managed by Team Admins.</p>
+                )}
+                {setup.feedback}
+                {error ? (
+                  <div className="notice error" role="alert">
+                    {error}
+                  </div>
+                ) : null}
+              </>
+            )}
+          </AsyncState>
+        );
+      }}
+    </FeishuSetup>
   );
-}
-
-function FeishuQrCode({ value }: { value: string }) {
-  const [source, setSource] = useState<string>();
-  useEffect(() => {
-    let active = true;
-    void qrToString(value, { margin: 1, type: "svg", width: 240 }).then(
-      (svg) => active && setSource(`data:image/svg+xml,${encodeURIComponent(svg)}`),
-    );
-    return () => {
-      active = false;
-    };
-  }, [value]);
-  return source ? <img alt="Scan this QR code in Feishu" className="setup-qr" src={source} /> : null;
 }
 
 function AccessTab({ agent }: { agent: AgentDetail }) {

@@ -161,8 +161,8 @@ failure; it is never converted into a skipped success.
 
 ## Latest Local Execution
 
-On 2026-08-20 the scoped Agent Runtime, Codex, and Claude Code suite passed 134
-tests with 100% statements, branches, functions, and lines. All 232 Client tests
+On 2026-08-20 the scoped Agent Runtime, Codex, and Claude Code suite passed 136
+tests with 100% statements, branches, functions, and lines. All 240 Client tests
 passed. Repository formatting, notice, build, and type-check gates passed. The
 Codex live test passed against `codex-cli 0.144.1`: both create and resumed Runs
 completed, the opaque binding was preserved, and each Run produced 16 ordered

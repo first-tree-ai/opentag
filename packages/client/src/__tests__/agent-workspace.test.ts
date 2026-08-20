@@ -292,6 +292,23 @@ describe("AgentWorkspaceManager", () => {
 
     await expect(fixture.workspace.verifyAgent(runtime, hashes)).rejects.toThrow("workspace state values are invalid");
   });
+
+  it("persists Claude Code in the existing workspace-state v2 contract", async () => {
+    const fixture = await workspaceFixture();
+    const runtime: EffectiveRuntimeSnapshot = {
+      ...snapshot("agent-claude", "workspace-claude", "session"),
+      provider: "claude-code",
+      execution: { approvalPolicy: "never", networkAccess: true },
+    };
+    const hashes = computeRuntimeSnapshotHashes(runtime);
+
+    await fixture.workspace.prepareAgent(runtime, hashes);
+    expect(JSON.parse(await readFile(fixture.workspace.paths(runtime.agentId).workspaceState, "utf8"))).toMatchObject({
+      schemaVersion: 2,
+      provider: "claude-code",
+    });
+    await expect(fixture.workspace.verifyAgent(runtime, hashes)).resolves.toBeUndefined();
+  });
 });
 
 async function workspaceFixture() {

@@ -44,6 +44,7 @@ describe("SessionRuntimeManager", () => {
     const manager = new SessionRuntimeManager({
       bindingStore: store,
       providers: await providerRegistry(factory),
+      readinessSignal: new AbortController().signal,
       toolHost,
       workspace,
     });
@@ -51,6 +52,9 @@ describe("SessionRuntimeManager", () => {
     const first = reconcile(computerId, snapshot(1));
 
     await expect(reconciler.reconcile(first)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime("session-1");
+    await manager.ensureRuntime("session-1", new AbortController().signal);
+    expect(manager.runtime("session-1")).toBe(factory.runtimes[0]);
     expect(factory.created).toHaveLength(1);
     expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-1"));
     await expect(
@@ -62,7 +66,8 @@ describe("SessionRuntimeManager", () => {
     });
     expect(() => manager.observe("session-1", () => undefined)).toThrow("active observer");
     await factory.runtimes[0]?.emit({ type: "provider_warning", runId: "run", code: "warning", message: "warn" });
-    expect(observed).toEqual(["provider_warning"]);
+    await factory.runtimes[0]?.emit({ type: "binding_changed", binding: binding("thread-1") });
+    expect(observed).toEqual(["provider_warning", "binding_changed"]);
     releaseObserver();
     releaseObserver();
     await expect(reconciler.reconcile({ ...first, requestId: randomUUID() })).resolves.toMatchObject({
@@ -72,9 +77,14 @@ describe("SessionRuntimeManager", () => {
 
     const upgraded = reconcile(computerId, snapshot(2));
     await expect(reconciler.reconcile(upgraded)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime("session-1");
     expect(factory.created).toHaveLength(2);
     expect(factory.runtimes[0]?.closed).toBe(true);
     expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-2"));
+    await factory.runtimes[1]?.close();
+    await manager.prepareSession(upgraded, computeRuntimeSnapshotHashes(upgraded.runtime as never));
+    await manager.ensureRuntime("session-1");
+    expect(factory.resumed).toEqual([binding("thread-2")]);
 
     await manager.close();
     const restartedFactory = new FakeFactory();
@@ -92,6 +102,7 @@ describe("SessionRuntimeManager", () => {
     await expect(restarted.reconcile({ ...upgraded, requestId: randomUUID() })).resolves.toMatchObject({
       status: "ready",
     });
+    await restartedManager.ensureRuntime("session-1");
     expect(restartedFactory.resumed).toEqual([binding("thread-2")]);
 
     await expect(
@@ -101,7 +112,7 @@ describe("SessionRuntimeManager", () => {
     toolHost.close();
   });
 
-  it("fails closed for unregistered providers and unsupported execution policy", async () => {
+  it("validates durable configuration without treating transient readiness as placement policy", async () => {
     const manager = new SessionRuntimeManager({
       bindingStore: {} as SessionBindingStore,
       providers: await providerRegistry(),
@@ -116,7 +127,7 @@ describe("SessionRuntimeManager", () => {
       toolHost: {} as RuntimeToolHost,
       workspace: {} as AgentWorkspaceManager,
     });
-    expect(providerUnavailable.validate(snapshot(1))).toBe("provider_unavailable");
+    expect(providerUnavailable.validate(snapshot(1))).toBeUndefined();
     const registered = new SessionRuntimeManager({
       bindingStore: {} as SessionBindingStore,
       providers: await providerRegistry(factory),
@@ -128,7 +139,8 @@ describe("SessionRuntimeManager", () => {
     );
     expect(registered.validate({ ...snapshot(1), allowedTools: ["unknown"] })).toBe("configuration_unsupported");
     expect(() => registered.runtime("missing")).toThrow("not ready");
-    expect(() => registered.cwd("missing")).toThrow("not ready");
+    await expect(registered.ensureRuntime("missing")).rejects.toThrow("not been prepared");
+    expect(() => registered.cwd("missing")).toThrow("not been prepared");
     expect(() => registered.observe("missing", () => undefined)).toThrow("not ready");
     const stopSession = vi.fn(async () => undefined);
     const stoppable = new SessionRuntimeManager({
@@ -156,7 +168,8 @@ describe("SessionRuntimeManager", () => {
       workspace,
     });
     const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
-    await expect(reconciler.reconcile(reconcile(computerId, snapshot(1)))).rejects.toThrow("durable binding");
+    await expect(reconciler.reconcile(reconcile(computerId, snapshot(1)))).resolves.toMatchObject({ status: "ready" });
+    await expect(manager.ensureRuntime("session-1")).rejects.toThrow("durable binding");
     expect(factory.runtimes[0]?.closed).toBe(true);
     toolHost.close();
   });
@@ -177,9 +190,8 @@ describe("SessionRuntimeManager", () => {
     });
     const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
 
-    await expect(reconciler.reconcile(reconcile(computerId, snapshot(1)))).rejects.toThrow(
-      "creation and cleanup both failed",
-    );
+    await expect(reconciler.reconcile(reconcile(computerId, snapshot(1)))).resolves.toMatchObject({ status: "ready" });
+    await expect(manager.ensureRuntime("session-1")).rejects.toThrow("creation and cleanup both failed");
     expect(factory.runtimes[0]?.closeCalls).toBe(1);
     toolHost.close();
   });
@@ -204,6 +216,7 @@ describe("SessionRuntimeManager", () => {
     });
     const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
+    await manager.ensureRuntime("session-1");
 
     const first = manager.close();
     const second = manager.close();
@@ -246,8 +259,14 @@ describe("SessionRuntimeManager", () => {
     });
     const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
     const request = reconcile(computerId, snapshot(1));
-    const preparing = reconciler.reconcile(request);
+    await reconciler.reconcile(request);
+    const starting = manager.ensureRuntime("session-1");
     await createStart;
+    const cancelledWaiter = new AbortController();
+    const joined = manager.ensureRuntime("session-1", cancelledWaiter.signal);
+    await Promise.resolve();
+    cancelledWaiter.abort(new Error("stop joined start"));
+    await expect(joined).rejects.toThrow("stop joined start");
 
     const closing = manager.close();
     let settled = false;
@@ -259,7 +278,7 @@ describe("SessionRuntimeManager", () => {
     expect(factory.runtimes[0]?.closeCalls).toBe(0);
 
     releaseCreate();
-    await expect(preparing).rejects.toThrow("manager is closing");
+    await expect(starting).rejects.toThrow("manager is closing");
     await expect(closing).resolves.toBeUndefined();
     expect(factory.runtimes[0]?.closeCalls).toBe(1);
     expect(factory.runtimes[0]?.closed).toBe(true);
@@ -268,6 +287,93 @@ describe("SessionRuntimeManager", () => {
       "manager is closing",
     );
     toolHost.close();
+  });
+
+  it("waits for an in-flight Provider start before applying a snapshot upgrade", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-session-runtime-start-upgrade-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const toolHost = new RuntimeToolHost(connection());
+    let releaseCreate!: () => void;
+    const createGate = new Promise<void>((resolveCreate) => {
+      releaseCreate = resolveCreate;
+    });
+    let createStarted!: () => void;
+    const createStart = new Promise<void>((resolveStarted) => {
+      createStarted = resolveStarted;
+    });
+    const factory = new FakeFactory(false, undefined, createGate, createStarted);
+    const computerId = randomUUID();
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      providers: await providerRegistry(factory),
+      toolHost,
+      workspace,
+    });
+    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    await reconciler.reconcile(reconcile(computerId, snapshot(1)));
+    const starting = manager.ensureRuntime("session-1");
+    await createStart;
+
+    const upgrading = reconciler.reconcile(reconcile(computerId, snapshot(2)));
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    releaseCreate();
+    await expect(starting).resolves.toBe(factory.runtimes[0]);
+    await expect(upgrading).resolves.toMatchObject({ status: "ready" });
+    expect(factory.runtimes[0]?.closed).toBe(true);
+    expect(() => manager.runtime("session-1")).toThrow("not ready");
+    await manager.close();
+    toolHost.close();
+  });
+
+  it("continues a snapshot upgrade after an in-flight Provider start fails", async () => {
+    let releaseCreate!: () => void;
+    const createGate = new Promise<void>((resolveCreate) => {
+      releaseCreate = resolveCreate;
+    });
+    let createStarted!: () => void;
+    const createStart = new Promise<void>((resolveStarted) => {
+      createStarted = resolveStarted;
+    });
+    const base = new FakeFactory();
+    const factory = {
+      manifest: base.manifest,
+      probe: () => base.probe(),
+      create: async () => {
+        createStarted();
+        await createGate;
+        throw new Error("start failed");
+      },
+      resume: async () => {
+        throw new Error("resume failed");
+      },
+    } satisfies AgentRuntimeFactory;
+    const computerId = randomUUID();
+    const first = reconcile(computerId, snapshot(1));
+    const upgraded = reconcile(computerId, snapshot(2));
+    const prepared = { binding: { sessionId: "session-1", runtimeBinding: undefined } as never };
+    const manager = new SessionRuntimeManager({
+      bindingStore: {} as SessionBindingStore,
+      providers: await providerRegistry(factory),
+      toolHost: {
+        hostedTools: () => ({ definitions: [], handler: async () => ({ success: true, content: [] }) }),
+      } as unknown as RuntimeToolHost,
+      workspace: {
+        prepareSession: async () => prepared,
+        cwd: async () => "/workspace",
+      } as unknown as AgentWorkspaceManager,
+    });
+    await manager.prepareSession(first, computeRuntimeSnapshotHashes(first.runtime as never));
+    const starting = manager.ensureRuntime("session-1");
+    await createStart;
+
+    const upgrading = manager.prepareSession(upgraded, computeRuntimeSnapshotHashes(upgraded.runtime as never));
+    await Promise.resolve();
+    releaseCreate();
+    await expect(starting).rejects.toThrow("start failed");
+    await expect(upgrading).resolves.toBe(prepared);
+    await manager.close();
   });
 
   it("surfaces failure while closing a runtime created after shutdown starts", async () => {
@@ -293,12 +399,13 @@ describe("SessionRuntimeManager", () => {
       workspace,
     });
     const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
-    const preparing = reconciler.reconcile(reconcile(computerId, snapshot(1)));
+    await reconciler.reconcile(reconcile(computerId, snapshot(1)));
+    const starting = manager.ensureRuntime("session-1");
     await createStart;
 
     const closing = manager.close();
     releaseCreate();
-    await expect(preparing).rejects.toThrow("manager is closing");
+    await expect(starting).rejects.toThrow("manager is closing");
     await expect(closing).rejects.toThrow("failed to close");
     expect(factory.runtimes[0]?.closeCalls).toBe(1);
     toolHost.close();
@@ -323,7 +430,7 @@ describe("SessionRuntimeManager", () => {
       saveRuntimeBinding: async (...args: Parameters<SessionBindingStore["saveRuntimeBinding"]>) => {
         const binding = await store.saveRuntimeBinding(...args);
         saveCalls += 1;
-        if (saveCalls === 2) {
+        if (saveCalls === 1) {
           persistStarted();
           await persistGate;
         }
@@ -339,7 +446,8 @@ describe("SessionRuntimeManager", () => {
       workspace,
     });
     const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
-    const preparing = reconciler.reconcile(reconcile(computerId, snapshot(1)));
+    await reconciler.reconcile(reconcile(computerId, snapshot(1)));
+    const starting = manager.ensureRuntime("session-1");
     await persistStart;
 
     const closing = manager.close();
@@ -356,9 +464,9 @@ describe("SessionRuntimeManager", () => {
     expect(closeSettled).toBe(false);
     releasePersist();
 
-    await expect(preparing).rejects.toThrow("manager is closing");
-    await expect(closing).rejects.toThrow("failed to close");
-    expect(factory.runtimes[0]?.closeCalls).toBe(1);
+    await expect(starting).rejects.toThrow("manager is closing");
+    await expect(closing).resolves.toBeUndefined();
+    expect(factory.runtimes).toHaveLength(0);
     expect(() => manager.runtime("session-1")).toThrow("manager is closing");
     toolHost.close();
   });
@@ -383,6 +491,7 @@ describe("SessionRuntimeManager", () => {
     });
     const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
+    await manager.ensureRuntime("session-1");
 
     const upgrading = reconciler.reconcile(reconcile(computerId, snapshot(2)));
     await vi.waitFor(() => expect(factory.runtimes[0]?.closeCalls).toBe(1));
@@ -410,6 +519,7 @@ describe("SessionRuntimeManager", () => {
     });
     const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
     await reconciler.reconcile(reconcile(computerId, snapshot(1)));
+    await manager.ensureRuntime("session-1");
 
     await expect(manager.close()).rejects.toThrow("failed to close");
     expect(factory.runtimes[0]?.closeCalls).toBe(1);
@@ -452,7 +562,7 @@ describe("SessionRuntimeManager", () => {
     await expect(unavailable.prepareSession({ ...request, runtime: undefined }, hashes)).rejects.toThrow(
       "runtime snapshot",
     );
-    await expect(unavailable.prepareSession(request, hashes)).rejects.toThrow("provider is unavailable");
+    await expect(unavailable.prepareSession(request, hashes)).rejects.toThrow("provider is not registered");
 
     const factory = new FakeFactory();
     const captured: CreateAgentRuntimeRequest[] = [];
@@ -461,16 +571,25 @@ describe("SessionRuntimeManager", () => {
       probe: () => factory.probe(),
       create: async (input: CreateAgentRuntimeRequest) => {
         captured.push(input);
-        return factory.create(input);
+        const runtime = new FakeRuntime(binding("thread-missing"), input.eventSink);
+        factory.runtimes.push(runtime);
+        return runtime;
       },
       resume: (input: ResumeAgentRuntimeRequest) => factory.resume(input),
+    } satisfies AgentRuntimeFactory;
+    const emittingFactory = {
+      ...policyFactory,
+      create: async (input: CreateAgentRuntimeRequest) => {
+        captured.push(input);
+        return factory.create(input);
+      },
     } satisfies AgentRuntimeFactory;
     const missingBinding = new SessionRuntimeManager({
       bindingStore: {
         saveRuntimeBinding: async () => undefined,
         read: async () => undefined,
       } as unknown as SessionBindingStore,
-      providers: await providerRegistry(policyFactory),
+      providers: await providerRegistry(emittingFactory),
       toolHost: {
         hostedTools: () => ({ definitions: [], handler: async () => ({ success: true, content: [] }) }),
       } as unknown as RuntimeToolHost,
@@ -485,14 +604,49 @@ describe("SessionRuntimeManager", () => {
       reasoningEffort: "high",
       execution: { approvalPolicy: "never", networkAccess: true },
     } as unknown as EffectiveRuntimeSnapshot;
-    await expect(missingBinding.prepareSession({ ...request, runtime: policySnapshot }, hashes)).rejects.toThrow(
-      "binding disappeared",
-    );
+    await expect(missingBinding.prepareSession({ ...request, runtime: policySnapshot }, hashes)).resolves.toBeDefined();
+    await expect(missingBinding.ensureRuntime("session-1")).rejects.toThrow("binding disappeared");
     expect(captured[0]).toMatchObject({
       configuration: { reasoningEffort: "high" },
       policy: { approvals: "never", network: "enabled" },
     });
+    expect(factory.runtimes).toHaveLength(0);
+
+    const missingFinalBinding = new SessionRuntimeManager({
+      bindingStore: {
+        saveRuntimeBinding: async () => undefined,
+      } as unknown as SessionBindingStore,
+      providers: await providerRegistry(policyFactory),
+      toolHost: {
+        hostedTools: () => ({ definitions: [], handler: async () => ({ success: true, content: [] }) }),
+      } as unknown as RuntimeToolHost,
+      workspace: {
+        prepareSession: async () => prepared,
+        cwd: async () => "/workspace",
+      } as unknown as AgentWorkspaceManager,
+    });
+    await missingFinalBinding.prepareSession({ ...request, runtime: policySnapshot }, hashes);
+    await expect(missingFinalBinding.ensureRuntime("session-1")).rejects.toThrow("binding disappeared");
     expect(factory.runtimes[0]?.closed).toBe(true);
+    await missingFinalBinding.close();
+
+    const savedBinding = { runtimeBinding: binding("thread-saved") } as never;
+    const saved = new SessionRuntimeManager({
+      bindingStore: {
+        saveRuntimeBinding: async () => savedBinding,
+      } as unknown as SessionBindingStore,
+      providers: await providerRegistry(policyFactory),
+      toolHost: {
+        hostedTools: () => ({ definitions: [], handler: async () => ({ success: true, content: [] }) }),
+      } as unknown as RuntimeToolHost,
+      workspace: {
+        prepareSession: async () => prepared,
+        cwd: async () => "/workspace",
+      } as unknown as AgentWorkspaceManager,
+    });
+    await saved.prepareSession({ ...request, runtime: policySnapshot }, hashes);
+    await expect(saved.ensureRuntime("session-1")).resolves.toMatchObject({ binding: binding("thread-missing") });
+    await saved.close();
   });
 });
 

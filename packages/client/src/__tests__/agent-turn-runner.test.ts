@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { type DirectImMessageDeliveryRequest, RUNTIME_FINAL_TEXT_MAX_BYTES } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRunResult, AgentRuntimeEventSink } from "../agent-runtime/types.js";
+import { AgentRuntimeProviderUnavailableError } from "../runtime/agent-runtime-provider-registry.js";
 import {
   AgentTurnRunner,
   buildAgentInput,
@@ -12,7 +13,7 @@ import {
 import type { ImResourceFetcher } from "../runtime/im-resource-fetcher.js";
 import type { RuntimeToolHost } from "../runtime/runtime-tool-host.js";
 import type { SessionBindingStore } from "../runtime/session-binding-store.js";
-import type { SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
+import { ClientRuntimeProviderStartError, type SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
 import type { TurnReportOwner } from "../runtime/turn-report-owner.js";
 
@@ -101,6 +102,32 @@ describe("AgentTurnRunner", () => {
       outcome: "unknown",
       errorReason: "turn_state_unknown",
     });
+    expect(
+      completionForError(
+        new AgentRuntimeProviderUnavailableError("claude-code", {
+          ready: false,
+          issues: [{ code: "credential_missing", message: "sign in" }],
+        }),
+        undefined,
+      ),
+    ).toEqual({ outcome: "failed", executionEffects: "not_started", errorReason: "credential_unavailable" });
+    expect(
+      completionForError(
+        new AgentRuntimeProviderUnavailableError("claude-code", {
+          ready: false,
+          issues: [{ code: "artifact_missing", message: "install" }],
+        }),
+        undefined,
+      ),
+    ).toEqual({ outcome: "failed", executionEffects: "not_started", errorReason: "provider_start_failed" });
+    expect(completionForError(new ClientRuntimeProviderStartError("claude-code"), undefined)).toEqual({
+      outcome: "failed",
+      executionEffects: "not_started",
+      errorReason: "provider_start_failed",
+    });
+    expect(new AgentRuntimeProviderUnavailableError("claude-code", { ready: false, issues: [] }).message).toContain(
+      "not ready",
+    );
   });
 
   it("applies budget/deadline limits and durably reports pre-provider failures", async () => {
@@ -174,7 +201,7 @@ describe("AgentTurnRunner", () => {
         submit: vi.fn(),
       } as unknown as TurnReportOwner,
       runtimeManager: {
-        runtime: () => ({
+        ensureRuntime: async () => ({
           prompt: async () => {
             await observer?.({ type: "run_started", runId: "turn-1" });
             await observer?.({
@@ -202,6 +229,46 @@ describe("AgentTurnRunner", () => {
     expect(onRuntimeEvent).toHaveBeenCalledTimes(2);
   });
 
+  it("reports unavailable credentials as a recoverable typed failure before Provider execution", async () => {
+    const create = vi.fn((input) => ({
+      ...input,
+      type: "turn:report",
+      requestId: randomUUID(),
+      resultHash: "d".repeat(64),
+    }));
+    const runner = new AgentTurnRunner({
+      bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: {
+        markReporting: vi.fn(async () => undefined),
+        recordResult: vi.fn(),
+      } as unknown as TurnCustodyOwner,
+      reportOwner: { create, submit: vi.fn(async () => undefined) } as unknown as TurnReportOwner,
+      runtimeManager: {
+        ensureRuntime: async () => {
+          throw new AgentRuntimeProviderUnavailableError("claude-code", {
+            ready: false,
+            issues: [{ code: "credential_missing", message: "sign in" }],
+          });
+        },
+      } as unknown as SessionRuntimeManager,
+      toolHost: {} as RuntimeToolHost,
+    });
+
+    const request = delivery();
+    request.runtime.provider = "claude-code";
+    request.runtime.execution.networkAccess = true;
+    runner.start(liveOwner(request));
+    await runner.settled();
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "failed",
+        executionEffects: "not_started",
+        errorReason: "credential_unavailable",
+      }),
+    );
+  });
+
   it("aborts an active Provider Run during shutdown", async () => {
     let resolvePrompt!: (result: AgentRunResult) => void;
     const prompt = vi.fn(
@@ -227,7 +294,7 @@ describe("AgentTurnRunner", () => {
         submit: vi.fn(async () => undefined),
       } as unknown as TurnReportOwner,
       runtimeManager: {
-        runtime: () => ({ prompt }),
+        ensureRuntime: async () => ({ prompt }),
         cwd: () => "/workspace",
         observe: () => () => undefined,
       } as unknown as SessionRuntimeManager,

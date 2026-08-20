@@ -138,7 +138,10 @@ describe("Computer persistence", () => {
           },
         });
         expect(negotiated.json().computers[0]).toMatchObject({
-          providerReadiness: [{ provider: "codex", status: "checking", observedAt: null }],
+          providerReadiness: [
+            { provider: "codex", status: "checking", observedAt: null },
+            { provider: "claude-code", status: "checking", observedAt: null },
+          ],
         });
       } finally {
         await app.close();

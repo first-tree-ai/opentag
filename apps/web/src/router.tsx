@@ -934,23 +934,7 @@ function NewAgentPage() {
   const { membership } = useTeam();
   const navigate = useNavigate();
   const computers = useResource(() => browserApi.ownComputers(), membership.teamId);
-  const [error, setError] = useState<string>();
   if (membership.role !== "admin") return <UnavailablePage title="Team Admin access required" />;
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    try {
-      const created = await browserApi.createAgent(membership.teamId, {
-        name: String(data.get("name") ?? ""),
-        displayName: String(data.get("displayName") ?? ""),
-        runtimeProvider: String(data.get("runtimeProvider") ?? "codex") as "codex" | "claude-code",
-        computerId: String(data.get("computerId") ?? ""),
-      });
-      navigate(`/agents/${created.id}/general`);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Agent creation failed");
-    }
-  }
   return (
     <Page title="Create Agent" description="Create the identity first. Complete its setup from the Agent overview.">
       <AsyncState state={computers}>
@@ -960,47 +944,123 @@ function NewAgentPage() {
               Open <Link to="/settings/computers">Computer settings</Link> to generate a connection command.
             </EmptyState>
           ) : (
-            <form className="form-card" onSubmit={submit}>
-              <label>
-                Name
-                <input name="name" required pattern="[a-z0-9][a-z0-9-]*" />
-              </label>
-              <label>
-                Display name
-                <input name="displayName" required />
-              </label>
-              <label>
-                Provider
-                <select name="runtimeProvider">
-                  <option value="codex">Codex</option>
-                  <option value="claude-code">Claude Code</option>
-                </select>
-              </label>
-              <label>
-                Computer
-                <select name="computerId" required>
-                  {value.computers.map((computer: Computer) => (
-                    <option value={computer.id} key={computer.id}>
-                      {computer.displayName}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <p className="muted">New Agents receive only direct mentions by default.</p>
-              <button className="button" type="submit">
-                Create Agent
-              </button>
-              {error ? (
-                <div className="notice error" role="alert">
-                  {error}
-                </div>
-              ) : null}
-            </form>
+            <NewAgentForm
+              computers={value.computers}
+              teamId={membership.teamId}
+              onCreated={(agentId) => navigate(`/agents/${agentId}/general`)}
+            />
           )
         }
       </AsyncState>
     </Page>
   );
+}
+
+function NewAgentForm({
+  computers,
+  onCreated,
+  teamId,
+}: {
+  computers: readonly Computer[];
+  onCreated(agentId: string): void;
+  teamId: string;
+}) {
+  const [computerId, setComputerId] = useState(computers[0]?.id ?? "");
+  const [runtimeProvider, setRuntimeProvider] = useState<"codex" | "claude-code">("codex");
+  const [error, setError] = useState<string>();
+  const computer = computers.find((candidate) => candidate.id === computerId) ?? computers[0];
+  const readiness = computer?.providerReadiness?.find((entry) => entry.provider === runtimeProvider);
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    try {
+      const created = await browserApi.createAgent(teamId, {
+        name: String(data.get("name") ?? ""),
+        displayName: String(data.get("displayName") ?? ""),
+        runtimeProvider,
+        computerId,
+      });
+      onCreated(created.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Agent creation failed");
+    }
+  }
+  return (
+    <form className="form-card" onSubmit={submit}>
+      <label>
+        Name
+        <input name="name" required pattern="[a-z0-9][a-z0-9-]*" />
+      </label>
+      <label>
+        Display name
+        <input name="displayName" required />
+      </label>
+      <label>
+        Provider
+        <select
+          name="runtimeProvider"
+          value={runtimeProvider}
+          onChange={(event) => setRuntimeProvider(event.currentTarget.value as "codex" | "claude-code")}
+        >
+          <option value="codex">Codex</option>
+          <option value="claude-code">Claude Code</option>
+        </select>
+      </label>
+      <label>
+        Computer
+        <select
+          name="computerId"
+          required
+          value={computerId}
+          onChange={(event) => setComputerId(event.currentTarget.value)}
+        >
+          {computers.map((candidate) => (
+            <option value={candidate.id} key={candidate.id}>
+              {candidate.displayName}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div
+        className={`notice ${readiness?.status === "ready" && computer?.connectionStatus === "online" ? "" : "warning"}`}
+        role="status"
+      >
+        {providerReadinessMessage(computer, runtimeProvider, readiness?.status)}
+      </div>
+      <p className="muted">New Agents receive only direct mentions by default.</p>
+      <button className="button" type="submit">
+        Create Agent
+      </button>
+      {error ? (
+        <div className="notice error" role="alert">
+          {error}
+        </div>
+      ) : null}
+    </form>
+  );
+}
+
+function providerReadinessMessage(
+  computer: Computer | undefined,
+  provider: "codex" | "claude-code",
+  status: "checking" | "install" | "sign-in" | "ready" | "unavailable" | undefined,
+): string {
+  const label = providerLabel(provider);
+  if (computer?.connectionStatus === "offline") {
+    return `${computer.displayName} is offline. You can still create this Agent; ${label} Turns will fail without starting and can be retried when this Computer reconnects. No other Provider will be substituted.`;
+  }
+  if (status === "ready") return `${label} is ready on ${computer?.displayName ?? "this Computer"}.`;
+  const action =
+    status === "checking"
+      ? "readiness is still being checked"
+      : status === "install"
+        ? "must be installed"
+        : status === "sign-in"
+          ? "requires sign-in"
+          : status === "unavailable"
+            ? "is currently unavailable"
+            : "readiness has not been reported by this Computer";
+  return `${label} ${action}. You can still create this Agent; its Turns will fail without starting and can be retried after readiness is restored. No other Provider will be substituted.`;
 }
 
 const agentSections = [

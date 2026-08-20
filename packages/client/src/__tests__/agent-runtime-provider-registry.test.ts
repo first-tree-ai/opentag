@@ -19,6 +19,7 @@ describe("AgentRuntimeProviderRegistry", () => {
     const claude = registration(factory("claude-code"), "b".repeat(64));
     const providers = new AgentRuntimeProviderRegistry([codex, claude]);
 
+    expect(providers.providerIds()).toEqual(["codex", "claude-code"]);
     expect(providers.registration("codex")).toMatchObject({ factory: codex.factory, artifactIdentity: "a".repeat(64) });
     expect(Object.isFrozen(providers.registration("codex"))).toBe(true);
     expect(providers.artifactIdentity("claude-code")).toBe("b".repeat(64));
@@ -77,7 +78,11 @@ describe("AgentRuntimeProviderRegistry", () => {
     });
     expect(providers.isReady("codex")).toBe(false);
     expect(providers.validate(snapshot())).toBe("provider_unavailable");
-    await expect(providers.ensureReady("codex")).rejects.toThrow("artifact_missing: missing");
+    await expect(providers.ensureReady("codex")).rejects.toMatchObject({
+      name: "AgentRuntimeProviderUnavailableError",
+      providerId: "codex",
+      result: { issues: [{ code: "artifact_missing" }] },
+    });
   });
 
   it("deduplicates the underlying probe while each waiter retains its own cancellation", async () => {
@@ -168,6 +173,11 @@ describe("AgentRuntimeProviderRegistry", () => {
     ]);
     await expect(verificationFailure.refresh("codex")).resolves.toBe(false);
     expect(verificationFailure.isReady("codex")).toBe(false);
+    await expect(verificationFailure.ensureReady("codex")).rejects.toMatchObject({
+      name: "AgentRuntimeProviderUnavailableError",
+      providerId: "codex",
+      result: { issues: [{ code: "temporarily_unavailable" }] },
+    });
 
     let release!: () => void;
     let completions = 0;

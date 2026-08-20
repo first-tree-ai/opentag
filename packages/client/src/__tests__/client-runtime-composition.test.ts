@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
 import type { AgentRuntime, AgentRuntimeFactory } from "../agent-runtime/types.js";
 import { createLogger } from "../observability/logger.js";
+import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
 import { CODEX_AGENT_RUNTIME_APP_SERVER_ARGS } from "../providers/codex/agent-runtime.js";
 import {
   ComposedClientRuntime,
@@ -22,6 +23,7 @@ import {
   createClientRuntimeHandlers,
   createClientRuntimePreflight,
   resolveCodexHome,
+  resolvedClaudeCodeFactory,
   resolvedCodexFactory,
   resolveExecutable,
 } from "../runtime/client-runtime-composition.js";
@@ -85,6 +87,7 @@ describe("createClientRuntime production composition", () => {
     expect(runtime.messageToolAvailable).toBe(true);
     const result = await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()));
     expect(result).toMatchObject({ status: "ready" });
+    await runtime.runtimeManager.ensureRuntime("session-1");
     expect(await runtime.bindingStore.read("agent-1", "session-1")).toMatchObject({
       schemaVersion: 2,
       runtimeBinding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "thread-1" } },
@@ -100,7 +103,7 @@ describe("createClientRuntime production composition", () => {
     runtime.toolHost.close();
   });
 
-  it("keeps the daemon composable and rejects Session placement when Codex is unavailable", async () => {
+  it("keeps placement composable and defers unavailable Codex failure to the exact Turn runtime start", async () => {
     const home = await temporaryDirectory("opentag-client-unavailable-");
     const connection = runtimeConnection();
     const runtime = await createClientRuntime(connection, {
@@ -113,7 +116,11 @@ describe("createClientRuntime production composition", () => {
     expect(runtime.messageToolAvailable).toBe(false);
     await expect(
       runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot())),
-    ).resolves.toMatchObject({ status: "rejected", reason: "provider_unavailable" });
+    ).resolves.toMatchObject({ status: "ready" });
+    await expect(runtime.runtimeManager.ensureRuntime("session-1")).rejects.toMatchObject({
+      name: "AgentRuntimeProviderUnavailableError",
+      providerId: "codex",
+    });
     runtime.stop();
     runtime.reportOwner.stop();
   });
@@ -134,10 +141,10 @@ describe("createClientRuntime production composition", () => {
         clientVersion: "0.0.1",
         codexHome: resolve(home, "wrong-provider-home"),
         environment: {},
-        factory: readyFactory("claude-code"),
+        factory: readyFactory("pi"),
         home,
       }),
-    ).rejects.toThrow("only registers the reviewed Codex provider");
+    ).rejects.toThrow("does not register the unreviewed provider");
 
     const controller = new AbortController();
     const error = new Error("cancel readiness");
@@ -206,7 +213,9 @@ describe("createClientRuntime production composition", () => {
       canonicalCommand,
     );
     await expect(resolveExecutable("missing", {})).rejects.toThrow("PATH is unavailable");
-    await expect(resolveExecutable("missing", { PATH: empty })).rejects.toThrow("compatible Codex executable");
+    await expect(resolveExecutable("missing", { PATH: empty })).rejects.toThrow(
+      "compatible Agent Runtime provider executable",
+    );
 
     const factory = resolvedCodexFactory({
       clientVersion: "0.0.1",
@@ -221,6 +230,69 @@ describe("createClientRuntime production composition", () => {
     const aborted = new AbortController();
     aborted.abort(new Error("stop resolution"));
     await expect(factory.probe({ signal: aborted.signal })).rejects.toThrow("stop resolution");
+  });
+
+  it("resolves the production Claude Code factory and enforces its reviewed runtime policy", async () => {
+    const home = await temporaryDirectory("opentag-client-claude-factory-");
+    const command = resolve(home, "claude-fixture");
+    await writeFile(
+      command,
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools\\n"; exit 0; fi\nexit 1\n',
+      "utf8",
+    );
+    await chmod(command, 0o755);
+    const resolved = resolvedClaudeCodeFactory({
+      claudeCodeHome: home,
+      command,
+      environment: { PATH: process.env.PATH, ANTHROPIC_API_KEY: "fixture" },
+      sourceEnvironment: { PATH: process.env.PATH },
+    });
+    expect(() => resolved.create({} as never)).toThrow("readiness has not been established");
+    expect(() => resolved.resume({} as never)).toThrow("readiness has not been established");
+    const missing = resolvedClaudeCodeFactory({
+      claudeCodeHome: home,
+      command: resolve(home, "missing-claude"),
+      environment: {},
+      sourceEnvironment: {},
+    });
+    await expect(missing.probe({})).resolves.toMatchObject({
+      ready: false,
+      issues: [{ code: "artifact_missing" }],
+    });
+    const abortedMissing = new AbortController();
+    abortedMissing.abort(new Error("stop Claude resolution"));
+    await expect(missing.probe({ signal: abortedMissing.signal })).rejects.toThrow("stop Claude resolution");
+    await expect(resolved.probe({})).resolves.toMatchObject({ ready: true });
+    await expect(resolved.create({} as never)).rejects.toThrow("eventSink is required");
+    await expect(resolved.resume({} as never)).rejects.toThrow("eventSink is required");
+
+    const claudeSnapshot: EffectiveRuntimeSnapshot = {
+      ...snapshot(),
+      provider: "claude-code",
+      execution: { approvalPolicy: "never", networkAccess: true },
+    };
+    expect(claudeCodeRuntimePolicy(claudeSnapshot)).toEqual({
+      fileSystem: "unrestricted",
+      network: "enabled",
+      approvals: "never",
+      tools: { mode: "provider-default" },
+    });
+    expect(validateClaudeCodeRuntimePolicy(claudeSnapshot)).toBeUndefined();
+    expect(
+      validateClaudeCodeRuntimePolicy({
+        ...claudeSnapshot,
+        execution: { approvalPolicy: "on-request", networkAccess: true },
+      } as unknown as EffectiveRuntimeSnapshot),
+    ).toBe("configuration_unsupported");
+    expect(
+      validateClaudeCodeRuntimePolicy({
+        ...claudeSnapshot,
+        execution: { approvalPolicy: "never", networkAccess: false },
+      }),
+    ).toBe("configuration_unsupported");
+    expect(validateClaudeCodeRuntimePolicy({ ...claudeSnapshot, allowedTools: ["unknown"] })).toBe(
+      "configuration_unsupported",
+    );
   });
 
   it("unit-tests composition delegates and every preflight outcome", async () => {
@@ -244,19 +316,14 @@ describe("createClientRuntime production composition", () => {
     await expect(handlers.onReconciled({} as never, {} as never)).resolves.toBeUndefined();
 
     const request = delivery(snapshot());
-    const ensureProviderReady = vi.fn(async () => undefined);
-    const runtime = vi.fn(() => ({ state: { phase: "idle" } }));
     const verifyAgent = vi.fn(async () => undefined);
     const validateProviderConfiguration = vi.fn(() => undefined as "configuration_unsupported" | undefined);
     const preflight = createClientRuntimePreflight({
-      providers: { ensureReady: ensureProviderReady, validateConfiguration: validateProviderConfiguration },
-      runtimeManager: { runtime } as never,
+      providers: { validateConfiguration: validateProviderConfiguration },
       workspace: { verifyAgent } as never,
     });
     await expect(preflight(request)).resolves.toBeUndefined();
-    expect(ensureProviderReady).toHaveBeenCalledWith("codex", undefined);
     expect(verifyAgent).toHaveBeenCalledOnce();
-    expect(runtime).toHaveBeenCalledWith("session-1");
 
     validateProviderConfiguration.mockReturnValue("configuration_unsupported");
     await expect(preflight(request)).resolves.toBe("configuration_unsupported");
@@ -265,7 +332,7 @@ describe("createClientRuntime production composition", () => {
     verifyAgent.mockRejectedValueOnce(new RuntimeStorageError("conflict", "binding conflict"));
     await expect(preflight(request)).resolves.toBe("session_binding_conflict");
     verifyAgent.mockRejectedValueOnce(new Error("provider failed"));
-    await expect(preflight(request)).resolves.toBe("provider_unavailable");
+    await expect(preflight(request)).resolves.toBe("configuration_unsupported");
   });
 
   it("covers ComposedClientRuntime monitor guards with deterministic component doubles", async () => {
@@ -623,7 +690,8 @@ describe("createClientRuntime production composition", () => {
     const running = runtime.run();
     await registration;
     const request = reconcileRequest(connection.computerId, snapshot());
-    const reconciling = runtime.reconciler.reconcile(request);
+    await runtime.reconciler.reconcile(request);
+    const starting = runtime.runtimeManager.ensureRuntime("session-1");
     await createStart;
 
     runtime.stop();
@@ -636,13 +704,10 @@ describe("createClientRuntime production composition", () => {
     expect(closeCalls).toBe(0);
 
     releaseCreate();
-    await expect(reconciling).rejects.toThrow("manager is closing");
+    await expect(starting).rejects.toThrow("manager is closing");
     await running;
     expect(closeCalls).toBe(1);
     expect(() => runtime.runtimeManager.runtime("session-1")).toThrow("manager is closing");
-    await expect(runtime.reconciler.reconcile({ ...request, requestId: randomUUID() })).rejects.toThrow(
-      "manager is closing",
-    );
   });
 });
 

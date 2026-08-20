@@ -66,6 +66,19 @@ const SHADOW: Owner = {
   inert: new Set(["none"]),
 };
 
+/**
+ * `filter: drop-shadow(...)` draws an elevation that no --shadow-* token can
+ * describe, because drop-shadow takes no spread and cannot accept a composed
+ * token. Rather than teach the guard a second shadow grammar, the stylesheet
+ * does not use it -- and may not start.
+ */
+function droppedShadows(css: string): string[] {
+  return declarations(css)
+    .filter((declaration) => /(^|-)filter$/.test(propertyName(declaration)))
+    .filter((declaration) => /drop-shadow\s*\(/.test(declaration.value))
+    .map((declaration) => `${declaration.name}: ${declaration.value}`);
+}
+
 const MOTION: Owner = {
   owns: (property) =>
     property === "transition" ||
@@ -169,6 +182,10 @@ describe("radius, elevation and motion tokens", () => {
     expect(baselineTokens(stylesheet, "motion").length).toBeGreaterThan(0);
   });
 
+  it("draws no elevation with a filter", () => {
+    expect(droppedShadows(stylesheet)).toEqual([]);
+  });
+
   it("draws every elevation layer in the one shadow colour", () => {
     expect(elevationTokens(stylesheet).length).toBeGreaterThan(0);
     expect(malformedElevations(stylesheet)).toEqual([]);
@@ -253,6 +270,18 @@ describe("the guard itself", () => {
     const literal = ".card { box-shadow: 0 1px 4px rgb(22 33 27 / 8%); }";
     expect(untokenized(literal, SHADOW)).toEqual(["box-shadow: 0 1px 4px rgb(22 33 27 / 8%)"]);
     expect(untokenized(".card { box-shadow: none; }", SHADOW)).toEqual([]);
+  });
+
+  it("rejects an elevation drawn with a filter", () => {
+    const css = ".row { filter: drop-shadow(0 1px 4px red); }";
+    expect(droppedShadows(css)).toEqual(["filter: drop-shadow(0 1px 4px red)"]);
+
+    const backdrop = ".row { backdrop-filter: blur(4px) drop-shadow(0 1px 4px red); }";
+    expect(droppedShadows(backdrop)).toEqual(["backdrop-filter: blur(4px) drop-shadow(0 1px 4px red)"]);
+  });
+
+  it("leaves a filter that draws no elevation alone", () => {
+    expect(droppedShadows(".row { filter: blur(4px); }")).toEqual([]);
   });
 
   it("rejects a second hue sitting beside the shadow colour", () => {

@@ -43,12 +43,14 @@ const agent = {
   createdAt: "2026-08-19T00:00:00.000Z",
   updatedAt: "2026-08-19T00:00:00.000Z",
 };
+const creationIntentId = "a3adbe5e-8e8e-4ac2-a013-b026684ab185";
 
 describe("Agent contracts", () => {
   it("normalizes canonical names and strict create/update payloads", () => {
     expect(AgentNameSchema.parse("  code-reviewer  ")).toBe("code-reviewer");
     expect(
       CreateAgentRequestSchema.parse({
+        creationIntentId,
         name: " code-reviewer ",
         displayName: " Code Reviewer ",
         runtimeProvider: "claude-code",
@@ -59,6 +61,7 @@ describe("Agent contracts", () => {
         },
       }),
     ).toEqual({
+      creationIntentId,
       name: "code-reviewer",
       displayName: "Code Reviewer",
       runtimeProvider: "claude-code",
@@ -96,6 +99,27 @@ describe("Agent contracts", () => {
   it.each(["", "UPPER", "has space", "under_score", "-leading"])("rejects invalid canonical name %j", (name) =>
     expect(() => AgentNameSchema.parse(name)).toThrow(),
   );
+
+  it("accepts only UUID creation intent identities", () => {
+    expect(
+      CreateAgentRequestSchema.parse({
+        creationIntentId,
+        computerId: agent.computerId,
+        displayName: agent.displayName,
+        name: agent.name,
+        runtimeProvider: agent.runtimeProvider,
+      }),
+    ).toMatchObject({ creationIntentId });
+    expect(() =>
+      CreateAgentRequestSchema.parse({
+        creationIntentId: "retry-by-name",
+        computerId: agent.computerId,
+        displayName: agent.displayName,
+        name: agent.name,
+        runtimeProvider: agent.runtimeProvider,
+      }),
+    ).toThrow();
+  });
 
   it("rejects unexpected authority and immutable update fields", () => {
     expect(() => CreateAgentRequestSchema.parse({ ...agent, managerUserId: agent.managerUserId })).toThrow();

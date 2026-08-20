@@ -17,6 +17,7 @@ const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
+const creationIntentId = "a3adbe5e-8e8e-4ac2-a013-b026684ab185";
 const agent = {
   id: agentId,
   teamId,
@@ -104,6 +105,7 @@ describe("Agent HTTP API", () => {
       url: teamAgentsPath(teamId),
       headers: authorization,
       payload: {
+        creationIntentId,
         name: " code-reviewer ",
         displayName: " Code Reviewer ",
         runtimeProvider: "codex",
@@ -114,6 +116,7 @@ describe("Agent HTTP API", () => {
     expect(create.statusCode).toBe(201);
     expect(create.json()).toEqual(agent);
     expect(service.createForTeam).toHaveBeenCalledWith(userId, teamId, {
+      creationIntentId,
       name: "code-reviewer",
       displayName: "Code Reviewer",
       runtimeProvider: "codex",
@@ -213,6 +216,7 @@ describe("Agent HTTP API", () => {
     ["AGENT_FORBIDDEN", 403],
     ["COMPUTER_NOT_FOUND", 404],
     ["RESOURCE_NOT_FOUND", 404],
+    ["AGENT_CREATION_INTENT_CONFLICT", 409],
     ["AGENT_NAME_CONFLICT", 409],
     ["AGENT_REVISION_CONFLICT", 409],
     ["AGENT_LIFECYCLE_CONFLICT", 409],

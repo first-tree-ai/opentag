@@ -34,6 +34,7 @@ function installApi(
   role: "admin" | "member",
   options: {
     alreadyJoinedInvitation?: boolean;
+    bindingReauth?: boolean;
     bound?: boolean;
     initialStatus?: "active" | "suspended";
     invitationExists?: boolean;
@@ -43,6 +44,7 @@ function installApi(
     redeemFails?: boolean;
     roleUpdate?: (targetUserId: string, role: "admin" | "member") => Promise<Response> | Response;
     roleUpdateFails?: boolean;
+    setupFailureCode?: string;
     scopeReauth?: boolean;
     unauthenticated?: boolean;
     teamless?: boolean;
@@ -294,7 +296,7 @@ function installApi(
         id: crypto.randomUUID(),
         agentId,
         provider: options.provider ?? "feishu",
-        bindingState: "active",
+        bindingState: options.bindingReauth ? "reauthorization_required" : "active",
         bot: { displayName: "Reviewer", avatarUrl: null },
         receiveMode: "mention_only",
         lastInboundAt: null,
@@ -303,21 +305,23 @@ function installApi(
       });
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts` && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as { intent: "create" | "reauthorize" | "replace" };
       return json(
         {
           id: crypto.randomUUID(),
           agentId,
-          intent: "create",
-          state: "awaiting_user",
-          qrUrl: "https://open.feishu.cn/setup",
+          intent: body.intent,
+          state: options.setupFailureCode ? "failed" : "awaiting_user",
+          qrUrl: options.setupFailureCode ? null : "https://open.feishu.cn/setup",
           expiresAt: "2026-08-20T00:15:00.000Z",
-          errorCode: null,
-          completedAt: null,
+          errorCode: options.setupFailureCode ?? null,
+          completedAt: options.setupFailureCode ? "2026-08-20T00:01:00.000Z" : null,
           createdAt: "2026-08-20T00:00:00.000Z",
         },
         201,
       );
     }
+    if (path === "/api/v1/auth/browser/logout" && init?.method === "POST") return new Response(null, { status: 204 });
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
   });
 }
@@ -337,6 +341,11 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Create Agent" })).toBeTruthy();
     expect(screen.getByText("Tasks").getAttribute("aria-disabled")).toBe("true");
+    expect(
+      within(screen.getByRole("navigation", { name: "Workspace" }))
+        .getAllByText(/Agents|Tasks|Settings/)
+        .map((item) => item.textContent),
+    ).toEqual(["Agents", "Tasks", "Settings"]);
   });
 
   it.each(["/", "/agents"])("redirects unauthenticated protected path %s to login", async (path) => {
@@ -352,7 +361,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("member");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    expect(screen.getByText("Member")).toBeTruthy();
+    expect(screen.getByText("ada@example.com")).toBeTruthy();
     expect(await screen.findByText("Reviewer")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Create Agent" })).toBeNull();
   });
@@ -474,7 +483,7 @@ describe("OpenTag Web App Shell", () => {
       within(navigation)
         .getAllByRole("link")
         .map((link) => link.textContent),
-    ).toEqual(["Overview", "Runtime", "Messaging", "Resources", "Integrations", "Access"]);
+    ).toEqual(["Overview", "Runtime", "IM", "Resources", "Integrations", "Access"]);
   });
 
   it("uses a flat local navigation for Settings", async () => {
@@ -536,7 +545,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
     expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(invitedTeamId);
     expect(window.sessionStorage.getItem("opentag.pendingInvitationToken")).toBeNull();
-    expect((screen.getByRole("combobox", { name: "Team" }) as HTMLSelectElement).value).toBe(invitedTeamId);
+    expect(screen.getByRole("button", { name: "Invited Team" }).getAttribute("aria-expanded")).toBe("false");
   });
 
   it("resumes a pending invitation after sign-in without requiring a second click", async () => {
@@ -685,6 +694,7 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() =>
       expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === "/api/v1/me")).toHaveLength(2),
     );
+    fireEvent.click(screen.getByRole("button", { name: "Example" }));
     expect(await screen.findByText("Member")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Invite people" })).toBeNull();
     expect(screen.queryByLabelText("Role for Ada")).toBeNull();
@@ -704,7 +714,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin");
     window.history.replaceState({}, "", `/agents/${agentId}/im`);
     render(<App />);
-    expect(await screen.findByRole("button", { name: "Connect Feishu" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Connect existing or new Feishu Bot" })).toBeTruthy();
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
@@ -712,8 +722,9 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin");
     window.history.replaceState({}, "", `/agents/${agentId}/im`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Connect Feishu" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect existing or new Feishu Bot" }));
     expect(await screen.findByText("Feishu setup started")).toBeTruthy();
+    expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
     expect(await screen.findByRole("img", { name: "Scan this QR code in Feishu" })).toBeTruthy();
     await waitFor(() =>
       expect(
@@ -724,6 +735,46 @@ describe("OpenTag Web App Shell", () => {
           ),
       ).toBe(true),
     );
+  });
+
+  it("keeps a legacy Feishu Bot visibly online while offering permission update or replacement", async () => {
+    installApi("admin", { bindingReauth: true, bound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    render(<App />);
+    expect(await screen.findByText("Online · permissions update required")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reauthorize Feishu" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Replace with existing or new Feishu Bot" }));
+    expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
+    const request = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([input, init]) => String(input).endsWith("/im-binding/feishu/setup-attempts") && init?.method === "POST",
+      );
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "replace" });
+  });
+
+  it("shows a safe occupied-App recovery and retries the original replacement intent", async () => {
+    installApi("admin", { bound: true, setupFailureCode: "FEISHU_APP_ALREADY_BOUND" });
+    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Replace with existing or new Feishu Bot" }));
+    const setupNotice = (await screen.findByText("Feishu setup started")).parentElement;
+    expect(setupNotice?.textContent).toContain(
+      "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Retry Feishu setup" }));
+    await waitFor(() => {
+      const requests = vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([input, init]) => String(input).endsWith("/im-binding/feishu/setup-attempts") && init?.method === "POST",
+        );
+      expect(requests).toHaveLength(2);
+      expect(requests.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+        { intent: "replace" },
+        { intent: "replace" },
+      ]);
+    });
   });
 
   it.each([
@@ -829,13 +880,66 @@ describe("OpenTag Web App Shell", () => {
   it("lets an existing member create a second Team and offers both in the picker", async () => {
     installApi("admin");
     render(<App />);
-    fireEvent.click(await screen.findByRole("link", { name: "Create Team" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Example" }));
+    fireEvent.click(screen.getByRole("link", { name: "Create Team" }));
     fireEvent.change(await screen.findByLabelText("Display name"), { target: { value: "Second Team" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Team" }));
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    const picker = screen.getByLabelText("Team") as HTMLSelectElement;
-    expect([...picker.options].map((option) => option.textContent)).toEqual(["Example", "Second Team"]);
-    expect(picker.value).toBe(createdTeamId);
+    fireEvent.click(screen.getByRole("button", { name: "Second Team" }));
+    const menu = screen.getByRole("dialog", { name: "Switch Team" });
+    expect(within(menu).getByRole("button", { name: /Example Admin/ })).toBeTruthy();
+    expect(
+      within(menu)
+        .getByRole("button", { name: /Second Team Admin/ })
+        .getAttribute("aria-current"),
+    ).toBe("true");
+    expect(within(menu).queryByText("Team settings")).toBeNull();
+  });
+
+  it("keeps account controls personal and signs out from the account menu", async () => {
+    installApi("admin");
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Account settings" }));
+    expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
+    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      "/api/v1/auth/browser/logout",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("moves focus into the Team picker and returns it to the trigger on Escape", async () => {
+    installApi("admin");
+    render(<App />);
+    const trigger = await screen.findByRole("button", { name: "Example" });
+    fireEvent.click(trigger);
+    const currentTeam = screen.getByRole("button", { name: /Example Admin/ });
+    expect(document.activeElement).toBe(currentTeam);
+    fireEvent.keyDown(currentTeam, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Switch Team" })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("supports arrow-key navigation and focus return in the account menu", async () => {
+    installApi("admin");
+    render(<App />);
+    const trigger = await screen.findByRole("button", { name: "Account menu" });
+    fireEvent.click(trigger);
+    const accountSettings = screen.getByRole("menuitem", { name: "Account settings" });
+    const signOut = screen.getByRole("menuitem", { name: "Sign out" });
+    expect(document.activeElement).toBe(accountSettings);
+    fireEvent.keyDown(accountSettings, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(signOut);
+    fireEvent.keyDown(signOut, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(accountSettings);
+    fireEvent.keyDown(accountSettings, { key: "End" });
+    expect(document.activeElement).toBe(signOut);
+    fireEvent.keyDown(signOut, { key: "Escape" });
+    expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("removes the old admin product shell without a redirect", async () => {

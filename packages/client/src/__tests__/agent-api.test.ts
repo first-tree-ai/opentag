@@ -4,6 +4,7 @@ import { OpenTagApi, OpenTagApiError } from "../api.js";
 const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
+const creationIntentId = "a3adbe5e-8e8e-4ac2-a013-b026684ab185";
 const agent = {
   id: agentId,
   teamId,
@@ -59,6 +60,7 @@ describe("OpenTagApi Agent methods", () => {
     const api = new OpenTagApi("https://opentag.example", fetchImpl);
 
     await api.createAgent("access", teamId, {
+      creationIntentId,
       computerId,
       displayName: "Code Reviewer",
       name: "code-reviewer",
@@ -91,6 +93,7 @@ describe("OpenTagApi Agent methods", () => {
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer access");
     }
     expect(JSON.parse(String(fetchImpl.mock.calls[0]?.[1]?.body))).toEqual({
+      creationIntentId,
       computerId,
       displayName: "Code Reviewer",
       name: "code-reviewer",

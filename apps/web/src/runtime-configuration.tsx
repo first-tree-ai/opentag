@@ -1,6 +1,5 @@
 import {
   type AgentAdminConfig,
-  type AgentRuntimeProvider,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_MAX_DURATION_MS,
   type UpdateAgentRequest,
@@ -8,10 +7,7 @@ import {
 } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
 
-const REASONING_EFFORT_SUGGESTIONS = {
-  codex: ["minimal", "low", "medium", "high", "xhigh"],
-  "claude-code": ["low", "medium", "high", "xhigh", "max", "ultracode"],
-} as const satisfies Record<AgentRuntimeProvider, readonly string[]>;
+const CODEX_REASONING_EFFORT_SUGGESTIONS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 
 const DEFAULT_DURATION_SECONDS = RUNTIME_DEFAULT_MAX_DURATION_MS / 1_000;
 const MAX_DURATION_SECONDS = RUNTIME_MAX_DURATION_MS / 1_000;
@@ -22,10 +18,24 @@ export interface RuntimeConfigurationFormProps {
 }
 
 export function RuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigurationFormProps) {
+  if (initialConfig.runtimeProvider !== "codex") {
+    return (
+      <section className="form-card">
+        <h2>Execution choices</h2>
+        <p className="muted">
+          Runtime Configuration is not available for Claude Code Agents. Effective Runtime Snapshots currently support
+          Codex only.
+        </p>
+      </section>
+    );
+  }
+  return <CodexRuntimeConfigurationForm initialConfig={initialConfig} save={save} />;
+}
+
+function CodexRuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigurationFormProps) {
   const [config, setConfig] = useState(initialConfig);
   const [message, setMessage] = useState<{ kind: "error" | "success"; text: string }>();
   const [saving, setSaving] = useState(false);
-  const reasoningEfforts = REASONING_EFFORT_SUGGESTIONS[config.runtimeProvider];
   const fieldId = (name: string) => `runtime-${name}-${config.id}`;
   const reasoningListId = `reasoning-effort-${config.id}`;
 
@@ -63,8 +73,7 @@ export function RuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigu
           placeholder="Managed by provider"
         />
         <small className="field-help" id={fieldId("model-help")}>
-          Enter an exact {providerLabel(config.runtimeProvider)} model ID. Leave blank to let the provider manage the
-          selection.
+          Enter an exact Codex model ID. Leave blank to let Codex manage the selection.
         </small>
       </div>
       <div className="form-field">
@@ -79,13 +88,13 @@ export function RuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigu
           placeholder="Managed by provider"
         />
         <datalist id={reasoningListId}>
-          {reasoningEfforts.map((effort) => (
+          {CODEX_REASONING_EFFORT_SUGGESTIONS.map((effort) => (
             <option value={effort} key={effort} />
           ))}
         </datalist>
         <small className="field-help" id={fieldId("reasoning-help")}>
-          These are common values for the selected provider, not a compatibility guarantee. The bound Computer performs
-          the authoritative runtime check.
+          These are common Codex values, not a compatibility guarantee. The bound Computer performs the authoritative
+          runtime check.
         </small>
       </div>
       <div className="form-field">
@@ -161,8 +170,4 @@ function nullableText(value: FormDataEntryValue | null): string | null {
 
 function formatMinutes(milliseconds: number): string {
   return `${milliseconds / 60_000}-minute`;
-}
-
-function providerLabel(provider: AgentRuntimeProvider): string {
-  return provider === "claude-code" ? "Claude Code" : "Codex";
 }

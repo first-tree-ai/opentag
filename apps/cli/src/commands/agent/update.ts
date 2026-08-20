@@ -6,14 +6,19 @@ export function registerAgentUpdateCommand(agent: Command): void {
   agent
     .command("update <agent-id>")
     .option("--display-name <display-name>", "new human-facing Agent name")
-    .addOption(new Option("--model <model>", "exact Provider-native model ID").conflicts("clearModel"))
-    .addOption(new Option("--clear-model", "let the Provider manage model selection").conflicts("model"))
     .addOption(
-      new Option("--reasoning-effort <effort>", "Provider-native reasoning effort").conflicts("clearReasoningEffort"),
+      new Option("--model <model>", "exact Codex model ID; effective snapshots support Codex only").conflicts(
+        "clearModel",
+      ),
     )
+    .addOption(new Option("--clear-model", "let Codex manage model selection").conflicts("model"))
     .addOption(
-      new Option("--clear-reasoning-effort", "let the Provider manage reasoning effort").conflicts("reasoningEffort"),
+      new Option(
+        "--reasoning-effort <effort>",
+        "Codex reasoning effort; effective snapshots support Codex only",
+      ).conflicts("clearReasoningEffort"),
     )
+    .addOption(new Option("--clear-reasoning-effort", "let Codex manage reasoning effort").conflicts("reasoningEffort"))
     .addOption(new Option("--instructions <text>", "Agent runtime instructions").conflicts("instructionsFile"))
     .addOption(
       new Option("--instructions-file <path>", "read Agent instructions from a UTF-8 file").conflicts("instructions"),
@@ -29,7 +34,7 @@ export function registerAgentUpdateCommand(agent: Command): void {
         "clearMaxDuration",
       ),
     )
-    .addOption(new Option("--clear-max-duration", "use OpenTag's 30-minute Turn default").conflicts("maxDurationMs"))
+    .addOption(new Option("--clear-max-duration", "use the OpenTag default Turn duration").conflicts("maxDurationMs"))
     .action(async (agentId, options) => {
       process.stdout.write(
         `${formatAgent(

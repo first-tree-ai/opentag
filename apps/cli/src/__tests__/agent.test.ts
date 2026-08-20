@@ -334,9 +334,10 @@ describe("Agent CLI core", () => {
       ]),
     );
     expect(update?.options.find((option) => option.long === "--display-name")?.mandatory).toBe(false);
-    expect(update?.options.find((option) => option.long === "--clear-model")?.description).toContain("Provider manage");
+    expect(update?.options.find((option) => option.long === "--model")?.description).toContain("Codex only");
+    expect(update?.options.find((option) => option.long === "--clear-model")?.description).toContain("Codex manage");
     expect(update?.options.find((option) => option.long === "--clear-max-duration")?.description).toContain(
-      "30-minute",
+      "OpenTag default",
     );
   });
 

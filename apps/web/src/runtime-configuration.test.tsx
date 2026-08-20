@@ -47,6 +47,14 @@ describe("RuntimeConfigurationForm", () => {
     expect(screen.getByText(/OpenTag's 30-minute default/)).toBeTruthy();
   });
 
+  it("does not advertise configuration for unsupported Claude Code snapshots", () => {
+    render(<RuntimeConfigurationForm initialConfig={{ ...config, runtimeProvider: "claude-code" }} save={vi.fn()} />);
+
+    expect(screen.getByText(/Effective Runtime Snapshots currently support Codex only/)).toBeTruthy();
+    expect(screen.queryByLabelText("Model")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save Runtime settings" })).toBeNull();
+  });
+
   it("saves exact Provider values and converts seconds to API milliseconds", async () => {
     const save = vi.fn(async () => ({
       ...config,

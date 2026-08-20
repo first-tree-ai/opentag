@@ -33,7 +33,7 @@ import { FeishuSetup } from "./im/feishu-setup.js";
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
 
 type AgentAvailability = {
-  state: "ready" | "action_required" | "setting_up" | "not_connected" | "suspended";
+  state: "ready" | "action_required" | "setting_up" | "not_connected" | "suspended" | "unconfirmed";
   reason:
     | "agent_suspended"
     | "computer_offline"
@@ -43,21 +43,24 @@ type AgentAvailability = {
     | "im_reauthorization_required"
     | "im_error"
     | "handoff_unavailable"
+    | "computer_unconfirmed"
+    | "handoff_unconfirmed"
     | null;
   lastConfirmedAt: string | null;
   dependencies: {
-    computer: { state: "ready" | "action_required"; lastConfirmedAt: string | null };
-    runtime: { state: "ready" | "action_required"; lastConfirmedAt: string | null };
-    im: {
-      state: "ready" | "action_required" | "setting_up" | "not_connected";
+    computer: { state: "ready" | "action_required" | "unconfirmed"; lastConfirmedAt: string | null };
+    handoff: {
+      state: "ready" | "action_required" | "setting_up" | "not_connected" | "unconfirmed";
+      lastConfirmedAt: string | null;
+    };
+    channel: {
       provider: "feishu" | "slack" | null;
       botDisplayName: string | null;
-      lastConfirmedAt: string | null;
     };
   };
 };
 
-type AgentListItem = AgentSummary & { availability: AgentAvailability };
+type AgentListItem = AgentSummary & { computerState: TeamComputerSummary | undefined };
 type AgentDetailView = AgentDetail & { availability: AgentAvailability };
 
 function projectAgentAvailability(
@@ -65,34 +68,34 @@ function projectAgentAvailability(
   computer: TeamComputerSummary | undefined,
   binding: ImBindingSummary | undefined,
   handoff: ImBindingHandoffStatus | undefined,
+  evidenceConfirmed: boolean,
 ): AgentAvailability {
   const computerReady = computer?.connectionStatus === "online";
-  const runtimeReady = agent.runtimeProvider === "codex" && handoff?.handoffReady === true;
-  const imState = !binding
-    ? ("not_connected" as const)
-    : binding.bindingState === "provisioning"
-      ? ("setting_up" as const)
-      : binding.bindingState === "active" && handoff?.handoffReady
-        ? ("ready" as const)
-        : ("action_required" as const);
+  const handoffState = !evidenceConfirmed
+    ? ("unconfirmed" as const)
+    : !binding
+      ? ("not_connected" as const)
+      : binding.bindingState === "provisioning"
+        ? ("setting_up" as const)
+        : binding.bindingState === "active" && handoff?.handoffReady
+          ? ("ready" as const)
+          : ("action_required" as const);
   const dependencies: AgentAvailability["dependencies"] = {
     computer: {
-      state: computerReady ? "ready" : "action_required",
+      state: computer ? (computerReady ? "ready" : "action_required") : "unconfirmed",
       lastConfirmedAt: computer?.lastSeenAt ?? null,
     },
-    runtime: {
-      state: runtimeReady ? "ready" : "action_required",
-      lastConfirmedAt: runtimeReady ? (binding?.lastConfirmedAt ?? null) : null,
-    },
-    im: {
-      state: imState,
+    handoff: { state: handoffState, lastConfirmedAt: binding?.lastConfirmedAt ?? null },
+    channel: {
       provider: binding?.provider ?? null,
       botDisplayName: binding?.bot.displayName ?? null,
-      lastConfirmedAt: binding?.lastConfirmedAt ?? null,
     },
   };
   if (agent.status === "suspended") {
     return { state: "suspended", reason: "agent_suspended", lastConfirmedAt: agent.updatedAt, dependencies };
+  }
+  if (!computer) {
+    return { state: "unconfirmed", reason: "computer_unconfirmed", lastConfirmedAt: null, dependencies };
   }
   if (!computerReady) {
     return {
@@ -104,6 +107,9 @@ function projectAgentAvailability(
   }
   if (agent.runtimeProvider !== "codex") {
     return { state: "action_required", reason: "runtime_unavailable", lastConfirmedAt: null, dependencies };
+  }
+  if (!evidenceConfirmed) {
+    return { state: "unconfirmed", reason: "handoff_unconfirmed", lastConfirmedAt: null, dependencies };
   }
   if (!binding) return { state: "not_connected", reason: "im_not_connected", lastConfirmedAt: null, dependencies };
   if (binding.bindingState === "provisioning") {
@@ -137,35 +143,28 @@ function projectAgentAvailability(
 }
 
 async function loadAgentList(teamId: string): Promise<{ agents: AgentListItem[] }> {
-  const [{ agents }, { computers }] = await Promise.all([browserApi.agents(teamId), browserApi.computers(teamId)]);
+  const [{ agents }, computersResult] = await Promise.all([
+    browserApi.agents(teamId),
+    browserApi.computers(teamId).catch(() => ({ computers: [] })),
+  ]);
   return {
-    agents: await Promise.all(
-      agents.map(async (agent) => {
-        const [binding, handoff] = await Promise.all([
-          browserApi.imBinding(agent.id),
-          browserApi.imBindingHandoff(agent.id),
-        ]);
-        return {
-          ...agent,
-          availability: projectAgentAvailability(
-            agent,
-            computers.find((computer) => computer.id === agent.computer.id),
-            binding,
-            handoff,
-          ),
-        };
-      }),
-    ),
+    agents: agents.map((agent) => ({
+      ...agent,
+      computerState: computersResult.computers.find((computer) => computer.id === agent.computer.id),
+    })),
   };
 }
 
 async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
   const agent = await browserApi.agent(agentId);
-  const [{ computers }, binding, handoff] = await Promise.all([
+  const [computersResult, bindingResult, handoffResult] = await Promise.allSettled([
     browserApi.computers(agent.teamId),
     browserApi.imBinding(agent.id),
     browserApi.imBindingHandoff(agent.id),
   ]);
+  const computers = computersResult.status === "fulfilled" ? computersResult.value.computers : [];
+  const binding = bindingResult.status === "fulfilled" ? bindingResult.value : undefined;
+  const handoff = handoffResult.status === "fulfilled" ? handoffResult.value : undefined;
   return {
     ...agent,
     availability: projectAgentAvailability(
@@ -173,6 +172,7 @@ async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
       computers.find((computer) => computer.id === agent.computer.id),
       binding,
       handoff,
+      bindingResult.status === "fulfilled" && handoffResult.status === "fulfilled",
     ),
   };
 }
@@ -190,19 +190,28 @@ function useResource<T>(
   useEffect(() => {
     let active = true;
     let request = 0;
+    let inFlight = false;
     const activeKey = key;
     const load = (showLoading: boolean) => {
+      if (inFlight) return;
+      inFlight = true;
       const currentRequest = ++request;
       if (showLoading) setState({ kind: "loading" });
-      void loaderRef.current().then(
-        (value) =>
-          active && keyRef.current === activeKey && request === currentRequest && setState({ kind: "ready", value }),
-        (error: unknown) =>
-          active &&
-          keyRef.current === activeKey &&
-          request === currentRequest &&
-          setState({ kind: "error", error: error instanceof Error ? error : new Error(String(error)) }),
-      );
+      void loaderRef
+        .current()
+        .then(
+          (value) =>
+            active && keyRef.current === activeKey && request === currentRequest && setState({ kind: "ready", value }),
+          (error: unknown) =>
+            active &&
+            showLoading &&
+            keyRef.current === activeKey &&
+            request === currentRequest &&
+            setState({ kind: "error", error: error instanceof Error ? error : new Error(String(error)) }),
+        )
+        .finally(() => {
+          if (active && keyRef.current === activeKey && request === currentRequest) inFlight = false;
+        });
     };
     const revalidate = () => load(false);
     load(true);
@@ -781,28 +790,17 @@ function AgentsContent({ agents }: { agents: AgentListItem[] }) {
 }
 
 function AgentList({ agents }: { agents: AgentListItem[] }) {
-  const readyCount = agents.filter((agent) => agent.availability.state === "ready").length;
-  const attentionCount = agents.length - readyCount;
   return (
     <section className="agent-list-section" aria-label="Team Agents">
       <div className="agent-summary-strip">
         <span>
           <strong>{agents.length}</strong> Agents
         </span>
-        <span>
-          <i className="availability-dot ready" aria-hidden="true" />
-          <strong>{readyCount}</strong> Ready
-        </span>
-        <span>
-          <i className="availability-dot action-required" aria-hidden="true" />
-          <strong>{attentionCount}</strong> need attention
-        </span>
       </div>
       <div className="agent-table">
         <div className="agent-table-header" aria-hidden="true">
           <span>Agent</span>
-          <span>Availability</span>
-          <span>Channel</span>
+          <span>Status</span>
           <span>Runtime</span>
           <span />
         </div>
@@ -817,7 +815,23 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
 }
 
 function AgentRow({ agent }: { agent: AgentListItem }) {
-  const channelProvider = agent.availability.dependencies.im.provider;
+  const computerStatus = agent.computerState?.connectionStatus;
+  const status =
+    agent.status === "suspended"
+      ? { label: "Suspended", reason: "Agent is suspended", tone: "suspended" }
+      : computerStatus === "online"
+        ? {
+            label: "Computer online",
+            reason: lastConfirmedLabel(agent.computerState?.lastSeenAt ?? null),
+            tone: "ready",
+          }
+        : computerStatus === "offline"
+          ? {
+              label: "Computer offline",
+              reason: lastConfirmedLabel(agent.computerState?.lastSeenAt ?? null),
+              tone: "action-required",
+            }
+          : { label: "Unconfirmed", reason: "Unable to confirm Computer", tone: "unconfirmed" };
   return (
     <div className="agent-row">
       <Link aria-label={`Open ${agent.displayName}`} className="agent-row-link" to={`/agents/${agent.id}/general`} />
@@ -830,19 +844,12 @@ function AgentRow({ agent }: { agent: AgentListItem }) {
           <small>@{agent.name}</small>
         </span>
       </span>
-      <span className="cell-stack availability-cell" data-label="Availability">
+      <span className="cell-stack availability-cell" data-label="Status">
         <strong>
-          <i className={`availability-dot ${availabilityTone(agent.availability.state)}`} aria-hidden="true" />
-          {availabilityStateLabel(agent.availability.state)}
+          <i className={`availability-dot ${status.tone}`} aria-hidden="true" />
+          {status.label}
         </strong>
-        <small>{availabilityReasonLabel(agent.availability.reason)}</small>
-        <small title={agent.availability.lastConfirmedAt ?? undefined}>
-          {lastConfirmedLabel(agent.availability.lastConfirmedAt)}
-        </small>
-      </span>
-      <span className="cell-stack" data-label="Channel">
-        <strong>{channelProvider ? titleCase(channelProvider) : "Not connected"}</strong>
-        <small>{channelProvider ? receiveModeLabel(agent.receiveMode) : "Connect Feishu or Slack"}</small>
+        <small>{status.reason}</small>
       </span>
       <span className="cell-stack" data-label="Runtime">
         <strong>{providerLabel(agent.runtimeProvider)}</strong>
@@ -1079,27 +1086,14 @@ function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgent
             secondary={lastConfirmedLabel(agent.availability.dependencies.computer.lastConfirmedAt)}
           />
           <DependencyCard
-            title="Runtime"
-            state={agent.availability.dependencies.runtime.state}
-            primary={providerLabel(agent.runtimeProvider)}
-            secondary={
-              agent.availability.dependencies.runtime.state === "ready"
-                ? "Message tools available"
-                : "Runtime capability unavailable"
-            }
-          />
-          <DependencyCard
-            title="IM"
-            state={agent.availability.dependencies.im.state}
+            title="Handoff"
+            state={agent.availability.dependencies.handoff.state}
             primary={
-              agent.availability.dependencies.im.provider
-                ? titleCase(agent.availability.dependencies.im.provider)
-                : "Not connected"
+              agent.availability.dependencies.channel.provider
+                ? `${titleCase(agent.availability.dependencies.channel.provider)} · ${providerLabel(agent.runtimeProvider)}`
+                : providerLabel(agent.runtimeProvider)
             }
-            secondary={
-              agent.availability.dependencies.im.botDisplayName ??
-              lastConfirmedLabel(agent.availability.dependencies.im.lastConfirmedAt)
-            }
+            secondary={handoffDetailLabel(agent.availability.dependencies.handoff.state)}
           />
         </div>
       </section>
@@ -1110,7 +1104,7 @@ function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgent
         </div>
         <DefinitionList
           rows={[
-            ["Bot identity", agent.availability.dependencies.im.botDisplayName ?? `@${agent.name}`],
+            ["Bot identity", agent.availability.dependencies.channel.botDisplayName ?? `@${agent.name}`],
             ["Manager", agent.manager.displayName],
             ["Who can use", "Team members"],
           ]}
@@ -1142,7 +1136,7 @@ function DependencyCard({
   secondary,
 }: {
   title: string;
-  state: AgentAvailability["dependencies"]["im"]["state"];
+  state: AgentAvailability["dependencies"]["handoff"]["state"];
   primary: string;
   secondary: string;
 }) {
@@ -1400,10 +1394,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                       </div>
                       <div className="binding-status">
                         <div className="binding-status-main">
-                          <i
-                            className={`availability-dot ${availabilityTone(agent.availability.dependencies.im.state)}`}
-                            aria-hidden="true"
-                          />
+                          <i className={`availability-dot ${imBindingTone(binding)}`} aria-hidden="true" />
                           <span>
                             <strong>{binding.bot.displayName}</strong>
                             <small>
@@ -1551,6 +1542,13 @@ function imBindingStateLabel(binding: ImBindingSummary): string {
     error: "Needs attention",
     disabled: "Disabled",
   }[binding.bindingState];
+}
+
+function imBindingTone(binding: ImBindingSummary): string {
+  if (binding.bindingState === "active") return "ready";
+  if (binding.bindingState === "provisioning") return "setting-up";
+  if (binding.bindingState === "disabled") return "not-connected";
+  return "action-required";
 }
 
 function AccessTab({ agent }: { agent: AgentDetailView }) {
@@ -2198,6 +2196,7 @@ function availabilityTone(state: AgentAvailability["state"]): string {
   if (state === "setting_up") return "setting-up";
   if (state === "suspended") return "suspended";
   if (state === "not_connected") return "not-connected";
+  if (state === "unconfirmed") return "unconfirmed";
   return "action-required";
 }
 
@@ -2208,17 +2207,30 @@ function availabilityStateLabel(state: AgentAvailability["state"]): string {
     setting_up: "Setting up",
     not_connected: "Not connected",
     suspended: "Suspended",
+    unconfirmed: "Unable to confirm",
   } satisfies Record<AgentAvailability["state"], string>;
   return labels[state];
 }
 
-function dependencyStateLabel(state: AgentAvailability["dependencies"]["im"]["state"]): string {
+function dependencyStateLabel(state: AgentAvailability["dependencies"]["handoff"]["state"]): string {
   const labels = {
     ready: "Ready",
     action_required: "Needs attention",
     setting_up: "Setting up",
     not_connected: "Not connected",
-  } satisfies Record<AgentAvailability["dependencies"]["im"]["state"], string>;
+    unconfirmed: "Unable to confirm",
+  } satisfies Record<AgentAvailability["dependencies"]["handoff"]["state"], string>;
+  return labels[state];
+}
+
+function handoffDetailLabel(state: AgentAvailability["dependencies"]["handoff"]["state"]): string {
+  const labels = {
+    ready: "Ready to receive work",
+    action_required: "Handoff needs attention",
+    setting_up: "IM setup in progress",
+    not_connected: "No IM binding",
+    unconfirmed: "Unable to confirm handoff",
+  } satisfies Record<AgentAvailability["dependencies"]["handoff"]["state"], string>;
   return labels[state];
 }
 
@@ -2232,7 +2244,9 @@ function availabilityReasonLabel(reason: AgentAvailability["reason"]): string {
     im_provisioning: "IM connection is being prepared",
     im_reauthorization_required: "IM permissions need updating",
     im_error: "IM connection needs attention",
-    handoff_unavailable: "Unable to confirm runtime and IM handoff",
+    handoff_unavailable: "Handoff needs attention",
+    computer_unconfirmed: "Unable to confirm Computer",
+    handoff_unconfirmed: "Unable to confirm handoff",
   } satisfies Record<NonNullable<AgentAvailability["reason"]>, string>;
   return labels[reason];
 }

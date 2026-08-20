@@ -33,10 +33,14 @@ function json(value: unknown, status = 200) {
 function installApi(
   role: "admin" | "member",
   options: {
+    agentRead?: () => Promise<void> | void;
     alreadyJoinedInvitation?: boolean;
     bindingReauth?: boolean;
+    bindingEvidenceFails?: boolean;
     bound?: boolean;
+    computerEvidenceFails?: boolean;
     computerStatus?: () => "online" | "offline";
+    handoffReady?: boolean;
     initialStatus?: "active" | "suspended";
     invitationExists?: boolean;
     provider?: "feishu" | "slack";
@@ -250,6 +254,7 @@ function installApi(
       });
     }
     if (/^\/api\/v1\/teams\/[^/]+\/computers$/.test(path)) {
+      if (options.computerEvidenceFails) return json({ error: { message: "Computer evidence unavailable" } }, 503);
       return json({
         computers: [
           {
@@ -293,6 +298,7 @@ function installApi(
       }
       if (init?.method === "PATCH") return json(adminConfig());
       if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      await options.agentRead?.();
       return json({
         ...agentSummary,
         status: lifecycleStatus,
@@ -313,11 +319,13 @@ function installApi(
       return json(adminConfig());
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/handoff`) {
+      if (options.bindingEvidenceFails) return json({ error: { message: "Handoff evidence unavailable" } }, 503);
       if (!options.bound) return new Response(null, { status: 204 });
       const bindingState = options.bindingReauth ? "reauthorization_required" : "active";
-      return json({ bindingState, handoffReady: bindingState === "active" });
+      return json({ bindingState, handoffReady: options.handoffReady ?? bindingState === "active" });
     }
     if (path === `/api/v1/agents/${agentId}/im-binding`) {
+      if (options.bindingEvidenceFails) return json({ error: { message: "Binding evidence unavailable" } }, 503);
       if (!options.bound) return new Response(null, { status: 204 });
       return json({
         id: crypto.randomUUID(),
@@ -523,6 +531,71 @@ describe("OpenTag Web App Shell", () => {
 
     computerStatus = "offline";
     fireEvent(window, new Event("focus"));
+    expect(await screen.findByText("Computer is offline")).toBeTruthy();
+  });
+
+  it("keeps the Agent list bounded to Team-level evidence", async () => {
+    installApi("admin", { bound: true, computerEvidenceFails: true });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+
+    expect(await screen.findByText("Reviewer")).toBeTruthy();
+    expect(screen.getByText("Unconfirmed")).toBeTruthy();
+    expect(screen.getByText("Unable to confirm Computer")).toBeTruthy();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes(`/agents/${agentId}/im-binding`))).toBe(
+      false,
+    );
+  });
+
+  it("reports one combined handoff dependency without inventing component causes", async () => {
+    installApi("admin", { bound: true, handoffReady: false });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    const handoffCard = screen.getByText("Handoff").closest("article");
+    expect(handoffCard).toBeTruthy();
+    expect(within(handoffCard as HTMLElement).getByText("Needs attention")).toBeTruthy();
+    expect(within(handoffCard as HTMLElement).getByText("Handoff needs attention")).toBeTruthy();
+    expect(screen.queryByText("Runtime capability unavailable")).toBeNull();
+  });
+
+  it("preserves the Agent detail when handoff evidence cannot be confirmed", async () => {
+    installApi("admin", { bound: true, bindingEvidenceFails: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    expect((await screen.findAllByText("Unable to confirm handoff")).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("does not overlap focus refreshes while an Agent read is still pending", async () => {
+    let agentReads = 0;
+    let computerStatus: "online" | "offline" = "online";
+    let releaseAgentRead = () => {};
+    const pendingAgentRead = new Promise<void>((resolve) => {
+      releaseAgentRead = resolve;
+    });
+    installApi("admin", {
+      agentRead: () => {
+        agentReads += 1;
+        return agentReads === 1 ? undefined : pendingAgentRead;
+      },
+      bound: true,
+      computerStatus: () => computerStatus,
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+
+    computerStatus = "offline";
+    fireEvent(window, new Event("focus"));
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(agentReads).toBe(2));
+    expect(agentReads).toBe(2);
+
+    releaseAgentRead();
     expect(await screen.findByText("Computer is offline")).toBeTruthy();
   });
 

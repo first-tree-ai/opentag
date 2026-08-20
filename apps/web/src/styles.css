@@ -836,10 +836,7 @@ button.danger:hover {
 .agent-table-header,
 .agent-row {
   display: grid;
-  grid-template-columns: minmax(205px, 1.25fr) minmax(185px, 1fr) minmax(150px, 0.8fr) minmax(185px, 1fr) minmax(
-      76px,
-      auto
-    );
+  grid-template-columns: minmax(205px, 1.25fr) minmax(185px, 1fr) minmax(185px, 1fr) minmax(76px, auto);
   gap: 20px;
 }
 
@@ -981,7 +978,8 @@ button.danger:hover {
 }
 
 .availability-dot.not-connected,
-.availability-dot.suspended {
+.availability-dot.suspended,
+.availability-dot.unconfirmed {
   background: #848b82;
 }
 

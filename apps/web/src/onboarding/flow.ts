@@ -1,6 +1,7 @@
 import type {
   AgentRuntimeProvider,
   ComputerConnectionStatus,
+  ImBindingHandoffStatus,
   ImBindingState,
   MembershipRole,
 } from "@opentag/shared/browser";
@@ -34,10 +35,7 @@ type UnusableImBindingState = Exclude<ImBindingState, "active">;
  * `handoffReady` is the authoritative combined IM readiness fact. In
  * particular, an active binding is not necessarily a usable handoff.
  */
-export type OnboardingHandoff =
-  | { readonly bindingState: "active"; readonly handoffReady: true }
-  | { readonly bindingState: "active"; readonly handoffReady: false }
-  | { readonly bindingState: UnusableImBindingState; readonly handoffReady: false };
+export type OnboardingHandoff = Readonly<ImBindingHandoffStatus>;
 
 export interface OnboardingFacts {
   readonly team: OnboardingTeam | undefined;

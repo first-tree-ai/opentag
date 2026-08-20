@@ -9,6 +9,7 @@ import {
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
+  agentImBindingHandoffPath,
   agentImBindingPath,
   agentReactivatePath,
   agentSuspendPath,
@@ -26,6 +27,8 @@ import {
   ImBindingAdminDetailSchema,
   type ImBindingDiagnostics,
   ImBindingDiagnosticsSchema,
+  type ImBindingHandoffStatus,
+  ImBindingHandoffStatusSchema,
   type ImBindingSummary,
   ImBindingSummarySchema,
   type InvitationPreview,
@@ -170,6 +173,10 @@ export class BrowserApi {
 
   imBinding(agentId: string): Promise<ImBindingSummary | undefined> {
     return this.requestOptional(agentImBindingPath(agentId), ImBindingSummarySchema);
+  }
+
+  imBindingHandoff(agentId: string): Promise<ImBindingHandoffStatus | undefined> {
+    return this.requestOptional(agentImBindingHandoffPath(agentId), ImBindingHandoffStatusSchema);
   }
 
   imBindingConfig(agentId: string): Promise<ImBindingAdminDetail | undefined> {

@@ -1,6 +1,7 @@
 import {
   AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE,
   AGENT_IM_BINDING_CONFIG_TEMPLATE,
+  AGENT_IM_BINDING_HANDOFF_TEMPLATE,
   AGENT_IM_BINDING_TEMPLATE,
   CreateFeishuSetupAttemptRequestSchema,
   FEISHU_SETUP_ATTEMPT_TEMPLATE,
@@ -9,6 +10,7 @@ import {
   IM_BINDING_DIAGNOSTICS_TEMPLATE,
   ImBindingAdminDetailSchema,
   ImBindingDiagnosticsSchema,
+  ImBindingHandoffStatusSchema,
   ImBindingSummarySchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -42,6 +44,12 @@ export function registerImBindingRoutes(
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
     const imBinding = await imBindings.getForAgent(authenticatedUserId(request), agentId);
     return imBinding ? reply.code(200).send(ImBindingSummarySchema.parse(imBinding)) : reply.code(204).send();
+  });
+
+  app.get(AGENT_IM_BINDING_HANDOFF_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { agentId } = parseRequest(AgentParamsSchema, request.params);
+    const handoff = await imBindings.getHandoffForAgent(authenticatedUserId(request), agentId);
+    return handoff ? reply.code(200).send(ImBindingHandoffStatusSchema.parse(handoff)) : reply.code(204).send();
   });
 
   app.get(AGENT_IM_BINDING_CONFIG_TEMPLATE, { preHandler }, async (request, reply) => {

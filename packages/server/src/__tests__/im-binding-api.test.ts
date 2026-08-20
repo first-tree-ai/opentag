@@ -1,6 +1,7 @@
 import {
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
+  agentImBindingHandoffPath,
   agentImBindingPath,
   feishuSetupAttemptPath,
   imBindingDiagnosticsPath,
@@ -53,6 +54,7 @@ function authService(): UserAuthService {
 function services() {
   const imBindings = {
     getForAgent: vi.fn().mockResolvedValue(undefined),
+    getHandoffForAgent: vi.fn().mockResolvedValue({ bindingState: "active", handoffReady: false }),
     getConfigForAgent: vi.fn().mockResolvedValue(undefined),
     disable: vi.fn().mockResolvedValue(undefined),
     diagnostics: vi.fn().mockResolvedValue({
@@ -91,6 +93,14 @@ describe("ImBinding HTTP API", () => {
     expect(
       (await app.inject({ method: "GET", url: agentImBindingConfigPath(agentId), headers: authorization })).statusCode,
     ).toBe(204);
+    const handoff = await app.inject({
+      method: "GET",
+      url: agentImBindingHandoffPath(agentId),
+      headers: authorization,
+    });
+    expect(handoff.statusCode).toBe(200);
+    expect(handoff.json()).toEqual({ bindingState: "active", handoffReady: false });
+    expect(service.imBindings.getHandoffForAgent).toHaveBeenCalledWith(userId, agentId);
     const create = await app.inject({
       method: "POST",
       url: agentFeishuSetupAttemptsPath(agentId),
@@ -110,6 +120,7 @@ describe("ImBinding HTTP API", () => {
       (await app.inject({ method: "POST", url: imBindingDisablePath(imBindingId), headers: authorization })).statusCode,
     ).toBe(204);
     expect(service.imBindings.disable).toHaveBeenCalledWith(userId, imBindingId);
+    expect(JSON.stringify(handoff.json())).not.toMatch(/credential|identity|error|connection|secret/i);
     expect(JSON.stringify(create.json())).not.toContain("secret");
   });
 });

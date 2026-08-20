@@ -4,6 +4,7 @@ import {
   FEISHU_REQUIRED_TENANT_SCOPES,
   FeishuSetupAttemptSchema,
   hasRequiredFeishuTenantScopes,
+  ImBindingHandoffStatusSchema,
   ImBindingSummarySchema,
   SlackBindingActivationSchema,
 } from "../im-binding.js";
@@ -108,5 +109,37 @@ describe("IM binding contracts", () => {
     };
     expect(ImBindingSummarySchema.parse(base)).toEqual(base);
     expect(() => ImBindingSummarySchema.parse({ ...base, credentialGeneration: 1 })).toThrow();
+  });
+
+  it("defines a strict handoff projection without changing the strict summary contract", () => {
+    expect(ImBindingHandoffStatusSchema.parse({ bindingState: "active", handoffReady: true })).toEqual({
+      bindingState: "active",
+      handoffReady: true,
+    });
+    expect(
+      ImBindingHandoffStatusSchema.parse({ bindingState: "reauthorization_required", handoffReady: false }),
+    ).toEqual({ bindingState: "reauthorization_required", handoffReady: false });
+    expect(() => ImBindingHandoffStatusSchema.parse({ bindingState: "error", handoffReady: true })).toThrow();
+    expect(() =>
+      ImBindingHandoffStatusSchema.parse({
+        bindingState: "active",
+        handoffReady: false,
+        credentialGeneration: 1,
+      }),
+    ).toThrow();
+    expect(() =>
+      ImBindingSummarySchema.parse({
+        id: crypto.randomUUID(),
+        agentId: crypto.randomUUID(),
+        provider: "slack",
+        bindingState: "active",
+        bot: { displayName: null, avatarUrl: null },
+        receiveMode: "mention_only",
+        lastInboundAt: null,
+        lastOutboundAt: null,
+        lastConfirmedAt: null,
+        handoffReady: true,
+      }),
+    ).toThrow();
   });
 });

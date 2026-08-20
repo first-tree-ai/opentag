@@ -2596,7 +2596,7 @@ function InvitationSettings({
                 Invite link
                 <input aria-label="Invite link" readOnly type="url" value={invitation.inviteUrl} />
               </label>
-              <p className="muted">Expires {formatDate(invitation.expiresAt)}.</p>
+              <p className="muted">Expires {formatInviteExpiry(invitation.expiresAt)}.</p>
               <div className={presentation === "dialog" ? "actions dialog-actions" : "actions"}>
                 <button type="button" onClick={() => void copyInvitation(invitation.inviteUrl)}>
                   Copy link
@@ -2922,6 +2922,10 @@ function settingsSectionDescription(section: (typeof settingsSections)[number]["
 }
 
 function formatDate(value: string) {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+}
+
+function formatInviteExpiry(value: string) {
   const date = new Date(value);
   const day = new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(date);
   const time = new Intl.DateTimeFormat("en-US", { timeStyle: "short" }).format(date);

@@ -281,6 +281,19 @@ pre,
   outline: 0;
 }
 
+.team-switcher-action {
+  width: fit-content;
+  margin: -8px 10px 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 560;
+  text-decoration: none;
+}
+
+.team-switcher-action:hover {
+  color: var(--brand-ink);
+}
+
 .primary-nav,
 .sidebar-bottom {
   border-top: 1px solid var(--border);
@@ -355,7 +368,6 @@ pre,
 .app-main {
   min-width: 0;
 }
-
 .content {
   min-width: 0;
   padding: 42px clamp(24px, 4.2vw, 64px) 72px;

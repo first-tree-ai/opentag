@@ -1,4 +1,5 @@
 import {
+  HTTP_PATHS,
   invitationPreviewPath,
   teamByIdPath,
   teamInvitationPath,
@@ -49,6 +50,14 @@ function authService(): UserAuthService {
 
 function services() {
   const team = {
+    createTeam: vi.fn().mockResolvedValue({
+      id: teamId,
+      name: "first-tree",
+      displayName: "First Tree AI",
+      role: "admin",
+      createdAt: "2026-08-20T00:00:00.000Z",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+    }),
     updateTeamProfile: vi.fn().mockResolvedValue({
       id: teamId,
       name: "renamed-team",
@@ -118,6 +127,100 @@ describe("Team and invitation HTTP APIs", () => {
       name: "renamed-team",
       displayName: "Renamed Team",
     });
+  });
+
+  it("creates a Team through an authenticated POST and normalizes the canonical name", async () => {
+    const { app, team } = testApp();
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.teams,
+      headers: { authorization: "Bearer access" },
+      payload: { name: "  First-Tree  ", displayName: "  First Tree AI  " },
+    });
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toEqual({
+      id: teamId,
+      name: "first-tree",
+      displayName: "First Tree AI",
+      role: "admin",
+      createdAt: "2026-08-20T00:00:00.000Z",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+    });
+    expect(team.createTeam).toHaveBeenCalledWith(userId, { name: "first-tree", displayName: "First Tree AI" });
+  });
+
+  it("maps a canonical Team name collision to 409 instead of a server error", async () => {
+    const { app, team } = testApp();
+    team.createTeam.mockRejectedValueOnce(
+      new AuthServiceError("TEAM_NAME_CONFLICT", "deterministic", "Another Team already uses this canonical name", 409),
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.teams,
+      headers: { authorization: "Bearer access" },
+      payload: { name: "example", displayName: "Example" },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: { code: "TEAM_NAME_CONFLICT", message: "Another Team already uses this canonical name" },
+    });
+  });
+
+  it("maps an exhausted Team allowance to 409 with its own code", async () => {
+    const { app, team } = testApp();
+    team.createTeam.mockRejectedValueOnce(
+      new AuthServiceError(
+        "TEAM_LIMIT_REACHED",
+        "deterministic",
+        "A user can hold at most 50 active Team memberships",
+        409,
+      ),
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.teams,
+      headers: { authorization: "Bearer access" },
+      payload: { name: "one-too-many", displayName: "One Too Many" },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({
+      error: { code: "TEAM_LIMIT_REACHED", message: "A user can hold at most 50 active Team memberships" },
+    });
+  });
+
+  it("rejects unauthenticated and malformed Team creation without reaching the service", async () => {
+    const { app, team } = testApp();
+    expect(
+      (await app.inject({ method: "POST", url: HTTP_PATHS.teams, payload: { name: "a", displayName: "A" } }))
+        .statusCode,
+    ).toBe(401);
+    const invalid = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.teams,
+      headers: { authorization: "Bearer access" },
+      payload: { name: "not a slug", displayName: "Example" },
+    });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json()).toMatchObject({ error: { code: "VALIDATION_ERROR" } });
+    expect(team.createTeam).not.toHaveBeenCalled();
+  });
+
+  it("requires Origin and double-submit CSRF for cookie-authenticated Team creation", async () => {
+    const { app, team } = testApp();
+    const cookie = "opentag_access=access; opentag_csrf=csrf";
+    const payload = { name: "first-tree", displayName: "First Tree AI" };
+    expect((await app.inject({ method: "POST", url: HTTP_PATHS.teams, headers: { cookie }, payload })).statusCode).toBe(
+      403,
+    );
+    expect(team.createTeam).not.toHaveBeenCalled();
+    const accepted = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.teams,
+      headers: { cookie, origin: "https://opentag.example.com", "x-opentag-csrf": "csrf" },
+      payload,
+    });
+    expect(accepted.statusCode).toBe(201);
+    expect(team.createTeam).toHaveBeenCalledTimes(1);
   });
 
   it("preserves the Team Admin permission error at the HTTP boundary", async () => {

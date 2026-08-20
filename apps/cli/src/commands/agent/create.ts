@@ -1,4 +1,4 @@
-import type { Command } from "commander";
+import { type Command, Option } from "commander";
 import { formatAgentCreated } from "../../core/agent/formatting.js";
 import { runAgentCreate } from "../../core/agent/mutations.js";
 
@@ -10,6 +10,14 @@ export function registerAgentCreateCommand(agent: Command): void {
     .requiredOption("--provider <provider>", "runtime provider: codex or claude-code")
     .option("--computer <uuid>", "Computer owned by the current user")
     .option("--team <name>", "Team canonical name")
+    .option("--model <model>", "default runtime model")
+    .option("--reasoning-effort <effort>", "default runtime reasoning effort")
+    .addOption(new Option("--instructions <text>", "Agent runtime instructions").conflicts("instructionsFile"))
+    .addOption(
+      new Option("--instructions-file <path>", "read Agent instructions from a UTF-8 file").conflicts("instructions"),
+    )
+    .option("--allowed-tool <tool-id>", "allow an OpenTag runtime tool (repeatable)", collectValue)
+    .option("--max-duration-ms <integer>", "maximum runtime duration in milliseconds")
     .action(async (options) => {
       const result = await runAgentCreate({
         name: options.name,
@@ -17,8 +25,18 @@ export function registerAgentCreateCommand(agent: Command): void {
         runtimeProvider: options.provider,
         computerId: options.computer,
         teamName: options.team,
+        model: options.model,
+        reasoningEffort: options.reasoningEffort,
+        instructions: options.instructions,
+        instructionsFile: options.instructionsFile,
+        allowedTools: options.allowedTool,
+        maxDurationMs: options.maxDurationMs,
       });
       if (result.warning) process.stderr.write(`${result.warning}\n`);
       process.stdout.write(`${formatAgentCreated(result)}\n`);
     });
+}
+
+function collectValue(value: string, previous: string[] | undefined): string[] {
+  return [...(previous ?? []), value];
 }

@@ -1,18 +1,18 @@
 import { randomUUID } from "node:crypto";
 import {
+  computeDirectInputHash,
   type DirectImMessageDeliveryRequest,
   DirectImMessageDeliveryRequestSchema,
   type EffectiveRuntimeSnapshot,
-  OPENTAG_PLATFORM_INSTRUCTIONS,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_IM_HISTORY_MAX_BYTES,
   RUNTIME_MAX_FRAME_BYTES,
   runtimeFrameByteLength,
 } from "@opentag/shared";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, or, sql } from "drizzle-orm";
-import type { DatabaseClient } from "../db/client.js";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, like, lt, lte, ne, notExists, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
+import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
-  agentRuntimeConfigs,
   agents,
   computers,
   imMessageDeliveries,
@@ -21,17 +21,33 @@ import {
   sessionPlacements,
   sessions,
 } from "../db/schema/index.js";
+import {
+  type EffectiveRuntimeSnapshotAssembler,
+  EffectiveRuntimeSnapshotAssemblerError,
+} from "../services/runtime-config/index.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
 import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
 
 const DEFAULT_INTERVAL_MS = 500;
 const RETRY_DELAY_MS = 2_000;
+const CLAIM_LEASE_MS = 15_000;
+const CLAIM_RENEW_MS = 5_000;
+// This durable marker bridges the transaction-to-runtime gap. The advisory lock
+// serializes competing claims; the marker keeps later transactions fenced after commit.
+const DISPATCH_CLAIM_PREFIX = "IM_DELIVERY_CLAIM_";
+const acceptedDeliveries = alias(imMessageDeliveries, "agent_accepted_deliveries");
+const acceptedSessions = alias(sessions, "agent_accepted_sessions");
+const acceptedIntegrations = alias(integrations, "agent_accepted_integrations");
+const acceptedAgents = alias(agents, "agent_accepted_agents");
 
 export class ImDeliveryWorker {
   readonly #database: DatabaseClient;
   readonly #domain: RuntimeDomainOwner;
+  readonly #assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
   readonly #registry: ConnectionRegistry;
   readonly #intervalMs: number;
+  readonly #claimLeaseMs: number;
+  readonly #claimRenewMs: number;
   readonly #onDiagnostic: (code: string) => void;
   #timer?: ReturnType<typeof setInterval>;
   #running = false;
@@ -39,14 +55,20 @@ export class ImDeliveryWorker {
   constructor(input: {
     database: DatabaseClient;
     domain: RuntimeDomainOwner;
+    assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
     registry: ConnectionRegistry;
     intervalMs?: number;
+    claimLeaseMs?: number;
+    claimRenewMs?: number;
     onDiagnostic?: (code: string) => void;
   }) {
     this.#database = input.database;
     this.#domain = input.domain;
+    this.#assembler = input.assembler;
     this.#registry = input.registry;
     this.#intervalMs = input.intervalMs ?? DEFAULT_INTERVAL_MS;
+    this.#claimLeaseMs = input.claimLeaseMs ?? CLAIM_LEASE_MS;
+    this.#claimRenewMs = input.claimRenewMs ?? CLAIM_RENEW_MS;
     this.#onDiagnostic = input.onDiagnostic ?? (() => undefined);
   }
 
@@ -68,7 +90,7 @@ export class ImDeliveryWorker {
     try {
       const claimed = await this.#claim();
       if (claimed) {
-        if (claimed.kind === "pending") await this.#deliver(claimed.id);
+        if (claimed.kind === "pending") await this.#deliver(claimed.id, claimed.claimToken);
         else await this.#recover(claimed.id);
       }
     } finally {
@@ -80,7 +102,9 @@ export class ImDeliveryWorker {
     void this.runOnce().catch(() => this.#onDiagnostic("IM_DELIVERY_WORKER_SCHEDULING_FAILED"));
   }
 
-  async #claim(): Promise<{ id: string; kind: "pending" | "recovery" } | undefined> {
+  async #claim(): Promise<
+    { id: string; kind: "pending"; claimToken: string } | { id: string; kind: "recovery" } | undefined
+  > {
     return this.#database.transaction(async (transaction) => {
       const now = new Date();
       await transaction
@@ -99,28 +123,60 @@ export class ImDeliveryWorker {
           state: imMessageDeliveries.state,
           deliveryGeneration: imMessageDeliveries.placementGeneration,
           dispatchRequestId: imMessageDeliveries.dispatchRequestId,
+          dispatchInputHash: imMessageDeliveries.dispatchInputHash,
           dispatchPayload: imMessageDeliveries.dispatchPayload,
           generation: sessionPlacements.generation,
+          agentId: integrations.agentId,
         })
         .from(imMessageDeliveries)
         .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
+        .innerJoin(agents, eq(agents.id, integrations.agentId))
         .where(
-          or(
-            and(
-              eq(imMessageDeliveries.state, "pending"),
-              isNull(imMessageDeliveries.reason),
-              lte(imMessageDeliveries.nextAttemptAt, now),
-              sql`${imMessageDeliveries.expiresAt} > now()`,
-            ),
-            and(
-              eq(imMessageDeliveries.state, "expired"),
-              isNotNull(imMessageDeliveries.dispatchRequestId),
-              lte(imMessageDeliveries.nextAttemptAt, now),
-            ),
-            and(
-              eq(imMessageDeliveries.state, "accepted"),
-              isNull(imMessageDeliveries.reportedAt),
-              lte(imMessageDeliveries.nextAttemptAt, now),
+          and(
+            isNull(sessions.endedAt),
+            eq(integrations.status, "active"),
+            isNull(agents.deletedAt),
+            or(
+              and(
+                or(
+                  and(
+                    eq(imMessageDeliveries.state, "pending"),
+                    isNull(imMessageDeliveries.reason),
+                    lte(imMessageDeliveries.nextAttemptAt, now),
+                    sql`${imMessageDeliveries.expiresAt} > now()`,
+                  ),
+                  and(
+                    eq(imMessageDeliveries.state, "expired"),
+                    isNotNull(imMessageDeliveries.dispatchRequestId),
+                    lte(imMessageDeliveries.nextAttemptAt, now),
+                  ),
+                ),
+                notExists(
+                  transaction
+                    .select({ id: acceptedDeliveries.id })
+                    .from(acceptedDeliveries)
+                    .innerJoin(acceptedSessions, eq(acceptedSessions.id, acceptedDeliveries.sessionId))
+                    .innerJoin(acceptedIntegrations, eq(acceptedIntegrations.id, acceptedSessions.integrationId))
+                    .innerJoin(acceptedAgents, eq(acceptedAgents.id, acceptedIntegrations.agentId))
+                    .where(
+                      and(
+                        eq(acceptedIntegrations.agentId, integrations.agentId),
+                        ne(acceptedDeliveries.id, imMessageDeliveries.id),
+                        isNull(acceptedSessions.endedAt),
+                        eq(acceptedIntegrations.status, "active"),
+                        isNull(acceptedAgents.deletedAt),
+                        uncertainAgentCustody(acceptedDeliveries),
+                      ),
+                    ),
+                ),
+              ),
+              and(
+                eq(imMessageDeliveries.state, "accepted"),
+                isNull(imMessageDeliveries.reportedAt),
+                lte(imMessageDeliveries.nextAttemptAt, now),
+              ),
             ),
           ),
         )
@@ -128,6 +184,12 @@ export class ImDeliveryWorker {
         .limit(1)
         .for("update", { of: imMessageDeliveries, skipLocked: true });
       if (!row) return undefined;
+      await transaction.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${`im-agent-custody:${row.agentId}`}, 0))`,
+      );
+      if (row.state !== "accepted" && (await hasOtherAgentCustody(transaction, row.agentId, row.id))) {
+        return undefined;
+      }
       if (row.state === "accepted") {
         await transaction
           .update(imMessageDeliveries)
@@ -145,8 +207,7 @@ export class ImDeliveryWorker {
       const staleCorrelation =
         row.dispatchRequestId !== null &&
         (row.deliveryGeneration !== row.generation ||
-          !persistedRequest?.success ||
-          persistedRequest.data.placementGeneration !== row.generation);
+          (persistedRequest?.success && persistedRequest.data.placementGeneration !== row.generation));
       if (staleCorrelation) {
         await transaction
           .update(imMessageDeliveries)
@@ -157,20 +218,30 @@ export class ImDeliveryWorker {
           .where(eq(imMessageDeliveries.id, row.id));
         return undefined;
       }
+      const claimToken = dispatchClaimToken();
       await transaction
         .update(imMessageDeliveries)
         .set({
           attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
           ...(row.state === "pending" ? { placementGeneration: row.generation } : {}),
-          nextAttemptAt: new Date(now.getTime() + RETRY_DELAY_MS),
-          lastErrorCode: null,
+          nextAttemptAt: new Date(now.getTime() + this.#claimLeaseMs),
+          lastErrorCode: claimToken,
         })
         .where(eq(imMessageDeliveries.id, row.id));
-      return { id: row.id, kind: "pending" as const };
+      return { id: row.id, kind: "pending" as const, claimToken };
     });
   }
 
-  async #deliver(deliveryId: string): Promise<void> {
+  async #deliver(deliveryId: string, claimToken: string): Promise<void> {
+    const lease = this.#maintainClaimLease(deliveryId, claimToken);
+    try {
+      await this.#deliverClaimed(deliveryId, claimToken, lease);
+    } finally {
+      await lease.stop();
+    }
+  }
+
+  async #deliverClaimed(deliveryId: string, claimToken: string, lease: ClaimLease): Promise<void> {
     const [row] = await this.#database
       .select({
         delivery: imMessageDeliveries,
@@ -179,7 +250,6 @@ export class ImDeliveryWorker {
         placement: sessionPlacements,
         integration: integrations,
         agent: agents,
-        runtimeConfig: agentRuntimeConfigs,
         computer: computers,
       })
       .from(imMessageDeliveries)
@@ -188,7 +258,6 @@ export class ImDeliveryWorker {
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
       .innerJoin(agents, eq(agents.id, integrations.agentId))
-      .innerJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
       .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(
         and(
@@ -203,26 +272,47 @@ export class ImDeliveryWorker {
         ),
       )
       .limit(1);
-    if (!row) return;
+    if (!row) {
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_AUTHORITY_UNAVAILABLE", claimToken);
+      return;
+    }
     if (row.delivery.placementGeneration !== row.placement.generation) {
-      await this.#recordFailure(deliveryId, "IM_DELIVERY_PLACEMENT_STALE");
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_PLACEMENT_STALE", claimToken);
       return;
     }
     const instanceId = this.#registry.currentInstanceId(row.placement.computerId);
     if (!instanceId || row.computer.currentInstanceId !== instanceId) {
-      await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_UNAVAILABLE");
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_UNAVAILABLE", claimToken);
       return;
     }
-    if (row.agent.runtimeProvider !== "codex") {
-      await this.#reject(deliveryId, "configuration_unsupported");
-      return;
-    }
-    const persistedRequest = row.delivery.dispatchPayload
-      ? DirectImMessageDeliveryRequestSchema.parse(row.delivery.dispatchPayload)
+    const parsedPersistedRequest = row.delivery.dispatchPayload
+      ? DirectImMessageDeliveryRequestSchema.safeParse(row.delivery.dispatchPayload)
       : undefined;
+    if (
+      parsedPersistedRequest &&
+      (!parsedPersistedRequest.success ||
+        parsedPersistedRequest.data.deliveryId !== row.delivery.id ||
+        parsedPersistedRequest.data.imMessageId !== row.message.id ||
+        parsedPersistedRequest.data.sessionId !== row.session.id ||
+        parsedPersistedRequest.data.agentId !== row.agent.id ||
+        parsedPersistedRequest.data.placementGeneration !== row.placement.generation ||
+        parsedPersistedRequest.data.requestId !== row.delivery.dispatchRequestId ||
+        computeDirectInputHash(parsedPersistedRequest.data) !== row.delivery.dispatchInputHash)
+    ) {
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_DISPATCH_PAYLOAD_INVALID", claimToken);
+      return;
+    }
+    const persistedRequest = parsedPersistedRequest?.data;
     const runtime =
-      persistedRequest?.runtime ??
-      runtimeSnapshot(row.agent.id, row.runtimeConfig, row.session.id, row.session.revision);
+      persistedRequest?.runtime ?? (await this.#assembleRuntime(deliveryId, row.session.id, "delivery", claimToken));
+    if (!runtime) return;
+    // A late acceptance may commit after this delivery was claimed. Recheck at
+    // the last boundary before any reconcile or delivery frame reaches runtime.
+    if (await hasOtherAgentCustody(this.#database, row.agent.id, deliveryId)) {
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_AGENT_CUSTODY_FENCED", claimToken);
+      return;
+    }
+    if (!(await lease.assertOwned())) return;
     try {
       const reconcile = await this.#domain.requestReconcile(row.placement.computerId, instanceId, {
         type: "session:reconcile",
@@ -242,25 +332,32 @@ export class ImDeliveryWorker {
       if (!currentDelivery || currentDelivery.state === "accepted" || currentDelivery.state === "terminal_rejected") {
         return;
       }
+      if (!(await lease.assertOwned())) return;
       if (reconcile.status !== "ready") {
         await this.#recordFailure(
           deliveryId,
           reconcile.status === "rejected" ? "IM_DELIVERY_RECONCILE_REJECTED" : "IM_DELIVERY_RECONCILE_NOT_READY",
+          claimToken,
         );
         return;
       }
       if (reconcile.retainedReports?.some((claim) => claim.deliveryId === deliveryId)) {
-        await this.#recordFailure(deliveryId, "IM_DELIVERY_RETAINED_CUSTODY_CONFLICT");
+        await this.#recordFailure(deliveryId, "IM_DELIVERY_RETAINED_CUSTODY_CONFLICT", claimToken);
         return;
       }
       if (currentDelivery.state === "expired") {
         if (persistedRequest) {
-          await this.#releaseDispatch(deliveryId, persistedRequest.requestId, "IM_DELIVERY_EXPIRED");
+          await this.#releaseDispatch(deliveryId, persistedRequest.requestId, "IM_DELIVERY_EXPIRED", claimToken);
         }
         return;
       }
       if (persistedRequest) {
-        await this.#releaseDispatch(deliveryId, persistedRequest.requestId, "IM_DELIVERY_RECONCILED_NO_CUSTODY");
+        await this.#releaseDispatch(
+          deliveryId,
+          persistedRequest.requestId,
+          "IM_DELIVERY_RECONCILED_NO_CUSTODY",
+          claimToken,
+        );
         return;
       }
       const resources = row.message.content.resources ?? [];
@@ -302,17 +399,18 @@ export class ImDeliveryWorker {
         deadlineAt: row.delivery.expiresAt.toISOString(),
       };
       fitDeliveryFrame(request);
+      if (!(await lease.assertOwned())) return;
       const result = await this.#domain.requestDelivery(row.placement.computerId, instanceId, request);
       if (
         result.status === "rejected" &&
         ["configuration_unsupported", "invalid_input"].includes(result.reason ?? "")
       ) {
-        await this.#reject(deliveryId, result.reason ?? "terminal_rejected");
+        await this.#reject(deliveryId, result.reason ?? "terminal_rejected", claimToken);
       } else if (result.status === "rejected") {
-        await this.#releaseDispatch(deliveryId, request.requestId, "IM_DELIVERY_RUNTIME_REJECTED");
+        await this.#releaseDispatch(deliveryId, request.requestId, "IM_DELIVERY_RUNTIME_REJECTED", claimToken);
       }
     } catch {
-      await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_FAILED");
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_FAILED", claimToken);
     }
   }
 
@@ -324,7 +422,6 @@ export class ImDeliveryWorker {
         placement: sessionPlacements,
         integration: integrations,
         agent: agents,
-        runtimeConfig: agentRuntimeConfigs,
         computer: computers,
       })
       .from(imMessageDeliveries)
@@ -332,7 +429,6 @@ export class ImDeliveryWorker {
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
       .innerJoin(agents, eq(agents.id, integrations.agentId))
-      .innerJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
       .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(
         and(
@@ -355,6 +451,30 @@ export class ImDeliveryWorker {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_UNAVAILABLE");
       return;
     }
+    let runtime: EffectiveRuntimeSnapshot | undefined;
+    if (row.delivery.dispatchPayload !== null) {
+      const pinned = DirectImMessageDeliveryRequestSchema.safeParse(row.delivery.dispatchPayload);
+      const pinnedInputHash = pinned.success ? computeDirectInputHash(pinned.data) : undefined;
+      if (
+        !pinned.success ||
+        pinned.data.deliveryId !== row.delivery.id ||
+        pinned.data.imMessageId !== row.delivery.messageId ||
+        pinned.data.sessionId !== row.session.id ||
+        pinned.data.agentId !== row.agent.id ||
+        pinned.data.placementGeneration !== row.placement.generation ||
+        pinned.data.requestId !== row.delivery.dispatchRequestId ||
+        pinnedInputHash !== row.delivery.dispatchInputHash ||
+        pinnedInputHash !== row.delivery.inputHash
+      ) {
+        await this.#recordFailure(deliveryId, "IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
+        return;
+      }
+      runtime = pinned.data.runtime;
+    } else {
+      this.#onDiagnostic("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
+      runtime = await this.#assembleRuntime(deliveryId, row.session.id, "recovery");
+    }
+    if (!runtime) return;
     try {
       await this.#domain.requestReconcile(row.placement.computerId, instanceId, {
         type: "session:reconcile",
@@ -364,43 +484,85 @@ export class ImDeliveryWorker {
         agentId: row.agent.id,
         placementGeneration: row.placement.generation,
         desired: "ready",
-        runtime: runtimeSnapshot(row.agent.id, row.runtimeConfig, row.session.id, row.session.revision),
+        runtime,
       });
     } catch {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RECOVERY_FAILED");
     }
   }
 
-  async #recordFailure(deliveryId: string, code: string): Promise<void> {
+  async #assembleRuntime(
+    deliveryId: string,
+    sessionId: string,
+    mode: "delivery" | "recovery",
+    claimToken?: string,
+  ): Promise<EffectiveRuntimeSnapshot | undefined> {
+    try {
+      return await this.#assembler.assembleForSession(sessionId);
+    } catch (error) {
+      const code = error instanceof EffectiveRuntimeSnapshotAssemblerError ? error.code : "DATABASE_FAILURE";
+      if (
+        mode === "delivery" &&
+        ["UNSUPPORTED_PROVIDER", "RUNTIME_CONFIG_MISSING", "INVALID_STORED_CONFIG", "SNAPSHOT_INVALID"].includes(code)
+      ) {
+        await this.#reject(
+          deliveryId,
+          code === "UNSUPPORTED_PROVIDER" ? "configuration_unsupported" : "invalid_input",
+          claimToken,
+        );
+        return undefined;
+      }
+      await this.#recordFailure(
+        deliveryId,
+        code === "DATABASE_FAILURE"
+          ? "IM_DELIVERY_RUNTIME_AUTHORITY_FAILED"
+          : "IM_DELIVERY_RUNTIME_AUTHORITY_UNAVAILABLE",
+        claimToken,
+      );
+      return undefined;
+    }
+  }
+
+  async #recordFailure(deliveryId: string, code: string, claimToken?: string): Promise<void> {
     const bounded = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/.test(code) ? code : "IM_DELIVERY_FAILED";
-    await this.#database
+    const [updated] = await this.#database
       .update(imMessageDeliveries)
-      .set({ lastErrorCode: bounded })
+      .set({ lastErrorCode: bounded, ...(claimToken ? { nextAttemptAt: new Date(Date.now() + RETRY_DELAY_MS) } : {}) })
       .where(
         and(
           eq(imMessageDeliveries.id, deliveryId),
           sql`${imMessageDeliveries.state} in ('pending', 'accepted', 'expired')`,
+          ...(claimToken ? [eq(imMessageDeliveries.lastErrorCode, claimToken)] : []),
         ),
-      );
-    this.#onDiagnostic(bounded);
+      )
+      .returning({ id: imMessageDeliveries.id });
+    if (updated) this.#onDiagnostic(bounded);
   }
 
-  async #releaseDispatch(deliveryId: string, requestId: string, code: string): Promise<void> {
+  async #releaseDispatch(deliveryId: string, requestId: string, code: string, claimToken: string): Promise<void> {
     const bounded = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/.test(code) ? code : "IM_DELIVERY_FAILED";
-    await this.#database
+    const [released] = await this.#database
       .update(imMessageDeliveries)
-      .set({ dispatchRequestId: null, dispatchInputHash: null, dispatchPayload: null, lastErrorCode: bounded })
+      .set({
+        dispatchRequestId: null,
+        dispatchInputHash: null,
+        dispatchPayload: null,
+        lastErrorCode: bounded,
+        nextAttemptAt: new Date(Date.now() + RETRY_DELAY_MS),
+      })
       .where(
         and(
           eq(imMessageDeliveries.id, deliveryId),
           inArray(imMessageDeliveries.state, ["pending", "expired"]),
           eq(imMessageDeliveries.dispatchRequestId, requestId),
+          eq(imMessageDeliveries.lastErrorCode, claimToken),
         ),
-      );
-    this.#onDiagnostic(bounded);
+      )
+      .returning({ id: imMessageDeliveries.id });
+    if (released) this.#onDiagnostic(bounded);
   }
 
-  async #reject(deliveryId: string, reason: string): Promise<void> {
+  async #reject(deliveryId: string, reason: string, claimToken?: string): Promise<void> {
     await this.#database
       .update(imMessageDeliveries)
       .set({
@@ -411,7 +573,70 @@ export class ImDeliveryWorker {
         reason: reason.slice(0, 120),
         lastErrorCode: "IM_DELIVERY_TERMINAL",
       })
-      .where(and(eq(imMessageDeliveries.id, deliveryId), eq(imMessageDeliveries.state, "pending")));
+      .where(
+        and(
+          eq(imMessageDeliveries.id, deliveryId),
+          eq(imMessageDeliveries.state, "pending"),
+          ...(claimToken ? [eq(imMessageDeliveries.lastErrorCode, claimToken)] : []),
+        ),
+      );
+  }
+
+  #maintainClaimLease(deliveryId: string, claimToken: string): ClaimLease {
+    let active = true;
+    let lost = false;
+    let renewal = Promise.resolve();
+    const renew = () => {
+      renewal = renewal
+        .then(async () => {
+          if (!active || lost) return;
+          lost = !(await this.#renewClaim(deliveryId, claimToken));
+        })
+        .catch(() => {
+          lost = true;
+        });
+    };
+    const timer = setInterval(renew, this.#claimRenewMs);
+    timer.unref();
+    return {
+      assertOwned: async () => {
+        await renewal;
+        if (lost) return false;
+        const [owned] = await this.#database
+          .select({ id: imMessageDeliveries.id })
+          .from(imMessageDeliveries)
+          .where(
+            and(
+              eq(imMessageDeliveries.id, deliveryId),
+              inArray(imMessageDeliveries.state, ["pending", "expired"]),
+              eq(imMessageDeliveries.lastErrorCode, claimToken),
+            ),
+          )
+          .limit(1);
+        if (!owned) lost = true;
+        return !lost;
+      },
+      stop: async () => {
+        active = false;
+        clearInterval(timer);
+        await renewal;
+      },
+    };
+  }
+
+  async #renewClaim(deliveryId: string, claimToken: string): Promise<boolean> {
+    const [renewed] = await this.#database
+      .update(imMessageDeliveries)
+      .set({ nextAttemptAt: new Date(Date.now() + this.#claimLeaseMs) })
+      .where(
+        and(
+          eq(imMessageDeliveries.id, deliveryId),
+          inArray(imMessageDeliveries.state, ["pending", "expired"]),
+          eq(imMessageDeliveries.lastErrorCode, claimToken),
+        ),
+      )
+      .returning({ id: imMessageDeliveries.id });
+    return renewed !== undefined;
   }
 
   async #history(
@@ -479,6 +704,46 @@ export class ImDeliveryWorker {
   }
 }
 
+type CustodyQuery = Pick<DatabaseClient | DatabaseTransaction, "select">;
+
+interface ClaimLease {
+  assertOwned(): Promise<boolean>;
+  stop(): Promise<void>;
+}
+
+async function hasOtherAgentCustody(database: CustodyQuery, agentId: string, deliveryId: string): Promise<boolean> {
+  const [row] = await database
+    .select({ id: imMessageDeliveries.id })
+    .from(imMessageDeliveries)
+    .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+    .innerJoin(integrations, eq(integrations.id, sessions.integrationId))
+    .innerJoin(agents, eq(agents.id, integrations.agentId))
+    .where(
+      and(
+        eq(integrations.agentId, agentId),
+        ne(imMessageDeliveries.id, deliveryId),
+        isNull(sessions.endedAt),
+        eq(integrations.status, "active"),
+        isNull(agents.deletedAt),
+        uncertainAgentCustody(imMessageDeliveries),
+      ),
+    )
+    .limit(1);
+  return row !== undefined;
+}
+
+function uncertainAgentCustody(delivery: typeof imMessageDeliveries | typeof acceptedDeliveries) {
+  return or(
+    and(eq(delivery.state, "accepted"), isNull(delivery.reportedAt)),
+    and(inArray(delivery.state, ["pending", "expired"]), isNotNull(delivery.dispatchRequestId)),
+    and(eq(delivery.state, "pending"), like(delivery.lastErrorCode, `${DISPATCH_CLAIM_PREFIX}%`)),
+  );
+}
+
+function dispatchClaimToken(): string {
+  return `${DISPATCH_CLAIM_PREFIX}${randomUUID().replaceAll("-", "").toUpperCase()}`;
+}
+
 function messageBefore(occurredAt: Date, providerRevisionKey: string, messageId: string) {
   return or(
     lt(imMessages.occurredAt, occurredAt),
@@ -503,32 +768,6 @@ function messageAfter(occurredAt: Date, providerRevisionKey: string, messageId: 
       ),
     ),
   );
-}
-
-function runtimeSnapshot(
-  agentId: string,
-  config: typeof agentRuntimeConfigs.$inferSelect,
-  sessionId: string,
-  sessionRevision: number,
-): EffectiveRuntimeSnapshot {
-  return {
-    revision: {
-      agent: { sequence: config.revision, id: agentId },
-      session: { sequence: sessionRevision, id: sessionId },
-    },
-    agentId,
-    provider: "codex",
-    ...(config.model ? { model: config.model } : {}),
-    ...(config.reasoningEffort ? { reasoningEffort: config.reasoningEffort } : {}),
-    instructions: {
-      platform: OPENTAG_PLATFORM_INSTRUCTIONS,
-      agent: config.instructions,
-    },
-    allowedTools: config.allowedTools,
-    execution: { approvalPolicy: "never", networkAccess: false },
-    ...(config.maxDurationMs ? { budget: { maxDurationMs: config.maxDurationMs } } : {}),
-    workspace: { workspaceId: agentId, mode: "empty_on_create", sharing: "agent" },
-  };
 }
 
 function truncateUtf8(value: string, maxBytes: number): string {

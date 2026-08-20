@@ -9,7 +9,10 @@ import {
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   type NormalizedInboundImEvent,
+  type SessionReconcileRequest,
+  type SessionReconcileResult,
   type TurnReportRequest,
+  type UpdateAgentRequest,
 } from "@opentag/shared";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq } from "drizzle-orm";
@@ -48,6 +51,7 @@ import {
   IntegrationService,
   ProviderAdapterResolutionError,
 } from "../../services/integrations/index.js";
+import { EffectiveRuntimeSnapshotAssembler } from "../../services/runtime-config/index.js";
 import { SessionService } from "../../services/sessions/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
@@ -185,6 +189,13 @@ async function unboundFixture() {
   return { ...client, agent, bootstrap, computer, cipher, integrationService };
 }
 
+function imDeliveryWorker(input: Omit<ConstructorParameters<typeof ImDeliveryWorker>[0], "assembler">) {
+  return new ImDeliveryWorker({
+    ...input,
+    assembler: new EffectiveRuntimeSnapshotAssembler(input.database),
+  });
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -250,6 +261,28 @@ async function createClientSessionBindingStore(home: string) {
   return new module.SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
 }
 
+async function createDurableClientReconciler(home: string, computerId: string) {
+  const bindingStore = await createClientSessionBindingStore(home);
+  const workspaceModuleUrl = new URL("../../../../client/src/runtime/agent-workspace.ts", import.meta.url).href;
+  const reconcilerModuleUrl = new URL("../../../../client/src/runtime/session-reconciler.ts", import.meta.url).href;
+  const workspaceModule = (await import(workspaceModuleUrl)) as {
+    AgentWorkspaceManager: new (options: { bindingStore: typeof bindingStore; home: string }) => object;
+  };
+  const reconcilerModule = (await import(reconcilerModuleUrl)) as {
+    SessionReconciler: new (options: {
+      computerId: string;
+      preparation: object;
+    }) => {
+      clearRecovery: (sessionId: string, turnId: string) => boolean;
+      getAgent: (agentId: string) => { revisionSequence: number } | undefined;
+      reconcile: (request: SessionReconcileRequest) => Promise<SessionReconcileResult>;
+    };
+  };
+  const workspace = new workspaceModule.AgentWorkspaceManager({ bindingStore, home });
+  const reconciler = new reconcilerModule.SessionReconciler({ computerId, preparation: workspace });
+  return { bindingStore, reconciler };
+}
+
 async function respondingRuntime(input: {
   acceptDeliveries?: boolean;
   database: ReturnType<typeof createDatabaseClient>["database"];
@@ -257,7 +290,7 @@ async function respondingRuntime(input: {
   deliveryGate?: Promise<void>;
   instanceId: string;
   requestTimeoutMs?: number;
-  reconcileResult?: (frame: Record<string, unknown>) => Record<string, unknown>;
+  reconcileResult?: (frame: Record<string, unknown>) => Promise<Record<string, unknown>> | Record<string, unknown>;
   userId: string;
 }) {
   const frames: unknown[] = [];
@@ -278,20 +311,20 @@ async function respondingRuntime(input: {
       frames.push(frame);
       callback();
       queueMicrotask(() => {
-        if (frame.type === "session:reconcile") {
-          void domain.handle(
-            (input.reconcileResult?.(frame) ?? {
-              type: "session:reconcile:result",
-              requestId: frame.requestId,
-              sessionId: frame.sessionId,
-              placementGeneration: frame.placementGeneration,
-              status: "ready",
-            }) as never,
-            context,
-          );
-        } else if (frame.type === "im:deliver") {
-          if (input.acceptDeliveries === false) return;
-          void (async () => {
+        void (async () => {
+          if (frame.type === "session:reconcile") {
+            const result = input.reconcileResult
+              ? await input.reconcileResult(frame)
+              : {
+                  type: "session:reconcile:result",
+                  requestId: frame.requestId,
+                  sessionId: frame.sessionId,
+                  placementGeneration: frame.placementGeneration,
+                  status: "ready",
+                };
+            await domain.handle(result as never, context);
+          } else if (frame.type === "im:deliver") {
+            if (input.acceptDeliveries === false) return;
             await input.deliveryGate;
             await domain.handle(
               {
@@ -305,8 +338,8 @@ async function respondingRuntime(input: {
               } as never,
               context,
             );
-          })();
-        }
+          }
+        })();
       });
     }),
   } as unknown as WebSocket;
@@ -604,7 +637,7 @@ describe("IM Integration persistence", () => {
         instanceId,
         userId: value.bootstrap.userId,
       });
-      const deliveryRun = new ImDeliveryWorker({
+      const deliveryRun = imDeliveryWorker({
         database: value.database,
         registry: runtime.registry,
         domain: runtime.domain,
@@ -683,7 +716,7 @@ describe("IM Integration persistence", () => {
         instanceId,
         userId: value.bootstrap.userId,
       });
-      const deliveryRun = new ImDeliveryWorker({
+      const deliveryRun = imDeliveryWorker({
         database: value.database,
         registry: runtime.registry,
         domain: runtime.domain,
@@ -695,7 +728,7 @@ describe("IM Integration persistence", () => {
         .update(imMessageDeliveries)
         .set({ expiresAt: new Date(0) })
         .where(eq(imMessageDeliveries.id, deliveryId));
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: runtime.registry,
         domain: runtime.domain,
@@ -763,7 +796,7 @@ describe("IM Integration persistence", () => {
         instanceId,
         userId: value.bootstrap.userId,
       });
-      const deliveryRun = new ImDeliveryWorker({
+      const deliveryRun = imDeliveryWorker({
         database: value.database,
         registry: runtime.registry,
         domain: runtime.domain,
@@ -1016,7 +1049,7 @@ describe("IM Integration persistence", () => {
         instanceId,
         userId: value.bootstrap.userId,
       });
-      const worker = new ImDeliveryWorker({
+      const worker = imDeliveryWorker({
         database: value.database,
         registry: runtime.registry,
         domain: runtime.domain,
@@ -1035,6 +1068,23 @@ describe("IM Integration persistence", () => {
       );
       await worker.runOnce();
       expect(directA.deliveryIds).toHaveLength(1);
+      const [acceptedA] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, directA.deliveryIds[0] as string));
+      if (!acceptedA?.turnId) throw new Error("Initial mention-only delivery was not accepted");
+      await expect(
+        runtime.domain.handle(
+          turnReportFor({
+            agentId: value.agent.id,
+            deliveryId: acceptedA.id,
+            placementGeneration: acceptedA.placementGeneration,
+            sessionId: acceptedA.sessionId,
+            turnId: acceptedA.turnId,
+          }),
+          runtime.context,
+        ),
+      ).resolves.toMatchObject({ status: "recorded" });
 
       const interveningEvent = revisionEvent({
         providerEventId: "mention-only-b",
@@ -1216,7 +1266,7 @@ describe("IM Integration persistence", () => {
         requestReconcile: vi.fn().mockRejectedValue(new Error("runtime unavailable")),
         requestDelivery: vi.fn(),
       };
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: registry as never,
         domain: failedDomain as never,
@@ -1230,7 +1280,7 @@ describe("IM Integration persistence", () => {
         instanceId,
         userId: value.bootstrap.userId,
       });
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: recovered.registry,
         domain: recovered.domain,
@@ -1252,6 +1302,713 @@ describe("IM Integration persistence", () => {
     }
   });
 
+  it("advances both effective revisions when an existing Session receives each Agent config update", async () => {
+    const value = await fixture();
+    const clientHome = await mkdtemp(resolve(tmpdir(), "opentag-im-config-update-"));
+    const owners: RuntimeDomainOwner[] = [];
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        userId: value.bootstrap.userId,
+      });
+      owners.push(runtime.domain);
+      const inbox = new ImMessageInbox(value.database);
+      const clientStore = await createClientSessionBindingStore(clientHome);
+      const service = new AgentService(value.database);
+      let currentAgent = value.agent;
+      let previousSequence = 0;
+
+      const deliverAndRecord = async (event: NormalizedInboundImEvent) => {
+        const before = runtime.frames.length;
+        await inbox.ingest(value.integrationId, 1, event);
+        await imDeliveryWorker({
+          database: value.database,
+          registry: runtime.registry,
+          domain: runtime.domain,
+        }).runOnce();
+        const request = runtime.frames
+          .slice(before)
+          .find(
+            (frame): frame is DirectImMessageDeliveryRequest =>
+              typeof frame === "object" && frame !== null && (frame as { type?: unknown }).type === "im:deliver",
+          );
+        if (!request) throw new Error("Updated Agent delivery was not dispatched");
+        await clientStore.prepare(
+          {
+            type: "session:reconcile",
+            requestId: crypto.randomUUID(),
+            computerId: value.computer.id,
+            sessionId: request.sessionId,
+            agentId: request.agentId,
+            placementGeneration: request.placementGeneration,
+            desired: "ready",
+            runtime: request.runtime,
+          },
+          computeRuntimeSnapshotHashes(request.runtime),
+        );
+        const turnId = `turn-${request.deliveryId}`;
+        await expect(
+          runtime.domain.handle(
+            turnReportFor({
+              agentId: request.agentId,
+              deliveryId: request.deliveryId,
+              placementGeneration: request.placementGeneration,
+              sessionId: request.sessionId,
+              turnId,
+            }),
+            runtime.context,
+          ),
+        ).resolves.toMatchObject({ status: "recorded" });
+        return request.runtime;
+      };
+
+      const initial = await deliverAndRecord(inbound("Ev-config-initial"));
+      previousSequence = initial.revision.session.sequence;
+      const changes: Array<{
+        expected: Record<string, unknown>;
+        runtimeConfig: NonNullable<UpdateAgentRequest["runtimeConfig"]>;
+      }> = [
+        { runtimeConfig: { model: "gpt-5" }, expected: { model: "gpt-5" } },
+        { runtimeConfig: { reasoningEffort: "high" }, expected: { reasoningEffort: "high" } },
+        { runtimeConfig: { instructions: "Updated instructions." }, expected: {} },
+        {
+          runtimeConfig: { allowedTools: ["opentag_message_send"] },
+          expected: { allowedTools: ["opentag_message_send"] },
+        },
+        { runtimeConfig: { maxDurationMs: 45_000 }, expected: { budget: { maxDurationMs: 45_000 } } },
+      ];
+      for (const [index, change] of changes.entries()) {
+        currentAgent = await service.updateById(value.bootstrap.userId, value.agent.id, {
+          expectedRevision: currentAgent.revision,
+          runtimeConfig: change.runtimeConfig,
+        });
+        const snapshot = await deliverAndRecord(
+          revisionEvent({
+            providerEventId: `Ev-config-${index}`,
+            externalMessageId: `config-message-${index}`,
+            operation: "created",
+            occurredAt: `2026-08-19T00:00:0${index + 2}.000Z`,
+            revisionKey: "1",
+          }),
+        );
+        expect(snapshot).toMatchObject(change.expected);
+        if ("instructions" in change.runtimeConfig) {
+          expect(snapshot.instructions.agent).toBe(change.runtimeConfig.instructions);
+        }
+        expect(snapshot.revision.agent.sequence).toBe(currentAgent.runtimeConfig.revision);
+        expect(snapshot.revision.session.sequence).toBe(currentAgent.runtimeConfig.revision);
+        expect(snapshot.revision.session.sequence).toBeGreaterThan(previousSequence);
+        previousSequence = snapshot.revision.session.sequence;
+      }
+    } finally {
+      for (const owner of owners) owner.close();
+      await rm(clientHome, { recursive: true, force: true });
+      await value.sql.end();
+    }
+  });
+
+  it("fences a higher Agent revision until pinned accepted custody recovers and reports", async () => {
+    const value = await fixture();
+    const clientHome = await mkdtemp(resolve(tmpdir(), "opentag-agent-custody-fence-"));
+    const owners: RuntimeDomainOwner[] = [];
+    try {
+      const firstInstanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: firstInstanceId })
+        .where(eq(computers.id, value.computer.id));
+      const firstClient = await createDurableClientReconciler(clientHome, value.computer.id);
+      const first = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId: firstInstanceId,
+        userId: value.bootstrap.userId,
+        reconcileResult: (frame) => firstClient.reconciler.reconcile(frame as unknown as SessionReconcileRequest),
+      });
+      owners.push(first.domain);
+      const inbox = new ImMessageInbox(value.database);
+      await inbox.ingest(value.integrationId, 1, inbound("Ev-agent-fence-accepted"));
+      await imDeliveryWorker({
+        database: value.database,
+        registry: first.registry,
+        domain: first.domain,
+      }).runOnce();
+      const firstRequest = first.frames.find(
+        (frame): frame is DirectImMessageDeliveryRequest =>
+          typeof frame === "object" && frame !== null && (frame as { type?: unknown }).type === "im:deliver",
+      );
+      if (!firstRequest) throw new Error("Initial Agent custody request was not dispatched");
+      const turnId = `turn-${firstRequest.deliveryId}`;
+      await firstClient.bindingStore.recordAccepted(firstRequest, computeDirectInputHash(firstRequest), turnId);
+      const report = turnReportFor({
+        agentId: firstRequest.agentId,
+        deliveryId: firstRequest.deliveryId,
+        placementGeneration: firstRequest.placementGeneration,
+        sessionId: firstRequest.sessionId,
+        turnId,
+      });
+      await firstClient.bindingStore.updateUnresolved(
+        firstRequest.agentId,
+        firstRequest.sessionId,
+        turnId,
+        "reporting",
+        {
+          report,
+          resultHash: report.resultHash,
+        },
+      );
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+        .where(eq(imMessageDeliveries.id, firstRequest.deliveryId));
+
+      const updatedAgent = await new AgentService(value.database).updateById(value.bootstrap.userId, value.agent.id, {
+        expectedRevision: value.agent.revision,
+        runtimeConfig: { model: "gpt-5-after-custody" },
+      });
+      const pendingAdmission = await inbox.ingest(
+        value.integrationId,
+        1,
+        revisionEvent({
+          providerEventId: "Ev-agent-fence-pending",
+          externalMessageId: "agent-fence-pending",
+          operation: "created",
+          occurredAt: "2026-08-19T00:00:02.000Z",
+          revisionKey: "1",
+        }),
+      );
+      const pendingId = pendingAdmission.deliveryIds[0];
+      if (!pendingId) throw new Error("Higher revision pending request was not admitted");
+      const [accepted] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, firstRequest.deliveryId));
+      if (!accepted?.dispatchRequestId || !accepted.dispatchInputHash || !accepted.inputHash || !accepted.turnId) {
+        throw new Error("Accepted Agent custody was not persisted");
+      }
+      first.domain.close();
+
+      const secondInstanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: secondInstanceId })
+        .where(eq(computers.id, value.computer.id));
+      const rebuiltClient = await createDurableClientReconciler(clientHome, value.computer.id);
+      const second = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId: secondInstanceId,
+        userId: value.bootstrap.userId,
+        reconcileResult: async (frame) => {
+          const result = await rebuiltClient.reconciler.reconcile(frame as unknown as SessionReconcileRequest);
+          return result.status === "recovery_required"
+            ? {
+                ...result,
+                retainedReports: [
+                  {
+                    dispatchRequestId: accepted.dispatchRequestId,
+                    deliveryId: accepted.id,
+                    inputHash: accepted.inputHash,
+                    turnId: accepted.turnId,
+                    placementGeneration: accepted.placementGeneration,
+                    resultHash: report.resultHash,
+                  },
+                ],
+              }
+            : result;
+        },
+      });
+      owners.push(second.domain);
+      const worker = imDeliveryWorker({
+        database: value.database,
+        registry: second.registry,
+        domain: second.domain,
+      });
+
+      await worker.runOnce();
+      expect(second.frames).toEqual([]);
+      expect(
+        (await value.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, pendingId)))[0],
+      ).toMatchObject({ attemptCount: 0, state: "pending" });
+
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(0) })
+        .where(eq(imMessageDeliveries.id, firstRequest.deliveryId));
+      await worker.runOnce();
+      const recovery = second.frames[0] as SessionReconcileRequest | undefined;
+      expect(recovery).toMatchObject({ type: "session:reconcile", runtime: firstRequest.runtime });
+      expect(rebuiltClient.reconciler.getAgent(value.agent.id)?.revisionSequence).toBe(
+        firstRequest.runtime.revision.agent.sequence,
+      );
+      await expect(second.domain.handle(report, second.context)).resolves.toMatchObject({ status: "recorded" });
+      await rebuiltClient.bindingStore.recordResult(value.agent.id, firstRequest.sessionId, turnId, report.resultHash);
+      expect(rebuiltClient.reconciler.clearRecovery(firstRequest.sessionId, turnId)).toBe(true);
+
+      const beforePending = second.frames.length;
+      await worker.runOnce();
+      const pendingFrames = second.frames.slice(beforePending);
+      expect(pendingFrames).toEqual([
+        expect.objectContaining({
+          type: "session:reconcile",
+          runtime: expect.objectContaining({
+            model: "gpt-5-after-custody",
+            revision: {
+              agent: expect.objectContaining({ sequence: updatedAgent.runtimeConfig.revision }),
+              session: expect.objectContaining({ sequence: updatedAgent.runtimeConfig.revision }),
+            },
+          }),
+        }),
+        expect.objectContaining({ type: "im:deliver", deliveryId: pendingId }),
+      ]);
+      expect(rebuiltClient.reconciler.getAgent(value.agent.id)?.revisionSequence).toBe(
+        updatedAgent.runtimeConfig.revision,
+      );
+    } finally {
+      for (const owner of owners) owner.close();
+      await rm(clientHome, { recursive: true, force: true });
+      await value.sql.end();
+    }
+  });
+
+  it("rechecks Agent custody after claim before a higher revision can reach runtime side effects", async () => {
+    const value = await fixture();
+    const clientHome = await mkdtemp(resolve(tmpdir(), "opentag-agent-custody-claim-race-"));
+    const owners: RuntimeDomainOwner[] = [];
+    try {
+      const firstInstanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: firstInstanceId })
+        .where(eq(computers.id, value.computer.id));
+      const inbox = new ImMessageInbox(value.database);
+      const firstAdmission = await inbox.ingest(value.integrationId, 1, inbound("Ev-agent-claim-race-accepted"));
+      const firstDeliveryId = firstAdmission.deliveryIds[0];
+      if (!firstDeliveryId || !firstAdmission.messageId) throw new Error("Race fixture was not admitted");
+      const [firstDelivery] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, firstDeliveryId));
+      if (!firstDelivery) throw new Error("Race delivery was not persisted");
+      const assembler = new EffectiveRuntimeSnapshotAssembler(value.database);
+      const pinnedRuntime = await assembler.assembleForSession(firstDelivery.sessionId);
+      const firstRequest: DirectImMessageDeliveryRequest = {
+        type: "im:deliver",
+        requestId: crypto.randomUUID(),
+        deliveryId: firstDelivery.id,
+        imMessageId: firstDelivery.messageId,
+        sessionId: firstDelivery.sessionId,
+        agentId: value.agent.id,
+        placementGeneration: firstDelivery.placementGeneration,
+        attention: firstDelivery.attention,
+        content: { kind: "text", text: "late accepted input" },
+        runtime: pinnedRuntime,
+        deadlineAt: firstDelivery.expiresAt.toISOString(),
+      };
+      const firstClient = await createDurableClientReconciler(clientHome, value.computer.id);
+      await expect(
+        firstClient.reconciler.reconcile({
+          type: "session:reconcile",
+          requestId: crypto.randomUUID(),
+          computerId: value.computer.id,
+          sessionId: firstRequest.sessionId,
+          agentId: firstRequest.agentId,
+          placementGeneration: firstRequest.placementGeneration,
+          desired: "ready",
+          runtime: firstRequest.runtime,
+        }),
+      ).resolves.toMatchObject({ status: "ready" });
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(Date.now() + 60_000) })
+        .where(eq(imMessageDeliveries.id, firstDelivery.id));
+
+      const updatedAgent = await new AgentService(value.database).updateById(value.bootstrap.userId, value.agent.id, {
+        expectedRevision: value.agent.revision,
+        runtimeConfig: { model: "gpt-5-after-late-accept" },
+      });
+      const secondAdmission = await inbox.ingest(
+        value.integrationId,
+        1,
+        revisionEvent({
+          providerEventId: "Ev-agent-claim-race-pending",
+          externalMessageId: "agent-claim-race-pending",
+          operation: "created",
+          occurredAt: "2026-08-19T00:00:02.000Z",
+          revisionKey: "1",
+        }),
+      );
+      const secondDeliveryId = secondAdmission.deliveryIds[0];
+      if (!secondDeliveryId) throw new Error("Higher revision race delivery was not admitted");
+
+      const assemblerEntered = deferred<void>();
+      const releaseAssembler = deferred<void>();
+      const guardedAssembler = {
+        assembleForSession: async (sessionId: string) => {
+          const runtime = await assembler.assembleForSession(sessionId);
+          assemblerEntered.resolve();
+          await releaseAssembler.promise;
+          return runtime;
+        },
+      };
+      const oldDomain = { requestReconcile: vi.fn(), requestDelivery: vi.fn() };
+      const oldRegistry = { currentInstanceId: () => firstInstanceId };
+      const racingRun = new ImDeliveryWorker({
+        assembler: guardedAssembler,
+        database: value.database,
+        domain: oldDomain as never,
+        registry: oldRegistry as never,
+      }).runOnce();
+      await assemblerEntered.promise;
+      expect(
+        (
+          await value.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, secondDeliveryId))
+        )[0],
+      ).toMatchObject({ lastErrorCode: expect.stringMatching(/^IM_DELIVERY_CLAIM_[A-F0-9]{32}$/) });
+
+      const firstInputHash = computeDirectInputHash(firstRequest);
+      const custody = new PostgresRuntimeCustodyStore(value.database);
+      const firstContext = {
+        computerId: value.computer.id,
+        instanceId: firstInstanceId,
+        signal: new AbortController().signal,
+        userId: value.bootstrap.userId,
+      };
+      await expect(custody.beginDeliveryDispatch(firstRequest, firstInputHash, firstContext)).resolves.toBe(
+        "dispatched",
+      );
+      const turnId = `turn-${firstRequest.deliveryId}`;
+      await expect(custody.acceptDelivery(firstRequest, firstInputHash, turnId, firstContext)).resolves.toBe(
+        "accepted",
+      );
+      await firstClient.bindingStore.recordAccepted(firstRequest, firstInputHash, turnId);
+      const report = turnReportFor({
+        agentId: firstRequest.agentId,
+        deliveryId: firstRequest.deliveryId,
+        placementGeneration: firstRequest.placementGeneration,
+        sessionId: firstRequest.sessionId,
+        turnId,
+      });
+      await firstClient.bindingStore.updateUnresolved(
+        firstRequest.agentId,
+        firstRequest.sessionId,
+        turnId,
+        "reporting",
+        { report, resultHash: report.resultHash },
+      );
+      const [accepted] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, firstDelivery.id));
+      if (!accepted?.dispatchRequestId || !accepted.inputHash || !accepted.turnId) {
+        throw new Error("Late accepted custody was not persisted");
+      }
+
+      const secondInstanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: secondInstanceId })
+        .where(eq(computers.id, value.computer.id));
+      const rebuiltClient = await createDurableClientReconciler(clientHome, value.computer.id);
+      const recovered = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId: secondInstanceId,
+        userId: value.bootstrap.userId,
+        reconcileResult: async (frame) => {
+          const result = await rebuiltClient.reconciler.reconcile(frame as unknown as SessionReconcileRequest);
+          return result.status === "recovery_required"
+            ? {
+                ...result,
+                retainedReports: [
+                  {
+                    dispatchRequestId: accepted.dispatchRequestId,
+                    deliveryId: accepted.id,
+                    inputHash: accepted.inputHash,
+                    turnId: accepted.turnId,
+                    placementGeneration: accepted.placementGeneration,
+                    resultHash: report.resultHash,
+                  },
+                ],
+              }
+            : result;
+        },
+      });
+      owners.push(recovered.domain);
+      releaseAssembler.resolve();
+      await racingRun;
+      expect(oldDomain.requestReconcile).not.toHaveBeenCalled();
+      expect(oldDomain.requestDelivery).not.toHaveBeenCalled();
+      expect(
+        (
+          await value.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, secondDeliveryId))
+        )[0],
+      ).toMatchObject({ lastErrorCode: "IM_DELIVERY_AGENT_CUSTODY_FENCED", state: "pending" });
+
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(0) })
+        .where(eq(imMessageDeliveries.id, firstDelivery.id));
+      const recoveryWorker = imDeliveryWorker({
+        database: value.database,
+        registry: recovered.registry,
+        domain: recovered.domain,
+      });
+      await recoveryWorker.runOnce();
+      expect(recovered.frames[0]).toMatchObject({ type: "session:reconcile", runtime: pinnedRuntime });
+      await expect(recovered.domain.handle(report, recovered.context)).resolves.toMatchObject({ status: "recorded" });
+      await rebuiltClient.bindingStore.recordResult(value.agent.id, firstRequest.sessionId, turnId, report.resultHash);
+      expect(rebuiltClient.reconciler.clearRecovery(firstRequest.sessionId, turnId)).toBe(true);
+
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(0) })
+        .where(eq(imMessageDeliveries.id, secondDeliveryId));
+      const beforePending = recovered.frames.length;
+      await recoveryWorker.runOnce();
+      expect(recovered.frames.slice(beforePending)).toEqual([
+        expect.objectContaining({
+          type: "session:reconcile",
+          runtime: expect.objectContaining({
+            model: "gpt-5-after-late-accept",
+            revision: {
+              agent: expect.objectContaining({ sequence: updatedAgent.runtimeConfig.revision }),
+              session: expect.objectContaining({ sequence: updatedAgent.runtimeConfig.revision }),
+            },
+          }),
+        }),
+        expect.objectContaining({ type: "im:deliver", deliveryId: secondDeliveryId }),
+      ]);
+    } finally {
+      for (const owner of owners) owner.close();
+      await rm(clientHome, { recursive: true, force: true });
+      await value.sql.end();
+    }
+  });
+
+  it("renews an active claim lease and fences same-Agent work across workers", async () => {
+    const value = await fixture();
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      const inbox = new ImMessageInbox(value.database);
+      const firstAdmission = await inbox.ingest(value.integrationId, 1, inbound("Ev-owned-claim-first"));
+      const firstDeliveryId = firstAdmission.deliveryIds[0];
+      if (!firstDeliveryId) throw new Error("Owned claim fixture was not admitted");
+      const reconcileEntered = deferred<void>();
+      const releaseReconcile = deferred<void>();
+      const firstDomain = {
+        requestReconcile: vi.fn(async () => {
+          reconcileEntered.resolve();
+          await releaseReconcile.promise;
+          return { status: "ready" };
+        }),
+        requestDelivery: vi.fn().mockResolvedValue({
+          status: "rejected",
+          reason: "configuration_unsupported",
+        }),
+      };
+      const firstWorker = imDeliveryWorker({
+        database: value.database,
+        registry: { currentInstanceId: () => instanceId } as never,
+        domain: firstDomain as never,
+        claimLeaseMs: 300,
+        claimRenewMs: 50,
+      });
+      const firstRun = firstWorker.runOnce();
+      await reconcileEntered.promise;
+      const [claimed] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, firstDeliveryId));
+      expect(claimed?.lastErrorCode).toMatch(/^IM_DELIVERY_CLAIM_[A-F0-9]{32}$/);
+
+      await new AgentService(value.database).updateById(value.bootstrap.userId, value.agent.id, {
+        expectedRevision: value.agent.revision,
+        runtimeConfig: { model: "gpt-5-owned-claim" },
+      });
+      const secondAdmission = await inbox.ingest(
+        value.integrationId,
+        1,
+        revisionEvent({
+          providerEventId: "Ev-owned-claim-second",
+          externalMessageId: "owned-claim-second",
+          operation: "created",
+          occurredAt: "2026-08-19T00:00:02.000Z",
+          revisionKey: "1",
+        }),
+      );
+      const secondDeliveryId = secondAdmission.deliveryIds[0];
+      if (!secondDeliveryId) throw new Error("Same-Agent fenced fixture was not admitted");
+
+      await new Promise((resolvePromise) => setTimeout(resolvePromise, 400));
+      const [renewedClaim] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, firstDeliveryId));
+      expect(renewedClaim?.nextAttemptAt.getTime()).toBeGreaterThan(claimed?.nextAttemptAt.getTime() ?? 0);
+      const secondDomain = { requestReconcile: vi.fn(), requestDelivery: vi.fn() };
+      const secondWorker = imDeliveryWorker({
+        database: value.database,
+        registry: { currentInstanceId: () => undefined } as never,
+        domain: secondDomain as never,
+      });
+      await secondWorker.runOnce();
+      expect(firstDomain.requestReconcile).toHaveBeenCalledTimes(1);
+      expect(secondDomain.requestReconcile).not.toHaveBeenCalled();
+      expect(secondDomain.requestDelivery).not.toHaveBeenCalled();
+      expect(
+        (await value.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, firstDeliveryId)))[0]
+          ?.lastErrorCode,
+      ).toBe(claimed?.lastErrorCode);
+      expect(
+        (
+          await value.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, secondDeliveryId))
+        )[0],
+      ).toMatchObject({ attemptCount: 0, state: "pending" });
+
+      releaseReconcile.resolve();
+      await firstRun;
+      expect(
+        (await value.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, firstDeliveryId)))[0],
+      ).toMatchObject({ lastErrorCode: "IM_DELIVERY_TERMINAL", state: "terminal_rejected" });
+      await secondWorker.runOnce();
+      expect(
+        (
+          await value.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, secondDeliveryId))
+        )[0],
+      ).toMatchObject({ attemptCount: 1, lastErrorCode: "IM_DELIVERY_RUNTIME_UNAVAILABLE", state: "pending" });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("does not let a pending delivery for an ended Session fence another active Session of the Agent", async () => {
+    const value = await fixture();
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      const inbox = new ImMessageInbox(value.database);
+      const endedAdmission = await inbox.ingest(value.integrationId, 1, inbound("Ev-ended-session-pending"));
+      const endedDeliveryId = endedAdmission.deliveryIds[0];
+      if (!endedDeliveryId) throw new Error("Ended Session fixture was not admitted");
+      const [endedDelivery] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, endedDeliveryId));
+      if (!endedDelivery) throw new Error("Ended Session delivery was not found");
+      await value.database
+        .update(sessions)
+        .set({ endedAt: new Date() })
+        .where(eq(sessions.id, endedDelivery.sessionId));
+
+      const activeAdmission = await inbox.ingest(
+        value.integrationId,
+        1,
+        revisionEvent({
+          providerEventId: "Ev-active-session-pending",
+          externalMessageId: "active-session-pending",
+          operation: "created",
+          occurredAt: "2026-08-19T00:00:02.000Z",
+          revisionKey: "1",
+        }),
+      );
+      const activeDeliveryId = activeAdmission.deliveryIds[0];
+      if (!activeDeliveryId) throw new Error("Active Session fixture was not admitted");
+
+      const worker = imDeliveryWorker({
+        database: value.database,
+        registry: { currentInstanceId: () => instanceId } as never,
+        domain: {
+          requestReconcile: vi.fn().mockResolvedValue({ status: "ready" }),
+          requestDelivery: vi.fn().mockResolvedValue({
+            status: "rejected",
+            reason: "configuration_unsupported",
+          }),
+        } as never,
+      });
+      await worker.runOnce();
+
+      const [stillEnded] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, endedDeliveryId));
+      const [processedActive] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, activeDeliveryId));
+      expect(stillEnded).toMatchObject({ attemptCount: 0, lastErrorCode: null, state: "pending" });
+      expect(processedActive).toMatchObject({ attemptCount: 1, state: "terminal_rejected" });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it.each(["pending", "accepted"] as const)(
+    "rejects a schema-valid %s payload mutation that no longer matches custody hashes",
+    async (state) => {
+      const value = await fixture();
+      try {
+        const instanceId = crypto.randomUUID();
+        await value.database
+          .update(computers)
+          .set({ currentInstanceId: instanceId })
+          .where(eq(computers.id, value.computer.id));
+        await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound(`Ev-payload-hash-${state}`));
+        const runtime = await respondingRuntime({
+          acceptDeliveries: state === "accepted",
+          database: value.database,
+          computerId: value.computer.id,
+          instanceId,
+          requestTimeoutMs: 100,
+          userId: value.bootstrap.userId,
+        });
+        const worker = imDeliveryWorker({
+          database: value.database,
+          registry: runtime.registry,
+          domain: runtime.domain,
+        });
+        await worker.runOnce();
+        const [stored] = await value.database.select().from(imMessageDeliveries);
+        if (!stored?.dispatchPayload) throw new Error("Custody payload was not persisted");
+        await value.database
+          .update(imMessageDeliveries)
+          .set({
+            dispatchPayload: {
+              ...stored.dispatchPayload,
+              runtime: { ...stored.dispatchPayload.runtime, model: "schema-valid-tampering" },
+            },
+            nextAttemptAt: new Date(0),
+          })
+          .where(eq(imMessageDeliveries.id, stored.id));
+        const beforeRetry = runtime.frames.length;
+        await worker.runOnce();
+        expect(runtime.frames).toHaveLength(beforeRetry);
+        expect((await value.database.select().from(imMessageDeliveries))[0]).toMatchObject({
+          lastErrorCode:
+            state === "accepted" ? "IM_DELIVERY_RECOVERY_PAYLOAD_INVALID" : "IM_DELIVERY_DISPATCH_PAYLOAD_INVALID",
+          state,
+        });
+        runtime.domain.close();
+      } finally {
+        await value.sql.end();
+      }
+    },
+  );
+
   it("expires a never-dispatched delivery even after reconcile increased its attempt count", async () => {
     const value = await fixture();
     try {
@@ -1266,7 +2023,7 @@ describe("IM Integration persistence", () => {
         requestDelivery: vi.fn(),
       };
       const registry = { currentInstanceId: () => instanceId };
-      const worker = new ImDeliveryWorker({
+      const worker = imDeliveryWorker({
         database: value.database,
         registry: registry as never,
         domain: failedDomain as never,
@@ -1311,15 +2068,21 @@ describe("IM Integration persistence", () => {
         userId: value.bootstrap.userId,
       });
       owners.push(first.domain);
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: first.registry,
         domain: first.domain,
       }).runOnce();
       const [accepted] = await value.database.select().from(imMessageDeliveries);
-      if (!accepted?.turnId || !accepted.dispatchRequestId || !accepted.dispatchInputHash) {
+      if (
+        !accepted?.turnId ||
+        !accepted.dispatchRequestId ||
+        !accepted.dispatchInputHash ||
+        !accepted.dispatchPayload
+      ) {
         throw new Error("Accepted delivery fixture was not persisted");
       }
+      const pinnedRuntime = accepted.dispatchPayload.runtime;
       const report = turnReportFor({
         agentId: value.agent.id,
         deliveryId: accepted.id,
@@ -1327,6 +2090,11 @@ describe("IM Integration persistence", () => {
         sessionId: accepted.sessionId,
         turnId: accepted.turnId,
       });
+      const updatedAgent = await new AgentService(value.database).updateById(value.bootstrap.userId, value.agent.id, {
+        expectedRevision: value.agent.revision,
+        runtimeConfig: { model: "gpt-5-after-accept" },
+      });
+      expect(updatedAgent.runtimeConfig.revision).toBeGreaterThan(pinnedRuntime.revision.session.sequence);
       first.domain.close();
 
       const secondInstanceId = crypto.randomUUID();
@@ -1364,14 +2132,20 @@ describe("IM Integration persistence", () => {
         }),
       });
       owners.push(second.domain);
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: second.registry,
         domain: second.domain,
       }).runOnce();
+      const recoveryReconcile = second.frames.find(
+        (frame): frame is Record<string, unknown> & { runtime: DirectImMessageDeliveryRequest["runtime"] } =>
+          typeof frame === "object" && frame !== null && (frame as { type?: unknown }).type === "session:reconcile",
+      );
+      expect(recoveryReconcile?.runtime).toEqual(pinnedRuntime);
       expect(await second.domain.getDelivery(accepted.id)).toMatchObject({ instanceId: secondInstanceId });
       await expect(second.domain.handle(report, second.context)).resolves.toMatchObject({ status: "recorded" });
       expect(await second.domain.getTurn(report.turnId)).toMatchObject({ resultHash: report.resultHash });
+      expect((await value.database.select().from(imMessageDeliveries))[0]?.dispatchPayload).toBeNull();
       second.domain.close();
 
       const thirdInstanceId = crypto.randomUUID();
@@ -1395,6 +2169,68 @@ describe("IM Integration persistence", () => {
     }
   });
 
+  it("uses a diagnostic best-effort assembler fallback only for legacy accepted rows without payload", async () => {
+    const value = await fixture();
+    const owners: RuntimeDomainOwner[] = [];
+    try {
+      const firstInstanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: firstInstanceId })
+        .where(eq(computers.id, value.computer.id));
+      await new ImMessageInbox(value.database).ingest(value.integrationId, 1, inbound("Ev-legacy-recovery"));
+      const first = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId: firstInstanceId,
+        userId: value.bootstrap.userId,
+      });
+      owners.push(first.domain);
+      await imDeliveryWorker({
+        database: value.database,
+        registry: first.registry,
+        domain: first.domain,
+      }).runOnce();
+      const [accepted] = await value.database.select().from(imMessageDeliveries);
+      if (!accepted) throw new Error("Legacy accepted fixture was not persisted");
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ dispatchPayload: null, nextAttemptAt: new Date(0) })
+        .where(eq(imMessageDeliveries.id, accepted.id));
+      first.domain.close();
+
+      const secondInstanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: secondInstanceId })
+        .where(eq(computers.id, value.computer.id));
+      const second = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId: secondInstanceId,
+        userId: value.bootstrap.userId,
+      });
+      owners.push(second.domain);
+      const diagnostic = vi.fn();
+      await imDeliveryWorker({
+        database: value.database,
+        registry: second.registry,
+        domain: second.domain,
+        onDiagnostic: diagnostic,
+      }).runOnce();
+      expect(diagnostic).toHaveBeenCalledWith("IM_DELIVERY_RECOVERY_LEGACY_SNAPSHOT_FALLBACK");
+      expect(second.frames).toEqual([
+        expect.objectContaining({
+          type: "session:reconcile",
+          runtime: expect.objectContaining({ agentId: value.agent.id }),
+        }),
+      ]);
+    } finally {
+      for (const owner of owners) owner.close();
+      await value.sql.end();
+    }
+  });
+
   it.each(["pending", "expired"] as const)(
     "recovers a retained Client Turn from a %s dispatch after rebuilding the Server owner",
     async (durableState) => {
@@ -1412,11 +2248,11 @@ describe("IM Integration persistence", () => {
           database: value.database,
           computerId: value.computer.id,
           instanceId: firstInstanceId,
-          requestTimeoutMs: 10,
+          requestTimeoutMs: 100,
           userId: value.bootstrap.userId,
         });
         owners.push(first.domain);
-        await new ImDeliveryWorker({
+        await imDeliveryWorker({
           database: value.database,
           registry: first.registry,
           domain: first.domain,
@@ -1444,7 +2280,7 @@ describe("IM Integration persistence", () => {
             requestReconcile: vi.fn().mockResolvedValue({ status: "recovery_required" }),
             requestDelivery: vi.fn(),
           };
-          await new ImDeliveryWorker({
+          await imDeliveryWorker({
             database: value.database,
             registry: first.registry,
             domain: expiryDomain as never,
@@ -1492,19 +2328,21 @@ describe("IM Integration persistence", () => {
           }),
         });
         owners.push(second.domain);
-        await new ImDeliveryWorker({
+        await imDeliveryWorker({
           database: value.database,
           registry: second.registry,
           domain: second.domain,
         }).runOnce();
         expect(second.frames.filter((frame) => (frame as { type?: unknown }).type === "im:deliver")).toEqual([]);
         expect((await value.database.select().from(imMessageDeliveries))[0]).toMatchObject({
+          dispatchPayload: firstFrame,
           reportOwnerInstanceId: secondInstanceId,
           state: "accepted",
           turnId,
         });
         await expect(second.domain.handle(report, second.context)).resolves.toMatchObject({ status: "recorded" });
         expect((await value.database.select().from(imMessageDeliveries))[0]).toMatchObject({
+          dispatchPayload: null,
           reportedAt: expect.any(Date),
           state: "accepted",
           turnId,
@@ -1531,11 +2369,11 @@ describe("IM Integration persistence", () => {
         database: value.database,
         computerId: value.computer.id,
         instanceId: firstInstanceId,
-        requestTimeoutMs: 10,
+        requestTimeoutMs: 100,
         userId: value.bootstrap.userId,
       });
       owners.push(first.domain);
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: first.registry,
         domain: first.domain,
@@ -1571,7 +2409,7 @@ describe("IM Integration persistence", () => {
         userId: value.bootstrap.userId,
       });
       owners.push(second.domain);
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: second.registry,
         domain: second.domain,
@@ -1588,7 +2426,7 @@ describe("IM Integration persistence", () => {
         .update(imMessageDeliveries)
         .set({ nextAttemptAt: new Date(0) })
         .where(eq(imMessageDeliveries.id, firstFrame.deliveryId));
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: second.registry,
         domain: second.domain,
@@ -1636,7 +2474,7 @@ describe("IM Integration persistence", () => {
         instanceId,
         userId: value.bootstrap.userId,
       });
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: runtime.registry,
         domain: runtime.domain,
@@ -1674,7 +2512,7 @@ describe("IM Integration persistence", () => {
         instanceId,
         userId: value.bootstrap.userId,
       });
-      const run = new ImDeliveryWorker({
+      const run = imDeliveryWorker({
         database: value.database,
         registry: runtime.registry,
         domain: runtime.domain,
@@ -1723,11 +2561,11 @@ describe("IM Integration persistence", () => {
         database: value.database,
         computerId: value.computer.id,
         instanceId: firstInstanceId,
-        requestTimeoutMs: 10,
+        requestTimeoutMs: 100,
         userId: value.bootstrap.userId,
       });
       owners.push(first.domain);
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: first.registry,
         domain: first.domain,
@@ -1769,7 +2607,7 @@ describe("IM Integration persistence", () => {
         .update(imMessageDeliveries)
         .set({ nextAttemptAt: new Date(0) })
         .where(eq(imMessageDeliveries.id, oldRequest.deliveryId));
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: second.registry,
         domain: second.domain,
@@ -1825,7 +2663,7 @@ describe("IM Integration persistence", () => {
         .update(imMessageDeliveries)
         .set({ nextAttemptAt: new Date(0) })
         .where(eq(imMessageDeliveries.id, oldRequest.deliveryId));
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: third.registry,
         domain: third.domain,
@@ -1858,7 +2696,7 @@ describe("IM Integration persistence", () => {
         .update(imMessageDeliveries)
         .set({ nextAttemptAt: new Date(0) })
         .where(eq(imMessageDeliveries.id, oldRequest.deliveryId));
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: fourth.registry,
         domain: fourth.domain,
@@ -1877,7 +2715,7 @@ describe("IM Integration persistence", () => {
         .update(imMessageDeliveries)
         .set({ nextAttemptAt: new Date(0) })
         .where(eq(imMessageDeliveries.id, oldRequest.deliveryId));
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: fourth.registry,
         domain: fourth.domain,
@@ -1925,11 +2763,11 @@ describe("IM Integration persistence", () => {
         database: value.database,
         computerId: value.computer.id,
         instanceId: firstInstanceId,
-        requestTimeoutMs: 10,
+        requestTimeoutMs: 100,
         userId: value.bootstrap.userId,
       });
       owners.push(first.domain);
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: first.registry,
         domain: first.domain,
@@ -1943,7 +2781,7 @@ describe("IM Integration persistence", () => {
         .update(imMessageDeliveries)
         .set({ expiresAt: new Date(0), nextAttemptAt: new Date(0) })
         .where(eq(imMessageDeliveries.id, oldRequest.deliveryId));
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: first.registry,
         domain: {
@@ -1974,7 +2812,7 @@ describe("IM Integration persistence", () => {
         .update(imMessageDeliveries)
         .set({ nextAttemptAt: new Date(0) })
         .where(eq(imMessageDeliveries.id, oldRequest.deliveryId));
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: second.registry,
         domain: second.domain,
@@ -2020,14 +2858,14 @@ describe("IM Integration persistence", () => {
         userId: value.bootstrap.userId,
       });
       owners.push(runtime.domain);
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: runtime.registry,
         domain: runtime.domain,
       }).runOnce();
       const [accepted] = await value.database.select().from(imMessageDeliveries);
       if (!accepted?.turnId) throw new Error("Accepted custody was not persisted");
-      expect(accepted.dispatchPayload).toBeNull();
+      expect(accepted.dispatchPayload).not.toBeNull();
       const sessionsService = new SessionService(value.database);
       await expect(sessionsService.movePlacement(accepted.sessionId, value.computer.id)).rejects.toMatchObject({
         code: "SESSION_PLACEMENT_CUSTODY_PENDING",
@@ -2040,6 +2878,7 @@ describe("IM Integration persistence", () => {
         turnId: accepted.turnId,
       });
       await expect(runtime.domain.handle(report, runtime.context)).resolves.toMatchObject({ status: "recorded" });
+      expect((await value.database.select().from(imMessageDeliveries))[0]?.dispatchPayload).toBeNull();
       await expect(sessionsService.movePlacement(accepted.sessionId, value.computer.id)).resolves.toMatchObject({
         generation: 2,
       });
@@ -2065,11 +2904,11 @@ describe("IM Integration persistence", () => {
         database: value.database,
         computerId: value.computer.id,
         instanceId: firstInstanceId,
-        requestTimeoutMs: 10,
+        requestTimeoutMs: 100,
         userId: value.bootstrap.userId,
       });
       owners.push(first.domain);
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: first.registry,
         domain: first.domain,
@@ -2155,7 +2994,7 @@ describe("IM Integration persistence", () => {
         }),
       });
       owners.push(second.domain);
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: second.registry,
         domain: second.domain,
@@ -2191,11 +3030,11 @@ describe("IM Integration persistence", () => {
           database: value.database,
           computerId: value.computer.id,
           instanceId,
-          requestTimeoutMs: 10,
+          requestTimeoutMs: 100,
           userId: value.bootstrap.userId,
         });
         owners.push(runtime.domain);
-        await new ImDeliveryWorker({
+        await imDeliveryWorker({
           database: value.database,
           registry: runtime.registry,
           domain: runtime.domain,
@@ -2293,7 +3132,7 @@ describe("IM Integration persistence", () => {
         userId: value.bootstrap.userId,
       });
       owners.push(first.domain);
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: first.registry,
         domain: first.domain,
@@ -2325,7 +3164,7 @@ describe("IM Integration persistence", () => {
         .where(eq(imMessageDeliveries.id, pending.id));
 
       const before = first.frames.length;
-      await new ImDeliveryWorker({
+      await imDeliveryWorker({
         database: value.database,
         registry: first.registry,
         domain: first.domain,

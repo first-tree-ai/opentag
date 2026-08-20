@@ -1,5 +1,9 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import type { Agent } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
+import { createProgram } from "../cli/program.js";
 import { formatAgent, formatAgentCreated, formatAgentList } from "../core/agent/formatting.js";
 import { runAgentCreate, runAgentDelete, runAgentUpdate, selectComputer } from "../core/agent/mutations.js";
 import { runAgentList, runAgentShow } from "../core/agent/queries.js";
@@ -109,6 +113,42 @@ describe("Agent CLI core", () => {
     expect(formatAgentCreated(result)).toContain(agentId);
   });
 
+  it("creates runtime settings and preserves UTF-8 instruction file contents", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-agent-cli-"));
+    try {
+      const instructionsFile = resolve(home, "instructions.txt");
+      await writeFile(instructionsFile, "请逐行检查。\n\n", "utf8");
+      const client = api();
+      await runAgentCreate({
+        accessToken: "access",
+        api: client,
+        name: "code-reviewer",
+        displayName: "Code Reviewer",
+        runtimeProvider: "codex",
+        model: "gpt-5",
+        reasoningEffort: "high",
+        instructionsFile,
+        allowedTools: ["opentag_message_send", "opentag_message_reply"],
+        maxDurationMs: "30000",
+      });
+      expect(client.createAgent).toHaveBeenCalledWith("access", teamId, {
+        computerId,
+        displayName: "Code Reviewer",
+        name: "code-reviewer",
+        runtimeProvider: "codex",
+        runtimeConfig: {
+          model: "gpt-5",
+          reasoningEffort: "high",
+          instructions: "请逐行检查。\n\n",
+          allowedTools: ["opentag_message_reply", "opentag_message_send"],
+          maxDurationMs: 30_000,
+        },
+      });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("lists and formats deterministic Agent projections", async () => {
     const client = api();
     const response = await runAgentList({ accessToken: "access", api: client });
@@ -136,6 +176,125 @@ describe("Agent CLI core", () => {
       "revision conflict",
     );
     expect(client.updateAgent).toHaveBeenCalledTimes(2);
+  });
+
+  it("updates runtime settings and maps explicit clears onto the existing CAS writer", async () => {
+    const client = api();
+    await runAgentUpdate(agentId, {
+      accessToken: "access",
+      api: client,
+      instructions: "",
+      clearModel: true,
+      clearReasoningEffort: true,
+      clearAllowedTools: true,
+      clearMaxDuration: true,
+    });
+    expect(client.updateAgent).toHaveBeenCalledWith("access", agentId, {
+      expectedRevision: 1,
+      runtimeConfig: {
+        model: null,
+        reasoningEffort: null,
+        instructions: "",
+        allowedTools: [],
+        maxDurationMs: null,
+      },
+    });
+  });
+
+  it("rejects conflicting, duplicate, invalid, and empty runtime mutations before API access", async () => {
+    const createConflict = api();
+    await expect(
+      runAgentCreate({
+        accessToken: "access",
+        api: createConflict,
+        name: "code-reviewer",
+        displayName: "Code Reviewer",
+        runtimeProvider: "codex",
+        instructions: "inline",
+        instructionsFile: "/tmp/unused",
+      }),
+    ).rejects.toThrow("cannot be used together");
+    expect(createConflict.me).not.toHaveBeenCalled();
+
+    for (const options of [
+      { model: "gpt-5", clearModel: true },
+      { reasoningEffort: "high", clearReasoningEffort: true },
+      { allowedTools: ["opentag_message_send"], clearAllowedTools: true },
+      { maxDurationMs: "100", clearMaxDuration: true },
+      { instructions: "inline", instructionsFile: "/tmp/unused" },
+    ]) {
+      const client = api();
+      await expect(runAgentUpdate(agentId, { accessToken: "access", api: client, ...options })).rejects.toThrow(
+        "cannot be used together",
+      );
+      expect(client.getAgent).not.toHaveBeenCalled();
+    }
+
+    const invalidDuration = api();
+    await expect(
+      runAgentUpdate(agentId, { accessToken: "access", api: invalidDuration, maxDurationMs: "1.5" }),
+    ).rejects.toThrow("positive base-10 safe integer");
+    expect(invalidDuration.getAgent).not.toHaveBeenCalled();
+
+    const excessiveDuration = api();
+    await expect(
+      runAgentUpdate(agentId, { accessToken: "access", api: excessiveDuration, maxDurationMs: "86400001" }),
+    ).rejects.toThrow();
+    expect(excessiveDuration.getAgent).not.toHaveBeenCalled();
+
+    const unknownTool = api();
+    await expect(
+      runAgentUpdate(agentId, { accessToken: "access", api: unknownTool, allowedTools: ["unknown_tool"] }),
+    ).rejects.toThrow();
+    expect(unknownTool.getAgent).not.toHaveBeenCalled();
+
+    const duplicateTools = api();
+    await expect(
+      runAgentUpdate(agentId, {
+        accessToken: "access",
+        api: duplicateTools,
+        allowedTools: ["opentag_message_send", "opentag_message_send"],
+      }),
+    ).rejects.toThrow("Agent tool IDs must be unique");
+    expect(duplicateTools.getAgent).not.toHaveBeenCalled();
+
+    const empty = api();
+    await expect(runAgentUpdate(agentId, { accessToken: "access", api: empty })).rejects.toThrow(
+      "No Agent changes were provided",
+    );
+    expect(empty.getAgent).not.toHaveBeenCalled();
+  });
+
+  it("registers every runtime setting option and keeps update display name optional", () => {
+    const program = createProgram();
+    const agentCommand = program.commands.find((command) => command.name() === "agent");
+    const create = agentCommand?.commands.find((command) => command.name() === "create");
+    const update = agentCommand?.commands.find((command) => command.name() === "update");
+    expect(create?.options.map((option) => option.long)).toEqual(
+      expect.arrayContaining([
+        "--model",
+        "--reasoning-effort",
+        "--instructions",
+        "--instructions-file",
+        "--allowed-tool",
+        "--max-duration-ms",
+      ]),
+    );
+    expect(update?.options.map((option) => option.long)).toEqual(
+      expect.arrayContaining([
+        "--model",
+        "--clear-model",
+        "--reasoning-effort",
+        "--clear-reasoning-effort",
+        "--instructions",
+        "--instructions-file",
+        "--allowed-tool",
+        "--clear-allowed-tools",
+        "--max-duration-ms",
+        "--clear-max-duration",
+      ]),
+    );
+    expect(update?.options.find((option) => option.long === "--display-name")?.mandatory).toBe(false);
   });
 
   it("deletes the explicit Agent without an interactive prompt", async () => {

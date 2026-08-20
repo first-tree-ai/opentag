@@ -36,6 +36,7 @@ import {
 import { createImProviderAdapterResolver, IntegrationService } from "./services/integrations/index.js";
 import { DefaultSlackApiClient, SlackAdapter } from "./services/integrations/slack/index.js";
 import { InvitationService } from "./services/invitations/index.js";
+import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { TeamMembershipService } from "./services/teams/index.js";
 
 export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
@@ -176,7 +177,9 @@ export async function startServer(): Promise<void> {
     const resolveImAdapter = createImProviderAdapterResolver({ integrations: integrationService, slackApi });
     outboundMessageService = new OutboundMessageService(database, resolveImAdapter);
     const imResourceService = new ImResourceService(database, resolveImAdapter);
+    const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     const imDeliveryWorker = new ImDeliveryWorker({
+      assembler: runtimeSnapshotAssembler,
       database,
       domain: domainOwner,
       registry,

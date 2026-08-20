@@ -139,7 +139,6 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         .update(imMessageDeliveries)
         .set({
           state: "accepted",
-          dispatchPayload: null,
           placementGeneration: request.placementGeneration,
           inputHash,
           turnId,
@@ -201,7 +200,6 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
             .update(imMessageDeliveries)
             .set({
               state: "accepted",
-              dispatchPayload: null,
               inputHash: claim.inputHash,
               turnId: claim.turnId,
               reportOwnerInstanceId: context.instanceId,
@@ -301,7 +299,13 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       }
       await transaction
         .update(imMessageDeliveries)
-        .set({ resultHash: report.resultHash, turnReport: report, reportedAt: this.#now(), lastErrorCode: null })
+        .set({
+          dispatchPayload: null,
+          resultHash: report.resultHash,
+          turnReport: report,
+          reportedAt: this.#now(),
+          lastErrorCode: null,
+        })
         .where(eq(imMessageDeliveries.id, report.deliveryId));
       return "recorded";
     });

@@ -22,7 +22,18 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  Link,
+  Navigate,
+  NavLink,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useOutletContext,
+  useParams,
+} from "react-router-dom";
 import { ApiError, browserApi } from "./api.js";
 import { ComputerSetup } from "./computer-setup.js";
 import { CreateTeamForm } from "./create-team-form.js";
@@ -77,6 +88,12 @@ interface TeamSession {
   membership: MeMembership;
   refreshMe: () => void;
   selectTeam: (teamId: string) => void;
+}
+
+interface AppShellOutletContext {
+  invitationMutationPending: boolean;
+  invitationOpen: boolean;
+  setInvitationMutationPending: (pending: boolean) => void;
 }
 
 const teamContext = createContext<TeamSession | undefined>(undefined);
@@ -306,6 +323,8 @@ function AppShell() {
   const navigate = useNavigate();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [openMenu, setOpenMenu] = useState<"team" | "account">();
+  const [invitationOpen, setInvitationOpen] = useState(false);
+  const [invitationMutationPending, setInvitationMutationPending] = useState(false);
   const [teamQuery, setTeamQuery] = useState("");
   const [loggingOut, setLoggingOut] = useState(false);
   const [accountError, setAccountError] = useState<string>();
@@ -458,17 +477,35 @@ function AppShell() {
                   })}
                   {filteredMemberships.length === 0 ? <span className="team-menu-empty">No matching Teams</span> : null}
                 </div>
-                <Link
-                  className="team-menu-action"
-                  to="/teams/new"
-                  onClick={() => {
-                    setOpenMenu(undefined);
-                    setNavigationOpen(false);
-                  }}
-                >
-                  <span aria-hidden="true">＋</span>
-                  Create Team
-                </Link>
+                <div className="team-menu-actions">
+                  {membership.role === "admin" ? (
+                    <button
+                      className="team-menu-action"
+                      disabled={invitationMutationPending}
+                      type="button"
+                      onClick={() => {
+                        if (invitationMutationPending) return;
+                        setOpenMenu(undefined);
+                        setNavigationOpen(false);
+                        setInvitationOpen(true);
+                      }}
+                    >
+                      <span aria-hidden="true">↗</span>
+                      Invite people
+                    </button>
+                  ) : null}
+                  <Link
+                    className="team-menu-action"
+                    to="/teams/new"
+                    onClick={() => {
+                      setOpenMenu(undefined);
+                      setNavigationOpen(false);
+                    }}
+                  >
+                    <span aria-hidden="true">＋</span>
+                    Create Team
+                  </Link>
+                </div>
               </section>
             ) : null}
           </div>
@@ -501,7 +538,6 @@ function AppShell() {
               </span>
               <span className="account-copy">
                 <strong>{me.user.displayName}</strong>
-                <small>{me.user.email}</small>
               </span>
               <span className="account-menu-dots" aria-hidden="true">
                 ⋮
@@ -548,9 +584,19 @@ function AppShell() {
           </button>
         </header>
         <main className="content">
-          <Outlet />
+          <Outlet context={{ invitationMutationPending, invitationOpen, setInvitationMutationPending }} />
         </main>
       </div>
+      {invitationOpen ? (
+        <InvitationDialog
+          mutationPending={invitationMutationPending}
+          onMutationPendingChange={setInvitationMutationPending}
+          returnFocusRef={teamTriggerRef}
+          teamDisplayName={membership.teamDisplayName}
+          teamId={membership.teamId}
+          onClose={() => setInvitationOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1180,6 +1226,7 @@ const settingsSections = [
 
 function SettingsPage() {
   const { section = "team" } = useParams();
+  const { invitationOpen, setInvitationMutationPending } = useOutletContext<AppShellOutletContext>();
   const navigate = useNavigate();
   const { me, membership, refreshMe } = useTeam();
   const currentSection = settingsSections.find((item) => item.key === section);
@@ -1219,6 +1266,8 @@ function SettingsPage() {
             <MembersSettings
               canManage={membership.role === "admin"}
               currentUserId={me.user.id}
+              invitationDialogOpen={invitationOpen}
+              onInvitationMutationPendingChange={setInvitationMutationPending}
               refreshMe={refreshMe}
               teamId={membership.teamId}
             />
@@ -1363,11 +1412,15 @@ function TeamSettings({ membership, refreshMe }: { membership: MeMembership; ref
 function MembersSettings({
   canManage,
   currentUserId,
+  invitationDialogOpen,
+  onInvitationMutationPendingChange,
   refreshMe,
   teamId,
 }: {
   canManage: boolean;
   currentUserId: string;
+  invitationDialogOpen: boolean;
+  onInvitationMutationPendingChange: (pending: boolean) => void;
   refreshMe: () => void;
   teamId: string;
 }) {
@@ -1397,7 +1450,9 @@ function MembersSettings({
 
   return (
     <>
-      {canManage ? <InvitationSettings teamId={teamId} /> : null}
+      {canManage && !invitationDialogOpen ? (
+        <InvitationSettings teamId={teamId} onMutationPendingChange={onInvitationMutationPendingChange} />
+      ) : null}
       <section className="panel">
         <h2>Team members</h2>
         <AsyncState state={state}>
@@ -1437,7 +1492,134 @@ function MembersSettings({
   );
 }
 
-function InvitationSettings({ teamId }: { teamId: string }) {
+function InvitationDialog({
+  mutationPending,
+  onClose,
+  onMutationPendingChange,
+  returnFocusRef,
+  teamDisplayName,
+  teamId,
+}: {
+  mutationPending: boolean;
+  onClose: () => void;
+  onMutationPendingChange: (pending: boolean) => void;
+  returnFocusRef: { current: HTMLButtonElement | null };
+  teamDisplayName: string;
+  teamId: string;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const mutationPendingRef = useRef(mutationPending);
+  const onCloseRef = useRef(onClose);
+  mutationPendingRef.current = mutationPending;
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const target = dialog?.querySelector<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled])",
+    );
+    if (mutationPending) {
+      if (!dialog.contains(document.activeElement)) (target ?? dialog).focus();
+    } else if (document.activeElement === dialog) {
+      target?.focus();
+    }
+  }, [mutationPending]);
+
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (mutationPendingRef.current) return;
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (!dialogRef.current?.contains(document.activeElement) || document.activeElement === dialogRef.current) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      returnFocusRef.current?.focus();
+    };
+  }, [returnFocusRef]);
+
+  return (
+    <div className="dialog-layer">
+      <button
+        aria-label="Dismiss invitation dialog"
+        className="dialog-backdrop"
+        disabled={mutationPending}
+        tabIndex={-1}
+        type="button"
+        onClick={onClose}
+      />
+      <div
+        aria-describedby="invitation-dialog-description"
+        aria-labelledby="invitation-dialog-title"
+        aria-modal="true"
+        className="dialog-card invitation-dialog"
+        ref={dialogRef}
+        role="dialog"
+        tabIndex={-1}
+      >
+        <header className="dialog-header">
+          <div>
+            <span className="eyebrow dialog-eyebrow">{teamDisplayName}</span>
+            <h2 id="invitation-dialog-title">Invite people</h2>
+          </div>
+          <button
+            aria-label="Close invitation dialog"
+            className="dialog-close"
+            disabled={mutationPending}
+            ref={closeButtonRef}
+            type="button"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </header>
+        <p className="dialog-description" id="invitation-dialog-description">
+          Anyone with the active link can join this Team as a member until the link expires.
+        </p>
+        <InvitationSettings presentation="dialog" teamId={teamId} onMutationPendingChange={onMutationPendingChange} />
+      </div>
+    </div>
+  );
+}
+
+function InvitationSettings({
+  onMutationPendingChange,
+  presentation = "panel",
+  teamId,
+}: {
+  onMutationPendingChange: (pending: boolean) => void;
+  presentation?: "dialog" | "panel";
+  teamId: string;
+}) {
   const state = useResource(() => browserApi.invitation(teamId), teamId);
   const [current, setCurrent] = useState<Awaited<ReturnType<typeof browserApi.invitation>>>();
   const [busy, setBusy] = useState(false);
@@ -1455,6 +1637,7 @@ function InvitationSettings({ teamId }: { teamId: string }) {
 
   async function mutateInvitation(action: () => Promise<NonNullable<typeof current>>, successMessage: string) {
     setBusy(true);
+    onMutationPendingChange(true);
     setError(undefined);
     setMessage(undefined);
     try {
@@ -1464,6 +1647,7 @@ function InvitationSettings({ teamId }: { teamId: string }) {
       setError(cause instanceof Error ? cause.message : "Unable to update the invitation link");
     } finally {
       setBusy(false);
+      onMutationPendingChange(false);
     }
   }
 
@@ -1480,9 +1664,13 @@ function InvitationSettings({ teamId }: { teamId: string }) {
   }
 
   return (
-    <section className="panel">
-      <h2>Invite people</h2>
-      <p>Anyone with the active link can join this Team as a member until the link expires.</p>
+    <section className={presentation === "dialog" ? "invitation-dialog-content" : "panel"}>
+      {presentation === "panel" ? (
+        <>
+          <h2>Invite people</h2>
+          <p>Anyone with the active link can join this Team as a member until the link expires.</p>
+        </>
+      ) : null}
       <AsyncState state={state}>
         {(loaded) => {
           const invitation = current ?? loaded;
@@ -1493,7 +1681,7 @@ function InvitationSettings({ teamId }: { teamId: string }) {
                 <input aria-label="Invitation link" readOnly type="url" value={invitation.inviteUrl} />
               </label>
               <p className="muted">Expires {formatDate(invitation.expiresAt)}.</p>
-              <div className="actions">
+              <div className={presentation === "dialog" ? "actions dialog-actions" : "actions"}>
                 <button type="button" onClick={() => void copyInvitation(invitation.inviteUrl)}>
                   Copy invitation link
                 </button>

@@ -1,0 +1,481 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const state = vi.hoisted(() => ({
+  events: [] as string[],
+  config: {} as Record<string, unknown>,
+  app: undefined as unknown,
+  appOptions: undefined as unknown,
+  onClose: undefined as (() => Promise<void>) | undefined,
+  database: undefined as unknown,
+  selectedAgents: [] as Array<{ computerId: string }>,
+  sql: { end: vi.fn() },
+  parseServerConfig: vi.fn(),
+  migrateDatabase: vi.fn(),
+  verifyDatabaseMigrations: vi.fn(),
+  createDatabaseClient: vi.fn(),
+  createApp: vi.fn(),
+  registryCurrentInstanceId: vi.fn(),
+  registrySupports: vi.fn(),
+  imBindingOptions: undefined as unknown,
+  imBindingGetAgentComputerId: vi.fn(),
+  feishuConnectionOptions: undefined as unknown,
+  feishuConnectionStart: vi.fn(),
+  feishuConnectionStop: vi.fn(),
+  feishuSetupOptions: undefined as unknown,
+  feishuSetupStart: vi.fn(),
+  feishuSetupStop: vi.fn(),
+  workerOptions: undefined as unknown,
+  workerStart: vi.fn(),
+  workerStop: vi.fn(),
+  domainOptions: undefined as unknown,
+  outboundExecute: vi.fn(),
+  googleOptions: undefined as unknown,
+  devAuthArgs: undefined as unknown,
+  slackAdapterOptions: undefined as unknown,
+}));
+
+vi.mock("../app.js", () => ({ createApp: state.createApp }));
+vi.mock("../admin/bootstrap.js", () => ({ bootstrapInitialAdmin: vi.fn() }));
+vi.mock("../bootstrap-readiness.js", () => ({
+  BootstrapReadiness: class {
+    complete(stage: string) {
+      state.events.push(`ready:${stage}`);
+    }
+  },
+}));
+vi.mock("../config.js", () => ({
+  parseServerConfig: state.parseServerConfig,
+  isHostedEnvironment: vi.fn(() => true),
+  serverEnvironmentSummary: vi.fn(() => ({ environment: "prod" })),
+}));
+vi.mock("../db/client.js", () => ({ createDatabaseClient: state.createDatabaseClient }));
+vi.mock("../db/migrate.js", () => ({
+  MigrationVerificationError: class extends Error {},
+  migrateDatabase: state.migrateDatabase,
+  verifyDatabaseMigrations: state.verifyDatabaseMigrations,
+  withMigrationLock: vi.fn(),
+}));
+vi.mock("../runtime/connection-registry.js", () => ({
+  ConnectionRegistry: class {
+    currentInstanceId(computerId: string) {
+      return state.registryCurrentInstanceId(computerId);
+    }
+    supports(computerId: string, instanceId: string, capability: string) {
+      return state.registrySupports(computerId, instanceId, capability);
+    }
+  },
+  RuntimeRegistrySendError: class extends Error {},
+}));
+vi.mock("../runtime/im-delivery-worker.js", () => ({
+  ImDeliveryWorker: class {
+    constructor(options: unknown) {
+      state.workerOptions = options;
+    }
+    start() {
+      state.events.push("worker:start");
+      state.workerStart();
+    }
+    stop() {
+      state.events.push("worker:stop");
+      state.workerStop();
+    }
+  },
+}));
+vi.mock("../runtime/runtime-custody-store.js", () => ({ PostgresRuntimeCustodyStore: class {} }));
+vi.mock("../runtime/runtime-domain-owner.js", () => ({
+  RuntimeDomainConflictError: class extends Error {},
+  RuntimeDomainOwner: class {
+    constructor(_registry: unknown, _store: unknown, options: unknown) {
+      state.domainOptions = options;
+    }
+  },
+  RuntimeDomainRequestError: class extends Error {},
+}));
+vi.mock("../services/agents/index.js", () => ({ AgentService: class {}, AgentServiceError: class extends Error {} }));
+vi.mock("../services/auth/index.js", () => ({
+  AuthIdentityService: class {},
+  AuthService: class {},
+  AuthServiceError: class extends Error {},
+  AuthTokenService: class {},
+  ConnectCodeService: class {},
+  DefaultGoogleIdentityClient: class {},
+  DevBrowserAuthService: class {
+    constructor(...args: unknown[]) {
+      state.devAuthArgs = args;
+    }
+  },
+  formatStartupError: (error: unknown, knownSecrets: string[]) => {
+    let detail = error instanceof Error ? error.message : String(error);
+    for (const secret of knownSecrets) if (secret) detail = detail.replaceAll(secret, "[REDACTED]");
+    return detail;
+  },
+  GoogleBrowserAuthService: class {
+    constructor(options: unknown) {
+      state.googleOptions = options;
+    }
+  },
+  OAuthFlowService: class {},
+  PostAuthenticationService: class {},
+}));
+vi.mock("../services/computers/index.js", () => ({ ComputerService: class {} }));
+vi.mock("../services/crypto.js", () => ({ ApplicationCipher: class {} }));
+vi.mock("../services/im/index.js", () => ({
+  ImMessageInbox: class {},
+  ImResourceService: class {},
+  OutboundMessageService: class {
+    execute(input: unknown) {
+      return state.outboundExecute(input);
+    }
+  },
+}));
+vi.mock("../services/im-bindings/feishu/index.js", () => ({
+  DefaultFeishuRegistrationGateway: class {},
+  FeishuConnectionManager: class {
+    constructor(options: unknown) {
+      state.feishuConnectionOptions = options;
+    }
+    start() {
+      state.events.push("feishu-connections:start");
+      state.feishuConnectionStart();
+    }
+    async stop() {
+      state.events.push("feishu-connections:stop");
+      await state.feishuConnectionStop();
+    }
+  },
+  FeishuSetupService: class {
+    constructor(options: unknown) {
+      state.feishuSetupOptions = options;
+    }
+    start() {
+      state.events.push("feishu-setup:start");
+      state.feishuSetupStart();
+    }
+    async stop() {
+      state.events.push("feishu-setup:stop");
+      await state.feishuSetupStop();
+    }
+  },
+}));
+vi.mock("../services/im-bindings/index.js", () => ({
+  createImProviderAdapterResolver: vi.fn(() => vi.fn()),
+  ImBindingService: class {
+    constructor(_database: unknown, _cipher: unknown, options: unknown) {
+      state.imBindingOptions = options;
+    }
+    getAgentComputerId(agentId: string) {
+      return state.imBindingGetAgentComputerId(agentId);
+    }
+  },
+}));
+vi.mock("../services/im-bindings/slack/index.js", () => ({
+  DefaultSlackApiClient: class {},
+  SlackAdapter: class {
+    constructor(options: unknown) {
+      state.slackAdapterOptions = options;
+    }
+  },
+}));
+vi.mock("../services/invitations/index.js", () => ({ InvitationService: class {} }));
+vi.mock("../services/runtime-config/index.js", () => ({ EffectiveRuntimeSnapshotAssembler: class {} }));
+vi.mock("../services/teams/index.js", () => ({ TeamMembershipService: class {} }));
+vi.mock("../web-app.js", () => ({ defaultWebAppRoot: "/mock-web" }));
+
+import { startServer } from "../index.js";
+
+const originalSecrets = {
+  database: process.env.OPENTAG_DATABASE_URL,
+  jwt: process.env.OPENTAG_JWT_SECRET,
+  google: process.env.OPENTAG_GOOGLE_CLIENT_SECRET,
+  encryption: process.env.OPENTAG_ENCRYPTION_KEY,
+};
+const originalExitCode = process.exitCode;
+
+function defaultConfig() {
+  return {
+    accessTokenTtlSeconds: 900,
+    autoMigrate: true,
+    databaseUrl: "postgres://db-user:db-password@localhost/opentag",
+    encryptionKey: new Uint8Array(32),
+    channel: {
+      binName: "opentag",
+      channel: "prod",
+      defaultHome: "/tmp/opentag",
+      displayName: "OpenTag",
+      packageName: "@opentag/cli",
+      serviceId: "opentag",
+    },
+    environment: "prod",
+    devAuth: { email: "dev@example.com" },
+    google: { clientId: "google-client", clientSecret: "google-secret" },
+    host: "127.0.0.1",
+    jwtSecret: "jwt-secret",
+    migrationsDirectory: "/mock/migrations",
+    port: 8000,
+    publicUrl: "https://opentag.example.com",
+    refreshTokenTtlSeconds: 2_592_000,
+  };
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  state.events.length = 0;
+  state.config = defaultConfig();
+  state.appOptions = undefined;
+  state.onClose = undefined;
+  state.selectedAgents = [{ computerId: "computer-1" }];
+  state.imBindingOptions = undefined;
+  state.feishuConnectionOptions = undefined;
+  state.feishuSetupOptions = undefined;
+  state.workerOptions = undefined;
+  state.domainOptions = undefined;
+  state.googleOptions = undefined;
+  state.devAuthArgs = undefined;
+  state.slackAdapterOptions = undefined;
+  state.sql = { end: vi.fn(async () => state.events.push("sql:end")) };
+  state.database = {
+    select: vi.fn(() => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          limit: vi.fn(async () => state.selectedAgents),
+        })),
+      })),
+    })),
+  };
+  state.parseServerConfig.mockImplementation(() => state.config);
+  state.migrateDatabase.mockImplementation(async () => state.events.push("migration:run"));
+  state.verifyDatabaseMigrations.mockImplementation(async () => state.events.push("migration:verify"));
+  state.createDatabaseClient.mockImplementation(() => ({ database: state.database, sql: state.sql }));
+  state.registryCurrentInstanceId.mockReturnValue("instance-1");
+  state.registrySupports.mockReturnValue(true);
+  state.imBindingGetAgentComputerId.mockResolvedValue("computer-1");
+  state.outboundExecute.mockResolvedValue({ status: "succeeded" });
+  const log = { info: vi.fn(), error: vi.fn() };
+  state.app = {
+    addHook: vi.fn((_name: string, hook: () => Promise<void>) => {
+      state.onClose = hook;
+    }),
+    listen: vi.fn(async () => state.events.push("listen")),
+    close: vi.fn(async () => {
+      state.events.push("app:close");
+      await state.onClose?.();
+    }),
+    log,
+  };
+  state.createApp.mockImplementation((options: unknown) => {
+    state.appOptions = options;
+    return state.app;
+  });
+  process.env.OPENTAG_DATABASE_URL = "postgres://db-user:db-password@localhost/opentag";
+  process.env.OPENTAG_JWT_SECRET = "jwt-secret";
+  process.env.OPENTAG_GOOGLE_CLIENT_SECRET = "google-secret";
+  process.env.OPENTAG_ENCRYPTION_KEY = "encryption-secret";
+  process.exitCode = undefined;
+});
+
+afterEach(() => {
+  const restore = (key: string, value: string | undefined) => {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  };
+  restore("OPENTAG_DATABASE_URL", originalSecrets.database);
+  restore("OPENTAG_JWT_SECRET", originalSecrets.jwt);
+  restore("OPENTAG_GOOGLE_CLIENT_SECRET", originalSecrets.google);
+  restore("OPENTAG_ENCRYPTION_KEY", originalSecrets.encryption);
+  process.exitCode = originalExitCode;
+});
+
+describe("Server startup", () => {
+  it("migrates before listen, wires runtime/auth/provider services, and cleans up in reverse ownership order", async () => {
+    await startServer();
+
+    expect(state.migrateDatabase).toHaveBeenCalledWith(state.config.databaseUrl, state.config.migrationsDirectory);
+    expect(state.verifyDatabaseMigrations).not.toHaveBeenCalled();
+    expect(state.events).toEqual([
+      "ready:configuration",
+      "migration:run",
+      "ready:migration",
+      "feishu-setup:start",
+      "feishu-connections:start",
+      "worker:start",
+      "ready:application",
+      "listen",
+      "ready:listen",
+    ]);
+
+    const appOptions = state.appOptions as {
+      browserAuth: { dev: unknown; google: unknown; secureCookies: boolean };
+      slackEvents: { createAdapter(binding: unknown): unknown };
+    };
+    expect(appOptions.browserAuth).toMatchObject({ secureCookies: true });
+    expect(appOptions.browserAuth.dev).toBeDefined();
+    expect(appOptions.browserAuth.google).toBeDefined();
+    expect(state.devAuthArgs).toEqual(expect.arrayContaining(["dev@example.com"]));
+    expect(state.googleOptions).toMatchObject({ publicUrl: state.config.publicUrl });
+
+    const slackBinding = {
+      botAccessToken: "xoxb-current",
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U1",
+    };
+    appOptions.slackEvents.createAdapter(slackBinding);
+    expect(state.slackAdapterOptions).toMatchObject({
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U1",
+      token: "xoxb-current",
+    });
+
+    const runtimeReady = (state.imBindingOptions as { runtimeReady(agentId: string): Promise<boolean> }).runtimeReady;
+    await expect(runtimeReady("agent-1")).resolves.toBe(true);
+    expect(state.registrySupports).toHaveBeenCalledWith("computer-1", "instance-1", "imMessageTool");
+    state.registrySupports.mockReturnValue(false);
+    await expect(runtimeReady("agent-1")).resolves.toBe(false);
+    state.registrySupports.mockReturnValue(true);
+    state.registryCurrentInstanceId.mockReturnValue(undefined);
+    await expect(runtimeReady("agent-1")).resolves.toBe(false);
+
+    const feishuRuntimeReady = (state.feishuConnectionOptions as { runtimeReady(agentId: string): Promise<boolean> })
+      .runtimeReady;
+    state.registryCurrentInstanceId.mockReturnValue("instance-1");
+    await expect(feishuRuntimeReady("agent-1")).resolves.toBe(true);
+    state.imBindingGetAgentComputerId.mockResolvedValue(undefined);
+    await expect(feishuRuntimeReady("agent-1")).resolves.toBe(false);
+
+    const onImToolRequest = (
+      state.domainOptions as {
+        onImToolRequest(request: Record<string, unknown>, context: Record<string, unknown>): Promise<unknown>;
+      }
+    ).onImToolRequest;
+    await expect(
+      onImToolRequest(
+        {
+          requestId: "request-1",
+          sessionId: "session-1",
+          agentId: "agent-1",
+          placementGeneration: 3,
+          expectedLatestImMessageId: "message-1",
+          operation: "send",
+          text: "hello",
+          replyToImMessageId: "reply-1",
+          targetImMessageId: "target-1",
+          emoji: "eyes",
+        },
+        { computerId: "computer-1", instanceId: "instance-1" },
+      ),
+    ).resolves.toMatchObject({ type: "im:tool:result", requestId: "request-1", status: "succeeded" });
+    expect(state.outboundExecute).toHaveBeenCalledWith(
+      expect.objectContaining({
+        computerId: "computer-1",
+        computerInstanceId: "instance-1",
+        content: expect.objectContaining({ fallbackText: "hello" }),
+        replyToImMessageId: "reply-1",
+        targetImMessageId: "target-1",
+        emoji: "eyes",
+      }),
+    );
+
+    (state.workerOptions as { onDiagnostic(code: string): void }).onDiagnostic("IM_DELIVERY_FAILED");
+    expect((state.app as { log: { error: ReturnType<typeof vi.fn> } }).log.error).toHaveBeenCalledWith(
+      { code: "IM_DELIVERY_FAILED" },
+      "IM delivery worker diagnostic",
+    );
+
+    const app = state.app as { addHook: ReturnType<typeof vi.fn>; close(): Promise<void> };
+    expect(app.addHook).toHaveBeenCalledWith("onClose", expect.any(Function));
+    await app.close();
+    expect(state.events.slice(-5)).toEqual([
+      "app:close",
+      "worker:stop",
+      "feishu-setup:stop",
+      "feishu-connections:stop",
+      "sql:end",
+    ]);
+  });
+
+  it("verifies checked-in migrations before listening when auto-migrate is disabled", async () => {
+    state.config = { ...defaultConfig(), autoMigrate: false, google: undefined, devAuth: undefined };
+
+    await startServer();
+
+    expect(state.migrateDatabase).not.toHaveBeenCalled();
+    expect(state.verifyDatabaseMigrations).toHaveBeenCalledWith(
+      state.config.databaseUrl,
+      state.config.migrationsDirectory,
+    );
+    expect(state.events.indexOf("migration:verify")).toBeLessThan(state.events.indexOf("listen"));
+    const browserAuth = (state.appOptions as { browserAuth: { google?: unknown; dev?: unknown } }).browserAuth;
+    expect(browserAuth.google).toBeUndefined();
+    expect(browserAuth.dev).toBeUndefined();
+  });
+
+  it.each([
+    ["configuration", []],
+    ["migration", ["ready:configuration"]],
+  ])(
+    "fails during %s without announcing later readiness or exposing known secrets",
+    async (failureStage, expectedEvents) => {
+      const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      const failure = new Error(
+        "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret",
+      );
+      if (failureStage === "configuration")
+        state.parseServerConfig.mockImplementation(() => {
+          throw failure;
+        });
+      else state.migrateDatabase.mockRejectedValue(failure);
+
+      await startServer();
+
+      expect(state.createApp).not.toHaveBeenCalled();
+      expect(state.events).toEqual(expectedEvents);
+      expect(process.exitCode).toBe(1);
+      const output = stderr.mock.calls.flat().join(" ");
+      expect(output).toContain("Failed to start OpenTag server");
+      for (const secret of [
+        "postgres://db-user:db-password@localhost/opentag",
+        "jwt-secret",
+        "google-secret",
+        "encryption-secret",
+      ]) {
+        expect(output).not.toContain(secret);
+      }
+      stderr.mockRestore();
+    },
+  );
+
+  it("logs a redacted post-creation failure and closes every started resource", async () => {
+    const app = state.app as {
+      listen: ReturnType<typeof vi.fn>;
+      close: ReturnType<typeof vi.fn>;
+      log: { error: ReturnType<typeof vi.fn> };
+    };
+    app.listen.mockRejectedValue(
+      new Error("postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret"),
+    );
+
+    await startServer();
+
+    expect(process.exitCode).toBe(1);
+    expect(app.close).toHaveBeenCalledTimes(1);
+    expect(state.events).not.toContain("ready:listen");
+    expect(state.events.slice(-5)).toEqual([
+      "app:close",
+      "worker:stop",
+      "feishu-setup:stop",
+      "feishu-connections:stop",
+      "sql:end",
+    ]);
+    const logged = JSON.stringify(app.log.error.mock.calls);
+    expect(logged).toContain("Failed to start OpenTag server");
+    for (const secret of [
+      "postgres://db-user:db-password@localhost/opentag",
+      "jwt-secret",
+      "google-secret",
+      "encryption-secret",
+    ]) {
+      expect(logged).not.toContain(secret);
+    }
+  });
+});

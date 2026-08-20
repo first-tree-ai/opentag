@@ -33,11 +33,20 @@ function json(value: unknown, status = 200) {
 function installApi(
   role: "admin" | "member",
   options: {
+    agentRead?: () => Promise<void> | void;
+    agentReadStatus?: () => number | undefined;
+    agentListStatus?: () => number | undefined;
     alreadyJoinedInvitation?: boolean;
     bindingReauth?: boolean;
+    bindingEvidenceFails?: boolean;
     bound?: boolean;
+    computerEvidenceFails?: boolean;
+    computerStatus?: () => "online" | "offline";
+    handoffReady?: boolean;
     initialStatus?: "active" | "suspended";
+    invitationCreate?: () => Promise<Response> | Response;
     invitationExists?: boolean;
+    invitationRotate?: () => Promise<Response> | Response;
     provider?: "feishu" | "slack";
     profileUpdate?: (displayName: string) => Promise<Response> | Response;
     profileUpdateFails?: boolean;
@@ -83,7 +92,7 @@ function installApi(
   let memberRole: "admin" | "member" = "member";
   let otherMemberRole: "admin" | "member" = "member";
   let invitationExists = options.invitationExists ?? false;
-  let invitationVersion: "A" | "B" = "A";
+  let invitationVersion: "A" | "B" | "C" = "A";
   let joinedInvitation = options.alreadyJoinedInvitation ?? false;
   let teamNameConflicts = options.teamNameConflicts ?? (options.teamNameConflict ? 1 : 0);
   const invitation = () => ({
@@ -176,6 +185,8 @@ function installApi(
     }
     // Any Team id, so a Team created during the test is served like the seeded and invited ones.
     if (/^\/api\/v1\/teams\/[^/]+\/agents$/.test(path)) {
+      const failureStatus = options.agentListStatus?.();
+      if (failureStatus) return json({ error: { message: "Agent list unavailable" } }, failureStatus);
       return json({
         agents: [
           path.includes(invitedTeamId)
@@ -225,10 +236,20 @@ function installApi(
       return invitationExists ? json(invitation()) : new Response(null, { status: 204 });
     }
     if (path === `/api/v1/teams/${teamId}/invitation` && init?.method === "POST") {
+      if (options.invitationCreate) {
+        const response = await options.invitationCreate();
+        if (response.ok) invitationExists = true;
+        return response;
+      }
       invitationExists = true;
       return json(invitation(), 201);
     }
     if (path === `/api/v1/teams/${teamId}/invitation/rotate` && init?.method === "POST") {
+      if (options.invitationRotate) {
+        const response = await options.invitationRotate();
+        if (response.ok) invitationVersion = "B";
+        return response;
+      }
       invitationVersion = "B";
       return json(invitation());
     }
@@ -248,7 +269,25 @@ function installApi(
         },
       });
     }
-    if (/^\/api\/v1\/teams\/[^/]+\/computers$/.test(path)) return json({ computers: [] });
+    if (/^\/api\/v1\/teams\/[^/]+\/computers$/.test(path)) {
+      if (options.computerEvidenceFails) return json({ error: { message: "Computer evidence unavailable" } }, 503);
+      return json({
+        computers: [
+          {
+            id: computerId,
+            ownerUserId: userId,
+            ownerDisplayName: "Ada",
+            displayName: "Ada's Mac",
+            platform: "darwin",
+            connectionStatus: options.computerStatus?.() ?? "online",
+            connectedAt: "2026-08-20T00:00:00.000Z",
+            lastSeenAt: "2026-08-20T00:00:00.000Z",
+            observedAt: "2026-08-20T00:00:00.000Z",
+            agentIds: [agentId],
+          },
+        ],
+      });
+    }
     if (path === "/api/v1/me/computers") return json({ computers: [] });
     if (path === "/api/v1/me/connect-codes" && init?.method === "POST") {
       return json(
@@ -273,7 +312,11 @@ function installApi(
           409,
         );
       }
+      if (init?.method === "PATCH") return json(adminConfig());
       if (init?.method === "DELETE") return new Response(null, { status: 204 });
+      await options.agentRead?.();
+      const failureStatus = options.agentReadStatus?.();
+      if (failureStatus) return json({ error: { message: "Agent unavailable" } }, failureStatus);
       return json({
         ...agentSummary,
         status: lifecycleStatus,
@@ -293,7 +336,14 @@ function installApi(
       revision += 1;
       return json(adminConfig());
     }
+    if (path === `/api/v1/agents/${agentId}/im-binding/handoff`) {
+      if (options.bindingEvidenceFails) return json({ error: { message: "Handoff evidence unavailable" } }, 503);
+      if (!options.bound) return new Response(null, { status: 204 });
+      const bindingState = options.bindingReauth ? "reauthorization_required" : "active";
+      return json({ bindingState, handoffReady: options.handoffReady ?? bindingState === "active" });
+    }
     if (path === `/api/v1/agents/${agentId}/im-binding`) {
+      if (options.bindingEvidenceFails) return json({ error: { message: "Binding evidence unavailable" } }, 503);
       if (!options.bound) return new Response(null, { status: 204 });
       return json({
         id: crypto.randomUUID(),
@@ -327,6 +377,11 @@ function installApi(
     if (path === "/api/v1/auth/browser/logout" && init?.method === "POST") return new Response(null, { status: 204 });
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
   });
+  return {
+    setInvitationVersion(value: "A" | "B" | "C") {
+      invitationVersion = value;
+    },
+  };
 }
 
 describe("OpenTag Web App Shell", () => {
@@ -364,7 +419,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("member");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    expect(screen.getByText("ada@example.com")).toBeTruthy();
+    expect(screen.queryByText("ada@example.com")).toBeNull();
     expect(await screen.findByText("Reviewer")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Create Agent" })).toBeNull();
   });
@@ -452,8 +507,8 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/general`);
     const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
     render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit Agent settings" }));
     fireEvent.click(await screen.findByRole("button", { name: "Suspend Agent" }));
-    expect(await screen.findByRole("button", { name: "Reactivate Agent" })).toBeTruthy();
     await waitFor(() =>
       expect(
         vi
@@ -463,8 +518,9 @@ describe("OpenTag Web App Shell", () => {
           ),
       ).toHaveLength(2),
     );
-    expect(screen.getByText("Lifecycle").parentElement?.querySelector("dd")?.textContent).toBe("Suspended");
-    const deleteButton = screen.getByRole("button", { name: "Delete Agent permanently" });
+    expect(await screen.findByText("Agent is suspended")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Reactivate Agent" })).toBeTruthy();
+    const deleteButton = await screen.findByRole("button", { name: "Delete Agent permanently" });
     fireEvent.click(deleteButton);
     expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
     fireEvent.click(deleteButton);
@@ -487,6 +543,128 @@ describe("OpenTag Web App Shell", () => {
         .getAllByRole("link")
         .map((link) => link.textContent),
     ).toEqual(["Overview", "Runtime", "IM", "Resources", "Integrations", "Access"]);
+  });
+
+  it("refreshes Agent availability when the page regains focus", async () => {
+    let computerStatus: "online" | "offline" = "online";
+    installApi("admin", { bound: true, computerStatus: () => computerStatus });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+    expect((await screen.findAllByText("Ready")).length).toBeGreaterThan(0);
+
+    computerStatus = "offline";
+    fireEvent(window, new Event("focus"));
+    expect(await screen.findByText("Computer is offline")).toBeTruthy();
+  });
+
+  it("keeps the Agent list bounded to Team-level evidence", async () => {
+    installApi("admin", { bound: true, computerEvidenceFails: true });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+
+    expect(await screen.findByText("Reviewer")).toBeTruthy();
+    expect(screen.getByText("Unconfirmed")).toBeTruthy();
+    expect(screen.getByText("Unable to confirm Computer")).toBeTruthy();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes(`/agents/${agentId}/im-binding`))).toBe(
+      false,
+    );
+  });
+
+  it("reports one combined handoff dependency without inventing component causes", async () => {
+    installApi("admin", { bound: true, handoffReady: false });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    const handoffCard = screen.getByText("Handoff").closest("article");
+    expect(handoffCard).toBeTruthy();
+    expect(within(handoffCard as HTMLElement).getByText("Needs attention")).toBeTruthy();
+    expect(within(handoffCard as HTMLElement).getByText("Handoff needs attention")).toBeTruthy();
+    expect(screen.queryByText("Runtime capability unavailable")).toBeNull();
+  });
+
+  it("preserves the Agent detail when handoff evidence cannot be confirmed", async () => {
+    installApi("admin", { bound: true, bindingEvidenceFails: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    expect((await screen.findAllByText("Unable to confirm handoff")).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("does not overlap focus refreshes while an Agent read is still pending", async () => {
+    let agentReads = 0;
+    let computerStatus: "online" | "offline" = "online";
+    let releaseAgentRead = () => {};
+    const pendingAgentRead = new Promise<void>((resolve) => {
+      releaseAgentRead = resolve;
+    });
+    installApi("admin", {
+      agentRead: () => {
+        agentReads += 1;
+        return agentReads === 1 ? undefined : pendingAgentRead;
+      },
+      bound: true,
+      computerStatus: () => computerStatus,
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+
+    computerStatus = "offline";
+    fireEvent(window, new Event("focus"));
+    fireEvent(window, new Event("focus"));
+    await waitFor(() => expect(agentReads).toBe(2));
+    expect(agentReads).toBe(2);
+
+    releaseAgentRead();
+    expect(await screen.findByText("Computer is offline")).toBeTruthy();
+  });
+
+  it("invalidates a stale Agent detail after a background not-found response", async () => {
+    let agentReadStatus: number | undefined;
+    installApi("admin", { agentReadStatus: () => agentReadStatus, bound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+    expect((await screen.findAllByText("Ready")).length).toBeGreaterThan(0);
+
+    agentReadStatus = 404;
+    fireEvent(window, new Event("focus"));
+    expect((await screen.findByRole("alert")).textContent).toContain("Agent unavailable");
+    expect(screen.queryByText("Ready")).toBeNull();
+  });
+
+  it("marks retained Agent rows unconfirmed after a transient primary refresh failure", async () => {
+    let agentListStatus: number | undefined;
+    installApi("admin", { agentListStatus: () => agentListStatus });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+    expect(await screen.findByText("Computer online")).toBeTruthy();
+
+    agentListStatus = 503;
+    fireEvent(window, new Event("focus"));
+    expect(await screen.findByText("Unconfirmed")).toBeTruthy();
+    expect(screen.getByText("Reviewer")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("refreshes the parent Agent projection after an IM mutation", async () => {
+    installApi("admin", { bound: true });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Enable all messages" }));
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([input, init]) => String(input) === `/api/v1/agents/${agentId}` && (init?.method ?? "GET") === "GET",
+          ),
+      ).toHaveLength(2),
+    );
+    confirm.mockRestore();
   });
 
   it("uses a flat local navigation for Settings", async () => {
@@ -599,6 +777,206 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() => expect(link.value).toBe(`https://opentag.example.com/invites/${"B".repeat(43)}`));
     expect(confirm).toHaveBeenCalledOnce();
     confirm.mockRestore();
+  });
+
+  it("opens invitation-link management directly from the Team picker", async () => {
+    installApi("admin", { invitationExists: true });
+    render(<App />);
+    const teamTrigger = await screen.findByRole("button", { name: "Example" });
+    fireEvent.click(teamTrigger);
+    const teamPicker = screen.getByRole("dialog", { name: "Switch Team" });
+    fireEvent.click(within(teamPicker).getByRole("button", { name: "Invite people" }));
+
+    const invitationDialog = await screen.findByRole("dialog", { name: "Invite people" });
+    expect(screen.queryByRole("dialog", { name: "Switch Team" })).toBeNull();
+    expect((within(invitationDialog).getByLabelText("Invitation link") as HTMLInputElement).value).toBe(
+      `https://opentag.example.com/invites/${"A".repeat(43)}`,
+    );
+    const closeButton = within(invitationDialog).getByRole("button", { name: "Close invitation dialog" });
+    expect(document.activeElement).toBe(closeButton);
+    fireEvent.keyDown(closeButton, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Invite people" })).toBeNull();
+    expect(document.activeElement).toBe(teamTrigger);
+  });
+
+  it("keeps the Members invitation panel in sync after rotating from the Team-picker dialog", async () => {
+    installApi("admin", { invitationExists: true });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText } });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+
+    const pageLink = (await screen.findByLabelText("Invitation link")) as HTMLInputElement;
+    expect(pageLink.value).toContain("/invites/AAA");
+    fireEvent.click(screen.getByRole("button", { name: "Example" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Switch Team" })).getByRole("button", { name: "Invite people" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Invite people" });
+    expect(screen.getAllByLabelText("Invitation link")).toHaveLength(1);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Rotate invitation link" }));
+    await waitFor(() =>
+      expect((within(dialog).getByLabelText("Invitation link") as HTMLInputElement).value).toContain("/invites/BBB"),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close invitation dialog" }));
+
+    const refreshedPageLink = (await screen.findByLabelText("Invitation link")) as HTMLInputElement;
+    expect(refreshedPageLink.value).toContain("/invites/BBB");
+    fireEvent.click(screen.getByRole("button", { name: "Copy invitation link" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(refreshedPageLink.value));
+    confirm.mockRestore();
+  });
+
+  it("prevents switching invitation surfaces while a rotation is pending", async () => {
+    let resolveRotate: (response: Response) => void = () => undefined;
+    const pendingRotate = new Promise<Response>((resolve) => {
+      resolveRotate = resolve;
+    });
+    installApi("admin", { invitationExists: true, invitationRotate: () => pendingRotate });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+
+    await screen.findByLabelText("Invitation link");
+    fireEvent.click(screen.getByRole("button", { name: "Rotate invitation link" }));
+    fireEvent.click(screen.getByRole("button", { name: "Example" }));
+    const teamPicker = screen.getByRole("dialog", { name: "Switch Team" });
+    const inviteAction = within(teamPicker).getByRole("button", { name: "Invite people" }) as HTMLButtonElement;
+    expect(inviteAction.disabled).toBe(true);
+    fireEvent.click(inviteAction);
+    expect(screen.queryByRole("dialog", { name: "Invite people" })).toBeNull();
+
+    resolveRotate(
+      json({
+        token: "B".repeat(43),
+        inviteUrl: `https://opentag.example.com/invites/${"B".repeat(43)}`,
+        role: "member",
+        expiresAt: "2026-08-27T00:00:00.000Z",
+      }),
+    );
+    await waitFor(() => expect(inviteAction.disabled).toBe(false));
+    fireEvent.click(inviteAction);
+    const dialog = await screen.findByRole("dialog", { name: "Invite people" });
+    await waitFor(() =>
+      expect((within(dialog).getByLabelText("Invitation link") as HTMLInputElement).value).toContain("/invites/BBB"),
+    );
+    confirm.mockRestore();
+  });
+
+  it("keeps focus inside the invitation dialog while a rotation is pending", async () => {
+    let resolveRotate: (response: Response) => void = () => undefined;
+    const pendingRotate = new Promise<Response>((resolve) => {
+      resolveRotate = resolve;
+    });
+    installApi("admin", { invitationExists: true, invitationRotate: () => pendingRotate });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<App />);
+
+    const teamTrigger = await screen.findByRole("button", { name: "Example" });
+    fireEvent.click(teamTrigger);
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Switch Team" })).getByRole("button", { name: "Invite people" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Invite people" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Rotate invitation link" }));
+
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(teamTrigger);
+    fireEvent.keyDown(document.activeElement ?? dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Invite people" })).toBe(dialog);
+
+    resolveRotate(
+      json({
+        token: "B".repeat(43),
+        inviteUrl: `https://opentag.example.com/invites/${"B".repeat(43)}`,
+        role: "member",
+        expiresAt: "2026-08-27T00:00:00.000Z",
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        (within(dialog).getByRole("button", { name: "Close invitation dialog" }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    confirm.mockRestore();
+  });
+
+  it("uses the dialog card as the focus fallback while invitation creation is pending", async () => {
+    let resolveCreate: (response: Response) => void = () => undefined;
+    const pendingCreate = new Promise<Response>((resolve) => {
+      resolveCreate = resolve;
+    });
+    installApi("admin", { invitationCreate: () => pendingCreate });
+    render(<App />);
+
+    const teamTrigger = await screen.findByRole("button", { name: "Example" });
+    fireEvent.click(teamTrigger);
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Switch Team" })).getByRole("button", { name: "Invite people" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Invite people" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Create invitation link" }));
+
+    teamTrigger.focus();
+    fireEvent.keyDown(teamTrigger, { key: "Tab" });
+    expect(document.activeElement).toBe(dialog);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Invite people" })).toBe(dialog);
+
+    resolveCreate(
+      json(
+        {
+          token: "A".repeat(43),
+          inviteUrl: `https://opentag.example.com/invites/${"A".repeat(43)}`,
+          role: "member",
+          expiresAt: "2026-08-27T00:00:00.000Z",
+        },
+        201,
+      ),
+    );
+    expect(await within(dialog).findByLabelText("Invitation link")).toBeTruthy();
+    await waitFor(() => {
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      expect(document.activeElement).not.toBe(dialog);
+    });
+
+    dialog.focus();
+    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(teamTrigger);
+  });
+
+  it("replaces a locally rotated invitation with a newer successful server read", async () => {
+    const api = installApi("admin", { invitationExists: true });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+
+    expect(((await screen.findByLabelText("Invitation link")) as HTMLInputElement).value).toContain("/invites/AAA");
+    fireEvent.click(screen.getByRole("button", { name: "Rotate invitation link" }));
+    await waitFor(() =>
+      expect((screen.getByLabelText("Invitation link") as HTMLInputElement).value).toContain("/invites/BBB"),
+    );
+
+    api.setInvitationVersion("C");
+    fireEvent.click(screen.getByRole("link", { name: "Agents" }));
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("link", { name: "Settings" }));
+    fireEvent.click(await screen.findByRole("link", { name: "Members" }));
+
+    await waitFor(() =>
+      expect((screen.getByLabelText("Invitation link") as HTMLInputElement).value).toContain("/invites/CCC"),
+    );
+    confirm.mockRestore();
+  });
+
+  it("does not expose the Team-picker invitation shortcut to regular members", async () => {
+    installApi("member");
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Example" }));
+    const teamPicker = screen.getByRole("dialog", { name: "Switch Team" });
+    expect(within(teamPicker).queryByRole("button", { name: "Invite people" })).toBeNull();
   });
 
   it("keeps invitation-link management hidden from regular members", async () => {
@@ -740,11 +1118,12 @@ describe("OpenTag Web App Shell", () => {
     );
   });
 
-  it("keeps a legacy Feishu Bot visibly online while offering permission update or replacement", async () => {
+  it("offers a legacy Feishu Bot permission update without claiming live connectivity", async () => {
     installApi("admin", { bindingReauth: true, bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}/im`);
     render(<App />);
-    expect(await screen.findByText("Online · permissions update required")).toBeTruthy();
+    expect(await screen.findByText("Permissions update required")).toBeTruthy();
+    expect(screen.queryByText(/Online/)).toBeNull();
     expect(screen.getByRole("button", { name: "Reauthorize Feishu" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Replace with existing or new Feishu Bot" }));
     expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
@@ -754,6 +1133,15 @@ describe("OpenTag Web App Shell", () => {
         ([input, init]) => String(input).endsWith("/im-binding/feishu/setup-attempts") && init?.method === "POST",
       );
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "replace" });
+  });
+
+  it("describes an active binding as configured when handoff is unavailable", async () => {
+    installApi("admin", { bound: true, handoffReady: false });
+    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    render(<App />);
+
+    expect(await screen.findByText("Configured")).toBeTruthy();
+    expect(screen.queryByText(/Online/)).toBeNull();
   });
 
   it("shows a safe occupied-App recovery and retries the original replacement intent", async () => {

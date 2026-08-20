@@ -364,7 +364,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("member");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    expect(screen.getByText("ada@example.com")).toBeTruthy();
+    expect(screen.queryByText("ada@example.com")).toBeNull();
     expect(await screen.findByText("Reviewer")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Create Agent" })).toBeNull();
   });
@@ -599,6 +599,34 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() => expect(link.value).toBe(`https://opentag.example.com/invites/${"B".repeat(43)}`));
     expect(confirm).toHaveBeenCalledOnce();
     confirm.mockRestore();
+  });
+
+  it("opens invitation-link management directly from the Team picker", async () => {
+    installApi("admin", { invitationExists: true });
+    render(<App />);
+    const teamTrigger = await screen.findByRole("button", { name: "Example" });
+    fireEvent.click(teamTrigger);
+    const teamPicker = screen.getByRole("dialog", { name: "Switch Team" });
+    fireEvent.click(within(teamPicker).getByRole("button", { name: "Invite people" }));
+
+    const invitationDialog = await screen.findByRole("dialog", { name: "Invite people" });
+    expect(screen.queryByRole("dialog", { name: "Switch Team" })).toBeNull();
+    expect((within(invitationDialog).getByLabelText("Invitation link") as HTMLInputElement).value).toBe(
+      `https://opentag.example.com/invites/${"A".repeat(43)}`,
+    );
+    const closeButton = within(invitationDialog).getByRole("button", { name: "Close invitation dialog" });
+    expect(document.activeElement).toBe(closeButton);
+    fireEvent.keyDown(closeButton, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Invite people" })).toBeNull();
+    expect(document.activeElement).toBe(teamTrigger);
+  });
+
+  it("does not expose the Team-picker invitation shortcut to regular members", async () => {
+    installApi("member");
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Example" }));
+    const teamPicker = screen.getByRole("dialog", { name: "Switch Team" });
+    expect(within(teamPicker).queryByRole("button", { name: "Invite people" })).toBeNull();
   });
 
   it("keeps invitation-link management hidden from regular members", async () => {

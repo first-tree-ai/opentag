@@ -430,21 +430,34 @@ button.danger:hover {
   padding: 14px 8px;
 }
 
-.team-menu-action {
-  display: flex;
-  min-height: 39px;
-  align-items: center;
-  gap: 9px;
+.team-menu-actions {
+  display: grid;
+  gap: 2px;
   margin-top: 7px;
   border-top: 1px solid var(--border);
+  padding-top: 7px;
+}
+
+.team-menu-action {
+  display: flex;
+  width: 100%;
+  min-height: 39px;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
   color: var(--secondary-foreground);
   font-size: 0.8rem;
   font-weight: 560;
-  padding: 9px 8px 0;
+  padding: 0 8px;
   text-decoration: none;
 }
 
 .team-menu-action:hover {
+  border-color: transparent;
+  background: var(--brand-light);
   color: var(--brand-ink);
 }
 
@@ -577,6 +590,98 @@ button.danger:hover {
 .sidebar-backdrop,
 .mobile-shell-bar {
   display: none;
+}
+
+.dialog-layer {
+  position: fixed;
+  z-index: calc(var(--layer-sidebar) + 10);
+  display: grid;
+  overflow-y: auto;
+  place-items: center;
+  inset: 0;
+  padding: 24px;
+}
+
+.dialog-backdrop {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: rgb(22 33 27 / 42%);
+  padding: 0;
+}
+
+.dialog-backdrop:active {
+  transform: none;
+}
+
+.dialog-card {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 560px);
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  border: 1px solid var(--strong-border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 24px 70px rgb(22 33 27 / 22%);
+  padding: 24px;
+}
+
+.dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.dialog-eyebrow {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.dialog-header h2 {
+  margin: 0;
+  font-size: 1.35rem;
+}
+
+.dialog-close {
+  display: inline-grid;
+  width: 34px;
+  min-height: 34px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.4rem;
+  line-height: 1;
+  padding: 0;
+}
+
+.dialog-close:hover {
+  border-color: var(--border);
+  background: var(--background);
+  color: var(--foreground);
+}
+
+.dialog-description {
+  max-width: 50ch;
+  margin: 14px 0 22px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.invitation-dialog-content {
+  display: grid;
+  gap: 14px;
+}
+
+.dialog-actions {
+  margin-top: 4px;
 }
 
 .app-main {
@@ -1250,6 +1355,17 @@ code {
 }
 
 @media (max-width: 720px) {
+  .dialog-layer {
+    align-items: end;
+    padding: 12px;
+  }
+
+  .dialog-card {
+    max-height: calc(100dvh - 24px);
+    border-radius: 14px;
+    padding: 20px;
+  }
+
   .page-header,
   .object-title-row {
     align-items: stretch;

@@ -307,6 +307,7 @@ function AppShell() {
   const navigate = useNavigate();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [openMenu, setOpenMenu] = useState<"team" | "account">();
+  const [invitationOpen, setInvitationOpen] = useState(false);
   const [teamQuery, setTeamQuery] = useState("");
   const [loggingOut, setLoggingOut] = useState(false);
   const [accountError, setAccountError] = useState<string>();
@@ -459,17 +460,33 @@ function AppShell() {
                   })}
                   {filteredMemberships.length === 0 ? <span className="team-menu-empty">No matching Teams</span> : null}
                 </div>
-                <Link
-                  className="team-menu-action"
-                  to="/teams/new"
-                  onClick={() => {
-                    setOpenMenu(undefined);
-                    setNavigationOpen(false);
-                  }}
-                >
-                  <span aria-hidden="true">＋</span>
-                  Create Team
-                </Link>
+                <div className="team-menu-actions">
+                  {membership.role === "admin" ? (
+                    <button
+                      className="team-menu-action"
+                      type="button"
+                      onClick={() => {
+                        setOpenMenu(undefined);
+                        setNavigationOpen(false);
+                        setInvitationOpen(true);
+                      }}
+                    >
+                      <span aria-hidden="true">↗</span>
+                      Invite people
+                    </button>
+                  ) : null}
+                  <Link
+                    className="team-menu-action"
+                    to="/teams/new"
+                    onClick={() => {
+                      setOpenMenu(undefined);
+                      setNavigationOpen(false);
+                    }}
+                  >
+                    <span aria-hidden="true">＋</span>
+                    Create Team
+                  </Link>
+                </div>
               </section>
             ) : null}
           </div>
@@ -502,7 +519,6 @@ function AppShell() {
               </span>
               <span className="account-copy">
                 <strong>{me.user.displayName}</strong>
-                <small>{me.user.email}</small>
               </span>
               <span className="account-menu-dots" aria-hidden="true">
                 ⋮
@@ -552,6 +568,14 @@ function AppShell() {
           <Outlet />
         </main>
       </div>
+      {invitationOpen ? (
+        <InvitationDialog
+          returnFocusRef={teamTriggerRef}
+          teamDisplayName={membership.teamDisplayName}
+          teamId={membership.teamId}
+          onClose={() => setInvitationOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1520,7 +1544,94 @@ function MembersSettings({
   );
 }
 
-function InvitationSettings({ teamId }: { teamId: string }) {
+function InvitationDialog({
+  onClose,
+  returnFocusRef,
+  teamDisplayName,
+  teamId,
+}: {
+  onClose: () => void;
+  returnFocusRef: { current: HTMLButtonElement | null };
+  teamDisplayName: string;
+  teamId: string;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      returnFocusRef.current?.focus();
+    };
+  }, [onClose, returnFocusRef]);
+
+  return (
+    <div className="dialog-layer">
+      <button
+        aria-label="Dismiss invitation dialog"
+        className="dialog-backdrop"
+        tabIndex={-1}
+        type="button"
+        onClick={onClose}
+      />
+      <div
+        aria-describedby="invitation-dialog-description"
+        aria-labelledby="invitation-dialog-title"
+        aria-modal="true"
+        className="dialog-card invitation-dialog"
+        ref={dialogRef}
+        role="dialog"
+      >
+        <header className="dialog-header">
+          <div>
+            <span className="eyebrow dialog-eyebrow">{teamDisplayName}</span>
+            <h2 id="invitation-dialog-title">Invite people</h2>
+          </div>
+          <button
+            aria-label="Close invitation dialog"
+            className="dialog-close"
+            ref={closeButtonRef}
+            type="button"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </header>
+        <p className="dialog-description" id="invitation-dialog-description">
+          Anyone with the active link can join this Team as a member until the link expires.
+        </p>
+        <InvitationSettings presentation="dialog" teamId={teamId} />
+      </div>
+    </div>
+  );
+}
+
+function InvitationSettings({ presentation = "panel", teamId }: { presentation?: "dialog" | "panel"; teamId: string }) {
   const state = useResource(() => browserApi.invitation(teamId), teamId);
   const [current, setCurrent] = useState<Awaited<ReturnType<typeof browserApi.invitation>>>();
   const [busy, setBusy] = useState(false);
@@ -1563,9 +1674,13 @@ function InvitationSettings({ teamId }: { teamId: string }) {
   }
 
   return (
-    <section className="panel">
-      <h2>Invite people</h2>
-      <p>Anyone with the active link can join this Team as a member until the link expires.</p>
+    <section className={presentation === "dialog" ? "invitation-dialog-content" : "panel"}>
+      {presentation === "panel" ? (
+        <>
+          <h2>Invite people</h2>
+          <p>Anyone with the active link can join this Team as a member until the link expires.</p>
+        </>
+      ) : null}
       <AsyncState state={state}>
         {(loaded) => {
           const invitation = current ?? loaded;
@@ -1576,7 +1691,7 @@ function InvitationSettings({ teamId }: { teamId: string }) {
                 <input aria-label="Invitation link" readOnly type="url" value={invitation.inviteUrl} />
               </label>
               <p className="muted">Expires {formatDate(invitation.expiresAt)}.</p>
-              <div className="actions">
+              <div className={presentation === "dialog" ? "actions dialog-actions" : "actions"}>
                 <button type="button" onClick={() => void copyInvitation(invitation.inviteUrl)}>
                   Copy invitation link
                 </button>

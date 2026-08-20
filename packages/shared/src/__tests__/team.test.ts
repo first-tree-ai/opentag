@@ -5,6 +5,7 @@ import {
   ListTeamComputersResponseSchema,
   TeamMemberAdminConfigSchema,
   TeamMemberSummarySchema,
+  TeamProfileSchema,
   UpdateTeamProfileRequestSchema,
 } from "../index.js";
 
@@ -69,6 +70,33 @@ describe("Team contracts", () => {
     expect(() => CreateTeamRequestSchema.parse({ name: "example", displayName: "Example", role: "admin" })).toThrow();
   });
 
+  it("applies the same field limits to Team updates that creation enforces", () => {
+    const overlongName = "a".repeat(65);
+    const overlongDisplayName = "a".repeat(121);
+    expect(() => CreateTeamRequestSchema.parse({ name: overlongName, displayName: "Example" })).toThrow();
+    expect(() => UpdateTeamProfileRequestSchema.parse({ name: overlongName })).toThrow();
+    expect(() => CreateTeamRequestSchema.parse({ name: "example", displayName: overlongDisplayName })).toThrow();
+    expect(() => UpdateTeamProfileRequestSchema.parse({ displayName: overlongDisplayName })).toThrow();
+    // A Team that creation accepts at the boundary must stay renameable to the same boundary.
+    expect(UpdateTeamProfileRequestSchema.parse({ name: "a".repeat(64) })).toEqual({ name: "a".repeat(64) });
+    expect(UpdateTeamProfileRequestSchema.parse({ displayName: "a".repeat(120) })).toEqual({
+      displayName: "a".repeat(120),
+    });
+  });
+
+  it("rejects Team projections carrying values no writer could produce", () => {
+    const profile = {
+      id: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
+      name: "first-tree",
+      displayName: "a".repeat(121),
+      updatedAt: "2026-08-20T00:00:00.000Z",
+    };
+    expect(() => TeamProfileSchema.parse(profile)).toThrow();
+    expect(TeamProfileSchema.parse({ ...profile, displayName: "First Tree AI" })).toMatchObject({
+      displayName: "First Tree AI",
+    });
+  });
+
   it("returns the created Team with the caller already holding the admin role", () => {
     const created = {
       id: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
@@ -80,5 +108,7 @@ describe("Team contracts", () => {
     };
     expect(CreateTeamResponseSchema.parse(created)).toEqual(created);
     expect(() => CreateTeamResponseSchema.parse({ ...created, role: "owner" })).toThrow();
+    // Creator-becomes-admin is a hard contract, so a regression returning a member must not pass the boundary.
+    expect(() => CreateTeamResponseSchema.parse({ ...created, role: "member" })).toThrow();
   });
 });

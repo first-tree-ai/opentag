@@ -196,6 +196,37 @@ describe("account identity and Team foundation persistence", () => {
     }
   });
 
+  it("holds the membership ceiling against invitation redemption and admin restore too", async () => {
+    const value = await fixture();
+    try {
+      const userId = await value.identities.resolveOrCreate(google("solo", "solo@example.com"));
+      for (let index = 0; index < TEAM_MEMBERSHIP_LIMIT; index += 1) {
+        await value.teamService.createTeam(userId, { name: `team-${index}`, displayName: `Team ${index}` });
+      }
+      // Redemption raises the count, so it has to consult the same ceiling creation does.
+      const invite = await value.invitations.create(value.bootstrap.userId, value.bootstrap.teamId);
+      await expect(value.invitations.redeem(userId, invite.token, { ip: "127.0.0.1" })).rejects.toMatchObject({
+        code: "TEAM_LIMIT_REACHED",
+        statusCode: 409,
+      });
+
+      // So does an admin restoring a removed membership on a Team the saturated user does not hold.
+      await value.database.insert(memberships).values({
+        teamId: value.bootstrap.teamId,
+        userId,
+        role: "member",
+        status: "removed",
+        createdAt: now,
+        updatedAt: now,
+      });
+      await expect(
+        value.teamService.restore(value.bootstrap.userId, value.bootstrap.teamId, userId, "member"),
+      ).rejects.toMatchObject({ code: "TEAM_LIMIT_REACHED", statusCode: 409 });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("stops one account from creating Teams without bound", async () => {
     const value = await fixture();
     try {

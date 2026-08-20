@@ -51,7 +51,9 @@ export {
   RefreshTokenRequestSchema,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
+  TeamDisplayNameSchema,
   type TeamName,
+  TeamNameInputSchema,
   TeamNameSchema,
 } from "./auth.js";
 export {

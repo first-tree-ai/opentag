@@ -23,10 +23,14 @@ import { AuthServiceError } from "../auth/index.js";
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
 /**
- * Caps how many Teams one user may hold at once. Team creation is self-serve and canonical names are a
- * global namespace, so without a ceiling one account could squat every short name. The cap counts active
- * memberships rather than authored Teams because every membership is re-read on each authenticated
- * request, and that read is what an unbounded count would make expensive.
+ * The one invariant: a user holds at most this many active memberships. Every writer that can raise the
+ * count — creation, invitation redemption and admin restore — checks it under a lock on the affected
+ * user's row, so concurrent writers cannot both pass. It bounds the membership fan-out that
+ * `#resolveActiveUser` re-reads on every authenticated request.
+ *
+ * It is deliberately NOT a durable quota on Team creation: a creator who promotes another admin may leave,
+ * which frees a slot while the Team and its canonical name persist. Bounding self-serve creation itself
+ * needs a durable record of authorship, which the schema does not carry.
  */
 export const TEAM_MEMBERSHIP_LIMIT = 50;
 
@@ -140,6 +144,7 @@ export class TeamMembershipService {
       );
     }
     if (existing?.status === "active") return { membership: existing, transitioned: false };
+    await this.#requireMembershipHeadroom(transaction, userId);
     const now = this.#now();
     const [membership] = existing
       ? await transaction
@@ -153,6 +158,26 @@ export class TeamMembershipService {
           .returning();
     if (!membership) throw new Error("Invitation redemption did not return a membership");
     return { membership, transitioned: true };
+  }
+
+  /**
+   * Locks the user's row and refuses the write that would take them past TEAM_MEMBERSHIP_LIMIT. The lock is
+   * what makes the ceiling hold under concurrency, and re-taking it inside one transaction is a no-op.
+   */
+  async #requireMembershipHeadroom(transaction: DatabaseTransaction, userId: string): Promise<void> {
+    await transaction.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1).for("update");
+    const held = await transaction
+      .select({ teamId: memberships.teamId })
+      .from(memberships)
+      .where(and(eq(memberships.userId, userId), eq(memberships.status, "active")));
+    if (held.length >= TEAM_MEMBERSHIP_LIMIT) {
+      throw new AuthServiceError(
+        "TEAM_LIMIT_REACHED",
+        "deterministic",
+        `A user can hold at most ${TEAM_MEMBERSHIP_LIMIT} active Team memberships`,
+        409,
+      );
+    }
   }
 
   async bootstrapAdminInTransaction(transaction: DatabaseTransaction, userId: string, teamId: string): Promise<void> {
@@ -193,19 +218,7 @@ export class TeamMembershipService {
         if (user.suspendedAt) {
           throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
         }
-        // The caller's user row is locked above, so concurrent creations by this user cannot both pass.
-        const held = await transaction
-          .select({ teamId: memberships.teamId })
-          .from(memberships)
-          .where(and(eq(memberships.userId, callerUserId), eq(memberships.status, "active")));
-        if (held.length >= TEAM_MEMBERSHIP_LIMIT) {
-          throw new AuthServiceError(
-            "TEAM_LIMIT_REACHED",
-            "deterministic",
-            `A user can hold at most ${TEAM_MEMBERSHIP_LIMIT} active Team memberships`,
-            409,
-          );
-        }
+        await this.#requireMembershipHeadroom(transaction, callerUserId);
         const now = this.#now();
         const [team] = await transaction
           .insert(teams)
@@ -376,6 +389,7 @@ export class TeamMembershipService {
       if (target.status === "active") {
         throw new AuthServiceError("MEMBERSHIP_FORBIDDEN", "deterministic", "The Team member is already active", 409);
       }
+      await this.#requireMembershipHeadroom(transaction, userId);
       const [updated] = await transaction
         .update(memberships)
         .set({ status: "active", role: parsedRole, updatedAt: this.#now() })

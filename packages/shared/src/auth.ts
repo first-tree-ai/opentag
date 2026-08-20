@@ -39,11 +39,18 @@ export const MembershipStatusSchema = z.enum(["active", "left", "removed"]);
 export const AuthIdentityProviderSchema = z.enum(["google", "github", "oidc"]);
 export const TeamNameSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/);
 
+/**
+ * The canonical Team field contracts. Every writer and every projection uses these, so a Team can never
+ * hold a value that one entry point accepts and another rejects.
+ */
+export const TeamNameInputSchema = z.string().trim().toLowerCase().max(64).pipe(TeamNameSchema);
+export const TeamDisplayNameSchema = z.string().trim().min(1).max(120);
+
 export const MeMembershipSchema = z
   .object({
     teamId: z.string().uuid(),
     teamName: TeamNameSchema,
-    teamDisplayName: z.string().min(1),
+    teamDisplayName: TeamDisplayNameSchema,
     role: MembershipRoleSchema,
   })
   .strict();

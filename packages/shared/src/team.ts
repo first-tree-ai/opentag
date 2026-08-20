@@ -1,20 +1,26 @@
 import { z } from "zod";
-import { MembershipRoleSchema, MembershipStatusSchema, TeamNameSchema } from "./auth.js";
+import {
+  MembershipRoleSchema,
+  MembershipStatusSchema,
+  TeamDisplayNameSchema,
+  TeamNameInputSchema,
+  TeamNameSchema,
+} from "./auth.js";
 import { ComputerConnectionStatusSchema, ComputerPlatformSchema } from "./computer.js";
 
 export const TeamProfileSchema = z
   .object({
     id: z.string().uuid(),
     name: TeamNameSchema,
-    displayName: z.string().min(1),
+    displayName: TeamDisplayNameSchema,
     updatedAt: z.string().datetime(),
   })
   .strict();
 
 export const CreateTeamRequestSchema = z
   .object({
-    name: z.string().trim().toLowerCase().max(64).pipe(TeamNameSchema),
-    displayName: z.string().trim().min(1).max(120),
+    name: TeamNameInputSchema,
+    displayName: TeamDisplayNameSchema,
   })
   .strict();
 
@@ -22,8 +28,9 @@ export const CreateTeamResponseSchema = z
   .object({
     id: z.string().uuid(),
     name: TeamNameSchema,
-    displayName: z.string().min(1),
-    role: MembershipRoleSchema,
+    displayName: TeamDisplayNameSchema,
+    // Creation always installs the caller as admin; the literal keeps a regression from passing the boundary.
+    role: z.literal("admin"),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
@@ -31,8 +38,8 @@ export const CreateTeamResponseSchema = z
 
 export const UpdateTeamProfileRequestSchema = z
   .object({
-    name: z.string().trim().toLowerCase().pipe(TeamNameSchema).optional(),
-    displayName: z.string().trim().min(1).optional(),
+    name: TeamNameInputSchema.optional(),
+    displayName: TeamDisplayNameSchema.optional(),
   })
   .strict()
   .refine((value) => value.name !== undefined || value.displayName !== undefined, {

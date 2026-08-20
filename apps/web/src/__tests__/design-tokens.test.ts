@@ -163,10 +163,23 @@ function untokenized(css: string, owner: Owner): string[] {
  * names are not, which is why the reference patterns stay case-sensitive:
  * `--RADIUS-MD` really is a different token.
  */
-const TIME = /(\d+\.?\d*|\.\d+)\s*m?s\b/i;
-const EASING = /\b(ease|ease-in|ease-out|ease-in-out|linear|step-start|step-end|steps|cubic-bezier)\b/i;
-const CALL = /\(/;
-const AUTO = /\bauto\b/i;
+const TIME = /^(\d+\.?\d*|\.\d+)m?s$/i;
+const EASING_KEYWORDS = new Set(["ease", "ease-in", "ease-out", "ease-in-out", "linear", "step-start", "step-end"]);
+
+/**
+ * Whether one component value of a shorthand could be the duration or the
+ * easing. Whole tokens, not substrings: `fade140ms`, `linear-fade` and
+ * `auto-spin` are animation names that merely contain those spellings, and
+ * matching inside them reported three valid, fully tokenized animations.
+ *
+ * `steps()` and `cubic-bezier()` need no entry here -- a parenthesis in a
+ * token is enough, which also covers calc() and any var() from a family that
+ * does not own the property.
+ */
+function carriesMotion(token: string): boolean {
+  const word = token.toLowerCase();
+  return token.includes("(") || TIME.test(token) || EASING_KEYWORDS.has(word) || word === "auto";
+}
 
 function untokenizedMotion(css: string): string[] {
   return declarations(css).flatMap((declaration) => {
@@ -180,8 +193,12 @@ function untokenizedMotion(css: string): string[] {
     }
 
     const residue = declaration.references.replace(ownedReferences(owner), " ");
-    const carries = TIME.test(residue) || EASING.test(residue) || CALL.test(residue) || AUTO.test(residue);
-    return carries ? report : [];
+    return residue
+      .split(/[\s,]+/)
+      .filter(Boolean)
+      .some(carriesMotion)
+      ? report
+      : [];
   });
 }
 
@@ -319,6 +336,15 @@ describe("the guard itself", () => {
       '.row { animation: "140ms" var(--motion-fast) var(--ease-standard) infinite; }',
       '.row { animation: "ease-in" var(--motion-fast) var(--ease-standard) infinite; }',
       '.row { animation: "calc()" var(--motion-fast) var(--ease-standard) infinite; }',
+    ];
+    expect(names.flatMap((css) => untokenizedMotion(css))).toEqual([]);
+  });
+
+  it("reads a decision as a whole token, not a substring of a name", () => {
+    const names = [
+      ".row { animation: fade140ms var(--motion-fast) var(--ease-standard) infinite; }",
+      ".row { animation: linear-fade var(--motion-fast) var(--ease-standard) infinite; }",
+      ".row { animation: auto-spin var(--motion-fast) var(--ease-standard) infinite; }",
     ];
     expect(names.flatMap((css) => untokenizedMotion(css))).toEqual([]);
   });

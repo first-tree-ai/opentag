@@ -171,6 +171,29 @@ describe("FeishuSetup", () => {
     expect(create.mock.calls.map(([, intent]) => intent)).toEqual(["replace", "replace"]);
   });
 
+  it("retains the Server-owned terminal attempt when its retry fails to start", async () => {
+    vi.spyOn(browserApi, "createFeishuSetupAttempt")
+      .mockResolvedValueOnce(
+        attempt({
+          id: firstAttemptId,
+          intent: "replace",
+          state: "failed",
+          errorCode: "FEISHU_APP_ALREADY_BOUND",
+        }),
+      )
+      .mockRejectedValueOnce(new Error("Retry unavailable"));
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    expect(await screen.findByText(/already connected to another Agent/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry Feishu setup" }));
+
+    expect((await screen.findByRole("alert")).textContent).toBe("Retry unavailable");
+    expect(screen.getByText(/State: failed/)).toBeTruthy();
+    expect(screen.getByText(/already connected to another Agent/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry Feishu setup" })).toBeTruthy();
+  });
+
   it("normalizes non-Error failures into a stable error state", async () => {
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockRejectedValue("network unavailable");
     render(<Harness />);

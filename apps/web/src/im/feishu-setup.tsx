@@ -54,15 +54,16 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
       const current = attemptRef.current;
       if (creatingRef.current || (current?.intent === intent && ACTIVE_STATES.includes(current.state))) return false;
 
-      const lifecycle = lifecycleRef.current + 1;
-      lifecycleRef.current = lifecycle;
+      const lifecycle = lifecycleRef.current;
       creatingRef.current = true;
-      attemptRef.current = undefined;
-      setAttempt(undefined);
       setError(undefined);
       try {
         const started = await browserApi.createFeishuSetupAttempt(agentId, intent);
         if (lifecycleRef.current !== lifecycle) return false;
+        creatingRef.current = false;
+        if (attemptRef.current?.id !== started.id || !ACTIVE_STATES.includes(started.state)) {
+          lifecycleRef.current = lifecycle + 1;
+        }
         attemptRef.current = started;
         setAttempt(started);
         if (started.state === "succeeded") onSuccessRef.current();

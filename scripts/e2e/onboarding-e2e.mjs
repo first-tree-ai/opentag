@@ -439,6 +439,8 @@ async function main() {
   }
 }
 
-await main().catch(() => {
+await main().catch((error) => {
+  // A failure outside any step, such as an unusable Chromium, still needs to name itself.
+  process.stderr.write(`${String(error?.stack ?? error)}\n`);
   process.exitCode = 1;
 });

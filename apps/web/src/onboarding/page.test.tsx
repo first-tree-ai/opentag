@@ -6,6 +6,7 @@ import type {
   ImBindingHandoffStatus,
   MeMembership,
   TeamComputerSummary,
+  TeamMemberSummary,
   UserProfile,
 } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -98,15 +99,22 @@ function installFacts({
   agents = [],
   computers = [],
   handoff,
+  members = [],
 }: {
   agents?: AgentSummary[];
   computers?: TeamComputerSummary[];
   handoff?: ImBindingHandoffStatus;
+  members?: TeamMemberSummary[];
 } = {}) {
   vi.spyOn(browserApi, "computers").mockResolvedValue({ computers });
   vi.spyOn(browserApi, "agents").mockResolvedValue({ agents });
   vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(handoff);
+  vi.spyOn(browserApi, "members").mockResolvedValue({ members });
   vi.spyOn(browserApi, "logout").mockResolvedValue();
+}
+
+function teamAdmin(displayName: string, id: string): TeamMemberSummary {
+  return { userId: id, displayName, role: "admin" };
 }
 
 function renderPage({
@@ -203,10 +211,147 @@ describe("OnboardingPage", () => {
     expect(await screen.findByRole("heading", { name: "OpenTag is ready" })).toBeTruthy();
   });
 
+  it("hands a completed setup over to the Agent it created", async () => {
+    installFacts({
+      agents: [agent],
+      computers: [
+        {
+          ...computerA,
+          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+        },
+      ],
+      handoff: { bindingState: "active", handoffReady: true },
+    });
+    render(<OnboardingPage membership={admin} user={user} />);
+    expect(await screen.findByRole("heading", { name: "OpenTag is ready" })).toBeTruthy();
+
+    const manage = screen.getByRole("link", { name: "Manage this Agent" }) as HTMLAnchorElement;
+    expect(new URL(manage.href).pathname).toBe(`/agents/${agentId}/general`);
+    expect(screen.getByRole("link", { name: "Open Feishu" })).toBeTruthy();
+  });
+
+  it("leaves the application reachable from the page header", async () => {
+    installFacts();
+    renderPage();
+    expect(await screen.findByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
+
+    const brand = screen.getByRole("link", { name: "OpenTag" }) as HTMLAnchorElement;
+    expect(new URL(brand.href).pathname).toBe("/agents");
+  });
+
   it("shows Provider recovery when authoritative facts say no route is runnable", async () => {
     installFacts({ computers: [computerA] });
     renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false }]) });
     expect(await screen.findByRole("heading", { name: "Prepare Codex or Claude Code" })).toBeTruthy();
+  });
+
+  it("advances from Provider setup without asking the user to check again", async () => {
+    vi.useFakeTimers();
+    installFacts({ computers: [computerA] });
+    const computers = vi.spyOn(browserApi, "computers");
+    let runtimeReady = false;
+    const runtime: RuntimeFactsAdapter = {
+      load: vi.fn(
+        async (): Promise<RuntimeFactsResult> => ({
+          kind: "available",
+          providers: [
+            {
+              computerId: computerAId,
+              provider: "codex",
+              runtimeReady,
+              status: runtimeReady ? "ready" : "install",
+            },
+          ],
+        }),
+      ),
+    };
+    renderPage({ runtime });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole("heading", { name: "Install Codex" })).toBeTruthy();
+    const loadsBeforePolling = computers.mock.calls.length;
+
+    runtimeReady = true;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(computers.mock.calls.length).toBeGreaterThan(loadsBeforePolling);
+    expect(screen.getByRole("heading", { name: "Create your Agent" })).toBeTruthy();
+  });
+
+  it("leaves a state that waits on this user alone", async () => {
+    vi.useFakeTimers();
+    installFacts({ computers: [computerA] });
+    const computers = vi.spyOn(browserApi, "computers");
+    renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]) });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole("heading", { name: "Create your Agent" })).toBeTruthy();
+    const loads = computers.mock.calls.length;
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(computers.mock.calls.length).toBe(loads);
+  });
+
+  it("stops polling a page that nobody has acted on for ten minutes", async () => {
+    vi.useFakeTimers();
+    installFacts({ computers: [computerA] });
+    const computers = vi.spyOn(browserApi, "computers");
+    renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false }]) });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole("heading", { name: "Prepare Codex or Claude Code" })).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10 * 60 * 1_000);
+    });
+    const loads = computers.mock.calls.length;
+    expect(loads).toBeGreaterThan(1);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+
+    expect(computers.mock.calls.length).toBe(loads);
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+  });
+
+  it("resumes polling when someone returns to a page that went quiet", async () => {
+    vi.useFakeTimers();
+    installFacts({ computers: [computerA] });
+    const computers = vi.spyOn(browserApi, "computers");
+    renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false }]) });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11 * 60 * 1_000);
+    });
+    const quiet = computers.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(computers.mock.calls.length).toBe(quiet);
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const attended = computers.mock.calls.length;
+    expect(attended).toBeGreaterThan(quiet);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(computers.mock.calls.length).toBeGreaterThan(attended);
   });
 
   it.each([
@@ -269,6 +414,66 @@ describe("OnboardingPage", () => {
     expect(screen.getByText("Read only")).toBeTruthy();
     expect(screen.getByText(/A Team admin can complete this action/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Feishu/ })).toBeNull();
+  });
+
+  it.each([
+    [["Ada"], "Ask a Team admin to continue: Ada."],
+    [["Ada", "Grace"], "Ask a Team admin to continue: Ada or Grace."],
+    [["Ada", "Grace", "Linus"], "Ask a Team admin to continue: Ada, Grace, or 1 more."],
+    [["Ada", "Grace", "Linus", "Ken"], "Ask a Team admin to continue: Ada, Grace, or 2 more."],
+  ])("names the admins a member can ask", async (names, expected) => {
+    installFacts({
+      agents: [agent],
+      computers: [computerA],
+      members: [
+        ...names.map((name, index) => teamAdmin(name, `0000000${index}-0000-4000-8000-00000000000${index}`)),
+        { userId, displayName: "Ada Member", role: "member" },
+      ],
+    });
+    renderPage({
+      membership: member,
+      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]),
+    });
+
+    expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
+    expect(screen.getByText(`${expected} Your factual progress will update here.`)).toBeTruthy();
+  });
+
+  it("does not claim a named admin can finish a step tied to one Computer owner", async () => {
+    const ownerAdminId = "00000001-0000-4000-8000-000000000001";
+    installFacts({
+      computers: [{ ...computerA, ownerUserId: ownerAdminId, ownerDisplayName: "Ada" }],
+      members: [teamAdmin("Ada", ownerAdminId), teamAdmin("Grace", "00000002-0000-4000-8000-000000000002")],
+    });
+    renderPage({
+      membership: member,
+      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false }]),
+    });
+
+    expect(await screen.findByRole("heading", { name: "Prepare Codex or Claude Code" })).toBeTruthy();
+    expect(screen.getByText(/Ask a Team admin to continue: Ada or Grace\./)).toBeTruthy();
+    expect(screen.queryByText(/can complete this action/)).toBeNull();
+  });
+
+  it("keeps a member's facts readable when the member list is unavailable", async () => {
+    installFacts({ agents: [agent], computers: [computerA] });
+    vi.spyOn(browserApi, "members").mockRejectedValue(new Error("Members unavailable"));
+    renderPage({
+      membership: member,
+      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]),
+    });
+
+    expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
+    expect(screen.getByText(/A Team admin can complete this action/)).toBeTruthy();
+  });
+
+  it("does not ask for the member list when the viewer manages the Team", async () => {
+    installFacts({ agents: [agent], computers: [computerA] });
+    const members = vi.spyOn(browserApi, "members");
+    renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]) });
+
+    expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
+    expect(members).not.toHaveBeenCalled();
   });
 
   it("keeps OpenTag editable and waits for the explicit Agent creation action", async () => {

@@ -48,6 +48,7 @@ describe("ComputerSetup", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.useRealTimers();
+    Reflect.deleteProperty(navigator, "clipboard");
   });
 
   it("captures the owned-Computer baseline before issuing a connect code", async () => {
@@ -290,6 +291,88 @@ describe("ComputerSetup", () => {
     expect(screen.getByRole("status").textContent).toBe("Computer connected.");
     expect(onConnected).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("copies the command and counts down on the existing poll cycle", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    vi.spyOn(browserApi, "ownComputers").mockResolvedValue({ computers: [] });
+    vi.spyOn(browserApi, "issueConnectCode").mockResolvedValue({
+      bootstrapCommand,
+      expiresIn: 900,
+      issuedAt: connectedAt,
+    });
+
+    render(<ComputerSetup teamId={teamId} />);
+    await clickGenerate();
+
+    expect(screen.getByText("Expires in 15:00")).toBeTruthy();
+    // The command owns no timer of its own: the poll cycle and the expiry deadline stay the only two.
+    expect(vi.getTimerCount()).toBe(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500);
+    });
+    expect(screen.getByText("Expires in 14:59")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
+    });
+
+    expect(writeText).toHaveBeenCalledWith(bootstrapCommand);
+    expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
+  });
+
+  it("selects the command when the browser denies clipboard access", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+    });
+    vi.spyOn(browserApi, "ownComputers").mockResolvedValue({ computers: [] });
+    vi.spyOn(browserApi, "issueConnectCode").mockResolvedValue({
+      bootstrapCommand,
+      expiresIn: 900,
+      issuedAt: connectedAt,
+    });
+
+    render(<ComputerSetup teamId={teamId} />);
+    await clickGenerate();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
+    });
+
+    expect(
+      screen.getByText("Copying is unavailable here. The command is selected; press Ctrl or Cmd + C."),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
+    expect(window.getSelection()?.rangeCount).toBe(1);
+  });
+
+  it("stops showing the countdown once the Computer connects", async () => {
+    vi.spyOn(browserApi, "ownComputers")
+      .mockResolvedValueOnce({ computers: [existingComputer] })
+      .mockResolvedValue({ computers: [existingComputer, newComputer] });
+    vi.spyOn(browserApi, "issueConnectCode").mockResolvedValue({
+      bootstrapCommand,
+      expiresIn: 900,
+      issuedAt: connectedAt,
+    });
+
+    render(<ComputerSetup teamId={teamId} />);
+    await clickGenerate();
+    expect(screen.getByText("Expires in 15:00")).toBeTruthy();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500);
+    });
+
+    expect(screen.getByRole("status").textContent).toBe("Computer connected.");
+    expect(screen.queryByText(/^Expires in/)).toBeNull();
   });
 
   it("normalizes connect-code issuance errors", async () => {

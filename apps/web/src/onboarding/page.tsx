@@ -28,6 +28,17 @@ import {
 
 const FEISHU_BOT_APP_LINK = "https://applink.feishu.cn/client/bot/open";
 const CREATE_INTENT_VERSION = 1;
+/** A Computer republishes Provider readiness about twice a minute, so a slower poll loses nothing. */
+const RUNTIME_POLL_INTERVAL_MS = 5_000;
+const RUNTIME_POLL_LIMIT_MS = 10 * 60 * 1_000;
+/** States that only an action taken outside this page can advance, and that no child polls for. */
+const RUNTIME_WAIT_STATES: readonly OnboardingCurrentState["kind"][] = ["provider", "agent-runtime"];
+/** The application route this page hands the Team over to once setup is complete. */
+const AGENTS_ROUTE = "/agents";
+
+function agentGeneralRoute(agentId: string): string {
+  return `${AGENTS_ROUTE}/${agentId}/general`;
+}
 
 type PageLoadState =
   | { readonly kind: "loading" }
@@ -41,6 +52,8 @@ interface OnboardingSnapshot {
   readonly targetCandidates: readonly AgentSummary[];
   readonly handoff: OnboardingFacts["handoff"];
   readonly runtime: RuntimeFactsResult;
+  /** Team admins a member can ask; empty whenever the viewer manages the Team. */
+  readonly admins: readonly string[];
 }
 
 interface RouteSelection {
@@ -83,6 +96,7 @@ export function OnboardingPage({
     () => readCreationIntent(membership.teamId)?.request.displayName ?? "OpenTag",
   );
   const [refreshPending, setRefreshPending] = useState(false);
+  const [attendedWindow, setAttendedWindow] = useState(0);
   const creationInFlight = useRef(false);
   const refreshInFlight = useRef(false);
   const reload = useCallback(() => {
@@ -91,12 +105,20 @@ export function OnboardingPage({
     setRefreshPending(true);
     setRevision((value) => value + 1);
   }, []);
+  /**
+   * A refresh someone is present for: it reloads facts and restarts the bounded
+   * polling window, so returning to a capped page resumes automatic progress.
+   */
+  const attendedReload = useCallback(() => {
+    setAttendedWindow((value) => value + 1);
+    reload();
+  }, [reload]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: revision is the explicit Server-fact reload trigger.
   useEffect(() => {
     let active = true;
     setLoadState((current) => (current.kind === "ready" ? current : { kind: "loading" }));
-    void loadSnapshot(membership.teamId, runtimeFacts).then(
+    void loadSnapshot(membership.teamId, runtimeFacts, membership.role !== "admin").then(
       (snapshot) => {
         if (!active) return;
         refreshInFlight.current = false;
@@ -119,9 +141,9 @@ export function OnboardingPage({
   }, [membership.teamId, revision, runtimeFacts]);
 
   useEffect(() => {
-    const refresh = () => reload();
+    const refresh = () => attendedReload();
     const refreshVisible = () => {
-      if (document.visibilityState === "visible") reload();
+      if (document.visibilityState === "visible") attendedReload();
     };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refreshVisible);
@@ -129,12 +151,29 @@ export function OnboardingPage({
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refreshVisible);
     };
-  }, [reload]);
+  }, [attendedReload]);
 
   const resolved = useMemo(() => {
     if (loadState.kind !== "ready") return undefined;
     return resolveSnapshot(membership, loadState.snapshot);
   }, [loadState, membership]);
+
+  const waitingForRuntime = resolved !== undefined && RUNTIME_WAIT_STATES.includes(resolved.state.currentState.kind);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: attendedWindow deliberately restarts the bounded window.
+  useEffect(() => {
+    if (!waitingForRuntime) return;
+    let elapsedMs = 0;
+    const timer = window.setInterval(() => {
+      elapsedMs += RUNTIME_POLL_INTERVAL_MS;
+      // An unattended page goes quiet; the next attended refresh starts a fresh window.
+      if (elapsedMs >= RUNTIME_POLL_LIMIT_MS) {
+        window.clearInterval(timer);
+        return;
+      }
+      if (document.visibilityState !== "hidden") reload();
+    }, RUNTIME_POLL_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [attendedWindow, reload, waitingForRuntime]);
 
   const runAgentCreation = useCallback(
     (request: Omit<CreateAgentRequest, "creationIntentId">) => {
@@ -206,7 +245,7 @@ export function OnboardingPage({
             }}
             onAgentDisplayNameChange={setAgentDisplayName}
             onCreateAgent={(current) => runAgentCreation(normalizedAgentRequest(current, agentDisplayName))}
-            onReload={reload}
+            onReload={attendedReload}
             refreshPending={refreshPending}
             snapshot={loadState.snapshot}
             state={resolved.state}
@@ -231,7 +270,7 @@ function OnboardingHeader({ user }: { user: UserProfile }) {
   }
   return (
     <header className="onboarding-header">
-      <a className="brand" href="/onboarding">
+      <a className="brand" href={AGENTS_ROUTE}>
         OpenTag
       </a>
       <div className="onboarding-account">
@@ -311,7 +350,7 @@ function OnboardingContent({
             ))}
           </div>
         ) : (
-          <ReadOnlyCopy />
+          <ReadOnlyCopy admins={snapshot.admins} />
         )}
       </ActionSection>
     );
@@ -335,7 +374,7 @@ function OnboardingContent({
         title="Connect a Local Computer"
         description="Run one secure command in Terminal. OpenTag continues when the Computer connects."
       >
-        <ReadOnlyCopy />
+        <ReadOnlyCopy admins={snapshot.admins} />
       </ActionSection>
     );
   }
@@ -346,7 +385,11 @@ function OnboardingContent({
         title="Reconnect your Computer"
         description={`Open OpenTag on ${current.computers.map((computer) => computer.displayName).join(", ")}.`}
       >
-        {canManage ? <ReloadButton pending={refreshPending} onReload={onReload} /> : <ReadOnlyCopy />}
+        {canManage ? (
+          <ReloadButton pending={refreshPending} onReload={onReload} />
+        ) : (
+          <ReadOnlyCopy admins={snapshot.admins} />
+        )}
       </ActionSection>
     );
   }
@@ -380,7 +423,7 @@ function OnboardingContent({
             })}
           </div>
         ) : (
-          <ReadOnlyCopy />
+          <ReadOnlyCopy admins={snapshot.admins} />
         )}
       </ActionSection>
     );
@@ -400,7 +443,11 @@ function OnboardingContent({
             : `Finish Provider setup on ${current.computer.displayName}, then check again.`)
         }
       >
-        {canManage ? <ReloadButton pending={refreshPending} onReload={onReload} /> : <ReadOnlyCopy />}
+        {canManage ? (
+          <ReloadButton pending={refreshPending} onReload={onReload} />
+        ) : (
+          <ReadOnlyCopy admins={snapshot.admins} />
+        )}
       </ActionSection>
     );
   }
@@ -412,7 +459,7 @@ function OnboardingContent({
           title="Create the Team Agent"
           description={`The runnable route is ${providerLabel(current.provider.provider)} on ${current.computer.displayName}.`}
         >
-          <ReadOnlyCopy />
+          <ReadOnlyCopy admins={snapshot.admins} />
         </ActionSection>
       );
     }
@@ -512,7 +559,11 @@ function OnboardingContent({
             : "The Agent identity and Feishu setup are unchanged. Restore its bound Computer and Provider, then check again."
         }
       >
-        {canManage ? <ReloadButton pending={refreshPending} onReload={onReload} /> : <ReadOnlyCopy />}
+        {canManage ? (
+          <ReloadButton pending={refreshPending} onReload={onReload} />
+        ) : (
+          <ReadOnlyCopy admins={snapshot.admins} />
+        )}
       </ActionSection>
     );
   }
@@ -528,7 +579,7 @@ function OnboardingContent({
             {(control) => <FeishuAction control={control} progress={current.progress} />}
           </FeishuSetup>
         ) : (
-          <ReadOnlyCopy />
+          <ReadOnlyCopy admins={snapshot.admins} />
         )}
       </ActionSection>
     );
@@ -538,9 +589,14 @@ function OnboardingContent({
       title="OpenTag is ready"
       description="Add the Bot to a Feishu group, then mention OpenTag with your first task."
     >
-      <a className="button" href={FEISHU_BOT_APP_LINK} rel="noreferrer" target="_blank">
-        Open Feishu
-      </a>
+      <div className="actions">
+        <a className="button" href={FEISHU_BOT_APP_LINK} rel="noreferrer" target="_blank">
+          Open Feishu
+        </a>
+        <a className="button secondary" href={agentGeneralRoute(current.agent.id)}>
+          Manage this Agent
+        </a>
+      </div>
       <p className="onboarding-helper">Setup is complete.</p>
     </ActionSection>
   );
@@ -593,8 +649,22 @@ function ReloadButton({ onReload, pending }: { onReload: () => void; pending: bo
   );
 }
 
-function ReadOnlyCopy() {
-  return <p className="notice">A Team admin can complete this action. Your factual progress will update here.</p>;
+function ReadOnlyCopy({ admins }: { admins: readonly string[] }) {
+  return <p className="notice">{`${adminGuidance(admins)} Your factual progress will update here.`}</p>;
+}
+
+/**
+ * Names people to ask, not people who can act: whether a given admin can finish
+ * the current step also depends on facts this page does not decide, such as who
+ * owns the Computer the route runs on. At most two names keep the sentence
+ * readable in a large Team.
+ */
+function adminGuidance(admins: readonly string[]): string {
+  const [first, second, ...rest] = admins;
+  if (!first) return "A Team admin can complete this action.";
+  if (!second) return `Ask a Team admin to continue: ${first}.`;
+  if (rest.length === 0) return `Ask a Team admin to continue: ${first} or ${second}.`;
+  return `Ask a Team admin to continue: ${first}, ${second}, or ${rest.length} more.`;
 }
 
 function FeishuAction({
@@ -631,8 +701,16 @@ function handoffTitle(current: Extract<OnboardingCurrentState, { kind: "handoff"
     : "Repair Feishu authorization";
 }
 
-async function loadSnapshot(teamId: string, runtimeFacts: RuntimeFactsAdapter): Promise<OnboardingSnapshot> {
-  const [{ computers }, { agents }] = await Promise.all([browserApi.computers(teamId), browserApi.agents(teamId)]);
+async function loadSnapshot(
+  teamId: string,
+  runtimeFacts: RuntimeFactsAdapter,
+  withAdmins: boolean,
+): Promise<OnboardingSnapshot> {
+  const [{ computers }, { agents }, admins] = await Promise.all([
+    browserApi.computers(teamId),
+    browserApi.agents(teamId),
+    withAdmins ? loadTeamAdmins(teamId) : Promise.resolve<readonly string[]>([]),
+  ]);
   const targetCandidates = agents.filter((agent) => agent.status === "active");
   const remembered = readTargetAgent(teamId);
   const targetAgent =
@@ -643,7 +721,21 @@ async function loadSnapshot(teamId: string, runtimeFacts: RuntimeFactsAdapter): 
     runtimeFacts.load({ teamId, agents, computers }),
     targetAgent ? browserApi.imBindingHandoff(targetAgent.id) : Promise.resolve(undefined),
   ]);
-  return { agents, computers, targetAgent, targetCandidates, handoff, runtime };
+  return { agents, computers, targetAgent, targetCandidates, handoff, runtime, admins };
+}
+
+/**
+ * Names the admins a member can ask. Their absence only costs the member a
+ * name, so an unavailable member list degrades to the generic guidance instead
+ * of failing the page's authoritative facts.
+ */
+async function loadTeamAdmins(teamId: string): Promise<readonly string[]> {
+  try {
+    const { members } = await browserApi.members(teamId);
+    return members.filter((member) => member.role === "admin").map((member) => member.displayName);
+  } catch {
+    return [];
+  }
 }
 
 function resolveSnapshot(membership: MeMembership, snapshot: OnboardingSnapshot): { state: OnboardingState } {

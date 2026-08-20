@@ -43,6 +43,8 @@ import {
   MeResponseSchema,
   type TeamInvitation,
   TeamInvitationSchema,
+  type TeamMemberAdminConfig,
+  TeamMemberAdminConfigSchema,
   type TeamProfile,
   TeamProfileSchema,
   teamAgentsPath,
@@ -50,8 +52,10 @@ import {
   teamComputersPath,
   teamInvitationPath,
   teamInvitationRotatePath,
+  teamMemberPath,
   teamMembersPath,
   type UpdateAgentRequest,
+  type UpdateTeamMemberRequest,
   type UpdateTeamProfileRequest,
 } from "@opentag/shared/browser";
 
@@ -84,6 +88,14 @@ export class BrowserApi {
 
   members(teamId: string): Promise<ListTeamMembersResponse> {
     return this.request(teamMembersPath(teamId), ListTeamMembersResponseSchema);
+  }
+
+  updateTeamMember(teamId: string, userId: string, input: UpdateTeamMemberRequest): Promise<TeamMemberAdminConfig> {
+    return this.request(teamMemberPath(teamId, userId), TeamMemberAdminConfigSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
   }
 
   updateTeam(teamId: string, input: UpdateTeamProfileRequest): Promise<TeamProfile> {

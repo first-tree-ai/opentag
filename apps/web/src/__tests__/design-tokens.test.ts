@@ -163,7 +163,13 @@ function untokenized(css: string, owner: Owner): string[] {
  * names are not, which is why the reference patterns stay case-sensitive:
  * `--RADIUS-MD` really is a different token.
  */
-const TIME = /^(\d+\.?\d*|\.\d+)m?s$/i;
+/**
+ * A CSS <time> is a <number> with a unit, and a <number> carries an optional
+ * sign and an optional exponent -- `-140ms` is a valid negative delay, and a
+ * local motion decision like any other. Anchored, so an identifier that merely
+ * ends in one of these spellings stays a name.
+ */
+const TIME = /^[+-]?(\d+\.?\d*|\.\d+)(e[+-]?\d+)?m?s$/i;
 const EASING_KEYWORDS = new Set(["ease", "ease-in", "ease-out", "ease-in-out", "linear", "step-start", "step-end"]);
 
 /**
@@ -338,6 +344,17 @@ describe("the guard itself", () => {
       '.row { animation: "calc()" var(--motion-fast) var(--ease-standard) infinite; }',
     ];
     expect(names.flatMap((css) => untokenizedMotion(css))).toEqual([]);
+  });
+
+  it("reads a signed or exponent-form time as a time", () => {
+    const signed = ".row { animation: pulse var(--motion-fast) var(--ease-standard) -140ms; }";
+    expect(untokenizedMotion(signed)).toEqual(["animation: pulse var(--motion-fast) var(--ease-standard) -140ms"]);
+
+    const plus = ".row { animation: pulse var(--motion-fast) var(--ease-standard) +140ms; }";
+    expect(untokenizedMotion(plus)).toEqual(["animation: pulse var(--motion-fast) var(--ease-standard) +140ms"]);
+
+    const exponent = ".row { animation-delay: 1e2ms; }";
+    expect(untokenizedMotion(exponent)).toEqual(["animation-delay: 1e2ms"]);
   });
 
   it("reads a decision as a whole token, not a substring of a name", () => {

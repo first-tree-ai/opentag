@@ -775,6 +775,15 @@ describe("OpenTag Web App Shell", () => {
       ),
     );
     expect(await within(dialog).findByLabelText("Invitation link")).toBeTruthy();
+    await waitFor(() => {
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      expect(document.activeElement).not.toBe(dialog);
+    });
+
+    dialog.focus();
+    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).not.toBe(teamTrigger);
   });
 
   it("replaces a locally rotated invitation with a newer successful server read", async () => {

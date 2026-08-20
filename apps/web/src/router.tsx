@@ -1515,12 +1515,16 @@ function InvitationDialog({
   onCloseRef.current = onClose;
 
   useEffect(() => {
-    if (!mutationPending || dialogRef.current?.contains(document.activeElement)) return;
     const dialog = dialogRef.current;
+    if (!dialog) return;
     const target = dialog?.querySelector<HTMLElement>(
       "button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled])",
     );
-    (target ?? dialog)?.focus();
+    if (mutationPending) {
+      if (!dialog.contains(document.activeElement)) (target ?? dialog).focus();
+    } else if (document.activeElement === dialog) {
+      target?.focus();
+    }
   }, [mutationPending]);
 
   useEffect(() => {
@@ -1545,7 +1549,7 @@ function InvitationDialog({
       }
       const first = focusable[0];
       const last = focusable.at(-1);
-      if (!dialogRef.current?.contains(document.activeElement)) {
+      if (!dialogRef.current?.contains(document.activeElement) || document.activeElement === dialogRef.current) {
         event.preventDefault();
         (event.shiftKey ? last : first)?.focus();
       } else if (event.shiftKey && document.activeElement === first) {

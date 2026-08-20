@@ -791,7 +791,8 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("heading", { name: "Message @reviewer" })).toBeTruthy();
     expect(screen.getByText("Send a direct message, or mention @reviewer in a Feishu conversation.")).toBeTruthy();
     expect(screen.getByText("Cannot receive new work")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Review messaging" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Review messaging" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Review runtime" })).toBeNull();
     expect(screen.queryByText("Handoff")).toBeNull();
     expect(screen.queryByText("Computer")).toBeNull();
     expect(screen.queryByText("Ada's Mac")).toBeNull();
@@ -804,8 +805,22 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     expect(await screen.findByText("Status temporarily unavailable")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Messaging status unavailable" })).toBeTruthy();
+    expect(screen.getByText("The messaging identity could not be confirmed. Try again in a moment.")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Connect Feishu or Slack" })).toBeNull();
+    expect(screen.queryByText("This Agent needs a messaging identity before teammates can send it work.")).toBeNull();
     expect(screen.queryByText("Handoff")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("offers messaging setup only when the missing binding is confirmed", async () => {
+    installApi("admin", { bound: false });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Connect Feishu or Slack" })).toBeTruthy();
+    expect(screen.getByText("This Agent needs a messaging identity before teammates can send it work.")).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Messaging status unavailable" })).toBeNull();
   });
 
   it("does not overlap focus refreshes while an Agent read is still pending", async () => {

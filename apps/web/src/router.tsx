@@ -66,6 +66,7 @@ type AgentAvailability = {
       lastConfirmedAt: string | null;
     };
     channel: {
+      state: "connected" | "not_connected" | "unconfirmed";
       provider: "feishu" | "slack" | null;
       botDisplayName: string | null;
     };
@@ -80,18 +81,20 @@ function projectAgentAvailability(
   computer: TeamComputerSummary | undefined,
   binding: ImBindingSummary | undefined,
   handoff: ImBindingHandoffStatus | undefined,
-  evidenceConfirmed: boolean,
+  bindingEvidenceConfirmed: boolean,
+  handoffEvidenceConfirmed: boolean,
 ): AgentAvailability {
   const computerReady = computer?.connectionStatus === "online";
-  const handoffState = !evidenceConfirmed
-    ? ("unconfirmed" as const)
-    : !binding
-      ? ("not_connected" as const)
-      : binding.bindingState === "provisioning"
-        ? ("setting_up" as const)
-        : binding.bindingState === "active" && handoff?.handoffReady
-          ? ("ready" as const)
-          : ("action_required" as const);
+  const handoffState =
+    !bindingEvidenceConfirmed || !handoffEvidenceConfirmed
+      ? ("unconfirmed" as const)
+      : !binding
+        ? ("not_connected" as const)
+        : binding.bindingState === "provisioning"
+          ? ("setting_up" as const)
+          : binding.bindingState === "active" && handoff?.handoffReady
+            ? ("ready" as const)
+            : ("action_required" as const);
   const dependencies: AgentAvailability["dependencies"] = {
     computer: {
       state: computer ? (computerReady ? "ready" : "action_required") : "unconfirmed",
@@ -99,6 +102,7 @@ function projectAgentAvailability(
     },
     handoff: { state: handoffState, lastConfirmedAt: binding?.lastConfirmedAt ?? null },
     channel: {
+      state: !bindingEvidenceConfirmed ? "unconfirmed" : binding ? "connected" : "not_connected",
       provider: binding?.provider ?? null,
       botDisplayName: binding?.bot.displayName ?? null,
     },
@@ -120,7 +124,7 @@ function projectAgentAvailability(
   if (agent.runtimeProvider !== "codex") {
     return { state: "action_required", reason: "runtime_unavailable", lastConfirmedAt: null, dependencies };
   }
-  if (!evidenceConfirmed) {
+  if (!bindingEvidenceConfirmed || !handoffEvidenceConfirmed) {
     return { state: "unconfirmed", reason: "handoff_unconfirmed", lastConfirmedAt: null, dependencies };
   }
   if (!binding) return { state: "not_connected", reason: "im_not_connected", lastConfirmedAt: null, dependencies };
@@ -176,7 +180,8 @@ async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
       computers.find((computer) => computer.id === agent.computer.id),
       binding,
       handoff,
-      bindingResult.status === "fulfilled" && handoffResult.status === "fulfilled",
+      bindingResult.status === "fulfilled",
+      handoffResult.status === "fulfilled",
     ),
   };
 }
@@ -197,6 +202,7 @@ function markAgentDetailUnconfirmed(agent: AgentDetailView): AgentDetailView {
         ...agent.availability.dependencies,
         computer: { state: "unconfirmed", lastConfirmedAt: null },
         handoff: { state: "unconfirmed", lastConfirmedAt: null },
+        channel: { ...agent.availability.dependencies.channel, state: "unconfirmed" },
       },
     },
   };
@@ -1419,7 +1425,7 @@ function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgent
             {agent.viewerCapabilities.canManage ? "Manage messaging" : "View messaging"}
           </Link>
         </div>
-        {channelLabel ? (
+        {channel.state === "connected" && channelLabel ? (
           <div className="agent-use-panel">
             <div className="agent-use-copy">
               <span className="agent-use-channel">{channelLabel}</span>
@@ -1431,12 +1437,20 @@ function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgent
               <small>{receiveModeLabel(agent.receiveMode)}</small>
             </div>
           </div>
-        ) : (
+        ) : channel.state === "not_connected" ? (
           <div className="agent-use-panel empty">
             <div className="agent-use-copy">
               <span className="agent-use-channel">Messaging</span>
               <h4>Connect Feishu or Slack</h4>
               <p>This Agent needs a messaging identity before teammates can send it work.</p>
+            </div>
+          </div>
+        ) : (
+          <div className="agent-use-panel empty">
+            <div className="agent-use-copy">
+              <span className="agent-use-channel">Messaging</span>
+              <h4>Messaging status unavailable</h4>
+              <p>The messaging identity could not be confirmed. Try again in a moment.</p>
             </div>
           </div>
         )}
@@ -2846,12 +2860,11 @@ function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to:
     agent.availability.reason === "im_not_connected" ||
     agent.availability.reason === "im_provisioning" ||
     agent.availability.reason === "im_reauthorization_required" ||
-    agent.availability.reason === "im_error" ||
-    agent.availability.reason === "handoff_unavailable" ||
-    agent.availability.reason === "handoff_unconfirmed"
+    agent.availability.reason === "im_error"
   ) {
     return { label: "Review messaging", to: `/agents/${agent.id}/im` };
   }
+  if (agent.availability.reason === "handoff_unavailable") return undefined;
   if (agent.availability.state === "unconfirmed") return undefined;
   return { label: "Review runtime", to: `/agents/${agent.id}/runtime` };
 }

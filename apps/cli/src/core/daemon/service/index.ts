@@ -51,8 +51,9 @@ type DaemonServiceMutation = "install" | "restart" | "start" | "stop" | "uninsta
 export async function createDaemonServiceManager(
   options: CreateDaemonServiceManagerOptions = {},
 ): Promise<DaemonServiceManager> {
+  const environment = options.env ?? process.env;
   const platform = options.platform ?? process.platform;
-  const home = await canonicalizeServiceHome(resolve(options.home ?? resolveOpenTagHome(options.env ?? process.env)));
+  const home = await canonicalizeServiceHome(resolve(options.home ?? resolveOpenTagHome(environment)));
   const runner = options.runner ?? defaultServiceRunner;
   const userHome = await canonicalizeServiceHome(resolve(options.userHome ?? homedir()));
   const channelDefaultHome = await canonicalizeServiceHome(getChannelConfig(CHANNEL, userHome).defaultHome);
@@ -68,6 +69,7 @@ export async function createDaemonServiceManager(
     invocation,
     platform,
     runner,
+    sourcePath: environment.PATH,
     uid,
     userHome,
     username: options.username,
@@ -176,6 +178,7 @@ function createBackend(options: {
   invocation: ResolvedCliInvocation;
   platform: NodeJS.Platform;
   runner: ServiceRunner;
+  sourcePath?: string;
   uid: number;
   userHome: string;
   username?: string;
@@ -186,6 +189,7 @@ function createBackend(options: {
       invocation: options.invocation,
       runner: options.runner,
       serviceId: channelConfig.serviceId,
+      ...(options.sourcePath ? { sourcePath: options.sourcePath } : {}),
       uid: options.uid,
       userHome: options.userHome,
       ...(options.username ? { username: options.username } : {}),
@@ -198,6 +202,7 @@ function createBackend(options: {
       invocation: options.invocation,
       runner: options.runner,
       serviceId: channelConfig.serviceId,
+      ...(options.sourcePath ? { sourcePath: options.sourcePath } : {}),
       uid: options.uid,
       userHome: options.userHome,
     });

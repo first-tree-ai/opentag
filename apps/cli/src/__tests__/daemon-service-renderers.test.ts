@@ -161,6 +161,45 @@ describe("systemd service backend", () => {
     );
     expect(unit).toContain(`ExecStart="${installedCli}" "daemon" "service-run"`);
     expect(unit).not.toContain(staleCli);
+    expect(unit).toContain(staleBin);
+    expect(unit.indexOf(installedBin)).toBeLessThan(unit.indexOf(staleBin));
+  });
+
+  it("detects and reconciles an active service whose PATH predates user-directory inheritance", async () => {
+    const userHome = await temporaryDirectory("opentag-systemd-path-drift-");
+    const home = await temporaryDirectory("opentag-systemd-home-");
+    const invocation = { args: [], program: "/opt/opentag/bin/opentag" };
+    const unitPath = join(userHome, ".config", "systemd", "user", "opentag.service");
+    await writeFileWithParents(
+      unitPath,
+      renderSystemdUnit({
+        home,
+        invocation,
+        path: buildServicePath(invocation, "linux"),
+        serviceId: "opentag",
+      }),
+    );
+    const runner = fakeRunner((program, args) => {
+      if (program === "loginctl" || args.includes("show-environment")) return result(0, "", "");
+      if (args.includes("is-active")) return result(0, "active", "");
+      if (args.includes("MainPID")) return result(0, "321", "");
+      return result(0, "", "");
+    });
+    const backend = createSystemdBackend({
+      home,
+      invocation,
+      runner,
+      serviceId: "opentag",
+      sourcePath: "/home/test/.local/bin:/usr/bin",
+      uid: 1000,
+      userHome,
+      username: "test",
+    });
+
+    await expect(backend.status()).resolves.toMatchObject({ drifted: true, state: "active" });
+    await expect(backend.installAndStart()).resolves.toMatchObject({ drifted: false, state: "active" });
+    expect(runner.run).toHaveBeenCalledWith("systemctl", ["--user", "restart", "opentag.service"], expect.any(Object));
+    await expect(readFile(unitPath, "utf8")).resolves.toContain("/home/test/.local/bin");
   });
 
   it.each([
@@ -496,6 +535,7 @@ describe("launchd service backend", () => {
       runner,
       serviceId: "opentag",
       sleep: async () => undefined,
+      sourcePath: "/Users/test/.local/bin:relative:/usr/bin",
       uid: 501,
       userHome,
     });
@@ -508,6 +548,9 @@ describe("launchd service backend", () => {
     const evictionPrints = calls.slice(0, bootstrapIndex).filter((value) => value === "print gui/501/opentag");
     expect(bootstrapIndex).toBeGreaterThan(0);
     expect(evictionPrints).toHaveLength(3);
+    const plist = await readFile(join(userHome, "Library", "LaunchAgents", "opentag.plist"), "utf8");
+    expect(plist).toContain("/Users/test/.local/bin");
+    expect(plist).not.toContain("relative");
   });
 
   it("reports a loaded waiting LaunchAgent without a PID as inactive", async () => {

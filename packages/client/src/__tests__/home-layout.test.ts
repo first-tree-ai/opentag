@@ -51,6 +51,8 @@ describe("OpenTag Home layout", () => {
     expect(paths.workspaceRoot).toMatch(
       new RegExp(`^${escapeRegExp(join(home, "data", "workspaces"))}/a-[a-f0-9]{40}$`, "u"),
     );
+    expect(paths.agentsFile).toBe(join(paths.files, "AGENTS.md"));
+    expect(paths.legacyAgentsFile).toBe(join(paths.workspaceRoot, "AGENTS.md"));
     expect(sessionBindingPath(home, "agent-1", "session-1")).toMatch(
       /\/data\/runtime\/session-bindings\/a-[a-f0-9]{40}\/s-[a-f0-9]{40}\.json$/u,
     );

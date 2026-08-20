@@ -1,16 +1,25 @@
 import { randomUUID } from "node:crypto";
-import type { DirectImMessageDeliveryRequest } from "@opentag/shared";
+import { type DirectImMessageDeliveryRequest, RUNTIME_DIRECT_TEXT_MAX_BYTES } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeBusinessFrame } from "../runtime/runtime-connection.js";
 import { openTagHostedToolDefinitions, RuntimeToolHost } from "../runtime/runtime-tool-host.js";
 
 describe("RuntimeToolHost", () => {
-  it("settles a missing Server result as a deterministic hosted-tool timeout", async () => {
+  it("returns an unknown identity after timeout and reuses it only for an explicit retry", async () => {
     vi.useFakeTimers();
     try {
+      let listener: ((frame: RuntimeBusinessFrame) => void | Promise<void>) | undefined;
+      const sent: Array<{ requestId: string }> = [];
       const host = new RuntimeToolHost({
-        send: vi.fn(async () => undefined),
-        subscribeBusinessFrames: () => () => undefined,
+        send: vi.fn(async (frame: unknown) => {
+          sent.push(frame as { requestId: string });
+        }),
+        subscribeBusinessFrames: (next) => {
+          listener = next;
+          return () => {
+            listener = undefined;
+          };
+        },
       });
       const delivery = request();
       const release = host.activateRun("turn-timeout", delivery, ["opentag_message_send"]);
@@ -18,14 +27,35 @@ describe("RuntimeToolHost", () => {
         runId: "turn-timeout",
         toolCallId: "call-timeout",
         name: "opentag_message_send",
-        input: { requestId: randomUUID(), text: "timeout" },
+        input: { text: "timeout" },
         signal: new AbortController().signal,
       });
       await vi.advanceTimersByTimeAsync(60_000);
-      await expect(result).resolves.toMatchObject({
+      const timedOut = await result;
+      expect(timedOut).toMatchObject({
         success: false,
-        error: { code: "tool_call_failed", message: expect.stringContaining("timed out") },
+        error: { code: "tool_result_timeout", message: expect.stringContaining("timed out") },
       });
+      const timeoutBody = JSON.parse((timedOut.content[0] as { text: string }).text) as {
+        requestId: string;
+        state: string;
+        code: string;
+      };
+      expect(timeoutBody).toMatchObject({ state: "unknown", code: "tool_result_timeout" });
+      expect(timeoutBody.requestId).toBe(sent[0]?.requestId);
+
+      const retry = host.execute({
+        runId: "turn-timeout",
+        toolCallId: "call-timeout-retry",
+        name: "opentag_message_send",
+        input: { retryRequestId: timeoutBody.requestId, text: "timeout" },
+        signal: new AbortController().signal,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(sent).toHaveLength(2);
+      expect(sent[1]?.requestId).toBe(timeoutBody.requestId);
+      await listener?.({ type: "im:tool:result", requestId: timeoutBody.requestId, state: "succeeded" });
+      await expect(retry).resolves.toMatchObject({ success: true });
       release();
       host.close();
     } finally {
@@ -35,8 +65,10 @@ describe("RuntimeToolHost", () => {
 
   it("binds model arguments to the current delivery scope and correlates the Server result", async () => {
     let listener: ((frame: RuntimeBusinessFrame) => void | Promise<void>) | undefined;
+    let sentRequestId: string | undefined;
     const send = vi.fn(async (frame: unknown) => {
       const request = frame as { requestId: string };
+      sentRequestId = request.requestId;
       queueMicrotask(() =>
         listener?.({
           type: "im:tool:result",
@@ -56,7 +88,6 @@ describe("RuntimeToolHost", () => {
       },
     });
     const delivery = request();
-    const requestId = randomUUID();
     const signal = new AbortController().signal;
     const release = host.activateRun("turn-1", delivery, ["opentag_message_reply"]);
     await expect(
@@ -65,22 +96,24 @@ describe("RuntimeToolHost", () => {
         toolCallId: "call-1",
         name: "opentag_message_reply",
         input: {
-          requestId,
           text: "reply",
           replyToImMessageId: delivery.imMessageId,
-          sessionId: randomUUID(),
-          placementGeneration: 999,
         },
         signal,
       }),
     ).resolves.toEqual({
       success: true,
-      content: [{ type: "text", text: JSON.stringify({ state: "succeeded", providerMessageId: "provider-1" }) }],
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ requestId: sentRequestId, state: "succeeded", providerMessageId: "provider-1" }),
+        },
+      ],
     });
     expect(send).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "im:tool",
-        requestId,
+        requestId: expect.stringMatching(/^[0-9a-f-]{36}$/u),
         sessionId: delivery.sessionId,
         agentId: delivery.agentId,
         placementGeneration: delivery.placementGeneration,
@@ -93,9 +126,68 @@ describe("RuntimeToolHost", () => {
     host.close();
   });
 
-  it("shares one pending owner for the same request intent and rejects conflicting reuse before send", async () => {
+  it("enforces the shared outbound byte limit before dispatch for send and reply", async () => {
     let listener: ((frame: RuntimeBusinessFrame) => void | Promise<void>) | undefined;
-    const send = vi.fn(async () => undefined);
+    const sent: Array<{ requestId: string }> = [];
+    const host = new RuntimeToolHost({
+      send: async (frame: unknown) => {
+        sent.push(frame as { requestId: string });
+      },
+      subscribeBusinessFrames: (next) => {
+        listener = next;
+        return () => {
+          listener = undefined;
+        };
+      },
+    });
+    const delivery = request();
+    const release = host.activateRun("turn-byte-limit", delivery, ["opentag_message_send", "opentag_message_reply"]);
+    const signal = new AbortController().signal;
+    const boundaryText = "x".repeat(RUNTIME_DIRECT_TEXT_MAX_BYTES);
+    const multibyteOverLimit = `${"x".repeat(RUNTIME_DIRECT_TEXT_MAX_BYTES - 2)}你`;
+    expect(Buffer.byteLength(multibyteOverLimit, "utf8")).toBe(RUNTIME_DIRECT_TEXT_MAX_BYTES + 1);
+
+    const cases = [
+      { name: "opentag_message_send", input: (text: string) => ({ text }) },
+      {
+        name: "opentag_message_reply",
+        input: (text: string) => ({ replyToImMessageId: delivery.imMessageId, text }),
+      },
+    ] as const;
+    for (const [index, entry] of cases.entries()) {
+      const boundary = host.execute({
+        runId: "turn-byte-limit",
+        toolCallId: `boundary-${index}`,
+        name: entry.name,
+        input: entry.input(boundaryText),
+        signal,
+      });
+      await vi.waitFor(() => expect(sent).toHaveLength(index + 1));
+      await listener?.({
+        type: "im:tool:result",
+        requestId: sent[index]?.requestId as string,
+        state: "succeeded",
+      });
+      await expect(boundary).resolves.toMatchObject({ success: true });
+
+      await expect(
+        host.execute({
+          runId: "turn-byte-limit",
+          toolCallId: `over-limit-${index}`,
+          name: entry.name,
+          input: entry.input(multibyteOverLimit),
+          signal,
+        }),
+      ).resolves.toMatchObject({ success: false, error: { code: "tool_call_failed" } });
+      expect(sent).toHaveLength(index + 1);
+    }
+    release();
+    host.close();
+  });
+
+  it("reuses an explicit retry identity and rejects conflicting reuse before send", async () => {
+    let listener: ((frame: RuntimeBusinessFrame) => void | Promise<void>) | undefined;
+    const send = vi.fn(async (_frame: unknown) => undefined);
     const host = new RuntimeToolHost({
       send,
       subscribeBusinessFrames: (next) => {
@@ -113,7 +205,7 @@ describe("RuntimeToolHost", () => {
       runId: "turn-1",
       toolCallId: callId,
       name: "opentag_message_send",
-      input: { requestId, text },
+      input: { retryRequestId: requestId, text },
       signal,
     });
     const first = host.execute(call("hello", "call-1"));
@@ -122,19 +214,26 @@ describe("RuntimeToolHost", () => {
     await listener?.({ type: "im:tool:result", requestId, state: "unknown", code: "provider_unknown" });
     await expect(first).resolves.toMatchObject({ success: false });
     await expect(same).resolves.toEqual(await first);
+    expect(send).toHaveBeenCalledTimes(1);
+
+    const explicitRetry = host.execute(call("hello", "call-retry"));
+    await expect.poll(() => send.mock.calls.length).toBe(2);
+    expect(send.mock.calls[1]?.[0]).toMatchObject({ requestId, text: "hello" });
+    await listener?.({ type: "im:tool:result", requestId, state: "succeeded" });
+    await expect(explicitRetry).resolves.toMatchObject({ success: true });
 
     const conflictingId = randomUUID();
     const pending = host.execute({
       ...call("one", "call-3"),
-      input: { requestId: conflictingId, text: "one" },
+      input: { retryRequestId: conflictingId, text: "one" },
     });
     await expect(
       host.execute({
         ...call("two", "call-4"),
-        input: { requestId: conflictingId, text: "two" },
+        input: { retryRequestId: conflictingId, text: "two" },
       }),
-    ).resolves.toMatchObject({ success: false, error: { code: "tool_call_failed" } });
-    expect(send).toHaveBeenCalledTimes(2);
+    ).resolves.toMatchObject({ success: false, error: { code: "request_id_conflict" } });
+    expect(send).toHaveBeenCalledTimes(3);
     await listener?.({ type: "im:tool:result", requestId: conflictingId, state: "succeeded" });
     await expect(pending).resolves.toMatchObject({ success: true });
     release();
@@ -155,12 +254,24 @@ describe("RuntimeToolHost", () => {
     expect(definitions.every((definition) => (definition.inputSchema as { type?: string }).type === "object")).toBe(
       true,
     );
+    for (const definition of definitions) {
+      const schema = definition.inputSchema as {
+        properties?: Record<string, unknown>;
+        required?: readonly string[];
+      };
+      expect(schema.properties).toHaveProperty("retryRequestId");
+      expect(schema.properties).not.toHaveProperty("requestId");
+      expect(schema.required).not.toContain("retryRequestId");
+    }
     expect(() => openTagHostedToolDefinitions(["unknown"])).toThrow("allow-list");
     expect(() => openTagHostedToolDefinitions(["opentag_message_send", "opentag_message_send"])).toThrow("allow-list");
 
     let listener: ((frame: RuntimeBusinessFrame) => void | Promise<void>) | undefined;
+    let sentRequestId: string | undefined;
     const host = new RuntimeToolHost({
-      send: vi.fn(async () => undefined),
+      send: vi.fn(async (frame: unknown) => {
+        sentRequestId = (frame as { requestId: string }).requestId;
+      }),
       subscribeBusinessFrames: (next) => {
         listener = next;
         return () => {
@@ -180,12 +291,11 @@ describe("RuntimeToolHost", () => {
     await expect(
       host.execute({ runId: "missing", toolCallId: "one", name: "opentag_message_send", input: {}, signal }),
     ).resolves.toMatchObject({ success: false, error: { code: "tool_not_authorized" } });
-    const requestId = randomUUID();
     const first = host.execute({
       runId: "turn-1",
       toolCallId: "same-call",
       name: "opentag_message_send",
-      input: { requestId, text: "one" },
+      input: { text: "one" },
       signal,
     });
     await expect(
@@ -193,7 +303,7 @@ describe("RuntimeToolHost", () => {
         runId: "turn-1",
         toolCallId: "same-call",
         name: "opentag_message_send",
-        input: { requestId, text: "two" },
+        input: { text: "two" },
         signal,
       }),
     ).resolves.toMatchObject({ success: false, error: { code: "tool_call_conflict" } });
@@ -201,12 +311,14 @@ describe("RuntimeToolHost", () => {
       runId: "turn-1",
       toolCallId: "same-call",
       name: "opentag_message_send",
-      input: { requestId, text: "one" },
+      input: { text: "one" },
       signal,
     });
-    await listener?.({ type: "im:tool:result", requestId, state: "succeeded" });
+    await vi.waitFor(() => expect(sentRequestId).toMatch(/^[0-9a-f-]{36}$/u));
+    await listener?.({ type: "im:tool:result", requestId: sentRequestId as string, state: "succeeded" });
     await expect(first).resolves.toMatchObject({ success: true });
     await expect(same).resolves.toEqual(await first);
+    expect(sentRequestId).toBeDefined();
     release();
     release();
     host.close();
@@ -247,17 +359,17 @@ describe("RuntimeToolHost", () => {
     const cases = [
       {
         name: "opentag_message_send",
-        input: { requestId: randomUUID(), text: "send" },
+        input: { text: "send" },
         operation: "send",
       },
       {
         name: "opentag_message_reply",
-        input: { requestId: randomUUID(), text: "reply", replyToImMessageId: delivery.imMessageId },
+        input: { text: "reply", replyToImMessageId: delivery.imMessageId },
         operation: "reply",
       },
       {
         name: "opentag_message_react",
-        input: { requestId: randomUUID(), targetImMessageId: delivery.imMessageId, emoji: "👍" },
+        input: { targetImMessageId: delivery.imMessageId, emoji: "👍" },
         operation: "react",
       },
     ] as const;
@@ -270,10 +382,12 @@ describe("RuntimeToolHost", () => {
         signal,
       });
       await vi.waitFor(() => expect(sent).toHaveLength(index + 1));
-      expect(sent.at(-1)).toMatchObject({ operation: entry.operation });
+      const requestId = (sent.at(-1) as { requestId: string }).requestId;
+      expect(requestId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu);
+      expect(sent.at(-1)).toMatchObject({ operation: entry.operation, requestId });
       await listener?.({
         type: "im:tool:result",
-        requestId: entry.input.requestId,
+        requestId,
         state: index === 0 ? "deterministic_failed" : "succeeded",
         ...(index === 0 ? { code: "provider_failed", retryAfterSeconds: 3 } : {}),
       });
@@ -282,13 +396,19 @@ describe("RuntimeToolHost", () => {
           ? { success: false, error: { code: "provider_failed" }, content: [expect.objectContaining({ type: "text" })] }
           : { success: true },
       );
+      const resultText = ((await pending).content[0] as { text: string }).text;
+      expect(JSON.parse(resultText)).toMatchObject({
+        requestId,
+        state: index === 0 ? "deterministic_failed" : "succeeded",
+      });
     }
 
     const invalidInputs: unknown[] = [
       [],
-      { requestId: "not-uuid", text: "text" },
-      { requestId: randomUUID(), text: " " },
-      { requestId: randomUUID(), text: "x".repeat(24 * 1024 + 1) },
+      { retryRequestId: "not-uuid", text: "text" },
+      { requestId: randomUUID(), text: "text" },
+      { text: " " },
+      { text: "x".repeat(RUNTIME_DIRECT_TEXT_MAX_BYTES + 1) },
     ];
     for (const [index, input] of invalidInputs.entries()) {
       await expect(
@@ -306,44 +426,56 @@ describe("RuntimeToolHost", () => {
     await expect(
       host.execute({
         runId: "turn-1",
+        toolCallId: "aborted-invalid",
+        name: "opentag_message_send",
+        input: null,
+        signal: aborted.signal,
+      }),
+    ).resolves.toMatchObject({ success: false, error: { code: "tool_call_cancelled" } });
+    await expect(
+      host.execute({
+        runId: "turn-1",
         toolCallId: "aborted",
         name: "opentag_message_send",
-        input: { requestId: randomUUID(), text: "cancel" },
+        input: { text: "cancel" },
         signal: aborted.signal,
       }),
     ).resolves.toMatchObject({ success: false, error: { code: "tool_call_cancelled" } });
 
     for (const [index, failure] of [new Error("send failed"), "non-error"].entries()) {
       sendFailure = failure;
-      await expect(
-        host.execute({
-          runId: "turn-1",
-          toolCallId: `send-failure-${index}`,
-          name: "opentag_message_send",
-          input: { requestId: randomUUID(), text: "fail" },
-          signal,
-        }),
-      ).resolves.toMatchObject({ success: false, error: { code: "tool_call_failed" } });
+      const sendFailureResult = await host.execute({
+        runId: "turn-1",
+        toolCallId: `send-failure-${index}`,
+        name: "opentag_message_send",
+        input: { text: "fail" },
+        signal,
+      });
+      expect(sendFailureResult).toMatchObject({ success: false, error: { code: "runtime_send_failed" } });
+      expect(JSON.parse((sendFailureResult.content[0] as { text: string }).text)).toMatchObject({
+        requestId: (sent.at(-1) as { requestId: string }).requestId,
+        state: "unknown",
+        code: "runtime_send_failed",
+      });
     }
 
     let requestIdReads = 0;
     const nonErrorInput = {
-      get requestId() {
+      get retryRequestId() {
         requestIdReads += 1;
         if (requestIdReads > 1) throw "non-error arguments failure";
         return randomUUID();
       },
       text: "fail",
     };
-    await expect(
-      host.execute({
-        runId: "turn-1",
-        toolCallId: "non-error-arguments",
-        name: "opentag_message_send",
-        input: nonErrorInput,
-        signal,
-      }),
-    ).resolves.toMatchObject({ success: false, error: { code: "tool_call_failed" } });
+    const nonErrorFailure = await host.execute({
+      runId: "turn-1",
+      toolCallId: "non-error-arguments",
+      name: "opentag_message_send",
+      input: nonErrorInput,
+      signal,
+    });
+    expect(nonErrorFailure).toMatchObject({ success: false, error: { code: "tool_call_failed" } });
 
     sendFailure = undefined;
     const noCodeRequestId = randomUUID();
@@ -351,7 +483,7 @@ describe("RuntimeToolHost", () => {
       runId: "turn-1",
       toolCallId: "failed-without-code",
       name: "opentag_message_send",
-      input: { requestId: noCodeRequestId, text: "fail" },
+      input: { retryRequestId: noCodeRequestId, text: "fail" },
       signal,
     });
     await listener?.({ type: "im:tool:result", requestId: noCodeRequestId, state: "deterministic_failed" });
@@ -364,7 +496,7 @@ describe("RuntimeToolHost", () => {
       runId: "turn-1",
       toolCallId: "shared-owner",
       name: "opentag_message_send",
-      input: { requestId: sharedRequestId, text: "shared" },
+      input: { retryRequestId: sharedRequestId, text: "shared" },
       signal,
     });
     const cancelledCaller = new AbortController();
@@ -374,7 +506,7 @@ describe("RuntimeToolHost", () => {
         runId: "turn-1",
         toolCallId: "shared-cancelled-caller",
         name: "opentag_message_send",
-        input: { requestId: sharedRequestId, text: "shared" },
+        input: { retryRequestId: sharedRequestId, text: "shared" },
         signal: cancelledCaller.signal,
       }),
     ).resolves.toMatchObject({ success: false, error: { code: "tool_call_cancelled" } });
@@ -387,23 +519,36 @@ describe("RuntimeToolHost", () => {
       runId: "turn-1",
       toolCallId: "abort-during-request",
       name: "opentag_message_send",
-      input: { requestId: abortRequestId, text: "cancel" },
+      input: { retryRequestId: abortRequestId, text: "cancel" },
       signal: abortDuringRequest.signal,
     });
     abortDuringRequest.abort();
-    await expect(abortPending).resolves.toMatchObject({ success: false, error: { code: "tool_call_cancelled" } });
+    const abortedAfterDispatch = await abortPending;
+    expect(abortedAfterDispatch).toMatchObject({ success: false, error: { code: "tool_call_cancelled" } });
+    expect(JSON.parse((abortedAfterDispatch.content[0] as { text: string }).text)).toMatchObject({
+      requestId: abortRequestId,
+      state: "unknown",
+      code: "tool_call_cancelled",
+    });
     await listener?.({ type: "im:tool:result", requestId: abortRequestId, state: "succeeded" });
 
     const pendingAtClose = host.execute({
       runId: "turn-1",
       toolCallId: "pending-at-close",
       name: "opentag_message_send",
-      input: { requestId: randomUUID(), text: "pending" },
+      input: { text: "pending" },
       signal,
     });
+    const closeRequestId = (sent.at(-1) as { requestId: string }).requestId;
     release();
     host.close();
-    await expect(pendingAtClose).resolves.toMatchObject({ success: false, error: { code: "tool_call_failed" } });
+    const closed = await pendingAtClose;
+    expect(closed).toMatchObject({ success: false, error: { code: "tool_host_closed" } });
+    expect(JSON.parse((closed.content[0] as { text: string }).text)).toEqual({
+      requestId: closeRequestId,
+      state: "unknown",
+      code: "tool_host_closed",
+    });
   });
 });
 

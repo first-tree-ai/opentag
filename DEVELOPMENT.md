@@ -278,6 +278,44 @@ Invitation plaintext is recovered only for an authorized `show`/`rotate` respons
 hash and AES-256-GCM ciphertext. Generate `OPENTAG_ENCRYPTION_KEY` with `openssl rand -base64 32`; changing the key
 without rotating existing invitations makes them intentionally fail closed.
 
+## Onboarding end-to-end check
+
+`scripts/e2e/onboarding-e2e.mjs` drives the whole `/onboarding` flow against a real Server, a real PostgreSQL database,
+the real Web build, and a real Computer daemon. It signs in through the browser, reads the connect command from the
+page, exchanges it with the CLI, runs `daemon service-run`, waits for the negotiated Provider readiness projection,
+creates the Agent from the form, and then checks the handoff, ready, member read-only, and runtime-outage states.
+
+```bash
+pnpm build
+npm install --no-save playwright-core   # outside the workspace, or reuse an existing install
+OPENTAG_E2E_PLAYWRIGHT_PATH=/path/to/playwright-core node scripts/e2e/onboarding-e2e.mjs
+```
+
+The check needs a reachable PostgreSQL superuser URL and a Chromium executable. It creates and drops its own database,
+listens on its own port, and writes screenshots, Server and daemon logs, and recorded console entries to its artifact
+directory. Because it drops that database on every run, it refuses any name that is not an unmistakably disposable E2E
+identifier, and it drops that database again once the Server stops. The check also refuses to start when its port is
+already taken, so it can never drive another local Server. The daemon receives an explicit Provider environment rather
+than the invoking shell's, so readiness is the same on any developer machine.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OPENTAG_E2E_ADMIN_DATABASE_URL` | `postgresql://opentag:opentag@127.0.0.1:5432/postgres` | Superuser URL used to create the E2E database |
+| `OPENTAG_E2E_DATABASE` | `opentag_e2e` | E2E database name, dropped and recreated on every run; must be a lowercase identifier containing `e2e` |
+| `OPENTAG_E2E_PORT` | `8123` | Server listen port for the run |
+| `OPENTAG_E2E_CHROMIUM` | `/opt/pw-browsers/chromium` | Chromium executable |
+| `OPENTAG_E2E_PLAYWRIGHT_PATH` | `playwright-core` | Module specifier or path for `playwright-core` |
+| `OPENTAG_E2E_ARTIFACTS` | `$TMPDIR/opentag-onboarding-e2e` | Screenshot and log output directory |
+| `OPENTAG_E2E_PROVIDER_STUB` | `on` | Set to `off` to probe the Claude Code CLI installed on `PATH` instead of the stub |
+| `CLAUDE_CONFIG_DIR` | `$HOME/.claude` | Claude Code configuration the daemon reads when the stub is off |
+| `OPENTAG_E2E_KEEP_DATABASE` | `off` | Set to `on` to keep the E2E database after the run for debugging |
+
+Two parts of the flow cannot run offline. Provider readiness uses a stub executable that answers the same probe contract
+as the Claude Code CLI, because a signed-in Codex or Claude Code installation is not available in CI. Feishu
+authorization needs `open.feishu.cn`, so the check starts a real setup attempt, records its outcome, and then writes an
+authorized binding into the database to confirm that the Server projects handoff readiness and the page derives the
+ready state from it.
+
 ## Environment variables
 
 Copy `.env.example` only when you need local overrides. Environment files are not loaded automatically by the current

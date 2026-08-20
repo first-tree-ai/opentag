@@ -1841,6 +1841,79 @@ textarea:focus {
   outline-offset: 0;
 }
 
+.new-agent-dialog {
+  width: min(100%, 620px);
+}
+
+.new-agent-dialog .form-card {
+  width: 100%;
+  padding: 0;
+  background: transparent;
+}
+
+.agent-create-form {
+  gap: 18px;
+}
+
+.agent-create-field {
+  display: grid;
+  gap: 7px;
+}
+
+.agent-create-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.field-hint {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 450;
+  line-height: 1.45;
+}
+
+.agent-name-input {
+  display: flex;
+  align-items: stretch;
+}
+
+.agent-name-input > span {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-right: 0;
+  border-radius: 9px 0 0 9px;
+  background: var(--background);
+  color: var(--muted);
+  font-family: "Geist Mono Variable", "SFMono-Regular", Consolas, monospace;
+  padding: 0 11px;
+}
+
+.agent-name-input input {
+  min-width: 0;
+  border-radius: 0 9px 9px 0;
+}
+
+.agent-create-note {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--background);
+  color: var(--muted);
+  font-size: 0.78rem;
+  padding: 10px 12px;
+}
+
+.agent-create-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 2px;
+  border-top: 1px solid var(--border);
+  padding-top: 18px;
+}
+
 .definition-list {
   display: grid;
   gap: 0;
@@ -2156,6 +2229,10 @@ textarea:focus {
     max-height: calc(100dvh - 24px);
     border-radius: 14px;
     padding: 20px;
+  }
+
+  .agent-create-grid {
+    grid-template-columns: 1fr;
   }
 
   .page-header,

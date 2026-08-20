@@ -1,8 +1,9 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { acquireDaemonOwner, inspectDaemonOwner } from "../core/daemon/ownership.js";
+import { resolveDaemonPaths } from "../core/daemon/paths.js";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -29,8 +30,10 @@ describe("daemon owner inspection", () => {
 
   it("quarantines a stale owner when acquiring the next lease", async () => {
     const home = await temporaryDirectory();
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.daemonState, { mode: 0o700, recursive: true });
     await writeFile(
-      join(home, "daemon-owner.json"),
+      paths.daemonOwner,
       `${JSON.stringify({
         home,
         instanceId: "stale-instance",
@@ -49,8 +52,19 @@ describe("daemon owner inspection", () => {
 
   it("fails closed on malformed owner records", async () => {
     const home = await temporaryDirectory();
-    await writeFile(join(home, "daemon-owner.json"), "{}\n", { mode: 0o600 });
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.daemonState, { mode: 0o700, recursive: true });
+    await writeFile(paths.daemonOwner, "{}\n", { mode: 0o600 });
     await expect(inspectDaemonOwner(home)).rejects.toThrow("malformed");
+  });
+
+  it("rejects a symlinked nested daemon state directory", async () => {
+    const home = await temporaryDirectory();
+    const external = await temporaryDirectory();
+    await symlink(external, join(home, "state"), "dir");
+
+    await expect(acquireDaemonOwner(home, "instance")).rejects.toThrow(/real director/i);
+    expect(await readdir(external)).toEqual([]);
   });
 
   it.each([
@@ -58,8 +72,10 @@ describe("daemon owner inspection", () => {
     ["an empty process start identity", { pid: process.pid, processStartId: "" }],
   ])("rejects %s in an owner record", async (_label, invalid) => {
     const home = await temporaryDirectory();
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.daemonState, { mode: 0o700, recursive: true });
     await writeFile(
-      join(home, "daemon-owner.json"),
+      paths.daemonOwner,
       `${JSON.stringify({
         home,
         instanceId: "instance",

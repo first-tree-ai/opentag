@@ -1,6 +1,8 @@
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { resolveOpenTagHome, resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { readPrivateJson, writePrivateJson } from "../storage/private-json-file.js";
+
+export { resolveOpenTagHome } from "../storage/home-layout.js";
 
 export interface StoredCredentials {
   accessToken: string;
@@ -11,21 +13,17 @@ export interface StoredCredentials {
 
 export const CREDENTIALS_FILE_NAME = "credentials.json";
 
-export function resolveOpenTagHome(environment: NodeJS.ProcessEnv = process.env): string {
-  return environment.OPENTAG_HOME ? resolve(environment.OPENTAG_HOME) : join(homedir(), ".opentag");
-}
-
 export function credentialsPath(home = resolveOpenTagHome()): string {
-  return join(home, CREDENTIALS_FILE_NAME);
+  return join(resolveOpenTagHomeLayout(home).config, CREDENTIALS_FILE_NAME);
 }
 
 export function readCredentials(home = resolveOpenTagHome()): Promise<StoredCredentials | undefined> {
-  return readPrivateJson(home, CREDENTIALS_FILE_NAME, validateCredentials);
+  return readPrivateJson(home, credentialsPath(home), validateCredentials);
 }
 
 export function writeCredentialsAtomically(credentials: StoredCredentials, home = resolveOpenTagHome()): Promise<void> {
   validateCredentials(credentials);
-  return writePrivateJson(home, CREDENTIALS_FILE_NAME, credentials);
+  return writePrivateJson(home, credentialsPath(home), credentials);
 }
 
 function validateCredentials(value: unknown): StoredCredentials {

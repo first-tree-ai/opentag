@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, lstat, mkdir, open, realpath, rename, rm } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 export class RuntimeStorageError extends Error {
   constructor(
@@ -17,7 +17,7 @@ export async function ensurePrivateDirectory(root: string, target: string): Prom
   const rootPath = resolve(root);
   const targetPath = resolve(target);
   assertWithin(rootPath, targetPath);
-  await ensureOneDirectory(rootPath);
+  await ensureRootDirectory(rootPath);
   const suffix = relative(rootPath, targetPath);
   let current = rootPath;
   if (suffix) {
@@ -30,6 +30,27 @@ export async function ensurePrivateDirectory(root: string, target: string): Prom
   const canonicalTarget = await realpath(targetPath);
   assertWithin(canonicalRoot, canonicalTarget);
   return canonicalTarget;
+}
+
+export async function validatePrivateDirectory(root: string, target: string): Promise<boolean> {
+  const rootPath = resolve(root);
+  const targetPath = resolve(target);
+  assertWithin(rootPath, targetPath);
+  const suffix = relative(rootPath, targetPath);
+  let current = rootPath;
+  for (const segment of suffix ? ["", ...suffix.split(sep)] : [""]) {
+    if (segment) current = resolve(current, segment);
+    try {
+      await assertRealDirectory(current);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw error;
+    }
+  }
+  const canonicalRoot = await realpath(rootPath);
+  const canonicalTarget = await realpath(targetPath);
+  assertWithin(canonicalRoot, canonicalTarget);
+  return true;
 }
 
 export async function readSecureFile(path: string): Promise<string | undefined> {
@@ -111,6 +132,29 @@ async function ensureOneDirectory(path: string): Promise<void> {
   }
   await assertRealDirectory(path);
   await chmod(path, 0o700);
+}
+
+async function ensureRootDirectory(root: string): Promise<void> {
+  const missingSegments: string[] = [];
+  let existing = root;
+  for (;;) {
+    try {
+      await assertRealDirectory(existing);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = dirname(existing);
+      if (parent === existing) throw error;
+      missingSegments.unshift(basename(existing));
+      existing = parent;
+    }
+  }
+  let current = existing;
+  for (const segment of missingSegments) {
+    current = resolve(current, segment);
+    await ensureOneDirectory(current);
+  }
+  await ensureOneDirectory(root);
 }
 
 async function assertReplaceableFile(path: string): Promise<void> {

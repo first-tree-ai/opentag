@@ -1,7 +1,7 @@
 # OpenTag 开发指南
 
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-08-19
+> Last synced with: 2026-08-20
 
 ## 前置要求
 
@@ -113,19 +113,53 @@ opentag-dev daemon status
 opentag-dev computer list
 ```
 
-daemon 会复用 home 中的稳定 Computer ID，每次服务启动创建新的进程 instance，并连接
-`/api/v1/computer/ws`。使用 `daemon install/start/stop/restart/status/uninstall` 管理服务；`uninstall` 会保留
-凭据和 Computer identity。只需写入凭据时使用 `login --no-start`；v0.1 不支持 Windows daemon 服务。
-Linux 日志通过 `journalctl --user -u opentag-dev.service` 查看，macOS 日志位于 channel home 的 `logs`
-目录。可选的 `${OPENTAG_HOME}/daemon.env` 必须是私有普通文件（权限 `0600`），用于补充服务环境且不会
-覆盖固定的服务配置。CLI 使用 `/api/v1/auth/...` 与 `/api/v1/me/...`；`/healthz` 和 `/readyz` 继续作为
-无版本部署探针。
+daemon 会复用 `${OPENTAG_HOME}/data/computer.json` 中的稳定 Computer ID，每次服务启动创建新的进程
+instance，并连接 `/api/v1/computer/ws`。OpenTag Home 按生命周期组织：
+
+```text
+${OPENTAG_HOME}/
+├── config/
+│   ├── credentials.json
+│   └── daemon.env
+├── data/
+│   ├── computer.json
+│   ├── runtime/agents/<agent-key>/
+│   └── workspaces/<agent-key>/
+├── state/
+│   ├── daemon/owner.json
+│   └── service/
+│       ├── operation.json
+│       ├── target-operation.json  # 仅默认 channel Home
+│       └── <serviceId>
+└── logs/
+```
+
+目录权限为私有 `0700`；credentials、identity、runtime recovery record 与 lease 文件均为私有普通文件
+（`0600`）。各目录和文件只在对应 owner 需要时创建。特别地，`login --no-start` 只创建
+`config/credentials.json`；runtime recovery record 和 Workspace 在首次相关 reconcile 时才出现。
+
+此布局采用 clean break：OpenTag 不会读取、迁移、删除或回退到根目录的 `credentials.json`、
+`computer.json`、`daemon-owner.json`、`runtime/`、`service/` 或 `~/.opentag-service-targets`。请使用全新
+Home，或先移走旧 Home 再重新登录；否则旧文件会原样保留，但新版不会使用它们。
+
+使用 `daemon install/start/stop/restart/status/uninstall` 管理服务；`uninstall` 会保留 `config/` 与
+`data/`。v0.1 不支持 Windows daemon 服务。Linux 日志通过
+`journalctl --user -u opentag-dev.service` 查看，macOS 日志位于 `${OPENTAG_HOME}/logs`。可选的
+`${OPENTAG_HOME}/config/daemon.env` 必须是私有普通文件（权限 `0600`），用于补充服务环境且不会覆盖固定
+的服务配置。CLI 使用 `/api/v1/auth/...` 与 `/api/v1/me/...`；`/healthz` 和 `/readyz` 继续作为无版本部署探针。
 
 dev 服务定义在 Linux 上位于 `~/.config/systemd/user/opentag-dev.service`，在 macOS 上位于
-`~/Library/LaunchAgents/opentag-dev.plist`；macOS wrapper 位于 `${OPENTAG_HOME}/service/opentag-dev`。
+`~/Library/LaunchAgents/opentag-dev.plist`；macOS wrapper 位于
+`${OPENTAG_HOME}/state/service/opentag-dev`。
 staging 与 production 使用各自的 channel `serviceId`（`opentag-staging` 或 `opentag`）替换后缀。如果登录已
 保存凭据但服务安装失败，修复提示的 manager 问题后运行
 `opentag-dev daemon install`，不需要申请新的 connect code。
+
+Service mutation 使用两个独立 lease。`${OPENTAG_HOME}/state/service/operation.json` 只序列化当前 Home 的
+操作；target lease 固定放在当前用户对应 binary channel 的默认 Home，例如
+`~/.opentag-dev/state/service/target-operation.json`。因此多个自定义 `OPENTAG_HOME` 无法并发修改同一个
+`opentag-dev.service`。dev、staging、production 各自使用不同默认 Home 和 service target，target lease 之间
+不会竞争。
 
 ## 管理 Agent 配置
 
@@ -222,7 +256,7 @@ fail-closed 原则拒绝读取。
 | `OPENTAG_AUTO_MIGRATE` | `true` | 监听前执行已入库的 migration |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | access token 有效期 |
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | refresh JWT 有效期 |
-| `OPENTAG_HOME` | 随 channel 而定 | CLI credentials、Computer identity 与 daemon ownership 目录（源码默认为 `~/.opentag-dev`） |
+| `OPENTAG_HOME` | 随 channel 而定 | 按生命周期分层的 `config/`、`data/`、`state/`、`logs/` 根目录（源码默认为 `~/.opentag-dev`） |
 
 如果 `doctor` 失败，其错误类别会区分配置、网络、HTTP 和无效响应。请确认 Server 已启动，且配置的 URL 指向其基础地址。
 

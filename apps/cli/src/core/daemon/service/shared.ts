@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { access, chmod, lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import { ensurePrivateDirectory } from "@opentag/client";
+import { resolveDaemonPaths } from "../paths.js";
 import {
   acquireProcessFileLease,
   ProcessLeaseBusyError,
@@ -18,8 +20,6 @@ import {
 } from "./types.js";
 
 const COMMAND_TIMEOUT_MS = 15_000;
-const SERVICE_OPERATION_FILE = "service-operation.json";
-const SERVICE_TARGET_DIRECTORY = ".opentag-service-targets";
 
 interface ServiceOperationRecord {
   operationId: string;
@@ -145,9 +145,14 @@ export async function writeFileAtomically(
   content: string,
   mode: number,
   directoryMode = 0o700,
+  containmentRoot?: string,
 ): Promise<void> {
   const parent = dirname(path);
-  await mkdir(parent, { recursive: true, mode: directoryMode });
+  if (containmentRoot) {
+    await ensurePrivateDirectory(containmentRoot, parent);
+  } else {
+    await mkdir(parent, { recursive: true, mode: directoryMode });
+  }
   const temporaryPath = join(parent, `.${randomUUID()}.tmp`);
   try {
     const handle = await open(temporaryPath, "wx", mode);
@@ -194,21 +199,33 @@ export async function runRequired(
 }
 
 export async function acquireServiceOperationLease(home: string): Promise<ServiceOperationLease> {
-  return acquireMappedOperationLease(home, SERVICE_OPERATION_FILE, "Another daemon service operation");
+  const paths = resolveDaemonPaths(home);
+  return acquireMappedOperationLease(
+    paths.home,
+    paths.serviceState,
+    basename(paths.serviceOperation),
+    "Another daemon service operation",
+  );
 }
 
-export async function acquireServiceTargetLease(userHome: string, serviceId: string): Promise<ServiceOperationLease> {
+export async function acquireServiceTargetLease(
+  channelDefaultHome: string,
+  serviceId: string,
+): Promise<ServiceOperationLease> {
   if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(serviceId)) {
     throw new DaemonServiceError("CONFIGURATION", "The daemon service ID is invalid");
   }
+  const paths = resolveDaemonPaths(channelDefaultHome);
   return acquireMappedOperationLease(
-    join(userHome, SERVICE_TARGET_DIRECTORY),
-    `${serviceId}.json`,
+    paths.home,
+    paths.serviceState,
+    basename(paths.serviceTargetOperation),
     `Another ${serviceId} service-target operation`,
   );
 }
 
 async function acquireMappedOperationLease(
+  root: string,
   directory: string,
   fileName: string,
   busyLabel: string,
@@ -224,6 +241,7 @@ async function acquireMappedOperationLease(
       fileName,
       getId: (record) => record.operationId,
       parseRecord: parseServiceOperation,
+      rootDirectory: root,
     });
     return { release: lease.release };
   } catch (error) {

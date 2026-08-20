@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { readPrivateJson, writePrivateJson } from "../storage/private-json-file.js";
 
 export interface ComputerIdentity {
@@ -12,11 +13,11 @@ export interface ComputerIdentity {
 export const COMPUTER_IDENTITY_FILE_NAME = "computer.json";
 
 export function computerIdentityPath(home: string): string {
-  return join(home, COMPUTER_IDENTITY_FILE_NAME);
+  return join(resolveOpenTagHomeLayout(home).data, COMPUTER_IDENTITY_FILE_NAME);
 }
 
 export function readComputerIdentity(home: string): Promise<ComputerIdentity | undefined> {
-  return readPrivateJson(home, COMPUTER_IDENTITY_FILE_NAME, validateIdentity);
+  return readPrivateJson(home, computerIdentityPath(home), validateIdentity);
 }
 
 export async function resolveComputerIdentity(
@@ -32,7 +33,7 @@ export async function resolveComputerIdentity(
     return existing;
   }
   const identity: ComputerIdentity = { version: 1, computerId: randomUUID(), serverUrl, userId };
-  await writePrivateJson(home, COMPUTER_IDENTITY_FILE_NAME, identity);
+  await writePrivateJson(home, computerIdentityPath(home), identity);
   return identity;
 }
 

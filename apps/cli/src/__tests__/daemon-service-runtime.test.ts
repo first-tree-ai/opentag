@@ -41,6 +41,7 @@ vi.mock("../core/daemon/ownership.js", async (importOriginal) => {
 });
 
 import { acquireDaemonOwner } from "../core/daemon/ownership.js";
+import { resolveDaemonPaths } from "../core/daemon/paths.js";
 import { runDaemonLifecycle, runDaemonService, runDaemonServiceEntry } from "../core/daemon/runtime.js";
 
 const directories: string[] = [];
@@ -139,7 +140,7 @@ describe("daemon service runtime", () => {
     await daemon;
 
     expect(clientMocks.me).not.toHaveBeenCalled();
-    await expect(access(join(home, "daemon-owner.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(access(resolveDaemonPaths(home).daemonOwner)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("composes the Codex Client Runtime after authenticated daemon startup", async () => {

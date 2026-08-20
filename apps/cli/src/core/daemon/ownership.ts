@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
+import { resolveDaemonPaths } from "./paths.js";
 import {
   acquireProcessFileLease,
   inspectProcessFileLease,
@@ -35,12 +37,11 @@ export class DaemonOwnerStartupError extends Error {
   }
 }
 
-const OWNER_FILE_NAME = "daemon-owner.json";
-
 export async function acquireDaemonOwner(home: string, instanceId: string): Promise<DaemonOwnerLease> {
+  const paths = resolveDaemonPaths(home);
   let lease: ProcessFileLease<DaemonOwner>;
   try {
-    lease = await acquireProcessFileLease(home, {
+    lease = await acquireProcessFileLease(paths.daemonState, {
       createRecord: (processStartId) => ({
         home,
         instanceId,
@@ -49,9 +50,10 @@ export async function acquireDaemonOwner(home: string, instanceId: string): Prom
         processStartId,
         startedAt: new Date().toISOString(),
       }),
-      fileName: OWNER_FILE_NAME,
+      fileName: basename(paths.daemonOwner),
       getId: (owner) => owner.ownerId,
       parseRecord: parseOwner,
+      rootDirectory: paths.home,
     });
   } catch (error) {
     if (error instanceof ProcessLeaseBusyError) {
@@ -73,11 +75,13 @@ export async function acquireDaemonOwner(home: string, instanceId: string): Prom
 }
 
 export async function inspectDaemonOwner(home: string): Promise<ProcessLeaseInspection<DaemonOwner>> {
+  const paths = resolveDaemonPaths(home);
   try {
-    return await inspectProcessFileLease(home, {
-      fileName: OWNER_FILE_NAME,
+    return await inspectProcessFileLease(paths.daemonState, {
+      fileName: basename(paths.daemonOwner),
       getId: (owner) => owner.ownerId,
       parseRecord: parseOwner,
+      rootDirectory: paths.home,
     });
   } catch (error) {
     throw normalizeOwnerError(error);

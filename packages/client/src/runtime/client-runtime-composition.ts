@@ -19,6 +19,7 @@ import {
   CodexAgentRuntimeFactory,
   codexAgentRuntimeEnvironment,
 } from "../providers/codex/agent-runtime.js";
+import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import {
   type AgentRuntimeProviderRegistration,
@@ -33,7 +34,7 @@ import type { RuntimeConnection } from "./runtime-connection.js";
 import { RuntimeToolHost } from "./runtime-tool-host.js";
 import { SessionBindingStore } from "./session-binding-store.js";
 import { SessionReconciler } from "./session-reconciler.js";
-import { codexRuntimePolicy, SessionRuntimeManager, validateCodexRuntimePolicy } from "./session-runtime-manager.js";
+import { SessionRuntimeManager } from "./session-runtime-manager.js";
 import { TurnCustodyOwner } from "./turn-custody-owner.js";
 import { TurnReportOwner } from "./turn-report-owner.js";
 

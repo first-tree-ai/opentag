@@ -80,12 +80,13 @@ describe("AgentRuntimeProviderRegistry", () => {
     const gate = new Promise<void>((resolveGate) => {
       release = resolveGate;
     });
-    const probe = vi.fn(async () => {
+    const probe = vi.fn(async (_request: Parameters<AgentRuntimeFactory["probe"]>[0]) => {
       await gate;
       return { ready: true as const, issues: [] };
     });
     const providers = new AgentRuntimeProviderRegistry([registration(factory("codex", probe))]);
-    const owner = providers.ensureReady("codex");
+    const ownerController = new AbortController();
+    const owner = providers.ensureReady("codex", ownerController.signal);
     const joinedWithoutSignal = providers.ensureReady("codex");
     const joinedController = new AbortController();
     const joinedWithSignal = providers.ensureReady("codex", joinedController.signal);
@@ -99,9 +100,17 @@ describe("AgentRuntimeProviderRegistry", () => {
     waiterAbort.abort(new Error("stop waiter"));
     await expect(waiter).rejects.toThrow("stop waiter");
     expect(probe).toHaveBeenCalledOnce();
+    const underlyingSignal = probe.mock.calls[0]?.[0].signal;
+    expect(underlyingSignal).toBeInstanceOf(AbortSignal);
+    expect(underlyingSignal).not.toBe(ownerController.signal);
+    expect(underlyingSignal?.aborted).toBe(false);
+
+    ownerController.abort(new Error("stop owner"));
+    await expect(owner).rejects.toThrow("stop owner");
+    expect(probe).toHaveBeenCalledOnce();
 
     release();
-    await Promise.all([owner, joinedWithoutSignal, joinedWithSignal]);
+    await Promise.all([joinedWithoutSignal, joinedWithSignal]);
     expect(providers.isReady("codex")).toBe(true);
   });
 
@@ -122,19 +131,30 @@ describe("AgentRuntimeProviderRegistry", () => {
     await expect(verificationFailure.refresh("codex")).resolves.toBe(false);
     expect(verificationFailure.isReady("codex")).toBe(false);
 
+    let release!: () => void;
+    let completions = 0;
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate;
+    });
+    const probe = vi.fn(async (_request: Parameters<AgentRuntimeFactory["probe"]>[0]) => {
+      if (probe.mock.calls.length > 1) await gate;
+      completions += 1;
+      return { ready: true as const, issues: [] };
+    });
+    const aborting = new AgentRuntimeProviderRegistry([registration(factory("codex", probe))]);
+    await expect(aborting.refresh("codex")).resolves.toBe(true);
     const controller = new AbortController();
-    const aborting = new AgentRuntimeProviderRegistry([
-      registration(
-        factory("codex", async ({ signal }) => {
-          return new Promise<never>((_resolve, reject) => {
-            signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
-          });
-        }),
-      ),
-    ]);
     const refreshing = aborting.refresh("codex", controller.signal);
     controller.abort(new Error("stop registry probe"));
     await expect(refreshing).rejects.toThrow("stop registry probe");
+    expect(aborting.isReady("codex")).toBe(true);
+    expect(probe.mock.calls[1]?.[0].signal?.aborted).toBe(true);
+    release();
+    await vi.waitFor(() => expect(completions).toBe(2));
+
+    const preAborted = new AbortController();
+    preAborted.abort(new Error("stop ready lookup"));
+    await expect(aborting.ensureReady("codex", preAborted.signal)).rejects.toThrow("stop ready lookup");
   });
 });
 

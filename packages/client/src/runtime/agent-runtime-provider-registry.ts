@@ -1,4 +1,5 @@
 import type { EffectiveRuntimeSnapshot, InputRejectReason } from "@opentag/shared";
+import { isAgentRuntimeProviderId } from "../agent-runtime/provider-id.js";
 import type { AgentRuntimeFactory, AgentRuntimePolicy } from "../agent-runtime/types.js";
 
 export interface AgentRuntimeProviderRegistration {
@@ -9,15 +10,22 @@ export interface AgentRuntimeProviderRegistration {
   readonly verifyArtifact?: (signal?: AbortSignal) => Promise<void>;
 }
 
+interface ProviderProbe {
+  readonly controller: AbortController;
+  readonly promise: Promise<void>;
+  settled: boolean;
+  waiters: number;
+}
+
 export class AgentRuntimeProviderRegistry {
   readonly #providers = new Map<string, AgentRuntimeProviderRegistration>();
   readonly #ready = new Set<string>();
-  readonly #probes = new Map<string, Promise<void>>();
+  readonly #probes = new Map<string, ProviderProbe>();
 
   constructor(registrations: readonly AgentRuntimeProviderRegistration[] = []) {
     for (const registration of registrations) {
       const providerId = registration.factory.manifest.providerId;
-      if (!/^[a-z][a-z0-9-]{0,63}$/.test(providerId) || this.#providers.has(providerId)) {
+      if (!isAgentRuntimeProviderId(providerId) || this.#providers.has(providerId)) {
         throw new Error(`Agent Runtime provider registration is invalid or duplicated: ${providerId}`);
       }
       if (!/^[0-9a-f]{64}$/.test(registration.artifactIdentity)) {
@@ -53,6 +61,7 @@ export class AgentRuntimeProviderRegistry {
   }
 
   async ensureReady(providerId: string, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (this.#ready.has(providerId)) return;
     await this.#probe(providerId, signal);
   }
@@ -62,34 +71,44 @@ export class AgentRuntimeProviderRegistry {
       await this.#probe(providerId, signal);
       return true;
     } catch (error) {
-      this.#ready.delete(providerId);
       if (signal?.aborted) throw error;
+      this.#ready.delete(providerId);
       return false;
     }
   }
 
   async #probe(providerId: string, signal?: AbortSignal): Promise<void> {
-    const current = this.#probes.get(providerId);
-    if (current) {
-      await waitForProbe(current, signal);
-      return;
+    let probe = this.#probes.get(providerId);
+    if (!probe) {
+      const provider = this.#providers.get(providerId);
+      if (!provider) throw new Error(`Agent Runtime provider is not registered: ${providerId}`);
+      const controller = new AbortController();
+      let record!: ProviderProbe;
+      const promise = (async () => {
+        const result = await provider.factory.probe({ signal: controller.signal });
+        if (!result.ready) {
+          throw new Error(result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+        }
+        await provider.verifyArtifact?.(controller.signal);
+        controller.signal.throwIfAborted();
+        this.#ready.add(providerId);
+      })().finally(() => {
+        record.settled = true;
+        if (this.#probes.get(providerId) === record) this.#probes.delete(providerId);
+      });
+      record = { controller, promise, settled: false, waiters: 0 };
+      probe = record;
+      this.#probes.set(providerId, probe);
     }
-    const provider = this.#providers.get(providerId);
-    if (!provider) throw new Error(`Agent Runtime provider is not registered: ${providerId}`);
-    const probing = (async () => {
-      signal?.throwIfAborted();
-      const result = await provider.factory.probe({ signal });
-      if (!result.ready) {
-        throw new Error(result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+    probe.waiters += 1;
+    try {
+      await waitForProbe(probe.promise, signal);
+    } finally {
+      probe.waiters -= 1;
+      if (probe.waiters === 0 && !probe.settled) {
+        probe.controller.abort(new Error(`Agent Runtime provider probe has no waiters: ${providerId}`));
       }
-      await provider.verifyArtifact?.(signal);
-      signal?.throwIfAborted();
-      this.#ready.add(providerId);
-    })().finally(() => {
-      this.#probes.delete(providerId);
-    });
-    this.#probes.set(providerId, probing);
-    return probing;
+    }
   }
 }
 

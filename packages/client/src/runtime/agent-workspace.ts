@@ -6,6 +6,7 @@ import {
   type RuntimeSnapshotHashes,
   type SessionReconcileRequest,
 } from "@opentag/shared";
+import { isAgentRuntimeProviderId } from "../agent-runtime/provider-id.js";
 import {
   assertRealDirectory,
   assertWithin,
@@ -171,8 +172,7 @@ function parseAgentWorkspaceState(value: unknown): LocalAgentWorkspaceState {
     state.schemaVersion !== 1 ||
     typeof state.agentId !== "string" ||
     typeof state.workspaceId !== "string" ||
-    typeof state.provider !== "string" ||
-    state.provider.length === 0 ||
+    !isAgentRuntimeProviderId(state.provider) ||
     typeof state.appliedAgentRevisionSequence !== "number" ||
     !Number.isSafeInteger(state.appliedAgentRevisionSequence) ||
     state.appliedAgentRevisionSequence < 0 ||

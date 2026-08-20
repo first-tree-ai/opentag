@@ -192,6 +192,19 @@ describe("AgentWorkspaceManager", () => {
 
     await expect(fixture.workspace.prepareAgent(runtime, hashes)).rejects.toThrow(/non-empty.*no valid runtime state/i);
   });
+
+  it("rejects an invalid persisted Provider ID at the workspace-state read boundary", async () => {
+    const fixture = await workspaceFixture();
+    const runtime = snapshot("agent-1", "workspace-1", "session");
+    const hashes = computeRuntimeSnapshotHashes(runtime);
+    await fixture.workspace.prepareAgent(runtime, hashes);
+    const statePath = fixture.workspace.paths("agent-1").workspaceState;
+    const state = JSON.parse(await readFile(statePath, "utf8")) as Record<string, unknown>;
+    state.provider = "Claude_Code";
+    await writeFile(statePath, `${JSON.stringify(state)}\n`, "utf8");
+
+    await expect(fixture.workspace.verifyAgent(runtime, hashes)).rejects.toThrow("workspace state values are invalid");
+  });
 });
 
 async function workspaceFixture() {

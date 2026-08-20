@@ -188,6 +188,21 @@ describe("SessionBindingStore", () => {
     await expect(fixture.store.read("agent-1", "session-1")).rejects.toThrow(/invalid JSON/);
   });
 
+  it("rejects invalid persisted Provider IDs in Session and Agent Runtime bindings", async () => {
+    const fixture = await bindingFixture();
+    const path = sessionBindingPath(fixture.home, "agent-1", "session-1");
+    const original = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    const invalidSession = structuredClone(original);
+    invalidSession.provider = "";
+    await writeFile(path, `${JSON.stringify(invalidSession)}\n`, "utf8");
+    await expect(fixture.store.read("agent-1", "session-1")).rejects.toThrow("Session binding values are invalid");
+
+    const invalidRuntime = structuredClone(original);
+    invalidRuntime.runtimeBinding = { providerId: "Claude_Code", schemaVersion: 1, payload: {} };
+    await writeFile(path, `${JSON.stringify(invalidRuntime)}\n`, "utf8");
+    await expect(fixture.store.read("agent-1", "session-1")).rejects.toThrow("Agent Runtime binding is invalid");
+  });
+
   it("reads a legacy v1 Codex thread and rewrites only the opaque v2 binding", async () => {
     const fixture = await bindingFixture();
     const path = sessionBindingPath(fixture.home, "agent-1", "session-1");

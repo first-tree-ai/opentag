@@ -10,6 +10,7 @@ import {
   type TurnReportRequest,
   TurnReportRequestSchema,
 } from "@opentag/shared";
+import { isAgentRuntimeProviderId } from "../agent-runtime/provider-id.js";
 import { AGENT_RUNTIME_BINDING_MAX_BYTES, type AgentRuntimeBinding } from "../agent-runtime/types.js";
 import { assertJsonValue } from "../agent-runtime/validation.js";
 import {
@@ -433,7 +434,7 @@ function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
     !isString(value.agentId) ||
     !isString(value.workspaceId) ||
     !isSequence(value.placementGeneration) ||
-    !isString(value.provider) ||
+    !isAgentRuntimeProviderId(value.provider) ||
     (isLegacy && value.provider !== "codex") ||
     !RuntimeSha256Schema.safeParse(value.providerHomeIdentity).success ||
     !isSequence(value.appliedSessionRevisionSequence) ||
@@ -495,7 +496,7 @@ function validateRuntimeBinding(value: unknown): AgentRuntimeBinding {
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, ["providerId", "schemaVersion", "payload"]) ||
-    !isString(value.providerId) ||
+    !isAgentRuntimeProviderId(value.providerId) ||
     !Number.isSafeInteger(value.schemaVersion) ||
     (value.schemaVersion as number) < 1 ||
     !("payload" in value)

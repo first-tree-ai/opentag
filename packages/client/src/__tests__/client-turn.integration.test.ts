@@ -17,6 +17,7 @@ import type {
   CodexDynamicToolHandler,
   InteractiveCodexAppServerClient,
 } from "../providers/codex/app-server-wire.js";
+import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
 import { AgentTurnRunner } from "../runtime/agent-turn-runner.js";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
@@ -25,11 +26,7 @@ import type { RuntimeBusinessFrame, RuntimeConnectionState } from "../runtime/ru
 import { RuntimeToolHost } from "../runtime/runtime-tool-host.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
-import {
-  codexRuntimePolicy,
-  SessionRuntimeManager,
-  validateCodexRuntimePolicy,
-} from "../runtime/session-runtime-manager.js";
+import { SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import { TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
 import { TurnReportOwner } from "../runtime/turn-report-owner.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";

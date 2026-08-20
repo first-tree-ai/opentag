@@ -11,7 +11,7 @@ import type {
   TeamMemberSummary,
   UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
-import { MembershipRoleSchema } from "@opentag/shared/browser";
+import { AgentNameSchema, MembershipRoleSchema } from "@opentag/shared/browser";
 import { toString as qrToString } from "qrcode";
 import {
   createContext,
@@ -480,19 +480,34 @@ function NewAgentPage() {
   const navigate = useNavigate();
   const computers = useResource(() => browserApi.ownComputers(), membership.teamId);
   const [error, setError] = useState<string>();
+  const [nameError, setNameError] = useState<string>();
   if (membership.role !== "admin") return <UnavailablePage title="Team Admin access required" />;
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const data = new FormData(event.currentTarget);
+    setError(undefined);
+    setNameError(undefined);
+    const name = AgentNameSchema.safeParse(String(data.get("name") ?? ""));
+    if (!name.success) {
+      setNameError(name.error.issues[0]?.message ?? "Agent name is invalid");
+      return;
+    }
     try {
       const created = await browserApi.createAgent(membership.teamId, {
-        name: String(data.get("name") ?? ""),
+        name: name.data,
         displayName: String(data.get("displayName") ?? ""),
         runtimeProvider: String(data.get("runtimeProvider") ?? "codex") as "codex" | "claude-code",
         computerId: String(data.get("computerId") ?? ""),
       });
       navigate(`/agents/${created.id}/general`);
     } catch (cause) {
+      if (cause instanceof ApiError) {
+        const issue = cause.issues?.find(({ path }) => path[0] === "name");
+        if (issue) {
+          setNameError(issue.message);
+          return;
+        }
+      }
       setError(cause instanceof Error ? cause.message : "Agent creation failed");
     }
   }
@@ -508,7 +523,18 @@ function NewAgentPage() {
             <form className="form-card" onSubmit={submit}>
               <label>
                 Name
-                <input name="name" required pattern="[a-z0-9][a-z0-9-]*" />
+                <input
+                  aria-describedby={nameError ? "agent-name-error" : undefined}
+                  aria-invalid={nameError ? true : undefined}
+                  name="name"
+                  onChange={() => setNameError(undefined)}
+                  required
+                />
+                {nameError ? (
+                  <span className="field-error" id="agent-name-error" role="alert">
+                    {nameError}
+                  </span>
+                ) : null}
               </label>
               <label>
                 Display name

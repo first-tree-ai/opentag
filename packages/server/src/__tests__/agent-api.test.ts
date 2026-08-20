@@ -179,6 +179,38 @@ describe("Agent HTTP API", () => {
     expect(service.updateById).not.toHaveBeenCalled();
   });
 
+  it("returns safe field issues for an invalid Agent name", async () => {
+    const { app, service } = appWith();
+    const response = await app.inject({
+      method: "POST",
+      url: teamAgentsPath(teamId),
+      headers: authorization,
+      payload: {
+        name: "Bestony",
+        displayName: "Bestony",
+        runtimeProvider: "codex",
+        computerId,
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: {
+        code: "VALIDATION_ERROR",
+        category: "validation",
+        message: "The request payload is invalid",
+        issues: [
+          {
+            path: ["name"],
+            code: "invalid_format",
+            message:
+              "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+          },
+        ],
+      },
+    });
+    expect(service.createForTeam).not.toHaveBeenCalled();
+  });
+
   it("rejects instructions that cannot fit beside the required platform policy", async () => {
     const { app, service } = appWith();
     const platformBytes = new TextEncoder().encode(OPENTAG_PLATFORM_INSTRUCTIONS).byteLength;
@@ -236,6 +268,7 @@ describe("Agent HTTP API", () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: { code: "VALIDATION_ERROR", category: "validation" } });
+    expect(response.json().error).not.toHaveProperty("issues");
   });
 
   it("classifies an invalid service response as a typed internal error", async () => {

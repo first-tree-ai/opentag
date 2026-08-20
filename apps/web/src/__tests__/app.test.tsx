@@ -34,7 +34,9 @@ function installApi(
   role: "admin" | "member",
   options: {
     alreadyJoinedInvitation?: boolean;
+    agentCreateError?: "generic" | "name";
     bound?: boolean;
+    connectedComputer?: boolean;
     initialStatus?: "active" | "suspended";
     invitationExists?: boolean;
     provider?: "feishu" | "slack";
@@ -157,6 +159,54 @@ function installApi(
       });
     }
     // Any Team id, so a Team created during the test is served like the seeded and invited ones.
+    if (/^\/api\/v1\/teams\/[^/]+\/agents$/.test(path) && init?.method === "POST") {
+      if (options.agentCreateError) {
+        return json(
+          {
+            error: {
+              code: "VALIDATION_ERROR",
+              category: "validation",
+              message: "The request payload is invalid",
+              ...(options.agentCreateError === "name"
+                ? { issues: [{ path: ["name"], code: "invalid_format", message: "Use a lowercase Agent name" }] }
+                : {}),
+            },
+          },
+          400,
+        );
+      }
+      const body = JSON.parse(String(init.body)) as {
+        computerId: string;
+        displayName: string;
+        name: string;
+        runtimeProvider: "claude-code" | "codex";
+      };
+      return json(
+        {
+          id: agentId,
+          teamId,
+          managerUserId: userId,
+          computerId: body.computerId,
+          name: body.name,
+          displayName: body.displayName,
+          runtimeProvider: body.runtimeProvider,
+          receiveMode: "mention_only",
+          status: "active",
+          revision: 1,
+          runtimeConfig: {
+            revision: 1,
+            model: null,
+            reasoningEffort: null,
+            instructions: "",
+            allowedTools: [],
+            maxDurationMs: null,
+          },
+          createdAt: "2026-08-20T00:00:00.000Z",
+          updatedAt: "2026-08-20T00:00:00.000Z",
+        },
+        201,
+      );
+    }
     if (/^\/api\/v1\/teams\/[^/]+\/agents$/.test(path)) {
       return json({
         agents: [
@@ -181,7 +231,16 @@ function installApi(
       const response = options.roleUpdate
         ? await options.roleUpdate(targetUserId, body.role)
         : options.roleUpdateFails
-          ? json({ error: { message: "The last active Team admin cannot be demoted" } }, 409)
+          ? json(
+              {
+                error: {
+                  code: "MEMBERSHIP_LAST_ADMIN",
+                  category: "deterministic",
+                  message: "The last active Team admin cannot be demoted",
+                },
+              },
+              409,
+            )
           : json({
               teamId,
               userId: targetUserId,
@@ -231,7 +290,25 @@ function installApi(
       });
     }
     if (/^\/api\/v1\/teams\/[^/]+\/computers$/.test(path)) return json({ computers: [] });
-    if (path === "/api/v1/me/computers") return json({ computers: [] });
+    if (path === "/api/v1/me/computers") {
+      return json({
+        computers: options.connectedComputer
+          ? [
+              {
+                id: computerId,
+                ownerUserId: userId,
+                displayName: "Ada's Mac",
+                platform: "darwin",
+                arch: "arm64",
+                clientVersion: "0.1.0",
+                connectionStatus: "online",
+                connectedAt: "2026-08-20T00:00:00.000Z",
+                lastSeenAt: "2026-08-20T00:00:00.000Z",
+              },
+            ]
+          : [],
+      });
+    }
     if (path === "/api/v1/me/connect-codes" && init?.method === "POST") {
       return json(
         {
@@ -665,6 +742,76 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Connect a Local Computer first" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Computer settings" }).getAttribute("href")).toBe("/settings/computers");
+  });
+
+  it("validates Agent name locally with an accessible field error before sending a request", async () => {
+    installApi("admin", { connectedComputer: true });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+    const name = await screen.findByLabelText("Name");
+    fireEvent.change(name, { target: { value: "Bestony" } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Bestony" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+    );
+    expect(name.getAttribute("aria-invalid")).toBe("true");
+    expect(name.getAttribute("aria-describedby")).toBe(alert.id);
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([input, init]) => String(input) === `/api/v1/teams/${teamId}/agents` && init?.method === "POST",
+        ),
+    ).toHaveLength(0);
+  });
+
+  it("creates an Agent with a valid canonical name and keeps the existing payload", async () => {
+    installApi("admin", { connectedComputer: true });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "bestony" } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Bestony" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}/general`));
+    const createCall = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([input, init]) => String(input) === `/api/v1/teams/${teamId}/agents` && init?.method === "POST",
+      );
+    expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
+      name: "bestony",
+      displayName: "Bestony",
+      runtimeProvider: "codex",
+      computerId,
+    });
+  });
+
+  it("maps a Server name issue back to the Agent name field", async () => {
+    installApi("admin", { agentCreateError: "name", connectedComputer: true });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+    const name = await screen.findByLabelText("Name");
+    fireEvent.change(name, { target: { value: "bestony" } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Bestony" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Use a lowercase Agent name");
+    expect(name.getAttribute("aria-describedby")).toBe(alert.id);
+    expect(window.location.pathname).toBe("/agents/new");
+  });
+
+  it("keeps an unmapped Server validation error at form level", async () => {
+    installApi("admin", { agentCreateError: "generic", connectedComputer: true });
+    window.history.replaceState({}, "", "/agents/new");
+    render(<App />);
+    const name = await screen.findByLabelText("Name");
+    fireEvent.change(name, { target: { value: "bestony" } });
+    fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Bestony" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+    expect((await screen.findByRole("alert")).textContent).toBe("The request payload is invalid");
+    expect(name.getAttribute("aria-invalid")).toBeNull();
   });
 
   it("sends a Team-less session to Team creation and lands it on Agents", async () => {

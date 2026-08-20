@@ -67,6 +67,7 @@ import {
   type UpdateAgentRequest,
   type UpdateTeamMemberRequest,
   type UpdateTeamProfileRequest,
+  type ValidationIssue,
 } from "@opentag/shared";
 
 interface RuntimeSchema<T> {
@@ -79,6 +80,7 @@ export class OpenTagApiError extends Error {
     readonly category: ErrorCategory,
     message: string,
     readonly status?: number,
+    readonly issues?: readonly ValidationIssue[],
   ) {
     super(message);
     this.name = "OpenTagApiError";
@@ -382,7 +384,13 @@ export class OpenTagApi {
   #throwResponseError(status: number, body: unknown): never {
     const parsed = ErrorEnvelopeSchema.safeParse(body);
     if (parsed.success) {
-      throw new OpenTagApiError(parsed.data.error.code, parsed.data.error.category, parsed.data.error.message, status);
+      throw new OpenTagApiError(
+        parsed.data.error.code,
+        parsed.data.error.category,
+        parsed.data.error.message,
+        status,
+        parsed.data.error.issues,
+      );
     }
     if (status === 429) {
       throw new OpenTagApiError("RATE_LIMITED", "rate_limit", "The OpenTag server rate limit was reached", 429);

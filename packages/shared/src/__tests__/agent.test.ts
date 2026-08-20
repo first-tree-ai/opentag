@@ -97,6 +97,19 @@ describe("Agent contracts", () => {
     expect(() => AgentNameSchema.parse(name)).toThrow(),
   );
 
+  it.each([
+    ["", "Agent name is required"],
+    ["a".repeat(65), "Agent name must be at most 64 characters"],
+    [
+      "Bestony",
+      "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+    ],
+  ])("provides a stable validation message for %j", (name, message) => {
+    const result = AgentNameSchema.safeParse(name);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues[0]?.message).toBe(message);
+  });
+
   it("rejects unexpected authority and immutable update fields", () => {
     expect(() => CreateAgentRequestSchema.parse({ ...agent, managerUserId: agent.managerUserId })).toThrow();
     expect(() =>

@@ -287,6 +287,37 @@ describe("OnboardingPage", () => {
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
 
+  it("resumes polling when someone returns to a page that went quiet", async () => {
+    vi.useFakeTimers();
+    installFacts({ computers: [computerA] });
+    const computers = vi.spyOn(browserApi, "computers");
+    renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false }]) });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(11 * 60 * 1_000);
+    });
+    const quiet = computers.mock.calls.length;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(computers.mock.calls.length).toBe(quiet);
+
+    await act(async () => {
+      window.dispatchEvent(new Event("focus"));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    const attended = computers.mock.calls.length;
+    expect(attended).toBeGreaterThan(quiet);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    expect(computers.mock.calls.length).toBeGreaterThan(attended);
+  });
+
   it.each([
     ["checking", "Checking Codex", "OpenTag is checking Codex readiness on Ada's Mac."],
     ["install", "Install Codex", "Install Codex on Ada's Mac, then check again."],

@@ -88,6 +88,7 @@ export function OnboardingPage({
     () => readCreationIntent(membership.teamId)?.request.displayName ?? "OpenTag",
   );
   const [refreshPending, setRefreshPending] = useState(false);
+  const [attendedWindow, setAttendedWindow] = useState(0);
   const creationInFlight = useRef(false);
   const refreshInFlight = useRef(false);
   const reload = useCallback(() => {
@@ -96,6 +97,14 @@ export function OnboardingPage({
     setRefreshPending(true);
     setRevision((value) => value + 1);
   }, []);
+  /**
+   * A refresh someone is present for: it reloads facts and restarts the bounded
+   * polling window, so returning to a capped page resumes automatic progress.
+   */
+  const attendedReload = useCallback(() => {
+    setAttendedWindow((value) => value + 1);
+    reload();
+  }, [reload]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: revision is the explicit Server-fact reload trigger.
   useEffect(() => {
@@ -124,9 +133,9 @@ export function OnboardingPage({
   }, [membership.teamId, revision, runtimeFacts]);
 
   useEffect(() => {
-    const refresh = () => reload();
+    const refresh = () => attendedReload();
     const refreshVisible = () => {
-      if (document.visibilityState === "visible") reload();
+      if (document.visibilityState === "visible") attendedReload();
     };
     window.addEventListener("focus", refresh);
     document.addEventListener("visibilitychange", refreshVisible);
@@ -134,7 +143,7 @@ export function OnboardingPage({
       window.removeEventListener("focus", refresh);
       document.removeEventListener("visibilitychange", refreshVisible);
     };
-  }, [reload]);
+  }, [attendedReload]);
 
   const resolved = useMemo(() => {
     if (loadState.kind !== "ready") return undefined;
@@ -147,7 +156,7 @@ export function OnboardingPage({
     let elapsedMs = 0;
     const timer = window.setInterval(() => {
       elapsedMs += RUNTIME_POLL_INTERVAL_MS;
-      // A page left open indefinitely stops polling; focus, visibility, and the explicit control still reload.
+      // An unattended page goes quiet; the next attended refresh starts a fresh window.
       if (elapsedMs >= RUNTIME_POLL_LIMIT_MS) {
         window.clearInterval(timer);
         return;
@@ -155,7 +164,7 @@ export function OnboardingPage({
       if (document.visibilityState !== "hidden") reload();
     }, RUNTIME_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [reload, waitingForRuntime]);
+  }, [attendedWindow, reload, waitingForRuntime]);
 
   const runAgentCreation = useCallback(
     (request: Omit<CreateAgentRequest, "creationIntentId">) => {
@@ -227,7 +236,7 @@ export function OnboardingPage({
             }}
             onAgentDisplayNameChange={setAgentDisplayName}
             onCreateAgent={(current) => runAgentCreation(normalizedAgentRequest(current, agentDisplayName))}
-            onReload={reload}
+            onReload={attendedReload}
             refreshPending={refreshPending}
             snapshot={loadState.snapshot}
             state={resolved.state}

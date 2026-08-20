@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiError, BrowserApi } from "../api.js";
 
 const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
+const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 
 function setDocumentCookie(value: string): void {
   const setter = Object.getOwnPropertyDescriptor(Document.prototype, "cookie")?.set;
@@ -10,6 +11,36 @@ function setDocumentCookie(value: string): void {
 }
 
 describe("BrowserApi", () => {
+  it("updates a Team member role with the browser mutation contract", async () => {
+    setDocumentCookie("opentag_csrf=member-csrf; Path=/");
+    const updatedMember = {
+      teamId,
+      userId,
+      email: "ada@example.com",
+      displayName: "Ada",
+      role: "member" as const,
+      status: "active" as const,
+      createdAt: "2030-01-01T00:00:00.000Z",
+      updatedAt: "2030-01-01T00:01:00.000Z",
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(`/api/v1/teams/${teamId}/members/${userId}`);
+      expect(init?.method).toBe("PATCH");
+      expect(init?.body).toBe(JSON.stringify({ role: "member" }));
+      expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
+      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("member-csrf");
+      return new Response(JSON.stringify(updatedMember), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    await expect(new BrowserApi(fetchImpl).updateTeamMember(teamId, userId, { role: "member" })).resolves.toEqual(
+      updatedMember,
+    );
+    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
+
   it("updates Team profile fields with the browser mutation contract", async () => {
     setDocumentCookie("opentag_csrf=team-csrf; Path=/");
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {

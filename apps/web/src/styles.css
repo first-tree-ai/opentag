@@ -241,29 +241,51 @@ button.danger:hover {
   text-decoration: none;
 }
 
-.team-switcher {
+.team-menu,
+.account-menu {
   position: relative;
+}
+
+.team-switcher {
   display: grid;
-  min-height: 44px;
+  width: 100%;
+  min-height: 38px;
   align-items: center;
-  grid-template-columns: 28px minmax(0, 1fr);
+  justify-content: initial;
+  grid-template-columns: 24px minmax(0, 1fr) 14px;
   gap: 9px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  padding: 7px 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--secondary-foreground);
+  font-size: 0.84rem;
+  font-weight: 560;
+  padding: 5px 10px;
+  text-align: left;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
 }
 
-.team-switcher::after {
-  position: absolute;
-  right: 12px;
+.team-switcher:hover,
+.team-switcher[aria-expanded="true"] {
+  border-color: transparent;
+  background: var(--brand-light);
+  color: var(--brand-ink);
+}
+
+.team-switcher:active,
+.team-menu-option:active,
+.account-row:active,
+.account-menu-popover button:active {
+  transform: none;
+}
+
+.team-menu-chevron {
   color: var(--muted);
-  content: "⌄";
-  pointer-events: none;
-}
-
-.team-switcher:focus-within {
-  border-color: var(--brand);
+  font-size: 0.76rem;
+  line-height: 1;
+  text-align: right;
 }
 
 .team-avatar,
@@ -273,7 +295,6 @@ button.danger:hover {
   flex: 0 0 auto;
   place-items: center;
   border: 1px solid var(--strong-border);
-  border-radius: 50%;
   background: var(--brand-light);
   color: var(--brand-ink);
   font-size: 0.7rem;
@@ -281,41 +302,149 @@ button.danger:hover {
   letter-spacing: -0.02em;
 }
 
-.team-avatar,
+.team-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+}
+
+.account-avatar,
+.agent-avatar {
+  border-radius: 50%;
+}
+
 .account-avatar {
   width: 28px;
   height: 28px;
 }
 
-.team-switcher select {
+.team-menu-popover,
+.account-menu-popover {
+  position: absolute;
+  z-index: calc(var(--layer-sidebar) + 1);
+  border: 1px solid var(--strong-border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 16px 36px rgb(43 55 38 / 12%);
+}
+
+.team-menu-popover {
+  top: calc(100% + 6px);
+  left: 0;
+  display: flex;
+  max-height: calc(100dvh - 32px);
+  flex-direction: column;
+  overflow: hidden;
+  width: min(272px, calc(100vw - 32px));
+  padding: 8px;
+}
+
+.menu-label {
+  padding: 7px 8px 6px;
+  color: var(--muted);
+  font-family: "Geist Mono Variable", monospace;
+  font-size: 0.66rem;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.team-search {
+  display: block;
+  padding: 4px 5px 7px;
+}
+
+.team-search input {
   width: 100%;
-  min-width: 0;
-  min-height: 28px;
-  appearance: none;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--background);
+  padding: 0 10px;
+}
+
+.team-menu-list {
+  display: grid;
+  min-height: 0;
+  max-height: min(352px, 45dvh);
+  gap: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.team-menu-option {
+  display: grid;
+  width: 100%;
+  min-height: 44px;
+  align-items: center;
+  justify-content: initial;
+  grid-template-columns: 24px minmax(0, 1fr) 16px;
+  gap: 10px;
   border: 0;
+  border-radius: 7px;
   background: transparent;
   color: var(--foreground);
-  cursor: pointer;
-  font-size: 0.9rem;
-  font-weight: 600;
-  padding: 0 24px 0 0;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.team-menu-option:hover,
+.team-menu-option[aria-current="true"] {
+  border-color: transparent;
+  background: var(--brand-light);
+  color: var(--foreground);
+}
+
+.team-option-copy,
+.team-option-copy strong,
+.team-option-copy small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.team-switcher select:focus-visible {
-  outline: 0;
+.team-option-copy strong {
+  font-size: 0.82rem;
+  font-weight: 610;
 }
 
-.team-switcher-action {
-  width: fit-content;
-  margin: -8px 10px 0;
+.team-option-copy small {
+  margin-top: 2px;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.69rem;
+}
+
+.team-option-check {
+  color: var(--brand-ink);
+  font-size: 0.86rem;
+  font-weight: 760;
+  text-align: right;
+}
+
+.team-menu-empty {
+  color: var(--muted);
+  font-size: 0.78rem;
+  padding: 14px 8px;
+}
+
+.team-menu-action {
+  display: flex;
+  min-height: 39px;
+  align-items: center;
+  gap: 9px;
+  margin-top: 7px;
+  border-top: 1px solid var(--border);
+  color: var(--secondary-foreground);
+  font-size: 0.8rem;
   font-weight: 560;
+  padding: 9px 8px 0;
   text-decoration: none;
 }
 
-.team-switcher-action:hover {
+.team-menu-action:hover {
   color: var(--brand-ink);
 }
 
@@ -331,8 +460,7 @@ button.danger:hover {
 }
 
 .primary-nav a,
-.nav-placeholder,
-.settings-link {
+.nav-placeholder {
   display: flex;
   min-height: 40px;
   align-items: center;
@@ -350,25 +478,40 @@ button.danger:hover {
 }
 
 .primary-nav a:hover,
-.settings-link:hover,
-.primary-nav a.active,
-.settings-link.active {
+.primary-nav a.active {
   background: var(--brand-light);
   color: var(--brand-ink);
 }
 
 .account-row {
   display: grid;
+  width: 100%;
   min-width: 0;
+  min-height: 48px;
   align-items: center;
-  grid-template-columns: 28px minmax(0, 1fr);
+  justify-content: initial;
+  grid-template-columns: 28px minmax(0, 1fr) 12px;
   gap: 9px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--foreground);
   padding: 7px 10px;
+  text-align: left;
 }
 
+.account-row:hover,
+.account-row[aria-expanded="true"] {
+  border-color: transparent;
+  background: var(--brand-light);
+  color: var(--foreground);
+}
+
+.account-copy,
 .account-row strong,
 .account-row small {
   display: block;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -383,6 +526,52 @@ button.danger:hover {
   margin-top: 2px;
   color: var(--muted);
   font-size: 0.72rem;
+}
+
+.account-menu-dots {
+  color: var(--muted);
+  line-height: 1;
+  text-align: right;
+}
+
+.account-menu-popover {
+  right: 0;
+  bottom: calc(100% + 7px);
+  left: 0;
+  display: grid;
+  gap: 2px;
+  padding: 7px;
+}
+
+.account-menu-popover a,
+.account-menu-popover button {
+  display: flex;
+  width: 100%;
+  min-height: 38px;
+  align-items: center;
+  justify-content: flex-start;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--secondary-foreground);
+  font-size: 0.8rem;
+  font-weight: 560;
+  padding: 0 9px;
+  text-decoration: none;
+}
+
+.account-menu-popover a:hover,
+.account-menu-popover button:hover {
+  border-color: transparent;
+  background: var(--brand-light);
+  color: var(--brand-ink);
+}
+
+.account-menu-error {
+  color: var(--error);
+  font-size: 0.7rem;
+  line-height: 1.4;
+  padding: 6px 9px;
 }
 
 .sidebar-backdrop,
@@ -491,10 +680,7 @@ button.danger:hover {
 .agent-table-header,
 .agent-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.35fr) minmax(118px, 0.85fr) minmax(130px, 0.95fr) minmax(122px, 0.9fr) minmax(
-      150px,
-      1fr
-    ) minmax(92px, 0.65fr);
+  grid-template-columns: minmax(210px, 1.35fr) minmax(140px, 0.85fr) minmax(150px, 0.9fr) minmax(180px, 1fr);
   gap: 18px;
 }
 
@@ -571,30 +757,6 @@ button.danger:hover {
 
 .cell-stack.align-end {
   text-align: right;
-}
-
-.status-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--secondary-foreground);
-  font-size: 0.8rem;
-  font-weight: 560;
-  white-space: nowrap;
-}
-
-.status-indicator {
-  width: 8px;
-  height: 8px;
-  flex: 0 0 auto;
-  border: 1px solid var(--strong-border);
-  border-radius: 50%;
-  background: var(--strong-border);
-}
-
-.status-label.success .status-indicator {
-  border-color: var(--brand-ink);
-  background: var(--success);
 }
 
 .muted,
@@ -977,19 +1139,11 @@ code {
   margin-top: 24px;
 }
 
-@media (max-width: 1120px) {
-  .agent-table-header,
-  .agent-row {
-    grid-template-columns: minmax(175px, 1.25fr) minmax(110px, 0.8fr) minmax(125px, 0.9fr) minmax(120px, 0.85fr) minmax(
-        145px,
-        1fr
-      );
-  }
-
-  .agent-table-header > :last-child,
-  .agent-row > :last-child {
-    display: none;
-  }
+.account-page-actions {
+  display: grid;
+  justify-items: start;
+  gap: 14px;
+  margin-top: 28px;
 }
 
 @media (max-width: 900px) {
@@ -1104,10 +1258,6 @@ code {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px 20px;
     padding: 18px 0;
-  }
-
-  .agent-row > :last-child {
-    display: block;
   }
 
   .agent-identity {

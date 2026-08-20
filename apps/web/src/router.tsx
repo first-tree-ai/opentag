@@ -16,6 +16,7 @@ import { toString as qrToString } from "qrcode";
 import {
   createContext,
   type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
   useCallback,
   useContext,
@@ -101,6 +102,7 @@ export function AppRouter() {
           <Route path="/agents/new" element={<NewAgentPage />} />
           <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
           <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
+          <Route path="/account" element={<AccountPage />} />
           <Route path="/settings" element={<Navigate replace to="team" />} />
           <Route path="/settings/:section" element={<SettingsPage />} />
         </Route>
@@ -301,7 +303,79 @@ function readTeamPreference(): string | undefined {
 
 function AppShell() {
   const { me, membership, selectTeam } = useTeam();
+  const navigate = useNavigate();
   const [navigationOpen, setNavigationOpen] = useState(false);
+  const [openMenu, setOpenMenu] = useState<"team" | "account">();
+  const [teamQuery, setTeamQuery] = useState("");
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [accountError, setAccountError] = useState<string>();
+  const teamMenuRef = useRef<HTMLDivElement>(null);
+  const accountMenuRef = useRef<HTMLDivElement>(null);
+  const teamTriggerRef = useRef<HTMLButtonElement>(null);
+  const accountTriggerRef = useRef<HTMLButtonElement>(null);
+  const filteredMemberships = me.memberships.filter((item) =>
+    item.teamDisplayName.toLocaleLowerCase().includes(teamQuery.trim().toLocaleLowerCase()),
+  );
+  useEffect(() => {
+    if (!openMenu) return;
+    const menu = openMenu === "team" ? teamMenuRef.current : accountMenuRef.current;
+    const initialFocus =
+      openMenu === "team"
+        ? (menu?.querySelector<HTMLInputElement>('input[type="search"]') ??
+          menu?.querySelector<HTMLElement>('[aria-current="true"]') ??
+          menu?.querySelector<HTMLElement>("button, a"))
+        : menu?.querySelector<HTMLElement>('[role="menuitem"]');
+    initialFocus?.focus();
+
+    const closeOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      const activeMenu = openMenu === "team" ? teamMenuRef.current : accountMenuRef.current;
+      if (!activeMenu?.contains(target)) setOpenMenu(undefined);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      const trigger = openMenu === "team" ? teamTriggerRef.current : accountTriggerRef.current;
+      setOpenMenu(undefined);
+      trigger?.focus();
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [openMenu]);
+  function handleAccountMenuKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Home" && event.key !== "End") return;
+    const items = Array.from(
+      accountMenuRef.current?.querySelectorAll<HTMLElement>('[role="menuitem"]:not([disabled])') ?? [],
+    );
+    if (items.length === 0) return;
+    event.preventDefault();
+    const activeIndex = items.indexOf(document.activeElement as HTMLElement);
+    if (event.key === "Home") {
+      items[0]?.focus();
+    } else if (event.key === "End") {
+      items.at(-1)?.focus();
+    } else {
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const nextIndex = activeIndex < 0 ? 0 : (activeIndex + direction + items.length) % items.length;
+      items[nextIndex]?.focus();
+    }
+  }
+  async function logout() {
+    setLoggingOut(true);
+    setAccountError(undefined);
+    try {
+      await browserApi.logout();
+      navigate("/login", { replace: true });
+    } catch (cause) {
+      setAccountError(cause instanceof Error ? cause.message : "Unable to sign out");
+      setLoggingOut(false);
+    }
+  }
   return (
     <div className="shell">
       {navigationOpen ? (
@@ -317,47 +391,150 @@ function AppShell() {
           <Link className="brand" to="/agents" onClick={() => setNavigationOpen(false)}>
             OpenTag
           </Link>
-          <label className="team-switcher">
-            <span className="visually-hidden">Team</span>
-            <span className="team-avatar" aria-hidden="true">
-              {initials(membership.teamDisplayName)}
-            </span>
-            <select
-              aria-label="Team"
-              value={membership.teamId}
-              onChange={(event) => selectTeam(event.currentTarget.value)}
+          <div className="team-menu" ref={teamMenuRef}>
+            <button
+              aria-controls="team-menu-popover"
+              aria-expanded={openMenu === "team"}
+              aria-haspopup="dialog"
+              className="team-switcher"
+              ref={teamTriggerRef}
+              type="button"
+              onClick={() => {
+                setTeamQuery("");
+                setOpenMenu((value) => (value === "team" ? undefined : "team"));
+              }}
             >
-              {me.memberships.map((item: MeMembership) => (
-                <option value={item.teamId} key={item.teamId}>
-                  {item.teamDisplayName}
-                </option>
-              ))}
-            </select>
-          </label>
-          <Link className="team-switcher-action" to="/teams/new" onClick={() => setNavigationOpen(false)}>
-            Create Team
-          </Link>
-          <nav className="primary-nav">
+              <span className="team-avatar" aria-hidden="true">
+                {initials(membership.teamDisplayName)}
+              </span>
+              <span>{membership.teamDisplayName}</span>
+              <span className="team-menu-chevron" aria-hidden="true">
+                {openMenu === "team" ? "⌃" : "⌄"}
+              </span>
+            </button>
+            {openMenu === "team" ? (
+              <section aria-label="Switch Team" className="team-menu-popover" id="team-menu-popover" role="dialog">
+                <span className="menu-label">Switch Team</span>
+                {me.memberships.length > 6 ? (
+                  <label className="team-search">
+                    <span className="visually-hidden">Search Teams</span>
+                    <input
+                      placeholder="Search Teams"
+                      type="search"
+                      value={teamQuery}
+                      onChange={(event) => setTeamQuery(event.currentTarget.value)}
+                    />
+                  </label>
+                ) : null}
+                <div className="team-menu-list">
+                  {filteredMemberships.map((item: MeMembership) => {
+                    const current = item.teamId === membership.teamId;
+                    return (
+                      <button
+                        aria-current={current ? "true" : undefined}
+                        className="team-menu-option"
+                        key={item.teamId}
+                        type="button"
+                        onClick={() => {
+                          setOpenMenu(undefined);
+                          setNavigationOpen(false);
+                          if (!current) selectTeam(item.teamId);
+                        }}
+                      >
+                        <span className="team-avatar" aria-hidden="true">
+                          {initials(item.teamDisplayName)}
+                        </span>
+                        <span className="team-option-copy">
+                          <strong>{item.teamDisplayName}</strong>
+                          <small>{titleCase(item.role)}</small>
+                        </span>
+                        {current ? (
+                          <span className="team-option-check" aria-hidden="true">
+                            ✓
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                  {filteredMemberships.length === 0 ? <span className="team-menu-empty">No matching Teams</span> : null}
+                </div>
+                <Link
+                  className="team-menu-action"
+                  to="/teams/new"
+                  onClick={() => {
+                    setOpenMenu(undefined);
+                    setNavigationOpen(false);
+                  }}
+                >
+                  <span aria-hidden="true">＋</span>
+                  Create Team
+                </Link>
+              </section>
+            ) : null}
+          </div>
+          <nav aria-label="Workspace" className="primary-nav">
             <NavLink to="/agents" onClick={() => setNavigationOpen(false)}>
               Agents
             </NavLink>
             <span className="nav-placeholder" aria-disabled="true">
               Tasks
             </span>
+            <NavLink to="/settings" onClick={() => setNavigationOpen(false)}>
+              Settings
+            </NavLink>
           </nav>
         </div>
         <div className="sidebar-bottom">
-          <NavLink className="settings-link" to="/settings/team" onClick={() => setNavigationOpen(false)}>
-            Settings
-          </NavLink>
-          <div className="account-row">
-            <span className="account-avatar" aria-hidden="true">
-              {initials(me.user.displayName)}
-            </span>
-            <span>
-              <strong>{me.user.displayName}</strong>
-              <small>{membership.role === "admin" ? "Team Admin" : "Member"}</small>
-            </span>
+          <div className="account-menu" ref={accountMenuRef}>
+            <button
+              aria-label="Account menu"
+              aria-controls="account-menu-popover"
+              aria-expanded={openMenu === "account"}
+              aria-haspopup="menu"
+              className="account-row"
+              ref={accountTriggerRef}
+              type="button"
+              onClick={() => setOpenMenu((value) => (value === "account" ? undefined : "account"))}
+            >
+              <span className="account-avatar" aria-hidden="true">
+                {initials(me.user.displayName)}
+              </span>
+              <span className="account-copy">
+                <strong>{me.user.displayName}</strong>
+                <small>{me.user.email}</small>
+              </span>
+              <span className="account-menu-dots" aria-hidden="true">
+                ⋮
+              </span>
+            </button>
+            {openMenu === "account" ? (
+              <div
+                aria-label="Account"
+                className="account-menu-popover"
+                id="account-menu-popover"
+                role="menu"
+                onKeyDown={handleAccountMenuKeyDown}
+              >
+                <Link
+                  role="menuitem"
+                  to="/account"
+                  onClick={() => {
+                    setOpenMenu(undefined);
+                    setNavigationOpen(false);
+                  }}
+                >
+                  Account settings
+                </Link>
+                <button disabled={loggingOut} role="menuitem" type="button" onClick={() => void logout()}>
+                  {loggingOut ? "Signing out…" : "Sign out"}
+                </button>
+                {accountError ? (
+                  <span className="account-menu-error" role="alert">
+                    {accountError}
+                  </span>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </div>
       </aside>
@@ -416,11 +593,9 @@ function AgentList({ agents }: { agents: AgentSummary[] }) {
       <div className="agent-table">
         <div className="agent-table-header" aria-hidden="true">
           <span>Agent</span>
-          <span>Readiness</span>
           <span>Runtime</span>
-          <span>Messaging</span>
+          <span>IM</span>
           <span>Computer</span>
-          <span>Last active</span>
         </div>
         <div className="agent-table-body">
           {agents.map((agent) => (
@@ -445,33 +620,19 @@ function AgentRow({ agent }: { agent: AgentSummary }) {
           <span className={`status-chip ${agent.status}`}>{titleCase(agent.status)}</span>
         </span>
       </span>
-      <span data-label="Readiness">
-        <StatusLabel tone="neutral">Unavailable</StatusLabel>
-      </span>
       <span className="cell-stack" data-label="Runtime">
         <strong>{providerLabel(agent.runtimeProvider)}</strong>
         <small>Provider</small>
       </span>
-      <span data-label="Messaging">
-        <StatusLabel tone="neutral">Unavailable</StatusLabel>
+      <span className="cell-stack" data-label="IM">
+        <strong>{receiveModeLabel(agent.receiveMode)}</strong>
+        <small>Receive mode</small>
       </span>
       <span className="cell-stack" data-label="Computer">
         <strong>{agent.computer.displayName}</strong>
         <small>{titleCase(agent.computer.platform)}</small>
       </span>
-      <span className="muted" data-label="Last active">
-        Unavailable
-      </span>
     </Link>
-  );
-}
-
-function StatusLabel({ tone, children }: { tone: "success" | "neutral"; children: ReactNode }) {
-  return (
-    <span className={`status-label ${tone}`}>
-      <span className="status-indicator" aria-hidden="true" />
-      {children}
-    </span>
   );
 }
 
@@ -551,7 +712,7 @@ function NewAgentPage() {
 const agentSections = [
   { key: "general", label: "Overview" },
   { key: "runtime", label: "Runtime" },
-  { key: "im", label: "Messaging" },
+  { key: "im", label: "IM" },
   { key: "resources", label: "Resources" },
   { key: "integrations", label: "Integrations" },
   { key: "access", label: "Access" },
@@ -586,7 +747,6 @@ function AgentDetailPage() {
                   </p>
                 </div>
               </div>
-              <StatusLabel tone="neutral">Readiness unavailable</StatusLabel>
             </div>
           </header>
           <label className="local-nav-select">
@@ -618,6 +778,44 @@ function AgentDetailPage() {
         </section>
       )}
     </AsyncState>
+  );
+}
+
+function AccountPage() {
+  const { me } = useTeam();
+  const navigate = useNavigate();
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [error, setError] = useState<string>();
+  async function logout() {
+    setLoggingOut(true);
+    setError(undefined);
+    try {
+      await browserApi.logout();
+      navigate("/login", { replace: true });
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to sign out");
+      setLoggingOut(false);
+    }
+  }
+  return (
+    <Page title="Account" description="Review the identity used to access OpenTag.">
+      <DefinitionList
+        rows={[
+          ["Display name", me.user.displayName],
+          ["Email", me.user.email],
+        ]}
+      />
+      <div className="account-page-actions">
+        <button className="secondary" disabled={loggingOut} type="button" onClick={() => void logout()}>
+          {loggingOut ? "Signing out…" : "Sign out"}
+        </button>
+        {error ? (
+          <div className="notice error" role="alert">
+            {error}
+          </div>
+        ) : null}
+      </div>
+    </Page>
   );
 }
 
@@ -1113,7 +1311,7 @@ function SettingsPage() {
           ) : null}
           {section === "integrations" ? (
             <EmptyState title="Team Integrations not enabled">
-              Agent-owned connections remain visible from each Agent's Messaging and Integrations sections.
+              Agent-owned connections remain visible from each Agent's IM and Integrations sections.
             </EmptyState>
           ) : null}
           {section === "access" ? (
@@ -1532,6 +1730,10 @@ function titleCase(value: string) {
 
 function providerLabel(provider: AgentSummary["runtimeProvider"]): string {
   return provider === "claude-code" ? "Claude Code" : "Codex";
+}
+
+function receiveModeLabel(receiveMode: AgentSummary["receiveMode"]): string {
+  return receiveMode === "all_message" ? "All messages" : "Mentions only";
 }
 
 function initials(value: string): string {

@@ -1058,6 +1058,23 @@ describe("OpenTag Web App Shell", () => {
     );
   });
 
+  it("continues an OAuth-redeemed invitation when Team preference storage is unavailable", async () => {
+    installApi("admin", { alreadyJoinedInvitation: true, redeemFails: true });
+    window.sessionStorage.setItem("opentag.pendingInvitationToken", invitationToken);
+    window.history.replaceState({}, "", `/invites/${invitationToken}?joinedTeamId=${invitedTeamId}`);
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    try {
+      render(<App />);
+      expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Invited Team" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/agents");
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
   it("preserves the pending invitation while redirecting an unauthenticated join to sign-in", async () => {
     installApi("member", { unauthenticated: true });
     window.history.replaceState({}, "", `/invites/${invitationToken}`);
@@ -1698,6 +1715,56 @@ describe("OpenTag Web App Shell", () => {
     expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(createdTeamId);
   });
 
+  it("lands on the created Team when Team preference storage is unavailable", async () => {
+    installApi("admin", { teamless: true });
+    window.localStorage.setItem("opentag.selectedTeamId", teamId);
+    const setItem = vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    try {
+      render(<App />);
+      fireEvent.change(await screen.findByLabelText("Team name"), { target: { value: "First Tree AI" } });
+      fireEvent.click(screen.getByRole("button", { name: "Create Team" }));
+      expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "First Tree AI" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/agents");
+      expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(teamId);
+    } finally {
+      setItem.mockRestore();
+    }
+  });
+
+  it("keeps Team establishment out of the standalone onboarding route", async () => {
+    installApi("admin", { teamless: true });
+    window.history.replaceState({}, "", "/onboarding");
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Create your team" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/teams/new");
+    expect(
+      vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/teams" && init?.method === "POST"),
+    ).toBe(false);
+  });
+
+  it("loads standalone onboarding when selected Team preference storage is unavailable", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/onboarding");
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    try {
+      render(<App />);
+      expect(await screen.findByRole("heading", { name: "Reviewer needs its runtime route" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/onboarding");
+      expect(vi.mocked(fetch).mock.calls.filter(([path]) => path === "/api/v1/me")).toHaveLength(1);
+    } finally {
+      getItem.mockRestore();
+      setItem.mockRestore();
+    }
+  });
+
   it("resolves an internal Team handle collision without asking the user for another name", async () => {
     installApi("admin", { teamless: true, teamNameConflict: true });
     window.history.replaceState({}, "", "/teams/new");
@@ -1752,6 +1819,28 @@ describe("OpenTag Web App Shell", () => {
         .getAttribute("aria-current"),
     ).toBe("true");
     expect(within(menu).queryByText("Team settings")).toBeNull();
+  });
+
+  it("switches Teams when Team preference storage is unavailable", async () => {
+    installApi("admin", { alreadyJoinedInvitation: true });
+    window.localStorage.setItem("opentag.selectedTeamId", teamId);
+    const setItem = vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
+      throw new Error("Storage unavailable");
+    });
+    try {
+      render(<App />);
+      fireEvent.click(await screen.findByRole("button", { name: "Example" }));
+      fireEvent.click(
+        within(screen.getByRole("dialog", { name: "Switch Team" })).getByRole("button", {
+          name: /Invited Team Member/,
+        }),
+      );
+      expect(await screen.findByRole("button", { name: "Invited Team" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/agents");
+      expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(teamId);
+    } finally {
+      setItem.mockRestore();
+    }
   });
 
   it("keeps account controls personal and signs out from the account menu", async () => {

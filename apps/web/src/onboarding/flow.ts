@@ -41,6 +41,8 @@ export interface OnboardingFacts {
   readonly team: OnboardingTeam | undefined;
   readonly computers: readonly OnboardingComputer[];
   readonly providers: readonly OnboardingProvider[];
+  /** A Computer choice made only when facts cannot identify one safe route. */
+  readonly computerSelection?: Pick<OnboardingProvider, "computerId">;
   /** An explicit current choice; ignored unless it still names a runnable route. */
   readonly providerSelection?: Pick<OnboardingProvider, "computerId" | "provider">;
   /** The Agent belonging to this onboarding intent, if it already exists. */
@@ -171,8 +173,15 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
   const selectedComputer = selectedRoute
     ? onlineComputers.find((computer) => computer.id === selectedRoute.computerId)
     : undefined;
+  const rememberedComputer = facts.computerSelection
+    ? onlineComputers.find((computer) => computer.id === facts.computerSelection?.computerId)
+    : undefined;
+  const explicitlySelectedComputer =
+    rememberedComputer && (eligibleComputers.length === 0 || runnableComputerIds.has(rememberedComputer.id))
+      ? rememberedComputer
+      : undefined;
   const [eligibleComputer, ...otherEligibleComputers] = eligibleComputers;
-  if (!selectedComputer && otherEligibleComputers.length > 0) {
+  if (!selectedComputer && !explicitlySelectedComputer && otherEligibleComputers.length > 0) {
     return {
       currentState: { kind: "computer", availability: "choice", computers: eligibleComputers },
       runtimeReady: false,
@@ -181,9 +190,9 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
     };
   }
 
-  let computer = selectedComputer ?? eligibleComputer;
+  let computer = selectedComputer ?? explicitlySelectedComputer ?? eligibleComputer;
   if (!computer) {
-    if (otherOnlineComputers.length > 0) {
+    if (!explicitlySelectedComputer && otherOnlineComputers.length > 0) {
       return {
         currentState: { kind: "computer", availability: "choice", computers: onlineComputers },
         runtimeReady: false,

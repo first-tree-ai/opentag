@@ -75,7 +75,7 @@ async function fixture() {
     teamService,
     invitations,
     identities: new AuthIdentityService(client.database, { now: () => now }),
-    postAuthentication: new PostAuthenticationService(client.database, invitations),
+    postAuthentication: new PostAuthenticationService(client.database, invitations, teamService),
   };
 }
 
@@ -231,14 +231,22 @@ describe("account identity and Team foundation persistence", () => {
     }
   });
 
-  it("never provisions a Team for a solo sign-in, leaving creation an explicit user action", async () => {
+  it("idempotently establishes an admin Team for a solo OAuth completion", async () => {
     const value = await fixture();
     try {
       const userId = await value.identities.resolveOrCreate(google("solo", "solo@example.com"));
+      const completions = await Promise.all([
+        value.postAuthentication.complete(userId),
+        value.postAuthentication.complete(userId),
+      ]);
+      const selectedTeamId = completions.find((completion) => completion.selectedTeamId)?.selectedTeamId;
+      expect(selectedTeamId).toEqual(expect.any(String));
+      expect(completions.filter((completion) => completion.selectedTeamId)).toHaveLength(1);
       expect(await value.postAuthentication.complete(userId)).toEqual({ userId });
-      expect(await value.postAuthentication.complete(userId)).toEqual({ userId });
-      expect(await value.database.select().from(memberships).where(eq(memberships.userId, userId))).toHaveLength(0);
-      expect(await value.database.select().from(teams)).toHaveLength(1);
+      expect(await value.database.select().from(memberships).where(eq(memberships.userId, userId))).toEqual([
+        expect.objectContaining({ teamId: selectedTeamId, role: "admin", status: "active" }),
+      ]);
+      expect(await value.database.select().from(teams)).toHaveLength(2);
     } finally {
       await value.sql.end();
     }
@@ -248,7 +256,6 @@ describe("account identity and Team foundation persistence", () => {
     const value = await fixture();
     try {
       const userId = await value.identities.resolveOrCreate(google("solo", "solo@example.com"));
-      await value.postAuthentication.complete(userId);
       const created = await value.teamService.createTeam(userId, {
         name: "  First-Tree  ",
         displayName: "  First Tree AI  ",

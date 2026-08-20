@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   type CreateTeamRequest,
   CreateTeamRequestSchema,
@@ -179,6 +180,42 @@ export class TeamMembershipService {
     await this.#afterMembershipUserLocked?.();
   }
 
+  /**
+   * Establishes the personal Team for a solo OAuth completion. The caller must
+   * already hold the user row lock so concurrent callbacks cannot create two
+   * Teams. Existing active membership always wins and is left unchanged.
+   */
+  async establishPersonalTeamForLockedUserInTransaction(
+    transaction: DatabaseTransaction,
+    user: { readonly displayName: string; readonly id: string },
+  ): Promise<string | undefined> {
+    const [activeMembership] = await transaction
+      .select({ teamId: memberships.teamId })
+      .from(memberships)
+      .where(and(eq(memberships.userId, user.id), eq(memberships.status, "active")))
+      .limit(1);
+    if (activeMembership) return undefined;
+
+    const now = this.#now();
+    const teamId = randomUUID();
+    await transaction.insert(teams).values({
+      id: teamId,
+      name: `team-${teamId}`,
+      displayName: `${user.displayName}'s Team`.slice(0, 120),
+      createdAt: now,
+      updatedAt: now,
+    });
+    await transaction.insert(memberships).values({
+      teamId,
+      userId: user.id,
+      role: "admin",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+    return teamId;
+  }
+
   /** Refuses the write that would take the user past TEAM_MEMBERSHIP_LIMIT; the caller holds the user lock. */
   async #requireMembershipHeadroom(transaction: DatabaseTransaction, userId: string): Promise<void> {
     const held = await transaction
@@ -215,10 +252,7 @@ export class TeamMembershipService {
     });
   }
 
-  /**
-   * Creates a Team and installs its creator as the first admin in one transaction.
-   * Team creation is always an explicit user action; no caller may provision a Team implicitly.
-   */
+  /** Creates a named Team and installs its creator as the first admin in one transaction. */
   async createTeam(callerUserId: string, rawInput: CreateTeamRequest): Promise<CreateTeamResponse> {
     const input = CreateTeamRequestSchema.parse(rawInput);
     try {

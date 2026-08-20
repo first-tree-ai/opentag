@@ -8,12 +8,15 @@ export interface OnboardingReadinessComputer {
 
 export function normalizeOnboardingProviders(
   computers: readonly OnboardingReadinessComputer[],
-): readonly OnboardingProvider[] {
+): readonly (OnboardingProvider & {
+  readonly status: ComputerProviderReadinessCollection[number]["status"];
+})[] {
   return computers.flatMap((computer) =>
     (computer.providerReadiness ?? []).map((observation) => ({
       computerId: computer.id,
       provider: observation.provider,
       runtimeReady: observation.status === "ready",
+      status: observation.status,
     })),
   );
 }

@@ -39,6 +39,7 @@ import { ApiError, browserApi } from "./api.js";
 import { ComputerSetup } from "./computer-setup.js";
 import { CreateTeamForm } from "./create-team-form.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
+import { OnboardingPage } from "./onboarding/page.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
@@ -334,7 +335,7 @@ export function AppRouter() {
       <Route path="/invites/:token" element={<InvitePage />} />
       <Route path="/teams/new" element={<NewTeamPage />} />
       <Route element={<AuthenticatedTeamGate />}>
-        <Route path="/onboarding" element={<OnboardingPage />} />
+        <Route path="/onboarding" element={<OnboardingRoute />} />
         <Route element={<AppShell />}>
           <Route index element={<Navigate replace to="/agents" />} />
           <Route path="/agents" element={<AgentsPage />} />
@@ -397,7 +398,7 @@ function InvitePage() {
           const me = await browserApi.me();
           if (me.memberships.some((membership: MeMembership) => membership.teamId === serverSelectedTeamId)) {
             clearPendingInvitation(token);
-            window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, serverSelectedTeamId);
+            rememberTeamPreference(serverSelectedTeamId);
             navigate("/agents", { replace: true });
             return;
           }
@@ -408,7 +409,7 @@ function InvitePage() {
           throw new Error("The invited Team is not available to the signed-in account");
         }
         clearPendingInvitation(token);
-        window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, redemption.membership.teamId);
+        rememberTeamPreference(redemption.membership.teamId);
         navigate("/agents", { replace: true });
       } catch (cause) {
         if (cause instanceof ApiError && cause.status === 401) {
@@ -460,6 +461,8 @@ function InvitePage() {
 
 const SELECTED_TEAM_STORAGE_KEY = "opentag.selectedTeamId";
 const PENDING_INVITATION_STORAGE_KEY = "opentag.pendingInvitationToken";
+let memoryTeamPreference: string | undefined;
+let memoryTeamPreferenceFallback = false;
 
 function readPendingInvitation(): string | undefined {
   try {
@@ -496,7 +499,7 @@ function NewTeamPage() {
       <p>You can invite people and add Agents next.</p>
       <CreateTeamForm
         onCreated={(created) => {
-          window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, created.id);
+          rememberTeamPreference(created.id);
           navigate("/agents");
         }}
         onUnauthenticated={() => navigate(`/login?next=${encodeURIComponent("/teams/new")}`)}
@@ -507,8 +510,8 @@ function NewTeamPage() {
 
 function AuthenticatedTeamGate() {
   const location = useLocation();
-  const navigate = useNavigate();
   const [meRevision, setMeRevision] = useState(0);
+  const [selectedTeamId, setSelectedTeamId] = useState(readTeamPreference);
   const state = useResource(() => browserApi.me(), `me:${meRevision}`);
   if (state.kind === "error" && state.error instanceof ApiError && state.error.status === 401) {
     const requested = location.pathname === "/" ? "/agents" : `${location.pathname}${location.search}`;
@@ -517,15 +520,13 @@ function AuthenticatedTeamGate() {
   return (
     <AsyncState state={state}>
       {(me) => {
-        const stored = readTeamPreference();
-        const membership = me.memberships.find((item: MeMembership) => item.teamId === stored) ?? me.memberships[0];
-        // Creating or joining a Team is the first onboarding step, so a Team-less session is sent there.
+        const membership =
+          me.memberships.find((item: MeMembership) => item.teamId === selectedTeamId) ?? me.memberships[0];
         if (!membership) return <Navigate replace to="/teams/new" />;
         const selectTeam = (teamId: string) => {
           if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
-          window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, teamId);
-          navigate(location.pathname, { replace: true });
-          window.location.reload();
+          rememberTeamPreference(teamId);
+          setSelectedTeamId(teamId);
         };
         return (
           <TeamContext value={{ me, membership, refreshMe: () => setMeRevision((value) => value + 1), selectTeam }}>
@@ -537,9 +538,34 @@ function AuthenticatedTeamGate() {
   );
 }
 
+function OnboardingRoute() {
+  const { me, membership } = useTeam();
+  return <OnboardingPage membership={membership} user={me.user} />;
+}
+
 function readTeamPreference(): string | undefined {
-  const value = window.localStorage.getItem(SELECTED_TEAM_STORAGE_KEY);
-  return value && value.length <= 64 ? value : undefined;
+  if (memoryTeamPreferenceFallback) return memoryTeamPreference;
+  try {
+    const value = window.localStorage.getItem(SELECTED_TEAM_STORAGE_KEY);
+    if (value && value.length <= 64) {
+      memoryTeamPreference = value;
+      return value;
+    }
+    return undefined;
+  } catch {
+    return memoryTeamPreference;
+  }
+}
+
+function rememberTeamPreference(teamId: string): void {
+  memoryTeamPreference = teamId;
+  try {
+    window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, teamId);
+    memoryTeamPreferenceFallback = false;
+  } catch {
+    memoryTeamPreferenceFallback = true;
+    // The authoritative membership still determines the available Team.
+  }
 }
 
 function AppShell() {
@@ -2724,32 +2750,6 @@ function ComputersSettings({ canManage, teamId }: { canManage: boolean; teamId: 
         )}
       </AsyncState>
     </>
-  );
-}
-
-function OnboardingPage() {
-  const { membership } = useTeam();
-  return (
-    <Page title="Set up OpenTag" description="Connect the runtime path before inviting the Team to mention an Agent.">
-      {membership.role === "admin" ? (
-        <>
-          <ol className="steps">
-            <li>Team: {membership.teamDisplayName}</li>
-            <li>Connect a Local Computer</li>
-            <li>Confirm the provider CLI</li>
-            <li>Create an Agent</li>
-            <li>Connect IM</li>
-          </ol>
-          <Link className="button" to="/settings/computers">
-            Start with a Computer
-          </Link>
-        </>
-      ) : (
-        <EmptyState title="Team Admin setup required">
-          You can browse the Team after an Admin completes setup.
-        </EmptyState>
-      )}
-    </Page>
   );
 }
 

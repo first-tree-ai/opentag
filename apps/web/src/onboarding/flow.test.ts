@@ -159,6 +159,40 @@ describe("deriveOnboardingState", () => {
     ).toEqual({ kind: "agent", computer: computerB, provider: claudeOnB, alternatives: [codexOnB] });
   });
 
+  it("keeps an explicit online Computer choice while its Provider is not ready", () => {
+    expect(
+      deriveOnboardingState(
+        facts({
+          computers: [computerA, computerB],
+          providers: [],
+          computerSelection: { computerId: computerB.id },
+        }),
+      ).currentState,
+    ).toEqual({ kind: "provider", availability: "none", computer: computerB });
+  });
+
+  it("ignores a stale explicit Computer choice", () => {
+    expect(
+      deriveOnboardingState(
+        facts({
+          computers: [computerA],
+          computerSelection: { computerId: computerB.id },
+        }),
+      ).currentState,
+    ).toEqual({ kind: "agent", computer: computerA, provider: codex, alternatives: [] });
+  });
+
+  it("falls back from a selected Computer without a route to the unique runnable Computer", () => {
+    expect(
+      deriveOnboardingState(
+        facts({
+          computers: [computerA, computerB],
+          computerSelection: { computerId: computerB.id },
+        }),
+      ).currentState,
+    ).toEqual({ kind: "agent", computer: computerA, provider: codex, alternatives: [] });
+  });
+
   it("falls back to Codex when an explicit selection is stale", () => {
     const claude = { ...codex, provider: "claude-code" as const };
     const unavailableClaude = { ...codex, provider: "claude-code" as const, runtimeReady: false };

@@ -199,7 +199,7 @@ export async function startServer(): Promise<void> {
       onDiagnostic: reportDiagnostic,
     });
     const identityService = new AuthIdentityService(database);
-    const postAuthentication = new PostAuthenticationService(database, invitationService);
+    const postAuthentication = new PostAuthenticationService(database, invitationService, teamService);
     const google = config.google
       ? new GoogleBrowserAuthService({
           database,

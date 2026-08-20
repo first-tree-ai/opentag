@@ -427,6 +427,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(screen.getByRole("main").classList.contains("decorative-page")).toBe(false);
     expect(screen.getByRole("link", { name: "Agents" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "New Agent" })).toBeTruthy();
@@ -446,7 +447,8 @@ describe("OpenTag Web App Shell", () => {
     installApi("member", { unauthenticated: true });
     window.history.replaceState({}, "", path);
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();
+    const heading = await screen.findByRole("heading", { name: "Sign in" });
+    expect(heading.closest("main")?.classList.contains("decorative-page")).toBe(true);
     const expectedNext = path === "/" ? "/agents" : path;
     expect(window.location.search).toBe(`?next=${encodeURIComponent(expectedNext)}`);
   });

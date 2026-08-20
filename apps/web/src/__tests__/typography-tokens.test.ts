@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import postcss, { type Declaration, type Rule } from "postcss";
+import postcss, { type Container, type Declaration, type Document, type Rule } from "postcss";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -9,6 +9,13 @@ import { describe, expect, it } from "vitest";
  * other. These tests keep type flowing through the token layer so the scale
  * cannot drift back apart one component at a time.
  *
+ * Surfaces that own a density, and the only selectors allowed to retune a
+ * role. Anywhere else, a rebinding is component-local drift: the thing this
+ * PR removed.
+ */
+const READING_SURFACES = new Set([".settings-page", ".onboarding-shell", ".decorative-page", ".dialog-card"]);
+
+/*
  * Every check reads parsed declarations rather than raw text. Matching CSS
  * with regular expressions cost this guard three separate holes in review —
  * the `font` shorthand read as a longhand, a token defined only inside a
@@ -62,13 +69,24 @@ function selectorsOf(declaration: Declaration): string[] {
   return (parent as Rule).selector.split(",").map((selector) => selector.trim());
 }
 
+/** A declaration wrapped in any at-rule applies only when that condition holds. */
+function unconditional(declaration: Declaration): boolean {
+  let node: Container | Document | undefined = declaration.parent;
+  while (node !== undefined) {
+    if (node.type === "atrule") return false;
+    node = node.parent;
+  }
+  return true;
+}
+
 /**
- * A custom property exists only where its selector matches. A step parked under
- * some other rule is invisible to a :root role, so the baseline scale has to be
- * declared at :root to count as declared at all.
+ * A custom property exists only where its selector matches and its conditions
+ * hold. A step parked under another rule -- or under a media query that a normal
+ * viewport never satisfies -- is invisible to a :root role, so the baseline
+ * scale has to be declared at an unconditional :root to count as declared.
  */
 function atRoot(declaration: Declaration): boolean {
-  return selectorsOf(declaration).includes(":root");
+  return unconditional(declaration) && selectorsOf(declaration).includes(":root");
 }
 
 /**
@@ -79,10 +97,15 @@ function withoutStrings(value: string): string {
   return value.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, "");
 }
 
+/** Ordinary property names are ASCII case-insensitive; custom property names are not. */
+function propertyName(declaration: Declaration): string {
+  return declaration.prop.startsWith("--") ? declaration.prop : declaration.prop.toLowerCase();
+}
+
 /** Values of one property, matched by parsed name so `font` never collects `font-size`. */
 function valuesOf(css: string, property: string): string[] {
   return declarations(css)
-    .filter((declaration) => declaration.prop === property)
+    .filter((declaration) => propertyName(declaration) === property)
     .map((declaration) => declaration.value.trim());
 }
 
@@ -131,16 +154,30 @@ function unresolvedRoles(css: string): string[] {
     .map((edge) => edge.step);
 }
 
-/** Raw steps as declared: the number in the name, and the pixel value it resolves to. */
+/** Every baseline step declaration, well-formed or not, so none is skipped silently. */
+function rootStepDeclarations(css: string): Declaration[] {
+  return declarations(css).filter((declaration) => atRoot(declaration) && declaration.prop.startsWith("--fs-"));
+}
+
+/** A step is a numeric name and a rem value; anything else does not describe one. */
+function stepOf(declaration: Declaration): { name: number; px: number } | undefined {
+  const name = declaration.prop.match(/^--fs-([0-9]+)$/)?.[1];
+  const rem = withoutStrings(declaration.value).match(/^([0-9.]+)rem$/)?.[1];
+  if (name === undefined || rem === undefined) return undefined;
+  return { name: Number(name), px: Number(rem) * 16 };
+}
+
 function rawSteps(css: string): { name: number; px: number }[] {
-  return declarations(css)
-    .filter(atRoot)
-    .flatMap((declaration) => {
-      const name = declaration.prop.match(/^--fs-([0-9]+)$/)?.[1];
-      const rem = withoutStrings(declaration.value).match(/^([0-9.]+)rem$/)?.[1];
-      if (name === undefined || rem === undefined) return [];
-      return [{ name: Number(name), px: Number(rem) * 16 }];
-    });
+  return rootStepDeclarations(css).flatMap((declaration) => {
+    const step = stepOf(declaration);
+    return step === undefined ? [] : [step];
+  });
+}
+
+function malformedSteps(css: string): string[] {
+  return rootStepDeclarations(css)
+    .filter((declaration) => stepOf(declaration) === undefined)
+    .map((declaration) => `${declaration.prop}: ${declaration.value}`);
 }
 
 /**
@@ -148,14 +185,14 @@ function rawSteps(css: string): { name: number; px: number }[] {
  * role it inherits; it may not invent a token, because nothing outside that
  * surface could resolve it.
  */
-function scopedDefinitions(css: string): { token: string; selector: string }[] {
+function scopedDefinitions(css: string): { token: string; selectors: string[] }[] {
   const pattern = new RegExp(`^--((?:${FAMILIES.join("|")})-[a-z0-9-]+)$`);
   return declarations(css)
     .filter((declaration) => !atRoot(declaration))
     .flatMap((declaration) => {
       const token = declaration.prop.match(pattern)?.[1];
       if (token === undefined) return [];
-      return [{ token, selector: selectorsOf(declaration).join(", ") }];
+      return [{ token, selectors: selectorsOf(declaration) }];
     });
 }
 
@@ -198,12 +235,20 @@ describe("typography tokens", () => {
     expect(roleEdges(stylesheet).length).toBe(roles.length);
   });
 
-  it("rebinds only roles that :root already declares, and never a raw step", () => {
+  it("retunes roles only on the reading surfaces, and never a raw step", () => {
     const roles = definedTokens(stylesheet, "text");
-    const introduced = scopedDefinitions(stylesheet).filter(
-      (definition) => !definition.token.startsWith("text-") || !roles.has(definition.token),
+    const stray = scopedDefinitions(stylesheet).filter(
+      (definition) =>
+        !definition.token.startsWith("text-") ||
+        !roles.has(definition.token) ||
+        !definition.selectors.every((selector) => READING_SURFACES.has(selector)),
     );
-    expect(introduced).toEqual([]);
+    expect(stray).toEqual([]);
+  });
+
+  it("declares every baseline step as a whole-pixel rem, with none skipped", () => {
+    expect(malformedSteps(stylesheet)).toEqual([]);
+    expect(rawSteps(stylesheet).length).toBe(rootStepDeclarations(stylesheet).length);
   });
 
   it("keeps every raw step on a whole pixel, named after the size it produces", () => {
@@ -267,14 +312,48 @@ describe("the guard itself", () => {
     expect(unresolvedRoles(css)).toEqual(["fs-13"]);
     expect(danglingReferences(css)).toEqual(["fs-13"]);
     expect(rawSteps(css)).toEqual([]);
-    expect(scopedDefinitions(css)).toEqual([{ token: "fs-13", selector: ".dead" }]);
+    expect(scopedDefinitions(css)).toEqual([{ token: "fs-13", selectors: [".dead"] }]);
   });
 
   it("accepts a surface that retunes a role :root already declares", () => {
     const css =
       ":root { --fs-13: 0.8125rem; --fs-14: 0.875rem; --text-ui: var(--fs-13); }\n.settings-page { --text-ui: var(--fs-14); }";
     expect(danglingReferences(css)).toEqual([]);
-    expect(scopedDefinitions(css)).toEqual([{ token: "text-ui", selector: ".settings-page" }]);
+    expect(scopedDefinitions(css)).toEqual([{ token: "text-ui", selectors: [".settings-page"] }]);
+  });
+
+  it("reads an upper-case property name, which the browser applies all the same", () => {
+    const css = "body { FONT-SIZE: 13px; FONT-FAMILY: Arial; }\n.row { Font: 12px Arial; }";
+    expect(offTokenValues(css, "font-size", /^var\(--text-[a-z]+\)$/)).toEqual(["13px"]);
+    expect(offTokenValues(css, "font-family", /^var\(--font-[a-z]+\)$/)).toEqual(["Arial"]);
+    expect(offTokenValues(css, "font", /^$/, FONT_SHORTHAND_LITERALS)).toEqual(["12px Arial"]);
+  });
+
+  it("reports a step that does not describe a step, rather than skipping it", () => {
+    const css = ":root { --fs-13: 13.5px; --fs-small: 0.8125rem; --fs-14: 0.875rem; }";
+    expect(malformedSteps(css)).toEqual(["--fs-13: 13.5px", "--fs-small: 0.8125rem"]);
+    expect(rawSteps(css)).toEqual([{ name: 14, px: 14 }]);
+  });
+
+  it("ignores a step declared under a condition a normal viewport never meets", () => {
+    const css = ":root { --text-ui: var(--fs-13); }\n@media (width: 0px) { :root { --fs-13: 0.8125rem; } }";
+    expect(unresolvedRoles(css)).toEqual(["fs-13"]);
+    expect(danglingReferences(css)).toEqual(["fs-13"]);
+    expect(rawSteps(css)).toEqual([]);
+    expect(scopedDefinitions(css)).toEqual([{ token: "fs-13", selectors: [":root"] }]);
+  });
+
+  it("rejects a component that retunes a role it does not own", () => {
+    const css =
+      ":root { --fs-30: 1.875rem; --text-ui: var(--fs-13); --fs-13: 0.8125rem; }\n.row { --text-ui: var(--fs-30); }";
+    const roles = definedTokens(css, "text");
+    const stray = scopedDefinitions(css).filter(
+      (definition) =>
+        !definition.token.startsWith("text-") ||
+        !roles.has(definition.token) ||
+        !definition.selectors.every((selector) => READING_SURFACES.has(selector)),
+    );
+    expect(stray).toEqual([{ token: "text-ui", selectors: [".row"] }]);
   });
 
   it("does not read a commented-out declaration as a violation", () => {

@@ -211,6 +211,14 @@ function defaultConfig() {
     host: "127.0.0.1",
     jwtSecret: "jwt-secret",
     migrationsDirectory: "/mock/migrations",
+    observability: {
+      tracing: {
+        endpoint: "",
+        environment: "test",
+        headers: "",
+        sampleRate: 1,
+      },
+    },
     port: 8000,
     publicUrl: "https://opentag.example.com",
     refreshTokenTtlSeconds: 2_592_000,
@@ -379,7 +387,7 @@ describe("Server startup", () => {
     (state.workerOptions as { onDiagnostic(code: string): void }).onDiagnostic("IM_DELIVERY_FAILED");
     expect((state.app as { log: { error: ReturnType<typeof vi.fn> } }).log.error).toHaveBeenCalledWith(
       { code: "IM_DELIVERY_FAILED" },
-      "IM delivery worker diagnostic",
+      "Server diagnostic",
     );
 
     const app = state.app as { addHook: ReturnType<typeof vi.fn>; close(): Promise<void> };

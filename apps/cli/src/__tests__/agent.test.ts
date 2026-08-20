@@ -1,10 +1,11 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import type { AgentAdminConfig } from "@opentag/shared";
+import type { AgentAdminConfig, ImBindingDiagnostics } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
 import { formatAgent, formatAgentCreated, formatAgentList } from "../core/agent/formatting.js";
+import { formatImBindingDiagnostics } from "../core/agent/im.js";
 import {
   runAgentCreate,
   runAgentDelete,
@@ -94,6 +95,22 @@ function api() {
 }
 
 describe("Agent CLI core", () => {
+  it("shows runtime message-tool readiness in IM diagnostics", () => {
+    const diagnostics: ImBindingDiagnostics = {
+      imBindingId: crypto.randomUUID(),
+      provider: "feishu",
+      ready: false,
+      runtimeToolAvailable: false,
+      credentialGeneration: 1,
+      reauthorizationRequired: false,
+      connection: null,
+      lastInboundAt: null,
+      lastOutboundAt: null,
+      lastErrorCode: null,
+    };
+    expect(formatImBindingDiagnostics(diagnostics)).toContain("runtimeToolAvailable\tfalse");
+  });
+
   it("resolves one Team automatically and requires an explicit choice for multiple Teams", () => {
     expect(selectTeam(me)).toEqual(membership);
     expect(() => selectTeam({ ...me, memberships: [] })).toThrow("No active Team membership");

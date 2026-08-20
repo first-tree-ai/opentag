@@ -1,6 +1,12 @@
 export type { VerifiedFeishuEnvelope } from "./adapter.js";
 export { FeishuAdapter, mapFeishuError, normalizeFeishuMessage } from "./adapter.js";
 export { FeishuConnectionManager } from "./connection-manager.js";
+export {
+  FeishuOperationError,
+  type FeishuSafeErrorCode,
+  safeFeishuConnectionErrorCode,
+  safeFeishuSetupErrorCode,
+} from "./errors.js";
 export type {
   FeishuAppProfile,
   FeishuRegistration,

@@ -55,6 +55,9 @@ test doubles.
 Readiness probes invoke those same local executables. Codex checks `--version`
 and `app-server --help`; Claude Code checks `--version`, `--help`, and local
 `auth status --json`; Pi checks `--version`, `--help`, and the offline model list.
+Pi requires 0.80.6 or newer so RPC provides both `agent_settled` and the accepted
+`max` thinking level. Model discovery uses the same extension, skill, template,
+theme, context-file, and project-trust disabling arguments as production Runs.
 Missing, incompatible, or unauthenticated artifacts fail with typed issues; the
 Client never installs or fetches a Provider. The offline suite locks this boundary
 by checking dependency manifests and by asserting the default process launch
@@ -138,7 +141,7 @@ A scripted Pi RPC client verifies:
 - extension, skill, template, theme, context-file, and approval disabling;
 - ordered message, tool, usage, warning, Provider extension, and `agent_settled` terminal events;
 - hidden reasoning content, model errors, late process failures, and terminal ingress precedence;
-- malformed or crossed session state, invalid event transitions, and disabled extension UI requests;
+- malformed or crossed session state, parent/child turn ordering, invalid event transitions, and disabled extension UI requests;
 - probe outcomes, credential discovery, process environment allow-listing, and process-tree cleanup.
 
 The Pi wire tests additionally enforce correlated strict JSONL responses,
@@ -239,7 +242,7 @@ type-check gates passed, as did all 96 Server integration tests.
 
 The Pi live test passed against the user-installed `pi` 0.83.0 executable:
 both create and resumed Runs completed, the materialized opaque binding was
-preserved, and the Runs produced 53 and 85 ordered events respectively. The
+preserved, and the Runs produced 53 and 95 ordered events respectively. The
 Client manifests contain no Pi package, SDK, CLI, or bundled-binary dependency.
 
 The monorepo test command retains two unrelated existing macOS CLI failures

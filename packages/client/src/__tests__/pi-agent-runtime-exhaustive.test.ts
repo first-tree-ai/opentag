@@ -14,6 +14,14 @@ const SESSION_FILE = `/sessions/${SESSION_ID}.jsonl`;
 const SESSION_FILE_HASH = createHash("sha256").update(SESSION_FILE).digest("hex");
 const fixture = fileURLToPath(new URL("./fixtures/pi-rpc.mjs", import.meta.url));
 const directories: string[] = [];
+const PI_TURN_CHILD_EVENTS = new Set([
+  "message_start",
+  "message_update",
+  "message_end",
+  "tool_execution_start",
+  "tool_execution_update",
+  "tool_execution_end",
+]);
 
 afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -186,12 +194,39 @@ describe("PiAgentRuntime exhaustive behavior", () => {
   });
 
   it("fails closed for every malformed event-state transition", async () => {
+    const outsideTurnEvents: readonly Readonly<Record<string, unknown>>[] = [
+      { type: "message_start", message: { role: "user", content: "x" } },
+      { type: "message_update", assistantMessageEvent: { type: "start" } },
+      { type: "message_end", message: { role: "user", content: "x" } },
+      { type: "tool_execution_start", toolCallId: "tool", toolName: "read" },
+      { type: "tool_execution_update", toolCallId: "tool", partialResult: {} },
+      { type: "tool_execution_end", toolCallId: "tool", result: {} },
+    ];
+    for (const [index, event] of outsideTurnEvents.entries()) {
+      const client = new ManualPiClient();
+      const runtime = await factory(client).create(request(() => undefined));
+      const run = runtime.prompt({ runId: `outside-turn-${index}`, input: input("bad") });
+      await client.called("prompt");
+      client.emit(event);
+      await expect(run).resolves.toMatchObject({
+        status: "failed",
+        error: { code: "provider_protocol_error" },
+      });
+      await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
+    }
+
     const invalidSequences: readonly (readonly Readonly<Record<string, unknown>>[])[] = [
       [{ type: "extension_ui_request" }],
       [{ type: "opentag/process_error" }],
       [{ type: 1 }],
       [{ type: "turn_start" }, { type: "turn_start" }],
       [{ type: "turn_end" }],
+      [{ type: "turn_start" }, { type: "message_start", message: { role: "assistant" } }, { type: "turn_end" }],
+      [
+        { type: "turn_start" },
+        { type: "tool_execution_start", toolCallId: "tool", toolName: "read" },
+        { type: "turn_end" },
+      ],
       [{ type: "message_start" }],
       [{ type: "message_update" }],
       [{ type: "message_end" }],
@@ -317,14 +352,19 @@ describe("PiAgentRuntime exhaustive behavior", () => {
       const runtime = await factory(client).create(request(() => undefined));
       const run = runtime.prompt({ runId: `invalid-${index}`, input: input("bad") });
       await client.called("prompt");
-      for (const event of sequence) client.emit(event);
+      const firstType = sequence[0]?.type;
+      const events =
+        typeof firstType === "string" && PI_TURN_CHILD_EVENTS.has(firstType)
+          ? [{ type: "turn_start" }, ...sequence]
+          : sequence;
+      for (const event of events) client.emit(event);
       await expect(run).resolves.toMatchObject({
         status: "failed",
         error: { code: index === 1 ? "provider_error" : "provider_protocol_error" },
       });
       await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
     }
-  });
+  }, 10_000);
 
   it("maps terminal defaults, absent model and usage, and command failures", async () => {
     for (const [index, stopReason] of ["aborted", "error"].entries()) {
@@ -537,15 +577,48 @@ describe("PiAgentRuntime exhaustive behavior", () => {
 
   it("runs the local probe against controlled CLI artifacts", async () => {
     const readyCli = await probeCli(`
-if [ "$1" = "--version" ]; then echo "1.2.3"; exit 0; fi
+if [ "$1" = "--version" ]; then echo "0.80.6"; exit 0; fi
 if [ "$1" = "--help" ]; then echo "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name"; exit 0; fi
 printf 'provider model\\nfixture configured\\n'
 `);
     await expect(new PiAgentRuntimeFactory({ process: { command: readyCli, env: {} } }).probe({})).resolves.toEqual({
       ready: true,
-      version: "1.2.3",
+      version: "0.80.6",
       issues: [],
     });
+
+    for (const version of ["0.80.3", "0.80.5"]) {
+      const oldCli = await probeCli(`
+if [ "$1" = "--version" ]; then echo "${version}"; exit 0; fi
+if [ "$1" = "--help" ]; then echo "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name"; exit 0; fi
+printf 'provider model\\nfixture configured\\n'
+`);
+      await expect(
+        new PiAgentRuntimeFactory({ process: { command: oldCli, env: {} } }).probe({}),
+      ).resolves.toMatchObject({
+        ready: false,
+        version,
+        issues: [{ code: "version_incompatible" }],
+      });
+    }
+
+    const extensionOnlyCli = await probeCli(`
+if [ "$1" = "--version" ]; then echo "1.2.3"; exit 0; fi
+if [ "$1" = "--help" ]; then echo "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name"; exit 0; fi
+case " $* " in *" --no-extensions "*) printf 'provider model\\n' ;; *) printf 'provider model\\nextension only\\n' ;; esac
+`);
+    await expect(
+      new PiAgentRuntimeFactory({ process: { command: extensionOnlyCli, env: {} } }).probe({}),
+    ).resolves.toMatchObject({ ready: false, version: "1.2.3", issues: [{ code: "credential_missing" }] });
+
+    const unsafeVersionCli = await probeCli(`
+if [ "$1" = "--version" ]; then echo "999999999999999999999999.0.0"; exit 0; fi
+if [ "$1" = "--help" ]; then echo "--mode rpc --session-id --session-dir --offline --no-extensions --no-skills --no-prompt-templates --no-themes --no-context-files --no-approve --tools --model --thinking --append-system-prompt --name"; exit 0; fi
+printf 'provider model\\nfixture configured\\n'
+`);
+    await expect(
+      new PiAgentRuntimeFactory({ process: { command: unsafeVersionCli, env: {} } }).probe({}),
+    ).resolves.toMatchObject({ ready: false, issues: [{ code: "version_incompatible" }] });
 
     const limitedCli = await probeCli(`
 if [ "$1" = "--version" ]; then exit 0; fi

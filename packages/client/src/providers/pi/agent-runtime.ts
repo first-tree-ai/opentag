@@ -31,9 +31,19 @@ import { type PiRpcClient, PiRpcError, PiRpcProcess, type PiRpcProcessSpawnOptio
 const execFileAsync = promisify(execFile);
 const PI_BINDING_SCHEMA_VERSION = 1;
 const PI_PROVIDER_ID = "pi";
+const PI_MINIMUM_VERSION = [0, 80, 6] as const;
 const PI_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 const PI_READ_ONLY_TOOLS = ["read", "grep", "find", "ls"] as const;
 const PI_STOP_REASONS = new Set(["stop", "length", "toolUse", "error", "aborted"]);
+const PI_RESOURCE_DISABLE_ARGUMENTS = [
+  "--offline",
+  "--no-extensions",
+  "--no-skills",
+  "--no-prompt-templates",
+  "--no-themes",
+  "--no-context-files",
+  "--no-approve",
+] as const;
 
 export const PI_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
   providerId: PI_PROVIDER_ID,
@@ -265,13 +275,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     return [
       "--mode",
       "rpc",
-      "--offline",
-      "--no-extensions",
-      "--no-skills",
-      "--no-prompt-templates",
-      "--no-themes",
-      "--no-context-files",
-      "--no-approve",
+      ...PI_RESOURCE_DISABLE_ARGUMENTS,
       "--session-id",
       this.#sessionId,
       ...(this.#sessionDirectory ? ["--session-dir", this.#sessionDirectory] : []),
@@ -322,31 +326,40 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     if (type === "turn_end") {
       const turnId = this.#currentTurnId;
       if (!turnId) throw protocolError("Pi ended a turn that was not active");
+      if (this.#currentAssistant || this.#tools.size > 0) {
+        throw protocolError("Pi ended a turn with unfinished child events");
+      }
       await this.#requireContext().emit({ type: "model_turn_completed", modelTurnId: turnId });
       this.#currentTurnId = undefined;
       return;
     }
     if (type === "message_start") {
+      this.#requireActiveTurn("Pi started a message outside an active turn");
       await this.#startMessage(requireRecord(message.message, "Pi message_start has no message"));
       return;
     }
     if (type === "message_update") {
+      this.#requireActiveTurn("Pi updated a message outside an active turn");
       await this.#updateMessage(requireRecord(message.assistantMessageEvent, "Pi message_update has no delta"));
       return;
     }
     if (type === "message_end") {
+      this.#requireActiveTurn("Pi ended a message outside an active turn");
       await this.#endMessage(requireRecord(message.message, "Pi message_end has no message"));
       return;
     }
     if (type === "tool_execution_start") {
+      this.#requireActiveTurn("Pi started a tool outside an active turn");
       await this.#startTool(message);
       return;
     }
     if (type === "tool_execution_update") {
+      this.#requireActiveTurn("Pi updated a tool outside an active turn");
       await this.#updateTool(message);
       return;
     }
     if (type === "tool_execution_end") {
+      this.#requireActiveTurn("Pi ended a tool outside an active turn");
       await this.#endTool(message);
       return;
     }
@@ -382,6 +395,10 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     if (this.#currentAssistant) throw protocolError("Pi started overlapping assistant messages");
     this.#assistantSequence += 1;
     this.#currentAssistant = { id: `pi-message-${this.#assistantSequence}`, blocks: new Map() };
+  }
+
+  #requireActiveTurn(message: string): void {
+    if (!this.#currentTurnId) throw protocolError(message);
   }
 
   async #updateMessage(update: Readonly<Record<string, unknown>>): Promise<void> {
@@ -776,28 +793,33 @@ async function probePi(
     "rpc",
     "--session-id",
     "--session-dir",
-    "--offline",
-    "--no-extensions",
-    "--no-skills",
-    "--no-prompt-templates",
-    "--no-themes",
-    "--no-context-files",
-    "--no-approve",
+    ...PI_RESOURCE_DISABLE_ARGUMENTS,
     "--tools",
     "--model",
     "--thinking",
     "--append-system-prompt",
     "--name",
   ];
-  const rpc = version.length > 0 && requiredOptions.every((token) => help.includes(token));
+  const rpc = supportsPiProtocol(version) && requiredOptions.every((token) => help.includes(token));
   let credential = false;
   try {
-    const models = await execFileAsync(command, ["--offline", "--list-models"], execution);
+    const models = await execFileAsync(command, [...PI_RESOURCE_DISABLE_ARGUMENTS, "--list-models"], execution);
     credential = models.stdout.trim().split(/\r?\n/).length > 1;
   } catch {
     credential = false;
   }
   return { credential, rpc, version };
+}
+
+function supportsPiProtocol(version: string): boolean {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!match) return false;
+  const actual = match.slice(1).map(Number);
+  if (actual.some((part) => !Number.isSafeInteger(part))) return false;
+  const firstDifference = actual.findIndex((part, index) => part !== PI_MINIMUM_VERSION[index]);
+  return (
+    firstDifference === -1 || (actual[firstDifference] as number) > (PI_MINIMUM_VERSION[firstDifference] as number)
+  );
 }
 
 function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {

@@ -52,6 +52,8 @@ interface OnboardingSnapshot {
   readonly targetCandidates: readonly AgentSummary[];
   readonly handoff: OnboardingFacts["handoff"];
   readonly runtime: RuntimeFactsResult;
+  /** Team admins a member can ask; empty whenever the viewer manages the Team. */
+  readonly admins: readonly string[];
 }
 
 interface RouteSelection {
@@ -116,7 +118,7 @@ export function OnboardingPage({
   useEffect(() => {
     let active = true;
     setLoadState((current) => (current.kind === "ready" ? current : { kind: "loading" }));
-    void loadSnapshot(membership.teamId, runtimeFacts).then(
+    void loadSnapshot(membership.teamId, runtimeFacts, membership.role !== "admin").then(
       (snapshot) => {
         if (!active) return;
         refreshInFlight.current = false;
@@ -348,7 +350,7 @@ function OnboardingContent({
             ))}
           </div>
         ) : (
-          <ReadOnlyCopy />
+          <ReadOnlyCopy admins={snapshot.admins} />
         )}
       </ActionSection>
     );
@@ -372,7 +374,7 @@ function OnboardingContent({
         title="Connect a Local Computer"
         description="Run one secure command in Terminal. OpenTag continues when the Computer connects."
       >
-        <ReadOnlyCopy />
+        <ReadOnlyCopy admins={snapshot.admins} />
       </ActionSection>
     );
   }
@@ -383,7 +385,11 @@ function OnboardingContent({
         title="Reconnect your Computer"
         description={`Open OpenTag on ${current.computers.map((computer) => computer.displayName).join(", ")}.`}
       >
-        {canManage ? <ReloadButton pending={refreshPending} onReload={onReload} /> : <ReadOnlyCopy />}
+        {canManage ? (
+          <ReloadButton pending={refreshPending} onReload={onReload} />
+        ) : (
+          <ReadOnlyCopy admins={snapshot.admins} />
+        )}
       </ActionSection>
     );
   }
@@ -417,7 +423,7 @@ function OnboardingContent({
             })}
           </div>
         ) : (
-          <ReadOnlyCopy />
+          <ReadOnlyCopy admins={snapshot.admins} />
         )}
       </ActionSection>
     );
@@ -437,7 +443,11 @@ function OnboardingContent({
             : `Finish Provider setup on ${current.computer.displayName}, then check again.`)
         }
       >
-        {canManage ? <ReloadButton pending={refreshPending} onReload={onReload} /> : <ReadOnlyCopy />}
+        {canManage ? (
+          <ReloadButton pending={refreshPending} onReload={onReload} />
+        ) : (
+          <ReadOnlyCopy admins={snapshot.admins} />
+        )}
       </ActionSection>
     );
   }
@@ -449,7 +459,7 @@ function OnboardingContent({
           title="Create the Team Agent"
           description={`The runnable route is ${providerLabel(current.provider.provider)} on ${current.computer.displayName}.`}
         >
-          <ReadOnlyCopy />
+          <ReadOnlyCopy admins={snapshot.admins} />
         </ActionSection>
       );
     }
@@ -549,7 +559,11 @@ function OnboardingContent({
             : "The Agent identity and Feishu setup are unchanged. Restore its bound Computer and Provider, then check again."
         }
       >
-        {canManage ? <ReloadButton pending={refreshPending} onReload={onReload} /> : <ReadOnlyCopy />}
+        {canManage ? (
+          <ReloadButton pending={refreshPending} onReload={onReload} />
+        ) : (
+          <ReadOnlyCopy admins={snapshot.admins} />
+        )}
       </ActionSection>
     );
   }
@@ -565,7 +579,7 @@ function OnboardingContent({
             {(control) => <FeishuAction control={control} progress={current.progress} />}
           </FeishuSetup>
         ) : (
-          <ReadOnlyCopy />
+          <ReadOnlyCopy admins={snapshot.admins} />
         )}
       </ActionSection>
     );
@@ -635,8 +649,22 @@ function ReloadButton({ onReload, pending }: { onReload: () => void; pending: bo
   );
 }
 
-function ReadOnlyCopy() {
-  return <p className="notice">A Team admin can complete this action. Your factual progress will update here.</p>;
+function ReadOnlyCopy({ admins }: { admins: readonly string[] }) {
+  return <p className="notice">{`${adminGuidance(admins)} Your factual progress will update here.`}</p>;
+}
+
+/**
+ * Names people to ask, not people who can act: whether a given admin can finish
+ * the current step also depends on facts this page does not decide, such as who
+ * owns the Computer the route runs on. At most two names keep the sentence
+ * readable in a large Team.
+ */
+function adminGuidance(admins: readonly string[]): string {
+  const [first, second, ...rest] = admins;
+  if (!first) return "A Team admin can complete this action.";
+  if (!second) return `Ask a Team admin to continue: ${first}.`;
+  if (rest.length === 0) return `Ask a Team admin to continue: ${first} or ${second}.`;
+  return `Ask a Team admin to continue: ${first}, ${second}, or ${rest.length} more.`;
 }
 
 function FeishuAction({
@@ -673,8 +701,16 @@ function handoffTitle(current: Extract<OnboardingCurrentState, { kind: "handoff"
     : "Repair Feishu authorization";
 }
 
-async function loadSnapshot(teamId: string, runtimeFacts: RuntimeFactsAdapter): Promise<OnboardingSnapshot> {
-  const [{ computers }, { agents }] = await Promise.all([browserApi.computers(teamId), browserApi.agents(teamId)]);
+async function loadSnapshot(
+  teamId: string,
+  runtimeFacts: RuntimeFactsAdapter,
+  withAdmins: boolean,
+): Promise<OnboardingSnapshot> {
+  const [{ computers }, { agents }, admins] = await Promise.all([
+    browserApi.computers(teamId),
+    browserApi.agents(teamId),
+    withAdmins ? loadTeamAdmins(teamId) : Promise.resolve<readonly string[]>([]),
+  ]);
   const targetCandidates = agents.filter((agent) => agent.status === "active");
   const remembered = readTargetAgent(teamId);
   const targetAgent =
@@ -685,7 +721,21 @@ async function loadSnapshot(teamId: string, runtimeFacts: RuntimeFactsAdapter): 
     runtimeFacts.load({ teamId, agents, computers }),
     targetAgent ? browserApi.imBindingHandoff(targetAgent.id) : Promise.resolve(undefined),
   ]);
-  return { agents, computers, targetAgent, targetCandidates, handoff, runtime };
+  return { agents, computers, targetAgent, targetCandidates, handoff, runtime, admins };
+}
+
+/**
+ * Names the admins a member can ask. Their absence only costs the member a
+ * name, so an unavailable member list degrades to the generic guidance instead
+ * of failing the page's authoritative facts.
+ */
+async function loadTeamAdmins(teamId: string): Promise<readonly string[]> {
+  try {
+    const { members } = await browserApi.members(teamId);
+    return members.filter((member) => member.role === "admin").map((member) => member.displayName);
+  } catch {
+    return [];
+  }
 }
 
 function resolveSnapshot(membership: MeMembership, snapshot: OnboardingSnapshot): { state: OnboardingState } {

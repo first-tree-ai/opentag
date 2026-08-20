@@ -79,7 +79,7 @@ const SHADOW: Owner = {
  */
 function droppedShadows(css: string): string[] {
   return declarations(css)
-    .filter((declaration) => /drop-shadow\s*\(/.test(declaration.references))
+    .filter((declaration) => /drop-shadow\s*\(/i.test(declaration.references))
     .map((declaration) => `${declaration.name}: ${declaration.value}`);
 }
 
@@ -133,13 +133,18 @@ function untokenized(css: string, owner: Owner): string[] {
 }
 
 /**
+ * Function names and keywords are ASCII case-insensitive to the browser, so
+ * `130MS` and `EASE-IN-OUT` animate exactly like their lower-case spellings.
+ * Custom property names are not, which is why the reference patterns stay
+ * case-sensitive: `--RADIUS-MD` really is a different token.
+ *
  * A duration or an easing written into a transition is a decision made twice,
  * and a variable from another family is that decision under a different name.
  * Property names are ordinary words here, so the residue is read for what a
  * decision looks like rather than for what is left over.
  */
-const TIME = /\d+(\.\d+)?\s*m?s\b/;
-const EASING = /\b(ease|ease-in|ease-out|ease-in-out|linear|step-start|step-end|steps|cubic-bezier)\b/;
+const TIME = /\d+(\.\d+)?\s*m?s\b/i;
+const EASING = /\b(ease|ease-in|ease-out|ease-in-out|linear|step-start|step-end|steps|cubic-bezier)\b/i;
 
 function untokenizedMotion(css: string): string[] {
   return declarations(css).flatMap((declaration) => {
@@ -268,6 +273,16 @@ describe("the guard itself", () => {
   it("rejects a drop shadow reached through a variable", () => {
     const css = ".row { --depth: drop-shadow(0 1px 4px red); filter: var(--depth); }";
     expect(droppedShadows(css)).toEqual(["--depth: drop-shadow(0 1px 4px red)"]);
+  });
+
+  it("reads a function name in any case, as the browser does", () => {
+    expect(droppedShadows(".row { filter: DROP-SHADOW(0 1px 4px red); }")).toEqual([
+      "filter: DROP-SHADOW(0 1px 4px red)",
+    ]);
+    expect(untokenizedMotion(".row { transition-duration: 130MS; }")).toEqual(["transition-duration: 130MS"]);
+    expect(untokenizedMotion(".row { transition: opacity var(--motion-fast) EASE-IN-OUT; }")).toEqual([
+      "transition: opacity var(--motion-fast) EASE-IN-OUT",
+    ]);
   });
 
   it("leaves a quoted drop-shadow alone, since it draws nothing", () => {

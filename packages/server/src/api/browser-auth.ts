@@ -19,8 +19,21 @@ import { parseRequest } from "./request-validation.js";
 
 const StartQuerySchema = z.object({ next: z.string().max(1024).optional() }).strict();
 const CallbackQuerySchema = z
-  .object({ code: z.string().min(1).max(4096), state: z.string().min(1).max(4096) })
-  .strict();
+  .object({
+    code: z.string().min(1).max(4096).optional(),
+    error: z.string().min(1).max(256).optional(),
+    error_description: z.string().max(1024).optional(),
+    state: z.string().min(1).max(4096),
+  })
+  .superRefine((value, context) => {
+    if ((value.code === undefined) === (value.error === undefined)) {
+      context.addIssue({
+        code: "custom",
+        message: "Exactly one of code or error is required",
+        path: ["code"],
+      });
+    }
+  });
 
 export interface BrowserAuthRoutesOptions {
   dev?: DevBrowserAuthService;
@@ -132,7 +145,7 @@ export function registerBrowserAuthRoutes(
     if (!options.google) {
       throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);
     }
-    const { code, state } = parseRequest(CallbackQuerySchema, request.query);
+    const callback = parseRequest(CallbackQuerySchema, request.query);
     const context = parseCookies(request.headers.cookie)[BROWSER_COOKIE_NAMES.oauthContext];
     if (!context) {
       throw new AuthServiceError(
@@ -142,8 +155,18 @@ export function registerBrowserAuthRoutes(
         401,
       );
     }
-    const result = await options.google.callback(code, state, context, audit(request));
-    clearOAuthContextCookie(reply, options.secureCookies);
+    const result = await options.google.callback(
+      {
+        ...(callback.code !== undefined ? { code: callback.code } : {}),
+        ...(callback.error !== undefined ? { error: callback.error } : {}),
+        state: callback.state,
+      },
+      context,
+      {
+        audit: audit(request),
+        onVerified: () => clearOAuthContextCookie(reply, options.secureCookies),
+      },
+    );
     setBrowserSessionCookies(reply, result.tokens, {
       refreshTtlSeconds: options.refreshTokenTtlSeconds,
       secure: options.secureCookies,

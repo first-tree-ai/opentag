@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { DefaultGoogleIdentityClient } from "../services/auth/index.js";
+import { AuthServiceError, DefaultGoogleIdentityClient, GoogleBrowserAuthService } from "../services/auth/index.js";
 
 describe("DefaultGoogleIdentityClient", () => {
   it("builds an OIDC request and verifies provider results through injected network boundaries", async () => {
@@ -60,5 +60,71 @@ describe("DefaultGoogleIdentityClient", () => {
         redirectUri: "https://example.com/callback",
       }),
     ).rejects.toMatchObject({ code: "AUTH_OAUTH_FAILED", message: "Google sign-in could not be verified" });
+  });
+});
+
+describe("GoogleBrowserAuthService", () => {
+  function createService(verify = vi.fn().mockResolvedValue({ next: "/admin", oidcNonce: "oidc-nonce" })) {
+    const exchangeCode = vi.fn();
+    const service = new GoogleBrowserAuthService({
+      database: {} as never,
+      flow: { verify } as never,
+      google: { exchangeCode } as never,
+      identities: {} as never,
+      postAuthentication: {} as never,
+      publicUrl: "https://opentag.example.com",
+      tokenIssuer: {} as never,
+    });
+    return { exchangeCode, service, verify };
+  }
+
+  it.each([
+    ["access_denied", "Google sign-in was cancelled"],
+    ["temporarily_unavailable", "Google sign-in failed"],
+  ])("verifies state before mapping provider error %s", async (error, message) => {
+    const { exchangeCode, service, verify } = createService();
+    const onVerified = vi.fn();
+
+    await expect(service.callback({ error, state: "state" }, "signed-context", { onVerified })).rejects.toMatchObject({
+      code: "AUTH_OAUTH_FAILED",
+      category: "credential",
+      message,
+      statusCode: 401,
+    });
+    expect(verify).toHaveBeenCalledWith("state", "signed-context");
+    expect(onVerified).toHaveBeenCalledOnce();
+    expect(exchangeCode).not.toHaveBeenCalled();
+  });
+
+  it("runs the verified lifecycle before exchanging an authorization code", async () => {
+    const { exchangeCode, service } = createService();
+    const onVerified = vi.fn();
+    const exchangeFailure = new Error("provider exchange failed");
+    exchangeCode.mockImplementationOnce(async () => {
+      expect(onVerified).toHaveBeenCalledOnce();
+      throw exchangeFailure;
+    });
+
+    await expect(service.callback({ code: "code", state: "state" }, "signed-context", { onVerified })).rejects.toBe(
+      exchangeFailure,
+    );
+    expect(exchangeCode).toHaveBeenCalledOnce();
+  });
+
+  it("preserves invalid or expired flow errors before interpreting the provider result", async () => {
+    const flowError = new AuthServiceError(
+      "AUTH_OAUTH_FAILED",
+      "credential",
+      "The browser sign-in flow is invalid or expired",
+      401,
+    );
+    const { exchangeCode, service } = createService(vi.fn().mockRejectedValue(flowError));
+    const onVerified = vi.fn();
+
+    await expect(
+      service.callback({ error: "access_denied", state: "invalid-state" }, "expired-context", { onVerified }),
+    ).rejects.toBe(flowError);
+    expect(onVerified).not.toHaveBeenCalled();
+    expect(exchangeCode).not.toHaveBeenCalled();
   });
 });

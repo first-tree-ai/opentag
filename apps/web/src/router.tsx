@@ -396,7 +396,7 @@ function InvitePage() {
           const me = await browserApi.me();
           if (me.memberships.some((membership: MeMembership) => membership.teamId === serverSelectedTeamId)) {
             clearPendingInvitation(token);
-            window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, serverSelectedTeamId);
+            rememberTeamPreference(serverSelectedTeamId);
             navigate("/agents", { replace: true });
             return;
           }
@@ -407,7 +407,7 @@ function InvitePage() {
           throw new Error("The invited Team is not available to the signed-in account");
         }
         clearPendingInvitation(token);
-        window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, redemption.membership.teamId);
+        rememberTeamPreference(redemption.membership.teamId);
         navigate("/agents", { replace: true });
       } catch (cause) {
         if (cause instanceof ApiError && cause.status === 401) {
@@ -459,6 +459,8 @@ function InvitePage() {
 
 const SELECTED_TEAM_STORAGE_KEY = "opentag.selectedTeamId";
 const PENDING_INVITATION_STORAGE_KEY = "opentag.pendingInvitationToken";
+let memoryTeamPreference: string | undefined;
+let memoryTeamPreferenceFallback = false;
 
 function readPendingInvitation(): string | undefined {
   try {
@@ -518,23 +520,6 @@ function AuthenticatedTeamGate() {
       {(me) => {
         const stored = readTeamPreference();
         const membership = me.memberships.find((item: MeMembership) => item.teamId === stored) ?? me.memberships[0];
-        if (!membership && location.pathname === "/onboarding") {
-          return (
-            <AutomaticTeamBootstrap
-              me={me}
-              onReady={(teamId) => {
-                if (teamId) {
-                  try {
-                    window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, teamId);
-                  } catch {
-                    // Team preference is optional; authoritative /me facts must still refresh.
-                  }
-                }
-                setMeRevision((value) => value + 1);
-              }}
-            />
-          );
-        }
         if (!membership) return <Navigate replace to="/teams/new" />;
         const selectTeam = (teamId: string) => {
           if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
@@ -552,60 +537,6 @@ function AuthenticatedTeamGate() {
   );
 }
 
-function AutomaticTeamBootstrap({ me, onReady }: { me: MeResponse; onReady: (teamId?: string) => void }) {
-  const [attempt, setAttempt] = useState(0);
-  const [error, setError] = useState<string>();
-  const started = useRef(false);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: attempt is the explicit retry trigger for the same Team request.
-  useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-    let active = true;
-    const displayName = `${me.user.displayName}'s Team`.slice(0, 120);
-    void browserApi.createTeam({ name: `team-${me.user.id}`, displayName }).then(
-      (created) => active && onReady(created.id),
-      (cause: unknown) => {
-        if (!active) return;
-        if (cause instanceof ApiError && cause.code === "TEAM_NAME_CONFLICT") {
-          onReady();
-          return;
-        }
-        setError(cause instanceof Error ? cause.message : "Unable to prepare your Team");
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [attempt, me.user.displayName, me.user.id, onReady]);
-  return (
-    <main className="center-card" aria-busy={!error || undefined}>
-      <span className="eyebrow">OpenTag</span>
-      <h1>Preparing your Team</h1>
-      <p>OpenTag will continue automatically.</p>
-      {error ? (
-        <div className="onboarding-feedback">
-          <div className="notice error" role="alert">
-            {error}
-          </div>
-          <button
-            className="button"
-            type="button"
-            onClick={() => {
-              started.current = false;
-              setError(undefined);
-              setAttempt((value) => value + 1);
-            }}
-          >
-            Try again
-          </button>
-        </div>
-      ) : (
-        <p role="status">Creating a secure Team workspace…</p>
-      )}
-    </main>
-  );
-}
-
 function OnboardingRoute() {
   const { me, membership } = useTeam();
   return <OnboardingPage membership={membership} user={me.user} />;
@@ -614,9 +545,24 @@ function OnboardingRoute() {
 function readTeamPreference(): string | undefined {
   try {
     const value = window.localStorage.getItem(SELECTED_TEAM_STORAGE_KEY);
-    return value && value.length <= 64 ? value : undefined;
+    if (value && value.length <= 64) {
+      memoryTeamPreference = value;
+      return value;
+    }
+    return memoryTeamPreferenceFallback ? memoryTeamPreference : undefined;
   } catch {
-    return undefined;
+    return memoryTeamPreference;
+  }
+}
+
+function rememberTeamPreference(teamId: string): void {
+  memoryTeamPreference = teamId;
+  try {
+    window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, teamId);
+    memoryTeamPreferenceFallback = false;
+  } catch {
+    memoryTeamPreferenceFallback = true;
+    // The authoritative membership still determines the available Team.
   }
 }
 

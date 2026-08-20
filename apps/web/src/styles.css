@@ -1625,6 +1625,20 @@ code {
   margin-top: 0;
 }
 
+.onboarding-agent-form {
+  display: grid;
+  width: min(100%, 560px);
+  gap: 20px;
+}
+
+.onboarding-agent-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--secondary-foreground);
+  font-size: 0.82rem;
+  font-weight: 620;
+}
+
 .onboarding-choice-list {
   display: grid;
   width: min(100%, 760px);

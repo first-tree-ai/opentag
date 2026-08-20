@@ -105,7 +105,7 @@ export class GoogleBrowserAuthService {
     });
     return {
       next: flow.next,
-      ...(invitationToken && completion.selectedTeamId ? { selectedTeamId: completion.selectedTeamId } : {}),
+      ...(completion.selectedTeamId ? { selectedTeamId: completion.selectedTeamId } : {}),
       tokens: await this.#tokenIssuer.issueTokensForUser(completion.userId),
     };
   }

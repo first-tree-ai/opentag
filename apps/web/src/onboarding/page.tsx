@@ -6,7 +6,7 @@ import type {
   TeamComputerSummary,
   UserProfile,
 } from "@opentag/shared/browser";
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { browserApi } from "../api.js";
 import { ComputerSetup } from "../computer-setup.js";
 import { FeishuSetup, type FeishuSetupControl } from "../im/feishu-setup.js";
@@ -56,7 +56,6 @@ interface CreationIntentRecord {
 }
 
 interface CreationState {
-  readonly key: string;
   readonly kind: "pending" | "error";
   readonly message?: string;
 }
@@ -80,9 +79,11 @@ export function OnboardingPage({
   const [revision, setRevision] = useState(0);
   const [loadState, setLoadState] = useState<PageLoadState>({ kind: "loading" });
   const [creation, setCreation] = useState<CreationState>();
-  const [creationRetry, setCreationRetry] = useState(0);
+  const [agentDisplayName, setAgentDisplayName] = useState(
+    () => readCreationIntent(membership.teamId)?.request.displayName ?? "OpenTag",
+  );
   const [refreshPending, setRefreshPending] = useState(false);
-  const creationAttempt = useRef<string | undefined>(undefined);
+  const creationInFlight = useRef(false);
   const refreshInFlight = useRef(false);
   const reload = useCallback(() => {
     if (refreshInFlight.current) return;
@@ -135,35 +136,43 @@ export function OnboardingPage({
     return resolveSnapshot(membership, loadState.snapshot);
   }, [loadState, membership]);
 
+  const runAgentCreation = useCallback(
+    (request: Omit<CreateAgentRequest, "creationIntentId">) => {
+      if (creationInFlight.current) return;
+      creationInFlight.current = true;
+      setCreation({ kind: "pending" });
+      void createOnboardingAgent(membership.teamId, request).then(
+        (agent) => {
+          creationInFlight.current = false;
+          rememberTargetAgent(membership.teamId, agent.id);
+          setCreation(undefined);
+          reload();
+        },
+        (cause: unknown) => {
+          creationInFlight.current = false;
+          setCreation({
+            kind: "error",
+            message: cause instanceof Error ? cause.message : "Unable to prepare OpenTag",
+          });
+        },
+      );
+    },
+    [membership.teamId, reload],
+  );
+
   useEffect(() => {
     if (!resolved?.state.canManage || resolved.state.currentState.kind !== "agent") return;
     const current = resolved.state.currentState;
-    const request = normalizedAgentRequest(current);
-    const key = `${request.computerId}:${request.runtimeProvider}:${creationRetry}`;
-    if (creationAttempt.current === key) return;
-    creationAttempt.current = key;
-    setCreation({ key, kind: "pending" });
-    let active = true;
-    void createOnboardingAgent(membership.teamId, request).then(
-      (agent) => {
-        if (!active) return;
-        rememberTargetAgent(membership.teamId, agent.id);
-        setCreation(undefined);
-        reload();
-      },
-      (cause: unknown) => {
-        if (!active) return;
-        setCreation({
-          key,
-          kind: "error",
-          message: cause instanceof Error ? cause.message : "Unable to prepare OpenTag",
-        });
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [creationRetry, membership.teamId, reload, resolved]);
+    const record = readCreationIntent(membership.teamId);
+    if (
+      !record ||
+      record.request.computerId !== current.computer.id ||
+      record.request.runtimeProvider !== current.provider.provider
+    )
+      return;
+    setAgentDisplayName(record.request.displayName);
+    runAgentCreation(record.request);
+  }, [membership.teamId, resolved, runAgentCreation]);
 
   return (
     <div className="onboarding-shell">
@@ -184,6 +193,7 @@ export function OnboardingPage({
         ) : null}
         {loadState.kind === "ready" && resolved ? (
           <OnboardingContent
+            agentDisplayName={agentDisplayName}
             canManage={resolved.state.canManage}
             creation={creation}
             onChooseAgent={(agentId) => {
@@ -194,10 +204,8 @@ export function OnboardingPage({
               rememberRouteSelection(membership.teamId, selection);
               reload();
             }}
-            onCreationRetry={() => {
-              creationAttempt.current = undefined;
-              setCreationRetry((value) => value + 1);
-            }}
+            onAgentDisplayNameChange={setAgentDisplayName}
+            onCreateAgent={(current) => runAgentCreation(normalizedAgentRequest(current, agentDisplayName))}
             onReload={reload}
             refreshPending={refreshPending}
             snapshot={loadState.snapshot}
@@ -252,22 +260,26 @@ function OnboardingLoading() {
 }
 
 function OnboardingContent({
+  agentDisplayName,
   canManage,
   creation,
+  onAgentDisplayNameChange,
   onChooseAgent,
   onChooseRoute,
-  onCreationRetry,
+  onCreateAgent,
   onReload,
   refreshPending,
   snapshot,
   state,
   teamId,
 }: {
+  agentDisplayName: string;
   canManage: boolean;
   creation: CreationState | undefined;
+  onAgentDisplayNameChange: (value: string) => void;
   onChooseAgent: (agentId: string) => void;
   onChooseRoute: (selection: RouteSelection) => void;
-  onCreationRetry: () => void;
+  onCreateAgent: (current: Extract<OnboardingCurrentState, { kind: "agent" }>) => void;
   onReload: () => void;
   refreshPending: boolean;
   snapshot: OnboardingSnapshot;
@@ -392,22 +404,53 @@ function OnboardingContent({
     );
   }
   if (current.kind === "agent") {
+    if (!canManage) {
+      return (
+        <ActionSection
+          readonly
+          title="Create the Team Agent"
+          description={`The runnable route is ${providerLabel(current.provider.provider)} on ${current.computer.displayName}.`}
+        >
+          <ReadOnlyCopy />
+        </ActionSection>
+      );
+    }
+    const pending = creation?.kind === "pending";
     return (
       <ActionSection
-        title="Preparing OpenTag"
-        description={`Using ${providerLabel(current.provider.provider)} on ${current.computer.displayName}.`}
-        pending={creation?.kind !== "error"}
+        title="Create your Agent"
+        description={`OpenTag will run with ${providerLabel(current.provider.provider)} on ${current.computer.displayName}.`}
       >
-        {creation?.kind === "error" ? (
+        <form
+          className="onboarding-agent-form"
+          onSubmit={(event: FormEvent<HTMLFormElement>) => {
+            event.preventDefault();
+            onCreateAgent(current);
+          }}
+        >
+          <label>
+            Agent display name
+            <input
+              autoComplete="off"
+              disabled={pending}
+              maxLength={120}
+              required
+              value={agentDisplayName}
+              onChange={(event) => onAgentDisplayNameChange(event.target.value)}
+            />
+          </label>
           <div className="onboarding-feedback">
-            <div className="notice error" role="alert">
-              {creation.message}
-            </div>
-            <button className="button" type="button" onClick={onCreationRetry}>
-              Try again
+            {creation?.kind === "error" ? (
+              <div className="notice error" role="alert">
+                {creation.message}
+              </div>
+            ) : null}
+            <button className="button" disabled={pending} type="submit">
+              {pending ? "Creating agent…" : creation?.kind === "error" ? "Try again" : "Create agent"}
             </button>
+            {pending ? <p role="status">Creating Agent identity and runtime binding…</p> : null}
           </div>
-        ) : null}
+        </form>
       </ActionSection>
     );
   }
@@ -588,10 +631,11 @@ function resolveSnapshot(membership: MeMembership, snapshot: OnboardingSnapshot)
 
 function normalizedAgentRequest(
   current: Extract<OnboardingCurrentState, { kind: "agent" }>,
+  displayName: string,
 ): Omit<CreateAgentRequest, "creationIntentId"> {
   return {
     name: "opentag",
-    displayName: "OpenTag",
+    displayName: displayName.trim(),
     computerId: current.computer.id,
     runtimeProvider: current.provider.provider,
   };

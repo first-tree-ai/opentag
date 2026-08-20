@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { users } from "../../db/schema/index.js";
 import type { InvitationAuditContext, InvitationService } from "../invitations/index.js";
+import type { TeamMembershipService } from "../teams/index.js";
 import { AuthServiceError } from "./errors.js";
 
 export interface PostAuthenticationResult {
@@ -12,10 +13,12 @@ export interface PostAuthenticationResult {
 export class PostAuthenticationService {
   readonly #database: DatabaseClient;
   readonly #invitations: InvitationService;
+  readonly #teams: TeamMembershipService;
 
-  constructor(database: DatabaseClient, invitations: InvitationService) {
+  constructor(database: DatabaseClient, invitations: InvitationService, teams: TeamMembershipService) {
     this.#database = database;
     this.#invitations = invitations;
+    this.#teams = teams;
   }
 
   complete(
@@ -42,11 +45,7 @@ export class PostAuthenticationService {
       const redemption = await this.#invitations.redeemInTransaction(transaction, userId, invitationToken, audit);
       return { userId, selectedTeamId: redemption.membership.teamId };
     }
-
-    /**
-     * Authentication never provisions a Team. Creating or joining one is an explicit user action, so a
-     * user arriving without an invitation simply holds no membership until they create a Team.
-     */
-    return { userId };
+    const selectedTeamId = await this.#teams.establishPersonalTeamForLockedUserInTransaction(transaction, user);
+    return { userId, ...(selectedTeamId ? { selectedTeamId } : {}) };
   }
 }

@@ -271,6 +271,25 @@ describe("OnboardingPage", () => {
     expect(screen.queryByRole("button", { name: /Feishu/ })).toBeNull();
   });
 
+  it("keeps OpenTag editable and waits for the explicit Agent creation action", async () => {
+    installFacts({ computers: [computerA] });
+    const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]) });
+
+    const name = await screen.findByLabelText("Agent display name");
+    expect(name).toHaveProperty("value", "OpenTag");
+    expect(create).not.toHaveBeenCalled();
+    fireEvent.change(name, { target: { value: "Research Partner" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith(
+        teamId,
+        expect.objectContaining({ displayName: "Research Partner", name: "opentag" }),
+      ),
+    );
+  });
+
   it("replays a lost create response with the same creationIntentId", async () => {
     let serverAgents: AgentSummary[] = [];
     const agentReads = vi.spyOn(browserApi, "agents").mockImplementation(async () => ({ agents: serverAgents }));
@@ -284,6 +303,7 @@ describe("OnboardingPage", () => {
       return adminConfig();
     });
     renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]) });
+    fireEvent.click(await screen.findByRole("button", { name: "Create agent" }));
     expect((await screen.findByRole("alert")).textContent).toBe("Response was lost");
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
@@ -307,6 +327,7 @@ describe("OnboardingPage", () => {
     });
     const runtime = runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]);
     const firstPage = renderPage({ runtime });
+    fireEvent.click(await screen.findByRole("button", { name: "Create agent" }));
     expect((await screen.findByRole("alert")).textContent).toBe("Connection closed before the response");
     const durableRecord = window.localStorage.getItem(`opentag.onboarding.creation-intent:${teamId}`);
     expect(durableRecord).toBeTruthy();
@@ -331,6 +352,10 @@ describe("OnboardingPage", () => {
     const runtime = runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]);
     render(<OnboardingPage membership={admin} runtimeFacts={runtime} user={user} />);
     render(<OnboardingPage membership={admin} runtimeFacts={runtime} user={user} />);
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Create agent" })).toHaveLength(2));
+    const actions = screen.getAllByRole("button", { name: "Create agent" });
+    fireEvent.click(actions[0] as HTMLButtonElement);
+    fireEvent.click(actions[1] as HTMLButtonElement);
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
   });
 

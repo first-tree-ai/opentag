@@ -47,6 +47,7 @@ function installApi(
     unauthenticated?: boolean;
     teamless?: boolean;
     teamNameConflict?: boolean;
+    teamNameConflicts?: number;
   } = {},
 ) {
   const teamProfile = { name: "example", displayName: "Example" };
@@ -81,7 +82,7 @@ function installApi(
   let invitationExists = options.invitationExists ?? false;
   let invitationVersion: "A" | "B" = "A";
   let joinedInvitation = options.alreadyJoinedInvitation ?? false;
-  let teamNameConflict = options.teamNameConflict ?? false;
+  let teamNameConflicts = options.teamNameConflicts ?? (options.teamNameConflict ? 1 : 0);
   const invitation = () => ({
     token: invitationVersion.repeat(43),
     inviteUrl: `https://opentag.example.com/invites/${invitationVersion.repeat(43)}`,
@@ -117,8 +118,8 @@ function installApi(
       });
     }
     if (path === "/api/v1/teams" && init?.method === "POST") {
-      if (teamNameConflict) {
-        teamNameConflict = false;
+      if (teamNameConflicts > 0) {
+        teamNameConflicts -= 1;
         return json(
           {
             error: {
@@ -752,20 +753,23 @@ describe("OpenTag Web App Shell", () => {
     });
   });
 
-  it("creates a safe internal handle for a Team name written without ASCII characters", async () => {
-    installApi("admin", { teamless: true });
+  it("uses a fresh internal handle for every collision on a Team name without ASCII characters", async () => {
+    installApi("admin", { teamless: true, teamNameConflicts: 2 });
     window.history.replaceState({}, "", "/teams/new");
     render(<App />);
     fireEvent.change(await screen.findByLabelText("Team name"), { target: { value: "示例团队" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Team" }));
     await screen.findByRole("heading", { name: "Agents" });
-    const request = vi
+    const requests = vi
       .mocked(fetch)
-      .mock.calls.find(([path, init]) => path === "/api/v1/teams" && init?.method === "POST");
-    expect(JSON.parse(String(request?.[1]?.body))).toMatchObject({
-      displayName: "示例团队",
-      name: expect.stringMatching(/^team-[a-f0-9]{8}$/),
-    });
+      .mock.calls.filter(([path, init]) => path === "/api/v1/teams" && init?.method === "POST");
+    expect(requests).toHaveLength(3);
+    const bodies = requests.map(
+      (request) => JSON.parse(String(request[1]?.body)) as { displayName: string; name: string },
+    );
+    expect(bodies.every((body) => body.displayName === "示例团队")).toBe(true);
+    expect(bodies.every((body) => /^team-[a-f0-9]{8}$/.test(body.name))).toBe(true);
+    expect(new Set(bodies.map((body) => body.name))).toHaveProperty("size", 3);
   });
 
   it("lets an existing member create a second Team and offers both in the picker", async () => {

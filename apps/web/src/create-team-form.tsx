@@ -17,6 +17,12 @@ function handleWithSuffix(handle: string, suffix: string): string {
   return `${base}-${suffix}`;
 }
 
+function randomHandleSuffix(): string {
+  return crypto.randomUUID().replaceAll("-", "").slice(0, 8);
+}
+
+const MAX_HANDLE_ATTEMPTS = 4;
+
 /**
  * The single Team creation form. It is mounted both by the standalone `/teams/new` page and by the first
  * onboarding step, so creating a Team behaves identically whether it is a first-run or an additional Team.
@@ -32,7 +38,6 @@ export function CreateTeamForm({
   submitLabel?: string;
 }) {
   const [displayName, setDisplayName] = useState("");
-  const [handleSuffix] = useState(() => crypto.randomUUID().replaceAll("-", "").slice(0, 8));
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -42,12 +47,21 @@ export function CreateTeamForm({
     try {
       setError(undefined);
       const suggestedHandle = toTeamHandle(displayName);
-      const initialHandle = suggestedHandle || handleWithSuffix(suggestedHandle, handleSuffix);
-      try {
-        onCreated(await browserApi.createTeam({ name: initialHandle, displayName }));
-      } catch (cause) {
-        if (!(cause instanceof ApiError) || cause.code !== "TEAM_NAME_CONFLICT") throw cause;
-        onCreated(await browserApi.createTeam({ name: handleWithSuffix(suggestedHandle, handleSuffix), displayName }));
+      for (let attempt = 0; attempt < MAX_HANDLE_ATTEMPTS; attempt += 1) {
+        const name =
+          attempt === 0 && suggestedHandle ? suggestedHandle : handleWithSuffix(suggestedHandle, randomHandleSuffix());
+        try {
+          onCreated(await browserApi.createTeam({ name, displayName }));
+          return;
+        } catch (cause) {
+          if (
+            !(cause instanceof ApiError) ||
+            cause.code !== "TEAM_NAME_CONFLICT" ||
+            attempt === MAX_HANDLE_ATTEMPTS - 1
+          ) {
+            throw cause;
+          }
+        }
       }
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401 && onUnauthenticated) {

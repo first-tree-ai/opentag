@@ -33,6 +33,12 @@ const RUNTIME_POLL_INTERVAL_MS = 5_000;
 const RUNTIME_POLL_LIMIT_MS = 10 * 60 * 1_000;
 /** States that only an action taken outside this page can advance, and that no child polls for. */
 const RUNTIME_WAIT_STATES: readonly OnboardingCurrentState["kind"][] = ["provider", "agent-runtime"];
+/** The application route this page hands the Team over to once setup is complete. */
+const AGENTS_ROUTE = "/agents";
+
+function agentGeneralRoute(agentId: string): string {
+  return `${AGENTS_ROUTE}/${agentId}/general`;
+}
 
 type PageLoadState =
   | { readonly kind: "loading" }
@@ -262,7 +268,7 @@ function OnboardingHeader({ user }: { user: UserProfile }) {
   }
   return (
     <header className="onboarding-header">
-      <a className="brand" href="/onboarding">
+      <a className="brand" href={AGENTS_ROUTE}>
         OpenTag
       </a>
       <div className="onboarding-account">
@@ -569,9 +575,14 @@ function OnboardingContent({
       title="OpenTag is ready"
       description="Add the Bot to a Feishu group, then mention OpenTag with your first task."
     >
-      <a className="button" href={FEISHU_BOT_APP_LINK} rel="noreferrer" target="_blank">
-        Open Feishu
-      </a>
+      <div className="actions">
+        <a className="button" href={FEISHU_BOT_APP_LINK} rel="noreferrer" target="_blank">
+          Open Feishu
+        </a>
+        <a className="button secondary" href={agentGeneralRoute(current.agent.id)}>
+          Manage this Agent
+        </a>
+      </div>
       <p className="onboarding-helper">Setup is complete.</p>
     </ActionSection>
   );

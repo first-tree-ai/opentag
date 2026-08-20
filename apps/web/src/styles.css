@@ -1434,6 +1434,24 @@ code {
   overflow-wrap: anywhere;
 }
 
+.connect-command-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.connect-command-meta {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.connect-command-actions .connect-command-meta {
+  margin: 0;
+}
+
 .setup-qr {
   display: block;
   width: min(240px, 100%);

@@ -348,7 +348,7 @@ export function AppRouter() {
           <Route path="/settings/:section" element={<SettingsPage />} />
         </Route>
       </Route>
-      <Route path="*" element={<NotFoundPage />} />
+      <Route path="*" element={<StandaloneNotFoundPage />} />
     </Routes>
   );
 }
@@ -2793,15 +2793,25 @@ function EmptyState({ title, children }: { title: string; children: ReactNode })
 
 function UnavailablePage({ title }: { title: string }) {
   return (
-    <main className="center-card decorative-page">
+    <section className="center-card">
       <h1>{title}</h1>
       <p>This capability is not available in the current release.</p>
       <Link to="/agents">Back to Agents</Link>
-    </main>
+    </section>
   );
 }
 
 function NotFoundPage() {
+  return (
+    <section className="center-card">
+      <h1>Page not found</h1>
+      <p>The requested OpenTag page is not available.</p>
+      <Link to="/agents">Back to Agents</Link>
+    </section>
+  );
+}
+
+function StandaloneNotFoundPage() {
   return (
     <main className="center-card decorative-page">
       <h1>Page not found</h1>

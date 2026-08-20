@@ -43,8 +43,17 @@ const LINE_HEIGHT_LITERALS = new Set(["1", "38px"]);
  */
 const FONT_SHORTHAND_LITERALS = new Set(["inherit"]);
 
+/**
+ * A commented-out declaration is not a declaration. The browser never sees it,
+ * so neither should any check below: a token defined only inside a comment
+ * does not exist, and a rule parked inside one cannot violate anything.
+ */
+function withoutComments(css: string): string {
+  return css.replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
 function captures(css: string, pattern: RegExp, group = 1): string[] {
-  return [...css.matchAll(pattern)]
+  return [...withoutComments(css).matchAll(pattern)]
     .map((match) => match[group])
     .filter((value): value is string => value !== undefined)
     .map((value) => value.trim());
@@ -157,6 +166,17 @@ describe("the guard itself", () => {
     const css = ":root { --text-ui: var(--fs-15); }\n.row { line-height: var(--lh-prsoe); }";
     expect(danglingReferences(css)).toEqual(["fs-15", "lh-prsoe"]);
     expect(unresolvedRoles(css)).toEqual(["fs-15"]);
+  });
+
+  it("ignores a step that exists only inside a comment", () => {
+    const css = ":root {\n  --text-ui: var(--fs-15);\n  /* --fs-15: 0.9375rem; */\n}";
+    expect(unresolvedRoles(css)).toEqual(["fs-15"]);
+    expect(danglingReferences(css)).toEqual(["fs-15"]);
+  });
+
+  it("does not read a commented-out declaration as a violation", () => {
+    const css = ".row { /* font-size: 0.83rem; */ font-size: var(--text-ui); }";
+    expect(offTokenValues(css, "font-size", /^var\(--text-[a-z]+\)$/)).toEqual([]);
   });
 
   it("does not mistake a longhand for the shorthand it starts with", () => {

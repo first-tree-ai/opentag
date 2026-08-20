@@ -36,11 +36,24 @@ describe("SessionBindingStore", () => {
     expect(raw).not.toContain("/Users/");
     expect(raw).not.toContain("credential-canary");
 
-    const mismatchedStore = new SessionBindingStore({ home: fixture.home, providerHomeIdentity: "b".repeat(64) });
+    const mismatchedStore = new SessionBindingStore({
+      home: fixture.home,
+      providerArtifactIdentity: () => "b".repeat(64),
+    });
     const mismatchedWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: mismatchedStore });
     const mismatched = new SessionReconciler({ computerId: fixture.computerId, preparation: mismatchedWorkspace });
     await expect(mismatched.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).rejects.toThrow(
       /identity|binding/i,
+    );
+
+    const unavailableStore = new SessionBindingStore({
+      home: fixture.home,
+      providerArtifactIdentity: () => undefined,
+    });
+    const unavailableWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: unavailableStore });
+    const unavailable = new SessionReconciler({ computerId: fixture.computerId, preparation: unavailableWorkspace });
+    await expect(unavailable.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).rejects.toThrow(
+      "artifact identity is unavailable",
     );
   });
 
@@ -110,7 +123,7 @@ describe("SessionBindingStore", () => {
 
     const reopenedStore = new SessionBindingStore({
       home: fixture.home,
-      providerHomeIdentity: fixture.homeIdentity,
+      providerArtifactIdentity: () => fixture.homeIdentity,
     });
     const reopenedWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: reopenedStore });
     const reopened = new SessionReconciler({ computerId: fixture.computerId, preparation: reopenedWorkspace });
@@ -126,7 +139,10 @@ describe("SessionBindingStore", () => {
     const path = snapshotPath(fixture.home, "agent-1", hashes.effectiveSnapshotHash);
     await rm(path);
 
-    const reopenedStore = new SessionBindingStore({ home: fixture.home, providerHomeIdentity: fixture.homeIdentity });
+    const reopenedStore = new SessionBindingStore({
+      home: fixture.home,
+      providerArtifactIdentity: () => fixture.homeIdentity,
+    });
     const reopenedWorkspace = new AgentWorkspaceManager({ home: fixture.home, bindingStore: reopenedStore });
     const reopened = new SessionReconciler({ computerId: fixture.computerId, preparation: reopenedWorkspace });
     await expect(reopened.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).resolves.toMatchObject({
@@ -145,7 +161,10 @@ describe("SessionBindingStore", () => {
       resultHash: report.resultHash,
     });
 
-    const reopened = new SessionBindingStore({ home: fixture.home, providerHomeIdentity: fixture.homeIdentity });
+    const reopened = new SessionBindingStore({
+      home: fixture.home,
+      providerArtifactIdentity: () => fixture.homeIdentity,
+    });
     expect((await reopened.read("agent-1", "session-1"))?.unresolvedTurn?.report).toEqual(report);
     await reopened.recordResult("agent-1", "session-1", report.turnId, report.resultHash);
 
@@ -167,6 +186,21 @@ describe("SessionBindingStore", () => {
     const fixture = await bindingFixture();
     await writeFile(sessionBindingPath(fixture.home, "agent-1", "session-1"), "{not-json", "utf8");
     await expect(fixture.store.read("agent-1", "session-1")).rejects.toThrow(/invalid JSON/);
+  });
+
+  it("rejects invalid persisted Provider IDs in Session and Agent Runtime bindings", async () => {
+    const fixture = await bindingFixture();
+    const path = sessionBindingPath(fixture.home, "agent-1", "session-1");
+    const original = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    const invalidSession = structuredClone(original);
+    invalidSession.provider = "";
+    await writeFile(path, `${JSON.stringify(invalidSession)}\n`, "utf8");
+    await expect(fixture.store.read("agent-1", "session-1")).rejects.toThrow("Session binding values are invalid");
+
+    const invalidRuntime = structuredClone(original);
+    invalidRuntime.runtimeBinding = { providerId: "Claude_Code", schemaVersion: 1, payload: {} };
+    await writeFile(path, `${JSON.stringify(invalidRuntime)}\n`, "utf8");
+    await expect(fixture.store.read("agent-1", "session-1")).rejects.toThrow("Agent Runtime binding is invalid");
   });
 
   it("reads a legacy v1 Codex thread and rewrites only the opaque v2 binding", async () => {
@@ -337,7 +371,7 @@ async function unpreparedBindingFixture() {
   homes.push(home);
   const computerId = randomUUID();
   const homeIdentity = "a".repeat(64);
-  const store = new SessionBindingStore({ home, providerHomeIdentity: homeIdentity });
+  const store = new SessionBindingStore({ home, providerArtifactIdentity: () => homeIdentity });
   const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
   const reconciler = new SessionReconciler({ computerId, preparation: workspace });
   const runtime = snapshot();

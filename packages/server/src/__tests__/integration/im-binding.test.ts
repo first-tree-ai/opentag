@@ -229,7 +229,7 @@ async function createClientSessionBindingStore(home: string) {
   const module = (await import(moduleUrl)) as {
     SessionBindingStore: new (options: {
       home: string;
-      providerHomeIdentity: string;
+      providerArtifactIdentity(providerId: string): string | undefined;
     }) => {
       prepare: (
         request: Parameters<PostgresRuntimeCustodyStore["claimRetainedReports"]>[0],
@@ -262,7 +262,7 @@ async function createClientSessionBindingStore(home: string) {
       ) => Promise<unknown>;
     };
   };
-  return new module.SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+  return new module.SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
 }
 
 async function createDurableClientReconciler(home: string, computerId: string) {

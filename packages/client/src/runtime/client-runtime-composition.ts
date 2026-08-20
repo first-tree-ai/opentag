@@ -19,7 +19,12 @@ import {
   CodexAgentRuntimeFactory,
   codexAgentRuntimeEnvironment,
 } from "../providers/codex/agent-runtime.js";
+import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
+import {
+  type AgentRuntimeProviderRegistration,
+  AgentRuntimeProviderRegistry,
+} from "./agent-runtime-provider-registry.js";
 import { AgentTurnRunner } from "./agent-turn-runner.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
@@ -129,7 +134,7 @@ export class ComposedClientRuntime {
   #startCapabilityMonitor(): void {
     if (this.#capabilityTimer || this.#stopped) return;
     this.#capabilityTimer = setInterval(() => {
-      if (this.#capabilityRefreshInFlight) return;
+      if (this.#capabilityRefreshInFlight || this.#stopped) return;
       const refresh = this.#refreshCapability();
       this.#capabilityRefreshInFlight = refresh;
       void refresh
@@ -162,7 +167,7 @@ export async function createClientRuntime(
   const command = options.codexCommand ?? "codex";
   options.signal?.throwIfAborted();
   const environment = codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome });
-  const providerHomeIdentity = createHash("sha256").update(codexHome, "utf8").digest("hex");
+  const providerArtifactIdentity = createHash("sha256").update(codexHome, "utf8").digest("hex");
   const factory =
     options.factory ??
     resolvedCodexFactory({
@@ -172,32 +177,16 @@ export async function createClientRuntime(
       environment,
       sourceEnvironment,
     });
-  if (factory.manifest.providerId !== "codex") {
-    throw new Error("Production Client Runtime only registers the reviewed Codex provider");
-  }
-  const factories = new Map([[factory.manifest.providerId, factory]]);
+  const providers = new AgentRuntimeProviderRegistry([
+    codexProviderRegistration(factory, providerArtifactIdentity, codexHome),
+  ]);
   const capabilityAbort = new AbortController();
   const readinessSignal = options.signal
     ? AbortSignal.any([options.signal, capabilityAbort.signal])
     : capabilityAbort.signal;
-  let providerReady = false;
-  const ensureProviderReady = serializeReadiness(async () => {
-    readinessSignal.throwIfAborted();
-    const result = await factory.probe({ signal: readinessSignal });
-    if (!result.ready) throw new Error(result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
-    if ((await realpath(codexHome)) !== codexHome) throw new Error("Codex Home identity changed");
-    readinessSignal.throwIfAborted();
-    providerReady = true;
-  });
   const refreshCapability = async (): Promise<void> => {
-    const available = await ensureProviderReady()
-      .then(() => true)
-      .catch((error: unknown) => {
-        if (readinessSignal.aborted) throw error;
-        return false;
-      });
+    const available = await providers.refresh(CODEX_AGENT_RUNTIME_MANIFEST.providerId, readinessSignal);
     readinessSignal.throwIfAborted();
-    providerReady = available;
     connection.setVerifiedCapabilities({ imMessageTool: available ? 1 : 0 });
   };
   try {
@@ -207,14 +196,16 @@ export async function createClientRuntime(
     throw error;
   }
 
-  const bindingStore = new SessionBindingStore({ home: options.home, providerHomeIdentity });
+  const bindingStore = new SessionBindingStore({
+    home: options.home,
+    providerArtifactIdentity: (providerId) => providers.artifactIdentity(providerId),
+  });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
   const reportOwner = new TurnReportOwner({ connection });
   const toolHost = new RuntimeToolHost(connection);
   const runtimeManager = new SessionRuntimeManager({
     bindingStore,
-    factories,
-    providerAvailable: () => providerReady,
+    providers,
     toolHost,
     workspace,
   });
@@ -237,9 +228,8 @@ export async function createClientRuntime(
   });
   let runner: AgentTurnRunner;
   const preflight = createClientRuntimePreflight({
-    ensureProviderReady,
-    /* v8 ignore next -- this late-bound state getter is covered through preflight's ready and unavailable cases. */
-    isProviderReady: () => providerReady,
+    providers,
+    readinessSignal,
     runtimeManager,
     workspace,
   });
@@ -268,7 +258,7 @@ export async function createClientRuntime(
   return new ComposedClientRuntime(runtime, {
     bindingStore,
     custody,
-    messageToolAvailable: providerReady,
+    messageToolAvailable: providers.isReady(CODEX_AGENT_RUNTIME_MANIFEST.providerId),
     reconciler,
     reportOwner,
     runner,
@@ -290,6 +280,26 @@ export interface ResolvedCodexFactoryOptions {
   readonly command: string;
   readonly environment: NodeJS.ProcessEnv;
   readonly sourceEnvironment: NodeJS.ProcessEnv;
+}
+
+function codexProviderRegistration(
+  factory: AgentRuntimeFactory,
+  artifactIdentity: string,
+  codexHome: string,
+): AgentRuntimeProviderRegistration {
+  if (factory.manifest.providerId !== CODEX_AGENT_RUNTIME_MANIFEST.providerId) {
+    throw new Error("Production Client Runtime only registers the reviewed Codex provider");
+  }
+  return {
+    artifactIdentity,
+    factory,
+    policy: codexRuntimePolicy,
+    validate: validateCodexRuntimePolicy,
+    verifyArtifact: async (signal) => {
+      signal?.throwIfAborted();
+      if ((await realpath(codexHome)) !== codexHome) throw new Error("Codex Home identity changed");
+    },
+  };
 }
 
 export function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): AgentRuntimeFactory {
@@ -355,21 +365,10 @@ export async function resolveExecutable(command: string, environment: NodeJS.Pro
   throw new Error("A compatible Codex executable is unavailable");
 }
 
-export function serializeReadiness(operation: () => Promise<void>): () => Promise<void> {
-  let inFlight: Promise<void> | undefined;
-  return () => {
-    if (inFlight) return inFlight;
-    inFlight = operation().finally(() => {
-      inFlight = undefined;
-    });
-    return inFlight;
-  };
-}
-
 interface ClientRuntimePreflightDependencies {
-  readonly ensureProviderReady: () => Promise<void>;
-  readonly isProviderReady: () => boolean;
-  readonly runtimeManager: Pick<SessionRuntimeManager, "runtime" | "validate">;
+  readonly providers: Pick<AgentRuntimeProviderRegistry, "ensureReady" | "validateConfiguration">;
+  readonly readinessSignal?: AbortSignal;
+  readonly runtimeManager: Pick<SessionRuntimeManager, "runtime">;
   readonly workspace: Pick<AgentWorkspaceManager, "verifyAgent">;
 }
 
@@ -377,10 +376,10 @@ export function createClientRuntimePreflight(
   dependencies: ClientRuntimePreflightDependencies,
 ): NonNullable<ConstructorParameters<typeof TurnCustodyOwner>[0]["preflight"]> {
   return async (request) => {
-    const policyReason = dependencies.runtimeManager.validate(request.runtime);
+    const policyReason = dependencies.providers.validateConfiguration(request.runtime);
     if (policyReason) return policyReason;
     try {
-      if (!dependencies.isProviderReady()) await dependencies.ensureProviderReady();
+      await dependencies.providers.ensureReady(request.runtime.provider, dependencies.readinessSignal);
       await dependencies.workspace.verifyAgent(request.runtime, computeRuntimeSnapshotHashes(request.runtime));
       dependencies.runtimeManager.runtime(request.sessionId);
       return undefined;

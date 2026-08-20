@@ -21,6 +21,8 @@ import type {
   CreateAgentRuntimeRequest,
   ResumeAgentRuntimeRequest,
 } from "../agent-runtime/types.js";
+import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
+import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
 import { RuntimeToolHost } from "../runtime/runtime-tool-host.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
@@ -34,14 +36,14 @@ describe("SessionRuntimeManager", () => {
   it("durably creates, reuses, upgrades, resumes, and stops Session-scoped runtimes", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-session-runtime-"));
     homes.push(home);
-    const store = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const toolHost = new RuntimeToolHost(connection());
     const factory = new FakeFactory();
     const computerId = randomUUID();
     const manager = new SessionRuntimeManager({
       bindingStore: store,
-      factories: new Map([["codex", factory]]),
+      providers: await providerRegistry(factory),
       toolHost,
       workspace,
     });
@@ -78,7 +80,7 @@ describe("SessionRuntimeManager", () => {
     const restartedFactory = new FakeFactory();
     const restartedManager = new SessionRuntimeManager({
       bindingStore: store,
-      factories: new Map([["codex", restartedFactory]]),
+      providers: await providerRegistry(restartedFactory),
       toolHost,
       workspace,
     });
@@ -102,23 +104,22 @@ describe("SessionRuntimeManager", () => {
   it("fails closed for unregistered providers and unsupported execution policy", async () => {
     const manager = new SessionRuntimeManager({
       bindingStore: {} as SessionBindingStore,
-      factories: new Map(),
+      providers: await providerRegistry(),
       toolHost: {} as RuntimeToolHost,
       workspace: {} as AgentWorkspaceManager,
     });
     expect(manager.validate(snapshot(1))).toBe("configuration_unsupported");
-    const factories = new Map([["codex", new FakeFactory() as AgentRuntimeFactory]]);
+    const factory = new FakeFactory() as AgentRuntimeFactory;
     const providerUnavailable = new SessionRuntimeManager({
       bindingStore: {} as SessionBindingStore,
-      factories,
-      providerAvailable: () => false,
+      providers: await providerRegistry(factory, false),
       toolHost: {} as RuntimeToolHost,
       workspace: {} as AgentWorkspaceManager,
     });
     expect(providerUnavailable.validate(snapshot(1))).toBe("provider_unavailable");
     const registered = new SessionRuntimeManager({
       bindingStore: {} as SessionBindingStore,
-      factories,
+      providers: await providerRegistry(factory),
       toolHost: {} as RuntimeToolHost,
       workspace: {} as AgentWorkspaceManager,
     });
@@ -132,7 +133,7 @@ describe("SessionRuntimeManager", () => {
     const stopSession = vi.fn(async () => undefined);
     const stoppable = new SessionRuntimeManager({
       bindingStore: {} as SessionBindingStore,
-      factories,
+      providers: await providerRegistry(factory),
       toolHost: {} as RuntimeToolHost,
       workspace: { stopSession } as unknown as AgentWorkspaceManager,
     });
@@ -143,14 +144,14 @@ describe("SessionRuntimeManager", () => {
   it("closes a runtime that cannot produce a durable binding", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-session-runtime-failure-"));
     homes.push(home);
-    const store = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const toolHost = new RuntimeToolHost(connection());
     const factory = new FakeFactory(true);
     const computerId = randomUUID();
     const manager = new SessionRuntimeManager({
       bindingStore: store,
-      factories: new Map([["codex", factory]]),
+      providers: await providerRegistry(factory),
       toolHost,
       workspace,
     });
@@ -163,14 +164,14 @@ describe("SessionRuntimeManager", () => {
   it("preserves both creation and cleanup failures before manager shutdown", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-session-runtime-double-failure-"));
     homes.push(home);
-    const store = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const toolHost = new RuntimeToolHost(connection());
     const factory = new FakeFactory(true, undefined, undefined, undefined, new Error("cleanup failed"));
     const computerId = randomUUID();
     const manager = new SessionRuntimeManager({
       bindingStore: store,
-      factories: new Map([["codex", factory]]),
+      providers: await providerRegistry(factory),
       toolHost,
       workspace,
     });
@@ -186,7 +187,7 @@ describe("SessionRuntimeManager", () => {
   it("returns one joinable close operation while Provider shutdown is in flight", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-session-runtime-close-"));
     homes.push(home);
-    const store = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const toolHost = new RuntimeToolHost(connection());
     let releaseClose!: () => void;
@@ -197,7 +198,7 @@ describe("SessionRuntimeManager", () => {
     const computerId = randomUUID();
     const manager = new SessionRuntimeManager({
       bindingStore: store,
-      factories: new Map([["codex", factory]]),
+      providers: await providerRegistry(factory),
       toolHost,
       workspace,
     });
@@ -224,7 +225,7 @@ describe("SessionRuntimeManager", () => {
   it("waits for in-flight preparation and closes a late Provider runtime exactly once", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-session-runtime-prepare-close-"));
     homes.push(home);
-    const store = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const toolHost = new RuntimeToolHost(connection());
     let releaseCreate!: () => void;
@@ -239,7 +240,7 @@ describe("SessionRuntimeManager", () => {
     const computerId = randomUUID();
     const manager = new SessionRuntimeManager({
       bindingStore: store,
-      factories: new Map([["codex", factory]]),
+      providers: await providerRegistry(factory),
       toolHost,
       workspace,
     });
@@ -272,7 +273,7 @@ describe("SessionRuntimeManager", () => {
   it("surfaces failure while closing a runtime created after shutdown starts", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-session-runtime-late-close-failure-"));
     homes.push(home);
-    const store = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const toolHost = new RuntimeToolHost(connection());
     let releaseCreate!: () => void;
@@ -287,7 +288,7 @@ describe("SessionRuntimeManager", () => {
     const computerId = randomUUID();
     const manager = new SessionRuntimeManager({
       bindingStore: store,
-      factories: new Map([["codex", factory]]),
+      providers: await providerRegistry(factory),
       toolHost,
       workspace,
     });
@@ -306,7 +307,7 @@ describe("SessionRuntimeManager", () => {
   it("does not publish ready after shutdown starts during final binding persistence", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-session-runtime-binding-close-"));
     homes.push(home);
-    const store = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const toolHost = new RuntimeToolHost(connection());
     let releasePersist!: () => void;
@@ -333,7 +334,7 @@ describe("SessionRuntimeManager", () => {
     const computerId = randomUUID();
     const manager = new SessionRuntimeManager({
       bindingStore,
-      factories: new Map([["codex", factory]]),
+      providers: await providerRegistry(factory),
       toolHost,
       workspace,
     });
@@ -365,7 +366,7 @@ describe("SessionRuntimeManager", () => {
   it("surfaces an upgrade close failure that races manager shutdown", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-session-runtime-upgrade-close-failure-"));
     homes.push(home);
-    const store = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const toolHost = new RuntimeToolHost(connection());
     let rejectClose!: (error: Error) => void;
@@ -376,7 +377,7 @@ describe("SessionRuntimeManager", () => {
     const computerId = randomUUID();
     const manager = new SessionRuntimeManager({
       bindingStore: store,
-      factories: new Map([["codex", factory]]),
+      providers: await providerRegistry(factory),
       toolHost,
       workspace,
     });
@@ -396,14 +397,14 @@ describe("SessionRuntimeManager", () => {
   it("aggregates failures while closing registered Provider runtimes", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-session-runtime-close-failure-"));
     homes.push(home);
-    const store = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const toolHost = new RuntimeToolHost(connection());
     const factory = new FakeFactory(false, undefined, undefined, undefined, new Error("close failed"));
     const computerId = randomUUID();
     const manager = new SessionRuntimeManager({
       bindingStore: store,
-      factories: new Map([["codex", factory]]),
+      providers: await providerRegistry(factory),
       toolHost,
       workspace,
     });
@@ -421,7 +422,7 @@ describe("SessionRuntimeManager", () => {
     const hashes = computeRuntimeSnapshotHashes(request.runtime as never);
     const unresolved = new SessionRuntimeManager({
       bindingStore: {} as SessionBindingStore,
-      factories: new Map(),
+      providers: await providerRegistry(),
       toolHost: {} as RuntimeToolHost,
       workspace: {
         prepareSession: async () => ({
@@ -442,7 +443,7 @@ describe("SessionRuntimeManager", () => {
 
     const unavailable = new SessionRuntimeManager({
       bindingStore: {} as SessionBindingStore,
-      factories: new Map(),
+      providers: await providerRegistry(),
       toolHost: {} as RuntimeToolHost,
       workspace: {
         prepareSession: async () => prepared,
@@ -469,7 +470,7 @@ describe("SessionRuntimeManager", () => {
         saveRuntimeBinding: async () => undefined,
         read: async () => undefined,
       } as unknown as SessionBindingStore,
-      factories: new Map([["codex", policyFactory]]),
+      providers: await providerRegistry(policyFactory),
       toolHost: {
         hostedTools: () => ({ definitions: [], handler: async () => ({ success: true, content: [] }) }),
       } as unknown as RuntimeToolHost,
@@ -494,6 +495,23 @@ describe("SessionRuntimeManager", () => {
     expect(factory.runtimes[0]?.closed).toBe(true);
   });
 });
+
+async function providerRegistry(factory?: AgentRuntimeFactory, ready = true): Promise<AgentRuntimeProviderRegistry> {
+  const providers = new AgentRuntimeProviderRegistry(
+    factory
+      ? [
+          {
+            artifactIdentity: "a".repeat(64),
+            factory,
+            policy: codexRuntimePolicy,
+            validate: validateCodexRuntimePolicy,
+          },
+        ]
+      : [],
+  );
+  if (factory && ready) await providers.refresh(factory.manifest.providerId);
+  return providers;
+}
 
 class FakeFactory implements AgentRuntimeFactory {
   readonly manifest = {

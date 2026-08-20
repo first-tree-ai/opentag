@@ -25,6 +25,7 @@ lowest Client execution layer. It covers these production boundaries:
 
 Production Client execution now uses this contract through:
 
+- `src/runtime/agent-runtime-provider-registry.ts`
 - `src/runtime/runtime-tool-host.ts`
 - `src/runtime/session-runtime-manager.ts`
 - `src/runtime/agent-turn-runner.ts`
@@ -197,7 +198,9 @@ requests and are therefore intentionally excluded from the default test command.
 The production-path tests verify:
 
 - daemon composition constructs the provider-neutral `createClientRuntime`
-  entry point and registers only the supported Codex factory;
+  entry point and registers Codex through the Provider Registry;
+- the registry owns per-Provider factory, readiness, artifact identity, policy
+  validation, and policy mapping while production remains Codex-only;
 - a new Session creates a Provider Runtime and durably writes an opaque v2
   binding before Run admission;
 - legacy v1 Codex bindings migrate on read and resume the exact Provider Thread;
@@ -241,8 +244,9 @@ is reported as a failure; it is never converted into a skipped success.
 
 ## Latest Local Execution
 
-On 2026-08-20 the contract-hardening Agent Runtime suite passed 251 tests with
-100% statements, branches, functions, and lines. All 370 Client tests passed.
+On 2026-08-20 the combined contract and Provider Registry Agent Runtime suite
+passed 256 tests with 100% statements, branches, functions, and lines. All 377
+Client tests passed.
 Repository formatting, notice, build, and type-check gates passed, as did all
 104 Server integration tests.
 

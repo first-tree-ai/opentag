@@ -621,6 +621,34 @@ describe("OpenTag Web App Shell", () => {
     expect(document.activeElement).toBe(teamTrigger);
   });
 
+  it("keeps the Members invitation panel in sync after rotating from the Team-picker dialog", async () => {
+    installApi("admin", { invitationExists: true });
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText } });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    window.history.replaceState({}, "", "/settings/members");
+    render(<App />);
+
+    const pageLink = (await screen.findByLabelText("Invitation link")) as HTMLInputElement;
+    expect(pageLink.value).toContain("/invites/AAA");
+    fireEvent.click(screen.getByRole("button", { name: "Example" }));
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Switch Team" })).getByRole("button", { name: "Invite people" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Invite people" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Rotate invitation link" }));
+    await waitFor(() =>
+      expect((within(dialog).getByLabelText("Invitation link") as HTMLInputElement).value).toContain("/invites/BBB"),
+    );
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close invitation dialog" }));
+
+    const refreshedPageLink = screen.getByLabelText("Invitation link") as HTMLInputElement;
+    expect(refreshedPageLink.value).toContain("/invites/BBB");
+    fireEvent.click(screen.getByRole("button", { name: "Copy invitation link" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(refreshedPageLink.value));
+    confirm.mockRestore();
+  });
+
   it("does not expose the Team-picker invitation shortcut to regular members", async () => {
     installApi("member");
     render(<App />);

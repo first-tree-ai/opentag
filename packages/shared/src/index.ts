@@ -57,6 +57,11 @@ export {
   type TeamName,
   TeamNameInputSchema,
   TeamNameSchema,
+  type UpdateUserProfileRequest,
+  UpdateUserProfileRequestSchema,
+  UserDisplayNameSchema,
+  type UserProfile,
+  UserProfileSchema,
 } from "./auth.js";
 export {
   type ChannelConfig,
@@ -94,6 +99,7 @@ export {
   AGENT_CONFIG_TEMPLATE,
   AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE,
   AGENT_IM_BINDING_CONFIG_TEMPLATE,
+  AGENT_IM_BINDING_HANDOFF_TEMPLATE,
   AGENT_IM_BINDING_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
@@ -102,6 +108,7 @@ export {
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
+  agentImBindingHandoffPath,
   agentImBindingPath,
   agentReactivatePath,
   agentSuspendPath,

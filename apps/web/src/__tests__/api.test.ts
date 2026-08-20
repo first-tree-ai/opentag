@@ -15,6 +15,25 @@ function jsonResponse(value: unknown): Response {
 }
 
 describe("BrowserApi", () => {
+  it("updates the current user profile with PATCH, response parsing, and browser CSRF", async () => {
+    setDocumentCookie("opentag_csrf=profile-csrf; Path=/");
+    const profile = { id: userId, email: "ada@example.com", displayName: "Ada Lovelace" };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe("/api/v1/me");
+      expect(init?.method).toBe("PATCH");
+      expect(init?.body).toBe(JSON.stringify({ displayName: "Ada Lovelace" }));
+      expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
+      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("profile-csrf");
+      return new Response(JSON.stringify(profile), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    await expect(new BrowserApi(fetchImpl).updateProfile({ displayName: "Ada Lovelace" })).resolves.toEqual(profile);
+    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
+
   it("uses explicit CSRF-protected Agent lifecycle commands", async () => {
     setDocumentCookie("opentag_csrf=lifecycle-csrf; Path=/");
     const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
@@ -124,6 +143,19 @@ describe("BrowserApi", () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  it("loads the authoritative handoff facts used by onboarding", async () => {
+    const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      expect(String(input)).toBe(`/api/v1/agents/${agentId}/im-binding/handoff`);
+      return jsonResponse({ bindingState: "active", handoffReady: false });
+    });
+
+    await expect(new BrowserApi(fetchImpl).imBindingHandoff(agentId)).resolves.toEqual({
+      bindingState: "active",
+      handoffReady: false,
+    });
+  });
+
   it("binds the default fetch implementation to the browser global", async () => {
     const fetchImpl = vi.fn<typeof fetch>(
       async () =>
@@ -208,13 +240,15 @@ describe("BrowserApi", () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input) => {
       if (String(input) === "/api/v1/auth/browser/refresh") return new Response(null, { status: 204 });
       protectedCalls += 1;
-      if (protectedCalls === 1 || protectedCalls === 3) return new Response(null, { status: 401 });
+      if (protectedCalls === 1 || protectedCalls === 3 || protectedCalls === 5)
+        return new Response(null, { status: 401 });
       return new Response(null, { status: 204 });
     });
     const api = new BrowserApi(fetchImpl);
     await expect(api.imBinding("1a63a21e-f6c7-4474-91ea-4dabf0566a24")).resolves.toBeUndefined();
+    await expect(api.imBindingHandoff("1a63a21e-f6c7-4474-91ea-4dabf0566a24")).resolves.toBeUndefined();
     await expect(api.disableImBinding("2a63a21e-f6c7-4474-91ea-4dabf0566a24")).resolves.toBeUndefined();
-    expect(fetchImpl.mock.calls.filter(([input]) => String(input) === "/api/v1/auth/browser/refresh")).toHaveLength(2);
+    expect(fetchImpl.mock.calls.filter(([input]) => String(input) === "/api/v1/auth/browser/refresh")).toHaveLength(3);
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 

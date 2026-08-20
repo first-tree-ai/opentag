@@ -121,6 +121,17 @@ export const ImBindingSummarySchema = z
   })
   .strict();
 
+export const ImBindingHandoffStatusSchema = z.union([
+  z.object({ bindingState: z.literal("active"), handoffReady: z.literal(true) }).strict(),
+  z.object({ bindingState: z.literal("active"), handoffReady: z.literal(false) }).strict(),
+  z
+    .object({
+      bindingState: z.enum(["provisioning", "reauthorization_required", "error", "disabled"]),
+      handoffReady: z.literal(false),
+    })
+    .strict(),
+]);
+
 export const ImBindingAdminDetailSchema = ImBindingSummarySchema.extend({
   identity: ImBindingIdentitySchema,
   credentialGeneration: z.number().int().min(1),
@@ -195,6 +206,7 @@ export type ImProvider = z.infer<typeof ImProviderSchema>;
 export type ImBindingState = z.infer<typeof ImBindingStateSchema>;
 export type ImBindingIdentity = z.infer<typeof ImBindingIdentitySchema>;
 export type ImBindingSummary = z.infer<typeof ImBindingSummarySchema>;
+export type ImBindingHandoffStatus = z.infer<typeof ImBindingHandoffStatusSchema>;
 export type ImBindingAdminDetail = z.infer<typeof ImBindingAdminDetailSchema>;
 export type FeishuSetupIntent = z.infer<typeof FeishuSetupIntentSchema>;
 export type FeishuSetupState = z.infer<typeof FeishuSetupStateSchema>;

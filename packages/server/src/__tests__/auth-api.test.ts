@@ -43,6 +43,11 @@ function createAuthService(): UserAuthService {
       },
     }),
     getActiveUserById: vi.fn(),
+    updateSelfProfile: vi.fn().mockResolvedValue({
+      id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+      email: "admin@example.com",
+      displayName: "Updated Admin",
+    }),
   };
 }
 
@@ -124,6 +129,72 @@ describe("auth HTTP API", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ memberships: [{ teamName: "example", role: "admin" }] });
     expect(authService.getAuthenticatedUser).toHaveBeenCalledWith("access");
+  });
+
+  it("updates only the authenticated user's strict profile through bearer auth", async () => {
+    const authService = createAuthService();
+    const app = createApp({ authService });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "PATCH",
+      url: HTTP_PATHS.me,
+      headers: { authorization: "Bearer access" },
+      payload: { displayName: "  Updated Admin  " },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+      email: "admin@example.com",
+      displayName: "Updated Admin",
+    });
+    expect(authService.updateSelfProfile).toHaveBeenCalledWith("53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", {
+      displayName: "Updated Admin",
+    });
+
+    const rejected = await app.inject({
+      method: "PATCH",
+      url: HTTP_PATHS.me,
+      headers: { authorization: "Bearer access" },
+      payload: { displayName: "Override", userId: "63e2babe-e4ac-4e2c-b7d1-d092d5a4568e" },
+    });
+    expect(rejected.statusCode).toBe(400);
+    expect(authService.updateSelfProfile).toHaveBeenCalledOnce();
+  });
+
+  it("requires browser mutation CSRF for self-profile updates", async () => {
+    const authService = createAuthService();
+    const app = createApp({
+      authService,
+      browserAuth: {
+        publicOrigin: "https://dev.example.com",
+        refreshTokenTtlSeconds: 3600,
+        secureCookies: true,
+      },
+    });
+    apps.push(app);
+
+    const rejected = await app.inject({
+      method: "PATCH",
+      url: HTTP_PATHS.me,
+      headers: { cookie: "opentag_access=access; opentag_csrf=csrf" },
+      payload: { displayName: "Updated Admin" },
+    });
+    expect(rejected.statusCode).toBe(403);
+    expect(authService.updateSelfProfile).not.toHaveBeenCalled();
+
+    const accepted = await app.inject({
+      method: "PATCH",
+      url: HTTP_PATHS.me,
+      headers: {
+        cookie: "opentag_access=access; opentag_csrf=csrf",
+        origin: "https://dev.example.com",
+        "x-opentag-csrf": "csrf",
+      },
+      payload: { displayName: "Updated Admin" },
+    });
+    expect(accepted.statusCode).toBe(200);
+    expect(authService.updateSelfProfile).toHaveBeenCalledOnce();
   });
 
   it("issues a server-authored connect command only for the authenticated user", async () => {

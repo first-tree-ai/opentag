@@ -38,6 +38,7 @@ export const MembershipRoleSchema = z.enum(["admin", "member"]);
 export const MembershipStatusSchema = z.enum(["active", "left", "removed"]);
 export const AuthIdentityProviderSchema = z.enum(["google", "github", "oidc"]);
 export const TeamNameSchema = z.string().regex(/^[a-z0-9][a-z0-9-]*$/);
+export const UserDisplayNameSchema = z.string().trim().min(1).max(255);
 
 /**
  * The canonical Team field contracts, used by every writer: creation, profile update and the bootstrap CLI.
@@ -58,15 +59,23 @@ export const MeMembershipSchema = z
   })
   .strict();
 
+export const UserProfileSchema = z
+  .object({
+    id: z.string().uuid(),
+    email: z.string().email(),
+    displayName: UserDisplayNameSchema,
+  })
+  .strict();
+
+export const UpdateUserProfileRequestSchema = z
+  .object({
+    displayName: UserDisplayNameSchema,
+  })
+  .strict();
+
 export const MeResponseSchema = z
   .object({
-    user: z
-      .object({
-        id: z.string().uuid(),
-        email: z.string().email(),
-        displayName: z.string().min(1),
-      })
-      .strict(),
+    user: UserProfileSchema,
     memberships: z.array(MeMembershipSchema),
   })
   .strict();
@@ -96,5 +105,7 @@ export type MembershipStatus = z.infer<typeof MembershipStatusSchema>;
 export type AuthIdentityProvider = z.infer<typeof AuthIdentityProviderSchema>;
 export type TeamName = z.infer<typeof TeamNameSchema>;
 export type MeMembership = z.infer<typeof MeMembershipSchema>;
+export type UserProfile = z.infer<typeof UserProfileSchema>;
+export type UpdateUserProfileRequest = z.infer<typeof UpdateUserProfileRequestSchema>;
 export type MeResponse = z.infer<typeof MeResponseSchema>;
 export type AuthProvidersResponse = z.infer<typeof AuthProvidersResponseSchema>;

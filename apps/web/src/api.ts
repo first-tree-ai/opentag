@@ -9,6 +9,7 @@ import {
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
+  agentImBindingHandoffPath,
   agentImBindingPath,
   agentReactivatePath,
   agentSuspendPath,
@@ -27,6 +28,8 @@ import {
   ImBindingAdminDetailSchema,
   type ImBindingDiagnostics,
   ImBindingDiagnosticsSchema,
+  type ImBindingHandoffStatus,
+  ImBindingHandoffStatusSchema,
   type ImBindingSummary,
   ImBindingSummarySchema,
   type InvitationPreview,
@@ -63,6 +66,9 @@ import {
   type UpdateAgentRequest,
   type UpdateTeamMemberRequest,
   type UpdateTeamProfileRequest,
+  type UpdateUserProfileRequest,
+  type UserProfile,
+  UserProfileSchema,
   type ValidationIssue,
 } from "@opentag/shared/browser";
 
@@ -88,6 +94,14 @@ export class BrowserApi {
 
   me(): Promise<MeResponse> {
     return this.request("/api/v1/me", MeResponseSchema);
+  }
+
+  updateProfile(input: UpdateUserProfileRequest): Promise<UserProfile> {
+    return this.request(HTTP_PATHS.me, UserProfileSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
   }
 
   authProviders(): Promise<AuthProvidersResponse> {
@@ -173,6 +187,10 @@ export class BrowserApi {
 
   imBinding(agentId: string): Promise<ImBindingSummary | undefined> {
     return this.requestOptional(agentImBindingPath(agentId), ImBindingSummarySchema);
+  }
+
+  imBindingHandoff(agentId: string): Promise<ImBindingHandoffStatus | undefined> {
+    return this.requestOptional(agentImBindingHandoffPath(agentId), ImBindingHandoffStatusSchema);
   }
 
   imBindingConfig(agentId: string): Promise<ImBindingAdminDetail | undefined> {

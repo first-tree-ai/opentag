@@ -1,4 +1,4 @@
-import { AuthIdentityProviderSchema } from "@opentag/shared";
+import { AuthIdentityProviderSchema, UserDisplayNameSchema } from "@opentag/shared";
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
@@ -11,7 +11,7 @@ const ExternalIdentitySchema = z
     issuer: z.string().url().max(2048),
     subject: z.string().min(1).max(512),
     email: z.string().email(),
-    displayName: z.string().trim().min(1).max(255),
+    displayName: UserDisplayNameSchema,
   })
   .strict();
 
@@ -69,10 +69,7 @@ export class AuthIdentityService {
         .update(authIdentities)
         .set({ email: identity.email, updatedAt: now })
         .where(eq(authIdentities.id, existing.id));
-      await transaction
-        .update(users)
-        .set({ email: identity.email, displayName: identity.displayName, updatedAt: now })
-        .where(eq(users.id, user.id));
+      await transaction.update(users).set({ email: identity.email, updatedAt: now }).where(eq(users.id, user.id));
       return user.id;
     }
     if (expectedUserId) {

@@ -9,6 +9,9 @@ OpenTag publishes one self-contained CLI artifact in two isolated npm package id
 | Staging | `open-tag-staging` | `opentag-staging` | Successful `CI` on `main`, or an intentional manual rerun on `main` |
 | Production | `open-tag` | `opentag` | A protected stable `vX.Y.Z` tag |
 
+This guide covers published artifacts only. The Staging server is deployed from the same `main` revision by a separate
+workflow described in [deploying.md](./deploying.md).
+
 The internal `@opentag/client`, `@opentag/shared`, and `@opentag/server` workspaces remain private. Client and Shared
 code is bundled into the CLI tarball, and the packed manifest must not expose an `@opentag/*` runtime dependency.
 `THIRD_PARTY_NOTICES` is generated from the exact third-party packages bundled into the CLI and contains their complete

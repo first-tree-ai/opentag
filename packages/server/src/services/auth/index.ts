@@ -2,6 +2,7 @@ export {
   type AuthenticatedUser,
   AuthService,
   type ResolvedUserTokenIssuer,
+  type SelfProfileService,
   type UserAuthService,
 } from "./auth-service.js";
 export {

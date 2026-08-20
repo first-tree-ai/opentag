@@ -99,6 +99,7 @@ future vertical slices.
 - [Development guide](./DEVELOPMENT.md)
 - [Contributing guide](./CONTRIBUTING.md)
 - [Release guide](./docs/releasing.md)
+- [Deployment guide](./docs/deploying.md)
 - [Security policy](./SECURITY.md)
 - [Code of Conduct](./CODE_OF_CONDUCT.md)
 

@@ -1,0 +1,182 @@
+name: Deploy Staging
+
+on:
+  # CI, not Docker: staging must only ever run a revision whose checks passed, and `main` CI is the
+  # gate that proves that. The image the revision needs is published by the Docker workflow running
+  # alongside CI, so this workflow waits for that coordinate instead of building anything itself.
+  workflow_run:
+    workflows:
+      - CI
+    branches:
+      - main
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: "Commit in main history to deploy; defaults to the current main tip"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+env:
+  PRIMARY_NODE_VERSION: "24"
+  IMAGE: ghcr.io/${{ github.repository }}
+
+concurrency:
+  # Staging is one mutable target where only the newest revision is worth shipping, so a superseded
+  # pending run should be dropped rather than deployed after the run that replaced it. This is the
+  # opposite of the image workflow, whose coordinates are immutable and must never be dropped.
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  staging:
+    name: Deploy Staging
+    if: >-
+      github.repository == 'first-tree-ai/opentag' &&
+      ((github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.head_branch == 'main') ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: staging
+    steps:
+      - name: Check out main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so main membership of the target revision can be proven locally.
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ env.PRIMARY_NODE_VERSION }}
+
+      - name: Resolve the deployment revision
+        id: target
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_REVISION: ${{ github.event.workflow_run.head_sha }}
+          REQUESTED_REVISION: ${{ inputs.revision }}
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            REVISION="$RUN_REVISION"
+          elif [ -n "$REQUESTED_REVISION" ]; then
+            REVISION=$(git rev-parse --verify "${REQUESTED_REVISION}^{commit}")
+          else
+            REVISION=$(git rev-parse --verify refs/remotes/origin/main)
+          fi
+
+          if ! printf '%s' "$REVISION" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "Could not resolve a full commit SHA to deploy (got \"$REVISION\")" >&2
+            exit 1
+          fi
+
+          # A revision outside main history has no reviewed provenance, and the image workflow only
+          # guarantees a commit coordinate for branch pushes it built.
+          if ! git merge-base --is-ancestor "$REVISION" refs/remotes/origin/main; then
+            echo "Revision $REVISION is not contained in main history" >&2
+            exit 1
+          fi
+
+          echo "revision=$REVISION" >> "$GITHUB_OUTPUT"
+          echo "Deployment target is $REVISION"
+
+      - name: Wait for the commit image
+        id: image
+        # Bounded so a revision whose image never lands fails instead of holding the deploy slot for
+        # the full job timeout.
+        timeout-minutes: 20
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REVISION: ${{ steps.target.outputs.revision }}
+        run: |
+          # CI and the image build run in parallel, so the commit coordinate is normally already
+          # published by the time CI concludes; waiting covers the case where it is not.
+          node scripts/registry-coordinate.mjs --image "$IMAGE" --reference "$REVISION" --wait
+
+      - name: Confirm the revision is still current
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REVISION: ${{ steps.target.outputs.revision }}
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+          MAIN_TIP=$(git rev-parse refs/remotes/origin/main)
+
+          # A manual deploy is an explicit decision, including a deliberate rollback to an older
+          # revision, so it is never treated as stale.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # An automatic deploy must never move staging backwards. Runs for consecutive commits can
+          # overlap, so a run whose revision is no longer the tip of main skips rather than
+          # overwriting the newer revision that has already shipped or is about to.
+          if [ "$REVISION" != "$MAIN_TIP" ]; then
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping: $REVISION is no longer the tip of main ($MAIN_TIP)"
+            exit 0
+          fi
+
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
+
+      - name: Verify the CapRover secrets are configured
+        if: steps.gate.outputs.deploy == 'true'
+        env:
+          CAPROVER_SERVER: ${{ secrets.CAPROVER_STAGING_SERVER }}
+          CAPROVER_APP: ${{ secrets.CAPROVER_STAGING_APP }}
+          CAPROVER_APP_TOKEN: ${{ secrets.CAPROVER_STAGING_APP_TOKEN }}
+        run: |
+          # The deploy action reports a missing secret as an opaque CLI failure, so name the gap here.
+          MISSING=""
+          [ -n "$CAPROVER_SERVER" ] || MISSING="$MISSING CAPROVER_STAGING_SERVER"
+          [ -n "$CAPROVER_APP" ] || MISSING="$MISSING CAPROVER_STAGING_APP"
+          [ -n "$CAPROVER_APP_TOKEN" ] || MISSING="$MISSING CAPROVER_STAGING_APP_TOKEN"
+          if [ -n "$MISSING" ]; then
+            echo "Missing repository secrets:$MISSING" >&2
+            exit 1
+          fi
+
+      - name: Deploy the commit image to CapRover
+        if: steps.gate.outputs.deploy == 'true'
+        uses: caprover/deploy-from-github@c221bd9d1c3a55de4c2b66c0dc4a3972d04c027c # v1.2.0
+        with:
+          server: ${{ secrets.CAPROVER_STAGING_SERVER }}
+          app: ${{ secrets.CAPROVER_STAGING_APP }}
+          token: ${{ secrets.CAPROVER_STAGING_APP_TOKEN }}
+          # The immutable per-commit coordinate, never `edge`: a moving tag would leave CapRover with
+          # an unchanged image reference and nothing to roll forward to.
+          image: ${{ env.IMAGE }}:${{ steps.target.outputs.revision }}
+
+      - name: Summarise the deployment
+        if: always() && steps.target.outputs.revision != ''
+        env:
+          DEPLOYED: ${{ steps.gate.outputs.deploy }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+          REVISION: ${{ steps.target.outputs.revision }}
+        run: |
+          {
+            echo "### Staging deployment"
+            echo
+            printf -- "- Revision: \`%s\`\n" "$REVISION"
+            printf -- "- Image: \`%s:%s\`\n" "$IMAGE" "$REVISION"
+            if [ -n "$DIGEST" ]; then
+              printf -- "- Digest: \`%s\`\n" "$DIGEST"
+            fi
+            if [ "$DEPLOYED" != "true" ]; then
+              echo "- Skipped: this revision is no longer the tip of main."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,8 +1,49 @@
 :root {
   color: #16211b;
   background: #f8f7f0;
-  font-family: "Geist Variable", Geist, ui-sans-serif, system-ui, sans-serif;
+  font-family: var(--font-sans);
   font-synthesis: none;
+
+  --font-sans: "Geist Variable", Geist, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", "SFMono-Regular", Consolas, monospace;
+  --font-display: "Bricolage Grotesque Variable", "Geist Variable", sans-serif;
+
+  /* Raw steps. Whole pixels only: fractional rem values round differently
+     across engines. Nothing outside this block may introduce a new step. */
+  --fs-12: 0.75rem;
+  --fs-13: 0.8125rem;
+  --fs-14: 0.875rem;
+  --fs-16: 1rem;
+  --fs-20: 1.25rem;
+  --fs-24: 1.5rem;
+  --fs-30: 1.875rem;
+  --fs-32: 2rem;
+  --fs-44: 2.75rem;
+
+  /* Roles. Components reference these, never the steps above.
+     micro and meta share a step on dense surfaces and separate on the
+     reading surfaces further down; case and tracking carry them apart. */
+  --text-micro: var(--fs-12);
+  --text-meta: var(--fs-12);
+  --text-ui: var(--fs-13);
+  --text-body: var(--fs-14);
+  --text-subsection: var(--fs-16);
+  --text-section: var(--fs-20);
+  --text-title: var(--fs-24);
+  --text-display: var(--fs-30);
+
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  --lh-tight: 1.2;
+  --lh-ui: 1.45;
+  --lh-prose: 1.6;
+
+  --track-tight: -0.02em;
+  --track-label: 0.06em;
+
   --background: #f8f7f0;
   --surface: #fdfcf7;
   --sidebar: #f1f1e8;
@@ -43,6 +84,8 @@ body {
   min-height: 100dvh;
   margin: 0;
   background: var(--background);
+  font-size: var(--text-ui);
+  line-height: var(--lh-ui);
 }
 
 /* The grid belongs to isolated entry and recovery pages, never the product workspace. */
@@ -87,7 +130,8 @@ button,
   background: var(--brand);
   color: #fff;
   cursor: pointer;
-  font-weight: 650;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
   padding: 0.58rem 0.95rem;
   text-decoration: none;
   transition:
@@ -189,33 +233,33 @@ p {
 h1,
 .brand,
 .mobile-brand {
-  font-family: "Bricolage Grotesque Variable", "Geist Variable", sans-serif;
+  font-family: var(--font-display);
 }
 
 h1 {
   margin-bottom: 0.45rem;
-  font-size: clamp(2rem, 3vw, 2.25rem);
-  font-weight: 650;
-  letter-spacing: -0.045em;
-  line-height: 1.08;
+  font-size: var(--text-title);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--track-tight);
+  line-height: var(--lh-tight);
 }
 
 h2 {
   color: var(--foreground);
-  font-size: 1rem;
-  font-weight: 650;
-  letter-spacing: -0.015em;
+  font-size: var(--text-subsection);
+  font-weight: var(--fw-semibold);
 }
 
 p {
   color: var(--secondary-foreground);
-  line-height: 1.55;
+  font-size: var(--text-body);
+  line-height: var(--lh-prose);
 }
 
 .mono,
 code,
 pre {
-  font-family: "Geist Mono Variable", "SFMono-Regular", Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 .visually-hidden {
@@ -238,8 +282,8 @@ pre {
   border: 1px solid var(--strong-border);
   border-radius: 999px;
   color: var(--muted);
-  font-size: 0.68rem;
-  font-weight: 620;
+  font-size: var(--text-micro);
+  font-weight: var(--fw-semibold);
 }
 
 .status-chip.suspended {
@@ -287,9 +331,9 @@ button.danger:hover {
   width: fit-content;
   margin: 0 10px 3px;
   color: var(--foreground);
-  font-size: 1.5rem;
-  font-weight: 720;
-  letter-spacing: -0.04em;
+  font-size: var(--text-title);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--track-tight);
   text-decoration: none;
 }
 
@@ -310,8 +354,8 @@ button.danger:hover {
   border-radius: 8px;
   background: #e6e8dc;
   color: var(--secondary-foreground);
-  font-size: 0.84rem;
-  font-weight: 560;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-medium);
   padding: 5px 10px;
   text-align: left;
   transition:
@@ -335,7 +379,7 @@ button.danger:hover {
 
 .team-menu-chevron {
   color: var(--muted);
-  font-size: 0.76rem;
+  font-size: var(--text-meta);
   line-height: 1;
   text-align: right;
 }
@@ -349,9 +393,9 @@ button.danger:hover {
   border: 1px solid var(--strong-border);
   background: var(--brand-light);
   color: var(--brand-ink);
-  font-size: 0.7rem;
-  font-weight: 720;
-  letter-spacing: -0.02em;
+  font-size: var(--text-micro);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--track-tight);
 }
 
 .team-avatar {
@@ -394,10 +438,10 @@ button.danger:hover {
 .menu-label {
   padding: 7px 8px 6px;
   color: var(--muted);
-  font-family: "Geist Mono Variable", monospace;
-  font-size: 0.66rem;
-  font-weight: 650;
-  letter-spacing: 0.08em;
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--track-label);
   text-transform: uppercase;
 }
 
@@ -459,26 +503,26 @@ button.danger:hover {
 }
 
 .team-option-copy strong {
-  font-size: 0.82rem;
-  font-weight: 610;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
 }
 
 .team-option-copy small {
   margin-top: 2px;
   color: var(--muted);
-  font-size: 0.69rem;
+  font-size: var(--text-meta);
 }
 
 .team-option-check {
   color: var(--brand-ink);
-  font-size: 0.86rem;
-  font-weight: 760;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-bold);
   text-align: right;
 }
 
 .team-menu-empty {
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: var(--text-meta);
   padding: 14px 8px;
 }
 
@@ -501,8 +545,8 @@ button.danger:hover {
   border-radius: 7px;
   background: transparent;
   color: var(--secondary-foreground);
-  font-size: 0.8rem;
-  font-weight: 560;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-medium);
   padding: 0 8px;
   text-decoration: none;
 }
@@ -531,8 +575,8 @@ button.danger:hover {
   align-items: center;
   border-radius: 9px;
   color: var(--secondary-foreground);
-  font-size: 0.9rem;
-  font-weight: 560;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-medium);
   gap: 10px;
   padding: 0 11px;
   text-decoration: none;
@@ -590,14 +634,14 @@ button.danger:hover {
 }
 
 .account-row strong {
-  font-size: 0.84rem;
-  font-weight: 600;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
 }
 
 .account-row small {
   margin-top: 2px;
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: var(--text-meta);
 }
 
 .account-menu-dots {
@@ -626,8 +670,8 @@ button.danger:hover {
   border-radius: 7px;
   background: transparent;
   color: var(--secondary-foreground);
-  font-size: 0.8rem;
-  font-weight: 560;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-medium);
   padding: 0 9px;
   text-decoration: none;
 }
@@ -641,8 +685,8 @@ button.danger:hover {
 
 .account-menu-error {
   color: var(--error);
-  font-size: 0.7rem;
-  line-height: 1.4;
+  font-size: var(--text-meta);
+  line-height: var(--lh-ui);
   padding: 6px 9px;
 }
 
@@ -703,7 +747,7 @@ button.danger:hover {
 
 .dialog-header h2 {
   margin: 0;
-  font-size: 1.35rem;
+  font-size: var(--text-section);
 }
 
 .dialog-close {
@@ -716,7 +760,7 @@ button.danger:hover {
   border-radius: 8px;
   background: transparent;
   color: var(--muted);
-  font-size: 1.4rem;
+  font-size: var(--text-section);
   line-height: 1;
   padding: 0;
 }
@@ -731,7 +775,7 @@ button.danger:hover {
   max-width: 50ch;
   margin: 14px 0 22px;
   color: var(--muted);
-  font-size: 0.9rem;
+  font-size: var(--text-body);
 }
 
 .invitation-dialog-content {
@@ -805,7 +849,7 @@ button.danger:hover {
   max-width: 640px;
   margin-bottom: 0;
   color: var(--muted);
-  font-size: 0.94rem;
+  font-size: var(--text-body);
 }
 
 .eyebrow,
@@ -813,9 +857,9 @@ button.danger:hover {
   display: block;
   margin-bottom: 8px;
   color: var(--brand-ink);
-  font-size: 0.7rem;
-  font-weight: 720;
-  letter-spacing: 0.11em;
+  font-size: var(--text-micro);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--track-label);
   text-transform: uppercase;
 }
 
@@ -840,7 +884,7 @@ button.danger:hover {
   gap: 8px;
   border-right: 0;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
   padding: 0 12px 0 0;
 }
 
@@ -864,8 +908,8 @@ button.danger:hover {
   align-items: center;
   border-bottom: 0;
   color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 620;
+  font-size: var(--text-micro);
+  font-weight: var(--fw-semibold);
   padding: 0 15px;
 }
 
@@ -875,7 +919,7 @@ button.danger:hover {
   align-items: center;
   border-bottom: 1px solid var(--border);
   color: var(--secondary-foreground);
-  font-size: 0.84rem;
+  font-size: var(--text-ui);
   transition: background-color 130ms ease;
 }
 
@@ -904,8 +948,8 @@ button.danger:hover {
   z-index: 2;
   justify-self: end;
   color: var(--brand-ink);
-  font-size: 0.8rem;
-  font-weight: 650;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
   text-decoration: none;
 }
 
@@ -913,8 +957,8 @@ button.danger:hover {
   border: 1px solid #d9a04c;
   border-radius: 8px;
   color: #975a13;
-  font-size: 0.76rem;
-  font-weight: 650;
+  font-size: var(--text-meta);
+  font-weight: var(--fw-semibold);
   padding: 0.48rem 0.65rem;
 }
 
@@ -939,7 +983,7 @@ button.danger:hover {
 .agent-avatar.large {
   width: 46px;
   height: 46px;
-  font-size: 0.85rem;
+  font-size: var(--text-ui);
 }
 
 .agent-identity strong,
@@ -955,14 +999,14 @@ button.danger:hover {
 .agent-identity strong,
 .cell-stack strong {
   color: var(--foreground);
-  font-weight: 610;
+  font-weight: var(--fw-semibold);
 }
 
 .agent-identity small,
 .cell-stack small {
   margin-top: 3px;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
 }
 
 .cell-stack.align-end {
@@ -1017,7 +1061,7 @@ button.danger:hover {
   display: inline-block;
   margin-bottom: 18px;
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: var(--text-ui);
   text-decoration: none;
 }
 
@@ -1061,7 +1105,7 @@ button.danger:hover {
 .availability-action small {
   margin-top: 4px;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
 }
 
 .object-identity {
@@ -1071,7 +1115,7 @@ button.danger:hover {
 
 .object-identity h1 {
   margin-bottom: 5px;
-  font-size: clamp(1.8rem, 2.5vw, 2.1rem);
+  font-size: var(--text-title);
 }
 
 .object-identity p {
@@ -1080,7 +1124,7 @@ button.danger:hover {
   gap: 9px 18px;
   margin: 0;
   color: var(--muted);
-  font-size: 0.8rem;
+  font-size: var(--text-meta);
 }
 
 .object-layout,
@@ -1104,8 +1148,8 @@ button.danger:hover {
   border-left: 0;
   border-radius: 9px;
   color: var(--muted);
-  font-size: 0.82rem;
-  font-weight: 570;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-medium);
   padding: 0 11px;
   text-decoration: none;
 }
@@ -1114,7 +1158,7 @@ button.danger:hover {
 .local-nav a.active {
   background: var(--brand-light);
   color: var(--brand-ink);
-  font-weight: 650;
+  font-weight: var(--fw-semibold);
 }
 
 .local-nav-select {
@@ -1135,16 +1179,16 @@ button.danger:hover {
 
 .section-header h2 {
   margin-bottom: 7px;
-  font-family: "Bricolage Grotesque Variable", "Geist Variable", sans-serif;
-  font-size: 1.55rem;
-  letter-spacing: -0.035em;
+  font-family: var(--font-display);
+  font-size: var(--text-section);
+  letter-spacing: var(--track-tight);
 }
 
 .section-header p {
   max-width: 640px;
   margin-bottom: 0;
   color: var(--muted);
-  font-size: 0.88rem;
+  font-size: var(--text-body);
 }
 
 .overview-stack {
@@ -1159,8 +1203,8 @@ button.danger:hover {
 .overview-section > h3,
 .overview-section-heading h3 {
   margin-bottom: 13px;
-  font-size: 0.9rem;
-  font-weight: 670;
+  font-size: var(--text-subsection);
+  font-weight: var(--fw-semibold);
 }
 
 .overview-section-heading {
@@ -1172,8 +1216,8 @@ button.danger:hover {
 
 .overview-section-heading a {
   color: var(--brand-ink);
-  font-size: 0.75rem;
-  font-weight: 660;
+  font-size: var(--text-meta);
+  font-weight: var(--fw-semibold);
 }
 
 .admin-controls {
@@ -1190,8 +1234,8 @@ button.danger:hover {
   background: transparent;
   color: var(--brand-ink);
   cursor: pointer;
-  font-size: 0.8rem;
-  font-weight: 620;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
   padding: 0;
 }
 
@@ -1235,7 +1279,7 @@ button.danger:hover {
 .form-card h2,
 .panel h2 {
   margin-bottom: 0;
-  font-size: 1rem;
+  font-size: var(--text-subsection);
 }
 
 .form-card label,
@@ -1243,14 +1287,14 @@ button.danger:hover {
   display: grid;
   gap: 7px;
   color: var(--secondary-foreground);
-  font-size: 0.8rem;
-  font-weight: 620;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
 }
 
 .field-error {
   color: var(--error);
-  font-size: 0.78rem;
-  font-weight: 520;
+  font-size: var(--text-meta);
+  font-weight: var(--fw-regular);
 }
 
 .form-field {
@@ -1260,9 +1304,9 @@ button.danger:hover {
 
 .field-help {
   color: var(--muted);
-  font-size: 0.76rem;
-  font-weight: 430;
-  line-height: 1.45;
+  font-size: var(--text-meta);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-ui);
 }
 
 input,
@@ -1319,13 +1363,13 @@ textarea::placeholder {
 
 dt {
   color: var(--muted);
-  font-size: 0.82rem;
+  font-size: var(--text-ui);
 }
 
 dd {
   margin: 0;
   color: var(--secondary-foreground);
-  font-size: 0.86rem;
+  font-size: var(--text-ui);
   overflow-wrap: anywhere;
 }
 
@@ -1341,14 +1385,14 @@ dd {
 
 .empty-state h2 {
   margin-bottom: 8px;
-  font-size: 1rem;
+  font-size: var(--text-subsection);
 }
 
 .empty-state p {
   max-width: 560px;
   margin-bottom: 0;
   color: var(--muted);
-  font-size: 0.88rem;
+  font-size: var(--text-body);
 }
 
 .notice {
@@ -1358,8 +1402,9 @@ dd {
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--secondary-foreground);
+  font-size: var(--text-body);
   padding: 14px 16px;
-  line-height: 1.5;
+  line-height: var(--lh-prose);
 }
 
 .notice.error,
@@ -1398,13 +1443,13 @@ dd {
 }
 
 .row strong {
-  font-size: 0.86rem;
+  font-size: var(--text-ui);
 }
 
 .row small {
   margin-top: 3px;
   color: var(--muted);
-  font-size: 0.74rem;
+  font-size: var(--text-meta);
 }
 
 .steps {
@@ -1417,6 +1462,7 @@ dd {
 
 .steps li {
   border-bottom: 1px solid var(--border);
+  font-size: var(--text-body);
   padding: 13px 6px;
 }
 
@@ -1465,23 +1511,23 @@ code {
   background: var(--success);
   color: var(--brand-ink);
   content: "OT";
-  font-family: "Geist Mono Variable", monospace;
-  font-size: 0.72rem;
-  font-weight: 800;
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  font-weight: var(--fw-bold);
   line-height: 38px;
   text-align: center;
 }
 
 .center-card h1 {
   margin-bottom: 8px;
-  font-size: clamp(2rem, 6vw, 2.5rem);
+  font-size: var(--text-display);
 }
 
 .center-card > p {
   max-width: 38ch;
   margin: 0;
   color: var(--muted);
-  font-size: 0.94rem;
+  font-size: var(--text-body);
 }
 
 .center-card > .form-card {
@@ -1526,7 +1572,7 @@ code {
   align-items: center;
   gap: 14px;
   color: var(--secondary-foreground);
-  font-size: 0.82rem;
+  font-size: var(--text-ui);
 }
 
 .onboarding-main {
@@ -1542,7 +1588,7 @@ code {
 
 .onboarding-title h1 {
   margin-bottom: 8px;
-  font-size: clamp(2.25rem, 5vw, 3.5rem);
+  font-size: var(--text-display);
 }
 
 .onboarding-title p {
@@ -1576,16 +1622,16 @@ code {
 
 .onboarding-action-heading h2 {
   margin-bottom: 8px;
-  font-family: "Bricolage Grotesque Variable", "Geist Variable", sans-serif;
-  font-size: clamp(1.45rem, 3vw, 1.8rem);
-  letter-spacing: -0.035em;
+  font-family: var(--font-display);
+  font-size: var(--text-section);
+  letter-spacing: var(--track-tight);
 }
 
 .onboarding-action-heading p {
   max-width: 640px;
   margin-bottom: 0;
   color: var(--muted);
-  font-size: 0.94rem;
+  font-size: var(--text-body);
 }
 
 .onboarding-action-heading .status-chip {
@@ -1628,8 +1674,8 @@ code {
   display: grid;
   gap: 7px;
   color: var(--secondary-foreground);
-  font-size: 0.82rem;
-  font-weight: 620;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
 }
 
 .onboarding-choice-list {
@@ -1671,13 +1717,13 @@ code {
 
 .onboarding-choice span {
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: var(--text-meta);
 }
 
 .onboarding-helper {
   margin: 8px 0 0;
   color: var(--muted);
-  font-size: 0.84rem;
+  font-size: var(--text-ui);
 }
 
 /* Product surfaces use spacing and tonal grouping instead of repeated rules. */
@@ -1777,8 +1823,8 @@ code {
 
 .availability-action a {
   color: currentColor;
-  font-size: 0.72rem;
-  font-weight: 680;
+  font-size: var(--text-meta);
+  font-weight: var(--fw-semibold);
   text-decoration: underline;
   text-decoration-color: rgb(40 64 30 / 28%);
   text-underline-offset: 3px;
@@ -1822,24 +1868,24 @@ code {
   display: block;
   margin-bottom: 9px;
   color: var(--brand-ink);
-  font-size: 0.72rem;
-  font-weight: 680;
-  letter-spacing: 0.04em;
+  font-size: var(--text-micro);
+  font-weight: var(--fw-semibold);
+  letter-spacing: var(--track-label);
   text-transform: uppercase;
 }
 
 .agent-use-copy h4 {
   margin-bottom: 7px;
   color: var(--foreground);
-  font-size: 1.05rem;
+  font-size: var(--text-subsection);
 }
 
 .agent-use-copy p {
   max-width: 510px;
   margin: 0;
   color: var(--secondary-foreground);
-  font-size: 0.84rem;
-  line-height: 1.6;
+  font-size: var(--text-body);
+  line-height: var(--lh-prose);
 }
 
 .agent-use-identity {
@@ -1853,13 +1899,13 @@ code {
 
 .agent-use-identity > span {
   color: var(--foreground);
-  font-size: 0.82rem;
-  font-weight: 660;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
 }
 
 .agent-use-identity small {
   color: var(--muted);
-  font-size: 0.72rem;
+  font-size: var(--text-meta);
 }
 
 .overview-section .definition-list {
@@ -1880,12 +1926,12 @@ code {
 
 .overview-section .definition-list dt {
   margin-bottom: 7px;
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
 }
 
 .overview-section .definition-list dd {
-  font-size: 0.82rem;
-  font-weight: 650;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
 }
 
 .admin-controls {
@@ -1928,7 +1974,7 @@ select,
 textarea {
   border-color: var(--border);
   background: var(--surface);
-  font-size: 0.88rem;
+  font-size: var(--text-ui);
 }
 
 input:focus,
@@ -1966,9 +2012,9 @@ textarea:focus {
 
 .field-hint {
   color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 450;
-  line-height: 1.45;
+  font-size: var(--text-meta);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-ui);
 }
 
 .agent-name-input {
@@ -1984,7 +2030,7 @@ textarea:focus {
   border-radius: 9px 0 0 9px;
   background: var(--background);
   color: var(--muted);
-  font-family: "Geist Mono Variable", "SFMono-Regular", Consolas, monospace;
+  font-family: var(--font-mono);
   padding: 0 11px;
 }
 
@@ -1999,7 +2045,7 @@ textarea:focus {
   border-radius: 9px;
   background: var(--background);
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: var(--text-meta);
   padding: 10px 12px;
 }
 
@@ -2051,14 +2097,14 @@ textarea:focus {
 
 .im-section h3 {
   margin-bottom: 0;
-  font-size: 0.9rem;
-  font-weight: 670;
+  font-size: var(--text-subsection);
+  font-weight: var(--fw-semibold);
 }
 
 .im-section-heading p {
   margin: 4px 0 0;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
 }
 
 .binding-status {
@@ -2083,14 +2129,14 @@ textarea:focus {
 }
 
 .binding-status-main strong {
-  font-size: 0.88rem;
+  font-size: var(--text-ui);
 }
 
 .binding-status-main small,
 .binding-status > small {
   margin-top: 4px;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
 }
 
 .message-policy {
@@ -2105,13 +2151,13 @@ textarea:focus {
 .message-policy-copy strong {
   display: block;
   margin-bottom: 5px;
-  font-size: 0.8rem;
+  font-size: var(--text-ui);
 }
 
 .message-policy-copy p {
   margin-bottom: 0;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
 }
 
 .segmented-control {
@@ -2133,8 +2179,8 @@ textarea:focus {
   border-radius: 7px;
   background: transparent;
   color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 620;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
   padding: 0 10px;
   text-align: center;
 }
@@ -2174,13 +2220,13 @@ textarea:focus {
 .team-profile-copy strong {
   display: block;
   margin: 2px 0 5px;
-  font-size: 0.8rem;
+  font-size: var(--text-ui);
 }
 
 .team-profile-copy p {
   margin-bottom: 0;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
 }
 
 .team-profile-row label {
@@ -2203,7 +2249,7 @@ textarea:focus {
   align-items: center;
   gap: 8px;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: var(--text-meta);
 }
 
 .dirty-bar > span::before {
@@ -2253,8 +2299,8 @@ textarea:focus {
 .settings-unavailable h2,
 .settings-policy-banner h2 {
   margin-bottom: 0;
-  font-size: 1rem;
-  font-weight: 680;
+  font-size: var(--text-subsection);
+  font-weight: var(--fw-semibold);
 }
 
 .settings-field-list {
@@ -2273,8 +2319,8 @@ textarea:focus {
 .settings-field-copy strong,
 .settings-field-row label {
   color: var(--secondary-foreground);
-  font-size: 0.82rem;
-  font-weight: 650;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
 }
 
 .settings-field-copy p,
@@ -2286,9 +2332,9 @@ textarea:focus {
 .settings-compact-empty p {
   margin: 5px 0 0;
   color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 450;
-  line-height: 1.5;
+  font-size: var(--text-meta);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-prose);
 }
 
 .settings-field-row label {
@@ -2298,7 +2344,7 @@ textarea:focus {
 
 .settings-field-hint code {
   color: var(--secondary-foreground);
-  font-size: 0.73rem;
+  font-size: var(--text-meta);
 }
 
 .settings-readonly-value {
@@ -2311,7 +2357,7 @@ textarea:focus {
   border-radius: 9px;
   background: rgb(253 252 247 / 58%);
   color: var(--secondary-foreground);
-  font-size: 0.86rem;
+  font-size: var(--text-ui);
   padding: 0.62rem 0.72rem;
 }
 
@@ -2341,7 +2387,7 @@ textarea:focus {
   margin: 0;
   border: 0;
   border-radius: 8px;
-  font-size: 0.78rem;
+  font-size: var(--text-meta);
   padding: 8px 11px;
 }
 
@@ -2377,8 +2423,8 @@ textarea:focus {
   border-radius: 7px;
   background: var(--surface);
   color: var(--secondary-foreground);
-  font-size: 0.72rem;
-  font-weight: 620;
+  font-size: var(--text-micro);
+  font-weight: var(--fw-semibold);
   padding: 5px 8px;
   white-space: nowrap;
 }
@@ -2394,15 +2440,15 @@ textarea:focus {
 
 .settings-invitation-panel h3 {
   margin: 0;
-  font-size: 0.9rem;
-  font-weight: 680;
+  font-size: var(--text-subsection);
+  font-weight: var(--fw-semibold);
 }
 
 .settings-invitation-panel > p {
   max-width: 590px;
   margin: -7px 0 1px;
   color: var(--muted);
-  font-size: 0.78rem;
+  font-size: var(--text-meta);
 }
 
 .settings-invitation-panel .invite-link {
@@ -2449,8 +2495,8 @@ textarea:focus {
 .settings-table-header {
   min-height: 38px;
   color: var(--muted);
-  font-size: 0.7rem;
-  font-weight: 640;
+  font-size: var(--text-micro);
+  font-weight: var(--fw-semibold);
 }
 
 .settings-member-table .settings-table-header,
@@ -2478,8 +2524,8 @@ textarea:focus {
 
 .settings-member-identity strong,
 .settings-computer-row strong {
-  font-size: 0.83rem;
-  font-weight: 650;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
 }
 
 .settings-member-identity small,
@@ -2487,7 +2533,7 @@ textarea:focus {
   display: block;
   margin-top: 3px;
   color: var(--muted);
-  font-size: 0.71rem;
+  font-size: var(--text-meta);
 }
 
 .settings-member-avatar {
@@ -2500,13 +2546,13 @@ textarea:focus {
   border-radius: 9px;
   background: var(--brand-ink);
   color: #fff;
-  font-size: 0.7rem;
-  font-weight: 690;
+  font-size: var(--text-micro);
+  font-weight: var(--fw-bold);
 }
 
 .settings-member-row select {
   min-height: 36px;
-  font-size: 0.78rem;
+  font-size: var(--text-ui);
   padding-block: 0.35rem;
 }
 
@@ -2518,7 +2564,7 @@ textarea:focus {
 .settings-computer-row {
   min-height: 70px;
   color: var(--secondary-foreground);
-  font-size: 0.77rem;
+  font-size: var(--text-ui);
   padding: 10px 0;
 }
 
@@ -2570,7 +2616,7 @@ textarea:focus {
 }
 
 .settings-compact-empty strong {
-  font-size: 0.86rem;
+  font-size: var(--text-ui);
 }
 
 .settings-unavailable {
@@ -2585,9 +2631,9 @@ textarea:focus {
   width: fit-content;
   margin-bottom: 12px;
   color: var(--brand-ink);
-  font-size: 0.67rem;
-  font-weight: 720;
-  letter-spacing: 0.08em;
+  font-size: var(--text-micro);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--track-label);
   text-transform: uppercase;
 }
 
@@ -2595,8 +2641,8 @@ textarea:focus {
   max-width: 610px;
   margin: 8px 0 22px;
   color: var(--muted);
-  font-size: 0.84rem;
-  line-height: 1.55;
+  font-size: var(--text-body);
+  line-height: var(--lh-prose);
 }
 
 .settings-unavailable ul {
@@ -2609,7 +2655,7 @@ textarea:focus {
   position: relative;
   border-top: 1px solid var(--border);
   color: var(--secondary-foreground);
-  font-size: 0.78rem;
+  font-size: var(--text-ui);
   padding: 12px 12px 12px 22px;
 }
 
@@ -2626,8 +2672,8 @@ textarea:focus {
 
 .settings-state-action {
   color: var(--brand-ink);
-  font-size: 0.8rem;
-  font-weight: 650;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
   text-decoration: none;
 }
 
@@ -2658,7 +2704,7 @@ textarea:focus {
 .settings-footnote {
   margin: 0;
   color: var(--muted);
-  font-size: 0.74rem;
+  font-size: var(--text-meta);
 }
 
 @media (max-width: 1320px) {
@@ -2667,8 +2713,8 @@ textarea:focus {
     gap: 7px;
     margin-top: 22px;
     color: var(--muted);
-    font-size: 0.75rem;
-    font-weight: 600;
+    font-size: var(--text-meta);
+    font-weight: var(--fw-semibold);
   }
 
   .settings-page .settings-layout {
@@ -2709,8 +2755,8 @@ textarea:focus {
     margin-bottom: 5px;
     color: var(--muted);
     content: attr(data-label);
-    font-size: 0.68rem;
-    font-weight: 600;
+    font-size: var(--text-micro);
+    font-weight: var(--fw-semibold);
   }
 }
 
@@ -2768,9 +2814,9 @@ textarea:focus {
   }
 
   .mobile-brand {
-    font-size: 1.25rem;
-    font-weight: 700;
-    letter-spacing: -0.04em;
+    font-size: var(--text-section);
+    font-weight: var(--fw-bold);
+    letter-spacing: var(--track-tight);
     text-decoration: none;
   }
 
@@ -2793,8 +2839,8 @@ textarea:focus {
     gap: 7px;
     margin-top: 22px;
     color: var(--muted);
-    font-size: 0.75rem;
-    font-weight: 600;
+    font-size: var(--text-meta);
+    font-weight: var(--fw-semibold);
   }
 
   .object-content,
@@ -2850,7 +2896,7 @@ textarea:focus {
   }
 
   .onboarding-action pre {
-    font-size: 0.78rem;
+    font-size: var(--text-meta);
   }
 
   .dialog-layer {
@@ -2971,8 +3017,8 @@ textarea:focus {
     margin-bottom: 5px;
     color: var(--muted);
     content: attr(data-label);
-    font-size: 0.68rem;
-    font-weight: 600;
+    font-size: var(--text-micro);
+    font-weight: var(--fw-semibold);
   }
 
   .settings-unavailable {
@@ -2989,8 +3035,8 @@ textarea:focus {
     margin-bottom: 5px;
     color: var(--muted);
     content: attr(data-label);
-    font-size: 0.68rem;
-    font-weight: 600;
+    font-size: var(--text-micro);
+    font-weight: var(--fw-semibold);
   }
 
   .definition-list div {

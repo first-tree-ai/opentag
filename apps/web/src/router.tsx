@@ -1516,11 +1516,11 @@ function InvitationDialog({
 
   useEffect(() => {
     if (!mutationPending || dialogRef.current?.contains(document.activeElement)) return;
-    dialogRef.current
-      ?.querySelector<HTMLElement>(
-        "button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled])",
-      )
-      ?.focus();
+    const dialog = dialogRef.current;
+    const target = dialog?.querySelector<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled])",
+    );
+    (target ?? dialog)?.focus();
   }, [mutationPending]);
 
   useEffect(() => {
@@ -1538,7 +1538,11 @@ function InvitationDialog({
           'button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
         ) ?? [],
       );
-      if (focusable.length === 0) return;
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
       const first = focusable[0];
       const last = focusable.at(-1);
       if (!dialogRef.current?.contains(document.activeElement)) {
@@ -1576,6 +1580,7 @@ function InvitationDialog({
         className="dialog-card invitation-dialog"
         ref={dialogRef}
         role="dialog"
+        tabIndex={-1}
       >
         <header className="dialog-header">
           <div>

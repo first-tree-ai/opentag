@@ -37,6 +37,7 @@ function installApi(
     bindingReauth?: boolean;
     bound?: boolean;
     initialStatus?: "active" | "suspended";
+    invitationCreate?: () => Promise<Response> | Response;
     invitationExists?: boolean;
     invitationRotate?: () => Promise<Response> | Response;
     provider?: "feishu" | "slack";
@@ -226,6 +227,11 @@ function installApi(
       return invitationExists ? json(invitation()) : new Response(null, { status: 204 });
     }
     if (path === `/api/v1/teams/${teamId}/invitation` && init?.method === "POST") {
+      if (options.invitationCreate) {
+        const response = await options.invitationCreate();
+        if (response.ok) invitationExists = true;
+        return response;
+      }
       invitationExists = true;
       return json(invitation(), 201);
     }
@@ -733,6 +739,42 @@ describe("OpenTag Web App Shell", () => {
       ).toBe(false),
     );
     confirm.mockRestore();
+  });
+
+  it("uses the dialog card as the focus fallback while invitation creation is pending", async () => {
+    let resolveCreate: (response: Response) => void = () => undefined;
+    const pendingCreate = new Promise<Response>((resolve) => {
+      resolveCreate = resolve;
+    });
+    installApi("admin", { invitationCreate: () => pendingCreate });
+    render(<App />);
+
+    const teamTrigger = await screen.findByRole("button", { name: "Example" });
+    fireEvent.click(teamTrigger);
+    fireEvent.click(
+      within(screen.getByRole("dialog", { name: "Switch Team" })).getByRole("button", { name: "Invite people" }),
+    );
+    const dialog = await screen.findByRole("dialog", { name: "Invite people" });
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Create invitation link" }));
+
+    teamTrigger.focus();
+    fireEvent.keyDown(teamTrigger, { key: "Tab" });
+    expect(document.activeElement).toBe(dialog);
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Invite people" })).toBe(dialog);
+
+    resolveCreate(
+      json(
+        {
+          token: "A".repeat(43),
+          inviteUrl: `https://opentag.example.com/invites/${"A".repeat(43)}`,
+          role: "member",
+          expiresAt: "2026-08-27T00:00:00.000Z",
+        },
+        201,
+      ),
+    );
+    expect(await within(dialog).findByLabelText("Invitation link")).toBeTruthy();
   });
 
   it("replaces a locally rotated invitation with a newer successful server read", async () => {

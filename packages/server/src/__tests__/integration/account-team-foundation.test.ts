@@ -28,7 +28,7 @@ import {
 import { ApplicationCipher } from "../../services/crypto.js";
 import { InvitationService } from "../../services/invitations/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../services/runtime-config/index.js";
-import { TeamMembershipService } from "../../services/teams/index.js";
+import { TEAM_MEMBERSHIP_LIMIT, TeamMembershipService } from "../../services/teams/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 const now = new Date("2026-08-19T00:00:00.000Z");
@@ -75,10 +75,7 @@ async function fixture() {
     teamService,
     invitations,
     identities: new AuthIdentityService(client.database, { now: () => now }),
-    postAuthentication: new PostAuthenticationService(client.database, invitations, {
-      membershipService: teamService,
-      now: () => now,
-    }),
+    postAuthentication: new PostAuthenticationService(client.database, invitations),
   };
 }
 
@@ -111,8 +108,9 @@ describe("account identity and Team foundation persistence", () => {
         .values({ email: "unassigned@example.com", displayName: "Unassigned" })
         .returning();
       if (!unassigned) throw new Error("Unassigned user fixture was not created");
-      await expect(new DevBrowserAuthService(value.database, auth, unassigned.email).signIn()).rejects.toMatchObject({
-        code: "AUTH_MEMBERSHIP_REQUIRED",
+      const unassignedTokens = await new DevBrowserAuthService(value.database, auth, unassigned.email).signIn();
+      await expect(auth.getAuthenticatedUser(unassignedTokens.accessToken)).resolves.toMatchObject({
+        me: { user: { id: unassigned.id }, memberships: [] },
       });
 
       await value.database.update(users).set({ suspendedAt: now }).where(eq(users.id, value.bootstrap.userId));
@@ -153,8 +151,11 @@ describe("account identity and Team foundation persistence", () => {
     const value = await fixture();
     try {
       const userId = await value.identities.resolveOrCreate(google("profile", "old@example.com"));
-      const completed = await value.postAuthentication.complete(userId);
-      if (!completed.selectedTeamId) throw new Error("Personal Team fixture was not created");
+      await value.postAuthentication.complete(userId);
+      const primaryTeam = await value.teamService.createTeam(userId, {
+        name: "profile-primary",
+        displayName: "Profile Primary",
+      });
       const auth = new AuthService(
         value.database,
         new AuthTokenService("development-auth-secret-at-least-32-characters", 900, 3600),
@@ -178,7 +179,7 @@ describe("account identity and Team foundation persistence", () => {
 
       const [persisted] = await value.database.select().from(users).where(eq(users.id, userId));
       expect(persisted).toMatchObject({ email: "new@example.com", displayName: "Product Name" });
-      await expect(value.teamService.listMembers(userId, completed.selectedTeamId)).resolves.toMatchObject({
+      await expect(value.teamService.listMembers(userId, primaryTeam.id)).resolves.toMatchObject({
         members: [{ userId, displayName: "Product Name" }],
       });
 
@@ -206,19 +207,19 @@ describe("account identity and Team foundation persistence", () => {
         })
         .returning();
       if (!computer) throw new Error("Computer fixture was not created");
-      const computerResult = await value.teamService.listComputers(userId, completed.selectedTeamId);
+      const computerResult = await value.teamService.listComputers(userId, primaryTeam.id);
       expect(computerResult.computers.find((candidate) => candidate.id === computer.id)).toMatchObject({
         ownerUserId: userId,
         ownerDisplayName: "Product Name",
       });
       const agentService = new AgentService(value.database, { membershipService: value.teamService, now: () => now });
-      await agentService.createForTeam(userId, completed.selectedTeamId, {
+      await agentService.createForTeam(userId, primaryTeam.id, {
         computerId: computer.id,
         name: "profile-agent",
         displayName: "Profile Agent",
         runtimeProvider: "codex",
       });
-      await expect(agentService.listForTeam(userId, completed.selectedTeamId)).resolves.toMatchObject({
+      await expect(agentService.listForTeam(userId, primaryTeam.id)).resolves.toMatchObject({
         agents: [{ manager: { userId, displayName: "Product Name" } }],
       });
     } finally {
@@ -226,20 +227,177 @@ describe("account identity and Team foundation persistence", () => {
     }
   });
 
-  it("atomically creates one personal Team for a solo sign-in and no duplicate for a returning user", async () => {
+  it("never provisions a Team for a solo sign-in, leaving creation an explicit user action", async () => {
     const value = await fixture();
     try {
       const userId = await value.identities.resolveOrCreate(google("solo", "solo@example.com"));
-      const first = await value.postAuthentication.complete(userId);
-      expect(first.selectedTeamId).toBeDefined();
       expect(await value.postAuthentication.complete(userId)).toEqual({ userId });
+      expect(await value.postAuthentication.complete(userId)).toEqual({ userId });
+      expect(await value.database.select().from(memberships).where(eq(memberships.userId, userId))).toHaveLength(0);
+      expect(await value.database.select().from(teams)).toHaveLength(1);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("creates a Team and its first admin membership in a single transaction", async () => {
+    const value = await fixture();
+    try {
+      const userId = await value.identities.resolveOrCreate(google("solo", "solo@example.com"));
+      await value.postAuthentication.complete(userId);
+      const created = await value.teamService.createTeam(userId, {
+        name: "  First-Tree  ",
+        displayName: "  First Tree AI  ",
+      });
+      expect(created).toMatchObject({ name: "first-tree", displayName: "First Tree AI", role: "admin" });
       const active = await value.database
         .select()
         .from(memberships)
         .where(and(eq(memberships.userId, userId), eq(memberships.status, "active")));
       expect(active).toHaveLength(1);
-      expect(active[0]).toMatchObject({ role: "admin" });
+      expect(active[0]).toMatchObject({ teamId: created.id, role: "admin", status: "active" });
       expect(await value.database.select().from(teams)).toHaveLength(2);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("rejects a case-insensitive Team name collision without leaving a half-created Team", async () => {
+    const value = await fixture();
+    try {
+      const userId = await value.identities.resolveOrCreate(google("solo", "solo@example.com"));
+      await expect(
+        value.teamService.createTeam(userId, { name: "  EXAMPLE  ", displayName: "Collides With Bootstrap" }),
+      ).rejects.toMatchObject({ code: "TEAM_NAME_CONFLICT", statusCode: 409 });
+      expect(await value.database.select().from(teams)).toHaveLength(1);
+      expect(await value.database.select().from(memberships).where(eq(memberships.userId, userId))).toHaveLength(0);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("holds the membership ceiling against invitation redemption and admin restore too", async () => {
+    const value = await fixture();
+    try {
+      const userId = await value.identities.resolveOrCreate(google("solo", "solo@example.com"));
+      for (let index = 0; index < TEAM_MEMBERSHIP_LIMIT; index += 1) {
+        await value.teamService.createTeam(userId, { name: `team-${index}`, displayName: `Team ${index}` });
+      }
+      // Redemption raises the count, so it has to consult the same ceiling creation does.
+      const invite = await value.invitations.create(value.bootstrap.userId, value.bootstrap.teamId);
+      await expect(value.invitations.redeem(userId, invite.token, { ip: "127.0.0.1" })).rejects.toMatchObject({
+        code: "TEAM_LIMIT_REACHED",
+        statusCode: 409,
+      });
+
+      // So does an admin restoring a removed membership on a Team the saturated user does not hold.
+      await value.database.insert(memberships).values({
+        teamId: value.bootstrap.teamId,
+        userId,
+        role: "member",
+        status: "removed",
+        createdAt: now,
+        updatedAt: now,
+      });
+      await expect(
+        value.teamService.restore(value.bootstrap.userId, value.bootstrap.teamId, userId, "member"),
+      ).rejects.toMatchObject({ code: "TEAM_LIMIT_REACHED", statusCode: 409 });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("keeps one user/Team lock order so post-auth and explicit redemption cannot deadlock", async () => {
+    const value = await fixture();
+    const second = createDatabaseClient(databaseUrl);
+    let releaseHold: () => void = () => undefined;
+    let signalUserLocked: () => void = () => undefined;
+    const userLocked = new Promise<void>((resolve) => {
+      signalUserLocked = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      releaseHold = resolve;
+    });
+    try {
+      const joiner = await value.identities.resolveOrCreate(google("racer", "racer@example.com"));
+      const invite = await value.invitations.create(value.bootstrap.userId, value.bootstrap.teamId);
+
+      // Mirror post-authentication: it locks the user row and only then redeems, which locks the Team.
+      // Holding it between those two acquisitions is what exposes an inverted order on the explicit path.
+      const viaPostAuth = value.database.transaction(async (transaction) => {
+        await value.teamService.lockUserForMembershipWrite(transaction, joiner);
+        signalUserLocked();
+        await held;
+        return value.invitations.redeemInTransaction(transaction, joiner, invite.token, { ip: "127.0.0.1" });
+      });
+      await userLocked;
+
+      // The explicit path now wants the same user and Team. Under the old order it took the Team first and
+      // the two transactions waited on each other; PostgreSQL would abort one with 40P01.
+      const explicitTeams = new TeamMembershipService(second.database, { now: () => now });
+      const explicitInvitations = new InvitationService(
+        second.database,
+        explicitTeams,
+        new ApplicationCipher(new Uint8Array(32).fill(9)),
+        "https://opentag.example.com",
+        { now: () => now },
+      );
+      const viaExplicit = explicitInvitations.redeem(joiner, invite.token, { ip: "127.0.0.2" });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      releaseHold();
+
+      await expect(viaPostAuth).resolves.toMatchObject({ membership: { teamId: value.bootstrap.teamId } });
+      await expect(viaExplicit).resolves.toMatchObject({ membership: { teamId: value.bootstrap.teamId } });
+      // One redemption transitions the membership; the other observes it already active.
+      expect(
+        await value.database
+          .select()
+          .from(memberships)
+          .where(and(eq(memberships.userId, joiner), eq(memberships.status, "active"))),
+      ).toHaveLength(1);
+    } finally {
+      releaseHold();
+      await Promise.all([second.sql.end(), value.sql.end()]);
+    }
+  });
+
+  it("stops one account from creating Teams without bound", async () => {
+    const value = await fixture();
+    try {
+      const userId = await value.identities.resolveOrCreate(google("solo", "solo@example.com"));
+      for (let index = 0; index < TEAM_MEMBERSHIP_LIMIT; index += 1) {
+        await value.teamService.createTeam(userId, { name: `team-${index}`, displayName: `Team ${index}` });
+      }
+      await expect(
+        value.teamService.createTeam(userId, { name: "one-too-many", displayName: "One Too Many" }),
+      ).rejects.toMatchObject({ code: "TEAM_LIMIT_REACHED", statusCode: 409 });
+      // The rejected name stays free, so a bounded account cannot squat the global namespace on the way out.
+      expect(await value.database.select().from(teams).where(eq(teams.name, "one-too-many"))).toHaveLength(0);
+      expect(
+        await value.database
+          .select()
+          .from(memberships)
+          .where(and(eq(memberships.userId, userId), eq(memberships.status, "active"))),
+      ).toHaveLength(TEAM_MEMBERSHIP_LIMIT);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("lets an existing member create an additional Team and hold both memberships", async () => {
+    const value = await fixture();
+    try {
+      const created = await value.teamService.createTeam(value.bootstrap.userId, {
+        name: "second-team",
+        displayName: "Second Team",
+      });
+      const active = await value.database
+        .select()
+        .from(memberships)
+        .where(and(eq(memberships.userId, value.bootstrap.userId), eq(memberships.status, "active")));
+      expect(active).toHaveLength(2);
+      expect(active.map((membership) => membership.teamId).sort()).toEqual([value.bootstrap.teamId, created.id].sort());
+      expect(active.every((membership) => membership.role === "admin")).toBe(true);
     } finally {
       await value.sql.end();
     }
@@ -606,7 +764,7 @@ describe("account identity and Team foundation persistence", () => {
       await expect(value.teamService.remove(secondAdmin.id, value.bootstrap.teamId, member.id)).rejects.toMatchObject({
         code: "MEMBERSHIP_ACTIVE_AGENTS",
       });
-      await value.database.update(agents).set({ deletedAt: now }).where(eq(agents.id, agent.id));
+      await value.database.update(agents).set({ status: "deleted" }).where(eq(agents.id, agent.id));
       await value.teamService.remove(secondAdmin.id, value.bootstrap.teamId, member.id);
       await expect(value.invitations.redeem(member.id, invitation.token)).rejects.toMatchObject({
         code: "MEMBERSHIP_FORBIDDEN",

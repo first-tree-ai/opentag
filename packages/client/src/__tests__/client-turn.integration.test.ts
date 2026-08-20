@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import type {
@@ -9,6 +9,7 @@ import type {
   TurnReportRequest,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { AgentRuntimeFactory } from "../agent-runtime/types.js";
 import { CodexAgentRuntimeFactory } from "../providers/codex/agent-runtime.js";
 import type {
   CodexAppServerMessage,
@@ -16,6 +17,8 @@ import type {
   CodexDynamicToolHandler,
   InteractiveCodexAppServerClient,
 } from "../providers/codex/app-server-wire.js";
+import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
+import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
 import { AgentTurnRunner } from "../runtime/agent-turn-runner.js";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
 import { MvpTurnReportRecovery } from "../runtime/mvp-turn-report-recovery.js";
@@ -67,6 +70,10 @@ describe("Agent Runtime Client Turn vertical", () => {
       finalText: "answer-1",
     });
     expect(fixture.clients).toHaveLength(1);
+    expect(fixture.clients[0]?.cwd).toBe(resolve(fixture.workspace.paths("agent-1").agentsFile, ".."));
+    await expect(readFile(resolve(fixture.clients[0]?.cwd ?? "", "AGENTS.md"), "utf8")).resolves.toContain(
+      "# OpenTag managed instructions",
+    );
     expect(fixture.clients[0]?.methods).toContain("thread/start");
     expect(fixture.clients[0]?.methods).not.toContain("thread/resume");
     expect(await fixture.store.read("agent-1", "session-1")).toMatchObject({
@@ -194,7 +201,7 @@ async function runtimeFixture(
   directories.push(home);
   const computerId = randomUUID();
   const runtime = snapshot();
-  const store = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+  const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
   const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
   const connection = new FakeConnection();
   const reportOwner = new TurnReportOwner({ connection });
@@ -212,7 +219,7 @@ async function runtimeFixture(
   });
   const runtimeManager = new SessionRuntimeManager({
     bindingStore: store,
-    factories: new Map([["codex", factory]]),
+    providers: await providerRegistry(factory),
     toolHost,
     workspace,
   });
@@ -289,6 +296,19 @@ async function runtimeFixture(
     waitForReport,
     workspace,
   };
+}
+
+async function providerRegistry(factory: AgentRuntimeFactory): Promise<AgentRuntimeProviderRegistry> {
+  const providers = new AgentRuntimeProviderRegistry([
+    {
+      artifactIdentity: "a".repeat(64),
+      factory,
+      policy: codexRuntimePolicy,
+      validate: validateCodexRuntimePolicy,
+    },
+  ]);
+  await providers.refresh(factory.manifest.providerId);
+  return providers;
 }
 
 class FakeConnection {

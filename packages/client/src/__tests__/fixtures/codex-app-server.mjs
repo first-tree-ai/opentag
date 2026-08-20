@@ -73,7 +73,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
               callId: "call-1",
               namespace: null,
               tool: "opentag_message_send",
-              arguments: { requestId: "11111111-1111-4111-8111-111111111111", text: "hello" },
+              arguments: { text: "hello" },
             },
           });
           if (scenario === "hosted-tool-duplicate-run") {
@@ -86,7 +86,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
                 callId: "call-2",
                 namespace: null,
                 tool: "opentag_message_send",
-                arguments: { requestId: "22222222-2222-4222-8222-222222222222", text: "duplicate" },
+                arguments: { text: "duplicate" },
               },
             });
           }
@@ -145,7 +145,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         callId: "call-1",
         namespace: message.method === "fixture/hosted-tool" ? null : 42,
         tool: "opentag_message_send",
-        arguments: { requestId: "11111111-1111-4111-8111-111111111111", text: "hello" },
+        arguments: { text: "hello" },
       },
     });
     return;

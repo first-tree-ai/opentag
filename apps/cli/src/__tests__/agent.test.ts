@@ -5,7 +5,14 @@ import type { AgentAdminConfig } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { createProgram } from "../cli/program.js";
 import { formatAgent, formatAgentCreated, formatAgentList } from "../core/agent/formatting.js";
-import { runAgentCreate, runAgentDelete, runAgentUpdate, selectComputer } from "../core/agent/mutations.js";
+import {
+  runAgentCreate,
+  runAgentDelete,
+  runAgentReactivate,
+  runAgentSuspend,
+  runAgentUpdate,
+  selectComputer,
+} from "../core/agent/mutations.js";
 import { runAgentList, runAgentShow } from "../core/agent/queries.js";
 import { selectTeam } from "../core/selection/team.js";
 
@@ -38,6 +45,7 @@ const agent: AgentAdminConfig = {
   displayName: "Code Reviewer",
   runtimeProvider: "codex" as const,
   receiveMode: "all_message" as const,
+  status: "active" as const,
   revision: 1,
   runtimeConfig: {
     revision: 1,
@@ -72,6 +80,8 @@ function api() {
     getAgent: vi.fn().mockResolvedValue(agent),
     getAgentConfig: vi.fn().mockResolvedValue(agent),
     updateAgent: vi.fn().mockResolvedValue({ ...agent, displayName: "Reviewer", revision: 2 }),
+    suspendAgent: vi.fn().mockResolvedValue({ ...agent, status: "suspended", revision: 2 }),
+    reactivateAgent: vi.fn().mockResolvedValue({ ...agent, revision: 3 }),
     deleteAgent: vi.fn().mockResolvedValue(undefined),
     getAgentImBinding: vi.fn().mockResolvedValue(undefined),
     getAgentImBindingConfig: vi.fn().mockResolvedValue(undefined),
@@ -315,5 +325,17 @@ describe("Agent CLI core", () => {
       `Deleted Agent ${agentId}`,
     );
     expect(client.deleteAgent).toHaveBeenCalledWith("access", agentId);
+  });
+
+  it("suspends and reactivates the explicit Agent", async () => {
+    const client = api();
+    await expect(runAgentSuspend(agentId, { accessToken: "access", api: client })).resolves.toMatchObject({
+      status: "suspended",
+    });
+    expect(client.suspendAgent).toHaveBeenCalledWith("access", agentId);
+    await expect(runAgentReactivate(agentId, { accessToken: "access", api: client })).resolves.toMatchObject({
+      status: "active",
+    });
+    expect(client.reactivateAgent).toHaveBeenCalledWith("access", agentId);
   });
 });

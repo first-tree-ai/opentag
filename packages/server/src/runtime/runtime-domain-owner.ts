@@ -137,6 +137,7 @@ export class RuntimeDomainOwner {
     computerId: string,
     instanceId: string,
     request: SessionReconcileRequest,
+    onDispatched?: () => void,
   ): Promise<SessionReconcileResult> {
     return this.#request(
       "reconcile",
@@ -144,6 +145,8 @@ export class RuntimeDomainOwner {
       instanceId,
       request,
       computeReconcilePayloadHash(request),
+      undefined,
+      onDispatched,
     ) as Promise<SessionReconcileResult>;
   }
 
@@ -151,6 +154,7 @@ export class RuntimeDomainOwner {
     computerId: string,
     instanceId: string,
     request: DirectImMessageDeliveryRequest,
+    onDispatched?: () => void,
   ): Promise<ImMessageDeliveryResult> {
     const inputHash = computeDirectInputHash(request);
     const requestHash = hashTuple([request.deliveryId, inputHash]);
@@ -159,6 +163,7 @@ export class RuntimeDomainOwner {
       if (starting.hash !== requestHash || starting.computerId !== computerId || starting.instanceId !== instanceId) {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
       }
+      onDispatched?.();
       return starting.promise;
     }
     if (
@@ -173,9 +178,10 @@ export class RuntimeDomainOwner {
         request,
         requestHash,
         inputHash,
+        onDispatched,
       ) as Promise<ImMessageDeliveryResult>;
     }
-    const promise = this.#startDelivery(computerId, instanceId, request, requestHash, inputHash);
+    const promise = this.#startDelivery(computerId, instanceId, request, requestHash, inputHash, onDispatched);
     const owner = { computerId, hash: requestHash, instanceId, promise };
     this.#startingDeliveries.set(request.requestId, owner);
     void promise.then(
@@ -197,6 +203,7 @@ export class RuntimeDomainOwner {
     request: DirectImMessageDeliveryRequest,
     requestHash: string,
     inputHash: string,
+    onDispatched?: () => void,
   ): Promise<ImMessageDeliveryResult> {
     const dispatch = await this.#custody.beginDeliveryDispatch(request, inputHash, { computerId, instanceId });
     if (dispatch === "conflict") throw new RuntimeDomainConflictError("The delivery dispatch conflicts");
@@ -210,6 +217,7 @@ export class RuntimeDomainOwner {
       request,
       requestHash,
       inputHash,
+      onDispatched,
     ) as Promise<ImMessageDeliveryResult>;
   }
 
@@ -286,6 +294,7 @@ export class RuntimeDomainOwner {
     request: SessionReconcileRequest | DirectImMessageDeliveryRequest,
     hash: string,
     inputHash?: string,
+    onDispatched?: () => void,
   ): Promise<SessionReconcileResult | ImMessageDeliveryResult> {
     const existing = this.#pending.get(request.requestId);
     if (existing) {
@@ -297,6 +306,7 @@ export class RuntimeDomainOwner {
       ) {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
       }
+      onDispatched?.();
       return existing.promise;
     }
     const completed = this.#completed.get(request.requestId);
@@ -309,6 +319,7 @@ export class RuntimeDomainOwner {
       ) {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
       }
+      onDispatched?.();
       return Promise.resolve(completed.result);
     }
     const expired = this.#expiredDeliveries.get(request.requestId);
@@ -360,7 +371,9 @@ export class RuntimeDomainOwner {
             inputHash: inputHash ?? "",
           } as PendingDelivery);
     this.#pending.set(request.requestId, pending);
-    void this.#registry.send(computerId, instanceId, request).catch((error: unknown) => {
+    const dispatch = this.#registry.send(computerId, instanceId, request);
+    onDispatched?.();
+    void dispatch.catch((error: unknown) => {
       if (this.#pending.get(request.requestId) !== pending) return;
       this.#pending.delete(request.requestId);
       clearTimeout(timer);

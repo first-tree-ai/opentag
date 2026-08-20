@@ -219,7 +219,7 @@ async function custodyFixture() {
   const home = await mkdtemp(resolve(tmpdir(), "opentag-custody-test-"));
   homes.push(home);
   const computerId = randomUUID();
-  const store = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
+  const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
   const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
   const reconciler = new SessionReconciler({ computerId, preparation: workspace });
   const runtime = snapshot();

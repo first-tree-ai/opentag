@@ -28,6 +28,7 @@ export interface LaunchdBackendOptions {
   launchctl?: string;
   runner: ServiceRunner;
   serviceId: string;
+  sourcePath?: string;
   sleep?: (milliseconds: number) => Promise<void>;
   uid?: number;
   userHome?: string;
@@ -95,7 +96,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
   const logDirectory = paths.logs;
   const stdoutPath = paths.daemonStdoutLog;
   const stderrPath = paths.daemonStderrLog;
-  const servicePath = buildServicePath(options.invocation, "darwin");
+  const servicePath = buildServicePath(options.invocation, "darwin", options.sourcePath);
   const expectedWrapper = renderLaunchdWrapper(options.invocation);
   const expectedPlist = renderLaunchdPlist({
     home: options.home,

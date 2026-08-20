@@ -1,6 +1,8 @@
 import {
   AGENT_BY_ID_TEMPLATE,
   AGENT_CONFIG_TEMPLATE,
+  AGENT_REACTIVATE_TEMPLATE,
+  AGENT_SUSPEND_TEMPLATE,
   AgentAdminConfigSchema,
   AgentDetailSchema,
   CreateAgentRequestSchema,
@@ -68,6 +70,22 @@ export function registerAgentRoutes(
     const input = parseRequest(UpdateAgentRequestSchema, request.body);
     const response = AgentAdminConfigSchema.parse(
       await agentService.updateById(authenticatedUserId(request), agentId, input),
+    );
+    return reply.code(200).send(response);
+  });
+
+  app.post(AGENT_SUSPEND_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { agentId } = parseRequest(AgentParamsSchema, request.params);
+    const response = AgentAdminConfigSchema.parse(
+      await agentService.suspendById(authenticatedUserId(request), agentId),
+    );
+    return reply.code(200).send(response);
+  });
+
+  app.post(AGENT_REACTIVATE_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { agentId } = parseRequest(AgentParamsSchema, request.params);
+    const response = AgentAdminConfigSchema.parse(
+      await agentService.reactivateById(authenticatedUserId(request), agentId),
     );
     return reply.code(200).send(response);
   });

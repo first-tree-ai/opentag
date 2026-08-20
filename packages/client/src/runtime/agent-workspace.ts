@@ -6,6 +6,7 @@ import {
   type RuntimeSnapshotHashes,
   type SessionReconcileRequest,
 } from "@opentag/shared";
+import { isAgentRuntimeProviderId } from "../agent-runtime/provider-id.js";
 import {
   assertRealDirectory,
   assertWithin,
@@ -13,6 +14,7 @@ import {
   RuntimeStorageError,
   readDurableJson,
   readSecureFile,
+  removeDurableFile,
   writeDurableFile,
   writeDurableJson,
 } from "../storage/durable-file.js";
@@ -20,16 +22,25 @@ import { agentRuntimePaths } from "./runtime-paths.js";
 import type { SessionBindingStore, SessionPreparationResult } from "./session-binding-store.js";
 import type { RuntimePreparation } from "./session-reconciler.js";
 
-export interface LocalAgentWorkspaceState {
-  schemaVersion: 1;
+interface AgentWorkspaceStateFields {
   agentId: string;
   workspaceId: string;
-  provider: "codex";
+  provider: string;
   appliedAgentRevisionSequence: number;
   appliedAgentRevisionId: string;
   agentConfigHash: string;
   managedInstructionsHash: string;
 }
+
+interface LegacyAgentWorkspaceState extends AgentWorkspaceStateFields {
+  schemaVersion: 1;
+}
+
+export interface LocalAgentWorkspaceState extends AgentWorkspaceStateFields {
+  schemaVersion: 2;
+}
+
+type ParsedAgentWorkspaceState = LegacyAgentWorkspaceState | LocalAgentWorkspaceState;
 
 export interface AgentWorkspaceManagerOptions {
   bindingStore: SessionBindingStore;
@@ -56,7 +67,7 @@ export class AgentWorkspaceManager implements RuntimePreparation {
     const content = renderManagedInstructions(snapshot);
     const managedInstructionsHash = sha256(content);
     const next: LocalAgentWorkspaceState = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       agentId: snapshot.agentId,
       workspaceId: snapshot.workspace.workspaceId,
       provider: snapshot.provider,
@@ -69,36 +80,14 @@ export class AgentWorkspaceManager implements RuntimePreparation {
     await ensurePrivateDirectory(this.#home, paths.workspaceRoot);
     await ensurePrivateDirectory(this.#home, paths.files);
 
-    if (state) {
-      validateWorkspaceIdentity(state, snapshot);
-      if (snapshot.revision.agent.sequence < state.appliedAgentRevisionSequence) {
-        throw new RuntimeStorageError("conflict", "The Agent runtime revision is stale");
-      }
-      if (
-        snapshot.revision.agent.sequence === state.appliedAgentRevisionSequence &&
-        (snapshot.revision.agent.id !== state.appliedAgentRevisionId ||
-          hashes.agentConfigHash !== state.agentConfigHash)
-      ) {
-        throw new RuntimeStorageError("conflict", "The Agent runtime revision conflicts with the workspace");
-      }
-      if (snapshot.revision.agent.sequence === state.appliedAgentRevisionSequence) {
-        const existing = await readSecureFile(paths.agentsFile);
-        if (existing === undefined && state.managedInstructionsHash === managedInstructionsHash) {
-          await writeDurableFile(paths.agentsFile, content, 0o444);
-          return;
-        }
-        if (existing === undefined || sha256(existing) !== state.managedInstructionsHash || existing !== content) {
-          throw new RuntimeStorageError("conflict", "The managed AGENTS.md file was modified outside OpenTag");
-        }
-        await chmod(paths.agentsFile, 0o444);
-        return;
-      }
-    } else if ((await readSecureFile(paths.agentsFile)) !== undefined) {
-      throw new RuntimeStorageError("conflict", "OpenTag will not replace an unmanaged AGENTS.md file");
+    const current = state ?? next;
+    validateWorkspaceIdentity(current, snapshot);
+    validateWorkspaceRevision(current, snapshot, hashes);
+    if (current.schemaVersion === 1) {
+      await migrateLegacyWorkspace(current, next, paths, content);
+      return;
     }
-
-    await writeDurableFile(paths.agentsFile, content, 0o444);
-    if (state) await writeDurableJson(paths.workspaceState, next);
+    await prepareCurrentWorkspace(current, next, paths, content, managedInstructionsHash);
   }
 
   async prepareSession(
@@ -145,7 +134,7 @@ export function renderManagedInstructions(snapshot: EffectiveRuntimeSnapshot): s
   ].join("\n");
 }
 
-function parseAgentWorkspaceState(value: unknown): LocalAgentWorkspaceState {
+function parseAgentWorkspaceState(value: unknown): ParsedAgentWorkspaceState {
   if (
     typeof value !== "object" ||
     value === null ||
@@ -168,10 +157,10 @@ function parseAgentWorkspaceState(value: unknown): LocalAgentWorkspaceState {
   }
   const state = value as Record<string, unknown>;
   if (
-    state.schemaVersion !== 1 ||
+    (state.schemaVersion !== 1 && state.schemaVersion !== 2) ||
     typeof state.agentId !== "string" ||
     typeof state.workspaceId !== "string" ||
-    state.provider !== "codex" ||
+    !isAgentRuntimeProviderId(state.provider) ||
     typeof state.appliedAgentRevisionSequence !== "number" ||
     !Number.isSafeInteger(state.appliedAgentRevisionSequence) ||
     state.appliedAgentRevisionSequence < 0 ||
@@ -181,10 +170,10 @@ function parseAgentWorkspaceState(value: unknown): LocalAgentWorkspaceState {
   ) {
     throw new RuntimeStorageError("invalid", "Agent workspace state values are invalid");
   }
-  return state as unknown as LocalAgentWorkspaceState;
+  return state as unknown as ParsedAgentWorkspaceState;
 }
 
-function validateWorkspaceIdentity(state: LocalAgentWorkspaceState, snapshot: EffectiveRuntimeSnapshot): void {
+function validateWorkspaceIdentity(state: ParsedAgentWorkspaceState, snapshot: EffectiveRuntimeSnapshot): void {
   if (
     state.agentId !== snapshot.agentId ||
     state.workspaceId !== snapshot.workspace.workspaceId ||
@@ -192,6 +181,78 @@ function validateWorkspaceIdentity(state: LocalAgentWorkspaceState, snapshot: Ef
   ) {
     throw new RuntimeStorageError("conflict", "Agent workspace identity cannot be changed");
   }
+}
+
+function validateWorkspaceRevision(
+  state: ParsedAgentWorkspaceState,
+  snapshot: EffectiveRuntimeSnapshot,
+  hashes: RuntimeSnapshotHashes,
+): void {
+  if (snapshot.revision.agent.sequence < state.appliedAgentRevisionSequence) {
+    throw new RuntimeStorageError("conflict", "The Agent runtime revision is stale");
+  }
+  if (
+    snapshot.revision.agent.sequence === state.appliedAgentRevisionSequence &&
+    (snapshot.revision.agent.id !== state.appliedAgentRevisionId || hashes.agentConfigHash !== state.agentConfigHash)
+  ) {
+    throw new RuntimeStorageError("conflict", "The Agent runtime revision conflicts with the workspace");
+  }
+}
+
+async function migrateLegacyWorkspace(
+  state: LegacyAgentWorkspaceState,
+  next: LocalAgentWorkspaceState,
+  paths: ReturnType<typeof agentRuntimePaths>,
+  content: string,
+): Promise<void> {
+  const legacy = await readSecureFile(paths.legacyAgentsFile);
+  if (legacy !== undefined && sha256(legacy) !== state.managedInstructionsHash) {
+    throw new RuntimeStorageError("conflict", "The legacy managed AGENTS.md file was modified outside OpenTag");
+  }
+  const current = await readSecureFile(paths.agentsFile);
+  if (current !== undefined && current !== content) {
+    throw new RuntimeStorageError("conflict", "OpenTag will not replace a conflicting AGENTS.md file in the Agent cwd");
+  }
+  if (current === undefined) await writeDurableFile(paths.agentsFile, content, 0o444);
+  else await chmod(paths.agentsFile, 0o444);
+  if (legacy !== undefined) await removeDurableFile(paths.legacyAgentsFile);
+  await writeDurableJson(paths.workspaceState, next);
+}
+
+async function prepareCurrentWorkspace(
+  state: LocalAgentWorkspaceState,
+  next: LocalAgentWorkspaceState,
+  paths: ReturnType<typeof agentRuntimePaths>,
+  content: string,
+  managedInstructionsHash: string,
+): Promise<void> {
+  if ((await readSecureFile(paths.legacyAgentsFile)) !== undefined) {
+    throw new RuntimeStorageError("conflict", "A legacy AGENTS.md file conflicts with the current Agent workspace");
+  }
+  const existing = await readSecureFile(paths.agentsFile);
+  const sameRevision = next.appliedAgentRevisionSequence === state.appliedAgentRevisionSequence;
+  if (existing === undefined) {
+    if (!sameRevision || state.managedInstructionsHash !== managedInstructionsHash) {
+      throw new RuntimeStorageError("conflict", "The managed AGENTS.md file was removed outside OpenTag");
+    }
+    await writeDurableFile(paths.agentsFile, content, 0o444);
+    return;
+  }
+  if (sha256(existing) !== state.managedInstructionsHash) {
+    throw new RuntimeStorageError("conflict", "The managed AGENTS.md file was modified outside OpenTag");
+  }
+  if (sameRevision) {
+    if (existing !== content) {
+      throw new RuntimeStorageError(
+        "conflict",
+        "The managed AGENTS.md file conflicts with the current runtime snapshot",
+      );
+    }
+    await chmod(paths.agentsFile, 0o444);
+    return;
+  }
+  await writeDurableFile(paths.agentsFile, content, 0o444);
+  await writeDurableJson(paths.workspaceState, next);
 }
 
 async function realDirectoryExists(path: string): Promise<boolean> {

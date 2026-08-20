@@ -101,12 +101,20 @@ export async function resolveCliInvocation(options: {
   };
 }
 
-export function buildServicePath(invocation: ResolvedCliInvocation, platform: "darwin" | "linux"): string {
+export function buildServicePath(
+  invocation: ResolvedCliInvocation,
+  platform: "darwin" | "linux",
+  sourcePath?: string,
+): string {
   const base =
     platform === "darwin"
       ? ["/usr/local/bin", "/opt/homebrew/bin", "/usr/bin", "/bin"]
       : ["/usr/local/bin", "/usr/bin", "/bin"];
-  return [...new Set([dirname(invocation.program), dirname(process.execPath), ...base])].join(":");
+  const inherited = (sourcePath ?? "")
+    .split(delimiter)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0 && isAbsolute(entry));
+  return [...new Set([dirname(invocation.program), dirname(process.execPath), ...inherited, ...base])].join(delimiter);
 }
 
 export function invocationArguments(invocation: ResolvedCliInvocation): string[] {

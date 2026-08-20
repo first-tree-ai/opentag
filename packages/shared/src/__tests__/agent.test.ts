@@ -9,7 +9,16 @@ import {
   ListAgentsResponseSchema,
   UpdateAgentRequestSchema,
 } from "../agent.js";
-import { AGENT_BY_ID_TEMPLATE, agentByIdPath, TEAM_AGENTS_TEMPLATE, teamAgentsPath } from "../http-paths.js";
+import {
+  AGENT_BY_ID_TEMPLATE,
+  AGENT_REACTIVATE_TEMPLATE,
+  AGENT_SUSPEND_TEMPLATE,
+  agentByIdPath,
+  agentReactivatePath,
+  agentSuspendPath,
+  TEAM_AGENTS_TEMPLATE,
+  teamAgentsPath,
+} from "../http-paths.js";
 import { OPENTAG_PLATFORM_INSTRUCTIONS, RUNTIME_INSTRUCTIONS_MAX_BYTES } from "../runtime-config.js";
 
 const agent = {
@@ -21,6 +30,7 @@ const agent = {
   displayName: "Code Reviewer",
   runtimeProvider: "codex",
   receiveMode: "all_message",
+  status: "active",
   revision: 1,
   runtimeConfig: {
     revision: 1,
@@ -186,5 +196,9 @@ describe("Agent contracts", () => {
     expect(AGENT_BY_ID_TEMPLATE).toBe("/api/v1/agents/:agentId");
     expect(teamAgentsPath("team/value")).toBe("/api/v1/teams/team%2Fvalue/agents");
     expect(agentByIdPath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue");
+    expect(AGENT_SUSPEND_TEMPLATE).toBe("/api/v1/agents/:agentId/suspend");
+    expect(agentSuspendPath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue/suspend");
+    expect(AGENT_REACTIVATE_TEMPLATE).toBe("/api/v1/agents/:agentId/reactivate");
+    expect(agentReactivatePath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue/reactivate");
   });
 });

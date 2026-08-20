@@ -10,9 +10,14 @@ import {
   agentFeishuSetupAttemptsPath,
   agentImBindingConfigPath,
   agentImBindingPath,
+  agentReactivatePath,
+  agentSuspendPath,
   type ConnectCodeIssueResponse,
   ConnectCodeIssueResponseSchema,
   type CreateAgentRequest,
+  type CreateTeamRequest,
+  type CreateTeamResponse,
+  CreateTeamResponseSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
   feishuSetupAttemptPath,
@@ -101,6 +106,14 @@ export class BrowserApi {
     return this.request(teamMembersPath(teamId), ListTeamMembersResponseSchema);
   }
 
+  createTeam(input: CreateTeamRequest): Promise<CreateTeamResponse> {
+    return this.request(HTTP_PATHS.teams, CreateTeamResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
   updateTeamMember(teamId: string, userId: string, input: UpdateTeamMemberRequest): Promise<TeamMemberAdminConfig> {
     return this.request(teamMemberPath(teamId, userId), TeamMemberAdminConfigSchema, {
       method: "PATCH",
@@ -142,6 +155,27 @@ export class BrowserApi {
       method: "PATCH",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  suspendAgent(agentId: string): Promise<AgentAdminConfig> {
+    return this.request(agentSuspendPath(agentId), AgentAdminConfigSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  reactivateAgent(agentId: string): Promise<AgentAdminConfig> {
+    return this.request(agentReactivatePath(agentId), AgentAdminConfigSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  deleteAgent(agentId: string): Promise<void> {
+    return this.requestNoContent(agentByIdPath(agentId), {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
     });
   }
 

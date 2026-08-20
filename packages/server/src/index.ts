@@ -7,6 +7,7 @@ import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
 import { agents } from "./db/schema/index.js";
+import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
 import { ImDeliveryWorker } from "./runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
@@ -104,7 +105,6 @@ export async function startServer(): Promise<void> {
     const connectCodeService = new ConnectCodeService(database);
     const computerService = new ComputerService(database, authService);
     const teamService = new TeamMembershipService(database);
-    const agentService = new AgentService(database, { membershipService: teamService });
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
     const invitationService = new InvitationService(database, teamService, applicationCipher, config.publicUrl);
     const registry = new ConnectionRegistry();
@@ -152,6 +152,16 @@ export async function startServer(): Promise<void> {
         return { type: "im:tool:result", requestId: request.requestId, ...result };
       },
     });
+    const agentService = new AgentService(database, {
+      membershipService: teamService,
+      onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
+      stopSessions: (targets) =>
+        stopAgentSessions(database, targets, {
+          currentInstanceId: (computerId) => registry.currentInstanceId(computerId),
+          requestReconcile: (computerId, instanceId, request, onDispatched) =>
+            domainOwner.requestReconcile(computerId, instanceId, request, onDispatched),
+        }),
+    });
     const feishuConnections = new FeishuConnectionManager({
       database,
       inbox: imMessageInbox,
@@ -186,9 +196,7 @@ export async function startServer(): Promise<void> {
       onDiagnostic: (code) => app?.log.error({ code }, "IM delivery worker diagnostic"),
     });
     const identityService = new AuthIdentityService(database);
-    const postAuthentication = new PostAuthenticationService(database, invitationService, {
-      membershipService: teamService,
-    });
+    const postAuthentication = new PostAuthenticationService(database, invitationService);
     const google = config.google
       ? new GoogleBrowserAuthService({
           database,

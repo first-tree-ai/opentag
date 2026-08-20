@@ -152,6 +152,11 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
       throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
     }
 
+    /**
+     * A session may legitimately hold no membership: creating or joining a Team is the first onboarding
+     * step, so the user must be able to authenticate before any Team exists. Team-scoped authority is
+     * always re-checked per resource, never inferred from holding a session.
+     */
     const activeMemberships = await this.#database
       .select({
         role: memberships.role,
@@ -162,14 +167,6 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
       .from(memberships)
       .innerJoin(teams, eq(memberships.teamId, teams.id))
       .where(and(eq(memberships.userId, userId), eq(memberships.status, "active")));
-    if (activeMemberships.length === 0) {
-      throw new AuthServiceError(
-        "AUTH_MEMBERSHIP_REQUIRED",
-        "deterministic",
-        "An active team membership is required",
-        403,
-      );
-    }
 
     return {
       user: { id: user.id, email: user.email, displayName: user.displayName },

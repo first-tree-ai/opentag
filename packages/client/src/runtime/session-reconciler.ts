@@ -44,7 +44,7 @@ export interface SessionReconcilerOptions {
 
 export interface AgentRuntimeState extends RuntimeSnapshotHashes {
   agentId: string;
-  provider: "codex";
+  provider: string;
   revisionId: string;
   revisionSequence: number;
   workspaceId: string;
@@ -53,7 +53,7 @@ export interface AgentRuntimeState extends RuntimeSnapshotHashes {
 export interface SessionRuntimeState extends RuntimeSnapshotHashes {
   agentId: string;
   placementGeneration: number;
-  provider: "codex";
+  provider: string;
   revisionId: string;
   revisionSequence: number;
   sessionId: string;

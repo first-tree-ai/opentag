@@ -1650,6 +1650,14 @@ code {
   gap: 20px;
 }
 
+.onboarding-route-change {
+  display: grid;
+  width: min(100%, 560px);
+  justify-items: start;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+
 .onboarding-agent-form label {
   display: grid;
   gap: 7px;

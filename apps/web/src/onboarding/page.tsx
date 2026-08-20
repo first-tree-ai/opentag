@@ -286,6 +286,7 @@ function OnboardingContent({
   state: OnboardingState;
   teamId: string;
 }) {
+  const [routeChangeOpen, setRouteChangeOpen] = useState(false);
   if (snapshot.targetCandidates.length > 1 && !snapshot.targetAgent) {
     return (
       <ActionSection
@@ -421,6 +422,41 @@ function OnboardingContent({
         title="Create your Agent"
         description={`OpenTag will run with ${providerLabel(current.provider.provider)} on ${current.computer.displayName}.`}
       >
+        {current.alternatives.length > 0 ? (
+          <div className="onboarding-route-change">
+            <button
+              aria-expanded={routeChangeOpen}
+              className="tertiary compact-button"
+              disabled={pending}
+              type="button"
+              onClick={() => setRouteChangeOpen((open) => !open)}
+            >
+              Change
+            </button>
+            {routeChangeOpen ? (
+              <div className="onboarding-choice-list">
+                {current.alternatives.map((alternative) => (
+                  <button
+                    className="onboarding-choice"
+                    disabled={pending}
+                    key={`${alternative.computerId}:${alternative.provider}`}
+                    type="button"
+                    onClick={() => {
+                      setRouteChangeOpen(false);
+                      onChooseRoute({ computerId: alternative.computerId, provider: alternative.provider });
+                    }}
+                  >
+                    <strong>{providerLabel(alternative.provider)}</strong>
+                    <span>
+                      {snapshot.computers.find((computer) => computer.id === alternative.computerId)?.displayName ??
+                        current.computer.displayName}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <form
           className="onboarding-agent-form"
           onSubmit={(event: FormEvent<HTMLFormElement>) => {

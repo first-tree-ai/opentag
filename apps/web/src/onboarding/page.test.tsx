@@ -290,6 +290,32 @@ describe("OnboardingPage", () => {
     );
   });
 
+  it("changes the default Codex route to Claude Code before explicit Agent creation", async () => {
+    installFacts({ computers: [computerA] });
+    const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    renderPage({
+      runtime: runtimeFacts([
+        { computerId: computerAId, provider: "codex", runtimeReady: true },
+        { computerId: computerAId, provider: "claude-code", runtimeReady: true },
+      ]),
+    });
+
+    expect(await screen.findByText("OpenTag will run with Codex on Ada's Mac.")).toBeTruthy();
+    expect(create).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
+    expect(await screen.findByText("OpenTag will run with Claude Code on Ada's Mac.")).toBeTruthy();
+    expect(create).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith(
+        teamId,
+        expect.objectContaining({ computerId: computerAId, runtimeProvider: "claude-code" }),
+      ),
+    );
+  });
+
   it("replays a lost create response with the same creationIntentId", async () => {
     let serverAgents: AgentSummary[] = [];
     const agentReads = vi.spyOn(browserApi, "agents").mockImplementation(async () => ({ agents: serverAgents }));

@@ -1574,7 +1574,8 @@ describe("OpenTag Web App Shell", () => {
 
   it("lands on the created Team when Team preference storage is unavailable", async () => {
     installApi("admin", { teamless: true });
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    window.localStorage.setItem("opentag.selectedTeamId", teamId);
+    const setItem = vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
       throw new Error("Storage unavailable");
     });
     try {
@@ -1584,6 +1585,7 @@ describe("OpenTag Web App Shell", () => {
       expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
       expect(screen.getByRole("button", { name: "First Tree AI" })).toBeTruthy();
       expect(window.location.pathname).toBe("/agents");
+      expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(teamId);
     } finally {
       setItem.mockRestore();
     }
@@ -1678,8 +1680,8 @@ describe("OpenTag Web App Shell", () => {
 
   it("switches Teams when Team preference storage is unavailable", async () => {
     installApi("admin", { alreadyJoinedInvitation: true });
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    window.localStorage.setItem("opentag.selectedTeamId", teamId);
+    const setItem = vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
       throw new Error("Storage unavailable");
     });
     try {
@@ -1692,9 +1694,9 @@ describe("OpenTag Web App Shell", () => {
       );
       expect(await screen.findByRole("button", { name: "Invited Team" })).toBeTruthy();
       expect(window.location.pathname).toBe("/agents");
+      expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(teamId);
     } finally {
       setItem.mockRestore();
-      consoleError.mockRestore();
     }
   });
 

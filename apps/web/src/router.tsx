@@ -510,8 +510,8 @@ function NewTeamPage() {
 
 function AuthenticatedTeamGate() {
   const location = useLocation();
-  const navigate = useNavigate();
   const [meRevision, setMeRevision] = useState(0);
+  const [selectedTeamId, setSelectedTeamId] = useState(readTeamPreference);
   const state = useResource(() => browserApi.me(), `me:${meRevision}`);
   if (state.kind === "error" && state.error instanceof ApiError && state.error.status === 401) {
     const requested = location.pathname === "/" ? "/agents" : `${location.pathname}${location.search}`;
@@ -520,14 +520,13 @@ function AuthenticatedTeamGate() {
   return (
     <AsyncState state={state}>
       {(me) => {
-        const stored = readTeamPreference();
-        const membership = me.memberships.find((item: MeMembership) => item.teamId === stored) ?? me.memberships[0];
+        const membership =
+          me.memberships.find((item: MeMembership) => item.teamId === selectedTeamId) ?? me.memberships[0];
         if (!membership) return <Navigate replace to="/teams/new" />;
         const selectTeam = (teamId: string) => {
           if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
           rememberTeamPreference(teamId);
-          navigate(location.pathname, { replace: true });
-          window.location.reload();
+          setSelectedTeamId(teamId);
         };
         return (
           <TeamContext value={{ me, membership, refreshMe: () => setMeRevision((value) => value + 1), selectTeam }}>
@@ -545,13 +544,14 @@ function OnboardingRoute() {
 }
 
 function readTeamPreference(): string | undefined {
+  if (memoryTeamPreferenceFallback) return memoryTeamPreference;
   try {
     const value = window.localStorage.getItem(SELECTED_TEAM_STORAGE_KEY);
     if (value && value.length <= 64) {
       memoryTeamPreference = value;
       return value;
     }
-    return memoryTeamPreferenceFallback ? memoryTeamPreference : undefined;
+    return undefined;
   } catch {
     return memoryTeamPreference;
   }

@@ -825,25 +825,30 @@ function AppShell() {
 
 function AgentsPage() {
   const { membership } = useTeam();
+  const [createOpen, setCreateOpen] = useState(false);
+  const createTriggerRef = useRef<HTMLButtonElement>(null);
   const state = useResource(() => loadAgentList(membership.teamId), membership.teamId, {
     onBackgroundError: markAgentListUnconfirmed,
     revalidateMs: 30_000,
     refreshOnFocus: true,
   });
   return (
-    <Page
-      title="Agents"
-      description="Shared agents your team can use in Feishu or Slack."
-      action={
-        membership.role === "admin" ? (
-          <Link className="button" to="/agents/new">
-            Create Agent
-          </Link>
-        ) : undefined
-      }
-    >
-      <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
-    </Page>
+    <>
+      <Page
+        title="Agents"
+        description="Shared agents your team can use in Feishu or Slack."
+        action={
+          membership.role === "admin" ? (
+            <button className="button" ref={createTriggerRef} type="button" onClick={() => setCreateOpen(true)}>
+              New Agent
+            </button>
+          ) : undefined
+        }
+      >
+        <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
+      </Page>
+      {createOpen ? <NewAgentDialog returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} /> : null}
+    </>
   );
 }
 
@@ -934,72 +939,281 @@ function NewAgentPage() {
   const { membership } = useTeam();
   const navigate = useNavigate();
   const computers = useResource(() => browserApi.ownComputers(), membership.teamId);
-  const [error, setError] = useState<string>();
   if (membership.role !== "admin") return <UnavailablePage title="Team Admin access required" />;
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const data = new FormData(event.currentTarget);
-    try {
-      const created = await browserApi.createAgent(membership.teamId, {
-        name: String(data.get("name") ?? ""),
-        displayName: String(data.get("displayName") ?? ""),
-        runtimeProvider: String(data.get("runtimeProvider") ?? "codex") as "codex" | "claude-code",
-        computerId: String(data.get("computerId") ?? ""),
-      });
-      navigate(`/agents/${created.id}/general`);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Agent creation failed");
-    }
-  }
   return (
     <Page title="Create Agent" description="Create the identity first. Complete its setup from the Agent overview.">
-      <AsyncState state={computers}>
-        {(value) =>
-          value.computers.length === 0 ? (
-            <EmptyState title="Connect a Local Computer first">
-              Open <Link to="/settings/computers">Computer settings</Link> to generate a connection command.
-            </EmptyState>
-          ) : (
-            <form className="form-card" onSubmit={submit}>
-              <label>
-                Name
-                <input name="name" required pattern="[a-z0-9][a-z0-9-]*" />
-              </label>
-              <label>
-                Display name
-                <input name="displayName" required />
-              </label>
-              <label>
-                Provider
-                <select name="runtimeProvider">
+      <AgentCreationContent
+        computers={computers}
+        teamId={membership.teamId}
+        onCreated={(agentId) => navigate(`/agents/${agentId}/general`)}
+      />
+    </Page>
+  );
+}
+
+function NewAgentDialog({
+  onClose,
+  returnFocusRef,
+}: {
+  onClose: () => void;
+  returnFocusRef: { current: HTMLButtonElement | null };
+}) {
+  const { membership } = useTeam();
+  const navigate = useNavigate();
+  const computers = useResource(() => browserApi.ownComputers(), membership.teamId);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(submitting);
+  const onCloseRef = useRef(onClose);
+  submittingRef.current = submitting;
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const target = dialog.querySelector<HTMLElement>(
+      "button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled])",
+    );
+    if (submitting) {
+      if (!activeElement || !dialog.contains(activeElement) || activeElement.matches(":disabled")) {
+        (target ?? dialog).focus();
+      }
+    } else if (activeElement === dialog) {
+      target?.focus();
+    }
+  }, [submitting]);
+
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        if (!submittingRef.current) onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      );
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1);
+      if (!dialogRef.current?.contains(document.activeElement) || document.activeElement === dialogRef.current) {
+        event.preventDefault();
+        (event.shiftKey ? last : first)?.focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      returnFocusRef.current?.focus();
+    };
+  }, [returnFocusRef]);
+
+  return (
+    <div className="dialog-layer">
+      <button
+        aria-label="Dismiss new Agent dialog"
+        className="dialog-backdrop"
+        disabled={submitting}
+        tabIndex={-1}
+        type="button"
+        onClick={onClose}
+      />
+      <div
+        aria-describedby="new-agent-dialog-description"
+        aria-labelledby="new-agent-dialog-title"
+        aria-modal="true"
+        className="dialog-card new-agent-dialog"
+        ref={dialogRef}
+        role="dialog"
+        tabIndex={-1}
+      >
+        <header className="dialog-header">
+          <div>
+            <span className="eyebrow dialog-eyebrow">Create</span>
+            <h2 id="new-agent-dialog-title">New Agent</h2>
+          </div>
+          <button
+            aria-label="Close new Agent dialog"
+            className="dialog-close"
+            disabled={submitting}
+            ref={closeButtonRef}
+            type="button"
+            onClick={onClose}
+          >
+            ×
+          </button>
+        </header>
+        <p className="dialog-description" id="new-agent-dialog-description">
+          Give the Agent an identity and choose where it runs. You can finish its setup from the overview.
+        </p>
+        <AgentCreationContent
+          computers={computers}
+          presentation="dialog"
+          teamId={membership.teamId}
+          onCancel={onClose}
+          onCreated={(agentId) => navigate(`/agents/${agentId}/general`)}
+          onSubmittingChange={setSubmitting}
+        />
+      </div>
+    </div>
+  );
+}
+
+function AgentCreationContent({
+  computers,
+  onCancel,
+  onCreated,
+  onSubmittingChange,
+  presentation = "page",
+  teamId,
+}: {
+  computers: LoadState<{ computers: Computer[] }>;
+  onCancel?: () => void;
+  onCreated: (agentId: string) => void;
+  onSubmittingChange?: (submitting: boolean) => void;
+  presentation?: "dialog" | "page";
+  teamId: string;
+}) {
+  const [error, setError] = useState<string>();
+  const [submitting, setSubmitting] = useState(false);
+  const firstFieldRef = useRef<HTMLInputElement>(null);
+  const inFlightRef = useRef(false);
+  const creationIntentRef = useRef<{ fingerprint: string; id: string } | null>(null);
+
+  useEffect(() => {
+    if (presentation === "dialog" && computers.kind === "ready") firstFieldRef.current?.focus();
+  }, [computers.kind, presentation]);
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (inFlightRef.current) return;
+    const data = new FormData(event.currentTarget);
+    const input = {
+      name: String(data.get("name") ?? ""),
+      displayName: String(data.get("displayName") ?? ""),
+      runtimeProvider: String(data.get("runtimeProvider") ?? "codex") as "codex" | "claude-code",
+      computerId: String(data.get("computerId") ?? ""),
+    };
+    const fingerprint = JSON.stringify(input);
+    if (creationIntentRef.current?.fingerprint !== fingerprint) {
+      creationIntentRef.current = { fingerprint, id: crypto.randomUUID() };
+    }
+    inFlightRef.current = true;
+    setError(undefined);
+    setSubmitting(true);
+    onSubmittingChange?.(true);
+    try {
+      const created = await browserApi.createAgent(teamId, {
+        creationIntentId: creationIntentRef.current.id,
+        ...input,
+      });
+      onCreated(created.id);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Agent creation failed");
+    } finally {
+      inFlightRef.current = false;
+      setSubmitting(false);
+      onSubmittingChange?.(false);
+    }
+  }
+
+  return (
+    <AsyncState state={computers}>
+      {(value) =>
+        value.computers.length === 0 ? (
+          <EmptyState title="Connect a Local Computer first">
+            Open <Link to="/settings/computers">Computer settings</Link> to generate a connection command.
+          </EmptyState>
+        ) : (
+          <form className="form-card agent-create-form" onSubmit={submit}>
+            <div className="agent-create-field">
+              <label htmlFor="new-agent-display-name">Display name</label>
+              <input
+                aria-describedby="new-agent-display-name-hint"
+                id="new-agent-display-name"
+                ref={firstFieldRef}
+                name="displayName"
+                placeholder="Research Assistant"
+                disabled={submitting}
+                required
+              />
+              <span className="field-hint" id="new-agent-display-name-hint">
+                How teammates will see this Agent in lists and conversations.
+              </span>
+            </div>
+            <div className="agent-create-field">
+              <label htmlFor="new-agent-name">Agent name</label>
+              <span className="agent-name-input">
+                <span aria-hidden="true">@</span>
+                <input
+                  aria-describedby="new-agent-name-hint"
+                  id="new-agent-name"
+                  name="name"
+                  pattern="[a-z0-9][a-z0-9-]*"
+                  placeholder="research-assistant"
+                  disabled={submitting}
+                  required
+                />
+              </span>
+              <span className="field-hint" id="new-agent-name-hint">
+                Used for mentions. Lowercase letters, numbers, and hyphens only.
+              </span>
+            </div>
+            <div className="agent-create-grid">
+              <div className="agent-create-field">
+                <label htmlFor="new-agent-provider">Provider</label>
+                <select id="new-agent-provider" name="runtimeProvider" disabled={submitting}>
                   <option value="codex">Codex</option>
                   <option value="claude-code">Claude Code</option>
                 </select>
-              </label>
-              <label>
-                Computer
-                <select name="computerId" required>
+              </div>
+              <div className="agent-create-field">
+                <label htmlFor="new-agent-computer">Computer</label>
+                <select id="new-agent-computer" name="computerId" disabled={submitting} required>
                   {value.computers.map((computer: Computer) => (
                     <option value={computer.id} key={computer.id}>
                       {computer.displayName}
                     </option>
                   ))}
                 </select>
-              </label>
-              <p className="muted">New Agents receive only direct mentions by default.</p>
-              <button className="button" type="submit">
-                Create Agent
-              </button>
-              {error ? (
-                <div className="notice error" role="alert">
-                  {error}
-                </div>
+              </div>
+            </div>
+            <p className="agent-create-note">New Agents receive only direct mentions by default.</p>
+            {error ? (
+              <div className="notice error" role="alert">
+                {error}
+              </div>
+            ) : null}
+            <div className="agent-create-actions">
+              {presentation === "dialog" ? (
+                <button className="secondary" disabled={submitting} type="button" onClick={onCancel}>
+                  Cancel
+                </button>
               ) : null}
-            </form>
-          )
-        }
-      </AsyncState>
-    </Page>
+              <button className="button" disabled={submitting} type="submit">
+                {submitting ? "Creating…" : "Create Agent"}
+              </button>
+            </div>
+          </form>
+        )
+      }
+    </AsyncState>
   );
 }
 

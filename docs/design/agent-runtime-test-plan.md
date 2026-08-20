@@ -170,7 +170,7 @@ failure; it is never converted into a skipped success.
 
 ## Latest Local Execution
 
-On 2026-08-20 the converged scoped suite passed 111 tests with 100% statements,
+On 2026-08-20 the converged scoped suite passed 112 tests with 100% statements,
 branches, functions, and lines. The live test passed against `codex-cli 0.147.0`:
 both create and resumed Runs completed, the opaque binding was preserved, and
 each Run produced 16 ordered events. The monorepo checks, build, type-check,

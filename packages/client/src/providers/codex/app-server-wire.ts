@@ -93,6 +93,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   readonly #pending = new Map<number, PendingRequest>();
   readonly #listeners = new Set<(message: CodexAppServerMessage) => void>();
   readonly #serverRequestListeners = new Set<(request: CodexAppServerRequest) => void>();
+  readonly #seenServerRequests = new Set<number | string>();
   readonly #pendingServerRequests = new Set<number | string>();
   readonly #respondingServerRequests = new Set<number | string>();
   readonly #duplicateServerRequests = new Set<number | string>();
@@ -246,6 +247,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     this.#closed = true;
     const closingError = new CodexAppServerError("aborted", "Codex App Server is closing");
     for (const pending of [...this.#pending.values()]) pending.reject(closingError);
+    this.#seenServerRequests.clear();
     this.#pendingServerRequests.clear();
     this.#respondingServerRequests.clear();
     this.#duplicateServerRequests.clear();
@@ -287,7 +289,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   }
 
   #onStdout(chunk: Buffer): void {
-    if (this.#failure) return;
+    if (this.#failure || this.#closed) return;
     this.#buffer = Buffer.concat([this.#buffer, chunk]);
     if (this.#buffer.byteLength > this.#maxLineBytes && !this.#buffer.includes(0x0a)) {
       this.#fail(new CodexAppServerError("protocol", "Codex emitted an oversized JSONL line"));
@@ -315,6 +317,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
         return;
       }
       this.#onMessage(message);
+      if (this.#failure || this.#closed) return;
     }
     if (this.#buffer.byteLength > this.#maxLineBytes) {
       this.#fail(new CodexAppServerError("protocol", "Codex emitted an oversized JSONL line"));
@@ -414,11 +417,12 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
   }
 
   #claimServerRequest(id: number | string, deferDuplicateFailure: boolean): boolean {
-    if (!this.#pendingServerRequests.has(id)) {
+    if (!this.#seenServerRequests.has(id)) {
+      this.#seenServerRequests.add(id);
       this.#pendingServerRequests.add(id);
       return true;
     }
-    if (deferDuplicateFailure) this.#duplicateServerRequests.add(id);
+    if (deferDuplicateFailure && this.#pendingServerRequests.has(id)) this.#duplicateServerRequests.add(id);
     else this.#fail(new CodexAppServerError("protocol", "Codex emitted a duplicate server request ID"));
     return false;
   }
@@ -439,6 +443,7 @@ export class CodexAppServerProcess implements InteractiveCodexAppServerClient {
     if (this.#failure) return;
     this.#failure = error;
     for (const pending of [...this.#pending.values()]) pending.reject(error);
+    this.#seenServerRequests.clear();
     this.#pendingServerRequests.clear();
     this.#respondingServerRequests.clear();
     this.#duplicateServerRequests.clear();

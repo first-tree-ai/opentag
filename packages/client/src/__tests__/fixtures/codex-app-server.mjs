@@ -6,6 +6,8 @@ const scenario = process.env.CODEX_FIXTURE_SCENARIO ?? "normal";
 if (process.env.CODEX_FIXTURE_PID_FILE) writeFileSync(process.env.CODEX_FIXTURE_PID_FILE, String(process.pid));
 let pendingApproval;
 let pendingHostedTool;
+let pendingHostedToolRequestId;
+let hostedToolSequence = 0;
 let threadSequence = 0;
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
@@ -60,9 +62,10 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       send({ method: "turn/started", params: { threadId: message.params.threadId, turn } });
       if (scenario === "hosted-tool-run" || scenario === "hosted-tool-duplicate-run") {
         pendingHostedTool = { threadId: message.params.threadId, turn, responses: 0 };
+        pendingHostedToolRequestId = `hosted-tool-${++hostedToolSequence}`;
         setTimeout(() => {
           send({
-            id: "hosted-tool-1",
+            id: pendingHostedToolRequestId,
             method: "item/tool/call",
             params: {
               threadId: message.params.threadId,
@@ -75,7 +78,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
           });
           if (scenario === "hosted-tool-duplicate-run") {
             send({
-              id: "hosted-tool-1",
+              id: pendingHostedToolRequestId,
               method: "item/tool/call",
               params: {
                 threadId: message.params.threadId,
@@ -132,8 +135,9 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (message.method === "fixture/hosted-tool" || message.method === "fixture/hosted-tool-invalid-namespace") {
     pendingHostedTool = message.id;
+    pendingHostedToolRequestId = `hosted-tool-${++hostedToolSequence}`;
     send({
-      id: "hosted-tool-1",
+      id: pendingHostedToolRequestId,
       method: "item/tool/call",
       params: {
         threadId: "thread-1",
@@ -146,7 +150,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     });
     return;
   }
-  if (message.id === "hosted-tool-1") {
+  if (message.id === pendingHostedToolRequestId) {
     if (process.env.CODEX_FIXTURE_RESPONSE_LOG) {
       appendFileSync(process.env.CODEX_FIXTURE_RESPONSE_LOG, `${JSON.stringify(message)}\n`);
     }

@@ -219,6 +219,53 @@ describe("CodexAppServerProcess exhaustive behavior", () => {
     await listenerProcess.close();
   });
 
+  it("retains dynamic request IDs across active and completed duplicate calls", async () => {
+    const activeChild = new FakeChild();
+    const activeProcess = processWith(activeChild);
+    const activeHandler = vi.fn();
+    let releaseHandler!: () => void;
+    const handlerGate = new Promise<void>((resolveHandler) => {
+      releaseHandler = resolveHandler;
+    });
+    activeProcess.setDynamicToolHandler(async (call) => {
+      activeHandler(call);
+      await handlerGate;
+      return { success: true, text: "active result" };
+    });
+    const activeFailure = processFailure(activeProcess);
+    activeChild.send(dynamicToolRequest("dynamic-active", "call-1"));
+    await vi.waitFor(() => expect(activeHandler).toHaveBeenCalledTimes(1));
+    activeChild.send(dynamicToolRequest("dynamic-active", "call-2"));
+    expect(activeHandler).toHaveBeenCalledTimes(1);
+    releaseHandler();
+    await vi.waitFor(() =>
+      expect(activeChild.messages.filter((message) => message.id === "dynamic-active")).toHaveLength(1),
+    );
+    await expect(activeFailure).resolves.toMatchObject({ code: "protocol" });
+    expect(activeHandler).toHaveBeenCalledTimes(1);
+    await activeProcess.close();
+
+    const completedChild = new FakeChild();
+    const completedProcess = processWith(completedChild);
+    const completedHandler = vi.fn(async () => ({ success: true, text: "completed result" }));
+    completedProcess.setDynamicToolHandler(completedHandler);
+    completedChild.send(dynamicToolRequest("dynamic-completed", "call-1"));
+    await vi.waitFor(() =>
+      expect(completedChild.messages.filter((message) => message.id === "dynamic-completed")).toHaveLength(1),
+    );
+    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+    const completedFailure = processFailure(completedProcess);
+    completedChild.stdout.write(
+      `${JSON.stringify(dynamicToolRequest("dynamic-completed", "call-2"))}\n${JSON.stringify(
+        dynamicToolRequest("dynamic-completed", "call-3"),
+      )}\n`,
+    );
+    await expect(completedFailure).resolves.toMatchObject({ code: "protocol" });
+    expect(completedHandler).toHaveBeenCalledTimes(1);
+    expect(completedChild.messages.filter((message) => message.id === "dynamic-completed")).toHaveLength(1);
+    await completedProcess.close();
+  });
+
   it("retains interactive request ownership across response write failures", async () => {
     const child = new FakeChild();
     const process = processWith(child);
@@ -462,6 +509,21 @@ function processFailure(process: CodexAppServerProcess): Promise<CodexAppServerE
       if (error instanceof CodexAppServerError) resolve(error);
     });
   });
+}
+
+function dynamicToolRequest(id: string, callId: string): Record<string, unknown> {
+  return {
+    id,
+    method: "item/tool/call",
+    params: {
+      arguments: { text: callId },
+      callId,
+      namespace: null,
+      threadId: "thread-1",
+      tool: "opentag_message_send",
+      turnId: "turn-1",
+    },
+  };
 }
 
 type CodexAppServerRequest = import("../providers/codex/app-server-wire.js").CodexAppServerRequest;

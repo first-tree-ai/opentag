@@ -1012,7 +1012,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
         args: [fixture],
         env: {
           PATH: process.env.PATH,
-          CODEX_FIXTURE_SCENARIO: "hosted-tool-duplicate-run",
+          CODEX_FIXTURE_SCENARIO: "hosted-tool-run",
           CODEX_FIXTURE_RESPONSE_LOG: responseLog,
         },
         requestTimeoutMs: 2_000,

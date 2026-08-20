@@ -20,6 +20,11 @@ interface FeishuSetupProps {
   onSuccess: () => void;
 }
 
+interface FeishuSetupError {
+  message: string;
+  source: "poll" | "start";
+}
+
 /**
  * Owns one Feishu setup lifecycle for an Agent behind a small rendering seam.
  * ImTab refreshes its binding on success; onboarding can use the same callback
@@ -35,7 +40,7 @@ export function FeishuSetup({ agentId, children, onSuccess }: FeishuSetupProps) 
 
 function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps) {
   const [attempt, setAttempt] = useState<FeishuSetupAttempt>();
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<FeishuSetupError>();
   const attemptRef = useRef<FeishuSetupAttempt>(undefined);
   const creatingRef = useRef(false);
   const lifecycleRef = useRef(0);
@@ -61,6 +66,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         const started = await browserApi.createFeishuSetupAttempt(agentId, intent);
         if (lifecycleRef.current !== lifecycle) return false;
         creatingRef.current = false;
+        if (current && attemptRef.current !== current && started.id === current.id) return true;
         if (attemptRef.current?.id !== started.id || !ACTIVE_STATES.includes(started.state)) {
           lifecycleRef.current = lifecycle + 1;
         }
@@ -70,7 +76,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         return true;
       } catch (cause) {
         if (lifecycleRef.current !== lifecycle) return false;
-        setError(normalizeError(cause, "Unable to start setup"));
+        setError({ message: normalizeError(cause, "Unable to start setup"), source: "start" });
         return false;
       } finally {
         if (lifecycleRef.current === lifecycle) creatingRef.current = false;
@@ -92,7 +98,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         if (!active || lifecycleRef.current !== lifecycle) return;
         attemptRef.current = next;
         setAttempt(next);
-        setError(undefined);
+        setError((currentError) => (currentError?.source === "poll" ? undefined : currentError));
         if (next.state === "succeeded") {
           onSuccessRef.current();
           return;
@@ -100,7 +106,11 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         if (ACTIVE_STATES.includes(next.state)) timer = window.setTimeout(poll, POLL_INTERVAL_MS);
       } catch (cause) {
         if (!active || lifecycleRef.current !== lifecycle) return;
-        setError(normalizeError(cause, "Unable to refresh setup"));
+        setError((currentError) =>
+          currentError?.source === "start"
+            ? currentError
+            : { message: normalizeError(cause, "Unable to refresh setup"), source: "poll" },
+        );
         timer = window.setTimeout(poll, POLL_INTERVAL_MS);
       }
     };
@@ -119,7 +129,7 @@ function FeishuSetupLifecycle({ agentId, children, onSuccess }: FeishuSetupProps
         {attempt ? <FeishuSetupFeedback attempt={attempt} onRetry={start} /> : null}
         {error ? (
           <div className="notice error" role="alert">
-            {error}
+            {error.message}
           </div>
         ) : null}
       </>

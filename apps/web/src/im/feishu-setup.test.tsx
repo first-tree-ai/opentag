@@ -194,6 +194,57 @@ describe("FeishuSetup", () => {
     expect(screen.getByRole("button", { name: "Retry Feishu setup" })).toBeTruthy();
   });
 
+  it("does not regress a terminal poll with a late reused start snapshot", async () => {
+    vi.useFakeTimers();
+    let resolveReplacement: (value: FeishuSetupAttempt) => void = () => undefined;
+    const replacement = new Promise<FeishuSetupAttempt>((resolve) => {
+      resolveReplacement = resolve;
+    });
+    vi.spyOn(browserApi, "createFeishuSetupAttempt")
+      .mockResolvedValueOnce(attempt({ id: firstAttemptId, intent: "reauthorize", state: "awaiting_user" }))
+      .mockReturnValueOnce(replacement);
+    const poll = vi
+      .spyOn(browserApi, "feishuSetupAttempt")
+      .mockResolvedValue(attempt({ id: firstAttemptId, intent: "reauthorize", state: "succeeded" }));
+    const onSuccess = vi.fn();
+    render(<Harness onSuccess={onSuccess} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reauthorize" }));
+    await act(async () => undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    await act(async () => vi.advanceTimersByTimeAsync(1_500));
+    await act(async () =>
+      resolveReplacement(attempt({ id: firstAttemptId, intent: "reauthorize", state: "awaiting_user" })),
+    );
+
+    expect(screen.getByText(/State: succeeded/)).toBeTruthy();
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    expect(poll).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a failed intent-switch error while the retained attempt keeps polling", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(browserApi, "createFeishuSetupAttempt")
+      .mockResolvedValueOnce(attempt({ id: firstAttemptId, intent: "reauthorize", state: "awaiting_user" }))
+      .mockRejectedValueOnce(new Error("Replacement unavailable"));
+    const poll = vi
+      .spyOn(browserApi, "feishuSetupAttempt")
+      .mockResolvedValue(attempt({ id: firstAttemptId, intent: "reauthorize", state: "validating" }));
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reauthorize" }));
+    await act(async () => undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Replace" }));
+    await act(async () => undefined);
+    expect(screen.getByRole("alert").textContent).toBe("Replacement unavailable");
+    await act(async () => vi.advanceTimersByTimeAsync(1_500));
+
+    expect(screen.getByText(/State: validating/)).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toBe("Replacement unavailable");
+    expect(poll).toHaveBeenCalledTimes(1);
+  });
+
   it("normalizes non-Error failures into a stable error state", async () => {
     vi.spyOn(browserApi, "createFeishuSetupAttempt").mockRejectedValue("network unavailable");
     render(<Harness />);

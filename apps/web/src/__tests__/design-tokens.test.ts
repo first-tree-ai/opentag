@@ -117,9 +117,6 @@ function ownedReferences(owner: Owner): RegExp {
   return new RegExp(`var\\(\\s*--(?:${owner.families.join("|")})-[a-z0-9-]+\\s*\\)`, "g");
 }
 
-/** Any reference at all, so a foreign one can be told apart from no reference. */
-const ANY_REFERENCE = /var\(\s*--[a-z0-9-]+\s*\)/;
-
 /** Values of an owned property still carrying something the token layer should own. */
 function untokenized(css: string, owner: Owner): string[] {
   return declarations(css)
@@ -133,17 +130,23 @@ function untokenized(css: string, owner: Owner): string[] {
 }
 
 /**
- * Function names and keywords are ASCII case-insensitive to the browser, so
- * `130MS` and `EASE-IN-OUT` animate exactly like their lower-case spellings.
- * Custom property names are not, which is why the reference patterns stay
- * case-sensitive: `--RADIUS-MD` really is a different token.
+ * What a motion value may still say once its own tokens are removed: the
+ * property or animation it applies to, and plain keywords like `infinite` or
+ * `none`. Bare identifiers, in other words, and the commas between them.
  *
- * A duration or an easing written into a transition is a decision made twice,
- * and a variable from another family is that decision under a different name.
- * Property names are ordinary words here, so the residue is read for what a
- * decision looks like rather than for what is left over.
+ * Radius and elevation are checked by listing what may remain; motion used to
+ * be checked by listing what may not, and that asymmetry was the hole --
+ * `calc(var(--motion-fast) * 2)` leaves `calc( * 2)`, which is not a literal
+ * time, an easing keyword or a foreign variable, and derives a duration
+ * outside the scale anyway. Naming what is allowed also covers the arithmetic,
+ * the units and the functions nobody thought to forbid.
+ *
+ * Function names and keywords are ASCII case-insensitive to the browser, so
+ * `EASE-IN-OUT` eases exactly like its lower-case spelling. Custom property
+ * names are not, which is why the reference patterns stay case-sensitive:
+ * `--RADIUS-MD` really is a different token.
  */
-const TIME = /\d+(\.\d+)?\s*m?s\b/i;
+const IDENTIFIER = /^([a-z-]+,?|,)$/i;
 const EASING = /\b(ease|ease-in|ease-out|ease-in-out|linear|step-start|step-end|steps|cubic-bezier)\b/i;
 
 function untokenizedMotion(css: string): string[] {
@@ -151,7 +154,9 @@ function untokenizedMotion(css: string): string[] {
     const owner = MOTION_OWNERS.find((candidate) => candidate.owns(propertyName(declaration)));
     if (owner === undefined) return [];
     const residue = declaration.value.replace(ownedReferences(owner), " ");
-    if (!TIME.test(residue) && !EASING.test(residue) && !ANY_REFERENCE.test(residue)) return [];
+    const words = residue.trim().split(/\s+/).filter(Boolean);
+    const derived = words.some((word) => !IDENTIFIER.test(word));
+    if (!derived && !EASING.test(residue)) return [];
     return [`${declaration.name}: ${declaration.value}`];
   });
 }
@@ -273,6 +278,16 @@ describe("the guard itself", () => {
   it("rejects a drop shadow reached through a variable", () => {
     const css = ".row { --depth: drop-shadow(0 1px 4px red); filter: var(--depth); }";
     expect(droppedShadows(css)).toEqual(["--depth: drop-shadow(0 1px 4px red)"]);
+  });
+
+  it("rejects a duration derived from a token", () => {
+    const longhand = ".row { transition-duration: calc(var(--motion-fast) * 2); }";
+    expect(untokenizedMotion(longhand)).toEqual(["transition-duration: calc(var(--motion-fast) * 2)"]);
+
+    const shorthand = ".row { transition: opacity calc(var(--motion-fast) * 2) var(--ease-standard); }";
+    expect(untokenizedMotion(shorthand)).toEqual([
+      "transition: opacity calc(var(--motion-fast) * 2) var(--ease-standard)",
+    ]);
   });
 
   it("reads a function name in any case, as the browser does", () => {

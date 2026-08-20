@@ -93,20 +93,35 @@ function withoutStrings(value: string): string {
   return value.replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, "");
 }
 
-/** Strings go first, then escapes: decoding first could manufacture a quote. */
-function readableValue(value: string): string {
+/**
+ * Strings are ignorable when looking for token references, and only then: to
+ * the browser a quoted run is still part of the value it validates. Strings go
+ * first and escapes second, since decoding first could manufacture a quote.
+ */
+function referenceProjection(value: string): string {
   return decodeIdentifier(withoutStrings(value));
 }
 
 /**
- * What the browser sees: the decoded name, the value with strings removed and
- * escapes resolved, where it applies, and whether it applies unconditionally.
+ * What the browser sees: the decoded name, the decoded value exactly as the
+ * browser validates it, where it applies, and whether it applies
+ * unconditionally.
+ *
+ * `references` is that value with quoted runs dropped, and is for finding
+ * var() references and nothing else. Validating against it would accept
+ * `font-size: "poison" var(--text-ui)`, which the browser throws out.
  *
  * Every check below reads these records. PostCSS nodes stop here on purpose --
  * twice, a check reached past the decoder to the name as written and let an
  * escaped declaration through, so the spelling is no longer reachable.
  */
-type Declared = { name: string; value: string; selectors: string[]; unconditional: boolean };
+type Declared = {
+  name: string;
+  value: string;
+  references: string;
+  selectors: string[];
+  unconditional: boolean;
+};
 
 /** Comments parse as their own nodes, so only declarations the browser applies reach any check. */
 function declarations(css: string): Declared[] {
@@ -114,7 +129,8 @@ function declarations(css: string): Declared[] {
   postcss.parse(css).walkDecls((declaration) => {
     found.push({
       name: decodeIdentifier(declaration.prop),
-      value: readableValue(declaration.value).trim(),
+      value: decodeIdentifier(declaration.value).trim(),
+      references: referenceProjection(declaration.value),
       selectors: selectorsOf(declaration),
       unconditional: unconditional(declaration),
     });
@@ -165,7 +181,7 @@ function offTokenValues(css: string, property: string, allowed: RegExp, literals
 function danglingReferences(css: string): string[] {
   const defined = definedTypographyTokens(css);
   const referenced = declarations(css).flatMap((declaration) =>
-    [...declaration.value.matchAll(TOKEN_REFERENCE)]
+    [...declaration.references.matchAll(TOKEN_REFERENCE)]
       .map((match) => match[1])
       .filter((name): name is string => name !== undefined),
   );
@@ -428,6 +444,17 @@ describe("the guard itself", () => {
   it("reports an escaped root role that overrides a good one", () => {
     const css = ":root { --fs-13: 0.8125rem; --text-ui: var(--fs-13); }\n:root { --text\\2d ui: 13.5px; }";
     expect(malformedRoles(css)).toEqual(["--text-ui: 13.5px"]);
+  });
+
+  it("rejects a value the browser throws out, even where it names a token", () => {
+    const size = 'body { font-size: "poison" var(--text-ui); }';
+    expect(offTokenValues(size, "font-size", /^var\(--text-[a-z]+\)$/)).toEqual(['"poison" var(--text-ui)']);
+
+    const role = ':root { --text-ui: "poison" var(--fs-13); }';
+    expect(malformedRoles(role)).toEqual(['--text-ui: "poison" var(--fs-13)']);
+
+    const step = ':root { --fs-13: "poison" 0.8125rem; }';
+    expect(malformedSteps(step)).toEqual(['--fs-13: "poison" 0.8125rem']);
   });
 
   it("does not read a commented-out declaration as a violation", () => {

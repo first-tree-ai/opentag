@@ -211,6 +211,34 @@ describe("OnboardingPage", () => {
     expect(await screen.findByRole("heading", { name: "OpenTag is ready" })).toBeTruthy();
   });
 
+  it("hands a completed setup over to the Agent it created", async () => {
+    installFacts({
+      agents: [agent],
+      computers: [
+        {
+          ...computerA,
+          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+        },
+      ],
+      handoff: { bindingState: "active", handoffReady: true },
+    });
+    render(<OnboardingPage membership={admin} user={user} />);
+    expect(await screen.findByRole("heading", { name: "OpenTag is ready" })).toBeTruthy();
+
+    const manage = screen.getByRole("link", { name: "Manage this Agent" }) as HTMLAnchorElement;
+    expect(new URL(manage.href).pathname).toBe(`/agents/${agentId}/general`);
+    expect(screen.getByRole("link", { name: "Open Feishu" })).toBeTruthy();
+  });
+
+  it("leaves the application reachable from the page header", async () => {
+    installFacts();
+    renderPage();
+    expect(await screen.findByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
+
+    const brand = screen.getByRole("link", { name: "OpenTag" }) as HTMLAnchorElement;
+    expect(new URL(brand.href).pathname).toBe("/agents");
+  });
+
   it("shows Provider recovery when authoritative facts say no route is runnable", async () => {
     installFacts({ computers: [computerA] });
     renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false }]) });

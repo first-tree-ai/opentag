@@ -4,9 +4,17 @@
   font-family: var(--font-sans);
   font-synthesis: none;
 
-  --font-sans: "Geist Variable", Geist, ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "Geist Mono Variable", "SFMono-Regular", Consolas, monospace;
-  --font-display: "Bricolage Grotesque Variable", "Geist Variable", sans-serif;
+  /* Team, agent and member names are frequently Chinese and none of the
+     Latin faces carry CJK glyphs. Name the CJK fallback explicitly, ahead
+     of the generics, so those runs land on a chosen face instead of
+     whatever the platform picks. */
+  --font-sans:
+    "Geist Variable", Geist, "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei", "Noto Sans SC", ui-sans-serif,
+    system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", "SFMono-Regular", Consolas, "PingFang SC", "Microsoft YaHei", monospace;
+  --font-display:
+    "Bricolage Grotesque Variable", "Geist Variable", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei",
+    "Noto Sans SC", sans-serif;
 
   /* Raw steps. Whole pixels only: fractional rem values round differently
      across engines. Nothing outside this block may introduce a new step. */
@@ -44,6 +52,8 @@
   --lh-ui: 1.45;
   --lh-prose: 1.6;
 
+  /* Kept mild because headings carry user-supplied names: tight Latin
+     tracking crowds CJK, which has no side bearings to give back. */
   --track-tight: -0.02em;
   --track-label: 0.06em;
 
@@ -282,6 +292,21 @@ p {
 code,
 pre {
   font-family: var(--font-mono);
+}
+
+/* Counts, timestamps and identifiers sit in columns or update in place;
+   proportional digits make them jitter. */
+.agent-row,
+.agent-summary-strip,
+.definition-list,
+.row,
+.settings-member-row,
+.settings-computer-row,
+.timestamp,
+.mono,
+code,
+pre {
+  font-variant-numeric: tabular-nums;
 }
 
 .visually-hidden {

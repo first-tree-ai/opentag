@@ -2137,25 +2137,6 @@ textarea:focus {
   top: 28px;
 }
 
-.local-nav-group {
-  display: grid;
-  gap: 3px;
-}
-
-.local-nav-group + .local-nav-group {
-  margin-top: 15px;
-}
-
-.local-nav-group-label {
-  margin-bottom: 3px;
-  color: #737c72;
-  font-size: 0.66rem;
-  font-weight: 680;
-  letter-spacing: 0.09em;
-  padding: 0 11px;
-  text-transform: uppercase;
-}
-
 .settings-profile-form,
 .settings-policy-stack {
   display: grid;

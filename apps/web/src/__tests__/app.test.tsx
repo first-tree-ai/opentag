@@ -833,12 +833,20 @@ describe("OpenTag Web App Shell", () => {
       "Usage",
       "Security",
     ]);
-    expect(Array.from(navigation.querySelectorAll(".local-nav-group-label"), (label) => label.textContent)).toEqual([
-      "Personal",
-      "Team",
-      "Capabilities",
-      "Governance",
+    expect(navigation.querySelector(".local-nav-group-label")).toBeNull();
+    const mobileNavigation = screen.getByLabelText("Settings section");
+    expect(Array.from(mobileNavigation.querySelectorAll("option"), (option) => option.textContent)).toEqual([
+      "Account",
+      "General",
+      "Members",
+      "Computers",
+      "Resources",
+      "Integrations",
+      "Access",
+      "Usage",
+      "Security",
     ]);
+    expect(mobileNavigation.querySelector("optgroup")).toBeNull();
   });
 
   it("keeps unavailable Team capabilities explicit instead of inventing records", async () => {

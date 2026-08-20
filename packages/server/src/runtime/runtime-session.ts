@@ -12,6 +12,15 @@ import {
   ServerWelcomeFrameSchema,
 } from "@opentag/shared";
 import WebSocket, { type RawData } from "ws";
+import {
+  endRuntimeConnectionSpan,
+  endRuntimeFrameSpan,
+  runInRuntimeFrameSpan,
+  runtimeAttrs,
+  setRuntimeConnectionAttrs,
+  startRuntimeConnectionSpan,
+  startRuntimeFrameSpan,
+} from "../observability/index.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
 import type { ComputerService } from "../services/computers/index.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
@@ -104,9 +113,10 @@ export class RuntimeSession {
   }
 
   start(): void {
+    startRuntimeConnectionSpan(this.#socket);
     this.#armTimeout(this.#options.authTimeoutMs, "RUNTIME_AUTH_TIMEOUT", "Authentication timed out");
     this.#socket.on("message", (data, isBinary) => this.#onMessage(data, isBinary));
-    this.#socket.on("close", () => void this.#onClose());
+    this.#socket.on("close", (code) => void this.#onClose(code));
     this.#socket.on("error", () => undefined);
   }
 
@@ -263,6 +273,10 @@ export class RuntimeSession {
       }
       this.#computerId = frame.computerId;
       this.#instanceId = frame.instanceId;
+      setRuntimeConnectionAttrs(
+        this.#socket,
+        runtimeAttrs({ computerId: frame.computerId, instanceId: frame.instanceId }),
+      );
       this.#state = "registered";
       this.#clearHandshakeTimer();
       this.#send({ type: "computer:register:result", requestId: frame.requestId, ok: true });
@@ -322,16 +336,39 @@ export class RuntimeSession {
       signal: this.#abort.signal,
       userId: this.#userId,
     };
-    const accepted = scheduler.enqueue(key, async () => {
-      if (!this.#canSendBusiness(context)) return;
-      try {
-        const result = await business.handle(frame, context);
-        if (this.#canSendBusiness(context)) this.#sendBusinessResult(result);
-      } catch {
-        if (this.#canSendBusiness(context)) this.#sendBusinessResult(business.failureResult(frame));
-      }
-    });
-    if (!accepted) this.#sendBusinessResult(business.overloadResult(frame));
+    const frameTrace = startRuntimeFrameSpan(this.#socket, frame.type, runtimeBusinessFrameAttrs(frame, context));
+    const accepted = scheduler.enqueue(
+      key,
+      async () => {
+        let outcome = "failed";
+        let errorCode: string | undefined = "RUNTIME_FRAME_FAILED";
+        try {
+          if (!this.#canSendBusiness(context)) {
+            outcome = "stale_connection";
+            errorCode = "RUNTIME_CONNECTION_STALE";
+            return;
+          }
+          const result = await runInRuntimeFrameSpan(frameTrace, () => business.handle(frame, context));
+          if (!this.#canSendBusiness(context)) {
+            outcome = "stale_connection";
+            errorCode = "RUNTIME_CONNECTION_STALE";
+            return;
+          }
+          this.#sendBusinessResult(result);
+          outcome = "handled";
+          errorCode = undefined;
+        } catch {
+          if (this.#canSendBusiness(context)) this.#sendBusinessResult(business.failureResult(frame));
+        } finally {
+          endRuntimeFrameSpan(frameTrace, outcome, errorCode);
+        }
+      },
+      () => endRuntimeFrameSpan(frameTrace, "stale_connection", "RUNTIME_CONNECTION_STALE"),
+    );
+    if (!accepted) {
+      endRuntimeFrameSpan(frameTrace, "overloaded", "RUNTIME_SCHEDULER_OVERLOADED");
+      this.#sendBusinessResult(business.overloadResult(frame));
+    }
   }
 
   #canSendBusiness(context: RuntimeBusinessContext): boolean {
@@ -351,8 +388,9 @@ export class RuntimeSession {
     this.#send(result);
   }
 
-  async #onClose(): Promise<void> {
+  async #onClose(code?: number): Promise<void> {
     if (this.#state === "closed") return;
+    endRuntimeConnectionSpan(this.#socket, code);
     this.#state = "closed";
     this.#abort.abort();
     this.#businessScheduler?.close();
@@ -399,6 +437,7 @@ export class RuntimeSession {
     this.#clearHandshakeTimer();
     if (this.#tokenTimer) clearTimeout(this.#tokenTimer);
     this.#send({ type: "error", code, message, ...(requestId ? { requestId } : {}) } satisfies ServerRuntimeFrame);
+    endRuntimeConnectionSpan(this.#socket, closeCode);
     this.#socket.close(closeCode, message.slice(0, 120));
   }
 
@@ -415,6 +454,31 @@ export class RuntimeSession {
   #isClosing(): boolean {
     return this.#state === "closing" || this.#state === "closed";
   }
+}
+
+function runtimeBusinessFrameAttrs(
+  frame: RuntimeServerBusinessFrame,
+  runtime: RuntimeBusinessContext,
+): Record<string, unknown> {
+  return runtimeAttrs({
+    frameType: frame.type,
+    requestId: stringField(frame, "requestId"),
+    deliveryId: stringField(frame, "deliveryId"),
+    messageId: stringField(frame, "imMessageId"),
+    sessionId: stringField(frame, "sessionId"),
+    agentId: stringField(frame, "agentId"),
+    computerId: runtime.computerId,
+    instanceId: runtime.instanceId,
+    placementGeneration: numberField(frame, "placementGeneration"),
+  });
+}
+
+function stringField(value: Readonly<Record<string, unknown>>, key: string): string | undefined {
+  return typeof value[key] === "string" ? value[key] : undefined;
+}
+
+function numberField(value: Readonly<Record<string, unknown>>, key: string): number | undefined {
+  return typeof value[key] === "number" ? value[key] : undefined;
 }
 
 function positiveTimeout(value: number, name: string): number {

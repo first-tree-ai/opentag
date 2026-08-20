@@ -97,6 +97,7 @@ Admin Web；Agent 执行与即时通信仍属于后续纵向切片。
 ## 文档
 
 - [开发指南](./DEVELOPMENT.zh-CN.md)
+- [Server 可观测性](./docs/zh-CN/observability.md)
 - [贡献指南](./CONTRIBUTING.zh-CN.md)
 - [发布指南](./docs/zh-CN/releasing.md)
 - [部署指南](./docs/zh-CN/deploying.md)

@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ClientLogBindings, ClientLogger } from "@opentag/client";
@@ -8,6 +8,7 @@ import { registerDaemonCommand } from "../commands/daemon/index.js";
 import { executeDaemonServiceCommand } from "../commands/daemon/shared.js";
 import { channelConfig } from "../core/channel/config.js";
 import { acquireDaemonOwner } from "../core/daemon/ownership.js";
+import { resolveDaemonPaths } from "../core/daemon/paths.js";
 import { runDaemonServiceEntry } from "../core/daemon/runtime.js";
 import { createDaemonServiceManager, type DaemonServiceManager } from "../core/daemon/service/index.js";
 import type { ServiceRunner } from "../core/daemon/service/types.js";
@@ -90,7 +91,9 @@ describe("daemon service commands", () => {
     const messages: Array<{ fields: ClientLogBindings; message: string }> = [];
     const home = await mkdtemp(join(tmpdir(), "opentag-service-owner-malformed-"));
     try {
-      await writeFile(join(home, "daemon-owner.json"), "{}\n", { mode: 0o600 });
+      const paths = resolveDaemonPaths(home);
+      await mkdir(paths.daemonState, { mode: 0o700, recursive: true });
+      await writeFile(paths.daemonOwner, "{}\n", { mode: 0o600 });
       await expect(
         runDaemonServiceEntry({
           home,

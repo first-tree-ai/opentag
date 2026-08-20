@@ -113,7 +113,7 @@ describe("AgentWorkspaceManager", () => {
     const home = await temporaryHome();
     const external = await temporaryHome();
     const paths = agentRuntimePaths(home, "agent-1");
-    await mkdir(resolve(home, "runtime", "workspaces"), { recursive: true, mode: 0o700 });
+    await mkdir(resolve(home, "data", "workspaces"), { recursive: true, mode: 0o700 });
     await symlink(external, paths.workspaceRoot);
     const bindingStore = new SessionBindingStore({ home, providerHomeIdentity: "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore });

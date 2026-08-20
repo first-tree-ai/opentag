@@ -113,19 +113,54 @@ opentag-dev daemon status
 opentag-dev computer list
 ```
 
-The daemon reuses the stable Computer ID stored in its home, creates a new process instance on every service start, and
-connects to `/api/v1/computer/ws`. Manage it with `daemon install/start/stop/restart/status/uninstall`. `uninstall`
-preserves credentials and Computer identity. Use `login --no-start` for credential-only setup; Windows services are not
-supported in v0.1. Linux logs are available through `journalctl --user -u opentag-dev.service`; macOS logs are under the
-channel home's `logs` directory. Optional `${OPENTAG_HOME}/daemon.env` must be a private regular file (mode `0600`) and
-can provide service-only environment values without overriding pinned service settings. The CLI uses `/api/v1/auth/...`
-and `/api/v1/me/...`; `/healthz` and `/readyz` remain unversioned deployment probes.
+The daemon reuses the stable Computer ID stored at `${OPENTAG_HOME}/data/computer.json`, creates a new process instance
+on every service start, and connects to `/api/v1/computer/ws`. OpenTag Home is organized by lifecycle:
+
+```text
+${OPENTAG_HOME}/
+├── config/
+│   ├── credentials.json
+│   └── daemon.env
+├── data/
+│   ├── computer.json
+│   ├── runtime/agents/<agent-key>/
+│   └── workspaces/<agent-key>/
+├── state/
+│   ├── daemon/owner.json
+│   └── service/
+│       ├── operation.json
+│       ├── target-operation.json  # default channel Home only
+│       └── <serviceId>
+└── logs/
+```
+
+Directories are private (`0700`); credentials, identity, runtime recovery records, and lease files are private regular
+files (`0600`). Directories and files are created only when their owner needs them. In particular, `login --no-start`
+creates only `config/credentials.json`; runtime recovery records and workspaces appear on the first relevant reconcile.
+
+This layout is a clean break: OpenTag does not read, migrate, delete, or fall back to root-level `credentials.json`,
+`computer.json`, `daemon-owner.json`, `runtime/`, `service/`, or `~/.opentag-service-targets`. Use a fresh Home, or move
+the old Home aside and log in again. Existing legacy files otherwise remain unused on disk.
+
+Manage the daemon with `daemon install/start/stop/restart/status/uninstall`. `uninstall` preserves `config/` and `data/`.
+Windows services are not supported in v0.1. Linux logs are available through
+`journalctl --user -u opentag-dev.service`; macOS logs are under `${OPENTAG_HOME}/logs`. Optional
+`${OPENTAG_HOME}/config/daemon.env` must be a private regular file (mode `0600`) and can provide service-only environment
+values without overriding pinned service settings. The CLI uses `/api/v1/auth/...` and `/api/v1/me/...`; `/healthz` and
+`/readyz` remain unversioned deployment probes.
 
 The dev service definition is `~/.config/systemd/user/opentag-dev.service` on Linux or
-`~/Library/LaunchAgents/opentag-dev.plist` on macOS; the macOS wrapper is `${OPENTAG_HOME}/service/opentag-dev`.
+`~/Library/LaunchAgents/opentag-dev.plist` on macOS; the macOS wrapper is
+`${OPENTAG_HOME}/state/service/opentag-dev`.
 Staging and production replace the suffix with their channel `serviceId` (`opentag-staging` or `opentag`). If login saves
 credentials but service installation fails, fix the reported manager issue and run
 `opentag-dev daemon install`; do not request another connect code.
+
+Service mutation has two independent leases. `${OPENTAG_HOME}/state/service/operation.json` serializes operations for
+the current Home. The target lease is fixed at the current user's default Home for the binary's channel — for example,
+`~/.opentag-dev/state/service/target-operation.json` — so multiple custom `OPENTAG_HOME` values cannot concurrently
+modify the same `opentag-dev.service`. Dev, staging, and production use different default Homes and service targets, so
+their target leases do not contend.
 
 ## Manage Agent configurations
 
@@ -228,7 +263,7 @@ processes.
 | `OPENTAG_AUTO_MIGRATE` | `true` | Run checked-in migrations before listening |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | Access-token lifetime |
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-JWT lifetime |
-| `OPENTAG_HOME` | channel-specific | CLI credentials, Computer identity, and daemon ownership directory (`~/.opentag-dev` in source) |
+| `OPENTAG_HOME` | channel-specific | Root for lifecycle-separated `config/`, `data/`, `state/`, and `logs/` (`~/.opentag-dev` in source) |
 
 If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm
 the server is running and that the configured URL points to its base address.

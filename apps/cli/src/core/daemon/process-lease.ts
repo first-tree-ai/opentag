@@ -1,7 +1,8 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { lstat, open, readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { ensurePrivateDirectory, validatePrivateDirectory } from "@opentag/client";
 
 export interface ProcessLeaseRecord {
   pid: number;
@@ -25,6 +26,7 @@ export interface ProcessLeaseOptions<T extends ProcessLeaseRecord> {
   getProcessIdentity?: (pid: number) => Promise<ProcessIdentityInspection>;
   getId(record: T): string;
   parseRecord(value: unknown): T;
+  rootDirectory?: string;
 }
 
 export type ProcessIdentityInspection = { id: string; state: "identified" } | { state: "gone" | "unverifiable" };
@@ -49,7 +51,7 @@ export async function acquireProcessFileLease<T extends ProcessLeaseRecord>(
   home: string,
   options: ProcessLeaseOptions<T>,
 ): Promise<ProcessFileLease<T>> {
-  await ensurePrivateDirectory(home);
+  await ensurePrivateDirectory(options.rootDirectory ?? home, home);
   const path = join(home, options.fileName);
   const getProcessIdentity = options.getProcessIdentity ?? inspectProcessIdentity;
   const currentIdentity = await getProcessIdentity(process.pid);
@@ -90,6 +92,7 @@ export async function inspectProcessFileLease<T extends ProcessLeaseRecord>(
   home: string,
   options: Omit<ProcessLeaseOptions<T>, "createRecord">,
 ): Promise<ProcessLeaseInspection<T>> {
+  if (!(await validatePrivateDirectory(options.rootDirectory ?? home, home))) return { state: "missing" };
   const path = join(home, options.fileName);
   let record: T;
   try {
@@ -181,14 +184,6 @@ function leaseFor<T extends ProcessLeaseRecord>(
       await rm(path);
     },
   };
-}
-
-async function ensurePrivateDirectory(path: string): Promise<void> {
-  await mkdir(path, { recursive: true, mode: 0o700 });
-  const status = await lstat(path);
-  if (!status.isDirectory() || status.isSymbolicLink()) {
-    throw new Error("The OpenTag home must be a real directory");
-  }
 }
 
 async function readProcessLease<T extends ProcessLeaseRecord>(

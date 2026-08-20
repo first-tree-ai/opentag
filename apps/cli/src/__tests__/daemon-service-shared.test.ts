@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { getChannelConfig } from "@opentag/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadDaemonEnvironment } from "../core/daemon/environment.js";
+import { resolveDaemonPaths } from "../core/daemon/paths.js";
 import {
   acquireProcessFileLease,
   inspectDarwinProcessIdentity,
@@ -11,6 +12,7 @@ import {
 } from "../core/daemon/process-lease.js";
 import {
   acquireServiceOperationLease,
+  acquireServiceTargetLease,
   canonicalizeServiceHome,
   deriveServiceIdentity,
   escapeXml,
@@ -100,11 +102,36 @@ describe("daemon service primitives", () => {
 
   it("serializes service mutations per home", async () => {
     const home = await temporaryDirectory("opentag-operation-");
+    const paths = resolveDaemonPaths(home);
     const first = await acquireServiceOperationLease(home);
+    await expect(readFile(paths.serviceOperation, "utf8")).resolves.toContain("operationId");
     await expect(acquireServiceOperationLease(home)).rejects.toThrow("already running");
     await first.release();
     const second = await acquireServiceOperationLease(home);
     await second.release();
+  });
+
+  it("stores a channel target lease in that channel's default Home", async () => {
+    const userHome = await temporaryDirectory("opentag-target-operation-");
+    const config = getChannelConfig("dev", userHome);
+    const paths = resolveDaemonPaths(config.defaultHome);
+
+    const lease = await acquireServiceTargetLease(config.defaultHome, config.serviceId);
+    await expect(readFile(paths.serviceTargetOperation, "utf8")).resolves.toContain("operationId");
+    await lease.release();
+  });
+
+  it("does not make different channels contend for one target lease", async () => {
+    const userHome = await temporaryDirectory("opentag-channel-operations-");
+    const dev = getChannelConfig("dev", userHome);
+    const production = getChannelConfig("prod", userHome);
+
+    const devLease = await acquireServiceTargetLease(dev.defaultHome, dev.serviceId);
+    const productionLease = await acquireServiceTargetLease(production.defaultHome, production.serviceId);
+    expect(resolveDaemonPaths(dev.defaultHome).serviceTargetOperation).not.toBe(
+      resolveDaemonPaths(production.defaultHome).serviceTargetOperation,
+    );
+    await Promise.all([devLease.release(), productionLease.release()]);
   });
 
   it("serializes stale lease takeover before publishing a successor", async () => {
@@ -309,8 +336,10 @@ describe("daemon service primitives", () => {
 describe("daemon.env", () => {
   it("fills missing keys without overriding pinned values or logging values", async () => {
     const home = await temporaryDirectory("opentag-env-");
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.config, { mode: 0o700, recursive: true });
     await writeFile(
-      join(home, "daemon.env"),
+      paths.daemonEnvironment,
       ["# service env", "export HTTPS_PROXY='http://secret-proxy'", "OPENTAG_HOME=/wrong", "BROKEN", ""].join("\n"),
       { mode: 0o600 },
     );
@@ -324,14 +353,26 @@ describe("daemon.env", () => {
 
   it("rejects broad permissions and symlinks", async () => {
     const home = await temporaryDirectory("opentag-env-");
-    const target = join(home, "target.env");
+    const paths = resolveDaemonPaths(home);
+    await mkdir(paths.config, { mode: 0o700, recursive: true });
+    const target = join(paths.config, "target.env");
     await writeFile(target, "KEY=value\n", { mode: 0o600 });
-    await symlink(target, join(home, "daemon.env"));
+    await symlink(target, paths.daemonEnvironment);
     await expect(loadDaemonEnvironment(home, {})).rejects.toThrow("regular file");
-    await rm(join(home, "daemon.env"));
-    await writeFile(join(home, "daemon.env"), "KEY=value\n", { mode: 0o600 });
-    await chmod(join(home, "daemon.env"), 0o644);
+    await rm(paths.daemonEnvironment);
+    await writeFile(paths.daemonEnvironment, "KEY=value\n", { mode: 0o600 });
+    await chmod(paths.daemonEnvironment, 0o644);
     await expect(loadDaemonEnvironment(home, {})).rejects.toThrow("permissions");
+  });
+
+  it("rejects a symlinked config directory", async () => {
+    const home = await temporaryDirectory("opentag-env-home-");
+    const external = await temporaryDirectory("opentag-env-external-");
+    const paths = resolveDaemonPaths(home);
+    await writeFile(join(external, "daemon.env"), "KEY=value\n", { mode: 0o600 });
+    await symlink(external, paths.config, "dir");
+
+    await expect(loadDaemonEnvironment(home, {})).rejects.toThrow(/real director/i);
   });
 });
 

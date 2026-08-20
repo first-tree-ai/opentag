@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { credentialsPath, readCredentials, resolveComputerIdentity } from "@opentag/client";
@@ -42,6 +42,7 @@ describe("runLogin", () => {
       accessTokenExpiresAt: "2026-08-18T00:15:00.000Z",
       refreshToken: "refresh-secret",
     });
+    expect(await readdir(home)).toEqual(["config"]);
   });
 
   it("rejects another server before consuming a connect code for a bound home", async () => {

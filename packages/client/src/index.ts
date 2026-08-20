@@ -57,7 +57,6 @@ export {
   CREDENTIALS_FILE_NAME,
   credentialsPath,
   readCredentials,
-  resolveOpenTagHome,
   type StoredCredentials,
   writeCredentialsAtomically,
 } from "./auth/credentials.js";
@@ -237,7 +236,13 @@ export {
   RuntimeStorageError,
   readDurableJson,
   readSecureFile,
+  validatePrivateDirectory,
   writeDurableFile,
   writeDurableJson,
 } from "./storage/durable-file.js";
+export {
+  type OpenTagHomeLayout,
+  resolveOpenTagHome,
+  resolveOpenTagHomeLayout,
+} from "./storage/home-layout.js";
 export { readPrivateJson, writePrivateJson } from "./storage/private-json-file.js";

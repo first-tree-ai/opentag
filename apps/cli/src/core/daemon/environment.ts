@@ -1,5 +1,6 @@
 import { lstat, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { validatePrivateDirectory } from "@opentag/client";
+import { resolveDaemonPaths } from "./paths.js";
 import { DaemonServiceError } from "./service/types.js";
 
 export interface DaemonEnvironmentResult {
@@ -13,7 +14,11 @@ export async function loadDaemonEnvironment(
   home: string,
   baseEnvironment: NodeJS.ProcessEnv = process.env,
 ): Promise<DaemonEnvironmentResult> {
-  const path = join(home, "daemon.env");
+  const paths = resolveDaemonPaths(home);
+  if (!(await validatePrivateDirectory(paths.home, paths.config))) {
+    return { appliedKeys: [], diagnostics: [], env: { ...baseEnvironment }, malformedLineNumbers: [] };
+  }
+  const path = paths.daemonEnvironment;
   let content: string;
   try {
     const status = await lstat(path);

@@ -292,7 +292,10 @@ jobs:
           trap cleanup_runtime EXIT
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs \
             login "$connect_code" --server http://127.0.0.1:18000 --no-start
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs daemon service-run >"$daemon_log" 2>&1 &
+          test -f "$runtime_home/config/credentials.json"
+          test ! -e "$runtime_home/credentials.json"
+          OPENTAG_HOME="$runtime_home" OPENTAG_SERVICE_MODE=1 node apps/cli/dist/cli/index.mjs daemon service-run \
+            >"$daemon_log" 2>&1 &
           daemon_pid=$!
 
           for attempt in $(seq 1 30); do
@@ -305,12 +308,15 @@ jobs:
             fi
             sleep 1
           done
+          test -f "$runtime_home/state/daemon/owner.json"
+          test -f "$runtime_home/logs/client.log"
           OPENTAG_HOME="$runtime_home" timeout 5s node apps/cli/dist/cli/index.mjs daemon service-run \
             >"$runtime_home/second.log" 2>&1
           grep -q "already running" "$runtime_home/second.log"
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list | grep -q $'\tonline\t'
           computer_id=$(node -p "JSON.parse(require('node:fs').readFileSync(process.argv[1], 'utf8')).computerId" \
-            "$runtime_home/computer.json")
+            "$runtime_home/data/computer.json")
+          test ! -e "$runtime_home/computer.json"
 
           agent_create=$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent create \
             --team example \
@@ -331,9 +337,11 @@ jobs:
           kill -INT "$daemon_pid"
           wait "$daemon_pid"
           unset daemon_pid
+          test ! -e "$runtime_home/state/daemon/owner.json"
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list | grep -q $'\toffline\t'
 
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs daemon service-run >"$daemon_log" 2>&1 &
+          OPENTAG_HOME="$runtime_home" OPENTAG_SERVICE_MODE=1 node apps/cli/dist/cli/index.mjs daemon service-run \
+            >"$daemon_log" 2>&1 &
           daemon_pid=$!
           for attempt in $(seq 1 30); do
             if list=$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer list) && \

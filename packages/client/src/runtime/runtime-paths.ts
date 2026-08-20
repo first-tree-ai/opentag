@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 
 export function deriveRuntimeKey(kind: "agent" | "session" | "snapshot", id: string): string {
   const digest = createHash("sha256").update(`${kind}\0${id}`, "utf8").digest("hex");
@@ -18,11 +19,11 @@ export interface AgentRuntimePaths {
 }
 
 export function agentRuntimePaths(home: string, agentId: string): AgentRuntimePaths {
-  const runtimeRoot = resolve(home, "runtime");
-  const controlRoot = resolve(runtimeRoot, "control");
+  const layout = resolveOpenTagHomeLayout(home);
+  const controlRoot = layout.runtimeAgents;
   const key = deriveRuntimeKey("agent", agentId);
-  const agentControl = resolve(controlRoot, "agents", key);
-  const workspaceRoot = resolve(runtimeRoot, "workspaces", key);
+  const agentControl = resolve(controlRoot, key);
+  const workspaceRoot = resolve(layout.workspaces, key);
   return {
     agentControl,
     agentsFile: resolve(workspaceRoot, "AGENTS.md"),

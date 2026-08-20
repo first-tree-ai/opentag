@@ -1,6 +1,8 @@
 import { homedir, userInfo } from "node:os";
 import { resolve } from "node:path";
 import { readCredentials, resolveOpenTagHome } from "@opentag/client";
+import { getChannelConfig } from "@opentag/shared";
+import { CHANNEL } from "../../../build-info.js";
 import { channelConfig } from "../../channel/config.js";
 import { inspectDaemonOwner } from "../ownership.js";
 import { createLaunchdBackend } from "./launchd.js";
@@ -53,6 +55,7 @@ export async function createDaemonServiceManager(
   const home = await canonicalizeServiceHome(resolve(options.home ?? resolveOpenTagHome(options.env ?? process.env)));
   const runner = options.runner ?? defaultServiceRunner;
   const userHome = await canonicalizeServiceHome(resolve(options.userHome ?? homedir()));
+  const channelDefaultHome = await canonicalizeServiceHome(getChannelConfig(CHANNEL, userHome).defaultHome);
   const invocation =
     options.invocation ??
     (platform === "darwin" || platform === "linux"
@@ -79,7 +82,7 @@ export async function createDaemonServiceManager(
     mutation: DaemonServiceMutation,
     operation: () => Promise<DaemonServiceInfo>,
   ): Promise<DaemonServiceInfo> => {
-    const targetLease = await acquireServiceTargetLease(userHome, channelConfig.serviceId);
+    const targetLease = await acquireServiceTargetLease(channelDefaultHome, channelConfig.serviceId);
     let lease: Awaited<ReturnType<typeof acquireServiceOperationLease>> | undefined;
     try {
       lease = await acquireServiceOperationLease(home);

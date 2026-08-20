@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, stat, symlink } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -40,8 +40,10 @@ describe("credential storage", () => {
 
     expect(await readCredentials(home)).toEqual({ ...credentials, accessToken: "next" });
     expect((await stat(home)).mode & 0o777).toBe(0o700);
+    expect((await stat(join(home, "config"))).mode & 0o777).toBe(0o700);
     expect((await stat(credentialsPath(home))).mode & 0o777).toBe(0o600);
-    expect(await readdir(home)).toEqual(["credentials.json"]);
+    expect(await readdir(home)).toEqual(["config"]);
+    expect(await readdir(join(home, "config"))).toEqual(["credentials.json"]);
   });
 
   it("rejects a symlinked canonical home", async () => {
@@ -51,10 +53,24 @@ describe("credential storage", () => {
     await mkdir(target);
     await symlink(target, linkedHome, "dir");
 
-    await expect(writeCredentialsAtomically(credentials, linkedHome)).rejects.toThrow(
-      "The OpenTag home must be a real directory",
-    );
+    await expect(writeCredentialsAtomically(credentials, linkedHome)).rejects.toThrow(/real director/i);
     expect(await readdir(target)).toEqual([]);
+  });
+
+  it("rejects a symlinked nested config directory", async () => {
+    const home = await temporaryHome();
+    const external = await temporaryHome();
+    await symlink(external, join(home, "config"), "dir");
+
+    await expect(writeCredentialsAtomically(credentials, home)).rejects.toThrow(/real director/i);
+    expect(await readdir(external)).toEqual([]);
+  });
+
+  it("does not read legacy root credentials", async () => {
+    const home = await temporaryHome();
+    await writeFile(join(home, "credentials.json"), `${JSON.stringify(credentials)}\n`, { mode: 0o600 });
+
+    await expect(readCredentials(home)).resolves.toBeUndefined();
   });
 });
 
@@ -146,5 +162,20 @@ describe("Computer identity", () => {
     await expect(resolveComputerIdentity(home, "https://other.example", first.userId)).rejects.toThrow(
       "bound to another server or user",
     );
+  });
+
+  it("does not read a legacy root Computer identity", async () => {
+    const home = await temporaryHome();
+    const legacy = {
+      version: 1,
+      computerId: crypto.randomUUID(),
+      serverUrl: "https://legacy.example",
+      userId: crypto.randomUUID(),
+    };
+    await writeFile(join(home, "computer.json"), `${JSON.stringify(legacy)}\n`, { mode: 0o600 });
+
+    const current = await resolveComputerIdentity(home, "https://opentag.example", crypto.randomUUID());
+    expect(current.computerId).not.toBe(legacy.computerId);
+    expect(computerIdentityPath(home)).toBe(join(home, "data", "computer.json"));
   });
 });

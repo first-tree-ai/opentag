@@ -1,6 +1,7 @@
 import { rm } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
+import { resolveDaemonPaths } from "../paths.js";
 import {
   buildServicePath,
   deriveServiceIdentity,
@@ -63,6 +64,7 @@ WantedBy=default.target
 
 export function createSystemdBackend(options: SystemdBackendOptions): DaemonServiceBackend {
   const identity = deriveServiceIdentity(options.serviceId);
+  const paths = resolveDaemonPaths(options.home);
   const userHome = options.userHome ?? homedir();
   const uid = options.uid ?? userInfo().uid;
   const username = options.username ?? userInfo().username;
@@ -280,7 +282,7 @@ export function createSystemdBackend(options: SystemdBackendOptions): DaemonServ
     return {
       currentHome: options.home,
       definitionPath: unitPath,
-      logHint: `${join(options.home, "logs", "client.log")} (fallback: journalctl --user -u ${identity.systemdUnitName} -f)`,
+      logHint: `${paths.clientLog} (fallback: journalctl --user -u ${identity.systemdUnitName} -f)`,
       platform: "systemd",
       serviceId: options.serviceId,
       state,

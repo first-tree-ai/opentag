@@ -2,9 +2,11 @@ import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeCredentialsAtomically } from "@opentag/client";
+import { getChannelConfig } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { channelConfig } from "../core/channel/config.js";
 import { acquireDaemonOwner } from "../core/daemon/ownership.js";
+import { resolveDaemonPaths } from "../core/daemon/paths.js";
 import { createDaemonServiceManager } from "../core/daemon/service/index.js";
 import { createLaunchdBackend, renderLaunchdPlist, renderLaunchdWrapper } from "../core/daemon/service/launchd.js";
 import { buildServicePath } from "../core/daemon/service/shared.js";
@@ -381,7 +383,15 @@ describe("systemd service backend", () => {
 
     const winner = first.installAndStart();
     await reloadReached;
+    const targetHome = getChannelConfig(channelConfig.channel, userHome).defaultHome;
+    await expect(readFile(resolveDaemonPaths(targetHome).serviceTargetOperation, "utf8")).resolves.toContain(
+      "operationId",
+    );
+    await expect(readFile(resolveDaemonPaths(firstHome).serviceOperation, "utf8")).resolves.toContain("operationId");
     await expect(second.installAndStart()).rejects.toThrow("service-target operation is already running");
+    await expect(readFile(resolveDaemonPaths(secondHome).serviceOperation, "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
     releaseReload?.();
     await expect(winner).resolves.toMatchObject({ configuredHome: canonicalFirstHome, state: "active" });
 
@@ -439,10 +449,10 @@ describe("launchd service backend", () => {
       path: "/usr/bin:/bin",
       stderrPath: "/Users/test/.opentag/logs/daemon.stderr.log",
       stdoutPath: "/Users/test/.opentag/logs/daemon.stdout.log",
-      wrapperPath: "/Users/test/.opentag/service/opentag",
+      wrapperPath: "/Users/test/.opentag/state/service/opentag",
     });
     expect(plist).toContain("<string>opentag</string>");
-    expect(plist).toContain("<string>/Users/test/.opentag/service/opentag</string>");
+    expect(plist).toContain("<string>/Users/test/.opentag/state/service/opentag</string>");
     expect(plist).not.toContain("node");
     expect(plist).not.toContain("index.mjs");
     expect(wrapper).toContain("'/usr/bin/node' '/app/index.mjs' 'daemon' 'service-run'");
@@ -670,7 +680,7 @@ async function writeLaunchdDefinitions(options: {
   invocation: { args: string[]; program: string };
   userHome: string;
 }): Promise<void> {
-  const wrapperPath = join(options.home, "service", "opentag");
+  const wrapperPath = join(options.home, "state", "service", "opentag");
   await writeFileWithParents(wrapperPath, renderLaunchdWrapper(options.invocation));
   await writeFileWithParents(
     join(options.userHome, "Library", "LaunchAgents", "opentag.plist"),

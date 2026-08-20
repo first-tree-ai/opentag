@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { arch, hostname, platform } from "node:os";
-import { join } from "node:path";
 import {
   AccessTokenProvider,
   type ClientLogger,
@@ -18,6 +17,7 @@ import {
 import { CLI_VERSION } from "../../build-info.js";
 import { applyDaemonEnvironment } from "./environment.js";
 import { acquireDaemonOwner, DaemonOwnerStartupError } from "./ownership.js";
+import { resolveDaemonPaths } from "./paths.js";
 import { DaemonServiceError } from "./service/types.js";
 
 export interface DaemonRuntimeOptions {
@@ -76,6 +76,7 @@ export class DaemonRuntimeConfigurationError extends Error {
 
 export async function runDaemonService(options: DaemonRuntimeOptions = {}): Promise<void> {
   const home = options.home ?? resolveOpenTagHome();
+  const paths = resolveDaemonPaths(home);
   const signals = options.signals ?? process;
   const instanceId = randomUUID();
   const currentPlatform = platform();
@@ -100,7 +101,7 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
   let failed = false;
   try {
     const environmentResult = await applyDaemonEnvironment(home, process.env);
-    if (process.env.OPENTAG_SERVICE_MODE === "1") configureClientLoggerForService(join(home, "logs"));
+    if (process.env.OPENTAG_SERVICE_MODE === "1") configureClientLoggerForService(paths.logs);
     const logger = (options.logger ?? createLogger("daemon")).child(baseBindings);
     lifecycleLogger = logger;
     terminalLogger = logger;

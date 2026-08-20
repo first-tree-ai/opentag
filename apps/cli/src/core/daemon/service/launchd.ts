@@ -1,6 +1,8 @@
-import { mkdir, rm } from "node:fs/promises";
+import { rm } from "node:fs/promises";
 import { homedir, userInfo } from "node:os";
 import { join } from "node:path";
+import { ensurePrivateDirectory } from "@opentag/client";
+import { resolveDaemonPaths } from "../paths.js";
 import {
   buildServicePath,
   deriveServiceIdentity,
@@ -88,10 +90,11 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
   const target = `${domain}/${identity.launchdLabel}`;
   const launchctl = options.launchctl ?? "launchctl";
   const plistPath = join(userHome, "Library", "LaunchAgents", identity.launchdPlistName);
-  const wrapperPath = join(options.home, "service", identity.launchdWrapperName);
-  const logDirectory = join(options.home, "logs");
-  const stdoutPath = join(logDirectory, "daemon.stdout.log");
-  const stderrPath = join(logDirectory, "daemon.stderr.log");
+  const paths = resolveDaemonPaths(options.home);
+  const wrapperPath = paths.serviceWrapper(identity.launchdWrapperName);
+  const logDirectory = paths.logs;
+  const stdoutPath = paths.daemonStdoutLog;
+  const stderrPath = paths.daemonStderrLog;
   const servicePath = buildServicePath(options.invocation, "darwin");
   const expectedWrapper = renderLaunchdWrapper(options.invocation);
   const expectedPlist = renderLaunchdPlist({
@@ -213,8 +216,8 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
     preflight,
     async installAndStart() {
       await preflight();
-      await mkdir(logDirectory, { recursive: true, mode: 0o700 });
-      await writeFileAtomically(wrapperPath, expectedWrapper, 0o700);
+      await ensurePrivateDirectory(paths.home, logDirectory);
+      await writeFileAtomically(wrapperPath, expectedWrapper, 0o700, 0o700, paths.home);
       await writeFileAtomically(plistPath, expectedPlist, 0o644, 0o700);
       await bootout();
       await waitForEviction();
@@ -288,7 +291,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
     return {
       currentHome: options.home,
       definitionPath: plistPath,
-      logHint: `${join(options.home, "logs", "client.log")} (fallback: ${stdoutPath} / ${stderrPath})`,
+      logHint: `${paths.clientLog} (fallback: ${stdoutPath} / ${stderrPath})`,
       platform: "launchd",
       serviceId: options.serviceId,
       state,

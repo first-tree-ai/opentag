@@ -228,8 +228,8 @@ export async function createClientRuntime(
   });
   let runner: AgentTurnRunner;
   const preflight = createClientRuntimePreflight({
-    ensureProviderReady: (providerId) => providers.ensureReady(providerId, readinessSignal),
-    validateProviderConfiguration: (snapshot) => providers.validateConfiguration(snapshot),
+    providers,
+    readinessSignal,
     runtimeManager,
     workspace,
   });
@@ -366,8 +366,8 @@ export async function resolveExecutable(command: string, environment: NodeJS.Pro
 }
 
 interface ClientRuntimePreflightDependencies {
-  readonly ensureProviderReady: (providerId: string) => Promise<void>;
-  readonly validateProviderConfiguration: AgentRuntimeProviderRegistration["validate"];
+  readonly providers: Pick<AgentRuntimeProviderRegistry, "ensureReady" | "validateConfiguration">;
+  readonly readinessSignal?: AbortSignal;
   readonly runtimeManager: Pick<SessionRuntimeManager, "runtime">;
   readonly workspace: Pick<AgentWorkspaceManager, "verifyAgent">;
 }
@@ -376,10 +376,10 @@ export function createClientRuntimePreflight(
   dependencies: ClientRuntimePreflightDependencies,
 ): NonNullable<ConstructorParameters<typeof TurnCustodyOwner>[0]["preflight"]> {
   return async (request) => {
-    const policyReason = dependencies.validateProviderConfiguration(request.runtime);
+    const policyReason = dependencies.providers.validateConfiguration(request.runtime);
     if (policyReason) return policyReason;
     try {
-      await dependencies.ensureProviderReady(request.runtime.provider);
+      await dependencies.providers.ensureReady(request.runtime.provider, dependencies.readinessSignal);
       await dependencies.workspace.verifyAgent(request.runtime, computeRuntimeSnapshotHashes(request.runtime));
       dependencies.runtimeManager.runtime(request.sessionId);
       return undefined;

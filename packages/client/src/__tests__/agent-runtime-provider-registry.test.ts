@@ -160,6 +160,16 @@ describe("AgentRuntimeProviderRegistry", () => {
     preAbortedRefresh.abort(new Error("stop before refresh"));
     await expect(aborting.refresh("codex", preAbortedRefresh.signal)).rejects.toThrow("stop before refresh");
     expect(probe).toHaveBeenCalledTimes(2);
+
+    const synchronousController = new AbortController();
+    const synchronousFailure = new Error("stop while probe starts");
+    const synchronousProbe = vi.fn(async () => {
+      synchronousController.abort(synchronousFailure);
+      throw synchronousFailure;
+    });
+    const synchronous = new AgentRuntimeProviderRegistry([registration(factory("codex", synchronousProbe))]);
+    await expect(synchronous.refresh("codex", synchronousController.signal)).rejects.toThrow("stop while probe starts");
+    await vi.waitFor(() => expect(synchronousProbe).toHaveBeenCalledOnce());
   });
 });
 

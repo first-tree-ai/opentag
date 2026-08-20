@@ -226,13 +226,12 @@ describe("createClientRuntime production composition", () => {
     const verifyAgent = vi.fn(async () => undefined);
     const validateProviderConfiguration = vi.fn(() => undefined as "configuration_unsupported" | undefined);
     const preflight = createClientRuntimePreflight({
-      ensureProviderReady,
-      validateProviderConfiguration,
+      providers: { ensureReady: ensureProviderReady, validateConfiguration: validateProviderConfiguration },
       runtimeManager: { runtime } as never,
       workspace: { verifyAgent } as never,
     });
     await expect(preflight(request)).resolves.toBeUndefined();
-    expect(ensureProviderReady).toHaveBeenCalledWith("codex");
+    expect(ensureProviderReady).toHaveBeenCalledWith("codex", undefined);
     expect(verifyAgent).toHaveBeenCalledOnce();
     expect(runtime).toHaveBeenCalledWith("session-1");
 

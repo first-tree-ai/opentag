@@ -97,6 +97,7 @@ export class AgentRuntimeProviderRegistry {
         record.settled = true;
         if (this.#probes.get(providerId) === record) this.#probes.delete(providerId);
       });
+      void promise.catch(() => undefined);
       record = { controller, promise, settled: false, waiters: 0 };
       probe = record;
       this.#probes.set(providerId, probe);

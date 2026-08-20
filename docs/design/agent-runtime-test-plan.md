@@ -244,8 +244,9 @@ is reported as a failure; it is never converted into a skipped success.
 
 ## Latest Local Execution
 
-On 2026-08-20 the contract-hardening Agent Runtime suite passed 251 tests with
-100% statements, branches, functions, and lines. All 370 Client tests passed.
+On 2026-08-20 the combined contract and Provider Registry Agent Runtime suite
+passed 255 tests with 100% statements, branches, functions, and lines. All 376
+Client tests passed.
 Repository formatting, notice, build, and type-check gates passed, as did all
 104 Server integration tests.
 

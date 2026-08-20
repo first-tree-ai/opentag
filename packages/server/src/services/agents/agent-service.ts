@@ -273,9 +273,10 @@ export class AgentService {
   ): Promise<AgentAdminConfig | undefined> {
     return this.#database.transaction(async (transaction) => {
       await this.#requireTeamMembershipForMutation(transaction, callerUserId, teamId, "admin");
-      const [agent] = await transaction
-        .select()
+      const [row] = await transaction
+        .select({ agent: agents, runtimeConfig: agentRuntimeConfigs })
         .from(agents)
+        .innerJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
         .where(
           and(
             eq(agents.teamId, teamId),
@@ -284,16 +285,8 @@ export class AgentService {
           ),
         )
         .limit(1);
-      if (!agent) return undefined;
-      const [storedRuntimeConfig] = await transaction
-        .select()
-        .from(agentRuntimeConfigs)
-        .where(eq(agentRuntimeConfigs.agentId, agent.id))
-        .limit(1);
-      const matchesIntent =
-        agent.status !== "deleted" &&
-        agent.creationIntentFingerprint === intentFingerprint &&
-        storedRuntimeConfig !== undefined;
+      if (!row) return undefined;
+      const matchesIntent = row.agent.status !== "deleted" && row.agent.creationIntentFingerprint === intentFingerprint;
       if (!matchesIntent) {
         throw new AgentServiceError(
           "AGENT_CREATION_INTENT_CONFLICT",
@@ -302,7 +295,7 @@ export class AgentService {
           409,
         );
       }
-      return toAgentAdminConfig(agent, storedRuntimeConfig);
+      return toAgentAdminConfig(row.agent, row.runtimeConfig);
     });
   }
 

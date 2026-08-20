@@ -283,6 +283,62 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
+  it("returns one atomic Agent and runtime-config revision during concurrent replay", async () => {
+    const value = await fixture();
+    const updater = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+    const observer = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+    const lockHeld = deferred<void>();
+    const releaseUpdate = deferred<void>();
+    try {
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const input = {
+        ...createInput(computer.id),
+        creationIntentId: "a3adbe5e-8e8e-4ac2-a013-b026684ab185",
+      };
+      const created = await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, input);
+      const update = updater.begin(async (transaction) => {
+        await transaction.unsafe("lock table agent_runtime_configs in access exclusive mode");
+        lockHeld.resolve();
+        await releaseUpdate.promise;
+        await transaction`
+          update agents
+          set display_name = 'Concurrent update', revision = revision + 1, updated_at = now()
+          where id = ${created.id}
+        `;
+        await transaction`
+          update agent_runtime_configs
+          set instructions = 'Concurrent instructions',
+              revision = nextval('runtime_config_revision_sequence'),
+              updated_at = now()
+          where agent_id = ${created.id}
+        `;
+      });
+      await lockHeld.promise;
+
+      const replay = value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, input);
+      await waitUntil(async () => {
+        const [waiting] = await observer<{ count: number }[]>`
+          select count(*)::int as count
+          from pg_locks
+          where relation = 'agent_runtime_configs'::regclass and not granted
+        `;
+        return (waiting?.count ?? 0) > 0;
+      });
+      releaseUpdate.resolve();
+      await update;
+
+      const current = await value.service.getConfigById(value.bootstrap.userId, created.id);
+      await expect(replay).resolves.toEqual(current);
+      expect(current).toMatchObject({
+        displayName: "Concurrent update",
+        runtimeConfig: { instructions: "Concurrent instructions" },
+      });
+    } finally {
+      releaseUpdate.resolve();
+      await Promise.all([value.sql.end(), updater.end(), observer.end()]);
+    }
+  });
+
   it("rejects reuse of a creation intent for different Agent inputs", async () => {
     const value = await fixture();
     try {

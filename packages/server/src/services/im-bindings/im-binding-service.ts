@@ -1,6 +1,8 @@
 import type {
   ImBindingAdminDetail,
   ImBindingDiagnostics,
+  ImBindingHandoffStatus,
+  ImBindingState,
   ImBindingSummary,
   SlackBindingActivation,
 } from "@opentag/shared";
@@ -72,6 +74,23 @@ export interface FeishuConnectionMaterial {
 
 export interface SlackConnectionMaterial extends SlackIngressBinding {
   grantedScopes: string[];
+}
+
+interface ImBindingReadinessInput {
+  agentId: string;
+  provider: "feishu" | "slack";
+  status: ImBindingState;
+  connectionLeaseExpiresAt: Date | null;
+  observedConnectedAt: Date | null;
+  observedAt: Date | null;
+  grantedCapabilities: string[];
+}
+
+interface ImBindingReadiness {
+  handoff: ImBindingHandoffStatus;
+  runtimeToolAvailable: boolean;
+  reauthorizationRequired: boolean;
+  connection: { state: "connected" | "disconnected"; observedAt: string } | null;
 }
 
 export async function disableImBindingInTransaction(
@@ -361,6 +380,25 @@ export class ImBindingService {
     };
   }
 
+  async getHandoffForAgent(callerUserId: string, agentId: string): Promise<ImBindingHandoffStatus | undefined> {
+    await this.#assertCanRead(callerUserId, agentId);
+    const [imBinding] = await this.#database
+      .select({
+        agentId: imBindings.agentId,
+        provider: imBindings.provider,
+        status: imBindings.status,
+        connectionLeaseExpiresAt: imBindings.connectionLeaseExpiresAt,
+        observedConnectedAt: imBindings.observedConnectedAt,
+        observedAt: imBindings.observedAt,
+        grantedCapabilities: imBindings.grantedCapabilities,
+      })
+      .from(imBindings)
+      .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
+      .limit(1);
+    if (!imBinding) return undefined;
+    return (await this.#readiness(imBinding)).handoff;
+  }
+
   async getConfigForAgent(callerUserId: string, agentId: string): Promise<ImBindingAdminDetail | undefined> {
     await this.assertCanManage(callerUserId, agentId);
     const [row] = await this.#database
@@ -453,39 +491,19 @@ export class ImBindingService {
       .limit(1);
     if (!imBinding) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The IM binding was not found");
     await this.assertCanManage(callerUserId, imBinding.agentId);
-    const now = this.#now();
-    const runtimeToolAvailable = await this.#runtimeReady(imBinding.agentId);
-    const reauthorizationRequired =
-      imBinding.status === "reauthorization_required" ||
-      needsFeishuScopeUpdate(imBinding.status, imBinding.provider, imBinding.grantedCapabilities);
+    const readiness = await this.#readiness(imBinding);
     const activity = await this.#activity(imBindingId);
-    const connection =
-      imBinding.provider === "feishu" && imBinding.observedAt
-        ? {
-            state:
-              imBinding.connectionLeaseExpiresAt &&
-              imBinding.connectionLeaseExpiresAt > now &&
-              imBinding.observedConnectedAt
-                ? ("connected" as const)
-                : ("disconnected" as const),
-            observedAt: imBinding.observedAt.toISOString(),
-          }
-        : null;
     return {
       imBindingId,
       provider: imBinding.provider,
-      ready:
-        imBinding.status === "active" &&
-        !reauthorizationRequired &&
-        runtimeToolAvailable &&
-        (imBinding.provider === "slack" || connection?.state === "connected"),
-      runtimeToolAvailable,
+      ready: readiness.handoff.handoffReady,
+      runtimeToolAvailable: readiness.runtimeToolAvailable,
       credentialGeneration: Math.max(1, imBinding.credentialGeneration),
-      reauthorizationRequired,
-      connection,
+      reauthorizationRequired: readiness.reauthorizationRequired,
+      connection: readiness.connection,
       ...activity,
       lastErrorCode:
-        reauthorizationRequired && imBinding.status === "active"
+        readiness.reauthorizationRequired && imBinding.status === "active"
           ? "FEISHU_SCOPE_REAUTH_REQUIRED"
           : imBinding.lastErrorCode,
     };
@@ -580,6 +598,39 @@ export class ImBindingService {
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!scope) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
+  }
+
+  async #readiness(imBinding: ImBindingReadinessInput): Promise<ImBindingReadiness> {
+    const runtimeToolAvailable = await this.#runtimeReady(imBinding.agentId);
+    const reauthorizationRequired =
+      imBinding.status === "reauthorization_required" ||
+      needsFeishuScopeUpdate(imBinding.status, imBinding.provider, imBinding.grantedCapabilities);
+    const bindingState = reauthorizationRequired ? "reauthorization_required" : imBinding.status;
+    const connection =
+      imBinding.provider === "feishu" && imBinding.observedAt
+        ? {
+            state:
+              imBinding.connectionLeaseExpiresAt &&
+              imBinding.connectionLeaseExpiresAt > this.#now() &&
+              imBinding.observedConnectedAt
+                ? ("connected" as const)
+                : ("disconnected" as const),
+            observedAt: imBinding.observedAt.toISOString(),
+          }
+        : null;
+    const connectionReady = imBinding.provider === "slack" || connection?.state === "connected";
+    const handoff: ImBindingHandoffStatus =
+      bindingState !== "active"
+        ? { bindingState, handoffReady: false }
+        : runtimeToolAvailable && connectionReady
+          ? { bindingState, handoffReady: true }
+          : { bindingState, handoffReady: false };
+    return {
+      handoff,
+      runtimeToolAvailable,
+      reauthorizationRequired,
+      connection,
+    };
   }
 
   async #activate(

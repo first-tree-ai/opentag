@@ -460,7 +460,7 @@ function revisionEvent(input: {
 }
 
 describe("IM binding persistence", () => {
-  it("returns a member-safe IM projection while reserving diagnostics and config for Team Admins", async () => {
+  it("returns member-safe Slack handoff readiness while preserving Team authorization boundaries", async () => {
     const value = await fixture();
     try {
       const [member] = await value.database
@@ -475,6 +475,38 @@ describe("IM binding persistence", () => {
       const summary = await value.imBindingService.getForAgent(member.id, value.agent.id);
       expect(summary).toMatchObject({ provider: "slack", bindingState: "active", receiveMode: "mention_only" });
       expect(JSON.stringify(summary)).not.toMatch(/credential|identity|appId|botUserId|lastError/i);
+      const handoff = await value.imBindingService.getHandoffForAgent(member.id, value.agent.id);
+      expect(handoff).toEqual({ bindingState: "active", handoffReady: true });
+      await expect(value.imBindingService.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toEqual(
+        handoff,
+      );
+      expect(JSON.stringify(handoff)).not.toMatch(/credential|identity|appId|botUserId|error|connection|secret/i);
+
+      const runtimeUnavailable = new ImBindingService(value.database, new ApplicationCipher(Buffer.alloc(32, 7)), {
+        runtimeReady: () => false,
+      });
+      await expect(runtimeUnavailable.getHandoffForAgent(member.id, value.agent.id)).resolves.toEqual({
+        bindingState: "active",
+        handoffReady: false,
+      });
+
+      const [otherTeam] = await value.database
+        .insert(teams)
+        .values({ name: "other-team", displayName: "Other Team" })
+        .returning();
+      const [outsider] = await value.database
+        .insert(users)
+        .values({ email: "outsider@example.com", displayName: "Outsider" })
+        .returning();
+      if (!otherTeam || !outsider) throw new Error("Cross-Team fixture was not created");
+      await value.database
+        .insert(memberships)
+        .values({ teamId: otherTeam.id, userId: outsider.id, role: "member", status: "active" });
+      await expect(value.imBindingService.getHandoffForAgent(outsider.id, value.agent.id)).rejects.toMatchObject({
+        code: "IM_BINDING_NOT_FOUND",
+        statusCode: 404,
+      });
+
       await expect(value.imBindingService.getConfigForAgent(member.id, value.agent.id)).rejects.toMatchObject({
         code: "IM_BINDING_FORBIDDEN",
         statusCode: 403,
@@ -4661,9 +4693,10 @@ describe("IM binding persistence", () => {
     const value = await unboundFixture();
     try {
       const now = new Date("2026-08-19T00:00:00.000Z");
+      let runtimeReady = true;
       const service = new ImBindingService(value.database, value.cipher, {
         now: () => now,
-        runtimeReady: () => true,
+        runtimeReady: () => runtimeReady,
       });
       const imBindingId = await service.activateFeishu({
         agentId: value.agent.id,
@@ -4689,6 +4722,10 @@ describe("IM binding persistence", () => {
         runtimeToolAvailable: true,
         connection: { state: "disconnected" },
       });
+      await expect(service.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toEqual({
+        bindingState: "active",
+        handoffReady: false,
+      });
 
       await value.database
         .update(imBindings)
@@ -4703,6 +4740,10 @@ describe("IM binding persistence", () => {
         ready: false,
         connection: { state: "disconnected" },
       });
+      await expect(service.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toEqual({
+        bindingState: "active",
+        handoffReady: false,
+      });
 
       await value.database
         .update(imBindings)
@@ -4716,6 +4757,21 @@ describe("IM binding persistence", () => {
       await expect(service.diagnostics(value.bootstrap.userId, imBindingId)).resolves.toMatchObject({
         ready: true,
         connection: { state: "connected" },
+      });
+      await expect(service.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toEqual({
+        bindingState: "active",
+        handoffReady: true,
+      });
+
+      runtimeReady = false;
+      await expect(service.diagnostics(value.bootstrap.userId, imBindingId)).resolves.toMatchObject({
+        ready: false,
+        runtimeToolAvailable: false,
+        connection: { state: "connected" },
+      });
+      await expect(service.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toEqual({
+        bindingState: "active",
+        handoffReady: false,
       });
     } finally {
       await value.sql.end();
@@ -4785,6 +4841,10 @@ describe("IM binding persistence", () => {
         reauthorizationRequired: true,
         connection: { state: "connected" },
         lastErrorCode: "FEISHU_SCOPE_REAUTH_REQUIRED",
+      });
+      await expect(value.imBindingService.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toEqual({
+        bindingState: "reauthorization_required",
+        handoffReady: false,
       });
       await expect(value.imBindingService.listFeishuConnectionIds(undefined)).resolves.toContain(legacy.id);
       await expect(value.imBindingService.getFeishuConnectionMaterial(legacy.id)).resolves.toMatchObject({

@@ -11,6 +11,7 @@ import {
   agents,
   authIdentities,
   computers,
+  invitationRedemptions,
   invitations,
   memberships,
   teams,
@@ -354,6 +355,10 @@ describe("account identity and Team foundation persistence", () => {
         .from(memberships)
         .where(and(eq(memberships.userId, userId), eq(memberships.teamId, value.bootstrap.teamId)));
       expect(membership).toMatchObject({ role: "member", status: "active" });
+      await expect(value.invitations.redeem(userId, nextInvite.token, { ip: "127.0.0.2" })).resolves.toMatchObject({
+        membership: { teamId: value.bootstrap.teamId, role: "member" },
+      });
+      expect(await value.database.select().from(invitationRedemptions)).toHaveLength(1);
     } finally {
       await value.sql.end();
     }

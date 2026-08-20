@@ -28,6 +28,7 @@ import {
   ImBindingSummarySchema,
   type InvitationPreview,
   InvitationPreviewSchema,
+  type InvitationRedemptionResponse,
   InvitationRedemptionResponseSchema,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
@@ -51,6 +52,7 @@ import {
   teamByIdPath,
   teamComputersPath,
   teamInvitationPath,
+  teamInvitationRotatePath,
   teamMembersPath,
   type UpdateAgentRequest,
   type UpdateTeamProfileRequest,
@@ -192,12 +194,19 @@ export class BrowserApi {
     });
   }
 
+  rotateInvitation(teamId: string): Promise<TeamInvitation> {
+    return this.request(teamInvitationRotatePath(teamId), TeamInvitationSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
   invitationPreview(token: string): Promise<InvitationPreview> {
     return this.request(invitationPreviewPath(token), InvitationPreviewSchema, undefined, false);
   }
 
-  async redeemInvitation(token: string): Promise<void> {
-    await this.request(invitationRedeemPath(token), InvitationRedemptionResponseSchema, {
+  redeemInvitation(token: string): Promise<InvitationRedemptionResponse> {
+    return this.request(invitationRedeemPath(token), InvitationRedemptionResponseSchema, {
       method: "POST",
       headers: this.csrfHeaders(),
     });

@@ -133,18 +133,58 @@ function LoginPage() {
 
 function InvitePage() {
   const { token = "" } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
+  const selectedTeamHint = new URLSearchParams(location.search).get("joinedTeamId") ?? undefined;
   const preview = useResource(() => browserApi.invitationPreview(token), token);
   const [error, setError] = useState<string>();
-  async function join() {
-    try {
-      await browserApi.redeemInvitation(token);
-      navigate("/agents");
-    } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 401) {
-        navigate(`/login?next=${encodeURIComponent(`/invites/${token}`)}`);
-      } else setError(cause instanceof Error ? cause.message : "The invitation could not be redeemed");
-    }
+  const [joining, setJoining] = useState(false);
+  const joinInFlight = useRef(false);
+  const completeJoin = useCallback(
+    async (serverSelectedTeamId?: string) => {
+      if (joinInFlight.current) return;
+      joinInFlight.current = true;
+      setJoining(true);
+      try {
+        if (serverSelectedTeamId) {
+          const me = await browserApi.me();
+          if (me.memberships.some((membership) => membership.teamId === serverSelectedTeamId)) {
+            clearPendingInvitation(token);
+            window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, serverSelectedTeamId);
+            navigate("/agents", { replace: true });
+            return;
+          }
+        }
+        const redemption = await browserApi.redeemInvitation(token);
+        const me = await browserApi.me();
+        if (!me.memberships.some((membership) => membership.teamId === redemption.membership.teamId)) {
+          throw new Error("The invited Team is not available to the signed-in account");
+        }
+        clearPendingInvitation(token);
+        window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, redemption.membership.teamId);
+        navigate("/agents", { replace: true });
+      } catch (cause) {
+        if (cause instanceof ApiError && cause.status === 401) {
+          rememberPendingInvitation(token);
+          navigate(`/login?next=${encodeURIComponent(`/invites/${token}`)}`);
+        } else {
+          if (!serverSelectedTeamId) clearPendingInvitation(token);
+          setError(cause instanceof Error ? cause.message : "The invitation could not be redeemed");
+        }
+      } finally {
+        joinInFlight.current = false;
+        setJoining(false);
+      }
+    },
+    [navigate, token],
+  );
+  useEffect(() => {
+    if (readPendingInvitation() === token) void completeJoin(selectedTeamHint);
+  }, [completeJoin, selectedTeamHint, token]);
+  function join() {
+    setError(undefined);
+    rememberPendingInvitation(token);
+    void completeJoin(selectedTeamHint);
   }
   return (
     <main className="center-card">
@@ -156,8 +196,8 @@ function InvitePage() {
             <p>
               This invitation grants the {value.role} role and expires {formatDate(value.expiresAt)}.
             </p>
-            <button className="button" type="button" onClick={join}>
-              Join Team
+            <button className="button" disabled={joining} type="button" onClick={join}>
+              {joining ? "Joining…" : "Join Team"}
             </button>
           </>
         )}
@@ -169,6 +209,35 @@ function InvitePage() {
       ) : null}
     </main>
   );
+}
+
+const SELECTED_TEAM_STORAGE_KEY = "opentag.selectedTeamId";
+const PENDING_INVITATION_STORAGE_KEY = "opentag.pendingInvitationToken";
+
+function readPendingInvitation(): string | undefined {
+  try {
+    return window.sessionStorage.getItem(PENDING_INVITATION_STORAGE_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function rememberPendingInvitation(token: string): void {
+  try {
+    window.sessionStorage.setItem(PENDING_INVITATION_STORAGE_KEY, token);
+  } catch {
+    // The explicit Join action can still continue when browser storage is unavailable.
+  }
+}
+
+function clearPendingInvitation(token: string): void {
+  try {
+    if (window.sessionStorage.getItem(PENDING_INVITATION_STORAGE_KEY) === token) {
+      window.sessionStorage.removeItem(PENDING_INVITATION_STORAGE_KEY);
+    }
+  } catch {
+    // There is no pending browser state to clean up when storage is unavailable.
+  }
 }
 
 /** Derives the canonical Team handle a display name suggests; the user stays free to replace it. */
@@ -204,7 +273,7 @@ function NewTeamPage() {
     try {
       setError(undefined);
       const created = await browserApi.createTeam({ name, displayName });
-      window.localStorage.setItem("opentag.selectedTeamId", created.id);
+      window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, created.id);
       navigate("/agents");
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401) {
@@ -293,7 +362,7 @@ function AuthenticatedTeamGate() {
         if (!membership) return <Navigate replace to="/teams/new" />;
         const selectTeam = (teamId: string) => {
           if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
-          window.localStorage.setItem("opentag.selectedTeamId", teamId);
+          window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, teamId);
           navigate(location.pathname, { replace: true });
           window.location.reload();
         };
@@ -308,7 +377,7 @@ function AuthenticatedTeamGate() {
 }
 
 function readTeamPreference(): string | undefined {
-  const value = window.localStorage.getItem("opentag.selectedTeamId");
+  const value = window.localStorage.getItem(SELECTED_TEAM_STORAGE_KEY);
   return value && value.length <= 64 ? value : undefined;
 }
 
@@ -858,7 +927,9 @@ function SettingsPage() {
         ))}
       </nav>
       {section === "team" ? <TeamSettings membership={membership} refreshMe={refreshMe} /> : null}
-      {section === "members" ? <MembersSettings teamId={membership.teamId} /> : null}
+      {section === "members" ? (
+        <MembersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
+      ) : null}
       {section === "computers" ? (
         <ComputersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
       ) : null}
@@ -920,21 +991,109 @@ function TeamSettings({ membership, refreshMe }: { membership: MeMembership; ref
   );
 }
 
-function MembersSettings({ teamId }: { teamId: string }) {
+function MembersSettings({ canManage, teamId }: { canManage: boolean; teamId: string }) {
   const state = useResource(() => browserApi.members(teamId), teamId);
   return (
-    <AsyncState state={state}>
-      {(value) => (
-        <div className="list">
-          {value.members.map((member: TeamMemberSummary) => (
-            <div className="row" key={member.userId}>
-              <strong>{member.displayName}</strong>
-              <span>{member.role}</span>
+    <>
+      {canManage ? <InvitationSettings teamId={teamId} /> : null}
+      <section className="panel">
+        <h2>Team members</h2>
+        <AsyncState state={state}>
+          {(value) => (
+            <div className="list">
+              {value.members.map((member: TeamMemberSummary) => (
+                <div className="row" key={member.userId}>
+                  <strong>{member.displayName}</strong>
+                  <span>{member.role}</span>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
-      )}
-    </AsyncState>
+          )}
+        </AsyncState>
+      </section>
+    </>
+  );
+}
+
+function InvitationSettings({ teamId }: { teamId: string }) {
+  const state = useResource(() => browserApi.invitation(teamId), teamId);
+  const [current, setCurrent] = useState<Awaited<ReturnType<typeof browserApi.invitation>>>();
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string>();
+  const [error, setError] = useState<string>();
+
+  async function createInvitation() {
+    await mutateInvitation(() => browserApi.createInvitation(teamId), "Invitation link created.");
+  }
+
+  async function rotateInvitation() {
+    if (!window.confirm("Rotate this invitation link? The current link will stop working immediately.")) return;
+    await mutateInvitation(() => browserApi.rotateInvitation(teamId), "Invitation link rotated.");
+  }
+
+  async function mutateInvitation(action: () => Promise<NonNullable<typeof current>>, successMessage: string) {
+    setBusy(true);
+    setError(undefined);
+    setMessage(undefined);
+    try {
+      setCurrent(await action());
+      setMessage(successMessage);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to update the invitation link");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyInvitation(inviteUrl: string) {
+    setError(undefined);
+    setMessage(undefined);
+    try {
+      if (!window.navigator.clipboard) throw new Error("Clipboard access is unavailable in this browser");
+      await window.navigator.clipboard.writeText(inviteUrl);
+      setMessage("Invitation link copied.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Unable to copy the invitation link");
+    }
+  }
+
+  return (
+    <section className="panel">
+      <h2>Invite people</h2>
+      <p>Anyone with the active link can join this Team as a member until the link expires.</p>
+      <AsyncState state={state}>
+        {(loaded) => {
+          const invitation = current ?? loaded;
+          return invitation ? (
+            <>
+              <label className="invite-link">
+                Invitation link
+                <input aria-label="Invitation link" readOnly type="url" value={invitation.inviteUrl} />
+              </label>
+              <p className="muted">Expires {formatDate(invitation.expiresAt)}.</p>
+              <div className="actions">
+                <button type="button" onClick={() => void copyInvitation(invitation.inviteUrl)}>
+                  Copy invitation link
+                </button>
+                <button className="secondary" disabled={busy} type="button" onClick={() => void rotateInvitation()}>
+                  {busy ? "Rotating…" : "Rotate invitation link"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <button className="button" disabled={busy} type="button" onClick={() => void createInvitation()}>
+              {busy ? "Creating…" : "Create invitation link"}
+            </button>
+          );
+        }}
+      </AsyncState>
+      {message ? <p className="notice success">{message}</p> : null}
+      {error ? (
+        <p className="notice error" role="alert">
+          {error}
+        </p>
+      ) : null}
+    </section>
   );
 }
 

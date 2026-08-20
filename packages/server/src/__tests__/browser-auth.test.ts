@@ -31,7 +31,7 @@ function authService(): UserAuthService {
   };
 }
 
-function google() {
+function google(result: { next?: string; selectedTeamId?: string } = {}) {
   return {
     start: vi
       .fn()
@@ -39,7 +39,8 @@ function google() {
     callback: vi.fn().mockImplementation(async (_input: unknown, _context: string, options: { onVerified(): void }) => {
       options.onVerified();
       return {
-        next: "/agents",
+        next: result.next ?? "/agents",
+        ...(result.selectedTeamId ? { selectedTeamId: result.selectedTeamId } : {}),
         tokens: {
           accessToken: "access-secret",
           refreshToken: "refresh-secret",
@@ -179,6 +180,21 @@ describe("browser authentication routes", () => {
       "signed-context",
       expect.objectContaining({ audit: expect.any(Object), onVerified: expect.any(Function) }),
     );
+  });
+
+  it("hands the Team selected during invitation sign-in back as a navigation hint", async () => {
+    const selectedTeamId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
+    const token = "A".repeat(43);
+    const googleService = google({ next: `/invites/${token}`, selectedTeamId });
+    const { app } = createBrowserApp({ googleService });
+    const response = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.authGoogleCallback}?code=code&state=state`,
+      headers: { cookie: "opentag_oauth_context=signed-context" },
+    });
+
+    expect(response.statusCode).toBe(302);
+    expect(response.headers.location).toBe(`/invites/${token}?joinedTeamId=${selectedTeamId}`);
   });
 
   it("accepts provider-owned callback fields but passes only supported values to the Google service", async () => {

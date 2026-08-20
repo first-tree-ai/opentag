@@ -132,7 +132,14 @@ function untokenized(css: string, owner: Owner): string[] {
 /**
  * What a motion value may still say once its own tokens are removed: the
  * property or animation it applies to, and plain keywords like `infinite` or
- * `none`. Bare identifiers, in other words, and the commas between them.
+ * `none`. Identifiers, in other words, and the commas between them -- CSS
+ * custom-idents, so `pulse2` counts, since only the first character is barred
+ * from being a digit.
+ *
+ * The `animation` shorthand also carries an iteration count, which is a bare
+ * number and belongs to no token family. It is allowed only there: a bare
+ * number is not valid anywhere in `transition`, and a duration always carries
+ * a unit, so `130ms` stays rejected either way.
  *
  * Radius and elevation are checked by listing what may remain; motion used to
  * be checked by listing what may not, and that asymmetry was the hole --
@@ -146,16 +153,18 @@ function untokenized(css: string, owner: Owner): string[] {
  * names are not, which is why the reference patterns stay case-sensitive:
  * `--RADIUS-MD` really is a different token.
  */
-const IDENTIFIER = /^([a-z-]+,?|,)$/i;
+const IDENTIFIER = /^(-?[a-z_][a-z0-9_-]*,?|,)$/i;
+const COUNT = /^\d+(\.\d+)?,?$/;
 const EASING = /\b(ease|ease-in|ease-out|ease-in-out|linear|step-start|step-end|steps|cubic-bezier)\b/i;
 
 function untokenizedMotion(css: string): string[] {
   return declarations(css).flatMap((declaration) => {
     const owner = MOTION_OWNERS.find((candidate) => candidate.owns(propertyName(declaration)));
     if (owner === undefined) return [];
+    const counts = propertyName(declaration) === "animation";
     const residue = declaration.value.replace(ownedReferences(owner), " ");
     const words = residue.trim().split(/\s+/).filter(Boolean);
-    const derived = words.some((word) => !IDENTIFIER.test(word));
+    const derived = words.some((word) => !IDENTIFIER.test(word) && !(counts && COUNT.test(word)));
     if (!derived && !EASING.test(residue)) return [];
     return [`${declaration.name}: ${declaration.value}`];
   });
@@ -288,6 +297,19 @@ describe("the guard itself", () => {
     expect(untokenizedMotion(shorthand)).toEqual([
       "transition: opacity calc(var(--motion-fast) * 2) var(--ease-standard)",
     ]);
+  });
+
+  it("keeps the rest of the animation shorthand's own grammar", () => {
+    const counted = ".row { animation: pulse var(--motion-fast) var(--ease-standard) 2 alternate both; }";
+    expect(untokenizedMotion(counted)).toEqual([]);
+
+    const digits = ".row { animation: pulse2 var(--motion-fast) var(--ease-standard) infinite; }";
+    expect(untokenizedMotion(digits)).toEqual([]);
+  });
+
+  it("allows an iteration count only where one is grammatical", () => {
+    const transition = ".row { transition: opacity var(--motion-fast) var(--ease-standard) 2; }";
+    expect(untokenizedMotion(transition)).toEqual(["transition: opacity var(--motion-fast) var(--ease-standard) 2"]);
   });
 
   it("reads a function name in any case, as the browser does", () => {

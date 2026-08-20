@@ -85,10 +85,13 @@
 /* Density follows the surface, not the reader. Dense surfaces are scanned
    by operators; configuration and entry surfaces are read, often by
    non-technical admins, and lose nothing by stepping each role up. Same
-   token names, same steps — only the value each role points at moves. */
+   token names, same steps — only the value each role points at moves.
+   Dialogs bind here directly: they mount as a sibling of the routed page,
+   so they inherit nothing from the surface they were opened from. */
 .settings-page,
 .onboarding-shell,
-.decorative-page {
+.decorative-page,
+.dialog-card {
   --text-meta: var(--fs-13);
   --text-ui: var(--fs-14);
   --text-body: var(--fs-16);

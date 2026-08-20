@@ -283,8 +283,8 @@ OPENTAG_E2E_PLAYWRIGHT_PATH=/path/to/playwright-core node scripts/e2e/onboarding
 
 该检查需要可访问的 PostgreSQL 超级用户地址和 Chromium 可执行文件。它会自行创建并删除数据库、监听独立端口，并把
 截图、Server 与 daemon 日志、记录到的 console 条目写入 artifact 目录。由于每次运行都会删库，它会拒绝任何不是一望即知
-可丢弃的 E2E 标识符的库名。daemon 拿到的是显式构造的 Provider 环境，而不是调用者的 shell 环境，因此在任何开发机上
-readiness 都一致。
+可丢弃的 E2E 标识符的库名，并在 Server 停止后再次删除该库。端口被占用时它会直接拒绝启动，因此绝不会去驱动另一个本地
+Server。daemon 拿到的是显式构造的 Provider 环境，而不是调用者的 shell 环境，因此在任何开发机上 readiness 都一致。
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
@@ -296,6 +296,7 @@ readiness 都一致。
 | `OPENTAG_E2E_ARTIFACTS` | `$TMPDIR/opentag-onboarding-e2e` | 截图与日志输出目录 |
 | `OPENTAG_E2E_PROVIDER_STUB` | `on` | 设为 `off` 时改用 `PATH` 上已安装的 Claude Code CLI，而不是 stub |
 | `CLAUDE_CONFIG_DIR` | `$HOME/.claude` | stub 关闭时守护进程读取的 Claude Code 配置目录 |
+| `OPENTAG_E2E_KEEP_DATABASE` | `off` | 设为 `on` 时运行结束后保留 E2E 数据库，便于排查 |
 
 流程中有两部分无法离线执行。Provider readiness 使用一个 stub 可执行文件，它满足与 Claude Code CLI 相同的 probe
 契约，因为 CI 中没有已登录的 Codex 或 Claude Code 安装。Feishu 授权需要访问 `open.feishu.cn`，因此该检查会真实发起一次

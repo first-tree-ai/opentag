@@ -28,6 +28,7 @@ import { randomBytes } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +52,11 @@ const TEAM_ID = "22222222-2222-4222-8222-222222222222";
 const ARTIFACT_DIRECTORY = resolve(process.env.OPENTAG_E2E_ARTIFACTS ?? join(tmpdir(), "opentag-onboarding-e2e"));
 /* Set to "off" to probe the Claude Code CLI already installed on PATH instead. */
 const PROVIDER_STUB = process.env.OPENTAG_E2E_PROVIDER_STUB !== "off";
+/* Set to "on" to keep the E2E database after the run for debugging. */
+const KEEP_DATABASE = process.env.OPENTAG_E2E_KEEP_DATABASE === "on";
+
+/** The database this run created, so the same run can drop it again. */
+let createdDatabase;
 
 const steps = [];
 let stepIndex = 0;
@@ -91,12 +97,15 @@ async function waitFor(description, predicate, { timeoutMs = 60_000, intervalMs 
   throw new Error(`Timed out waiting for ${description}${lastError ? `: ${lastError.message}` : ""}`);
 }
 
-/** Keeps the password out of argv, where any local process could read it. */
+/**
+ * Keeps the password out of argv, where any local process could read it. A URL
+ * stores its password percent-encoded, but libpq wants the decoded credential.
+ */
 function connectionTarget(url) {
   const target = new URL(String(url));
-  const password = target.password;
+  const encoded = target.password;
   target.password = "";
-  return { dsn: target.href, password };
+  return { dsn: target.href, password: decodeURIComponent(encoded), encodedPassword: encoded };
 }
 
 function redactSecrets(message, ...secrets) {
@@ -104,7 +113,7 @@ function redactSecrets(message, ...secrets) {
 }
 
 async function psql(url, sql) {
-  const { dsn, password } = connectionTarget(url);
+  const { dsn, password, encodedPassword } = connectionTarget(url);
   try {
     const { stdout } = await execFileAsync("psql", [dsn, "-v", "ON_ERROR_STOP=1", "-Atc", sql], {
       env: { ...process.env, PGPASSWORD: password },
@@ -112,8 +121,23 @@ async function psql(url, sql) {
     return stdout.trim();
   } catch (error) {
     // execFile puts the whole command, and psql echoes the target, into the failure text.
-    throw new Error(redactSecrets(error.message, password));
+    throw new Error(redactSecrets(error.message, password, encodedPassword));
   }
+}
+
+/** Fails closed when the port is taken, so this run can never drive another Server. */
+async function assertPortAvailable(port) {
+  await new Promise((settle, fail) => {
+    const probe = createServer();
+    probe.once("error", (error) =>
+      fail(
+        error.code === "EADDRINUSE"
+          ? new Error(`127.0.0.1:${port} is already in use; stop it or set OPENTAG_E2E_PORT`)
+          : error,
+      ),
+    );
+    probe.listen(port, "127.0.0.1", () => probe.close(() => settle(undefined)));
+  });
 }
 
 /**
@@ -235,7 +259,8 @@ async function main() {
       const database = disposableDatabaseName(DATABASE_NAME, ADMIN_DATABASE_URL);
       await psql(ADMIN_DATABASE_URL, `drop database if exists "${database}" with (force)`);
       await psql(ADMIN_DATABASE_URL, `create database "${database}"`);
-      return database;
+      createdDatabase = database;
+      return KEEP_DATABASE ? `${database} (retained after the run)` : database;
     });
 
     await step("start the Server with the real Web build", async () => {
@@ -244,6 +269,7 @@ async function main() {
       if (!existsSync(join(repositoryRoot, "apps", "web", "dist", "index.html"))) {
         throw new Error("apps/web/dist is missing; run pnpm build before this check");
       }
+      await assertPortAvailable(PORT);
       const log = createWriteStream(serverLogPath);
       server = spawn(process.execPath, [serverEntry], {
         cwd: repositoryRoot,
@@ -264,8 +290,14 @@ async function main() {
       });
       server.stdout.pipe(log);
       server.stderr.pipe(log);
-      server.on("exit", (code) => log.write(`\nserver exited with ${code}\n`));
+      let serverExit;
+      server.on("exit", (code) => {
+        serverExit = code;
+        log.write(`\nserver exited with ${code}\n`);
+      });
       await waitFor("the Server health endpoint", async () => {
+        // Readiness must belong to this child: a Server that died can never answer for it.
+        if (serverExit !== undefined) throw new Error(`Server exited with ${serverExit}; see ${serverLogPath}`);
         const response = await fetch(`${BASE_URL}/healthz`);
         return response.ok;
       });
@@ -498,6 +530,11 @@ async function main() {
     });
   } finally {
     await shutdown();
+    if (createdDatabase && !KEEP_DATABASE) {
+      await psql(ADMIN_DATABASE_URL, `drop database if exists "${createdDatabase}" with (force)`).catch((error) =>
+        process.stdout.write(`Could not drop ${createdDatabase}: ${error.message}\n`),
+      );
+    }
     process.stdout.write(`\nArtifacts: ${ARTIFACT_DIRECTORY}\n`);
     const failed = steps.filter((entry) => !entry.ok);
     process.stdout.write(`${steps.length - failed.length}/${steps.length} steps passed\n`);

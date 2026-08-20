@@ -294,8 +294,9 @@ OPENTAG_E2E_PLAYWRIGHT_PATH=/path/to/playwright-core node scripts/e2e/onboarding
 The check needs a reachable PostgreSQL superuser URL and a Chromium executable. It creates and drops its own database,
 listens on its own port, and writes screenshots, Server and daemon logs, and recorded console entries to its artifact
 directory. Because it drops that database on every run, it refuses any name that is not an unmistakably disposable E2E
-identifier. The daemon receives an explicit Provider environment rather than the invoking shell's, so readiness is the
-same on any developer machine.
+identifier, and it drops that database again once the Server stops. The check also refuses to start when its port is
+already taken, so it can never drive another local Server. The daemon receives an explicit Provider environment rather
+than the invoking shell's, so readiness is the same on any developer machine.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -307,6 +308,7 @@ same on any developer machine.
 | `OPENTAG_E2E_ARTIFACTS` | `$TMPDIR/opentag-onboarding-e2e` | Screenshot and log output directory |
 | `OPENTAG_E2E_PROVIDER_STUB` | `on` | Set to `off` to probe the Claude Code CLI installed on `PATH` instead of the stub |
 | `CLAUDE_CONFIG_DIR` | `$HOME/.claude` | Claude Code configuration the daemon reads when the stub is off |
+| `OPENTAG_E2E_KEEP_DATABASE` | `off` | Set to `on` to keep the E2E database after the run for debugging |
 
 Two parts of the flow cannot run offline. Provider readiness uses a stub executable that answers the same probe contract
 as the Claude Code CLI, because a signed-in Codex or Claude Code installation is not available in CI. Feishu

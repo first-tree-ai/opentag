@@ -1,4 +1,5 @@
 export const API_V1_PREFIX = "/api/v1";
+export const TEAMS_TEMPLATE = `${API_V1_PREFIX}/teams`;
 export const TEAM_AGENTS_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/agents`;
 export const TEAM_BY_ID_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId`;
 export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
@@ -38,6 +39,7 @@ export const HTTP_PATHS = {
   meComputers: `${API_V1_PREFIX}/me/computers`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
   teamAgents: TEAM_AGENTS_TEMPLATE,
+  teams: TEAMS_TEMPLATE,
 } as const;
 
 export function teamMembersPath(teamId: string): string {

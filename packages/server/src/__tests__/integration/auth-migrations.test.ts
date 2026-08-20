@@ -671,12 +671,19 @@ describe("authentication persistence", () => {
         .update(memberships)
         .set({ status: "left", updatedAt: new Date("2026-08-18T00:01:00.000Z") })
         .where(eq(memberships.userId, fixture.bootstrap.userId));
+      // Losing every membership drops Team authority but keeps the session, so the user can create a new Team.
+      await expect(fixture.auth.getAuthenticatedUser(tokens.accessToken)).resolves.toMatchObject({
+        me: { user: { id: fixture.bootstrap.userId }, memberships: [] },
+      });
+      await expect(fixture.auth.refresh(tokens.refreshToken)).resolves.toMatchObject({ tokenType: "Bearer" });
+
+      await fixture.database
+        .update(users)
+        .set({ suspendedAt: new Date("2026-08-18T00:02:00.000Z") })
+        .where(eq(users.id, fixture.bootstrap.userId));
       const error = await fixture.auth.getAuthenticatedUser(tokens.accessToken).catch((caught: unknown) => caught);
       expect(error).toBeInstanceOf(AuthServiceError);
-      expect(error).toMatchObject({ code: "AUTH_MEMBERSHIP_REQUIRED" });
-      await expect(fixture.auth.refresh(tokens.refreshToken)).rejects.toMatchObject({
-        code: "AUTH_MEMBERSHIP_REQUIRED",
-      });
+      expect(error).toMatchObject({ code: "AUTH_USER_SUSPENDED" });
     } finally {
       await fixture.sql.end();
     }

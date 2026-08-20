@@ -570,8 +570,11 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
   });
 
   it("keeps the package boundary free of Claude SDK, CLI, and bundled binary dependencies", async () => {
-    for (const path of [join(process.cwd(), "../..", "package.json"), join(process.cwd(), "package.json")]) {
-      const manifest = JSON.parse(await readFile(path, "utf8")) as Record<string, Record<string, string>>;
+    for (const url of [
+      new URL("../../../../package.json", import.meta.url),
+      new URL("../../package.json", import.meta.url),
+    ]) {
+      const manifest = JSON.parse(await readFile(url, "utf8")) as Record<string, Record<string, string>>;
       const dependencies = {
         ...manifest.dependencies,
         ...manifest.devDependencies,

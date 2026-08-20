@@ -9,6 +9,7 @@ import {
 import {
   assertAgentInput,
   assertBinding,
+  assertHostedTools,
   assertIdentifier,
   assertJsonValue,
   assertPromptRequest,
@@ -97,6 +98,178 @@ describe("Agent Runtime validation", () => {
     expect(() =>
       assertBinding({ ...valid, payload: { value: "x".repeat(AGENT_RUNTIME_BINDING_MAX_BYTES) } }, manifest),
     ).toThrowError(expect.objectContaining({ code: "binding_incompatible" }));
+  });
+
+  it("requires an exact, unique hosted tool definition set for allow-list policies", () => {
+    const policy = {
+      fileSystem: "workspace-write" as const,
+      network: "disabled" as const,
+      approvals: "never" as const,
+      tools: { mode: "allow-list" as const, names: ["send"] },
+    };
+    const hostedTools = {
+      definitions: [
+        {
+          name: "send",
+          description: "Send a message",
+          inputSchema: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              payload: {
+                type: "object",
+                properties: { text: { type: "string" } },
+                required: ["text"],
+              },
+            },
+            required: ["payload"],
+          },
+        },
+      ],
+      handler: async () => ({ success: true, content: [] }),
+    };
+    expect(() => assertHostedTools(policy, hostedTools)).not.toThrow();
+    for (const propertySchema of [
+      { type: "string", format: "uuid", description: "Identifier" },
+      { type: "number" },
+      { type: "integer" },
+      { type: "boolean" },
+      { type: "null" },
+      { type: "array", items: { type: "string" } },
+    ]) {
+      expect(() =>
+        assertHostedTools(policy, {
+          ...hostedTools,
+          definitions: [
+            {
+              name: "send",
+              inputSchema: { type: "object", properties: { value: propertySchema } },
+            },
+          ],
+        } as never),
+      ).not.toThrow();
+    }
+    expect(() =>
+      assertHostedTools({ ...policy, tools: { mode: "allow-list", names: ["send", "send"] } }, hostedTools),
+    ).toThrowError(expect.objectContaining({ code: "configuration_invalid" }));
+    expect(() => assertHostedTools({ ...policy, tools: { mode: "provider-default" } }, hostedTools)).toThrowError(
+      expect.objectContaining({ code: "configuration_invalid" }),
+    );
+    for (const candidate of [
+      undefined,
+      { ...hostedTools, definitions: [null] },
+      { ...hostedTools, definitions: [] },
+      { ...hostedTools, definitions: [...hostedTools.definitions, hostedTools.definitions[0]] },
+      { ...hostedTools, definitions: [{ name: "other", inputSchema: { type: "object" } }] },
+      { ...hostedTools, definitions: [{ name: "send", inputSchema: [] }] },
+      { ...hostedTools, definitions: [{ name: "send", inputSchema: { type: "string" } }] },
+      { ...hostedTools, definitions: [{ name: "send", inputSchema: { type: "object", required: "text" } }] },
+      {
+        ...hostedTools,
+        definitions: [{ name: "send", inputSchema: { type: "object", properties: { text: 42 } } }],
+      },
+      {
+        ...hostedTools,
+        definitions: [
+          {
+            name: "send",
+            inputSchema: {
+              type: "object",
+              properties: { nested: { type: "object", properties: {}, required: ["missing"] } },
+            },
+          },
+        ],
+      },
+      { ...hostedTools, definitions: [{ name: "send", inputSchema: { type: "object", unknown: true } }] },
+      { ...hostedTools, definitions: [{ name: "send", inputSchema: { type: "object", description: 1 } }] },
+      { ...hostedTools, definitions: [{ name: "send", inputSchema: { type: "object", description: "" } }] },
+      { ...hostedTools, definitions: [{ name: "send", inputSchema: { type: "object", items: {} } }] },
+      { ...hostedTools, definitions: [{ name: "send", inputSchema: { type: "object", format: "uuid" } }] },
+      {
+        ...hostedTools,
+        definitions: [{ name: "send", inputSchema: { type: "object", additionalProperties: {} } }],
+      },
+      { ...hostedTools, definitions: [{ name: "send", inputSchema: { type: "object", properties: [] } }] },
+      {
+        ...hostedTools,
+        definitions: [
+          { name: "send", inputSchema: { type: "object", properties: { "bad name": { type: "string" } } } },
+        ],
+      },
+      {
+        ...hostedTools,
+        definitions: [{ name: "send", inputSchema: { type: "object", required: [1] } }],
+      },
+      {
+        ...hostedTools,
+        definitions: [
+          {
+            name: "send",
+            inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text", "text"] },
+          },
+        ],
+      },
+      {
+        ...hostedTools,
+        definitions: [{ name: "send", inputSchema: { type: "object", properties: { value: { type: "unknown" } } } }],
+      },
+      {
+        ...hostedTools,
+        definitions: [
+          { name: "send", inputSchema: { type: "object", properties: { value: { type: "number", format: "uuid" } } } },
+        ],
+      },
+      {
+        ...hostedTools,
+        definitions: [
+          {
+            name: "send",
+            inputSchema: { type: "object", properties: { value: { type: "string", items: { type: "string" } } } },
+          },
+        ],
+      },
+      {
+        ...hostedTools,
+        definitions: [{ name: "send", inputSchema: { type: "object", properties: { value: { type: "array" } } } }],
+      },
+      {
+        ...hostedTools,
+        definitions: [
+          { name: "send", inputSchema: { type: "object", properties: { value: { type: "array", items: [] } } } },
+        ],
+      },
+      {
+        ...hostedTools,
+        definitions: [
+          { name: "send", inputSchema: { type: "object", properties: { value: { type: "string", properties: {} } } } },
+        ],
+      },
+    ]) {
+      expect(() => assertHostedTools(policy, candidate as never)).toThrowError(
+        expect.objectContaining({ code: "configuration_invalid" }),
+      );
+    }
+    for (const name of ["bad name", "_private", "line\nbreak", "x".repeat(65)]) {
+      expect(() =>
+        assertHostedTools({ ...policy, tools: { mode: "allow-list", names: [name] } }, {
+          ...hostedTools,
+          definitions: [{ ...hostedTools.definitions[0], name }],
+        } as never),
+      ).toThrowError(expect.objectContaining({ code: "configuration_invalid" }));
+    }
+    expect(() =>
+      assertHostedTools({ ...policy, tools: { mode: "allow-list", names: [1 as never] } }, hostedTools),
+    ).toThrowError(expect.objectContaining({ code: "configuration_invalid" }));
+    let tooDeep: Record<string, unknown> = { type: "string" };
+    for (let index = 0; index < 18; index += 1) {
+      tooDeep = { type: "array", items: tooDeep };
+    }
+    expect(() =>
+      assertHostedTools(policy, {
+        ...hostedTools,
+        definitions: [{ name: "send", inputSchema: { type: "object", properties: { value: tooDeep } } }],
+      } as never),
+    ).toThrowError(expect.objectContaining({ code: "configuration_invalid" }));
   });
 
   it("accepts JSON values and rejects non-finite, unsupported, and cyclic values", () => {

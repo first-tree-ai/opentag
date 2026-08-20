@@ -1,0 +1,369 @@
+import { createHash } from "node:crypto";
+import { constants } from "node:fs";
+import { access, mkdir, realpath } from "node:fs/promises";
+import { homedir } from "node:os";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { computeRuntimeSnapshotHashes, RUNTIME_CLIENT_CAPABILITY_TTL_MS } from "@opentag/shared";
+import type {
+  AgentRuntimeFactory,
+  AgentRuntimeProbeRequest,
+  AgentRuntimeProbeResult,
+  CreateAgentRuntimeRequest,
+  ResumeAgentRuntimeRequest,
+} from "../agent-runtime/types.js";
+import type { OpenTagApi } from "../api.js";
+import type { AccessTokenProvider } from "../auth/token-provider.js";
+import { type ClientLogger, createLogger } from "../observability/logger.js";
+import {
+  CODEX_AGENT_RUNTIME_MANIFEST,
+  CodexAgentRuntimeFactory,
+  codexAgentRuntimeEnvironment,
+} from "../providers/codex/agent-runtime.js";
+import { RuntimeStorageError } from "../storage/durable-file.js";
+import { AgentTurnRunner } from "./agent-turn-runner.js";
+import { AgentWorkspaceManager } from "./agent-workspace.js";
+import { ClientRuntime } from "./client-runtime.js";
+import { ImResourceFetcher } from "./im-resource-fetcher.js";
+import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
+import type { RuntimeConnection } from "./runtime-connection.js";
+import { RuntimeToolHost } from "./runtime-tool-host.js";
+import { SessionBindingStore } from "./session-binding-store.js";
+import { SessionReconciler } from "./session-reconciler.js";
+import { SessionRuntimeManager } from "./session-runtime-manager.js";
+import { TurnCustodyOwner } from "./turn-custody-owner.js";
+import { TurnReportOwner } from "./turn-report-owner.js";
+
+const DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS = Math.floor(RUNTIME_CLIENT_CAPABILITY_TTL_MS / 2);
+
+export interface CreateClientRuntimeOptions {
+  readonly api?: Pick<OpenTagApi, "openImResource">;
+  readonly capabilityRefreshIntervalMs?: number;
+  readonly clientVersion: string;
+  readonly codexCommand?: string;
+  readonly codexHome?: string;
+  readonly environment?: NodeJS.ProcessEnv;
+  readonly factory?: AgentRuntimeFactory;
+  readonly home: string;
+  readonly logger?: ClientLogger;
+  readonly signal?: AbortSignal;
+  readonly tokenProvider?: Pick<AccessTokenProvider, "getAccessTokenLease">;
+}
+
+export class ComposedClientRuntime {
+  readonly bindingStore: SessionBindingStore;
+  readonly custody: TurnCustodyOwner;
+  readonly messageToolAvailable: boolean;
+  readonly reconciler: SessionReconciler;
+  readonly reportOwner: TurnReportOwner;
+  readonly runner: AgentTurnRunner;
+  readonly runtimeManager: SessionRuntimeManager;
+  readonly toolHost: RuntimeToolHost;
+  readonly workspace: AgentWorkspaceManager;
+  readonly #runtime: ClientRuntime;
+  readonly #refreshCapability: () => Promise<void>;
+  readonly #capabilityRefreshIntervalMs: number;
+  readonly #capabilityAbort: AbortController;
+  #capabilityTimer?: ReturnType<typeof setInterval>;
+  #capabilityRefreshInFlight?: Promise<void>;
+  #stopped = false;
+
+  constructor(
+    runtime: ClientRuntime,
+    components: {
+      bindingStore: SessionBindingStore;
+      custody: TurnCustodyOwner;
+      messageToolAvailable: boolean;
+      reconciler: SessionReconciler;
+      reportOwner: TurnReportOwner;
+      runner: AgentTurnRunner;
+      runtimeManager: SessionRuntimeManager;
+      toolHost: RuntimeToolHost;
+      workspace: AgentWorkspaceManager;
+      refreshCapability: () => Promise<void>;
+      capabilityRefreshIntervalMs: number;
+      capabilityAbort: AbortController;
+    },
+  ) {
+    this.#runtime = runtime;
+    this.bindingStore = components.bindingStore;
+    this.custody = components.custody;
+    this.messageToolAvailable = components.messageToolAvailable;
+    this.reconciler = components.reconciler;
+    this.reportOwner = components.reportOwner;
+    this.runner = components.runner;
+    this.runtimeManager = components.runtimeManager;
+    this.toolHost = components.toolHost;
+    this.workspace = components.workspace;
+    this.#refreshCapability = components.refreshCapability;
+    this.#capabilityRefreshIntervalMs = components.capabilityRefreshIntervalMs;
+    this.#capabilityAbort = components.capabilityAbort;
+  }
+
+  async run(): Promise<void> {
+    this.#startCapabilityMonitor();
+    try {
+      await this.#runtime.run();
+    } finally {
+      this.#stopCapabilityMonitor();
+      this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
+      await this.#capabilityRefreshInFlight?.catch(() => undefined);
+      this.runner.stop();
+      await this.runner.settled();
+      await this.runtimeManager.close();
+      this.reportOwner.stop();
+      this.toolHost.close();
+    }
+  }
+
+  stop(): void {
+    if (this.#stopped) return;
+    this.#stopped = true;
+    this.#stopCapabilityMonitor();
+    this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
+    this.runner.stop();
+    void this.runtimeManager.close();
+    this.toolHost.close();
+    this.#runtime.stop();
+  }
+
+  #startCapabilityMonitor(): void {
+    if (this.#capabilityTimer || this.#stopped) return;
+    this.#capabilityTimer = setInterval(() => {
+      if (this.#capabilityRefreshInFlight || this.#stopped) return;
+      const refresh = this.#refreshCapability();
+      this.#capabilityRefreshInFlight = refresh;
+      void refresh
+        .catch(() => undefined)
+        .finally(() => {
+          if (this.#capabilityRefreshInFlight === refresh) this.#capabilityRefreshInFlight = undefined;
+        });
+    }, this.#capabilityRefreshIntervalMs);
+    this.#capabilityTimer.unref();
+  }
+
+  #stopCapabilityMonitor(): void {
+    if (!this.#capabilityTimer) return;
+    clearInterval(this.#capabilityTimer);
+    this.#capabilityTimer = undefined;
+  }
+}
+
+export async function createClientRuntime(
+  connection: RuntimeConnection,
+  options: CreateClientRuntimeOptions,
+): Promise<ComposedClientRuntime> {
+  const moduleLogger = (module: string) => options.logger?.child({ module }) ?? createLogger(module);
+  const sourceEnvironment = options.environment ?? process.env;
+  options.signal?.throwIfAborted();
+  const defaultHome = sourceEnvironment.HOME ?? homedir();
+  const configuredCodexHome = resolve(options.codexHome ?? sourceEnvironment.CODEX_HOME ?? join(defaultHome, ".codex"));
+  await mkdir(configuredCodexHome, { recursive: true, mode: 0o700 });
+  const codexHome = await realpath(configuredCodexHome);
+  const command = options.codexCommand ?? "codex";
+  options.signal?.throwIfAborted();
+  const environment = codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome });
+  const providerHomeIdentity = createHash("sha256").update(codexHome, "utf8").digest("hex");
+  const factory =
+    options.factory ??
+    resolvedCodexFactory({
+      clientVersion: options.clientVersion,
+      command,
+      codexHome,
+      environment,
+      sourceEnvironment,
+    });
+  if (factory.manifest.providerId !== "codex") {
+    throw new Error("Production Client Runtime only registers the reviewed Codex provider");
+  }
+  const factories = new Map([[factory.manifest.providerId, factory]]);
+  const capabilityAbort = new AbortController();
+  const readinessSignal = options.signal
+    ? AbortSignal.any([options.signal, capabilityAbort.signal])
+    : capabilityAbort.signal;
+  let providerReady = false;
+  let providerReadiness: Promise<void> | undefined;
+  const ensureProviderReady = (): Promise<void> => {
+    if (providerReadiness) return providerReadiness;
+    providerReadiness = (async () => {
+      readinessSignal.throwIfAborted();
+      const result = await factory.probe({ signal: readinessSignal });
+      if (!result.ready) throw new Error(result.issues.map((issue) => `${issue.code}: ${issue.message}`).join("; "));
+      if ((await realpath(codexHome)) !== codexHome) throw new Error("Codex Home identity changed");
+      readinessSignal.throwIfAborted();
+      providerReady = true;
+    })().finally(() => {
+      providerReadiness = undefined;
+    });
+    return providerReadiness;
+  };
+  const refreshCapability = async (): Promise<void> => {
+    const available = await ensureProviderReady()
+      .then(() => true)
+      .catch((error: unknown) => {
+        if (readinessSignal.aborted) throw error;
+        return false;
+      });
+    readinessSignal.throwIfAborted();
+    providerReady = available;
+    connection.setVerifiedCapabilities({ imMessageTool: available ? 1 : 0 });
+  };
+  try {
+    await refreshCapability();
+  } catch (error) {
+    capabilityAbort.abort(error);
+    throw error;
+  }
+
+  const bindingStore = new SessionBindingStore({ home: options.home, providerHomeIdentity });
+  const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
+  const reportOwner = new TurnReportOwner({ connection });
+  const toolHost = new RuntimeToolHost(connection);
+  const runtimeManager = new SessionRuntimeManager({
+    bindingStore,
+    factories,
+    providerAvailable: () => providerReady,
+    toolHost,
+    workspace,
+  });
+  const reconciler = new SessionReconciler({
+    computerId: connection.computerId,
+    preparation: runtimeManager,
+    localPolicy: runtimeManager,
+  });
+  const resourceFetcher = new ImResourceFetcher({
+    computerId: connection.computerId,
+    instanceId: connection.instanceId,
+    api: options.api,
+    tokenProvider: options.tokenProvider,
+  });
+  const mvpReportRecovery = new MvpTurnReportRecovery({
+    bindingStore,
+    logger: moduleLogger("report-recovery"),
+    reconciler,
+    reportOwner,
+  });
+  let runner: AgentTurnRunner;
+  const custody = new TurnCustodyOwner({
+    bindingStore,
+    reconciler,
+    preflight: async (request) => {
+      const policyReason = runtimeManager.validate(request.runtime);
+      if (policyReason) return policyReason;
+      try {
+        if (!providerReady) await ensureProviderReady();
+        await workspace.verifyAgent(request.runtime, computeRuntimeSnapshotHashes(request.runtime));
+        runtimeManager.runtime(request.sessionId);
+        return undefined;
+      } catch (error) {
+        return error instanceof RuntimeStorageError ? "session_binding_conflict" : "provider_unavailable";
+      }
+    },
+    start: (owner) => runner.start(owner),
+  });
+  runner = new AgentTurnRunner({
+    bindingStore,
+    connection,
+    custody,
+    logger: moduleLogger("turn"),
+    reportOwner,
+    resourceFetcher,
+    runtimeManager,
+    toolHost,
+  });
+  const runtime = new ClientRuntime(connection, {
+    logger: moduleLogger("client-runtime"),
+    reconciler,
+    handleDelivery: (request) => custody.accept(request),
+    handleTurnReportResult: (result) => reportOwner.handleResult(result).then(() => undefined),
+    prepareReconcileResult: (request, result) => mvpReportRecovery.prepare(request, result),
+    onReconcileResultSendFailed: (request, result) => mvpReportRecovery.cancel(request, result),
+    onReconciled: (request, result) => mvpReportRecovery.afterReconciled(request, result),
+  });
+  return new ComposedClientRuntime(runtime, {
+    bindingStore,
+    custody,
+    messageToolAvailable: providerReady,
+    reconciler,
+    reportOwner,
+    runner,
+    runtimeManager,
+    toolHost,
+    workspace,
+    refreshCapability,
+    capabilityAbort,
+    capabilityRefreshIntervalMs: Math.max(
+      10,
+      options.capabilityRefreshIntervalMs ?? DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS,
+    ),
+  });
+}
+
+interface ResolvedCodexFactoryOptions {
+  readonly clientVersion: string;
+  readonly codexHome: string;
+  readonly command: string;
+  readonly environment: NodeJS.ProcessEnv;
+  readonly sourceEnvironment: NodeJS.ProcessEnv;
+}
+
+function resolvedCodexFactory(options: ResolvedCodexFactoryOptions): AgentRuntimeFactory {
+  let readyFactory: CodexAgentRuntimeFactory | undefined;
+  return {
+    manifest: CODEX_AGENT_RUNTIME_MANIFEST,
+    async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
+      let command: string;
+      try {
+        request.signal?.throwIfAborted();
+        command = await resolveExecutable(options.command, options.sourceEnvironment);
+      } catch (error) {
+        if (request.signal?.aborted) throw error;
+        return { ready: false, issues: [{ code: "artifact_missing", message: "Codex CLI could not be executed" }] };
+      }
+      const candidate = new CodexAgentRuntimeFactory({
+        clientVersion: options.clientVersion,
+        process: { command, env: options.environment, expectedCodexHome: options.codexHome },
+      });
+      const result = await candidate.probe(request);
+      if (result.ready) readyFactory = candidate;
+      return result;
+    },
+    create(request: CreateAgentRuntimeRequest) {
+      return requireReadyCodexFactory(readyFactory).create(request);
+    },
+    resume(request: ResumeAgentRuntimeRequest) {
+      return requireReadyCodexFactory(readyFactory).resume(request);
+    },
+  };
+}
+
+function requireReadyCodexFactory(factory: CodexAgentRuntimeFactory | undefined): CodexAgentRuntimeFactory {
+  if (!factory) throw new Error("Codex provider readiness has not been established");
+  return factory;
+}
+
+export function resolveCodexHome(environment: NodeJS.ProcessEnv = process.env): string {
+  return resolve(environment.CODEX_HOME ?? join(environment.HOME ?? homedir(), ".codex"));
+}
+
+async function resolveExecutable(command: string, environment: NodeJS.ProcessEnv): Promise<string> {
+  if (isAbsolute(command)) {
+    await access(command, constants.X_OK);
+    return realpath(command);
+  }
+  const path = environment.PATH;
+  if (!path) throw new Error("PATH is unavailable while locating Codex");
+  const extensions = process.platform === "win32" ? (environment.PATHEXT ?? ".EXE;.CMD;.BAT").split(";") : [""];
+  for (const directory of path.split(delimiter)) {
+    if (!directory) continue;
+    for (const extension of extensions) {
+      const candidate = join(directory, `${command}${extension}`);
+      try {
+        await access(candidate, constants.X_OK);
+        return await realpath(candidate);
+      } catch {
+        // Continue through the explicit PATH allowlist.
+      }
+    }
+  }
+  throw new Error("A compatible Codex executable is unavailable");
+}

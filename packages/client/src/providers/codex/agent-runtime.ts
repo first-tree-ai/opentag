@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
-import { access } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
@@ -8,6 +7,9 @@ import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
   type AgentApprovalResponse,
+  type AgentHostedToolCall,
+  type AgentHostedToolResult,
+  type AgentHostedTools,
   type AgentInteractionRequest,
   type AgentInteractionResponse,
   type AgentPromptRequest,
@@ -28,11 +30,14 @@ import {
   type JsonValue,
   type ResumeAgentRuntimeRequest,
 } from "../../agent-runtime/types.js";
-import { assertBinding, assertJsonValue } from "../../agent-runtime/validation.js";
+import { assertBinding, assertHostedTools, assertJsonValue } from "../../agent-runtime/validation.js";
 import {
+  CodexAppServerError,
   type CodexAppServerMessage,
   CodexAppServerProcess,
   type CodexAppServerRequest,
+  type CodexDynamicToolCall,
+  type CodexDynamicToolResult,
   type CodexSpawnOptions,
   type InteractiveCodexAppServerClient,
 } from "./app-server-wire.js";
@@ -40,7 +45,56 @@ import {
 const execFileAsync = promisify(execFile);
 const CODEX_BINDING_SCHEMA_VERSION = 1;
 const CODEX_PROVIDER_ID = "codex";
-const CODEX_APP_SERVER_ARGS = ["app-server"] as const;
+export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
+  "app-server",
+  "--stdio",
+  "--disable",
+  "apps",
+  "--disable",
+  "auth_elicitation",
+  "--disable",
+  "browser_use",
+  "--disable",
+  "browser_use_external",
+  "--disable",
+  "browser_use_full_cdp_access",
+  "--disable",
+  "computer_use",
+  "--disable",
+  "goals",
+  "--disable",
+  "hooks",
+  "--disable",
+  "image_generation",
+  "--disable",
+  "in_app_browser",
+  "--disable",
+  "multi_agent",
+  "--disable",
+  "plugins",
+  "--disable",
+  "remote_plugin",
+  "--disable",
+  "skill_mcp_dependency_install",
+  "--disable",
+  "tool_call_mcp_elicitation",
+  "-c",
+  "mcp_servers={}",
+  "-c",
+  'web_search="disabled"',
+  "-c",
+  "tools.view_image=false",
+  "-c",
+  "memories.use_memories=false",
+  "-c",
+  "memories.generate_memories=false",
+  "-c",
+  "allow_login_shell=false",
+  "-c",
+  'shell_environment_policy.inherit="all"',
+  "-c",
+  'shell_environment_policy.filters={ PATH = "include", LANG = "include", LC_ALL = "include" }',
+] as const;
 const CODEX_REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 const TOOL_ITEM_TYPES = new Set([
   "collabToolCall",
@@ -73,15 +127,17 @@ interface CodexRuntimeOptions {
   readonly workspace: AgentRuntimeWorkspace;
   readonly policy: AgentRuntimePolicy;
   readonly configuration?: AgentRunConfiguration;
+  readonly hostedTools?: AgentHostedTools;
 }
 
 export interface CodexAgentRuntimeFactoryOptions {
   readonly clientVersion: string;
   readonly createClient?: (cwd: string) => InteractiveCodexAppServerClient;
   readonly process?: Omit<CodexSpawnOptions, "cwd" | "env"> & { readonly env?: NodeJS.ProcessEnv };
-  readonly probeRunner?: () => Promise<{
+  readonly probeRunner?: (signal?: AbortSignal) => Promise<{
     readonly appServer: boolean;
     readonly credential: boolean;
+    readonly experimentalTools: boolean;
     readonly version: string;
   }>;
 }
@@ -109,10 +165,15 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   readonly #workspace: AgentRuntimeWorkspace;
   readonly #policy: AgentRuntimePolicy;
   readonly #configuration?: AgentRunConfiguration;
+  readonly #hostedTools?: AgentHostedTools;
   readonly #unsubscribeNotifications: () => void;
   readonly #unsubscribeRequests: () => void;
   readonly #wireInteractions = new Map<string, CodexAppServerRequest>();
   readonly #completedMessages = new Map<string, { readonly phase?: string; readonly text: string }>();
+  readonly #hostedToolCalls = new Map<
+    string,
+    { readonly hash: string; readonly result: Promise<CodexDynamicToolResult> }
+  >();
   #eventTail: Promise<void> = Promise.resolve();
   #buffering = false;
   #buffered: CodexEnvelope[] = [];
@@ -135,6 +196,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#workspace = options.workspace;
     this.#policy = options.policy;
     this.#configuration = options.configuration;
+    this.#hostedTools = options.hostedTools;
+    this.#client.setDynamicToolHandler?.((call) => this.#handleHostedTool(call));
     this.#unsubscribeNotifications = this.#client.subscribe((message) => {
       this.#enqueue({ type: "notification", message });
     });
@@ -188,6 +251,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       this.#turnIdReady = undefined;
       this.#terminal = undefined;
       this.#wireInteractions.clear();
+      this.#hostedToolCalls.clear();
     }
   }
 
@@ -233,7 +297,58 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     }
     this.#unsubscribeRequests();
     this.#unsubscribeNotifications();
+    this.#client.setDynamicToolHandler?.(undefined);
     await this.#client.close();
+  }
+
+  async #handleHostedTool(call: CodexDynamicToolCall): Promise<CodexDynamicToolResult> {
+    const hash = JSON.stringify({
+      arguments: call.arguments,
+      namespace: call.namespace,
+      threadId: call.threadId,
+      tool: call.tool,
+      turnId: call.turnId,
+    });
+    const existing = this.#hostedToolCalls.get(call.callId);
+    if (existing) {
+      return existing.hash === hash
+        ? existing.result
+        : { success: false, text: "OpenTag rejected conflicting reuse of a hosted tool call ID." };
+    }
+    const result = this.#executeHostedTool(call);
+    this.#hostedToolCalls.set(call.callId, { hash, result });
+    return result;
+  }
+
+  async #executeHostedTool(call: CodexDynamicToolCall): Promise<CodexDynamicToolResult> {
+    const context = this.#context;
+    const hostedTools = this.#hostedTools;
+    if (!context || !hostedTools || call.namespace !== null || call.threadId !== this.#threadId) {
+      return { success: false, text: "OpenTag tool request is not authorized for this run." };
+    }
+    if (
+      call.turnId !== this.#providerTurnId ||
+      this.#policy.tools.mode !== "allow-list" ||
+      !this.#policy.tools.names.includes(call.tool)
+    ) {
+      return { success: false, text: "OpenTag tool request is not authorized for this run." };
+    }
+    try {
+      const input = toJsonValue(call.arguments);
+      const request: AgentHostedToolCall = {
+        runId: context.runId,
+        toolCallId: call.callId,
+        name: call.tool,
+        input,
+        signal: context.signal,
+      };
+      return codexHostedToolResult(await hostedTools.handler(request));
+    } catch (error) {
+      return {
+        success: false,
+        text: error instanceof Error ? `OpenTag tool request failed: ${error.message}` : "OpenTag tool request failed.",
+      };
+    }
   }
 
   #enqueue(envelope: CodexEnvelope): void {
@@ -514,9 +629,10 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
   readonly manifest = CODEX_AGENT_RUNTIME_MANIFEST;
   readonly #clientVersion: string;
   readonly #createClient: (cwd: string) => InteractiveCodexAppServerClient;
-  readonly #probeRunner: () => Promise<{
+  readonly #probeRunner: (signal?: AbortSignal) => Promise<{
     readonly appServer: boolean;
     readonly credential: boolean;
+    readonly experimentalTools: boolean;
     readonly version: string;
   }>;
 
@@ -529,7 +645,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       ((cwd) =>
         new CodexAppServerProcess({
           command,
-          args: options.process?.args ?? [...CODEX_APP_SERVER_ARGS],
+          args: options.process?.args ?? [...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS],
           cwd,
           env: environment,
           expectedCodexHome: options.process?.expectedCodexHome,
@@ -538,7 +654,40 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
           spawnProcess: options.process?.spawnProcess,
         }));
     this.#probeRunner =
-      options.probeRunner ?? (() => probeCodex(command, environment, options.process?.expectedCodexHome));
+      options.probeRunner ??
+      (async (signal) => {
+        const local = await probeCodex(command, environment, signal);
+        if (!local.credential) return { ...local, experimentalTools: false };
+        const client = this.#createClient(process.cwd());
+        try {
+          await client.initialize(this.#clientVersion, signal);
+          const response = requireRecord(
+            await client.request(
+              "thread/start",
+              {
+                cwd: process.cwd(),
+                approvalPolicy: "never",
+                sandbox: "read-only",
+                ephemeral: true,
+                dynamicTools: [
+                  {
+                    type: "function",
+                    name: "opentag_capability_probe",
+                    description: "Validate Codex dynamic tool protocol support.",
+                    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+                  },
+                ],
+              },
+              signal,
+            ),
+            "Codex dynamic tool probe returned an invalid response",
+          );
+          requireRecord(response.thread, "Codex dynamic tool probe returned no thread");
+          return { ...local, experimentalTools: true };
+        } finally {
+          await client.close().catch(() => undefined);
+        }
+      });
   }
 
   async probe(request: AgentRuntimeProbeRequest): Promise<AgentRuntimeProbeResult> {
@@ -553,12 +702,19 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
     }
     let version: string | undefined;
     try {
-      const result = await this.#probeRunner();
+      const result = await this.#probeRunner(request.signal);
       version = result.version;
       if (!result.appServer) issues.push({ code: "version_incompatible", message: "Codex App Server is unavailable" });
       if (!result.credential) issues.push({ code: "credential_missing", message: "Codex credentials were not found" });
-    } catch {
-      issues.push({ code: "artifact_missing", message: "Codex CLI could not be executed" });
+      if (result.appServer && result.credential && !result.experimentalTools) {
+        issues.push({
+          code: "version_incompatible",
+          message: "Codex experimental dynamic tools are unavailable",
+        });
+      }
+    } catch (error) {
+      if (request.signal?.aborted) throw error;
+      issues.push(probeIssue(error));
     }
     return { ready: issues.length === 0, ...(version ? { version } : {}), issues };
   }
@@ -583,6 +739,12 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
     const expectedThreadId = binding ? parseCodexBinding(binding) : undefined;
     const client = this.#createClient(request.workspace.cwd);
     try {
+      if (request.hostedTools && typeof client.setDynamicToolHandler !== "function") {
+        throw new AgentRuntimeError(
+          "configuration_invalid",
+          "Codex App Server transport does not support hosted dynamic tools",
+        );
+      }
       await client.initialize(this.#clientVersion);
       const method = mode === "create" ? "thread/start" : "thread/resume";
       const response = requireRecord(
@@ -593,7 +755,15 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
           sandbox: codexSandboxMode(request.policy.fileSystem),
           ...(request.configuration?.model ? { model: request.configuration.model } : {}),
           ...(providerConfiguration.personality ? { personality: providerConfiguration.personality } : {}),
-          ...(providerConfiguration.serviceName ? { serviceName: providerConfiguration.serviceName } : {}),
+          serviceName: providerConfiguration.serviceName ?? "OpenTag",
+          ...(mode === "create"
+            ? {
+                ephemeral: false,
+                ...(request.hostedTools
+                  ? { dynamicTools: request.hostedTools.definitions.map(codexDynamicToolDefinition) }
+                  : {}),
+              }
+            : {}),
         }),
         `${method} returned an invalid response`,
       );
@@ -616,6 +786,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
         workspace: request.workspace,
         policy: request.policy,
         configuration: request.configuration,
+        hostedTools: request.hostedTools,
       });
     } catch (error) {
       await client.close().catch(() => undefined);
@@ -634,12 +805,9 @@ export function codexAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process
     "LANG",
     "LC_ALL",
     "LOGNAME",
-    "OPENAI_API_KEY",
     "PATH",
     "PATHEXT",
     "SHELL",
-    "SSL_CERT_DIR",
-    "SSL_CERT_FILE",
     "SystemRoot",
     "TMPDIR",
     "USER",
@@ -652,30 +820,34 @@ export function codexAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process
   return environment;
 }
 
+function probeIssue(error: unknown): AgentRuntimeProbeResult["issues"][number] {
+  if (error instanceof CodexAppServerError) {
+    if (error.code === "protocol") {
+      return { code: "version_incompatible", message: `Codex App Server protocol is incompatible: ${error.message}` };
+    }
+    return { code: "temporarily_unavailable", message: `Codex App Server is unavailable: ${error.message}` };
+  }
+  return { code: "artifact_missing", message: "Codex CLI could not be executed" };
+}
+
 async function probeCodex(
   command: string,
   environment: NodeJS.ProcessEnv,
-  expectedCodexHome?: string,
+  signal?: AbortSignal,
 ): Promise<{ readonly appServer: boolean; readonly credential: boolean; readonly version: string }> {
-  const execution = { encoding: "utf8" as const, env: environment, timeout: 5_000, windowsHide: true };
+  const execution = { encoding: "utf8" as const, env: environment, signal, timeout: 5_000, windowsHide: true };
   const versionResult = await execFileAsync(command, ["--version"], execution);
   const version = versionResult.stdout.trim();
   if (!version) throw new Error("Codex CLI returned no version");
   await execFileAsync(command, ["app-server", "--help"], execution);
-  const codexHome =
-    expectedCodexHome ?? environment.CODEX_HOME ?? (environment.HOME ? join(environment.HOME, ".codex") : undefined);
-  const credential =
-    Boolean(environment.OPENAI_API_KEY) || (codexHome ? await fileExists(join(codexHome, "auth.json")) : false);
-  return { appServer: true, credential, version };
-}
-
-async function fileExists(path: string): Promise<boolean> {
+  let credential = false;
   try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
+    await execFileAsync(command, ["login", "status"], execution);
+    credential = true;
+  } catch (error) {
+    if (signal?.aborted) throw error;
   }
+  return { appServer: true, credential, version };
 }
 
 function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
@@ -688,12 +860,7 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
   for (const root of request.workspace.writableRoots ?? []) {
     if (!isAbsolute(root)) throw new AgentRuntimeError("configuration_invalid", "writable roots must be absolute");
   }
-  if (request.policy.tools.mode !== "provider-default") {
-    throw new AgentRuntimeError(
-      "configuration_invalid",
-      "Codex does not implement the common tool allow-list contract",
-    );
-  }
+  assertHostedTools(request.policy, request.hostedTools);
   if (request.policy.fileSystem === "read-only" && (request.workspace.writableRoots?.length ?? 0) > 0) {
     throw new AgentRuntimeError("configuration_invalid", "read-only policy cannot have writable roots");
   }
@@ -800,6 +967,35 @@ function codexSandboxPolicy(workspace: AgentRuntimeWorkspace, policy: AgentRunti
     writableRoots: [...(workspace.writableRoots ?? [workspace.cwd])],
     networkAccess: policy.network === "enabled",
   };
+}
+
+function codexDynamicToolDefinition(definition: AgentHostedTools["definitions"][number]): Record<string, unknown> {
+  return {
+    type: "function",
+    name: definition.name,
+    ...(definition.description ? { description: definition.description } : {}),
+    inputSchema: definition.inputSchema,
+  };
+}
+
+function codexHostedToolResult(result: AgentHostedToolResult): CodexDynamicToolResult {
+  if (!result || typeof result !== "object" || typeof result.success !== "boolean" || !Array.isArray(result.content)) {
+    return { success: false, text: "OpenTag tool returned an invalid result." };
+  }
+  const text: string[] = [];
+  for (const item of result.content) {
+    if (item?.type !== "text" || typeof item.text !== "string") {
+      return { success: false, text: "OpenTag tool returned an invalid result." };
+    }
+    text.push(item.text);
+  }
+  if (result.error) {
+    if (typeof result.error.code !== "string" || typeof result.error.message !== "string") {
+      return { success: false, text: "OpenTag tool returned an invalid result." };
+    }
+    if (text.length === 0) text.push(`${result.error.code}: ${result.error.message}`);
+  }
+  return { success: result.success, text: text.join("\n") };
 }
 
 function codexInteractionRequest(

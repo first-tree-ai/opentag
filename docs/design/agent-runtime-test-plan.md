@@ -2,7 +2,7 @@
 
 Status: active quality gate
 
-Last updated: 2026-08-19
+Last updated: 2026-08-20
 
 ## Goal and Scope
 
@@ -19,9 +19,19 @@ Client execution layer. It covers these production boundaries:
 - `src/providers/claude-code/agent-runtime.ts`
 - `src/providers/claude-code/process-wire.ts`
 
+Production Client execution now uses this contract through:
+
+- `src/runtime/runtime-tool-host.ts`
+- `src/runtime/session-runtime-manager.ts`
+- `src/runtime/agent-turn-runner.ts`
+- `src/runtime/client-runtime-composition.ts`
+
 The coverage gate requires 100% statements, branches, functions, and lines for
-that exact source set. Coverage is a floor, not the acceptance criterion by
-itself: protocol behavior and live local Provider sessions are tested separately.
+the contract, Codex translation, hosted-tool host, Session Runtime manager, and
+Claude Code translation, Turn runner, and Session Runtime/hosted-tool integration.
+Coverage is a floor, not the acceptance criterion by itself: production
+composition, crash recovery, protocol behavior, and live local Provider sessions
+are tested separately.
 
 There are no file-level or broad range exclusions. Five local V8 annotations in
 the shared Runtime and Codex implementation document non-executable invariant
@@ -87,6 +97,13 @@ A scripted interactive App Server client verifies:
 - foreign Thread/Turn events, duplicate requests, malformed data, and process failure;
 - probe outcomes, credential discovery, process environment allow-listing, and cleanup.
 
+The same suite verifies the experimental hosted-tool protocol: initialization
+advertises experimental API support, `thread/start` receives the exact canonical
+dynamic-tool definitions, `thread/resume` restores persisted definitions, and
+unknown, duplicate, late, cancelled, malformed, or failed calls settle with a
+deterministic fail-closed response. A Codex artifact without this protocol is
+reported unavailable; there is no provider-default tool fallback.
+
 ### 3. Real JSONL process tests
 
 The wire client runs against a child-process fixture rather than an in-memory
@@ -141,6 +158,31 @@ Code live test explicitly requests unrestricted filesystem and enabled network
 with `approvals: never`. The Provider rejects stricter common policies rather
 than claiming a boundary it cannot guarantee.
 
+### 6. Production Client Runtime integration and recovery
+
+The production-path tests verify:
+
+- daemon composition constructs the provider-neutral `createClientRuntime`
+  entry point and registers only the supported Codex factory;
+- a new Session creates a Provider Runtime and durably writes an opaque v2
+  binding before Run admission;
+- legacy v1 Codex bindings migrate on read and resume the exact Provider Thread;
+- effective configuration or tool-policy changes close the old Runtime and
+  create a new Provider session instead of silently reusing stale definitions;
+- IM hosted tools remain scoped to the active Run identity, allow-list, Session,
+  placement generation, and idempotent request correlation;
+- Agent Runtime events feed generic traces and typed results feed the existing
+  Turn Report path while Client Runtime retains custody;
+- restart recovery reports accepted-but-not-started work as `not_started` and
+  starting/running work as `turn_state_unknown`, without replaying the Run;
+- stop, shutdown, repeated reconcile, binding-write failures, and reporting
+  failures do not admit an unbound Run or leak a Runtime owner.
+
+Repository acceptance also audits that `CodexAdapter`, `CodexTurnRunner`,
+`createCodexClientRuntime`, and their old smoke path have no remaining source,
+export, test, or production consumer. The Agent Runtime live E2E is the sole
+Codex live smoke.
+
 ## Commands and Acceptance
 
 ```bash
@@ -151,6 +193,8 @@ pnpm check
 pnpm build
 pnpm typecheck
 pnpm test
+pnpm --filter @opentag/server test:integration
+git diff --check
 ```
 
 Acceptance requires all commands to pass, all four scoped coverage metrics to
@@ -161,15 +205,11 @@ failure; it is never converted into a skipped success.
 
 ## Latest Local Execution
 
-On 2026-08-20 the scoped Agent Runtime, Codex, and Claude Code suite passed 139
-tests with 100% statements, branches, functions, and lines. All 243 Client tests
-passed. Repository formatting, notice, build, and type-check gates passed. The
-Codex live test passed against `codex-cli 0.144.1`: both create and resumed Runs
-completed, the opaque binding was preserved, and each Run produced 16 ordered
-events.
-
-The local `claude` 2.1.210 executable was discovered from the user `PATH`. The
-create/resume success E2E remains blocked because `claude auth status --json`
-reports no active login; readiness reports `credential_missing` and does not
-skip the gate. The monorepo test command also retains two unrelated existing
-macOS CLI failures caused solely by `/tmp` versus `/private/tmp` path spelling.
+On 2026-08-20 the converged Agent Runtime, Codex, Claude Code, and production
+Client Runtime suite passed 170 tests with 100% statements, branches, functions,
+and lines. All 267 Client tests passed. The Codex live test passed against
+`codex-cli 0.147.0`: both create and resumed Runs completed, the opaque binding
+was preserved, and each Run produced 16 ordered events. The local `claude`
+2.1.210 executable was discovered from the user `PATH`; its create/resume E2E
+remains blocked because `claude auth status --json` reports no active login, and
+readiness correctly reports `credential_missing`.

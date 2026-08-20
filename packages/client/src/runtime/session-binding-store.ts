@@ -9,6 +9,8 @@ import {
   type TurnReportRequest,
   TurnReportRequestSchema,
 } from "@opentag/shared";
+import { AGENT_RUNTIME_BINDING_MAX_BYTES, type AgentRuntimeBinding } from "../agent-runtime/types.js";
+import { assertJsonValue } from "../agent-runtime/validation.js";
 import {
   ensurePrivateDirectory,
   RuntimeStorageError,
@@ -17,7 +19,7 @@ import {
 } from "../storage/durable-file.js";
 import { agentRuntimePaths, sessionBindingPath, snapshotPath } from "./runtime-paths.js";
 
-export const SESSION_BINDING_SCHEMA_VERSION = 1 as const;
+export const SESSION_BINDING_SCHEMA_VERSION = 2 as const;
 export const SESSION_RECORDED_INPUT_LIMIT = 64;
 
 export type UnresolvedTurnPhase = "accepted" | "starting" | "running" | "reporting";
@@ -48,9 +50,9 @@ export interface LocalSessionBinding {
   agentId: string;
   workspaceId: string;
   placementGeneration: number;
-  provider: "codex";
+  provider: "codex" | "claude-code";
   providerHomeIdentity: string;
-  providerThreadId?: string;
+  runtimeBinding?: AgentRuntimeBinding;
   appliedSessionRevisionSequence: number;
   appliedSessionRevisionId: string;
   sessionConfigHash: string;
@@ -162,7 +164,9 @@ export class SessionBindingStore {
         placementGeneration: request.placementGeneration,
         provider: runtime.provider,
         providerHomeIdentity: this.#providerHomeIdentity,
-        ...(current?.providerThreadId ? { providerThreadId: current.providerThreadId } : {}),
+        ...(current && current.lastEffectiveSnapshotHash === hashes.effectiveSnapshotHash && current.runtimeBinding
+          ? { runtimeBinding: current.runtimeBinding }
+          : {}),
         appliedSessionRevisionSequence: runtime.revision.session.sequence,
         appliedSessionRevisionId: runtime.revision.session.id,
         sessionConfigHash: hashes.sessionConfigHash,
@@ -216,7 +220,6 @@ export class SessionBindingStore {
     turnId: string,
     phase: UnresolvedTurnPhase,
     fields: {
-      providerThreadId?: string;
       providerTurnId?: string;
       report?: TurnReportRequest;
       resultHash?: string;
@@ -245,7 +248,6 @@ export class SessionBindingStore {
       }
       const updated: LocalSessionBinding = {
         ...binding,
-        ...(fields.providerThreadId ? { providerThreadId: fields.providerThreadId } : {}),
         unresolvedTurn: {
           ...unresolved,
           phase,
@@ -254,6 +256,29 @@ export class SessionBindingStore {
           ...(fields.resultHash ? { resultHash: fields.resultHash } : {}),
         },
       };
+      await writeDurableJson(path, updated);
+      return updated;
+    });
+  }
+
+  saveRuntimeBinding(
+    agentId: string,
+    sessionId: string,
+    effectiveSnapshotHash: string,
+    runtimeBinding: AgentRuntimeBinding,
+  ): Promise<LocalSessionBinding> {
+    return this.#withSessionLock(sessionId, async () => {
+      RuntimeSha256Schema.parse(effectiveSnapshotHash);
+      validateRuntimeBinding(runtimeBinding);
+      const path = sessionBindingPath(this.#home, agentId, sessionId);
+      const binding = await this.#requireBinding(agentId, sessionId);
+      if (
+        binding.lastEffectiveSnapshotHash !== effectiveSnapshotHash ||
+        binding.provider !== runtimeBinding.providerId
+      ) {
+        throw new SessionBindingConflictError("conflict", "The Agent Runtime binding does not match the Session");
+      }
+      const updated = { ...binding, runtimeBinding };
       await writeDurableJson(path, updated);
       return updated;
     });
@@ -305,7 +330,7 @@ export class SessionBindingStore {
     if (
       binding.sessionId !== request.sessionId ||
       binding.agentId !== request.agentId ||
-      binding.provider !== "codex" ||
+      (request.runtime && binding.provider !== request.runtime.provider) ||
       binding.providerHomeIdentity !== this.#providerHomeIdentity ||
       (request.runtime && binding.workspaceId !== request.runtime.workspace.workspaceId)
     ) {
@@ -358,9 +383,10 @@ export class SessionBindingStore {
 }
 
 function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
-  if (!isRecord(value) || value.schemaVersion !== SESSION_BINDING_SCHEMA_VERSION) {
+  if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== SESSION_BINDING_SCHEMA_VERSION)) {
     throw new RuntimeStorageError("invalid", "Unsupported Session binding schema");
   }
+  const isLegacy = value.schemaVersion === 1;
   const required = [
     "schemaVersion",
     "sessionId",
@@ -375,7 +401,7 @@ function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
     "lastEffectiveSnapshotHash",
     "recentRecordedInputs",
   ];
-  const optional = ["providerThreadId", "unresolvedTurn"];
+  const optional = isLegacy ? ["providerThreadId", "unresolvedTurn"] : ["runtimeBinding", "unresolvedTurn"];
   if (!hasOnlyKeys(value, [...required, ...optional]) || required.some((key) => !(key in value))) {
     throw new RuntimeStorageError("invalid", "Session binding fields are invalid");
   }
@@ -384,13 +410,14 @@ function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
     !isString(value.agentId) ||
     !isString(value.workspaceId) ||
     !isSequence(value.placementGeneration) ||
-    value.provider !== "codex" ||
+    (value.provider !== "codex" && value.provider !== "claude-code") ||
+    (isLegacy && value.provider !== "codex") ||
     !RuntimeSha256Schema.safeParse(value.providerHomeIdentity).success ||
     !isSequence(value.appliedSessionRevisionSequence) ||
     !isString(value.appliedSessionRevisionId) ||
     !RuntimeSha256Schema.safeParse(value.sessionConfigHash).success ||
     !RuntimeSha256Schema.safeParse(value.lastEffectiveSnapshotHash).success ||
-    (value.providerThreadId !== undefined && !isString(value.providerThreadId)) ||
+    (isLegacy && value.providerThreadId !== undefined && !isString(value.providerThreadId)) ||
     !Array.isArray(value.recentRecordedInputs)
   ) {
     throw new RuntimeStorageError("invalid", "Session binding values are invalid");
@@ -410,15 +437,28 @@ function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
           value.agentId as string,
           value.placementGeneration as number,
         );
+  let runtimeBinding: AgentRuntimeBinding | undefined;
+  if (isLegacy && value.providerThreadId) {
+    runtimeBinding = {
+      providerId: "codex",
+      schemaVersion: 1,
+      payload: { threadId: value.providerThreadId as string },
+    };
+  } else if (!isLegacy && value.runtimeBinding !== undefined) {
+    runtimeBinding = validateRuntimeBinding(value.runtimeBinding);
+    if (runtimeBinding.providerId !== value.provider) {
+      throw new RuntimeStorageError("invalid", "Agent Runtime binding provider does not match the Session");
+    }
+  }
   return {
     schemaVersion: SESSION_BINDING_SCHEMA_VERSION,
     sessionId: value.sessionId,
     agentId: value.agentId,
     workspaceId: value.workspaceId,
     placementGeneration: value.placementGeneration,
-    provider: "codex",
+    provider: value.provider,
     providerHomeIdentity: value.providerHomeIdentity as string,
-    ...(value.providerThreadId ? { providerThreadId: value.providerThreadId } : {}),
+    ...(runtimeBinding ? { runtimeBinding } : {}),
     appliedSessionRevisionSequence: value.appliedSessionRevisionSequence,
     appliedSessionRevisionId: value.appliedSessionRevisionId,
     sessionConfigHash: value.sessionConfigHash as string,
@@ -426,6 +466,28 @@ function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
     recentRecordedInputs,
     ...(unresolvedTurn ? { unresolvedTurn } : {}),
   };
+}
+
+function validateRuntimeBinding(value: unknown): AgentRuntimeBinding {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["providerId", "schemaVersion", "payload"]) ||
+    !isString(value.providerId) ||
+    !Number.isSafeInteger(value.schemaVersion) ||
+    (value.schemaVersion as number) < 1 ||
+    !("payload" in value)
+  ) {
+    throw new RuntimeStorageError("invalid", "Agent Runtime binding is invalid");
+  }
+  try {
+    assertJsonValue(value.payload, "runtimeBinding.payload", "binding_incompatible");
+  } catch {
+    throw new RuntimeStorageError("invalid", "Agent Runtime binding payload is invalid");
+  }
+  if (Buffer.byteLength(JSON.stringify(value), "utf8") > AGENT_RUNTIME_BINDING_MAX_BYTES) {
+    throw new RuntimeStorageError("invalid", "Agent Runtime binding exceeds the size limit");
+  }
+  return value as unknown as AgentRuntimeBinding;
 }
 
 function parseRecordedInput(

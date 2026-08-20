@@ -10,12 +10,12 @@ import type { SessionReconciler } from "./session-reconciler.js";
 import type { TurnReportOwner } from "./turn-report-owner.js";
 
 export interface MvpTurnReportRecoveryOptions {
-  bindingStore: Pick<SessionBindingStore, "read" | "recordResult">;
+  bindingStore: Pick<SessionBindingStore, "read" | "recordResult" | "updateUnresolved">;
   logger?: ClientLogger;
   maxActiveReplays?: number;
   maxPreparedBatches?: number;
-  reconciler: Pick<SessionReconciler, "clearRecovery" | "withAgentLock">;
-  reportOwner: Pick<TurnReportOwner, "rearmTerminal" | "submit">;
+  reconciler: Pick<SessionReconciler, "claimRecovery" | "clearRecovery" | "withAgentLock">;
+  reportOwner: Pick<TurnReportOwner, "create" | "rearmTerminal" | "submit">;
 }
 
 type RetainedReportReference = NonNullable<SessionReconcileResult["retainedReports"]>[number];
@@ -71,8 +71,39 @@ export class MvpTurnReportRecovery {
   prepare(request: SessionReconcileRequest, result: SessionReconcileResult): Promise<SessionReconcileResult> {
     if (result.status === "rejected") return Promise.resolve(result);
     return this.#reconciler.withAgentLock(request.agentId, async () => {
-      const binding = await this.#bindingStore.read(request.agentId, request.sessionId);
+      let binding = await this.#bindingStore.read(request.agentId, request.sessionId);
       if (!binding) return result;
+      const unresolved = binding.unresolvedTurn;
+      if (
+        unresolved &&
+        !this.#reconciler.claimRecovery(request.sessionId, {
+          deliveryId: unresolved.deliveryId,
+          turnId: unresolved.turnId,
+        })
+      ) {
+        return result;
+      }
+      if (unresolved && unresolved.phase !== "reporting") {
+        const uncertain = unresolved.phase === "starting" || unresolved.phase === "running";
+        const report = this.#reportOwner.create({
+          deliveryId: unresolved.deliveryId,
+          turnId: unresolved.turnId,
+          sessionId: binding.sessionId,
+          agentId: binding.agentId,
+          placementGeneration: binding.placementGeneration,
+          outcome: uncertain ? "unknown" : "failed",
+          executionEffects: uncertain ? "may_have_occurred" : "not_started",
+          errorReason: uncertain ? "turn_state_unknown" : "provider_start_failed",
+          traceSummary: { lastSequence: 0, droppedEvents: 0 },
+        });
+        binding = await this.#bindingStore.updateUnresolved(
+          request.agentId,
+          request.sessionId,
+          unresolved.turnId,
+          "reporting",
+          { report, resultHash: report.resultHash },
+        );
+      }
       const reports = retainedReports(binding);
       if (reports.length === 0) return result;
       if (reports.length > RUNTIME_MVP_RETAINED_REPORT_LIMIT) {

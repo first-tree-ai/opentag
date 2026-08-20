@@ -7,6 +7,13 @@ export {
   AGENT_RUNTIME_TEXT_MAX_BYTES,
   type AgentAbortRequest,
   type AgentApprovalResponse,
+  type AgentHostedToolCall,
+  type AgentHostedToolContent,
+  type AgentHostedToolDefinition,
+  type AgentHostedToolError,
+  type AgentHostedToolHandler,
+  type AgentHostedToolResult,
+  type AgentHostedTools,
   type AgentInput,
   type AgentInputItem,
   type AgentInteractionRequest,
@@ -86,25 +93,7 @@ export {
   type ClaudeCodeSpawnOptions,
 } from "./providers/claude-code/process-wire.js";
 export {
-  buildOpenTagRuntimeContext,
-  CODEX_V0_APP_SERVER_ARGS,
-  CODEX_V0_ITEM_LIMIT,
-  CODEX_V0_NOTIFICATION_BYTES,
-  CODEX_V0_NOTIFICATION_LIMIT,
-  CODEX_V0_REASONING_EFFORTS,
-  CodexAdapter,
-  type CodexAdapterOptions,
-  CodexLocalPolicy,
-  type CodexTraceItemType,
-  type CodexTraceSink,
-  CodexTurnError,
-  type CodexTurnOutcome,
-  type CodexTurnResult,
-  type CodexTurnRunOptions,
-  codexProviderEnvironment,
-  safeRelativeTracePath,
-} from "./providers/codex/adapter.js";
-export {
+  CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
   CODEX_AGENT_RUNTIME_MANIFEST,
   CodexAgentRuntime,
   CodexAgentRuntimeFactory,
@@ -131,6 +120,7 @@ export {
   AdmissionReservation,
   type AdmissionSnapshot,
 } from "./runtime/admission-controller.js";
+export { AgentTurnRunner, type AgentTurnRunnerOptions, buildAgentInput } from "./runtime/agent-turn-runner.js";
 export {
   AgentWorkspaceManager,
   type AgentWorkspaceManagerOptions,
@@ -143,12 +133,11 @@ export {
   type DeliveryDecision,
 } from "./runtime/client-runtime.js";
 export {
-  CodexClientRuntime,
-  type CreateCodexClientRuntimeOptions,
-  createCodexClientRuntime,
+  ComposedClientRuntime,
+  type CreateClientRuntimeOptions,
+  createClientRuntime,
   resolveCodexHome,
-} from "./runtime/codex-client-runtime.js";
-export { CodexTurnRunner, type CodexTurnRunnerOptions } from "./runtime/codex-turn-runner.js";
+} from "./runtime/client-runtime-composition.js";
 export {
   COMPUTER_IDENTITY_FILE_NAME,
   type ComputerIdentity,
@@ -176,7 +165,7 @@ export {
   sessionBindingPath,
   snapshotPath,
 } from "./runtime/runtime-paths.js";
-export { RuntimeToolHost } from "./runtime/runtime-tool-host.js";
+export { openTagHostedToolDefinitions, RuntimeToolHost } from "./runtime/runtime-tool-host.js";
 export {
   type CustodyResult,
   type LocalSessionBinding,
@@ -201,6 +190,7 @@ export {
   type SessionRuntimeState,
   type SessionTurnIdentity,
 } from "./runtime/session-reconciler.js";
+export { SessionRuntimeManager, type SessionRuntimeManagerOptions } from "./runtime/session-runtime-manager.js";
 export {
   TURN_TRACE_BATCH_SOFT_LIMIT_BYTES,
   TURN_TRACE_MAX_BUFFER_BYTES,

@@ -5,7 +5,7 @@ import {
   AccessTokenProvider,
   type ClientLogger,
   configureClientLoggerForService,
-  createCodexClientRuntime,
+  createClientRuntime,
   createLogger,
   OpenTagApi,
   OpenTagApiError,
@@ -171,7 +171,7 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
         platform: currentPlatform,
         tokenProvider,
       });
-      const runtime = await createCodexClientRuntime(connection, {
+      const runtime = await createClientRuntime(connection, {
         home,
         clientVersion: CLI_VERSION,
         logger: runtimeLogger,

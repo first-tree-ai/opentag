@@ -179,13 +179,23 @@ describe("CodexAgentRuntime", () => {
   it("probes local readiness without making a provider network request", async () => {
     const ready = new CodexAgentRuntimeFactory({
       clientVersion: "0.0.1",
-      probeRunner: async () => ({ appServer: true, credential: true, version: "codex-cli 1.2.3" }),
+      probeRunner: async () => ({
+        appServer: true,
+        credential: true,
+        experimentalTools: true,
+        version: "codex-cli 1.2.3",
+      }),
     });
     await expect(ready.probe({})).resolves.toEqual({ ready: true, version: "codex-cli 1.2.3", issues: [] });
 
     const missingCredential = new CodexAgentRuntimeFactory({
       clientVersion: "0.0.1",
-      probeRunner: async () => ({ appServer: true, credential: false, version: "codex-cli 1.2.3" }),
+      probeRunner: async () => ({
+        appServer: true,
+        credential: false,
+        experimentalTools: false,
+        version: "codex-cli 1.2.3",
+      }),
     });
     await expect(missingCredential.probe({})).resolves.toMatchObject({
       ready: false,
@@ -202,7 +212,7 @@ describe("CodexAgentRuntime", () => {
         OPENTAG_ACCESS_TOKEN: "opentag-secret",
         RANDOM_SECRET: "other-secret",
       }),
-    ).toEqual({ HOME: "/home/provider", PATH: "/bin", OPENAI_API_KEY: "provider-key" });
+    ).toEqual({ HOME: "/home/provider", PATH: "/bin" });
   });
 });
 
@@ -363,7 +373,7 @@ function codexFactory(client: ScriptedCodexClient): CodexAgentRuntimeFactory {
   return new CodexAgentRuntimeFactory({
     clientVersion: "0.0.1",
     createClient: () => client,
-    probeRunner: async () => ({ appServer: true, credential: true, version: "test" }),
+    probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "test" }),
   });
 }
 

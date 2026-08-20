@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { DirectImMessageDeliveryRequest } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRuntimeError } from "../agent-runtime/errors.js";
 import type {
@@ -13,12 +15,22 @@ import type {
   AgentRuntimeEvent,
   CreateAgentRuntimeRequest,
 } from "../agent-runtime/types.js";
-import { CodexAgentRuntimeFactory, codexAgentRuntimeEnvironment } from "../providers/codex/agent-runtime.js";
+import {
+  CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
+  CodexAgentRuntimeFactory,
+  codexAgentRuntimeEnvironment,
+} from "../providers/codex/agent-runtime.js";
 import type {
   CodexAppServerMessage,
   CodexAppServerRequest,
+  CodexDynamicToolCall,
+  CodexDynamicToolHandler,
+  CodexDynamicToolResult,
   InteractiveCodexAppServerClient,
 } from "../providers/codex/app-server-wire.js";
+import { CodexAppServerError } from "../providers/codex/app-server-wire.js";
+import type { RuntimeBusinessFrame } from "../runtime/runtime-connection.js";
+import { RuntimeToolHost } from "../runtime/runtime-tool-host.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex-app-server.mjs", import.meta.url));
 const directories: string[] = [];
@@ -28,6 +40,94 @@ afterEach(async () => {
 });
 
 describe("CodexAgentRuntime exhaustive behavior", () => {
+  it("bridges only canonical hosted tools for the active Run and settles each call once", async () => {
+    const client = new ManualCodexClient();
+    const handler = vi.fn(async (request: { input: unknown }) => {
+      const mode = (request.input as { mode?: string }).mode;
+      if (mode === "throw") throw new Error("handler failed");
+      if (mode === "throw-non-error") throw "handler failed";
+      if (mode === "invalid") return null as never;
+      if (mode === "invalid-content") return { success: true, content: [{}] } as never;
+      if (mode === "invalid-error") return { success: false, content: [], error: {} } as never;
+      if (mode === "error") {
+        return { success: false, content: [], error: { code: "denied", message: "denied" } };
+      }
+      return { success: true, content: [{ type: "text" as const, text: "sent" }] };
+    });
+    const definition = {
+      name: "opentag_message_send",
+      description: "Send a message.",
+      inputSchema: { type: "object", properties: { text: { type: "string" } } },
+    } as const;
+    const definitionWithoutDescription = {
+      name: "opentag_message_reply",
+      inputSchema: { type: "object", properties: { text: { type: "string" } } },
+    } as const;
+    const runtime = await factory(client).create({
+      ...createRequest(() => undefined),
+      policy: {
+        fileSystem: "workspace-write",
+        network: "disabled",
+        approvals: "never",
+        tools: { mode: "allow-list", names: [definition.name, definitionWithoutDescription.name] },
+      },
+      hostedTools: { definitions: [definition, definitionWithoutDescription], handler },
+    });
+    expect(client.call("thread/start")?.params).toMatchObject({
+      ephemeral: false,
+      dynamicTools: [
+        {
+          type: "function",
+          name: definition.name,
+          description: definition.description,
+          inputSchema: definition.inputSchema,
+        },
+        {
+          type: "function",
+          name: definitionWithoutDescription.name,
+          inputSchema: definitionWithoutDescription.inputSchema,
+        },
+      ],
+    });
+
+    const run = runtime.prompt({ runId: "hosted-run", input: input("send") });
+    await client.called("turn/start");
+    const call = {
+      arguments: { text: "hello" },
+      callId: "tool-call-1",
+      namespace: null,
+      threadId: "thread-1",
+      tool: definition.name,
+      turnId: "turn-1",
+    } satisfies CodexDynamicToolCall;
+    await expect(client.callDynamicTool(call)).resolves.toEqual({ success: true, text: "sent" });
+    await expect(client.callDynamicTool(call)).resolves.toEqual({ success: true, text: "sent" });
+    await expect(client.callDynamicTool({ ...call, arguments: { text: "different" } })).resolves.toMatchObject({
+      success: false,
+      text: expect.stringContaining("conflicting reuse"),
+    });
+    expect(handler).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: "hosted-run", toolCallId: "tool-call-1", name: definition.name }),
+    );
+    await expect(client.callDynamicTool({ ...call, callId: "unknown", tool: "unknown" })).resolves.toMatchObject({
+      success: false,
+    });
+    for (const mode of ["throw", "throw-non-error", "invalid", "invalid-content", "invalid-error"] as const) {
+      await expect(client.callDynamicTool({ ...call, callId: mode, arguments: { mode } })).resolves.toMatchObject({
+        success: false,
+      });
+    }
+    await expect(client.callDynamicTool({ ...call, callId: "error", arguments: { mode: "error" } })).resolves.toEqual({
+      success: false,
+      text: "denied: denied",
+    });
+    client.complete();
+    await run;
+    await expect(client.callDynamicTool({ ...call, callId: "late" })).resolves.toMatchObject({ success: false });
+    await runtime.close();
+  });
+
   it("maps all supported factory, Turn, policy, and Provider configuration variants", async () => {
     const client = new ManualCodexClient();
     const events: AgentRuntimeEvent[] = [];
@@ -55,6 +155,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       model: "base-model",
       personality: "friendly",
       serviceName: "opentag",
+      ephemeral: false,
     });
 
     const first = runtime.prompt({
@@ -707,7 +808,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
 
     const invalidProviderProbe = new CodexAgentRuntimeFactory({
       clientVersion: "test",
-      probeRunner: async () => ({ appServer: false, credential: false, version: "version" }),
+      probeRunner: async () => ({ appServer: false, credential: false, experimentalTools: false, version: "version" }),
     });
     await expect(invalidProviderProbe.probe({ configuration: { model: " " } })).resolves.toMatchObject({
       ready: false,
@@ -724,6 +825,48 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       ready: false,
       issues: [{ code: "artifact_missing", message: "Codex CLI could not be executed" }],
     });
+    const incompatibleProtocol = new CodexAgentRuntimeFactory({
+      clientVersion: "test",
+      probeRunner: async () => {
+        throw new CodexAppServerError("protocol", "bad response");
+      },
+    });
+    await expect(incompatibleProtocol.probe({})).resolves.toMatchObject({
+      ready: false,
+      issues: [{ code: "version_incompatible", message: expect.stringContaining("bad response") }],
+    });
+    const temporaryFailure = new CodexAgentRuntimeFactory({
+      clientVersion: "test",
+      probeRunner: async () => {
+        throw new CodexAppServerError("timeout", "slow response");
+      },
+    });
+    await expect(temporaryFailure.probe({})).resolves.toMatchObject({
+      ready: false,
+      issues: [{ code: "temporarily_unavailable", message: expect.stringContaining("slow response") }],
+    });
+    const missingExperimental = new CodexAgentRuntimeFactory({
+      clientVersion: "test",
+      probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: false, version: "version" }),
+    });
+    await expect(missingExperimental.probe({})).resolves.toMatchObject({
+      ready: false,
+      issues: [{ code: "version_incompatible", message: expect.stringContaining("dynamic tools") }],
+    });
+
+    const missingTransport = new ManualCodexClient();
+    Object.defineProperty(missingTransport, "setDynamicToolHandler", { value: undefined });
+    await expect(
+      factory(missingTransport).create({
+        ...valid,
+        policy: { ...valid.policy, tools: { mode: "allow-list", names: ["tool"] } },
+        hostedTools: {
+          definitions: [{ name: "tool", inputSchema: { type: "object" } }],
+          handler: async () => ({ success: true, content: [] }),
+        },
+      }),
+    ).rejects.toMatchObject({ code: "configuration_invalid" });
+    expect(missingTransport.closed).toBe(true);
   });
 
   it("cleans up factory failures without hiding typed errors", async () => {
@@ -783,12 +926,14 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
           return spawn(process.execPath, [fixture], { ...options, stdio: "pipe" });
         },
       },
-      probeRunner: async () => ({ appServer: true, credential: true, version: "fixture" }),
+      probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "fixture" }),
     });
     const runtime = await runtimeFactory.create({ ...createRequest(() => undefined), workspace: { cwd } });
     await runtime.close();
 
-    expect(launches).toEqual([{ command: "codex", args: ["app-server"], path: process.env.PATH }]);
+    expect(launches).toEqual([
+      { command: "codex", args: [...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS], path: process.env.PATH },
+    ]);
   });
 
   it("runs the full Provider through a real offline App Server process", async () => {
@@ -801,7 +946,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
         env: { PATH: process.env.PATH, CODEX_FIXTURE_SCENARIO: "normal" },
         requestTimeoutMs: 2_000,
       },
-      probeRunner: async () => ({ appServer: true, credential: true, version: "fixture" }),
+      probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "fixture" }),
     });
     const runtime = await runtimeFactory.create({ ...createRequest(() => undefined), workspace: { cwd } });
     await expect(runtime.prompt({ runId: "process", input: input("hello") })).resolves.toMatchObject({
@@ -827,10 +972,77 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
         requestTimeoutMs: 2_000,
         spawnProcess: (_command, _args, options) => spawn(process.execPath, [fixture], { ...options, stdio: "pipe" }),
       },
-      probeRunner: async () => ({ appServer: true, credential: true, version: "fixture" }),
+      probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "fixture" }),
     });
     const defaultArgs = await defaultArgsFactory.create({ ...createRequest(() => undefined), workspace: { cwd } });
     await defaultArgs.close();
+  });
+
+  it("routes a real App Server dynamic tool call exactly once through RuntimeToolHost", async () => {
+    const cwd = await temporaryDirectory("opentag-codex-hosted-tool-process-");
+    const responseLog = join(cwd, "responses.jsonl");
+    let listener: ((frame: RuntimeBusinessFrame) => void | Promise<void>) | undefined;
+    const send = vi.fn(async (frame: unknown) => {
+      const request = frame as { requestId: string };
+      queueMicrotask(() =>
+        listener?.({
+          type: "im:tool:result",
+          requestId: request.requestId,
+          state: "succeeded",
+          providerMessageId: "provider-1",
+        }),
+      );
+    });
+    const host = new RuntimeToolHost({
+      send,
+      subscribeBusinessFrames: (next) => {
+        listener = next;
+        return () => {
+          listener = undefined;
+        };
+      },
+    });
+    const delivery = hostedToolDelivery();
+    const release = host.activateRun("hosted-tool-process", delivery, ["opentag_message_send"]);
+    const hostedTools = host.hostedTools(["opentag_message_send"]);
+    const runtimeFactory = new CodexAgentRuntimeFactory({
+      clientVersion: "0.0.1-test",
+      process: {
+        command: process.execPath,
+        args: [fixture],
+        env: {
+          PATH: process.env.PATH,
+          CODEX_FIXTURE_SCENARIO: "hosted-tool-run",
+          CODEX_FIXTURE_RESPONSE_LOG: responseLog,
+        },
+        requestTimeoutMs: 2_000,
+      },
+      probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "fixture" }),
+    });
+    const runtime = await runtimeFactory.create({
+      ...createRequest(() => undefined),
+      workspace: { cwd },
+      policy: {
+        fileSystem: "workspace-write",
+        network: "disabled",
+        approvals: "never",
+        tools: { mode: "allow-list", names: ["opentag_message_send"] },
+      },
+      hostedTools,
+    });
+
+    const result = await runtime.prompt({ runId: "hosted-tool-process", input: input("use the hosted tool") });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: "completed",
+      output: [{ text: expect.stringContaining('"responses":1') }],
+    });
+    const responses = (await readFile(responseLog, "utf8")).trim().split("\n");
+    expect(responses).toHaveLength(1);
+
+    await runtime.close();
+    release();
+    host.close();
   });
 
   it("runs the default local probe against controlled CLI artifacts and credential sources", async () => {
@@ -838,7 +1050,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     const command = join(directory, "codex-fixture");
     await writeFile(
       command,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then echo \'codex-cli test\'; exit 0; fi\nif [ "$1" = "app-server" ] && [ "$2" = "--help" ]; then exit 0; fi\nexit 1\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then echo \'codex-cli test\'; exit 0; fi\nif [ "$1" = "app-server" ] && [ "$2" = "--help" ]; then exit 0; fi\nif [ "$1" = "login" ] && [ "$2" = "status" ] && [ "$CODEX_FIXTURE_LOGIN_VALID" = "1" ]; then exit 0; fi\nexit 1\n',
       "utf8",
     );
     await chmod(command, 0o755);
@@ -848,21 +1060,30 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
 
     const withFile = new CodexAgentRuntimeFactory({
       clientVersion: "test",
-      process: { command, env: { PATH: process.env.PATH, CODEX_HOME: codexHome }, expectedCodexHome: codexHome },
+      createClient: () => new ManualCodexClient(),
+      process: {
+        command,
+        env: { PATH: process.env.PATH, CODEX_HOME: codexHome, CODEX_FIXTURE_LOGIN_VALID: "1" },
+        expectedCodexHome: codexHome,
+      },
     });
     await expect(withFile.probe({})).resolves.toEqual({ ready: true, version: "codex-cli test", issues: [] });
 
     const withKey = new CodexAgentRuntimeFactory({
       clientVersion: "test",
-      process: { command, env: { PATH: process.env.PATH, OPENAI_API_KEY: "test-key" } },
+      createClient: () => new ManualCodexClient(),
+      process: {
+        command,
+        env: { PATH: process.env.PATH, OPENAI_API_KEY: "test-key", CODEX_FIXTURE_LOGIN_VALID: "1" },
+      },
     });
     await expect(withKey.probe({})).resolves.toMatchObject({ ready: true });
 
-    const missingCredential = new CodexAgentRuntimeFactory({
+    const invalidPersistedCredential = new CodexAgentRuntimeFactory({
       clientVersion: "test",
-      process: { command, env: { PATH: process.env.PATH, HOME: directory } },
+      process: { command, env: { PATH: process.env.PATH, CODEX_HOME: codexHome }, expectedCodexHome: codexHome },
     });
-    await expect(missingCredential.probe({})).resolves.toMatchObject({
+    await expect(invalidPersistedCredential.probe({})).resolves.toMatchObject({
       ready: false,
       issues: [{ code: "credential_missing" }],
     });
@@ -887,7 +1108,61 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       ready: false,
       issues: [{ code: "artifact_missing" }],
     });
+
+    const loginStarted = join(directory, "login-started");
+    const hangingLoginCommand = join(directory, "codex-hanging-login");
+    await writeFile(
+      hangingLoginCommand,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'codex-cli test'; exit 0; fi\nif [ "$1" = "app-server" ] && [ "$2" = "--help" ]; then exit 0; fi\nif [ "$1" = "login" ] && [ "$2" = "status" ]; then printf started > '${loginStarted}'; exec '${process.execPath}' -e 'setInterval(() => undefined, 1000)'; fi\nexit 1\n`,
+      "utf8",
+    );
+    await chmod(hangingLoginCommand, 0o755);
+    const hangingLogin = new CodexAgentRuntimeFactory({
+      clientVersion: "test",
+      process: { command: hangingLoginCommand, env: { PATH: process.env.PATH } },
+    });
+    const loginAbort = new AbortController();
+    const loginProbe = hangingLogin.probe({ signal: loginAbort.signal });
+    await vi.waitFor(async () => expect(await readFile(loginStarted, "utf8")).toBe("started"));
+    loginAbort.abort(new Error("stop"));
+    await expect(loginProbe).rejects.toBeDefined();
     expect(codexAgentRuntimeEnvironment()).toEqual(expect.any(Object));
+  });
+
+  it("aborts a hanging real App Server readiness probe and closes its process", async () => {
+    const directory = await temporaryDirectory("opentag-codex-probe-abort-");
+    const command = join(directory, "codex-fixture");
+    const pidFile = join(directory, "app-server.pid");
+    const codexHome = join(directory, "codex-home");
+    await mkdir(codexHome);
+    await writeFile(
+      command,
+      `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'codex-cli test'; exit 0; fi\nif [ "$1" = "app-server" ] && [ "$2" = "--help" ]; then exit 0; fi\nif [ "$1" = "login" ] && [ "$2" = "status" ]; then exit 0; fi\nexec '${process.execPath}' '${fixture}'\n`,
+      "utf8",
+    );
+    await chmod(command, 0o755);
+    const runtimeFactory = new CodexAgentRuntimeFactory({
+      clientVersion: "test",
+      process: {
+        command,
+        env: {
+          PATH: process.env.PATH,
+          CODEX_HOME: codexHome,
+          CODEX_FIXTURE_SCENARIO: "probe-hang",
+          CODEX_FIXTURE_PID_FILE: pidFile,
+        },
+        expectedCodexHome: codexHome,
+        requestTimeoutMs: 60_000,
+      },
+    });
+    const controller = new AbortController();
+    const probing = runtimeFactory.probe({ signal: controller.signal });
+    await vi.waitFor(async () => expect(Number(await readFile(pidFile, "utf8"))).toBeGreaterThan(0));
+    const pid = Number(await readFile(pidFile, "utf8"));
+
+    controller.abort(new Error("stop"));
+    await expect(probing).rejects.toBeDefined();
+    await vi.waitFor(() => expect(() => process.kill(pid, 0)).toThrow());
   });
 });
 
@@ -919,6 +1194,7 @@ class ManualCodexClient implements InteractiveCodexAppServerClient {
   readonly #notifications = new Set<(message: CodexAppServerMessage) => void>();
   readonly #requests = new Set<(request: CodexAppServerRequest) => void>();
   readonly #options: ManualClientOptions;
+  #dynamicToolHandler?: CodexDynamicToolHandler;
   closed = false;
   turn = 0;
 
@@ -960,6 +1236,15 @@ class ManualCodexClient implements InteractiveCodexAppServerClient {
   subscribeServerRequests(listener: (request: CodexAppServerRequest) => void): () => void {
     this.#requests.add(listener);
     return () => this.#requests.delete(listener);
+  }
+
+  setDynamicToolHandler(handler: CodexDynamicToolHandler | undefined): void {
+    this.#dynamicToolHandler = handler;
+  }
+
+  callDynamicTool(call: CodexDynamicToolCall): Promise<CodexDynamicToolResult> {
+    if (!this.#dynamicToolHandler) throw new Error("dynamic tool handler is unavailable");
+    return this.#dynamicToolHandler(call);
   }
 
   async respondServerRequest(id: number | string, result: unknown): Promise<void> {
@@ -1031,8 +1316,35 @@ function factory(client: ManualCodexClient): CodexAgentRuntimeFactory {
   return new CodexAgentRuntimeFactory({
     clientVersion: "0.0.1-test",
     createClient: () => client,
-    probeRunner: async () => ({ appServer: true, credential: true, version: "test" }),
+    probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "test" }),
   });
+}
+
+function hostedToolDelivery(): DirectImMessageDeliveryRequest {
+  const agentId = randomUUID();
+  return {
+    type: "im:deliver",
+    requestId: randomUUID(),
+    deliveryId: randomUUID(),
+    imMessageId: randomUUID(),
+    sessionId: randomUUID(),
+    agentId,
+    placementGeneration: 1,
+    attention: "direct",
+    content: { kind: "text", text: "hello" },
+    runtime: {
+      revision: {
+        agent: { sequence: 1, id: agentId },
+        session: { sequence: 1, id: "session-1" },
+      },
+      agentId,
+      provider: "codex",
+      instructions: { platform: "platform", agent: "agent" },
+      allowedTools: ["opentag_message_send"],
+      execution: { approvalPolicy: "never", networkAccess: false },
+      workspace: { workspaceId: agentId, mode: "empty_on_create", sharing: "agent" },
+    },
+  };
 }
 
 function createRequest(eventSink: CreateAgentRuntimeRequest["eventSink"]): CreateAgentRuntimeRequest {

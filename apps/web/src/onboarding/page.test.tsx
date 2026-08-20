@@ -280,10 +280,10 @@ describe("OnboardingPage", () => {
   });
 
   it.each([
-    [["Ada"], "Ada can complete this action."],
-    [["Ada", "Grace"], "Ada or Grace can complete this action."],
-    [["Ada", "Grace", "Linus"], "Ada, Grace, or 1 more Team admin can complete this action."],
-    [["Ada", "Grace", "Linus", "Ken"], "Ada, Grace, or 2 more Team admins can complete this action."],
+    [["Ada"], "Ask a Team admin to continue: Ada."],
+    [["Ada", "Grace"], "Ask a Team admin to continue: Ada or Grace."],
+    [["Ada", "Grace", "Linus"], "Ask a Team admin to continue: Ada, Grace, or 1 more."],
+    [["Ada", "Grace", "Linus", "Ken"], "Ask a Team admin to continue: Ada, Grace, or 2 more."],
   ])("names the admins a member can ask", async (names, expected) => {
     installFacts({
       agents: [agent],
@@ -300,6 +300,22 @@ describe("OnboardingPage", () => {
 
     expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
     expect(screen.getByText(`${expected} Your factual progress will update here.`)).toBeTruthy();
+  });
+
+  it("does not claim a named admin can finish a step tied to one Computer owner", async () => {
+    const ownerAdminId = "00000001-0000-4000-8000-000000000001";
+    installFacts({
+      computers: [{ ...computerA, ownerUserId: ownerAdminId, ownerDisplayName: "Ada" }],
+      members: [teamAdmin("Ada", ownerAdminId), teamAdmin("Grace", "00000002-0000-4000-8000-000000000002")],
+    });
+    renderPage({
+      membership: member,
+      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false }]),
+    });
+
+    expect(await screen.findByRole("heading", { name: "Prepare Codex or Claude Code" })).toBeTruthy();
+    expect(screen.getByText(/Ask a Team admin to continue: Ada or Grace\./)).toBeTruthy();
+    expect(screen.queryByText(/can complete this action/)).toBeNull();
   });
 
   it("keeps a member's facts readable when the member list is unavailable", async () => {

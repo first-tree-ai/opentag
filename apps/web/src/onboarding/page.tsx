@@ -611,13 +611,18 @@ function ReadOnlyCopy({ admins }: { admins: readonly string[] }) {
   return <p className="notice">{`${adminGuidance(admins)} Your factual progress will update here.`}</p>;
 }
 
-/** Names at most two admins so the sentence stays readable in a large Team. */
+/**
+ * Names people to ask, not people who can act: whether a given admin can finish
+ * the current step also depends on facts this page does not decide, such as who
+ * owns the Computer the route runs on. At most two names keep the sentence
+ * readable in a large Team.
+ */
 function adminGuidance(admins: readonly string[]): string {
   const [first, second, ...rest] = admins;
   if (!first) return "A Team admin can complete this action.";
-  if (!second) return `${first} can complete this action.`;
-  if (rest.length === 0) return `${first} or ${second} can complete this action.`;
-  return `${first}, ${second}, or ${rest.length} more Team ${rest.length === 1 ? "admin" : "admins"} can complete this action.`;
+  if (!second) return `Ask a Team admin to continue: ${first}.`;
+  if (rest.length === 0) return `Ask a Team admin to continue: ${first} or ${second}.`;
+  return `Ask a Team admin to continue: ${first}, ${second}, or ${rest.length} more.`;
 }
 
 function FeishuAction({

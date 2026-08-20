@@ -42,11 +42,15 @@ import {
   MeResponseSchema,
   type TeamInvitation,
   TeamInvitationSchema,
+  type TeamProfile,
+  TeamProfileSchema,
   teamAgentsPath,
+  teamByIdPath,
   teamComputersPath,
   teamInvitationPath,
   teamMembersPath,
   type UpdateAgentRequest,
+  type UpdateTeamProfileRequest,
 } from "@opentag/shared/browser";
 
 interface RuntimeSchema<T> {
@@ -78,6 +82,14 @@ export class BrowserApi {
 
   members(teamId: string): Promise<ListTeamMembersResponse> {
     return this.request(teamMembersPath(teamId), ListTeamMembersResponseSchema);
+  }
+
+  updateTeam(teamId: string, input: UpdateTeamProfileRequest): Promise<TeamProfile> {
+    return this.request(teamByIdPath(teamId), TeamProfileSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
   }
 
   agents(teamId: string): Promise<ListAgentsResponse> {

@@ -8,6 +8,9 @@ import {
   type TeamComputerAdminConfig,
   type TeamComputerSummary,
   type TeamMemberAdminConfig,
+  type TeamProfile,
+  type UpdateTeamProfileRequest,
+  UpdateTeamProfileRequestSchema,
 } from "@opentag/shared";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
@@ -16,13 +19,40 @@ import { AuthServiceError } from "../auth/index.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
+function isTeamNameConflict(error: unknown): boolean {
+  let current = error;
+  const visited = new Set<unknown>();
+  while (typeof current === "object" && current !== null && !visited.has(current)) {
+    visited.add(current);
+    if (
+      "code" in current &&
+      current.code === "23505" &&
+      "constraint_name" in current &&
+      current.constraint_name === "teams_name_unique"
+    ) {
+      return true;
+    }
+    current = "cause" in current ? current.cause : undefined;
+  }
+  return false;
+}
+
 export class TeamMembershipService {
   readonly #database: DatabaseClient;
+  readonly #afterTeamProfileAuthorityLocked: (() => Promise<void>) | undefined;
   readonly #now: () => Date;
   readonly #presenceTimeoutMs: number;
 
-  constructor(database: DatabaseClient, options: { now?: () => Date; presenceTimeoutMs?: number } = {}) {
+  constructor(
+    database: DatabaseClient,
+    options: {
+      afterTeamProfileAuthorityLocked?: () => Promise<void>;
+      now?: () => Date;
+      presenceTimeoutMs?: number;
+    } = {},
+  ) {
     this.#database = database;
+    this.#afterTeamProfileAuthorityLocked = options.afterTeamProfileAuthorityLocked;
     this.#now = options.now ?? (() => new Date());
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
   }
@@ -132,6 +162,52 @@ export class TeamMembershipService {
       createdAt: now,
       updatedAt: now,
     });
+  }
+
+  async updateTeamProfile(
+    callerUserId: string,
+    teamId: string,
+    rawInput: UpdateTeamProfileRequest,
+  ): Promise<TeamProfile> {
+    const input = UpdateTeamProfileRequestSchema.parse(rawInput);
+    try {
+      return await this.#database.transaction(async (transaction) => {
+        await this.requireActiveMembershipForMutation(transaction, callerUserId, teamId, "admin");
+        await this.#afterTeamProfileAuthorityLocked?.();
+        const updatedAt = this.#now();
+        const [updated] = await transaction
+          .update(teams)
+          .set({
+            ...(input.name !== undefined ? { name: input.name } : {}),
+            ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
+            updatedAt,
+          })
+          .where(eq(teams.id, teamId))
+          .returning({
+            id: teams.id,
+            name: teams.name,
+            displayName: teams.displayName,
+            updatedAt: teams.updatedAt,
+          });
+        if (!updated) throw this.#notFound();
+        return {
+          id: updated.id,
+          name: updated.name,
+          displayName: updated.displayName,
+          updatedAt: updated.updatedAt.toISOString(),
+        };
+      });
+    } catch (error) {
+      if (isTeamNameConflict(error)) {
+        throw new AuthServiceError(
+          "TEAM_NAME_CONFLICT",
+          "deterministic",
+          "Another Team already uses this canonical name",
+          409,
+        );
+      }
+      throw error;
+    }
   }
 
   async listMembers(callerUserId: string, teamId: string): Promise<ListTeamMembersResponse> {

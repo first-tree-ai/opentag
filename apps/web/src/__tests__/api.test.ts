@@ -10,6 +10,29 @@ function setDocumentCookie(value: string): void {
 }
 
 describe("BrowserApi", () => {
+  it("updates Team profile fields with the browser mutation contract", async () => {
+    setDocumentCookie("opentag_csrf=team-csrf; Path=/");
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(`/api/v1/teams/${teamId}`);
+      expect(init?.method).toBe("PATCH");
+      expect(init?.body).toBe(JSON.stringify({ name: "renamed-team", displayName: "Renamed Team" }));
+      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("team-csrf");
+      return new Response(
+        JSON.stringify({
+          id: teamId,
+          name: "renamed-team",
+          displayName: "Renamed Team",
+          updatedAt: "2030-01-01T00:00:00.000Z",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+    await expect(
+      new BrowserApi(fetchImpl).updateTeam(teamId, { name: "renamed-team", displayName: "Renamed Team" }),
+    ).resolves.toMatchObject({ id: teamId, name: "renamed-team" });
+    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
+
   it("loads strict browser provider availability without retrying as an authenticated request", async () => {
     const fetchImpl = vi.fn<typeof fetch>(
       async () =>

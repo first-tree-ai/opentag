@@ -28,6 +28,7 @@ function installApi(
   role: "admin" | "member",
   options: { bound?: boolean; provider?: "feishu" | "slack"; scopeReauth?: boolean; unauthenticated?: boolean } = {},
 ) {
+  const teamProfile = { name: "example", displayName: "Example" };
   vi.mocked(fetch).mockImplementation(async (input, init) => {
     const path = String(input);
     if (path === "/api/v1/auth/providers") {
@@ -37,7 +38,18 @@ function installApi(
       if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
       return json({
         user: { id: userId, email: "ada@example.com", displayName: "Ada" },
-        memberships: [{ teamId, teamName: "example", teamDisplayName: "Example", role }],
+        memberships: [{ teamId, teamName: teamProfile.name, teamDisplayName: teamProfile.displayName, role }],
+      });
+    }
+    if (path === `/api/v1/teams/${teamId}` && init?.method === "PATCH") {
+      const body = JSON.parse(String(init.body)) as { displayName?: string; name?: string };
+      if (body.name !== undefined) teamProfile.name = body.name.trim().toLowerCase();
+      if (body.displayName !== undefined) teamProfile.displayName = body.displayName.trim();
+      return json({
+        id: teamId,
+        name: teamProfile.name,
+        displayName: teamProfile.displayName,
+        updatedAt: "2026-08-20T00:01:00.000Z",
       });
     }
     if (path === `/api/v1/teams/${teamId}/agents`) return json({ agents: [agentSummary] });
@@ -157,6 +169,34 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Member · read only")).toBeTruthy();
     expect(await screen.findByText("Reviewer")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Create Agent" })).toBeNull();
+  });
+
+  it("lets admins rename a Team and refreshes the UUID-selected Team context from /me", async () => {
+    installApi("admin");
+    localStorage.setItem("opentag.selectedTeamId", teamId);
+    window.history.replaceState({}, "", "/settings/team");
+    render(<App />);
+    const name = await screen.findByLabelText("Canonical name");
+    const displayName = screen.getByLabelText("Display name");
+    fireEvent.change(name, { target: { value: "RENAMED-TEAM" } });
+    fireEvent.change(displayName, { target: { value: "Renamed Team" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Team profile" }));
+    await waitFor(() =>
+      expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === "/api/v1/me")).toHaveLength(2),
+    );
+    expect(await screen.findByDisplayValue("renamed-team")).toBeTruthy();
+    expect((screen.getByLabelText("Display name") as HTMLInputElement).value).toBe("Renamed Team");
+    expect(localStorage.getItem("opentag.selectedTeamId")).toBe(teamId);
+  });
+
+  it("keeps Team profile fields read-only for members", async () => {
+    installApi("member");
+    window.history.replaceState({}, "", "/settings/team");
+    render(<App />);
+    expect(await screen.findByText("example")).toBeTruthy();
+    expect(screen.getByText("Display name").parentElement?.querySelector("dd")?.textContent).toBe("Example");
+    expect(screen.queryByRole("button", { name: "Save Team profile" })).toBeNull();
+    expect(screen.queryByLabelText("Canonical name")).toBeNull();
   });
 
   it("does not create an IM setup attempt while rendering Agent detail", async () => {

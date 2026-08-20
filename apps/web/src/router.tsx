@@ -70,6 +70,7 @@ function AsyncState<T>({ state, children }: { state: LoadState<T>; children: (va
 interface TeamSession {
   me: MeResponse;
   membership: MeMembership;
+  refreshMe: () => void;
   selectTeam: (teamId: string) => void;
 }
 
@@ -173,7 +174,8 @@ function InvitePage() {
 function AuthenticatedTeamGate() {
   const location = useLocation();
   const navigate = useNavigate();
-  const state = useResource(() => browserApi.me(), "me");
+  const [meRevision, setMeRevision] = useState(0);
+  const state = useResource(() => browserApi.me(), `me:${meRevision}`);
   if (state.kind === "error" && state.error instanceof ApiError && state.error.status === 401) {
     const requested = location.pathname === "/" ? "/agents" : `${location.pathname}${location.search}`;
     return <Navigate replace to={`/login?next=${encodeURIComponent(requested)}`} />;
@@ -191,7 +193,7 @@ function AuthenticatedTeamGate() {
           window.location.reload();
         };
         return (
-          <TeamContext value={{ me, membership, selectTeam }}>
+          <TeamContext value={{ me, membership, refreshMe: () => setMeRevision((value) => value + 1), selectTeam }}>
             <Outlet />
           </TeamContext>
         );
@@ -733,7 +735,7 @@ function AccessTab({ agent }: { agent: AgentDetail }) {
 
 function SettingsPage() {
   const { section = "team" } = useParams();
-  const { membership } = useTeam();
+  const { membership, refreshMe } = useTeam();
   const allowed = ["team", "computers", "resources", "members", "security"];
   if (!allowed.includes(section)) return <NotFoundPage />;
   return (
@@ -745,14 +747,7 @@ function SettingsPage() {
           </NavLink>
         ))}
       </nav>
-      {section === "team" ? (
-        <DefinitionList
-          rows={[
-            ["Team", membership.teamDisplayName],
-            ["Your role", membership.role],
-          ]}
-        />
-      ) : null}
+      {section === "team" ? <TeamSettings membership={membership} refreshMe={refreshMe} /> : null}
       {section === "members" ? <MembersSettings teamId={membership.teamId} /> : null}
       {section === "computers" ? (
         <ComputersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
@@ -764,6 +759,54 @@ function SettingsPage() {
         <EmptyState title="Security overview">Sensitive credentials are never returned to the browser.</EmptyState>
       ) : null}
     </Page>
+  );
+}
+
+function TeamSettings({ membership, refreshMe }: { membership: MeMembership; refreshMe: () => void }) {
+  const [message, setMessage] = useState<string>();
+  if (membership.role !== "admin") {
+    return (
+      <DefinitionList
+        rows={[
+          ["Canonical name", membership.teamName],
+          ["Display name", membership.teamDisplayName],
+          ["Your role", membership.role],
+        ]}
+      />
+    );
+  }
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const data = new FormData(event.currentTarget);
+    try {
+      setMessage(undefined);
+      await browserApi.updateTeam(membership.teamId, {
+        name: String(data.get("name") ?? ""),
+        displayName: String(data.get("displayName") ?? ""),
+      });
+      refreshMe();
+      setMessage("Team profile saved.");
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : "Unable to save the Team profile");
+    }
+  }
+  return (
+    <form className="form-card" key={`${membership.teamName}:${membership.teamDisplayName}`} onSubmit={submit}>
+      <h2>Team profile</h2>
+      <label>
+        Canonical name
+        <input defaultValue={membership.teamName} name="name" pattern="[A-Za-z0-9][A-Za-z0-9-]*" required />
+      </label>
+      <p className="muted">Changing this name immediately changes the CLI --team selector. The Team ID stays stable.</p>
+      <label>
+        Display name
+        <input defaultValue={membership.teamDisplayName} name="displayName" required />
+      </label>
+      <button className="button" type="submit">
+        Save Team profile
+      </button>
+      {message ? <p role="status">{message}</p> : null}
+    </form>
   );
 }
 

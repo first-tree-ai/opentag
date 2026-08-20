@@ -1,6 +1,25 @@
 import { z } from "zod";
-import { MembershipRoleSchema, MembershipStatusSchema } from "./auth.js";
+import { MembershipRoleSchema, MembershipStatusSchema, TeamNameSchema } from "./auth.js";
 import { ComputerConnectionStatusSchema, ComputerPlatformSchema } from "./computer.js";
+
+export const TeamProfileSchema = z
+  .object({
+    id: z.string().uuid(),
+    name: TeamNameSchema,
+    displayName: z.string().min(1),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+
+export const UpdateTeamProfileRequestSchema = z
+  .object({
+    name: z.string().trim().toLowerCase().pipe(TeamNameSchema).optional(),
+    displayName: z.string().trim().min(1).optional(),
+  })
+  .strict()
+  .refine((value) => value.name !== undefined || value.displayName !== undefined, {
+    message: "At least one Team profile field is required",
+  });
 
 export const TeamMemberSummarySchema = z
   .object({
@@ -66,6 +85,8 @@ export const ListTeamComputersConfigResponseSchema = z
   .strict();
 
 export type TeamMemberSummary = z.infer<typeof TeamMemberSummarySchema>;
+export type TeamProfile = z.infer<typeof TeamProfileSchema>;
+export type UpdateTeamProfileRequest = z.infer<typeof UpdateTeamProfileRequestSchema>;
 export type TeamMemberAdminConfig = z.infer<typeof TeamMemberAdminConfigSchema>;
 export type ListTeamMembersResponse = z.infer<typeof ListTeamMembersResponseSchema>;
 export type ListTeamMembersConfigResponse = z.infer<typeof ListTeamMembersConfigResponseSchema>;

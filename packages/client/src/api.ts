@@ -48,7 +48,10 @@ import {
   TeamInvitationSchema,
   type TeamMemberAdminConfig,
   TeamMemberAdminConfigSchema,
+  type TeamProfile,
+  TeamProfileSchema,
   teamAgentsPath,
+  teamByIdPath,
   teamComputersConfigPath,
   teamComputersPath,
   teamInvitationPath,
@@ -61,6 +64,7 @@ import {
   teamMembersPath,
   type UpdateAgentRequest,
   type UpdateTeamMemberRequest,
+  type UpdateTeamProfileRequest,
 } from "@opentag/shared";
 
 interface RuntimeSchema<T> {
@@ -107,6 +111,14 @@ export class OpenTagApi {
   me(accessToken: string): Promise<MeResponse> {
     return this.#request(HTTP_PATHS.me, MeResponseSchema, {
       headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  updateTeam(accessToken: string, teamId: string, input: UpdateTeamProfileRequest): Promise<TeamProfile> {
+    return this.#request(teamByIdPath(teamId), TeamProfileSchema, {
+      method: "PATCH",
+      body: JSON.stringify(input),
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
     });
   }
 

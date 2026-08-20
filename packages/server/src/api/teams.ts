@@ -4,13 +4,16 @@ import {
   ListTeamMembersConfigResponseSchema,
   ListTeamMembersResponseSchema,
   RestoreTeamMemberRequestSchema,
+  TEAM_BY_ID_TEMPLATE,
   TEAM_COMPUTERS_CONFIG_TEMPLATE,
   TEAM_COMPUTERS_TEMPLATE,
   TEAM_MEMBER_TEMPLATE,
   TEAM_MEMBERS_CONFIG_TEMPLATE,
   TEAM_MEMBERS_TEMPLATE,
   TeamMemberAdminConfigSchema,
+  TeamProfileSchema,
   UpdateTeamMemberRequestSchema,
+  UpdateTeamProfileRequestSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -35,6 +38,14 @@ export function registerTeamRoutes(
   publicOrigin?: string,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
+
+  app.patch(TEAM_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { teamId } = parseRequest(TeamParamsSchema, request.params);
+    const input = parseRequest(UpdateTeamProfileRequestSchema, request.body);
+    return reply
+      .code(200)
+      .send(TeamProfileSchema.parse(await teamService.updateTeamProfile(userId(request), teamId, input)));
+  });
 
   app.get(TEAM_MEMBERS_TEMPLATE, { preHandler }, async (request, reply) => {
     const { teamId } = parseRequest(TeamParamsSchema, request.params);

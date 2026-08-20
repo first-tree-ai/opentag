@@ -316,6 +316,159 @@ describe("account identity and Team foundation persistence", () => {
     }
   });
 
+  it("updates Team handles and display names without changing UUID-backed invitation identity", async () => {
+    const value = await fixture();
+    try {
+      const [member] = await value.database
+        .insert(users)
+        .values({ email: "team-profile-member@example.com", displayName: "Team Profile Member" })
+        .returning();
+      if (!member) throw new Error("Member fixture was not created");
+      await value.database
+        .insert(memberships)
+        .values({ teamId: value.bootstrap.teamId, userId: member.id, role: "member", status: "active" });
+      await expect(
+        value.teamService.updateTeamProfile(member.id, value.bootstrap.teamId, { displayName: "Denied" }),
+      ).rejects.toMatchObject({ code: "MEMBERSHIP_FORBIDDEN", statusCode: 403 });
+
+      const invitation = await value.invitations.create(value.bootstrap.userId, value.bootstrap.teamId);
+      await expect(
+        value.teamService.updateTeamProfile(value.bootstrap.userId, value.bootstrap.teamId, {
+          name: "  RENAMED-TEAM  ",
+          displayName: "  Renamed Team  ",
+        }),
+      ).resolves.toMatchObject({
+        id: value.bootstrap.teamId,
+        name: "renamed-team",
+        displayName: "Renamed Team",
+      });
+      await expect(
+        value.teamService.updateTeamProfile(value.bootstrap.userId, value.bootstrap.teamId, {
+          displayName: "Renamed Team AI",
+        }),
+      ).resolves.toMatchObject({ name: "renamed-team", displayName: "Renamed Team AI" });
+      await expect(value.invitations.preview(invitation.token)).resolves.toMatchObject({
+        teamDisplayName: "Renamed Team AI",
+      });
+
+      const inviteeId = await value.identities.resolveOrCreate(google("renamed-team-invitee", "renamed@example.com"));
+      await expect(value.invitations.redeem(inviteeId, invitation.token)).resolves.toMatchObject({
+        membership: {
+          teamId: value.bootstrap.teamId,
+          teamName: "renamed-team",
+          teamDisplayName: "Renamed Team AI",
+        },
+      });
+
+      await value.database.insert(teams).values({ name: "reserved-name", displayName: "Reserved" });
+      await expect(
+        value.teamService.updateTeamProfile(value.bootstrap.userId, value.bootstrap.teamId, {
+          name: "RESERVED-NAME",
+        }),
+      ).rejects.toMatchObject({ code: "TEAM_NAME_CONFLICT", statusCode: 409 });
+      await expect(
+        value.teamService.updateTeamProfile(value.bootstrap.userId, value.bootstrap.teamId, { name: "not url safe" }),
+      ).rejects.toBeDefined();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("serializes Team profile rename with a concurrent admin downgrade", async () => {
+    const value = await fixture();
+    const revoker = createDatabaseClient(databaseUrl);
+    let releaseRevocation: () => void = () => undefined;
+    let releaseRename: () => void = () => undefined;
+    let signalTeamLocked: () => void = () => undefined;
+    const teamLocked = new Promise<void>((resolve) => {
+      signalTeamLocked = resolve;
+    });
+    const releaseRevocationPromise = new Promise<void>((resolve) => {
+      releaseRevocation = resolve;
+    });
+    try {
+      const [secondAdmin] = await value.database
+        .insert(users)
+        .values({ email: "team-profile-admin@example.com", displayName: "Team Profile Admin" })
+        .returning();
+      if (!secondAdmin) throw new Error("Second admin fixture was not created");
+      await value.database
+        .insert(memberships)
+        .values({ teamId: value.bootstrap.teamId, userId: secondAdmin.id, role: "admin", status: "active" });
+
+      const revocation = revoker.database.transaction(async (transaction) => {
+        await transaction
+          .select({ id: teams.id })
+          .from(teams)
+          .where(eq(teams.id, value.bootstrap.teamId))
+          .for("update");
+        await transaction
+          .update(memberships)
+          .set({ role: "member" })
+          .where(and(eq(memberships.teamId, value.bootstrap.teamId), eq(memberships.userId, secondAdmin.id)));
+        signalTeamLocked();
+        await releaseRevocationPromise;
+      });
+      await teamLocked;
+      const staleRename = value.teamService.updateTeamProfile(secondAdmin.id, value.bootstrap.teamId, {
+        name: "stale-rename",
+      });
+      let staleRenameSettled = false;
+      void staleRename.then(
+        () => {
+          staleRenameSettled = true;
+        },
+        () => {
+          staleRenameSettled = true;
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(staleRenameSettled).toBe(false);
+      releaseRevocation();
+      await revocation;
+      await expect(staleRename).rejects.toMatchObject({ code: "MEMBERSHIP_FORBIDDEN", statusCode: 403 });
+
+      await value.teamService.changeRole(value.bootstrap.userId, value.bootstrap.teamId, secondAdmin.id, "admin");
+      let signalAuthorityLocked: () => void = () => undefined;
+      const authorityLocked = new Promise<void>((resolve) => {
+        signalAuthorityLocked = resolve;
+      });
+      const releaseRenamePromise = new Promise<void>((resolve) => {
+        releaseRename = resolve;
+      });
+      const renameService = new TeamMembershipService(value.database, {
+        now: () => now,
+        afterTeamProfileAuthorityLocked: async () => {
+          signalAuthorityLocked();
+          await releaseRenamePromise;
+        },
+      });
+      const rename = renameService.updateTeamProfile(secondAdmin.id, value.bootstrap.teamId, {
+        name: "winning-rename",
+      });
+      await authorityLocked;
+      const downgrade = value.teamService.changeRole(
+        value.bootstrap.userId,
+        value.bootstrap.teamId,
+        secondAdmin.id,
+        "member",
+      );
+      let downgradeSettled = false;
+      void downgrade.finally(() => {
+        downgradeSettled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(downgradeSettled).toBe(false);
+      releaseRename();
+      await expect(rename).resolves.toMatchObject({ name: "winning-rename" });
+      await expect(downgrade).resolves.toMatchObject({ role: "member" });
+    } finally {
+      releaseRevocation();
+      releaseRename();
+      await Promise.all([revoker.sql.end(), value.sql.end()]);
+    }
+  });
+
   it("enforces last-admin, active-Agent, left, removed, and restore invariants", async () => {
     const value = await fixture();
     try {

@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { ListTeamComputersResponseSchema, TeamMemberAdminConfigSchema, TeamMemberSummarySchema } from "../index.js";
+import {
+  ListTeamComputersResponseSchema,
+  TeamMemberAdminConfigSchema,
+  TeamMemberSummarySchema,
+  UpdateTeamProfileRequestSchema,
+} from "../index.js";
 
 describe("Team contracts", () => {
   it("keeps membership role and lifecycle as separate strict fields", () => {
@@ -30,5 +35,15 @@ describe("Team contracts", () => {
         email: "member@example.com",
       }),
     ).toThrow();
+  });
+
+  it("normalizes partial Team profile updates and requires at least one field", () => {
+    expect(UpdateTeamProfileRequestSchema.parse({ name: "  First-Tree  " })).toEqual({ name: "first-tree" });
+    expect(UpdateTeamProfileRequestSchema.parse({ displayName: "  First Tree AI  " })).toEqual({
+      displayName: "First Tree AI",
+    });
+    expect(() => UpdateTeamProfileRequestSchema.parse({})).toThrow();
+    expect(() => UpdateTeamProfileRequestSchema.parse({ name: "not url safe" })).toThrow();
+    expect(() => UpdateTeamProfileRequestSchema.parse({ displayName: "   " })).toThrow();
   });
 });

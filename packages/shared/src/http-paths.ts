@@ -1,5 +1,6 @@
 export const API_V1_PREFIX = "/api/v1";
 export const TEAM_AGENTS_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/agents`;
+export const TEAM_BY_ID_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId`;
 export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
 export const AGENT_IM_BINDING_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding`;
@@ -39,6 +40,10 @@ export const HTTP_PATHS = {
 
 export function teamMembersPath(teamId: string): string {
   return `${API_V1_PREFIX}/teams/${encodeURIComponent(teamId)}/members`;
+}
+
+export function teamByIdPath(teamId: string): string {
+  return `${API_V1_PREFIX}/teams/${encodeURIComponent(teamId)}`;
 }
 
 export function teamMemberPath(teamId: string, userId: string): string {

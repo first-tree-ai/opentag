@@ -1,5 +1,6 @@
 import {
   invitationPreviewPath,
+  teamByIdPath,
   teamInvitationPath,
   teamMemberPath,
   teamMembersConfigPath,
@@ -7,7 +8,7 @@ import {
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
-import type { UserAuthService } from "../services/auth/index.js";
+import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
 import type { InvitationService } from "../services/invitations/index.js";
 import type { TeamMembershipService } from "../services/teams/index.js";
 
@@ -48,6 +49,12 @@ function authService(): UserAuthService {
 
 function services() {
   const team = {
+    updateTeamProfile: vi.fn().mockResolvedValue({
+      id: teamId,
+      name: "renamed-team",
+      displayName: "Renamed Team",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+    }),
     listMembers: vi.fn().mockResolvedValue({ members: [memberSummary] }),
     listMembersConfig: vi.fn().mockResolvedValue({ members: [member] }),
     changeRole: vi.fn().mockResolvedValue(member),
@@ -97,6 +104,37 @@ function testApp() {
 }
 
 describe("Team and invitation HTTP APIs", () => {
+  it("updates the Team profile through an authenticated PATCH", async () => {
+    const { app, team } = testApp();
+    const response = await app.inject({
+      method: "PATCH",
+      url: teamByIdPath(teamId),
+      headers: { authorization: "Bearer access" },
+      payload: { name: "  RENAMED-TEAM  ", displayName: "  Renamed Team  " },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ id: teamId, name: "renamed-team", displayName: "Renamed Team" });
+    expect(team.updateTeamProfile).toHaveBeenCalledWith(userId, teamId, {
+      name: "renamed-team",
+      displayName: "Renamed Team",
+    });
+  });
+
+  it("preserves the Team Admin permission error at the HTTP boundary", async () => {
+    const { app, team } = testApp();
+    team.updateTeamProfile.mockRejectedValueOnce(
+      new AuthServiceError("MEMBERSHIP_FORBIDDEN", "deterministic", "Team admin access is required", 403),
+    );
+    const response = await app.inject({
+      method: "PATCH",
+      url: teamByIdPath(teamId),
+      headers: { authorization: "Bearer access" },
+      payload: { displayName: "Denied" },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error: { code: "MEMBERSHIP_FORBIDDEN" } });
+  });
+
   it("uses strict bearer contracts for member and invitation reads", async () => {
     const { app, invitation } = testApp();
     const authorization = { authorization: "Bearer access" };

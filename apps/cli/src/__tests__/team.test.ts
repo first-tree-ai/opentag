@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { runTeamInvitationShow, runTeamMemberList, runTeamMemberRole } from "../index.js";
+import { runTeamInvitationShow, runTeamMemberList, runTeamMemberRole, selectTeam } from "../index.js";
 
 const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -48,5 +48,15 @@ describe("Team CLI core", () => {
     await expect(runTeamInvitationShow({ accessToken: "access", api: client })).resolves.toMatchObject({
       inviteUrl: expect.stringContaining("/invites/"),
     });
+  });
+
+  it("hard-switches the CLI selector to the renamed Team handle while preserving UUID selection", () => {
+    const me = {
+      user: { id: userId, email: member.email, displayName: member.displayName },
+      memberships: [{ teamId, teamName: "renamed-team", teamDisplayName: "Renamed Team", role: "admin" as const }],
+    };
+    expect(selectTeam(me, "renamed-team").teamId).toBe(teamId);
+    expect(selectTeam(me, teamId).teamName).toBe("renamed-team");
+    expect(() => selectTeam(me, "example")).toThrow('Team "example" is not available');
   });
 });

@@ -20,6 +20,26 @@ function json(body: unknown, status = 200): Response {
 }
 
 describe("OpenTagApi Team surface", () => {
+  it("updates a Team profile by stable Team UUID", async () => {
+    const profile = {
+      id: teamId,
+      name: "renamed-team",
+      displayName: "Renamed Team",
+      updatedAt: "2026-08-20T00:00:00.000Z",
+    };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(json(profile));
+    const api = new OpenTagApi("https://opentag.example.com", fetchImpl);
+    await expect(api.updateTeam("access", teamId, { name: "renamed-team" })).resolves.toEqual(profile);
+    expect(fetchImpl).toHaveBeenCalledWith(
+      new URL(`https://opentag.example.com/api/v1/teams/${teamId}`),
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({ name: "renamed-team" }),
+        headers: expect.objectContaining({ authorization: "Bearer access" }),
+      }),
+    );
+  });
+
   it("uses bearer-authenticated Team member contracts", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()

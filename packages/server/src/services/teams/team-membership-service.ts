@@ -108,7 +108,7 @@ export class TeamMembershipService {
     userId: string,
     teamId: string,
     role: MembershipRole,
-  ): Promise<typeof memberships.$inferSelect> {
+  ): Promise<{ membership: typeof memberships.$inferSelect; transitioned: boolean }> {
     await this.lockTeamForMutation(transaction, teamId);
     const [user] = await transaction.select().from(users).where(eq(users.id, userId)).limit(1);
     if (!user || user.suspendedAt) {
@@ -128,7 +128,7 @@ export class TeamMembershipService {
         403,
       );
     }
-    if (existing?.status === "active") return existing;
+    if (existing?.status === "active") return { membership: existing, transitioned: false };
     const now = this.#now();
     const [membership] = existing
       ? await transaction
@@ -141,7 +141,7 @@ export class TeamMembershipService {
           .values({ teamId, userId, role, status: "active", createdAt: now, updatedAt: now })
           .returning();
     if (!membership) throw new Error("Invitation redemption did not return a membership");
-    return membership;
+    return { membership, transitioned: true };
   }
 
   async bootstrapAdminInTransaction(transaction: DatabaseTransaction, userId: string, teamId: string): Promise<void> {

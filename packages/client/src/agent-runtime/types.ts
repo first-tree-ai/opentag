@@ -220,6 +220,8 @@ export interface AgentInteractionRequest {
 }
 
 export type AgentProviderRunEvent =
+  // Model-turn events are optional: providers that cannot observe this boundary
+  // emit message/tool lifecycles directly within the Run.
   | { readonly type: "model_turn_started"; readonly modelTurnId: string }
   | { readonly type: "model_turn_completed"; readonly modelTurnId: string }
   | { readonly type: "message_started"; readonly messageId: string }

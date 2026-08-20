@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiError, BrowserApi } from "../api.js";
 
 const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
+const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 
 function setDocumentCookie(value: string): void {
   const setter = Object.getOwnPropertyDescriptor(Document.prototype, "cookie")?.set;
@@ -48,6 +49,36 @@ describe("BrowserApi", () => {
     await expect(api.suspendAgent(agentId)).resolves.toMatchObject({ status: "suspended" });
     await expect(api.reactivateAgent(agentId)).resolves.toMatchObject({ id: agentId });
     await expect(api.deleteAgent(agentId)).resolves.toBeUndefined();
+    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
+
+  it("updates a Team member role with the browser mutation contract", async () => {
+    setDocumentCookie("opentag_csrf=member-csrf; Path=/");
+    const updatedMember = {
+      teamId,
+      userId,
+      email: "ada@example.com",
+      displayName: "Ada",
+      role: "member" as const,
+      status: "active" as const,
+      createdAt: "2030-01-01T00:00:00.000Z",
+      updatedAt: "2030-01-01T00:01:00.000Z",
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(`/api/v1/teams/${teamId}/members/${userId}`);
+      expect(init?.method).toBe("PATCH");
+      expect(init?.body).toBe(JSON.stringify({ role: "member" }));
+      expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
+      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("member-csrf");
+      return new Response(JSON.stringify(updatedMember), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    await expect(new BrowserApi(fetchImpl).updateTeamMember(teamId, userId, { role: "member" })).resolves.toEqual(
+      updatedMember,
+    );
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 
@@ -139,8 +170,35 @@ describe("BrowserApi", () => {
       );
     });
 
-    await expect(new BrowserApi(fetchImpl).redeemInvitation("A".repeat(32))).resolves.toBeUndefined();
+    await expect(new BrowserApi(fetchImpl).redeemInvitation("A".repeat(32))).resolves.toMatchObject({
+      membership: { teamId },
+    });
     expect(fetchImpl).toHaveBeenCalledTimes(3);
+    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
+
+  it("creates and rotates Team invitation links through explicit CSRF-protected mutations", async () => {
+    setDocumentCookie("opentag_csrf=invite-csrf; Path=/");
+    const invitation = {
+      token: "A".repeat(43),
+      inviteUrl: `https://opentag.example.com/invites/${"A".repeat(43)}`,
+      role: "member" as const,
+      expiresAt: "2030-01-01T00:00:00.000Z",
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      expect(init?.method).toBe("POST");
+      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("invite-csrf");
+      const path = String(input);
+      expect([`/api/v1/teams/${teamId}/invitation`, `/api/v1/teams/${teamId}/invitation/rotate`]).toContain(path);
+      return new Response(JSON.stringify(invitation), {
+        status: path.endsWith("/rotate") ? 200 : 201,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    const api = new BrowserApi(fetchImpl);
+    await expect(api.createInvitation(teamId)).resolves.toEqual(invitation);
+    await expect(api.rotateInvitation(teamId)).resolves.toEqual(invitation);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 
@@ -200,7 +258,7 @@ describe("BrowserApi", () => {
       expect(init?.body).toBe(JSON.stringify({ teamId }));
       return new Response(
         JSON.stringify({
-          bootstrapCommand: `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login code --server http://127.0.0.1:8000`,
+          bootstrapCommand: `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login --server http://127.0.0.1:8000 -- code`,
           expiresIn: 900,
           issuedAt: "2030-01-01T00:00:00.000Z",
         }),

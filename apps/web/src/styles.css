@@ -249,6 +249,11 @@ dd {
   gap: 0.45rem;
   font-weight: 700;
 }
+.invite-link {
+  display: grid;
+  gap: 0.45rem;
+  font-weight: 700;
+}
 input,
 select {
   max-width: 100%;

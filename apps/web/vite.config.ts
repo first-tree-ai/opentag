@@ -13,6 +13,8 @@ export default defineConfig({
   },
   test: {
     environment: "jsdom",
+    name: "web",
+    sequence: { groupOrder: 2 },
     setupFiles: ["./src/__tests__/setup.ts"],
   },
 });

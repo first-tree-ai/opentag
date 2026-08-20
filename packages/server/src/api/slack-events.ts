@@ -15,6 +15,15 @@ interface SlackEnvelopeBase {
   event?: { type?: string; tokens?: { oauth?: string[]; bot?: string[] } } & Record<string, unknown>;
 }
 
+class SlackEventProcessingError extends Error {
+  readonly code = "SLACK_EVENT_PROCESSING_FAILED";
+
+  constructor() {
+    super("SLACK_EVENT_PROCESSING_FAILED");
+    this.name = "SlackEventProcessingError";
+  }
+}
+
 export interface SlackEventsRouteOptions {
   imBindings: ImBindingService;
   inbox: ImMessageInbox;
@@ -80,16 +89,20 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
       return reply.code(200).send({ ok: true });
     }
 
-    const adapter = options.createAdapter(binding);
-    const events = adapter.normalizeInbound({
-      eventId: envelope.event_id,
-      appId: binding.appId,
-      teamId: binding.teamId,
-      botUserId: binding.botUserId,
-      event: envelope.event,
-      eventTime: envelope.event_time,
-    });
-    for (const event of events) await options.inbox.ingest(binding.imBindingId, binding.generation, event);
+    try {
+      const adapter = options.createAdapter(binding);
+      const events = adapter.normalizeInbound({
+        eventId: envelope.event_id,
+        appId: binding.appId,
+        teamId: binding.teamId,
+        botUserId: binding.botUserId,
+        event: envelope.event,
+        eventTime: envelope.event_time,
+      });
+      for (const event of events) await options.inbox.ingest(binding.imBindingId, binding.generation, event);
+    } catch {
+      throw new SlackEventProcessingError();
+    }
     return reply.code(200).send({ ok: true });
   });
 }

@@ -130,20 +130,22 @@ export class InvitationService {
     const now = this.#now();
     if (!invitation || invitation.revokedAt || invitation.expiresAt <= now) throw this.#invalid();
 
-    const membership = await this.#membershipService.joinWithInvitationInTransaction(
+    const { membership, transitioned } = await this.#membershipService.joinWithInvitationInTransaction(
       transaction,
       userId,
       invitation.teamId,
       invitation.role,
     );
 
-    await transaction.insert(invitationRedemptions).values({
-      invitationId: invitation.id,
-      userId,
-      redeemedAt: now,
-      ip: audit.ip,
-      userAgent: audit.userAgent,
-    });
+    if (transitioned) {
+      await transaction.insert(invitationRedemptions).values({
+        invitationId: invitation.id,
+        userId,
+        redeemedAt: now,
+        ip: audit.ip,
+        userAgent: audit.userAgent,
+      });
+    }
     const [team] = await transaction.select().from(teams).where(eq(teams.id, invitation.teamId)).limit(1);
     if (!team) throw this.#invalid();
     return {

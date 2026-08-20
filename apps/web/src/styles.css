@@ -86,6 +86,7 @@
   --shadow-color: 22 33 27;
   --shadow-raised: 0 1px 4px rgb(var(--shadow-color) / 8%);
   --shadow-overlay: 0 16px 36px rgb(var(--shadow-color) / 12%);
+  --shadow-entry: 0 24px 80px rgb(var(--shadow-color) / 10%);
   --shadow-dialog: 0 24px 70px rgb(var(--shadow-color) / 22%);
   --shadow-drawer: 24px 0 70px rgb(var(--shadow-color) / 16%);
 
@@ -1584,7 +1585,7 @@ code {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
-  box-shadow: var(--shadow-overlay);
+  box-shadow: var(--shadow-entry);
   padding: clamp(28px, 6vw, 48px);
 }
 

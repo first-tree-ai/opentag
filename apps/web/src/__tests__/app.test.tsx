@@ -123,7 +123,7 @@ function installApi(
     if (path === "/api/v1/me/connect-codes" && init?.method === "POST") {
       return json(
         {
-          bootstrapCommand: "npm i -g @opentag/cli && opentag login --code example",
+          bootstrapCommand: "npm i -g @opentag/cli && opentag login --server https://opentag.example.com -- example",
           expiresIn: 900,
           issuedAt: "2026-08-20T00:00:00.000Z",
         },
@@ -382,7 +382,7 @@ describe("OpenTag Web App Shell", () => {
     const button = await screen.findByRole("button", { name: "Generate connection command" });
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
     fireEvent.click(button);
-    expect(await screen.findByText(/opentag login --code example/)).toBeTruthy();
+    expect(await screen.findByText(/opentag login --server https:\/\/opentag\.example\.com -- example/)).toBeTruthy();
   });
 
   it("guides Agent creation to Computer setup when none is connected", async () => {

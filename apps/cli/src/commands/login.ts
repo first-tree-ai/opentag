@@ -48,7 +48,7 @@ export async function executeLoginCommand(
   }
 }
 
-export function registerLoginCommand(program: Command): void {
+export function registerLoginCommand(program: Command, dependencies: LoginCommandDependencies = {}): void {
   program
     .command("login")
     .description("Exchange a one-time connect code and store private credentials")
@@ -57,6 +57,6 @@ export function registerLoginCommand(program: Command): void {
     .option("--home <path>", "OpenTag home directory")
     .option("--no-start", "store credentials without installing the daemon service")
     .action(async (code: string, options: LoginCommandOptions) => {
-      process.exitCode = await executeLoginCommand(code, options);
+      process.exitCode = await executeLoginCommand(code, options, dependencies);
     });
 }

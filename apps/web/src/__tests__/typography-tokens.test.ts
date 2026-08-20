@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import postcss, { type Declaration } from "postcss";
+import postcss, { type Declaration, type Rule } from "postcss";
 import { describe, expect, it } from "vitest";
 
 /**
@@ -55,6 +55,22 @@ function declarations(css: string): Declaration[] {
   return found;
 }
 
+/** The selectors a declaration applies under, or none when it sits outside a rule. */
+function selectorsOf(declaration: Declaration): string[] {
+  const parent = declaration.parent;
+  if (parent === undefined || parent.type !== "rule") return [];
+  return (parent as Rule).selector.split(",").map((selector) => selector.trim());
+}
+
+/**
+ * A custom property exists only where its selector matches. A step parked under
+ * some other rule is invisible to a :root role, so the baseline scale has to be
+ * declared at :root to count as declared at all.
+ */
+function atRoot(declaration: Declaration): boolean {
+  return selectorsOf(declaration).includes(":root");
+}
+
 /**
  * A quoted run is content, not code: `content: "--fs-15: 0.9375rem"` declares
  * no token and references none, so strings drop out before a value is read.
@@ -73,7 +89,7 @@ function valuesOf(css: string, property: string): string[] {
 function definedTokens(css: string, prefix: string): Set<string> {
   const pattern = new RegExp(`^--(${prefix}-[a-z0-9-]+)$`);
   const names = new Set<string>();
-  for (const declaration of declarations(css)) {
+  for (const declaration of declarations(css).filter(atRoot)) {
     const name = declaration.prop.match(pattern)?.[1];
     if (name !== undefined) names.add(name);
   }
@@ -117,12 +133,30 @@ function unresolvedRoles(css: string): string[] {
 
 /** Raw steps as declared: the number in the name, and the pixel value it resolves to. */
 function rawSteps(css: string): { name: number; px: number }[] {
-  return declarations(css).flatMap((declaration) => {
-    const name = declaration.prop.match(/^--fs-([0-9]+)$/)?.[1];
-    const rem = withoutStrings(declaration.value).match(/^([0-9.]+)rem$/)?.[1];
-    if (name === undefined || rem === undefined) return [];
-    return [{ name: Number(name), px: Number(rem) * 16 }];
-  });
+  return declarations(css)
+    .filter(atRoot)
+    .flatMap((declaration) => {
+      const name = declaration.prop.match(/^--fs-([0-9]+)$/)?.[1];
+      const rem = withoutStrings(declaration.value).match(/^([0-9.]+)rem$/)?.[1];
+      if (name === undefined || rem === undefined) return [];
+      return [{ name: Number(name), px: Number(rem) * 16 }];
+    });
+}
+
+/**
+ * Typography tokens declared somewhere other than :root. A surface may retune a
+ * role it inherits; it may not invent a token, because nothing outside that
+ * surface could resolve it.
+ */
+function scopedDefinitions(css: string): { token: string; selector: string }[] {
+  const pattern = new RegExp(`^--((?:${FAMILIES.join("|")})-[a-z0-9-]+)$`);
+  return declarations(css)
+    .filter((declaration) => !atRoot(declaration))
+    .flatMap((declaration) => {
+      const token = declaration.prop.match(pattern)?.[1];
+      if (token === undefined) return [];
+      return [{ token, selector: selectorsOf(declaration).join(", ") }];
+    });
 }
 
 describe("typography tokens", () => {
@@ -162,6 +196,14 @@ describe("typography tokens", () => {
     const roles = declarations(stylesheet).filter((declaration) => /^--text-[a-z]+$/.test(declaration.prop));
     expect(roles.length).toBeGreaterThan(0);
     expect(roleEdges(stylesheet).length).toBe(roles.length);
+  });
+
+  it("rebinds only roles that :root already declares, and never a raw step", () => {
+    const roles = definedTokens(stylesheet, "text");
+    const introduced = scopedDefinitions(stylesheet).filter(
+      (definition) => !definition.token.startsWith("text-") || !roles.has(definition.token),
+    );
+    expect(introduced).toEqual([]);
   });
 
   it("keeps every raw step on a whole pixel, named after the size it produces", () => {
@@ -218,6 +260,21 @@ describe("the guard itself", () => {
   it("does not read a token reference quoted inside a value", () => {
     const css = ':root { --fs-13: 0.8125rem; }\n.row::after { content: "var(--fs-99)"; }';
     expect(danglingReferences(css)).toEqual([]);
+  });
+
+  it("ignores a step declared under some other selector", () => {
+    const css = ":root { --text-ui: var(--fs-13); }\n.dead { --fs-13: 0.8125rem; }";
+    expect(unresolvedRoles(css)).toEqual(["fs-13"]);
+    expect(danglingReferences(css)).toEqual(["fs-13"]);
+    expect(rawSteps(css)).toEqual([]);
+    expect(scopedDefinitions(css)).toEqual([{ token: "fs-13", selector: ".dead" }]);
+  });
+
+  it("accepts a surface that retunes a role :root already declares", () => {
+    const css =
+      ":root { --fs-13: 0.8125rem; --fs-14: 0.875rem; --text-ui: var(--fs-13); }\n.settings-page { --text-ui: var(--fs-14); }";
+    expect(danglingReferences(css)).toEqual([]);
+    expect(scopedDefinitions(css)).toEqual([{ token: "text-ui", selector: ".settings-page" }]);
   });
 
   it("does not read a commented-out declaration as a violation", () => {

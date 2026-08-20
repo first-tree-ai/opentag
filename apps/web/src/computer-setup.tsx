@@ -56,6 +56,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
       activePollCycle.current = cycle;
       baselineConnections.current = baseline;
       connectCodeExpiresAt.current = Date.parse(issued.issuedAt) + issued.expiresIn * 1_000;
+      setError(undefined);
       setBootstrapCommand(issued.bootstrapCommand);
       setComputerConnected(false);
       setPollCycle(cycle);

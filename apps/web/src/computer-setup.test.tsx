@@ -195,6 +195,39 @@ describe("ComputerSetup", () => {
     expect(vi.getTimerCount()).toBe(2);
   });
 
+  it("clears an old-cycle error when replacement issuance succeeds", async () => {
+    const replacementIssue = deferred<{ bootstrapCommand: string; expiresIn: number; issuedAt: string }>();
+    vi.spyOn(browserApi, "ownComputers").mockResolvedValue({ computers: [] });
+    vi.spyOn(browserApi, "issueConnectCode")
+      .mockResolvedValueOnce({ bootstrapCommand: "first command", expiresIn: 2, issuedAt: connectedAt })
+      .mockImplementationOnce(() => replacementIssue.promise);
+
+    render(<ComputerSetup teamId={teamId} />);
+    await clickGenerate();
+    await clickGenerate();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_000);
+    });
+    expect(screen.getByRole("alert").textContent).toBe(
+      "This Computer connection command expired. Generate a new one to continue.",
+    );
+
+    await act(async () => {
+      replacementIssue.resolve({
+        bootstrapCommand: "replacement command",
+        expiresIn: 5,
+        issuedAt: "2026-08-20T00:00:02.000Z",
+      });
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("replacement command")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("Waiting for the Computer to connect…");
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(vi.getTimerCount()).toBe(2);
+  });
+
   it("ignores an old in-flight poll after replacement issuance succeeds", async () => {
     const oldPoll = deferred<{ computers: Computer[] }>();
     const replacementIssue = deferred<{ bootstrapCommand: string; expiresIn: number; issuedAt: string }>();

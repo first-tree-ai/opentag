@@ -95,12 +95,21 @@ function withoutStrings(value: string): string {
 
 /**
  * Strings are ignorable when looking for token references, and only then: to
- * the browser a quoted run is still part of the value it validates. Strings go
- * first and escapes second, since decoding first could manufacture a quote.
+ * the browser a quoted run is still part of the value it validates.
  */
 function referenceProjection(value: string): string {
-  return decodeIdentifier(withoutStrings(value));
+  return withoutStrings(value);
 }
+
+/** The properties this guard owns, alongside the token families themselves. */
+const TYPOGRAPHY_PROPERTIES = new Set([
+  "font",
+  "font-size",
+  "font-weight",
+  "font-family",
+  "line-height",
+  "letter-spacing",
+]);
 
 /**
  * What the browser sees: the decoded name, the decoded value exactly as the
@@ -110,6 +119,12 @@ function referenceProjection(value: string): string {
  * `references` is that value with quoted runs dropped, and is for finding
  * var() references and nothing else. Validating against it would accept
  * `font-size: "poison" var(--text-ui)`, which the browser throws out.
+ *
+ * Values are recorded as written. A name is one identifier, so decoding it is
+ * exact; a value is a sequence of tokens, and CSS resolves escapes inside the
+ * token being consumed rather than across it -- `var\28--text-ui\29` is a
+ * single identifier, not a call. Rather than reimplement value tokenization to
+ * tell those apart, escapes are refused in the values this guard owns.
  *
  * Every check below reads these records. PostCSS nodes stop here on purpose --
  * twice, a check reached past the decoder to the name as written and let an
@@ -129,7 +144,7 @@ function declarations(css: string): Declared[] {
   postcss.parse(css).walkDecls((declaration) => {
     found.push({
       name: decodeIdentifier(declaration.prop),
-      value: decodeIdentifier(declaration.value).trim(),
+      value: declaration.value.trim(),
       references: referenceProjection(declaration.value),
       selectors: selectorsOf(declaration),
       unconditional: unconditional(declaration),
@@ -176,6 +191,24 @@ function definedTypographyTokens(css: string): Set<string> {
 
 function offTokenValues(css: string, property: string, allowed: RegExp, literals?: Set<string>): string[] {
   return valuesOf(css, property).filter((value) => !allowed.test(value) && !(literals?.has(value) ?? false));
+}
+
+/** A typography declaration is one this guard reads: an owned property, or a token definition. */
+function ownedByGuard(declaration: Declared): boolean {
+  return (
+    TYPOGRAPHY_PROPERTIES.has(propertyName(declaration)) ||
+    FAMILIES.some((family) => declaration.name.startsWith(`--${family}-`))
+  );
+}
+
+/**
+ * An escape inside a value changes which tokens the browser consumes, so the
+ * text is no longer what it looks like. The stylesheet has never needed one.
+ */
+function escapedValues(css: string): string[] {
+  return declarations(css)
+    .filter((declaration) => ownedByGuard(declaration) && declaration.value.includes("\\"))
+    .map((declaration) => `${declaration.name}: ${declaration.value}`);
 }
 
 function danglingReferences(css: string): string[] {
@@ -292,6 +325,10 @@ describe("typography tokens", () => {
 
   it("resolves each role to a step that is actually declared", () => {
     expect(unresolvedRoles(stylesheet)).toEqual([]);
+  });
+
+  it("spells every value it owns without escapes", () => {
+    expect(escapedValues(stylesheet)).toEqual([]);
   });
 
   it("resolves every role to a raw step rather than a bare length", () => {
@@ -455,6 +492,16 @@ describe("the guard itself", () => {
 
     const step = ':root { --fs-13: "poison" 0.8125rem; }';
     expect(malformedSteps(step)).toEqual(['--fs-13: "poison" 0.8125rem']);
+  });
+
+  it("refuses an escape in a value, which does not mean what its text says", () => {
+    const size = String.raw`body { font-size: var\28--text-ui\29; }`;
+    expect(escapedValues(size)).toEqual([String.raw`font-size: var\28--text-ui\29`]);
+    expect(danglingReferences(size)).toEqual([]);
+
+    const role = String.raw`:root { --text-ui: var\28--fs-13\29; }`;
+    expect(escapedValues(role)).toEqual([String.raw`--text-ui: var\28--fs-13\29`]);
+    expect(malformedRoles(role)).toEqual([String.raw`--text-ui: var\28--fs-13\29`]);
   });
 
   it("does not read a commented-out declaration as a violation", () => {

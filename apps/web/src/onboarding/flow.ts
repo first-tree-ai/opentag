@@ -162,8 +162,19 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
     facts.providers.filter((provider) => provider.runtimeReady).map((provider) => provider.computerId),
   );
   const eligibleComputers = onlineComputers.filter((computer) => runnableComputerIds.has(computer.id));
+  const selection = facts.providerSelection;
+  const selectedRoute = facts.providers.find(
+    (provider) =>
+      selection !== undefined &&
+      provider.runtimeReady &&
+      provider.computerId === selection.computerId &&
+      provider.provider === selection.provider,
+  );
+  const selectedComputer = selectedRoute
+    ? onlineComputers.find((computer) => computer.id === selectedRoute.computerId)
+    : undefined;
   const [eligibleComputer, ...otherEligibleComputers] = eligibleComputers;
-  if (otherEligibleComputers.length > 0) {
+  if (!selectedComputer && otherEligibleComputers.length > 0) {
     return {
       currentState: { kind: "computer", availability: "choice", computers: eligibleComputers },
       runtimeReady: false,
@@ -172,7 +183,7 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
     };
   }
 
-  let computer = eligibleComputer;
+  let computer = selectedComputer ?? eligibleComputer;
   if (!computer) {
     if (otherOnlineComputers.length > 0) {
       return {
@@ -199,7 +210,6 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
     };
   }
 
-  const selection = facts.providerSelection;
   const provider =
     orderedProviders.find(
       (candidate) =>

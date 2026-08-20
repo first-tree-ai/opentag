@@ -145,6 +145,20 @@ describe("deriveOnboardingState", () => {
     ).toMatchObject({ kind: "agent", provider: claude });
   });
 
+  it("applies an explicit runnable route before eligible Computer ambiguity", () => {
+    const codexOnB = { ...codex, computerId: computerB.id };
+    const claudeOnB = { ...codexOnB, provider: "claude-code" as const };
+    expect(
+      deriveOnboardingState(
+        facts({
+          computers: [computerA, computerB],
+          providers: [codex, claudeOnB, codexOnB],
+          providerSelection: { computerId: computerB.id, provider: "claude-code" },
+        }),
+      ).currentState,
+    ).toEqual({ kind: "agent", computer: computerB, provider: claudeOnB, alternatives: [codexOnB] });
+  });
+
   it("falls back to Codex when an explicit selection is stale", () => {
     const claude = { ...codex, provider: "claude-code" as const };
     const unavailableClaude = { ...codex, provider: "claude-code" as const, runtimeReady: false };

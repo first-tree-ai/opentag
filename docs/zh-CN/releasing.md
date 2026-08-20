@@ -1,7 +1,7 @@
 # OpenTag 发布指南
 
 > Canonical source: [../releasing.md](../releasing.md)
-> Last synced with: 2026-08-19
+> Last synced with: 2026-08-20
 
 OpenTag 以两个相互隔离的 npm package identity 发布一个自包含 CLI artifact：
 
@@ -9,6 +9,9 @@ OpenTag 以两个相互隔离的 npm package identity 发布一个自包含 CLI 
 | --- | --- | --- | --- |
 | Staging | `open-tag-staging` | `opentag-staging` | `main` 的 `CI` 成功，或在 `main` 上有意手动重跑 |
 | Production | `open-tag` | `opentag` | 受保护的稳定 `vX.Y.Z` tag |
+
+本指南只覆盖已发布的 artifact。Staging server 由另一个 workflow 从同一个 `main` revision 部署，说明见
+[deploying.md](./deploying.md)。
 
 内部 `@opentag/client`、`@opentag/shared` 和 `@opentag/server` workspace 永久保持 private。Client 与 Shared
 代码会 bundle 进 CLI tarball，pack 后的 manifest 不得暴露任何 `@opentag/*` runtime dependency。

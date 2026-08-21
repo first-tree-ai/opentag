@@ -27,7 +27,6 @@ describe("OpenTag Home layout", () => {
       runtime: join(root, "data", "runtime"),
       runtimeEffectiveSnapshots: join(root, "data", "runtime", "effective-snapshots"),
       runtimeSessionBindings: join(root, "data", "runtime", "session-bindings"),
-      runtimeWorkspaceStates: join(root, "data", "runtime", "workspace-states"),
       serviceState: join(root, "state", "service"),
       state: join(root, "state"),
       workspaces: join(root, "data", "workspaces"),
@@ -40,19 +39,13 @@ describe("OpenTag Home layout", () => {
     const paths = agentRuntimePaths(home, "agent-1");
 
     expect(paths.runtimeRoot).toBe(join(home, "data", "runtime"));
-    expect(paths.workspaceStatesRoot).toBe(join(home, "data", "runtime", "workspace-states"));
     expect(paths.sessionBindingsRoot).toBe(join(home, "data", "runtime", "session-bindings"));
     expect(paths.effectiveSnapshotsRoot).toBe(join(home, "data", "runtime", "effective-snapshots"));
-    expect(paths.workspaceState).toMatch(
-      new RegExp(`^${escapeRegExp(paths.workspaceStatesRoot)}/a-[a-f0-9]{40}\\.json$`, "u"),
-    );
     expect(paths.sessions).toMatch(new RegExp(`^${escapeRegExp(paths.sessionBindingsRoot)}/a-[a-f0-9]{40}$`, "u"));
     expect(paths.snapshots).toMatch(new RegExp(`^${escapeRegExp(paths.effectiveSnapshotsRoot)}/a-[a-f0-9]{40}$`, "u"));
     expect(paths.workspaceRoot).toMatch(
       new RegExp(`^${escapeRegExp(join(home, "data", "workspaces"))}/a-[a-f0-9]{40}$`, "u"),
     );
-    expect(paths.agentsFile).toBe(join(paths.files, "AGENTS.md"));
-    expect(paths.legacyAgentsFile).toBe(join(paths.workspaceRoot, "AGENTS.md"));
     expect(sessionBindingPath(home, "agent-1", "session-1")).toMatch(
       /\/data\/runtime\/session-bindings\/a-[a-f0-9]{40}\/s-[a-f0-9]{40}\.json$/u,
     );

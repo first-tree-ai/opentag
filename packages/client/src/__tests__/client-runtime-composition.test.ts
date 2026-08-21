@@ -493,7 +493,7 @@ describe("createClientRuntime production composition", () => {
       manifest: {
         providerId: "codex",
         displayName: "Codex fixture",
-        contractVersion: 1,
+        contractVersion: 2,
         bindingSchemaVersion: 1,
       },
       probe: async () => ({
@@ -558,7 +558,7 @@ describe("createClientRuntime production composition", () => {
     const binding = { providerId: "codex", schemaVersion: 1, payload: { threadId: "thread-1" } };
     const state = { phase: "idle" as "idle" | "closed", queuedRunCount: 0 };
     const agentRuntime: AgentRuntime = {
-      manifest: { providerId: "codex", displayName: "Codex", contractVersion: 1, bindingSchemaVersion: 1 },
+      manifest: { providerId: "codex", displayName: "Codex", contractVersion: 2, bindingSchemaVersion: 1 },
       capabilities: { steer: "unsupported", interactions: "unsupported" },
       state,
       binding,
@@ -664,7 +664,7 @@ describe("createClientRuntime production composition", () => {
       manifest: {
         providerId: "codex",
         displayName: "Codex fixture",
-        contractVersion: 1,
+        contractVersion: 2,
         bindingSchemaVersion: 1,
       },
       probe: vi.fn(async ({ signal }: { signal?: AbortSignal }) => {
@@ -767,7 +767,7 @@ describe("createClientRuntime production composition", () => {
     let closeCalls = 0;
     const state = { phase: "idle" as "idle" | "closed", queuedRunCount: 0 };
     const agentRuntime: AgentRuntime = {
-      manifest: { providerId: "codex", displayName: "Codex", contractVersion: 1, bindingSchemaVersion: 1 },
+      manifest: { providerId: "codex", displayName: "Codex", contractVersion: 2, bindingSchemaVersion: 1 },
       capabilities: { steer: "unsupported", interactions: "unsupported" },
       state,
       binding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "thread-1" } },
@@ -962,7 +962,7 @@ function readyFactory(
   probe: AgentRuntimeFactory["probe"] = async () => ({ ready: true, issues: [] }),
 ): AgentRuntimeFactory {
   return {
-    manifest: { providerId, displayName: providerId, contractVersion: 1, bindingSchemaVersion: 1 },
+    manifest: { providerId, displayName: providerId, contractVersion: 2, bindingSchemaVersion: 1 },
     probe,
     create: async () => {
       throw new Error("not used");

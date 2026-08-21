@@ -134,12 +134,9 @@ ${OPENTAG_HOME}/
 │   └── daemon.env
 ├── data/
 │   ├── runtime/
-│   │   ├── workspace-states/<agent-key>.json
 │   │   ├── session-bindings/<agent-key>/<session-key>.json
 │   │   └── effective-snapshots/<agent-key>/<snapshot-key>.json
-│   └── workspaces/<agent-key>/
-│       ├── AGENTS.md
-│       └── files/
+│   └── workspaces/<agent-key>/  # Agent cwd and writable root
 ├── state/
 │   ├── daemon/owner.json
 │   └── service/
@@ -153,6 +150,13 @@ Directories are private (`0700`); credentials, identity, runtime recovery record
 files (`0600`). Directories and files are created only when their owner needs them. In particular, `login --no-start`
 creates only `config/credentials.json`; runtime recovery records and workspaces appear on the first relevant reconcile.
 
+OpenTag does not maintain control files inside an Agent Workspace. Platform and Agent instructions are injected through
+the selected Provider's native system-prompt surface. The Workspace root is the Provider cwd. The Client provisions and
+validates that private root directory but otherwise treats its contents as user-owned: it does not inspect, migrate,
+rename, or delete Workspace entries, and it does not read the obsolete workspace-state record. Data written by an older
+Client under `workspaces/<agent-key>/files/` remains there as an ordinary `files/` subdirectory. Back it up and reorganize
+it manually if a different layout is desired.
+
 This layout is a clean break: OpenTag does not read, migrate, delete, or fall back to root-level `credentials.json`,
 `computer.json`, `daemon-owner.json`, `runtime/`, `service/`, `data/computer.json`, `data/runtime/agents`, or
 `~/.opentag-service-targets`. Use a fresh Home, or move the old Home aside and log in again. Existing legacy files
@@ -161,21 +165,20 @@ otherwise remain unused on disk.
 ### Local data loss and recovery
 
 Re-login restores connectivity, not the prior local execution continuity. The Server can reissue credentials and
-rebuild effective snapshots, managed `AGENTS.md`, and snapshot-derived workspace-state fields. Reissued credentials are
-new values. If `config/computer.json` is lost, the current Client creates a new Computer identity; although the Server
-retains the old Computer and placement records, the Client does not automatically reclaim that identity or repair old
-bindings.
+rebuild effective snapshots; managed instructions are injected again when the Provider Runtime starts or resumes.
+Reissued credentials are new values. If `config/computer.json` is lost, the current Client creates a new Computer
+identity; although the Server retains the old Computer and placement records, the Client does not automatically reclaim
+that identity or repair old bindings.
 
 Provider bindings, evidence for Turns not yet reported successfully, Workspace files, and local `daemon.env` values are
 local-only. Losing a Session binding can reset exact Provider resume continuity and can leave accepted-but-unreported
-work requiring explicit repair. Losing workspace state while its Workspace is non-empty fails closed instead of
-silently adopting those files. Workspace files require Git, external storage, or a local backup; the OpenTag Server
+work requiring explicit repair. Workspace files require Git, external storage, or a local backup; the OpenTag Server
 cannot restore them. Effective snapshots are reproducible and are not a primary backup target.
 
 Daemon/service owner and lease state plus logs are locally reproducible only while the daemon is stopped and no service
 mutation is running. Deleting owner or lease evidence while operations are live can break single-daemon and service
 mutual exclusion. Backups should prioritize `config/computer.json`, local `config/daemon.env`,
-`data/runtime/session-bindings`, and `data/runtime/workspace-states` together with `data/workspaces`.
+`data/runtime/session-bindings`, and `data/workspaces`.
 
 Manage the daemon with `daemon install/start/stop/restart/status/uninstall`. `uninstall` preserves `config/` and `data/`.
 Windows services are not supported in v0.1. Linux logs are available through

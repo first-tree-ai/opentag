@@ -314,6 +314,12 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     const invalidRequests: Array<{ request: unknown; message: string }> = [
       { request: undefined, message: "eventSink" },
       { request: {}, message: "eventSink" },
+      { request: { ...createRequest(() => undefined), systemPrompt: undefined }, message: "systemPrompt" },
+      { request: { ...createRequest(() => undefined), systemPrompt: " " }, message: "systemPrompt" },
+      {
+        request: { ...createRequest(() => undefined), systemPrompt: "x".repeat(1024 * 1024 + 1) },
+        message: "systemPrompt",
+      },
       { request: { ...createRequest(() => undefined), workspace: { cwd: "relative" } }, message: "absolute" },
       {
         request: { ...createRequest(() => undefined), workspace: { cwd: "/workspace", writableRoots: ["relative"] } },
@@ -337,8 +343,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       { request: withConfiguration({ reasoningEffort: "extreme" }), message: "reasoning effort" },
       { request: withConfiguration({ provider: [] }), message: "must be an object" },
       { request: withConfiguration({ provider: { unknown: true } }), message: "unknown" },
-      { request: withConfiguration({ provider: { appendSystemPrompt: "" } }), message: "appendSystemPrompt" },
-      { request: withConfiguration({ provider: { appendSystemPrompt: 1 } }), message: "appendSystemPrompt" },
+      { request: withConfiguration({ provider: { appendSystemPrompt: "removed" } }), message: "unknown" },
       { request: withConfiguration({ provider: { maxBudgetUsd: "1" } }), message: "maxBudgetUsd" },
       { request: withConfiguration({ provider: { maxBudgetUsd: Number.NaN } }), message: "finite JSON" },
       { request: withConfiguration({ provider: { maxBudgetUsd: 0 } }), message: "maxBudgetUsd" },
@@ -424,7 +429,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         expected: (args) => {
           expect(args).not.toContain("--model");
           expect(args).not.toContain("--effort");
-          expect(args).not.toContain("--append-system-prompt");
+          expect(argumentAfter(args, "--append-system-prompt")).toBe("OpenTag managed system prompt");
           expect(args).not.toContain("--max-budget-usd");
           expect(args).not.toContain("--max-turns");
         },
@@ -433,11 +438,11 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
         request: createRequest(() => undefined),
         promptConfiguration: {
           model: "override",
-          provider: { appendSystemPrompt: "Override", maxBudgetUsd: 2 },
+          provider: { maxBudgetUsd: 2 },
         },
         expected: (args) => {
           expect(argumentAfter(args, "--model")).toBe("override");
-          expect(argumentAfter(args, "--append-system-prompt")).toBe("Override");
+          expect(argumentAfter(args, "--append-system-prompt")).toBe("OpenTag managed system prompt");
           expect(argumentAfter(args, "--max-budget-usd")).toBe("2");
           expect(argumentAfter(args, "--max-turns")).toBe("5");
         },
@@ -704,6 +709,7 @@ function factory(process: ManualClaudeCodeProcess): ClaudeCodeAgentRuntimeFactor
 function createRequest(eventSink: CreateAgentRuntimeRequest["eventSink"]): CreateAgentRuntimeRequest {
   return {
     eventSink,
+    systemPrompt: "OpenTag managed system prompt",
     workspace: { cwd: "/workspace" },
     policy: {
       fileSystem: "unrestricted",
@@ -714,7 +720,7 @@ function createRequest(eventSink: CreateAgentRuntimeRequest["eventSink"]): Creat
     configuration: {
       model: "claude-test",
       reasoningEffort: "high",
-      provider: { appendSystemPrompt: "Be concise", maxBudgetUsd: 1.5, maxTurns: 5 },
+      provider: { maxBudgetUsd: 1.5, maxTurns: 5 },
     },
   };
 }

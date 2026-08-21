@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import type {
@@ -83,11 +83,13 @@ describe("Agent Runtime Client Turn vertical", () => {
     });
     expect(fixture.clients).toHaveLength(1);
     expect(await realpath(fixture.clients[0]?.cwd ?? "")).toBe(
-      await realpath(resolve(fixture.workspace.paths("agent-1").agentsFile, "..")),
+      await realpath(fixture.workspace.paths("agent-1").workspaceRoot),
     );
-    await expect(readFile(resolve(fixture.clients[0]?.cwd ?? "", "AGENTS.md"), "utf8")).resolves.toContain(
-      "# OpenTag managed instructions",
-    );
+    await expect(stat(resolve(fixture.clients[0]?.cwd ?? "", "AGENTS.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(fixture.clients[0]?.developerInstructions).toContain("# OpenTag managed instructions");
+    expect(fixture.clients[0]?.developerInstructions).toContain("## Platform\n\nplatform");
+    expect(fixture.clients[0]?.developerInstructions).toContain("## Agent\n\nagent");
+    expect(fixture.clients[0]?.developerInstructions).not.toContain("## Session");
     expect(fixture.clients[0]?.methods).toContain("thread/start");
     expect(fixture.clients[0]?.methods).not.toContain("thread/resume");
     expect(await fixture.store.read("agent-1", "session-1")).toMatchObject({
@@ -436,6 +438,7 @@ class ScriptedTurnClient implements InteractiveCodexAppServerClient {
   closed = false;
   interrupts = 0;
   threadId?: string;
+  developerInstructions?: string;
 
   constructor(cwd: string, terminalGate: Promise<void>) {
     this.cwd = cwd;
@@ -449,14 +452,14 @@ class ScriptedTurnClient implements InteractiveCodexAppServerClient {
   async request(method: string, params: unknown): Promise<unknown> {
     this.methods.push(method);
     if (method === "thread/start" || method === "thread/resume") {
-      const input = params as { cwd: string; threadId?: string };
+      const input = params as { cwd: string; developerInstructions: string; threadId?: string };
       this.threadId = input.threadId ?? "thread-1";
+      this.developerInstructions = input.developerInstructions;
       return {
         thread: { id: this.threadId, ephemeral: false },
         cwd: input.cwd,
         approvalPolicy: "never",
         sandbox: { type: "workspaceWrite", networkAccess: true },
-        instructionSources: [resolve(input.cwd, "AGENTS.md")],
         model: "default-model",
       };
     }

@@ -67,6 +67,7 @@ describe("ClaudeCodeAgentRuntime", () => {
     expect(processes[0]?.args).toContain("--session-id");
     expect(processes[0]?.args).toContain(SESSION_ID);
     expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("bypassPermissions");
+    expect(argumentAfter(processes[0]?.args ?? [], "--append-system-prompt")).toBe("OpenTag managed system prompt");
     expect(processes[0]?.args).toContain("--strict-mcp-config");
     const mcpConfig = argumentAfter(processes[0]?.args ?? [], "--mcp-config");
     expect(mcpConfig).toContain("opentag-claude-mcp-");
@@ -274,6 +275,7 @@ function claudeFactory(processes: ScriptedClaudeCodeProcess[], scenario: Scenari
 function createRequest(eventSink: CreateAgentRuntimeRequest["eventSink"]): CreateAgentRuntimeRequest {
   return {
     eventSink,
+    systemPrompt: "OpenTag managed system prompt",
     workspace: { cwd: "/workspace" },
     policy: {
       fileSystem: "unrestricted",
@@ -284,7 +286,7 @@ function createRequest(eventSink: CreateAgentRuntimeRequest["eventSink"]): Creat
     configuration: {
       model: "claude-test",
       reasoningEffort: "high",
-      provider: { appendSystemPrompt: "Be concise", maxBudgetUsd: 1.5, maxTurns: 5 },
+      provider: { maxBudgetUsd: 1.5, maxTurns: 5 },
     },
   };
 }

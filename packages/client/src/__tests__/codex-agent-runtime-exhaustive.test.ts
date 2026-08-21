@@ -146,6 +146,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     });
     expect(client.call("thread/start")?.params).toEqual({
       cwd: "/workspace",
+      developerInstructions: "OpenTag managed system prompt",
       approvalPolicy: "unlessTrusted",
       sandbox: "workspace-write",
       model: "base-model",
@@ -856,6 +857,9 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     const invalidRequests: unknown[] = [
       undefined,
       { ...valid, eventSink: undefined },
+      { ...valid, systemPrompt: undefined },
+      { ...valid, systemPrompt: " " },
+      { ...valid, systemPrompt: "x".repeat(1024 * 1024 + 1) },
       { ...valid, workspace: undefined },
       { ...valid, workspace: { cwd: "relative" } },
       { ...valid, workspace: { cwd: "/workspace", writableRoots: ["relative"] } },
@@ -1342,6 +1346,7 @@ function factory(client: ManualCodexClient): CodexAgentRuntimeFactory {
 function createRequest(eventSink: CreateAgentRuntimeRequest["eventSink"]): CreateAgentRuntimeRequest {
   return {
     eventSink,
+    systemPrompt: "OpenTag managed system prompt",
     workspace: { cwd: "/workspace" },
     policy: {
       fileSystem: "workspace-write",

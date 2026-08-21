@@ -597,6 +597,7 @@ describe("SessionRuntimeManager", () => {
     expect(captured[0]).toMatchObject({
       configuration: { reasoningEffort: "high" },
       policy: { approvals: "never", network: "enabled" },
+      systemPrompt: expect.stringContaining("## Platform\n\nplatform"),
     });
     expect(factory.runtimes).toHaveLength(0);
 
@@ -655,7 +656,7 @@ class FakeFactory implements AgentRuntimeFactory {
   readonly manifest = {
     providerId: "codex",
     displayName: "Codex",
-    contractVersion: 1 as const,
+    contractVersion: 2 as const,
     bindingSchemaVersion: 1,
   };
   readonly created: CreateAgentRuntimeRequest[] = [];
@@ -714,7 +715,7 @@ class FakeRuntime implements AgentRuntime {
   readonly manifest = {
     providerId: "codex",
     displayName: "Codex",
-    contractVersion: 1 as const,
+    contractVersion: 2 as const,
     bindingSchemaVersion: 1,
   };
   readonly capabilities = { steer: "unsupported" as const, interactions: "unsupported" as const };

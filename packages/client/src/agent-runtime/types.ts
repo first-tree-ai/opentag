@@ -1,4 +1,4 @@
-export const AGENT_RUNTIME_CONTRACT_VERSION = 1;
+export const AGENT_RUNTIME_CONTRACT_VERSION = 2;
 export const AGENT_RUNTIME_BINDING_MAX_BYTES = 64 * 1024;
 export const AGENT_RUNTIME_ID_MAX_BYTES = 256;
 export const AGENT_RUNTIME_TEXT_MAX_BYTES = 1024 * 1024;
@@ -182,6 +182,7 @@ export type AgentRuntimeEventSink = (event: AgentRuntimeEvent) => void | Promise
 export interface CreateAgentRuntimeRequest {
   readonly eventSink: AgentRuntimeEventSink;
   readonly hostedTools?: AgentHostedTools;
+  readonly systemPrompt: string;
   readonly workspace: AgentRuntimeWorkspace;
   readonly policy: AgentRuntimePolicy;
   readonly configuration?: AgentRunConfiguration;

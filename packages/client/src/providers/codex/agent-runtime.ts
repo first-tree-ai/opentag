@@ -30,7 +30,12 @@ import {
   type JsonValue,
   type ResumeAgentRuntimeRequest,
 } from "../../agent-runtime/types.js";
-import { assertBinding, assertHostedTools, assertJsonValue } from "../../agent-runtime/validation.js";
+import {
+  assertBinding,
+  assertHostedTools,
+  assertJsonValue,
+  assertSystemPrompt,
+} from "../../agent-runtime/validation.js";
 import {
   CodexAppServerError,
   type CodexAppServerMessage,
@@ -820,6 +825,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
         await client.request(method, {
           ...(expectedThreadId ? { threadId: expectedThreadId } : {}),
           cwd: request.workspace.cwd,
+          developerInstructions: request.systemPrompt,
           approvalPolicy: codexApprovalPolicy(request.policy.approvals),
           sandbox: codexSandboxMode(request.policy.fileSystem),
           ...(request.configuration?.model ? { model: request.configuration.model } : {}),
@@ -927,6 +933,7 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
   if (!request.workspace || !isAbsolute(request.workspace.cwd)) {
     throw new AgentRuntimeError("configuration_invalid", "workspace.cwd must be absolute");
   }
+  assertSystemPrompt(request.systemPrompt);
   for (const root of request.workspace.writableRoots ?? []) {
     if (!isAbsolute(root)) throw new AgentRuntimeError("configuration_invalid", "writable roots must be absolute");
   }

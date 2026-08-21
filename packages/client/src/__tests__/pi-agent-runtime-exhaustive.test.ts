@@ -447,6 +447,9 @@ describe("PiAgentRuntime exhaustive behavior", () => {
     const invalidRequests: readonly unknown[] = [
       undefined,
       {},
+      { ...request(() => undefined), systemPrompt: undefined },
+      { ...request(() => undefined), systemPrompt: " " },
+      { ...request(() => undefined), systemPrompt: "x".repeat(1024 * 1024 + 1) },
       { ...request(() => undefined), workspace: { cwd: "relative" } },
       { ...request(() => undefined), workspace: { cwd: "/workspace", writableRoots: ["relative"] } },
       { ...request(() => undefined), workspace: { cwd: "/workspace", writableRoots: ["/write"] } },
@@ -479,8 +482,7 @@ describe("PiAgentRuntime exhaustive behavior", () => {
       { ...request(() => undefined), configuration: { reasoningEffort: "ultra" } },
       { ...request(() => undefined), configuration: { provider: [] } },
       { ...request(() => undefined), configuration: { provider: { unknown: true } } },
-      { ...request(() => undefined), configuration: { provider: { appendSystemPrompt: "" } } },
-      { ...request(() => undefined), configuration: { provider: { appendSystemPrompt: 1 } } },
+      { ...request(() => undefined), configuration: { provider: { appendSystemPrompt: "removed" } } },
       { ...request(() => undefined), configuration: { provider: { sessionName: "x".repeat(4097) } } },
     ];
     const piFactory = factory(new ManualPiClient());
@@ -859,7 +861,12 @@ function factory(client: ManualPiClient): PiAgentRuntimeFactory {
 }
 
 function request(eventSink: CreateAgentRuntimeRequest["eventSink"]): CreateAgentRuntimeRequest {
-  return { eventSink, workspace: { cwd: "/workspace" }, policy: readOnlyPolicy() };
+  return {
+    eventSink,
+    systemPrompt: "OpenTag managed system prompt",
+    workspace: { cwd: "/workspace" },
+    policy: readOnlyPolicy(),
+  };
 }
 
 function readOnlyPolicy(): CreateAgentRuntimeRequest["policy"] {

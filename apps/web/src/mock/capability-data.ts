@@ -1,45 +1,32 @@
-export const resourceTypes = ["Repositories", "Skills", "Tools", "Prompts"] as const;
-
-export type ResourceType = (typeof resourceTypes)[number];
-export type ResourceFilter = "All" | ResourceType;
-
-export type ResourcePreview = {
+export type SkillPreview = {
   name: string;
-  type: ResourceType;
+  source: "OpenTag" | "Workspace";
   agentCount: number;
+  status: "Demo";
   description: string;
 };
 
-export const resourcePreviews: readonly ResourcePreview[] = [
-  {
-    name: "OpenTag workspace",
-    type: "Repositories",
-    agentCount: 4,
-    description: "Product and runtime source",
-  },
-  {
-    name: "Support playbook",
-    type: "Repositories",
-    agentCount: 2,
-    description: "Response guidelines and examples",
-  },
+export const skillPreviews: readonly SkillPreview[] = [
   {
     name: "Release notes writer",
-    type: "Skills",
+    source: "Workspace",
     agentCount: 3,
+    status: "Demo",
     description: "Turns merged changes into clear release notes",
   },
   {
-    name: "Browser runner",
-    type: "Tools",
+    name: "Browser validation",
+    source: "OpenTag",
     agentCount: 2,
-    description: "Checks product flows in a browser",
+    status: "Demo",
+    description: "Checks key product flows and reports regressions",
   },
   {
     name: "Issue triage",
-    type: "Prompts",
+    source: "Workspace",
     agentCount: 5,
-    description: "Shared intake and prioritization guidance",
+    status: "Demo",
+    description: "Classifies incoming issues and recommends priority",
   },
 ];
 

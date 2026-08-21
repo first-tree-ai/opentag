@@ -246,6 +246,12 @@ describe("account identity and Team foundation persistence", () => {
       expect(await value.database.select().from(memberships).where(eq(memberships.userId, userId))).toEqual([
         expect.objectContaining({ teamId: selectedTeamId, role: "admin", status: "active" }),
       ]);
+      expect(
+        await value.database
+          .select()
+          .from(teams)
+          .where(eq(teams.id, selectedTeamId ?? "")),
+      ).toEqual([expect.objectContaining({ displayName: "Google solo's Workspace" })]);
       expect(await value.database.select().from(teams)).toHaveLength(2);
     } finally {
       await value.sql.end();

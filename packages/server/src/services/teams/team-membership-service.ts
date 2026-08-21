@@ -205,7 +205,7 @@ export class TeamMembershipService {
     await transaction.insert(teams).values({
       id: teamId,
       name: `team-${teamId}`,
-      displayName: `${user.displayName}'s Team`.slice(0, 120),
+      displayName: `${user.displayName}'s Workspace`.slice(0, 120),
       createdAt: now,
       updatedAt: now,
     });

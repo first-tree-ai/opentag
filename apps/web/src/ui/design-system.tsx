@@ -21,18 +21,23 @@ export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   variant?: ButtonVariant;
 };
 
+export function buttonClassName({
+  className,
+  size = "default",
+  variant = "primary",
+}: {
+  className?: string;
+  size?: ButtonProps["size"];
+  variant?: ButtonVariant;
+} = {}): string {
+  return classes("ds-button", `ds-button--${variant}`, size === "compact" && "ds-button--compact", className);
+}
+
 export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button(
   { className, size = "default", variant = "primary", type = "button", ...props },
   ref,
 ) {
-  return (
-    <button
-      className={classes("ds-button", `ds-button--${variant}`, size === "compact" && "ds-button--compact", className)}
-      ref={ref}
-      type={type}
-      {...props}
-    />
-  );
+  return <button className={buttonClassName({ className, size, variant })} ref={ref} type={type} {...props} />;
 });
 
 export function Field({
@@ -98,7 +103,7 @@ export function StatusIndicator({
   );
 }
 
-export type IconName = "arrow-left" | "arrow-right" | "chevron-right" | "close";
+export type IconName = "arrow-left" | "arrow-right" | "check" | "chevron-right" | "close" | "more-vertical";
 
 export function Icon({ className, name, ...props }: SVGAttributes<SVGSVGElement> & { name: IconName }) {
   return (
@@ -111,6 +116,8 @@ export function Icon({ className, name, ...props }: SVGAttributes<SVGSVGElement>
       {...props}
     >
       {name === "close" ? <path d="m5 5 10 10M15 5 5 15" /> : null}
+      {name === "check" ? <path d="m4.5 10.5 3.5 3.5 7.5-8" /> : null}
+      {name === "more-vertical" ? <path d="M10 5.5h.01M10 10h.01M10 14.5h.01" /> : null}
       {name === "chevron-right" ? <path d="m7.5 4.5 5.5 5.5-5.5 5.5" /> : null}
       {name === "arrow-right" ? <path d="M3.5 10h13m-5-5 5 5-5 5" /> : null}
       {name === "arrow-left" ? <path d="M16.5 10h-13m5-5-5 5 5 5" /> : null}

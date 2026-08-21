@@ -1,12 +1,21 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createRef, useState } from "react";
 import { describe, expect, it } from "vitest";
-import { Button, Dialog, Field, Icon, StatusIndicator } from "./design-system.js";
+import { Button, buttonClassName, Dialog, Field, Icon, StatusIndicator } from "./design-system.js";
 
 describe("design system primitives", () => {
   it("maps button intent to an explicit visual variant", () => {
     render(<Button variant="secondary">Cancel</Button>);
     expect(screen.getByRole("button", { name: "Cancel" }).className).toContain("ds-button--secondary");
+  });
+
+  it("shares button styling with semantic links", () => {
+    render(
+      <a className={buttonClassName({ variant: "secondary" })} href="/continue">
+        Continue
+      </a>,
+    );
+    expect(screen.getByText("Continue").className).toContain("ds-button--secondary");
   });
 
   it("keeps field labels, help and errors associated with the control", () => {
@@ -33,7 +42,7 @@ describe("design system primitives", () => {
   });
 
   it("provides consistent vector icons", () => {
-    const { container } = render(<Icon name="chevron-right" />);
+    const { container } = render(<Icon name="check" />);
     expect(container.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
     expect(container.querySelector("path")).toBeTruthy();
   });

@@ -6,6 +6,7 @@ import {
   type UpdateAgentRuntimeConfig,
 } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
+import { Button, Field } from "./ui/design-system.js";
 
 const CODEX_REASONING_EFFORT_SUGGESTIONS = ["minimal", "low", "medium", "high", "xhigh"] as const;
 
@@ -62,8 +63,12 @@ function CodexRuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigura
   return (
     <form className="form-card" key={config.revision} onSubmit={submit}>
       <h2>Execution choices</h2>
-      <div className="form-field">
-        <label htmlFor={fieldId("model")}>Model</label>
+      <Field
+        hint="Enter an exact Codex model ID. Leave blank to let Codex manage the selection."
+        hintId={fieldId("model-help")}
+        htmlFor={fieldId("model")}
+        label="Model"
+      >
         <input
           aria-describedby={fieldId("model-help")}
           autoComplete="off"
@@ -72,12 +77,13 @@ function CodexRuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigura
           name="model"
           placeholder="Managed by provider"
         />
-        <small className="field-help" id={fieldId("model-help")}>
-          Enter an exact Codex model ID. Leave blank to let Codex manage the selection.
-        </small>
-      </div>
-      <div className="form-field">
-        <label htmlFor={fieldId("reasoning-effort")}>Reasoning effort</label>
+      </Field>
+      <Field
+        hint="These are common Codex values, not a compatibility guarantee. The bound Computer performs the authoritative runtime check."
+        hintId={fieldId("reasoning-help")}
+        htmlFor={fieldId("reasoning-effort")}
+        label="Reasoning effort"
+      >
         <input
           aria-describedby={fieldId("reasoning-help")}
           autoComplete="off"
@@ -92,13 +98,18 @@ function CodexRuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigura
             <option value={effort} key={effort} />
           ))}
         </datalist>
-        <small className="field-help" id={fieldId("reasoning-help")}>
-          These are common Codex values, not a compatibility guarantee. The bound Computer performs the authoritative
-          runtime check.
-        </small>
-      </div>
-      <div className="form-field">
-        <label htmlFor={fieldId("max-duration")}>Maximum Turn duration</label>
+      </Field>
+      <Field
+        hint={
+          <>
+            Seconds. Leave blank to use OpenTag's {formatMinutes(RUNTIME_DEFAULT_MAX_DURATION_MS)} default. A timeout
+            stops the Turn, but external effects may already have occurred.
+          </>
+        }
+        hintId={fieldId("duration-help")}
+        htmlFor={fieldId("max-duration")}
+        label="Maximum Turn duration"
+      >
         <input
           aria-describedby={fieldId("duration-help")}
           defaultValue={millisecondsToSeconds(config.runtimeConfig.maxDurationMs)}
@@ -110,23 +121,18 @@ function CodexRuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigura
           step="0.001"
           type="number"
         />
-        <small className="field-help" id={fieldId("duration-help")}>
-          Seconds. Leave blank to use OpenTag's {formatMinutes(RUNTIME_DEFAULT_MAX_DURATION_MS)} default. A timeout
-          stops the Turn, but external effects may already have occurred.
-        </small>
-      </div>
-      <div className="form-field">
-        <label htmlFor={fieldId("instructions")}>Instructions</label>
+      </Field>
+      <Field htmlFor={fieldId("instructions")} label="Instructions">
         <textarea
           defaultValue={config.runtimeConfig.instructions}
           id={fieldId("instructions")}
           name="instructions"
           rows={10}
         />
-      </div>
-      <button className="button" disabled={saving} type="submit">
+      </Field>
+      <Button disabled={saving} type="submit">
         {saving ? "Saving…" : "Save Runtime settings"}
-      </button>
+      </Button>
       {message ? (
         <p
           className={message.kind === "error" ? "error" : undefined}

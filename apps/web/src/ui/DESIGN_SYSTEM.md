@@ -29,5 +29,6 @@ This module is intentionally small. It owns repeated interaction and layout rule
 
 - Reuse a module when its semantic contract matches; do not add a variant only to reproduce one page.
 - Keep simple table selects as `ds-control` without wrapping them in `Field` or `SettingsRow`.
+- Keep top-level destinations as separate pages; do not repeat the app-shell navigation as page-level `Tabs`.
 - Keep domain modules such as Agent cards, messaging panels, runtime configuration, and invitation flows local to their page until at least two real call sites share the same behavior.
 - New pages should compose these modules and existing page shells before adding CSS. If a new pattern is genuinely repeated, deepen the existing module instead of creating a parallel one.

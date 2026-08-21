@@ -145,7 +145,7 @@ export function StatusIndicator({
   );
 }
 
-export type IconName = "arrow-left" | "arrow-right" | "check" | "chevron-right" | "close" | "more-vertical";
+export type IconName = "arrow-left" | "arrow-right" | "check" | "chevron-right" | "close" | "more-vertical" | "plus";
 
 export function Icon({ className, name, ...props }: SVGAttributes<SVGSVGElement> & { name: IconName }) {
   return (
@@ -161,6 +161,7 @@ export function Icon({ className, name, ...props }: SVGAttributes<SVGSVGElement>
       {name === "check" ? <path d="m4.5 10.5 3.5 3.5 7.5-8" /> : null}
       {name === "more-vertical" ? <path d="M10 5.5h.01M10 10h.01M10 14.5h.01" /> : null}
       {name === "chevron-right" ? <path d="m7.5 4.5 5.5 5.5-5.5 5.5" /> : null}
+      {name === "plus" ? <path d="M10 4v12M4 10h12" /> : null}
       {name === "arrow-right" ? <path d="M3.5 10h13m-5-5 5 5-5 5" /> : null}
       {name === "arrow-left" ? <path d="M16.5 10h-13m5-5-5 5 5 5" /> : null}
     </svg>

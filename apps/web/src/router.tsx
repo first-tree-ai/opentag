@@ -17,6 +17,7 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
+  type RefObject,
   useCallback,
   useContext,
   useEffect,
@@ -371,11 +372,12 @@ export function AppRouter() {
           <Route path="/resources" element={<Navigate replace to="/skills" />} />
           <Route path="/usage" element={<UsagePage />} />
           <Route path="/members" element={<MembersPage />} />
-          <Route path="/account" element={<AccountPage section="profile" />} />
-          <Route path="/account/workspace" element={<AccountPage section="workspace" />} />
+          <Route path="/account" element={<AccountPage />} />
+          <Route path="/workspace" element={<WorkspacePage />} />
+          <Route path="/account/workspace" element={<Navigate replace to="/workspace" />} />
           <Route path="/settings" element={<Navigate replace to="/members" />} />
           <Route path="/settings/account" element={<Navigate replace to="/account" />} />
-          <Route path="/settings/team" element={<Navigate replace to="/account/workspace" />} />
+          <Route path="/settings/team" element={<Navigate replace to="/workspace" />} />
           <Route path="/settings/members" element={<Navigate replace to="/members" />} />
           <Route path="/settings/access" element={<Navigate replace to="/members" />} />
           <Route path="/settings/security" element={<Navigate replace to="/members" />} />
@@ -805,7 +807,18 @@ function AppShell() {
                   })}
                 </fieldset>
                 <div className="account-menu-actions">
-                  <Link
+                  <NavLink
+                    role="menuitem"
+                    to="/workspace"
+                    onClick={() => {
+                      setOpenMenu(undefined);
+                      setNavigationOpen(false);
+                    }}
+                  >
+                    Workspace settings
+                  </NavLink>
+                  <NavLink
+                    end
                     role="menuitem"
                     to="/account"
                     onClick={() => {
@@ -813,19 +826,15 @@ function AppShell() {
                       setNavigationOpen(false);
                     }}
                   >
-                    Profile
-                  </Link>
-                  <Link
+                    Account settings
+                  </NavLink>
+                  <button
+                    className="account-signout"
+                    disabled={loggingOut}
                     role="menuitem"
-                    to="/account/workspace"
-                    onClick={() => {
-                      setOpenMenu(undefined);
-                      setNavigationOpen(false);
-                    }}
+                    type="button"
+                    onClick={() => void logout()}
                   >
-                    Workspace
-                  </Link>
-                  <button disabled={loggingOut} role="menuitem" type="button" onClick={() => void logout()}>
                     {loggingOut ? "Signing out…" : "Sign out"}
                   </button>
                 </div>
@@ -923,41 +932,79 @@ function AgentsPage() {
   });
   return (
     <>
-      <Page
-        title="Agents"
-        description="Shared AI teammates configured for your team."
-        action={
-          membership.role === "admin" ? (
-            <Button ref={createTriggerRef} onClick={() => setCreateOpen(true)}>
-              New Agent
-            </Button>
-          ) : undefined
-        }
-      >
-        <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
+      <Page title="Agents" description="Shared AI teammates configured for your team.">
+        <AsyncState state={state}>
+          {(value) => (
+            <AgentsContent
+              agents={value.agents}
+              canCreate={membership.role === "admin"}
+              createTriggerRef={createTriggerRef}
+              onCreate={() => setCreateOpen(true)}
+            />
+          )}
+        </AsyncState>
       </Page>
       {createOpen ? <NewAgentDialog returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} /> : null}
     </>
   );
 }
 
-function AgentsContent({ agents }: { agents: AgentListItem[] }) {
-  return agents.length === 0 ? (
+function AgentsContent({
+  agents,
+  canCreate,
+  createTriggerRef,
+  onCreate,
+}: {
+  agents: AgentListItem[];
+  canCreate: boolean;
+  createTriggerRef: RefObject<HTMLButtonElement | null>;
+  onCreate: () => void;
+}) {
+  return agents.length === 0 && !canCreate ? (
     <EmptyState title="No Agents yet">An Admin can create the first Agent.</EmptyState>
   ) : (
-    <AgentList agents={agents} />
+    <AgentList agents={agents} canCreate={canCreate} createTriggerRef={createTriggerRef} onCreate={onCreate} />
   );
 }
 
-function AgentList({ agents }: { agents: AgentListItem[] }) {
+function AgentList({
+  agents,
+  canCreate,
+  createTriggerRef,
+  onCreate,
+}: {
+  agents: AgentListItem[];
+  canCreate: boolean;
+  createTriggerRef: RefObject<HTMLButtonElement | null>;
+  onCreate: () => void;
+}) {
   return (
     <section className="agent-list-section" aria-label="Agents">
       <div className="agent-card-grid">
+        {canCreate ? <NewAgentCard onClick={onCreate} triggerRef={createTriggerRef} /> : null}
         {agents.map((agent) => (
           <AgentCard agent={agent} key={agent.id} />
         ))}
       </div>
     </section>
+  );
+}
+
+function NewAgentCard({
+  onClick,
+  triggerRef,
+}: {
+  onClick: () => void;
+  triggerRef: RefObject<HTMLButtonElement | null>;
+}) {
+  return (
+    <button aria-label="New Agent" className="agent-create-card" onClick={onClick} ref={triggerRef} type="button">
+      <span className="agent-create-card-icon" aria-hidden="true">
+        <Icon name="plus" />
+      </span>
+      <strong>New Agent</strong>
+      <small>Create a shared AI teammate.</small>
+    </button>
   );
 }
 
@@ -1371,27 +1418,24 @@ function AgentDetailPage() {
   );
 }
 
-function AccountPage({ section }: { section: "profile" | "workspace" }) {
-  const { me, membership, refreshMe } = useTeam();
+function AccountPage() {
+  const { me, refreshMe } = useTeam();
   const location = useLocation();
-  if (section === "profile" && location.hash === "#workspace-management") {
-    return <Navigate replace to="/account/workspace" />;
+  if (location.hash === "#workspace-management") {
+    return <Navigate replace to="/workspace" />;
   }
   return (
-    <Page title="Account" description="Manage your profile and Workspace settings.">
-      <Tabs className="account-tabs" label="Account settings">
-        <NavLink end to="/account">
-          Profile
-        </NavLink>
-        <NavLink to="/account/workspace">Workspace</NavLink>
-      </Tabs>
-      <div className="account-settings-content">
-        {section === "profile" ? (
-          <AccountSettings refreshMe={refreshMe} user={me.user} />
-        ) : (
-          <WorkspaceSettings membership={membership} refreshMe={refreshMe} />
-        )}
-      </div>
+    <Page title="Account" description="Manage your personal account details.">
+      <AccountSettings refreshMe={refreshMe} user={me.user} />
+    </Page>
+  );
+}
+
+function WorkspacePage() {
+  const { membership, refreshMe } = useTeam();
+  return (
+    <Page title="Workspace" description="Manage the current Workspace and create additional Workspaces.">
+      <WorkspaceSettings membership={membership} refreshMe={refreshMe} />
     </Page>
   );
 }
@@ -2252,12 +2296,12 @@ function MembersSettings({
                           >
                             {MembershipRoleSchema.options.map((role) => (
                               <option value={role} key={role}>
-                                {role}
+                                {titleCase(role)}
                               </option>
                             ))}
                           </select>
                         ) : (
-                          <span className="settings-value-badge">{member.role}</span>
+                          <span className="settings-value-badge">{titleCase(member.role)}</span>
                         )}
                       </td>
                     </tr>

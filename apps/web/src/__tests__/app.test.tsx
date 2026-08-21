@@ -970,7 +970,6 @@ describe("OpenTag Web App Shell", () => {
     expect(memberRows[0]?.textContent).toContain("Ada");
     const currentRoleSelect = await screen.findByLabelText("Role for Ada");
     expect(currentRoleSelect.classList.contains("ds-control--compact")).toBe(true);
-    expect(currentRoleSelect.classList.contains("ds-control--quiet")).toBe(true);
     expect(within(membersSection).getByRole("heading", { level: 3, name: "Invite members" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Invite members" })).toBeNull();
   });

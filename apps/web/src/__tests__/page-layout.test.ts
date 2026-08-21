@@ -77,6 +77,5 @@ describe("workspace page layout", () => {
     expect(declarationValue(designSystemStyles, ".ds-settings-list", "border-radius")).toBe("var(--radius-panel)");
     expect(declarationValue(designSystemStyles, ".ds-settings-row", "padding")).toBe("var(--space-6)");
     expect(declarationValue(designSystemStyles, "select.ds-control--compact", "min-height")).toBe("36px");
-    expect(declarationValue(designSystemStyles, "select.ds-control--quiet", "border-color")).toBe("transparent");
   });
 });

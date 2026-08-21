@@ -4,6 +4,7 @@ import {
   type DirectImMessageDeliveryRequest,
   DirectImMessageDeliveryRequestSchema,
   type EffectiveRuntimeSnapshot,
+  type ProviderInboundContext,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_IM_HISTORY_MAX_BYTES,
   RUNTIME_MAX_FRAME_BYTES,
@@ -29,6 +30,7 @@ import {
   setActiveSpanAttributes,
   traceDeliveryClaim,
 } from "../observability/index.js";
+import { threadRootExternalId } from "../services/im/provider-thread-context.js";
 import {
   type EffectiveRuntimeSnapshotAssembler,
   EffectiveRuntimeSnapshotAssemblerError,
@@ -47,6 +49,7 @@ const acceptedDeliveries = alias(imMessageDeliveries, "agent_accepted_deliveries
 const acceptedSessions = alias(sessions, "agent_accepted_sessions");
 const acceptedImBindings = alias(imBindings, "agent_accepted_im_bindings");
 const acceptedAgents = alias(agents, "agent_accepted_agents");
+const newerHistoryRevisions = alias(imMessages, "newer_history_revisions");
 
 export class ImDeliveryWorker {
   readonly #database: DatabaseClient;
@@ -408,8 +411,16 @@ export class ImDeliveryWorker {
       }
       const resources = row.message.content.resources ?? [];
       const history =
-        row.agent.receiveMode === "mention_only" && row.delivery.attention === "direct"
-          ? await this.#history(row.session, row.message.occurredAt, row.message.providerRevisionKey, row.message.id)
+        row.delivery.attention === "direct" &&
+        (row.agent.receiveMode === "mention_only" || row.session.kind === "thread")
+          ? await this.#history(
+              row.session,
+              row.message.providerContext,
+              row.message.externalMessageId,
+              row.message.occurredAt,
+              row.message.providerRevisionKey,
+              row.message.id,
+            )
           : { items: [], truncated: false };
       const request: DirectImMessageDeliveryRequest = {
         type: "im:deliver",
@@ -741,6 +752,8 @@ export class ImDeliveryWorker {
 
   async #history(
     session: typeof sessions.$inferSelect,
+    providerContext: ProviderInboundContext,
+    externalMessageId: string,
     occurredAt: Date,
     providerRevisionKey: string,
     messageId: string,
@@ -753,6 +766,7 @@ export class ImDeliveryWorker {
     }>;
     truncated: boolean;
   }> {
+    const rootExternalId = threadRootExternalId(providerContext);
     const [lastAccepted] = await this.#database
       .select({
         id: imMessages.id,
@@ -770,15 +784,83 @@ export class ImDeliveryWorker {
       )
       .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
       .limit(1);
+    const historyBoundary = and(
+      messageBefore(occurredAt, providerRevisionKey, messageId),
+      ...(lastAccepted
+        ? [messageAfter(lastAccepted.occurredAt, lastAccepted.providerRevisionKey, lastAccepted.id)]
+        : []),
+      notExists(
+        this.#database
+          .select({ id: newerHistoryRevisions.id })
+          .from(newerHistoryRevisions)
+          .where(
+            and(
+              eq(newerHistoryRevisions.imBindingId, imMessages.imBindingId),
+              eq(newerHistoryRevisions.channelId, imMessages.channelId),
+              eq(newerHistoryRevisions.externalMessageId, imMessages.externalMessageId),
+              eq(newerHistoryRevisions.direction, "inbound"),
+              or(
+                gt(newerHistoryRevisions.occurredAt, imMessages.occurredAt),
+                and(
+                  eq(newerHistoryRevisions.occurredAt, imMessages.occurredAt),
+                  or(
+                    gt(newerHistoryRevisions.providerRevisionKey, imMessages.providerRevisionKey),
+                    and(
+                      eq(newerHistoryRevisions.providerRevisionKey, imMessages.providerRevisionKey),
+                      gt(newerHistoryRevisions.id, imMessages.id),
+                    ),
+                  ),
+                ),
+              ),
+              or(
+                lt(newerHistoryRevisions.occurredAt, occurredAt),
+                and(
+                  eq(newerHistoryRevisions.occurredAt, occurredAt),
+                  or(
+                    lt(newerHistoryRevisions.providerRevisionKey, providerRevisionKey),
+                    and(
+                      eq(newerHistoryRevisions.providerRevisionKey, providerRevisionKey),
+                      lt(newerHistoryRevisions.id, messageId),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ),
+    );
+    const selection = {
+      id: imMessages.id,
+      operation: imMessages.operation,
+      occurredAt: imMessages.occurredAt,
+      content: imMessages.content,
+      channelId: imMessages.channelId,
+      externalMessageId: imMessages.externalMessageId,
+      providerContext: imMessages.providerContext,
+      imBinding: imBindings,
+    };
+    const [root] =
+      session.kind === "thread" && rootExternalId
+        ? await this.#database
+            .select(selection)
+            .from(imMessages)
+            .innerJoin(imBindings, eq(imBindings.id, imMessages.imBindingId))
+            .where(
+              and(
+                eq(imMessages.imBindingId, session.imBindingId),
+                eq(imMessages.channelId, session.channelId),
+                eq(imMessages.direction, "inbound"),
+                eq(imMessages.externalMessageId, rootExternalId),
+                ne(imMessages.externalMessageId, externalMessageId),
+                historyBoundary,
+              ),
+            )
+            .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
+            .limit(1)
+        : [];
     const rows = await this.#database
       .select({
-        id: imMessages.id,
-        occurredAt: imMessages.occurredAt,
-        content: imMessages.content,
-        channelId: imMessages.channelId,
-        externalMessageId: imMessages.externalMessageId,
-        providerContext: imMessages.providerContext,
-        imBinding: imBindings,
+        ...selection,
       })
       .from(imMessages)
       .innerJoin(imBindings, eq(imBindings.id, imMessages.imBindingId))
@@ -787,16 +869,14 @@ export class ImDeliveryWorker {
           eq(imMessages.imBindingId, session.imBindingId),
           eq(imMessages.channelId, session.channelId),
           eq(imMessages.direction, "inbound"),
+          ne(imMessages.externalMessageId, externalMessageId),
           ...(session.kind === "thread" && session.threadKey ? [eq(imMessages.threadKey, session.threadKey)] : []),
-          messageBefore(occurredAt, providerRevisionKey, messageId),
-          ...(lastAccepted
-            ? [messageAfter(lastAccepted.occurredAt, lastAccepted.providerRevisionKey, lastAccepted.id)]
-            : []),
+          historyBoundary,
         ),
       )
       .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
       .limit(101);
-    const selected = rows.slice(0, 100);
+    const selected = rows.slice(0, root ? 99 : 100);
     const items: Array<{
       imMessageId: string;
       occurredAt: string;
@@ -805,14 +885,29 @@ export class ImDeliveryWorker {
     }> = [];
     let bytes = 2;
     let truncated = rows.length > selected.length;
+    const rootItem = root
+      ? {
+          imMessageId: root.id,
+          occurredAt: root.occurredAt.toISOString(),
+          text:
+            root.operation === "deleted"
+              ? "[deleted]"
+              : truncateUtf8(root.content.fallbackText, RUNTIME_DIRECT_TEXT_MAX_BYTES),
+          providerRef: runtimeProviderMessageRef(root, root.imBinding),
+        }
+      : undefined;
+    if (rootItem) bytes += Buffer.byteLength(JSON.stringify(rootItem), "utf8");
     for (const row of selected) {
       const item = {
         imMessageId: row.id,
         occurredAt: row.occurredAt.toISOString(),
-        text: truncateUtf8(row.content.fallbackText, RUNTIME_DIRECT_TEXT_MAX_BYTES),
+        text:
+          row.operation === "deleted"
+            ? "[deleted]"
+            : truncateUtf8(row.content.fallbackText, RUNTIME_DIRECT_TEXT_MAX_BYTES),
         providerRef: runtimeProviderMessageRef(row, row.imBinding),
       };
-      const itemBytes = Buffer.byteLength(JSON.stringify(item), "utf8") + (items.length > 0 ? 1 : 0);
+      const itemBytes = Buffer.byteLength(JSON.stringify(item), "utf8") + (items.length > 0 || rootItem ? 1 : 0);
       if (bytes + itemBytes > RUNTIME_IM_HISTORY_MAX_BYTES) {
         truncated = true;
         break;
@@ -820,7 +915,7 @@ export class ImDeliveryWorker {
       items.push(item);
       bytes += itemBytes;
     }
-    return { items: items.reverse(), truncated };
+    return { items: [...(rootItem ? [rootItem] : []), ...items.reverse()], truncated };
   }
 }
 

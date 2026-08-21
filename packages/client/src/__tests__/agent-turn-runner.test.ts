@@ -83,6 +83,33 @@ describe("AgentTurnRunner", () => {
     expect(context).toContain("Attention does not change provider CLI or credential availability");
   });
 
+  it("exposes provider-native thread facts without adding a provider reply policy", () => {
+    const slackRequest = delivery();
+    slackRequest.content.providerRef = {
+      ...providerRef("1710000000.000002"),
+      threadTs: "1710000000.000001",
+    };
+    const slackContext = buildAgentInput(slackRequest).items[0]?.text;
+    expect(slackContext).toContain(JSON.stringify(slackRequest.content.providerRef));
+    expect(slackContext).not.toMatch(/Slack.*(?:must|always|default).*(?:thread|reply)/i);
+
+    const feishuRequest = delivery();
+    feishuRequest.content.providerRef = {
+      provider: "feishu",
+      teamBrand: "feishu",
+      appId: "cli_1",
+      botOpenId: "ou_bot",
+      chatId: "oc_1",
+      messageId: "om_reply",
+      threadId: "omt_1",
+      rootId: "om_root",
+      parentId: "om_parent",
+    };
+    const feishuContext = buildAgentInput(feishuRequest).items[0]?.text;
+    expect(feishuContext).toContain(JSON.stringify(feishuRequest.content.providerRef));
+    expect(feishuContext).not.toMatch(/Feishu.*(?:must|always|default).*(?:thread|reply)/i);
+  });
+
   it("maps every typed Agent result and abort reason to the stable Turn taxonomy", () => {
     const result = (status: AgentRunResult["status"], overrides: Partial<AgentRunResult> = {}): AgentRunResult => ({
       runId: "turn-1",

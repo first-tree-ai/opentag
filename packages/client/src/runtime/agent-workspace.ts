@@ -163,9 +163,8 @@ async function beginLegacyTransition(
   const managedFilesHash =
     state.schemaVersion === 2
       ? state.managedInstructionsHash
-      : root !== undefined &&
-          files !== undefined &&
-          (await isKnownLegacyPartialMigration(paths.agentsFile, root, files))
+      : files !== undefined &&
+          (await isKnownLegacyPartialMigration(paths.agentsFile, state.managedInstructionsHash, root, files))
         ? filesHash
         : undefined;
   if (filesHash !== undefined && filesHash !== managedFilesHash) {
@@ -320,23 +319,31 @@ async function syncRestoredRegularFile(path: string): Promise<void> {
 
 async function isKnownLegacyPartialMigration(
   path: string,
-  provenRootContent: string,
+  managedRootHash: string,
+  provenRootContent: string | undefined,
   content: string,
 ): Promise<boolean> {
-  const expected = knownLegacyPartialMigrationContent(provenRootContent);
-  if (expected === undefined || content !== expected) return false;
-  return ((await lstat(path)).mode & 0o222) === 0;
+  if (!matchesKnownLegacyPartialMigration(managedRootHash, provenRootContent, content)) return false;
+  return isReadOnlyRegularFile(await lstat(path));
 }
 
-function knownLegacyPartialMigrationContent(provenRootContent: string): string | undefined {
+function matchesKnownLegacyPartialMigration(
+  managedRootHash: string,
+  provenRootContent: string | undefined,
+  content: string,
+): boolean {
   for (const migration of KNOWN_LEGACY_PARTIAL_MIGRATIONS) {
+    const targetPrefix = `${LEGACY_MANAGED_PLATFORM_PREFIX}\n${migration.targetPlatform}${LEGACY_MANAGED_AGENT_SEPARATOR}`;
+    if (!content.startsWith(targetPrefix)) continue;
+    const agentSuffix = content.slice(targetPrefix.length);
+    if (!agentSuffix.endsWith("\n")) continue;
     const sourcePrefix = `${LEGACY_MANAGED_PLATFORM_PREFIX}\n${migration.sourcePlatform}${LEGACY_MANAGED_AGENT_SEPARATOR}`;
-    if (!provenRootContent.startsWith(sourcePrefix)) continue;
-    const agentSuffix = provenRootContent.slice(sourcePrefix.length);
-    if (!agentSuffix.endsWith("\n")) return undefined;
-    return `${LEGACY_MANAGED_PLATFORM_PREFIX}\n${migration.targetPlatform}${LEGACY_MANAGED_AGENT_SEPARATOR}${agentSuffix}`;
+    const reconstructedRoot = `${sourcePrefix}${agentSuffix}`;
+    if (sha256(reconstructedRoot) !== managedRootHash) continue;
+    if (provenRootContent !== undefined && provenRootContent !== reconstructedRoot) continue;
+    return true;
   }
-  return undefined;
+  return false;
 }
 
 function completeState(

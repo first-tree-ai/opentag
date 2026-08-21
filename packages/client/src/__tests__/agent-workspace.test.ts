@@ -130,7 +130,7 @@ describe("AgentWorkspaceManager", () => {
     await expect(stat(paths.agentsFile)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("fails closed if a schema-v1 partial migration lost its hash-proven root anchor", async () => {
+  it("recovers the schema-v1 crash window after the old migration removed its root file", async () => {
     const fixture = await workspaceFixture();
     const runtime = snapshot("agent-1", "workspace-1", "session");
     const oldManaged = managedInstructions(ISSUE_101_SCHEMA_V1_PLATFORM, runtime.instructions.agent);
@@ -142,12 +142,22 @@ describe("AgentWorkspaceManager", () => {
     });
     await writeFile(resolve(paths.files, "kept.txt"), "keep", "utf8");
 
-    await expect(fixture.workspace.prepareAgent(runtime, computeRuntimeSnapshotHashes(runtime))).rejects.toThrow(
-      /files\/AGENTS\.md is not proven/i,
-    );
+    await expect(
+      fixture.reconciler.reconcile(reconcileRequest(fixture.computerId, "session-1", runtime)),
+    ).resolves.toMatchObject({ status: "ready" });
+    expect(await fixture.workspace.cwd(runtime.agentId)).toBe(await realpathForTest(paths.files));
     await expect(readFile(resolve(paths.files, "kept.txt"), "utf8")).resolves.toBe("keep");
-    await expect(readFile(paths.agentsFile, "utf8")).resolves.toBe(migratedManaged);
-    await expect(readWorkspaceState(fixture.workspace, runtime.agentId)).resolves.toMatchObject({ schemaVersion: 1 });
+    await expect(stat(paths.agentsFile)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readWorkspaceState(fixture.workspace, runtime.agentId)).resolves.toMatchObject({
+      schemaVersion: 3,
+      transition: "complete",
+      layout: "legacy-files",
+    });
+
+    await expect(
+      fixture.reconciler.reconcile(reconcileRequest(fixture.computerId, "session-2", runtime)),
+    ).resolves.toMatchObject({ status: "ready" });
+    await expect(readFile(resolve(paths.files, "kept.txt"), "utf8")).resolves.toBe("keep");
   });
 
   it.each(["before-removal", "after-root-removal", "after-all-removal"] as const)(
@@ -269,6 +279,24 @@ describe("AgentWorkspaceManager", () => {
       schemaVersion: 1,
       rootInstructions: managed,
       filesInstructions: changed,
+    });
+
+    await expect(fixture.workspace.prepareAgent(runtime, computeRuntimeSnapshotHashes(runtime))).rejects.toThrow(
+      /not proven OpenTag-managed/i,
+    );
+    await expect(readFile(paths.agentsFile, "utf8")).resolves.toBe(changed);
+    await expect(readWorkspaceState(fixture.workspace, runtime.agentId)).resolves.toMatchObject({ schemaVersion: 1 });
+  });
+
+  it("fails closed if a rootless historical partial cannot reconstruct the state-proven Agent suffix", async () => {
+    const fixture = await workspaceFixture();
+    const runtime = snapshot("agent-1", "workspace-1", "session");
+    const provenRoot = managedInstructions(ISSUE_101_SCHEMA_V1_PLATFORM, runtime.instructions.agent);
+    const changed = managedInstructions(ISSUE_101_PARTIAL_MIGRATION_PLATFORM, "different Agent instructions");
+    const paths = await writeLegacyWorkspace(fixture, runtime, {
+      schemaVersion: 1,
+      filesInstructions: changed,
+      provenanceInstructions: provenRoot,
     });
 
     await expect(fixture.workspace.prepareAgent(runtime, computeRuntimeSnapshotHashes(runtime))).rejects.toThrow(

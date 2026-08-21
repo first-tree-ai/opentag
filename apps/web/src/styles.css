@@ -154,8 +154,7 @@ textarea {
   font: inherit;
 }
 
-button,
-.button {
+button {
   display: inline-flex;
   min-height: 42px;
   align-items: center;
@@ -177,71 +176,17 @@ button,
   white-space: nowrap;
 }
 
-button:hover,
-.button:hover {
+button:hover {
   background: var(--brand-ink);
 }
 
-button:active,
-.button:active {
+button:active {
   transform: translateY(1px);
 }
 
-button:disabled,
-.button[aria-disabled="true"] {
+button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
-}
-
-.secondary {
-  border: 0;
-  background: #e7e9df;
-  color: var(--foreground);
-}
-
-.secondary:hover {
-  background: #dde1d3;
-  color: var(--foreground);
-}
-
-.commit {
-  background: var(--foreground);
-  color: #fff;
-}
-
-.commit:hover {
-  background: #26332c;
-}
-
-.tertiary,
-.danger-text {
-  min-height: 34px;
-  border: 0;
-  background: transparent;
-  padding: 0 0.45rem;
-}
-
-.tertiary {
-  color: var(--muted);
-}
-
-.tertiary:hover {
-  background: #e7e9df;
-  color: var(--foreground);
-}
-
-.danger-text {
-  color: var(--error);
-}
-
-.danger-text:hover {
-  background: var(--error-surface);
-  color: var(--error);
-}
-
-.compact-button {
-  min-height: 36px;
-  padding: 0.42rem 0.75rem;
 }
 
 button:focus-visible,
@@ -341,18 +286,6 @@ pre {
   color: #7b4510;
 }
 
-button.danger {
-  min-height: 34px;
-  border: 0;
-  background: transparent;
-  color: var(--error);
-  padding: 0 0.45rem;
-}
-
-button.danger:hover {
-  background: var(--error-surface);
-  color: var(--error);
-}
 .shell {
   display: grid;
   min-height: 100dvh;
@@ -1172,33 +1105,6 @@ button.danger:hover {
   gap: 8px;
 }
 
-.availability-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  flex: 0 0 auto;
-  border-radius: 999px;
-  background: #8a9188;
-}
-
-.availability-dot.ready {
-  background: var(--brand);
-}
-
-.availability-dot.action-required {
-  background: #d97706;
-}
-
-.availability-dot.setting-up {
-  background: #2e6fa7;
-}
-
-.availability-dot.not-connected,
-.availability-dot.suspended,
-.availability-dot.unconfirmed {
-  background: #848b82;
-}
-
 .muted,
 .timestamp {
   color: var(--muted);
@@ -1447,18 +1353,6 @@ button.danger:hover {
   color: var(--error);
   font-size: var(--text-meta);
   font-weight: var(--fw-regular);
-}
-
-.form-field {
-  display: grid;
-  gap: 7px;
-}
-
-.field-help {
-  color: var(--muted);
-  font-size: var(--text-meta);
-  font-weight: var(--fw-regular);
-  line-height: var(--lh-ui);
 }
 
 input,
@@ -2412,7 +2306,7 @@ code {
   gap: 14px;
 }
 
-.onboarding-action .button:not(.compact-button) {
+.onboarding-action .ds-button:not(.ds-button--compact) {
   min-height: 46px;
   min-width: 190px;
   border-radius: 10px;
@@ -2947,22 +2841,6 @@ textarea:focus {
   padding: 20px 22px;
 }
 
-.binding-status-main {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.binding-status-main strong,
-.binding-status-main small {
-  display: block;
-}
-
-.binding-status-main strong {
-  font-size: var(--text-ui);
-}
-
-.binding-status-main small,
 .binding-status > small {
   margin-top: 4px;
   color: var(--muted);
@@ -3233,10 +3111,6 @@ textarea:focus {
   width: 100%;
 }
 
-.settings-content > .panel .button {
-  justify-self: start;
-}
-
 .settings-readonly-heading,
 .settings-subheader {
   display: flex;
@@ -3434,21 +3308,6 @@ textarea:focus {
   gap: 7px;
 }
 
-.settings-status-dot {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-}
-
-.settings-status-dot.online {
-  background: var(--brand);
-}
-
-.settings-status-dot.offline {
-  background: var(--warning);
-}
-
 .settings-compact-empty {
   border-top: 1px solid var(--strong-border);
   border-bottom: 1px solid var(--border);
@@ -3511,6 +3370,9 @@ textarea:focus {
 }
 
 .settings-state-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   color: var(--brand-ink);
   font-size: var(--text-ui);
   font-weight: var(--fw-semibold);
@@ -3699,7 +3561,7 @@ textarea:focus {
     flex-direction: column;
   }
 
-  .account-workspace-create .secondary {
+  .account-workspace-create .ds-button {
     justify-content: center;
     width: 100%;
   }
@@ -3831,8 +3693,8 @@ textarea:focus {
     gap: 5px;
   }
 
-  .onboarding-action .button,
-  .onboarding-feedback > .button {
+  .onboarding-action .ds-button,
+  .onboarding-feedback > .ds-button {
     width: 100%;
   }
 
@@ -3861,7 +3723,7 @@ textarea:focus {
     flex-direction: column;
   }
 
-  .page-header .button {
+  .page-header .ds-button {
     align-self: flex-start;
   }
 
@@ -4000,7 +3862,7 @@ textarea:focus {
   }
 
   .actions > button,
-  .actions > .button,
+  .actions > .ds-button,
   .actions > a {
     width: 100%;
   }

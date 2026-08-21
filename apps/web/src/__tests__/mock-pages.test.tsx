@@ -47,7 +47,10 @@ describe("capability entry pages", () => {
     expect(within(metrics).getByText("728")).toBeTruthy();
     expect(screen.getByRole("img").getAttribute("aria-label")).toContain("30 days");
 
-    fireEvent.change(screen.getByLabelText("Time range"), { target: { value: "7 days" } });
+    const timeRange = screen.getByLabelText("Time range");
+    expect(timeRange.className).toContain("ds-control");
+    expect(timeRange.closest(".ds-field")).toBeTruthy();
+    fireEvent.change(timeRange, { target: { value: "7 days" } });
 
     expect(within(metrics).getByText("38")).toBeTruthy();
     expect(within(metrics).getByText("184")).toBeTruthy();

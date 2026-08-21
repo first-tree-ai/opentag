@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { type UsageRange, usageRanges, usageSnapshots } from "../mock/capability-data.js";
+import { Field } from "../ui/design-system.js";
 import "../mock-pages.css";
 
 export function UsagePage() {
@@ -15,16 +16,20 @@ export function UsagePage() {
           <h1 id="usage-page-title">Usage</h1>
           <p>A simple view of sample Agent activity across this Workspace.</p>
         </div>
-        <label className="capability-range-field">
-          <span>Time range</span>
-          <select value={range} onChange={(event) => setRange(event.currentTarget.value as UsageRange)}>
+        <Field className="capability-range-field" htmlFor="usage-range" label="Time range">
+          <select
+            className="ds-control"
+            id="usage-range"
+            value={range}
+            onChange={(event) => setRange(event.currentTarget.value as UsageRange)}
+          >
             {usageRanges.map((option) => (
               <option value={option} key={option}>
                 Last {option}
               </option>
             ))}
           </select>
-        </label>
+        </Field>
       </header>
 
       <dl className="capability-metric-grid" aria-label="Usage metrics" aria-live="polite">

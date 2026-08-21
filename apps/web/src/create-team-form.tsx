@@ -1,6 +1,7 @@
 import type { CreateTeamResponse } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
 import { ApiError, browserApi } from "./api.js";
+import { Button, Field } from "./ui/design-system.js";
 
 /** Derives the internal Team handle suggested by a user-facing name. */
 export function toTeamHandle(displayName: string): string {
@@ -83,9 +84,9 @@ export function CreateTeamForm({
 
   return (
     <form className="form-card" onSubmit={submit}>
-      <label>
-        Workspace name
+      <Field htmlFor="workspace-display-name" label="Workspace name">
         <input
+          id="workspace-display-name"
           name="displayName"
           autoComplete="organization"
           maxLength={120}
@@ -94,10 +95,10 @@ export function CreateTeamForm({
           value={displayName}
           onChange={(event) => setDisplayName(event.currentTarget.value)}
         />
-      </label>
-      <button className="button" type="submit" disabled={submitting}>
+      </Field>
+      <Button type="submit" disabled={submitting}>
         {submitting ? "Creating…" : submitLabel}
-      </button>
+      </Button>
       {error ? (
         <div className="notice error" role="alert">
           {error}

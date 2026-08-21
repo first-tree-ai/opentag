@@ -662,6 +662,8 @@ describe("OpenTag Web App Shell", () => {
     const displayName = screen.getByLabelText("Display name") as HTMLInputElement;
     expect(email.value).toBe("ada@example.com");
     expect(email.readOnly).toBe(true);
+    expect(email.closest(".ds-field")).toBeTruthy();
+    expect(displayName.closest(".ds-field")).toBeTruthy();
     fireEvent.change(displayName, { target: { value: "  Ada Lovelace  " } });
     fireEvent.click(await screen.findByRole("button", { name: "Save account profile" }));
 
@@ -1339,7 +1341,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/im`);
     render(<App />);
 
-    expect(await screen.findByText("Configured")).toBeTruthy();
+    expect((await screen.findByText("Configured")).closest(".ds-status")).toBeTruthy();
     expect(screen.queryByText(/Online/)).toBeNull();
   });
 

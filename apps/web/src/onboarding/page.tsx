@@ -10,6 +10,7 @@ import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef
 import { browserApi } from "../api.js";
 import { ComputerSetup } from "../computer-setup.js";
 import { FeishuSetup, type FeishuSetupControl } from "../im/feishu-setup.js";
+import { Button, buttonClassName, Field } from "../ui/design-system.js";
 import {
   deriveOnboardingState,
   type OnboardingAgent,
@@ -249,9 +250,7 @@ export function OnboardingPage({
               {loadState.kind === "loading" ? <OnboardingLoading /> : null}
               {loadState.kind === "error" ? (
                 <ActionSection title="We couldn’t load setup" description={loadState.error.message}>
-                  <button className="button" type="button" onClick={reload}>
-                    Try again
-                  </button>
+                  <Button onClick={reload}>Try again</Button>
                 </ActionSection>
               ) : null}
               {loadState.kind === "ready" && resolved ? (
@@ -539,14 +538,9 @@ function OnboardingHeader({ user }: { user: UserProfile }) {
       </a>
       <div className="onboarding-account">
         <span>{user.displayName}</span>
-        <button
-          className="secondary compact-button"
-          disabled={logoutState === "pending"}
-          type="button"
-          onClick={logout}
-        >
+        <Button size="compact" variant="secondary" disabled={logoutState === "pending"} onClick={logout}>
           {logoutState === "pending" ? "Signing out…" : logoutState === "error" ? "Retry sign out" : "Sign out"}
-        </button>
+        </Button>
       </div>
     </header>
   );
@@ -736,15 +730,15 @@ function OnboardingContent({
       >
         {current.alternatives.length > 0 ? (
           <div className="onboarding-route-change">
-            <button
+            <Button
               aria-expanded={routeChangeOpen}
-              className="tertiary compact-button"
               disabled={pending}
-              type="button"
+              size="compact"
+              variant="tertiary"
               onClick={() => setRouteChangeOpen((open) => !open)}
             >
               Change
-            </button>
+            </Button>
             {routeChangeOpen ? (
               <div className="onboarding-choice-list">
                 {current.alternatives.map((alternative) => (
@@ -776,24 +770,24 @@ function OnboardingContent({
             onCreateAgent(current);
           }}
         >
-          <label>
-            Agent display name
+          <Field htmlFor="onboarding-agent-display-name" label="Agent display name">
             <input
               autoComplete="off"
               disabled={pending}
+              id="onboarding-agent-display-name"
               maxLength={120}
               required
               value={agentDisplayName}
               onChange={(event) => onAgentDisplayNameChange(event.target.value)}
             />
-          </label>
+          </Field>
           <div className="onboarding-feedback">
             {creation?.kind === "error" ? (
               <div className="notice error" role="alert">
                 {creation.message}
               </div>
             ) : null}
-            <button className="button" disabled={pending} type="submit">
+            <Button disabled={pending} type="submit">
               {refreshPending
                 ? "Updating route…"
                 : creationPending
@@ -801,7 +795,7 @@ function OnboardingContent({
                   : creation?.kind === "error"
                     ? "Try again"
                     : "Create agent"}
-            </button>
+            </Button>
             {refreshPending ? <p role="status">Confirming the selected runtime route…</p> : null}
             {creationPending ? <p role="status">Creating Agent identity and runtime binding…</p> : null}
           </div>
@@ -854,10 +848,10 @@ function OnboardingContent({
       description="Add the Bot to a Feishu group, then mention OpenTag with your first task."
     >
       <div className="actions">
-        <a className="button" href={FEISHU_BOT_APP_LINK} rel="noreferrer" target="_blank">
+        <a className={buttonClassName()} href={FEISHU_BOT_APP_LINK} rel="noreferrer" target="_blank">
           Open Feishu
         </a>
-        <a className="button secondary" href={agentGeneralRoute(current.agent.id)}>
+        <a className={buttonClassName({ variant: "secondary" })} href={agentGeneralRoute(current.agent.id)}>
           Manage this Agent
         </a>
       </div>
@@ -901,9 +895,9 @@ function ActionSection({
 function ReloadButton({ onReload, pending }: { onReload: () => void; pending: boolean }) {
   return (
     <div className="onboarding-feedback">
-      <button className="button" disabled={pending} type="button" onClick={onReload}>
+      <Button disabled={pending} onClick={onReload}>
         {pending ? "Checking…" : "Check again"}
-      </button>
+      </Button>
       {pending ? (
         <p className="onboarding-helper" role="status">
           Refreshing Server facts…
@@ -948,9 +942,7 @@ function FeishuAction({
         : "Resume Feishu setup";
   return (
     <div className="onboarding-feedback">
-      <button className="button" type="button" onClick={() => void control.start(intent)}>
-        {label}
-      </button>
+      <Button onClick={() => void control.start(intent)}>{label}</Button>
       {control.feedback}
     </div>
   );

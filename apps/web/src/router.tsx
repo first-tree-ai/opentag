@@ -35,7 +35,7 @@ import { UsagePage } from "./features/usage-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
 import { OnboardingPage } from "./onboarding/page.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
-import { Button, Dialog, Field, Icon, StatusIndicator, type StatusTone } from "./ui/design-system.js";
+import { Button, buttonClassName, Dialog, Field, Icon, StatusIndicator, type StatusTone } from "./ui/design-system.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
 type AuthProvider = AuthProvidersResponse["providers"][number];
@@ -505,9 +505,9 @@ function InvitePage() {
             <p>
               This invitation grants the {value.role} role and expires {formatDate(value.expiresAt)}.
             </p>
-            <button className="button" disabled={joining} type="button" onClick={join}>
+            <Button disabled={joining} onClick={join}>
               {joining ? "Joining…" : "Join Workspace"}
-            </button>
+            </Button>
           </>
         )}
       </AsyncState>
@@ -610,9 +610,7 @@ function WorkspaceSetupIncomplete({ onRetry }: { onRetry: () => void }) {
       <div className="notice error" role="alert">
         The server must finish Workspace setup before the Web app can continue.
       </div>
-      <button className="button" type="button" onClick={onRetry}>
-        Check again
-      </button>
+      <Button onClick={onRetry}>Check again</Button>
     </main>
   );
 }
@@ -770,7 +768,7 @@ function AppShell() {
                 <strong>{me.user.displayName}</strong>
               </span>
               <span className="account-menu-dots" aria-hidden="true">
-                ⋮
+                <Icon name="more-vertical" />
               </span>
             </button>
             {openMenu === "account" ? (
@@ -811,7 +809,7 @@ function AppShell() {
                           </span>
                           {current ? (
                             <span className="team-option-check" aria-hidden="true">
-                              ✓
+                              <Icon name="check" />
                             </span>
                           ) : null}
                         </button>
@@ -861,9 +859,9 @@ function AppShell() {
           <Link className="mobile-brand" to="/agents" onClick={() => setNavigationOpen(false)}>
             OpenTag
           </Link>
-          <button className="secondary compact-button" type="button" onClick={() => setNavigationOpen(true)}>
+          <Button size="compact" variant="secondary" onClick={() => setNavigationOpen(true)}>
             Menu
-          </button>
+          </Button>
         </header>
         <main className="content">
           <Outlet />
@@ -1412,7 +1410,7 @@ function AccountPage() {
                 <strong>Additional Workspace</strong>
                 <p>Create another isolated organization for a separate client or team.</p>
               </div>
-              <Link className="secondary" to="/workspaces/new">
+              <Link className={buttonClassName({ variant: "secondary" })} to="/workspaces/new">
                 Create another Workspace
               </Link>
             </div>
@@ -1692,15 +1690,16 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                         <p>{agent.displayName} receives messages through this dedicated identity.</p>
                       </div>
                       <div className="binding-status">
-                        <div className="binding-status-main">
-                          <span>
-                            <strong>{binding.bot.displayName}</strong>
-                            <small>
+                        <StatusIndicator
+                          detail={
+                            <>
                               <span>{titleCase(binding.provider)} · </span>
                               <span>{imBindingStateLabel(binding)}</span>
-                            </small>
-                          </span>
-                        </div>
+                            </>
+                          }
+                          label={binding.bot.displayName}
+                          tone={imBindingTone(binding)}
+                        />
                         <small>
                           {binding.lastConfirmedAt
                             ? `Confirmed ${formatDate(binding.lastConfirmedAt)}`
@@ -1711,9 +1710,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                       binding.provider === "feishu" &&
                       agent.viewerCapabilities.canManage ? (
                         <div className="im-actions">
-                          <button className="button" type="button" onClick={() => void connect("reauthorize")}>
-                            Reauthorize Feishu
-                          </button>
+                          <Button onClick={() => void connect("reauthorize")}>Reauthorize Feishu</Button>
                         </div>
                       ) : null}
                       {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
@@ -1762,13 +1759,12 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                         </div>
                         <div className="im-actions">
                           {binding.provider === "feishu" ? (
-                            <button className="secondary" type="button" onClick={() => void connect("replace")}>
+                            <Button variant="secondary" onClick={() => void connect("replace")}>
                               Replace with existing or new Feishu Bot
-                            </button>
+                            </Button>
                           ) : null}
-                          <button
-                            className="danger-text"
-                            type="button"
+                          <Button
+                            variant="danger"
                             onClick={() => {
                               if (
                                 !window.confirm(
@@ -1787,7 +1783,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                             }}
                           >
                             Disable IM binding
-                          </button>
+                          </Button>
                         </div>
                       </section>
                     ) : (
@@ -1805,9 +1801,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                     </EmptyState>
                     {agent.viewerCapabilities.canManage ? (
                       <div className="im-actions">
-                        <button className="button" type="button" onClick={() => void connect()}>
-                          Connect existing or new Feishu Bot
-                        </button>
+                        <Button onClick={() => void connect()}>Connect existing or new Feishu Bot</Button>
                       </div>
                     ) : (
                       <p className="muted">IM setup is managed by Admins.</p>
@@ -1840,6 +1834,17 @@ function imBindingStateLabel(binding: ImBindingSummary): string {
     error: "Needs attention",
     disabled: "Disabled",
   }[binding.bindingState];
+}
+
+function imBindingTone(binding: ImBindingSummary): StatusTone {
+  const tones: Record<ImBindingSummary["bindingState"], StatusTone> = {
+    active: "success",
+    provisioning: "info",
+    reauthorization_required: "warning",
+    error: "danger",
+    disabled: "neutral",
+  };
+  return tones[binding.bindingState];
 }
 
 function AccessTab({ agent }: { agent: AgentDetailView }) {
@@ -1919,7 +1924,7 @@ function CapabilityUnavailable({
       </ul>
       {action ? (
         <Link className="settings-state-action" to={action.to}>
-          {action.label} <span aria-hidden="true">→</span>
+          {action.label} <Icon name="arrow-right" />
         </Link>
       ) : null}
     </section>
@@ -1971,20 +1976,34 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
             <strong>Email</strong>
             <p>Your sign-in email cannot be changed here.</p>
           </div>
-          <div className="settings-readonly-value">
-            <input aria-label="Email" name="email" readOnly type="email" value={user.email} />
-            <small>Read only</small>
-          </div>
+          <Field
+            className="settings-profile-field"
+            hint="Read only"
+            hintId="account-email-hint"
+            htmlFor="account-email"
+            label="Email"
+          >
+            <input
+              aria-describedby="account-email-hint"
+              className="ds-control"
+              id="account-email"
+              name="email"
+              readOnly
+              type="email"
+              value={user.email}
+            />
+          </Field>
         </div>
         <div className="settings-field-row">
           <div className="settings-field-copy">
             <strong>Display name</strong>
             <p>This identity is used throughout OpenTag.</p>
           </div>
-          <label>
-            Display name
+          <Field className="settings-profile-field" htmlFor="account-display-name" label="Display name">
             <input
               autoComplete="name"
+              className="ds-control"
+              id="account-display-name"
               maxLength={255}
               name="displayName"
               onChange={(event) => {
@@ -1995,17 +2014,16 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
               required
               value={displayName}
             />
-          </label>
+          </Field>
         </div>
       </div>
       {dirty ? (
         <div className="dirty-bar">
           <span>Unsaved changes</span>
           <div className="dirty-actions">
-            <button
-              className="tertiary"
+            <Button
               disabled={saving}
-              type="button"
+              variant="tertiary"
               onClick={() => {
                 setDisplayName(user.displayName);
                 setMessage(undefined);
@@ -2013,10 +2031,10 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
               }}
             >
               Discard
-            </button>
-            <button className="button commit" disabled={saving} type="submit">
+            </Button>
+            <Button disabled={saving} type="submit" variant="commit">
               {saving ? "Saving…" : "Save account profile"}
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}
@@ -2090,9 +2108,10 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
             <strong>Workspace name</strong>
             <p>What people see in navigation and invitations.</p>
           </div>
-          <label>
-            Workspace name
+          <Field className="settings-profile-field" htmlFor="workspace-profile-name" label="Workspace name">
             <input
+              className="ds-control"
+              id="workspace-profile-name"
               name="displayName"
               required
               value={teamDisplayName}
@@ -2102,7 +2121,7 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
                 setError(undefined);
               }}
             />
-          </label>
+          </Field>
         </div>
         <div className="settings-field-row">
           <div className="settings-field-copy">
@@ -2131,10 +2150,9 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
         <div className="dirty-bar">
           <span>Unsaved changes</span>
           <div className="dirty-actions">
-            <button
-              className="tertiary"
+            <Button
               disabled={saving}
-              type="button"
+              variant="tertiary"
               onClick={() => {
                 setTeamDisplayName(membership.teamDisplayName);
                 setMessage(undefined);
@@ -2142,10 +2160,10 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
               }}
             >
               Discard
-            </button>
-            <button className="button commit" disabled={saving} type="submit">
+            </Button>
+            <Button disabled={saving} type="submit" variant="commit">
               {saving ? "Saving…" : "Save Workspace profile"}
-            </button>
+            </Button>
           </div>
         </div>
       ) : null}

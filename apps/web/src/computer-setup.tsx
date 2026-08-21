@@ -1,6 +1,7 @@
 import type { Computer } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "./api.js";
+import { Button } from "./ui/design-system.js";
 
 const COMPUTER_POLL_INTERVAL_MS = 1_500;
 const COPY_FEEDBACK_MS = 2_000;
@@ -172,18 +173,16 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
     <section className="panel">
       <h2>Connect a Local Computer</h2>
       <p>Generate a short-lived command, then run it in a terminal on the Computer.</p>
-      <button className="button" type="button" onClick={() => void connectComputer()}>
-        Generate connection command
-      </button>
+      <Button onClick={() => void connectComputer()}>Generate connection command</Button>
       {bootstrapCommand ? (
         <>
           <pre>
             <code ref={commandRef}>{bootstrapCommand}</code>
           </pre>
           <div className="connect-command-actions">
-            <button className="button secondary" type="button" onClick={() => void copyCommand(bootstrapCommand)}>
+            <Button variant="secondary" onClick={() => void copyCommand(bootstrapCommand)}>
               {copied ? "Copied" : "Copy command"}
-            </button>
+            </Button>
             {waitingForComputer && remainingMs !== undefined ? (
               <p className="connect-command-meta">Expires in {formatRemaining(remainingMs)}</p>
             ) : null}

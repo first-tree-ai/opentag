@@ -71,7 +71,10 @@ describe("RuntimeConfigurationForm", () => {
     fireEvent.change(screen.getByLabelText("Reasoning effort"), { target: { value: "high" } });
     fireEvent.change(screen.getByLabelText("Maximum Turn duration"), { target: { value: "45.5" } });
     fireEvent.change(screen.getByLabelText("Instructions"), { target: { value: "Updated instructions." } });
-    fireEvent.click(screen.getByRole("button", { name: "Save Runtime settings" }));
+    const saveButton = screen.getByRole("button", { name: "Save Runtime settings" });
+    expect(saveButton.className).toContain("ds-button--primary");
+    expect(screen.getByLabelText("Model").closest(".ds-field")).toBeTruthy();
+    fireEvent.click(saveButton);
 
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
     expect(save).toHaveBeenCalledWith({

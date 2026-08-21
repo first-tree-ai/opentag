@@ -45,6 +45,7 @@ describe("Slack installed-binding adapter", () => {
     });
     expect(event).toMatchObject({
       providerEventId: "Ev1",
+      providerContext: { provider: "slack", channelType: "channel", threadTs: "1724025500.000" },
       conversation: { externalId: "C1", kind: "channel" },
       message: { externalId: "1724025600.123", threadKey: "1724025500.000" },
       mentions: [{ externalId: "U1" }],

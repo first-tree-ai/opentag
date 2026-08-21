@@ -4,6 +4,7 @@ import {
   type DirectImMessageDeliveryRequest,
   DirectImMessageDeliveryRequestSchema,
   type EffectiveRuntimeSnapshot,
+  type ProviderInboundContext,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_IM_HISTORY_MAX_BYTES,
   RUNTIME_MAX_FRAME_BYTES,
@@ -29,6 +30,7 @@ import {
   setActiveSpanAttributes,
   traceDeliveryClaim,
 } from "../observability/index.js";
+import { threadRootExternalId } from "../services/im/provider-thread-context.js";
 import {
   type EffectiveRuntimeSnapshotAssembler,
   EffectiveRuntimeSnapshotAssemblerError,
@@ -408,8 +410,15 @@ export class ImDeliveryWorker {
       }
       const resources = row.message.content.resources ?? [];
       const history =
-        row.agent.receiveMode === "mention_only" && row.delivery.attention === "direct"
-          ? await this.#history(row.session, row.message.occurredAt, row.message.providerRevisionKey, row.message.id)
+        row.delivery.attention === "direct" &&
+        (row.agent.receiveMode === "mention_only" || row.session.kind === "thread")
+          ? await this.#history(
+              row.session,
+              row.message.providerContext,
+              row.message.occurredAt,
+              row.message.providerRevisionKey,
+              row.message.id,
+            )
           : { items: [], truncated: false };
       const request: DirectImMessageDeliveryRequest = {
         type: "im:deliver",
@@ -741,6 +750,7 @@ export class ImDeliveryWorker {
 
   async #history(
     session: typeof sessions.$inferSelect,
+    providerContext: ProviderInboundContext,
     occurredAt: Date,
     providerRevisionKey: string,
     messageId: string,
@@ -753,6 +763,7 @@ export class ImDeliveryWorker {
     }>;
     truncated: boolean;
   }> {
+    const rootExternalId = threadRootExternalId(providerContext);
     const [lastAccepted] = await this.#database
       .select({
         id: imMessages.id,
@@ -787,7 +798,14 @@ export class ImDeliveryWorker {
           eq(imMessages.imBindingId, session.imBindingId),
           eq(imMessages.channelId, session.channelId),
           eq(imMessages.direction, "inbound"),
-          ...(session.kind === "thread" && session.threadKey ? [eq(imMessages.threadKey, session.threadKey)] : []),
+          ...(session.kind === "thread" && session.threadKey
+            ? [
+                or(
+                  eq(imMessages.threadKey, session.threadKey),
+                  ...(rootExternalId ? [eq(imMessages.externalMessageId, rootExternalId)] : []),
+                ),
+              ]
+            : []),
           messageBefore(occurredAt, providerRevisionKey, messageId),
           ...(lastAccepted
             ? [messageAfter(lastAccepted.occurredAt, lastAccepted.providerRevisionKey, lastAccepted.id)]

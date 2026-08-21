@@ -40,11 +40,48 @@ describe("Feishu adapter", () => {
       providerEventId: "ev_1",
       externalAppId: "cli_1",
       externalTeamId: "team_1",
+      providerContext: {
+        provider: "feishu",
+        chatType: "group",
+        threadId: "omt_1",
+        rootId: "om_root",
+        parentId: "om_parent",
+      },
       conversation: { externalId: "oc_1", kind: "channel" },
       message: { externalId: "om_1", threadKey: "omt_1", replyToExternalId: "om_parent" },
       mentions: [{ externalId: "ou_bot", displayName: "Agent" }],
     });
     expect(event?.message.resources[0]).toMatchObject({ providerResourceKey: "img_1", kind: "image" });
+  });
+
+  it("preserves a Feishu thread without inventing a missing root", () => {
+    const message: NormalizedMessage = {
+      messageId: "om_reply",
+      chatId: "oc_1",
+      chatType: "group",
+      senderId: "ou_human",
+      content: "reply",
+      rawContentType: "text",
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: false,
+      threadId: "omt_1",
+      replyToMessageId: "om_parent",
+      createTime: 1_724_025_600_000,
+      raw: { header: { event_id: "ev_2", tenant_key: "team_1" } },
+    };
+    const [event] = normalizeFeishuMessage({ appId: "cli_1", teamId: "team_1", message });
+    expect(event).toMatchObject({
+      providerContext: {
+        provider: "feishu",
+        chatType: "group",
+        threadId: "omt_1",
+        parentId: "om_parent",
+      },
+      message: { threadKey: "omt_1" },
+    });
+    expect(event?.providerContext).not.toHaveProperty("rootId");
   });
 
   it("uses the external Team authorization response as the capability authority", async () => {

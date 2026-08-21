@@ -6,6 +6,16 @@ import { agents, imBindings, imMessageDeliveries, sessionPlacements, sessions } 
 type SessionRow = typeof sessions.$inferSelect;
 type PlacementRow = typeof sessionPlacements.$inferSelect;
 
+export interface EnsureChatSessionInTransactionInput {
+  imBindingId: string;
+  channelId: string;
+  conversationKind: ImConversationKind;
+  kind: Exclude<SessionKind, "internal">;
+  threadKey?: string;
+  computerId: string;
+  now: Date;
+}
+
 function toSession(row: SessionRow): Session {
   return {
     id: row.id,
@@ -55,28 +65,54 @@ export class SessionService {
     kind: Exclude<SessionKind, "internal">,
     threadKey?: string,
   ): Promise<{ session: Session; placement: SessionPlacement }> {
-    if (kind === "channel" && threadKey !== undefined) {
+    return this.#database.transaction(async (transaction) => {
+      const computerId = await this.#resolveComputer(transaction, scope.imBindingId);
+      return this.ensureChatSessionInTransaction(transaction, {
+        ...scope,
+        kind,
+        ...(threadKey ? { threadKey } : {}),
+        computerId,
+        now: this.#now(),
+      });
+    });
+  }
+
+  async ensureChatSessionInTransaction(
+    transaction: DatabaseTransaction,
+    input: EnsureChatSessionInTransactionInput,
+  ): Promise<{ session: Session; placement: SessionPlacement }> {
+    if (input.kind === "channel" && input.threadKey !== undefined) {
       throw new SessionServiceError("SESSION_SCOPE_INVALID", "A channel Session cannot have a thread key");
     }
-    if (kind === "thread" && !threadKey) {
+    if (input.kind === "thread" && !input.threadKey) {
       throw new SessionServiceError("SESSION_SCOPE_INVALID", "A thread Session requires a thread key");
     }
 
-    return this.#database.transaction(async (transaction) => {
-      const computerId = await this.#resolveComputer(transaction, scope.imBindingId);
-      const existing = await this.#findActive(transaction, scope.imBindingId, scope.channelId, kind, threadKey);
-      if (existing) return this.#withPlacement(transaction, existing, computerId);
+    const existing = await this.#findActive(
+      transaction,
+      input.imBindingId,
+      input.channelId,
+      input.kind,
+      input.threadKey,
+    );
+    if (existing) return this.#withPlacement(transaction, existing, input.computerId, input.now);
 
-      const [created] = await transaction
-        .insert(sessions)
-        .values({ ...scope, kind, threadKey: threadKey ?? null, createdAt: this.#now() })
-        .onConflictDoNothing()
-        .returning();
-      const session =
-        created ?? (await this.#findActive(transaction, scope.imBindingId, scope.channelId, kind, threadKey));
-      if (!session) throw new Error("Active Session ensure did not converge");
-      return this.#withPlacement(transaction, session, computerId);
-    });
+    const [created] = await transaction
+      .insert(sessions)
+      .values({
+        imBindingId: input.imBindingId,
+        channelId: input.channelId,
+        conversationKind: input.conversationKind,
+        kind: input.kind,
+        threadKey: input.threadKey ?? null,
+        createdAt: input.now,
+      })
+      .onConflictDoNothing()
+      .returning();
+    const session =
+      created ?? (await this.#findActive(transaction, input.imBindingId, input.channelId, input.kind, input.threadKey));
+    if (!session) throw new Error("Active Session ensure did not converge");
+    return this.#withPlacement(transaction, session, input.computerId, input.now);
   }
 
   async createInternalSession(creatorSessionId: string): Promise<{ session: Session; placement: SessionPlacement }> {
@@ -275,6 +311,7 @@ export class SessionService {
     transaction: DatabaseTransaction,
     session: SessionRow,
     computerId: string,
+    now = this.#now(),
   ): Promise<{ session: Session; placement: SessionPlacement }> {
     const [existing] = await transaction
       .select()
@@ -286,7 +323,7 @@ export class SessionService {
       (
         await transaction
           .insert(sessionPlacements)
-          .values({ sessionId: session.id, computerId, generation: 1, updatedAt: this.#now() })
+          .values({ sessionId: session.id, computerId, generation: 1, updatedAt: now })
           .onConflictDoNothing()
           .returning()
       )[0];

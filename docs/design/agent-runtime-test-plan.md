@@ -2,7 +2,7 @@
 
 Status: active quality gate
 
-Last updated: 2026-08-20
+Last updated: 2026-08-21
 
 ## Goal and Scope
 
@@ -26,14 +26,14 @@ lowest Client execution layer. It covers these production boundaries:
 Production Client execution now uses this contract through:
 
 - `src/runtime/agent-runtime-provider-registry.ts`
-- `src/runtime/runtime-tool-host.ts`
+- `src/runtime/im-credential-environment-manager.ts`
 - `src/runtime/session-runtime-manager.ts`
 - `src/runtime/agent-turn-runner.ts`
 - `src/runtime/client-runtime-composition.ts`
 
 The required CI coverage gate enforces 100% statements, branches, functions,
 and lines for the contract, all three Provider translations and wire adapters,
-shared process ownership, hosted-tool host, Turn runner, Session Runtime
+shared process ownership, provider credential projection, Turn runner, Session Runtime
 manager, and production Client Runtime composition.
 Coverage is a floor, not the acceptance criterion by itself: production
 composition, crash recovery, protocol behavior, and live local Provider sessions

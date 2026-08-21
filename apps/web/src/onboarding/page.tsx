@@ -73,6 +73,26 @@ interface CreationState {
   readonly message?: string;
 }
 
+type JourneyStatus = "complete" | "current" | "upcoming";
+type JourneyFactStatus = "attention" | "current" | "ready" | "waiting";
+
+interface JourneyFact {
+  readonly label: string;
+  readonly status: JourneyFactStatus;
+  readonly value: string;
+}
+
+interface OnboardingJourneyState {
+  readonly activeStep: 1 | 2;
+  readonly agentName: string;
+  readonly messaging: JourneyStatus;
+  readonly prepareFacts: readonly JourneyFact[];
+  readonly prepare: JourneyStatus;
+  readonly stageDescription: string;
+  readonly stageStatus: string;
+  readonly stageTitle: string;
+}
+
 export interface OnboardingPageProps {
   readonly membership: MeMembership;
   readonly user: UserProfile;
@@ -157,6 +177,10 @@ export function OnboardingPage({
     if (loadState.kind !== "ready") return undefined;
     return resolveSnapshot(membership, loadState.snapshot);
   }, [loadState, membership]);
+  const journey = onboardingJourney(
+    resolved?.state.currentState,
+    loadState.kind === "ready" ? loadState.snapshot : undefined,
+  );
 
   const waitingForRuntime = resolved !== undefined && RUNTIME_WAIT_STATES.includes(resolved.state.currentState.kind);
   // biome-ignore lint/correctness/useExhaustiveDependencies: attendedWindow deliberately restarts the bounded window.
@@ -217,44 +241,260 @@ export function OnboardingPage({
     <div className="onboarding-shell">
       <OnboardingHeader user={user} />
       <main className="onboarding-main">
-        <header className="onboarding-title">
-          <span className="eyebrow">Onboarding</span>
-          <h1>Set up OpenTag</h1>
-          <p>Bring your first Team Agent to Feishu.</p>
-        </header>
-        {loadState.kind === "loading" ? <OnboardingLoading /> : null}
-        {loadState.kind === "error" ? (
-          <ActionSection title="We couldn’t load setup" description={loadState.error.message}>
-            <button className="button" type="button" onClick={reload}>
-              Try again
-            </button>
-          </ActionSection>
-        ) : null}
-        {loadState.kind === "ready" && resolved ? (
-          <OnboardingContent
-            agentDisplayName={agentDisplayName}
-            canManage={resolved.state.canManage}
-            creation={creation}
-            onChooseAgent={(agentId) => {
-              rememberTargetAgent(membership.teamId, agentId);
-              reload();
-            }}
-            onChooseRoute={(selection) => {
-              rememberRouteSelection(membership.teamId, selection);
-              reload();
-            }}
-            onAgentDisplayNameChange={setAgentDisplayName}
-            onCreateAgent={(current) => runAgentCreation(normalizedAgentRequest(current, agentDisplayName))}
-            onReload={attendedReload}
-            refreshPending={refreshPending}
-            snapshot={loadState.snapshot}
-            state={resolved.state}
-            teamId={membership.teamId}
-          />
-        ) : null}
+        <div className="onboarding-layout">
+          <OnboardingJourney journey={journey} />
+          <section className="onboarding-workspace" aria-labelledby="onboarding-stage-title">
+            <OnboardingStageHeader journey={journey} />
+            <div className="onboarding-workspace-body">
+              {loadState.kind === "loading" ? <OnboardingLoading /> : null}
+              {loadState.kind === "error" ? (
+                <ActionSection title="We couldn’t load setup" description={loadState.error.message}>
+                  <button className="button" type="button" onClick={reload}>
+                    Try again
+                  </button>
+                </ActionSection>
+              ) : null}
+              {loadState.kind === "ready" && resolved ? (
+                <OnboardingContent
+                  agentDisplayName={agentDisplayName}
+                  canManage={resolved.state.canManage}
+                  creation={creation}
+                  onChooseAgent={(agentId) => {
+                    rememberTargetAgent(membership.teamId, agentId);
+                    reload();
+                  }}
+                  onChooseRoute={(selection) => {
+                    rememberRouteSelection(membership.teamId, selection);
+                    reload();
+                  }}
+                  onAgentDisplayNameChange={setAgentDisplayName}
+                  onCreateAgent={(current) => runAgentCreation(normalizedAgentRequest(current, agentDisplayName))}
+                  onReload={attendedReload}
+                  refreshPending={refreshPending}
+                  snapshot={loadState.snapshot}
+                  state={resolved.state}
+                  teamId={membership.teamId}
+                />
+              ) : null}
+            </div>
+          </section>
+        </div>
       </main>
     </div>
   );
+}
+
+function OnboardingJourney({ journey }: { journey: OnboardingJourneyState }) {
+  return (
+    <aside className="onboarding-journey">
+      <div className="onboarding-journey-intro">
+        <span className="eyebrow">Agent setup</span>
+        <h1>Set up OpenTag</h1>
+        <p>Prepare one Agent, then bring it into your team conversation.</p>
+      </div>
+      <nav aria-label="Onboarding steps">
+        <ol className="onboarding-steps">
+          <JourneyStep
+            description="Computer, runtime and identity"
+            number="01"
+            status={journey.prepare}
+            title="Prepare your Agent"
+          />
+          <JourneyStep
+            description="Authorize your team bot"
+            number="02"
+            status={journey.messaging}
+            title="Add to Feishu"
+          />
+        </ol>
+      </nav>
+      <p className="onboarding-journey-note">
+        Progress is saved from live server state. You can leave and return at any time.
+      </p>
+    </aside>
+  );
+}
+
+function JourneyStep({
+  description,
+  number,
+  status,
+  title,
+}: {
+  description: string;
+  number: string;
+  status: JourneyStatus;
+  title: string;
+}) {
+  const statusLabel = status === "complete" ? "Complete" : status === "current" ? "In progress" : "Up next";
+  return (
+    <li className="onboarding-step" data-status={status}>
+      <span aria-hidden="true" className="onboarding-step-number">
+        {status === "complete" ? "✓" : number}
+      </span>
+      <span className="onboarding-step-copy">
+        <span className="onboarding-step-status">{statusLabel}</span>
+        <strong>{title}</strong>
+        <span>{description}</span>
+      </span>
+    </li>
+  );
+}
+
+function OnboardingStageHeader({ journey }: { journey: OnboardingJourneyState }) {
+  return (
+    <header className="onboarding-stage-header">
+      <div className="onboarding-stage-copy">
+        <span className="onboarding-stage-kicker">Step {String(journey.activeStep).padStart(2, "0")} / 02</span>
+        <span className="onboarding-stage-status">{journey.stageStatus}</span>
+        <h2 id="onboarding-stage-title">{journey.stageTitle}</h2>
+        <p>{journey.stageDescription}</p>
+      </div>
+      <OnboardingStageContext journey={journey} />
+    </header>
+  );
+}
+
+function OnboardingStageContext({ journey }: { journey: OnboardingJourneyState }) {
+  if (journey.activeStep === 1) {
+    return (
+      <section aria-label="Agent preparation summary">
+        <dl className="onboarding-runtime-summary">
+          {journey.prepareFacts.map((fact) => (
+            <div data-status={fact.status} key={fact.label}>
+              <dt>{fact.label}</dt>
+              <dd>{fact.value}</dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+    );
+  }
+
+  const connected = journey.messaging === "complete";
+  return (
+    <section
+      aria-label={`${journey.agentName} Agent ${connected ? "connected to" : "awaiting connection to"} Feishu`}
+      className="onboarding-messaging-connection"
+      data-status={connected ? "complete" : "current"}
+    >
+      <div className="onboarding-connection-endpoint">
+        <span aria-hidden="true" className="onboarding-endpoint-mark">
+          OT
+        </span>
+        <span>
+          <small>Agent</small>
+          <strong>{journey.agentName}</strong>
+        </span>
+      </div>
+      <div className="onboarding-messaging-bridge">
+        <span>{connected ? "Connected" : "Authorization"}</span>
+      </div>
+      <div className="onboarding-connection-endpoint onboarding-connection-endpoint-feishu">
+        <span aria-hidden="true" className="onboarding-endpoint-mark">
+          FS
+        </span>
+        <span>
+          <small>Team chat</small>
+          <strong>Feishu</strong>
+        </span>
+      </div>
+    </section>
+  );
+}
+
+function onboardingJourney(
+  current: OnboardingCurrentState | undefined,
+  snapshot: OnboardingSnapshot | undefined,
+): OnboardingJourneyState {
+  if (!current) {
+    return {
+      activeStep: 1,
+      agentName: snapshot?.targetAgent?.displayName ?? "OpenTag",
+      messaging: "upcoming",
+      prepareFacts: [
+        { label: "Computer", status: "current", value: "Checking" },
+        { label: "Runtime", status: "waiting", value: "Waiting" },
+        { label: "Agent", status: "waiting", value: "Not created" },
+      ],
+      prepare: "current",
+      stageDescription: "We’re reading your Computer and runtime state.",
+      stageStatus: "Checking setup",
+      stageTitle: "Prepare your Agent",
+    };
+  }
+
+  const messagingReady = snapshot?.handoff?.handoffReady === true;
+  const prepareComplete = current.kind === "handoff" || current.kind === "ready";
+  const messagingCurrent = current.kind === "handoff";
+  const setupReady = current.kind === "ready";
+  const agentNeedsAttention = current.kind === "agent-runtime";
+  const availableComputer = snapshot?.computers.find((computer) => computer.connectionStatus === "online");
+  const runtimeProvider =
+    current.kind === "agent"
+      ? current.provider.provider
+      : (snapshot?.targetAgent?.runtimeProvider ??
+        (current.kind === "handoff" || current.kind === "ready" || current.kind === "agent-runtime"
+          ? current.agent.runtimeProvider
+          : undefined));
+  const computerFact: JourneyFact =
+    current.kind === "computer"
+      ? current.availability === "none"
+        ? { label: "Computer", status: "current", value: "Not connected" }
+        : current.availability === "offline"
+          ? { label: "Computer", status: "attention", value: "Reconnect" }
+          : { label: "Computer", status: "current", value: "Choose one" }
+      : current.kind === "team"
+        ? { label: "Computer", status: "current", value: "Checking" }
+        : { label: "Computer", status: "ready", value: availableComputer?.displayName ?? "Connected" };
+  const runtimeFact: JourneyFact =
+    current.kind === "team" || current.kind === "computer"
+      ? { label: "Runtime", status: "waiting", value: "Waiting" }
+      : current.kind === "provider"
+        ? { label: "Runtime", status: "current", value: "Setup required" }
+        : current.kind === "agent-runtime"
+          ? { label: "Runtime", status: "attention", value: "Needs attention" }
+          : { label: "Runtime", status: "ready", value: runtimeProvider ? providerLabel(runtimeProvider) : "Ready" };
+  const agentFact: JourneyFact = snapshot?.targetAgent
+    ? { label: "Agent", status: agentNeedsAttention ? "attention" : "ready", value: snapshot.targetAgent.displayName }
+    : current.kind === "agent"
+      ? { label: "Agent", status: "current", value: "Name pending" }
+      : prepareComplete
+        ? { label: "Agent", status: "ready", value: "Prepared" }
+        : { label: "Agent", status: "waiting", value: "Not created" };
+
+  return {
+    activeStep: prepareComplete ? 2 : 1,
+    agentName: snapshot?.targetAgent?.displayName ?? "OpenTag",
+    prepare: prepareComplete ? "complete" : "current",
+    prepareFacts: [computerFact, runtimeFact, agentFact],
+    messaging: setupReady || messagingReady ? "complete" : messagingCurrent ? "current" : "upcoming",
+    stageDescription: prepareComplete
+      ? setupReady
+        ? "Your Agent is ready for the first conversation in Feishu."
+        : "Authorize the bot your team will mention in conversations."
+      : "Confirm where your Agent runs, then give it a clear identity.",
+    stageStatus: onboardingStageStatus(current),
+    stageTitle: prepareComplete
+      ? setupReady
+        ? "Your Agent is ready"
+        : "Add your Agent to Feishu"
+      : "Prepare your Agent",
+  };
+}
+
+function onboardingStageStatus(current: OnboardingCurrentState): string {
+  if (current.kind === "team") return "Checking Workspace";
+  if (current.kind === "computer") {
+    if (current.availability === "none") return "Computer needed";
+    if (current.availability === "offline") return "Computer offline";
+    return "Choose a Computer";
+  }
+  if (current.kind === "provider") return "Runtime needs setup";
+  if (current.kind === "agent") return "Runtime ready";
+  if (current.kind === "agent-runtime") return "Runtime needs attention";
+  if (current.kind === "handoff") return "Agent prepared";
+  return "Setup complete";
 }
 
 function OnboardingHeader({ user }: { user: UserProfile }) {
@@ -331,7 +571,7 @@ function OnboardingContent({
       <ActionSection
         readonly={!canManage}
         title="Choose the Agent to finish"
-        description="More than one existing Team Agent could be continued safely."
+        description="More than one existing Agent could be continued safely."
       >
         {canManage ? (
           <div className="onboarding-choice-list">
@@ -358,7 +598,7 @@ function OnboardingContent({
 
   const current = state.currentState;
   if (current.kind === "team") {
-    return <ActionSection title="Preparing your Team" description="OpenTag will continue automatically." pending />;
+    return <ActionSection title="Preparing OpenTag" description="Setup will continue automatically." pending />;
   }
   if (current.kind === "computer" && current.availability === "none") {
     if (canManage) {
@@ -456,7 +696,7 @@ function OnboardingContent({
       return (
         <ActionSection
           readonly
-          title="Create the Team Agent"
+          title="Create the Agent"
           description={`The runnable route is ${providerLabel(current.provider.provider)} on ${current.computer.displayName}.`}
         >
           <ReadOnlyCopy admins={snapshot.admins} />
@@ -572,7 +812,7 @@ function OnboardingContent({
       <ActionSection
         readonly={!canManage}
         title={handoffTitle(current)}
-        description="Authorize the Feishu Bot that your Team will mention."
+        description="Authorize the Feishu Bot that your team will mention."
       >
         {canManage ? (
           <FeishuSetup agentId={current.agent.id} onSuccess={onReload}>
@@ -661,10 +901,10 @@ function ReadOnlyCopy({ admins }: { admins: readonly string[] }) {
  */
 function adminGuidance(admins: readonly string[]): string {
   const [first, second, ...rest] = admins;
-  if (!first) return "A Team admin can complete this action.";
-  if (!second) return `Ask a Team admin to continue: ${first}.`;
-  if (rest.length === 0) return `Ask a Team admin to continue: ${first} or ${second}.`;
-  return `Ask a Team admin to continue: ${first}, ${second}, or ${rest.length} more.`;
+  if (!first) return "An admin can complete this action.";
+  if (!second) return `Ask an admin to continue: ${first}.`;
+  if (rest.length === 0) return `Ask an admin to continue: ${first} or ${second}.`;
+  return `Ask an admin to continue: ${first}, ${second}, or ${rest.length} more.`;
 }
 
 function FeishuAction({

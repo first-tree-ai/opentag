@@ -23,15 +23,32 @@ function randomHandleSuffix(): string {
 
 const MAX_HANDLE_ATTEMPTS = 4;
 
+/** Creates a Team without exposing its internal handle, retrying deterministic handle collisions. */
+export async function createTeamWithUniqueHandle(displayName: string): Promise<CreateTeamResponse> {
+  const suggestedHandle = toTeamHandle(displayName);
+  for (let attempt = 0; attempt < MAX_HANDLE_ATTEMPTS; attempt += 1) {
+    const name =
+      attempt === 0 && suggestedHandle ? suggestedHandle : handleWithSuffix(suggestedHandle, randomHandleSuffix());
+    try {
+      return await browserApi.createTeam({ name, displayName });
+    } catch (cause) {
+      if (!(cause instanceof ApiError) || cause.code !== "TEAM_NAME_CONFLICT" || attempt === MAX_HANDLE_ATTEMPTS - 1) {
+        throw cause;
+      }
+    }
+  }
+  throw new Error("The Workspace could not be created");
+}
+
 /**
- * The single Team creation form. It is mounted both by the standalone `/teams/new` page and by the first
- * onboarding step, so creating a Team behaves identically whether it is a first-run or an additional Team.
+ * The single Workspace creation form. It is mounted by the standalone `/workspaces/new` page for both first-run
+ * and additional Workspace creation while the backing domain continues to use Team identifiers.
  * The caller owns what happens next; this component owns the fields, the derivation and the error surface.
  */
 export function CreateTeamForm({
   onCreated,
   onUnauthenticated,
-  submitLabel = "Create Team",
+  submitLabel = "Create Workspace",
 }: {
   onCreated: (team: CreateTeamResponse) => void;
   onUnauthenticated?: () => void;
@@ -46,23 +63,7 @@ export function CreateTeamForm({
     setSubmitting(true);
     try {
       setError(undefined);
-      const suggestedHandle = toTeamHandle(displayName);
-      for (let attempt = 0; attempt < MAX_HANDLE_ATTEMPTS; attempt += 1) {
-        const name =
-          attempt === 0 && suggestedHandle ? suggestedHandle : handleWithSuffix(suggestedHandle, randomHandleSuffix());
-        try {
-          onCreated(await browserApi.createTeam({ name, displayName }));
-          return;
-        } catch (cause) {
-          if (
-            !(cause instanceof ApiError) ||
-            cause.code !== "TEAM_NAME_CONFLICT" ||
-            attempt === MAX_HANDLE_ATTEMPTS - 1
-          ) {
-            throw cause;
-          }
-        }
-      }
+      onCreated(await createTeamWithUniqueHandle(displayName));
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401 && onUnauthenticated) {
         onUnauthenticated();
@@ -70,10 +71,10 @@ export function CreateTeamForm({
       }
       setError(
         cause instanceof ApiError && cause.code === "TEAM_NAME_CONFLICT"
-          ? "We couldn't create a unique team address. Try again."
+          ? "We couldn't create a unique Workspace address. Try again."
           : cause instanceof Error
             ? cause.message
-            : "The Team could not be created",
+            : "The Workspace could not be created",
       );
     } finally {
       setSubmitting(false);
@@ -83,12 +84,12 @@ export function CreateTeamForm({
   return (
     <form className="form-card" onSubmit={submit}>
       <label>
-        Team name
+        Workspace name
         <input
           name="displayName"
           autoComplete="organization"
           maxLength={120}
-          placeholder="e.g. Platform team"
+          placeholder="e.g. Platform Workspace"
           required
           value={displayName}
           onChange={(event) => setDisplayName(event.currentTarget.value)}

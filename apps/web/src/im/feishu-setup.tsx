@@ -216,7 +216,7 @@ function setupRecovery(attempt: FeishuSetupAttempt): string | undefined {
   if (attempt.errorCode && FEISHU_SETUP_MESSAGES[attempt.errorCode]) return FEISHU_SETUP_MESSAGES[attempt.errorCode];
   if (attempt.state === "expired") return FEISHU_SETUP_MESSAGES.FEISHU_SETUP_EXPIRED;
   if (attempt.state === "canceled") return FEISHU_SETUP_MESSAGES.FEISHU_SETUP_CANCELED;
-  if (attempt.state === "failed") return "Feishu setup failed. Retry or contact a Team admin for help.";
+  if (attempt.state === "failed") return "Feishu setup failed. Retry or contact an admin for help.";
   return undefined;
 }
 

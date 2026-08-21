@@ -2,7 +2,7 @@
 
 Status: active quality gate
 
-Last updated: 2026-08-20
+Last updated: 2026-08-21
 
 ## Goal and Scope
 
@@ -26,14 +26,14 @@ lowest Client execution layer. It covers these production boundaries:
 Production Client execution now uses this contract through:
 
 - `src/runtime/agent-runtime-provider-registry.ts`
-- `src/runtime/runtime-tool-host.ts`
+- `src/runtime/im-credential-environment-manager.ts`
 - `src/runtime/session-runtime-manager.ts`
 - `src/runtime/agent-turn-runner.ts`
 - `src/runtime/client-runtime-composition.ts`
 
 The required CI coverage gate enforces 100% statements, branches, functions,
 and lines for the contract, all three Provider translations and wire adapters,
-shared process ownership, hosted-tool host, Turn runner, Session Runtime
+shared process ownership, provider credential projection, Turn runner, Session Runtime
 manager, and production Client Runtime composition.
 Coverage is a floor, not the acceptance criterion by itself: production
 composition, crash recovery, protocol behavior, and live local Provider sessions
@@ -170,7 +170,7 @@ use the installed and authenticated local CLIs. Each performs:
 6. a second prompt proving conversation continuity;
 7. ordered-event and clean-close assertions.
 
-The live Codex test uses a temporary read-only workspace, disabled network
+The live Codex test uses a temporary read-only workspace, enabled network
 policy, `approvalPolicy: never`, no tool request, and bounded Run timeouts. It
 makes real model requests and is therefore intentionally excluded from the
 default test command.
@@ -206,8 +206,9 @@ The production-path tests verify:
 - legacy v1 Codex bindings migrate on read and resume the exact Provider Thread;
 - effective configuration or tool-policy changes close the old Runtime and
   create a new Provider session instead of silently reusing stale definitions;
-- IM hosted tools remain scoped to the active Run identity, allow-list, Session,
-  placement generation, and idempotent request correlation;
+- IM Turns receive only a temporary provider credential-file path, while the
+  Server fences the secret-bearing grant by Agent, Session, Computer, placement
+  generation, active binding, and credential generation;
 - Agent Runtime events feed generic traces and typed results feed the existing
   Turn Report path while Client Runtime retains custody;
 - restart recovery reports accepted-but-not-started work as `not_started` and

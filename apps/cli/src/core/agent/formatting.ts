@@ -38,7 +38,6 @@ export function formatAgent(agent: AgentAdminConfig): string {
     `runtimeConfig.model\t${agent.runtimeConfig.model ?? ""}`,
     `runtimeConfig.reasoningEffort\t${agent.runtimeConfig.reasoningEffort ?? ""}`,
     `runtimeConfig.instructions\t${JSON.stringify(agent.runtimeConfig.instructions)}`,
-    `runtimeConfig.allowedTools\t${agent.runtimeConfig.allowedTools.join(",")}`,
     `runtimeConfig.maxDurationMs\t${agent.runtimeConfig.maxDurationMs ?? ""}`,
   ].join("\n");
 }

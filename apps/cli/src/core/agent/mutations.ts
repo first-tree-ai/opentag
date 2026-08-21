@@ -11,7 +11,6 @@ import { selectTeam } from "../selection/team.js";
 import { type AgentCommandDependencies, resolveAgentCommandContext } from "./context.js";
 
 export interface AgentCreateOptions extends AgentCommandDependencies {
-  allowedTools?: string[];
   computerId?: string;
   displayName: string;
   instructions?: string;
@@ -30,8 +29,6 @@ export interface AgentCreateResult {
 }
 
 export interface AgentUpdateOptions extends AgentCommandDependencies {
-  allowedTools?: string[];
-  clearAllowedTools?: boolean;
   clearMaxDuration?: boolean;
   clearModel?: boolean;
   clearReasoningEffort?: boolean;
@@ -121,7 +118,6 @@ async function createRuntimeConfig(options: AgentCreateOptions) {
     ...(options.instructions !== undefined || options.instructionsFile !== undefined
       ? { instructions: await readInstructions(options) }
       : {}),
-    ...(options.allowedTools !== undefined ? { allowedTools: options.allowedTools } : {}),
     ...(options.maxDurationMs !== undefined ? { maxDurationMs: parseMaxDuration(options.maxDurationMs) } : {}),
   };
   return Object.keys(runtimeConfig).length > 0 ? CreateAgentRuntimeConfigSchema.parse(runtimeConfig) : undefined;
@@ -136,7 +132,6 @@ async function updateMutation(options: AgentUpdateOptions): Promise<Omit<UpdateA
     "--reasoning-effort",
     "--clear-reasoning-effort",
   );
-  assertExclusive(options.allowedTools, options.clearAllowedTools, "--allowed-tool", "--clear-allowed-tools");
   assertExclusive(options.maxDurationMs, options.clearMaxDuration, "--max-duration-ms", "--clear-max-duration");
 
   const runtimeConfigInput = {
@@ -146,9 +141,6 @@ async function updateMutation(options: AgentUpdateOptions): Promise<Omit<UpdateA
       : {}),
     ...(options.instructions !== undefined || options.instructionsFile !== undefined
       ? { instructions: await readInstructions(options) }
-      : {}),
-    ...(options.allowedTools !== undefined || options.clearAllowedTools
-      ? { allowedTools: options.clearAllowedTools ? [] : options.allowedTools }
       : {}),
     ...(options.maxDurationMs !== undefined || options.clearMaxDuration
       ? { maxDurationMs: options.clearMaxDuration ? null : parseMaxDuration(options.maxDurationMs) }

@@ -1,18 +1,11 @@
-import type { DirectImMessageDeliveryRequest, ImContentV1, TurnReportRequest } from "@opentag/shared";
+import type {
+  DirectImMessageDeliveryRequest,
+  ImContentV1,
+  ProviderInboundContext,
+  TurnReportRequest,
+} from "@opentag/shared";
 import { sql } from "drizzle-orm";
-import {
-  bigint,
-  check,
-  index,
-  integer,
-  jsonb,
-  pgEnum,
-  pgTable,
-  text,
-  timestamp,
-  uniqueIndex,
-  uuid,
-} from "drizzle-orm/pg-core";
+import { bigint, check, index, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { imBindings } from "./im-bindings.js";
 import { sessions } from "./sessions.js";
 
@@ -21,16 +14,6 @@ export const imMessageOperation = pgEnum("im_message_operation", ["created", "ed
 export const imAuthorKind = pgEnum("im_author_kind", ["human", "bot", "system"]);
 export const imDeliveryAttention = pgEnum("im_delivery_attention", ["direct", "ambient"]);
 export const imDeliveryState = pgEnum("im_delivery_state", ["pending", "accepted", "terminal_rejected", "expired"]);
-export const imOutboundOperation = pgEnum("im_outbound_operation", ["send", "reply", "react"]);
-export const imOutboundState = pgEnum("im_outbound_state", [
-  "prepared",
-  "succeeded",
-  "deterministic_failed",
-  "credential_failed",
-  "transient_failed",
-  "unknown",
-]);
-
 export const imMessages = pgTable(
   "im_messages",
   {
@@ -50,6 +33,7 @@ export const imMessages = pgTable(
     authorExternalId: text("author_external_id").notNull(),
     authorDisplayName: text("author_display_name"),
     content: jsonb("content").$type<ImContentV1>().notNull(),
+    providerContext: jsonb("provider_context").$type<ProviderInboundContext>().notNull(),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -127,23 +111,3 @@ export const imMessageDeliveries = pgTable(
     ),
   ],
 );
-
-export const imOutboundRequests = pgTable("im_outbound_requests", {
-  requestId: uuid("request_id").primaryKey(),
-  sessionId: uuid("session_id")
-    .notNull()
-    .references(() => sessions.id, { onDelete: "restrict" }),
-  expectedLatestImMessageId: uuid("expected_latest_im_message_id")
-    .notNull()
-    .references(() => imMessages.id, { onDelete: "restrict" }),
-  admittedCredentialGeneration: bigint("admitted_credential_generation", { mode: "number" }).notNull(),
-  operation: imOutboundOperation("operation").notNull(),
-  payloadHash: text("payload_hash").notNull(),
-  normalizedPayload: jsonb("normalized_payload").$type<Record<string, unknown>>().notNull(),
-  state: imOutboundState("state").notNull(),
-  providerMessageId: text("provider_message_id"),
-  resultCode: text("result_code"),
-  retryAfterSeconds: integer("retry_after_seconds"),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  completedAt: timestamp("completed_at", { withTimezone: true }),
-});

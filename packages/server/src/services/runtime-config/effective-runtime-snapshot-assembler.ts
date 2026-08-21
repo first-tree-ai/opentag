@@ -71,7 +71,6 @@ export class EffectiveRuntimeSnapshotAssembler {
       config.model,
       config.reasoningEffort,
       null,
-      config.allowedTools,
       providerPolicy.execution.approvalPolicy,
       providerPolicy.execution.networkAccess,
       config.maxDurationMs,
@@ -89,7 +88,6 @@ export class EffectiveRuntimeSnapshotAssembler {
         platform: OPENTAG_PLATFORM_INSTRUCTIONS,
         agent: config.instructions,
       },
-      allowedTools: config.allowedTools,
       execution: providerPolicy.execution,
       workspace: { workspaceId: authority.agentId, mode: "empty_on_create", sharing: "agent" },
       ...(config.maxDurationMs !== null ? { budget: { maxDurationMs: config.maxDurationMs } } : {}),
@@ -117,7 +115,6 @@ async function loadAuthority(
       configModel: agentRuntimeConfigs.model,
       configReasoningEffort: agentRuntimeConfigs.reasoningEffort,
       configInstructions: agentRuntimeConfigs.instructions,
-      configAllowedTools: agentRuntimeConfigs.allowedTools,
       configMaxDurationMs: agentRuntimeConfigs.maxDurationMs,
     })
     .from(sessions)
@@ -139,7 +136,6 @@ async function loadAuthority(
             model: row.configModel,
             reasoningEffort: row.configReasoningEffort,
             instructions: row.configInstructions,
-            allowedTools: row.configAllowedTools,
             maxDurationMs: row.configMaxDurationMs,
           },
     runtimeProvider: row.runtimeProvider,

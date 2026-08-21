@@ -7,8 +7,8 @@ import {
   type DirectImMessageDeliveryRequest,
   hashTuple,
   type ImMessageDeliveryResult,
-  type RuntimeImToolRequest,
-  type RuntimeImToolResult,
+  type RuntimeImCredentialGrantRequest,
+  type RuntimeImCredentialGrantResult,
   type SessionReconcileRequest,
   type SessionReconcileResult,
   type TurnReportRequest,
@@ -43,7 +43,10 @@ export class RuntimeDomainRequestError extends Error {
 export interface RuntimeDomainOwnerOptions {
   maxPendingRequests?: number;
   onTrace?(batch: AgentTraceBatch, context: RuntimeBusinessContext): Promise<void> | void;
-  onImToolRequest?(request: RuntimeImToolRequest, context: RuntimeBusinessContext): Promise<RuntimeImToolResult>;
+  onImCredentialGrant?(
+    request: RuntimeImCredentialGrantRequest,
+    context: RuntimeBusinessContext,
+  ): Promise<RuntimeImCredentialGrantResult>;
   requestTimeoutMs?: number;
 }
 
@@ -97,7 +100,7 @@ export class RuntimeDomainOwner {
   readonly #registry: ConnectionRegistry;
   readonly #custody: RuntimeCustodyStore;
   readonly #options: Required<Pick<RuntimeDomainOwnerOptions, "maxPendingRequests" | "requestTimeoutMs">> &
-    Pick<RuntimeDomainOwnerOptions, "onImToolRequest" | "onTrace">;
+    Pick<RuntimeDomainOwnerOptions, "onImCredentialGrant" | "onTrace">;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #startingDeliveries = new Map<string, StartingDelivery>();
   readonly #expiredDeliveries = new Map<string, ExpiredDelivery>();
@@ -110,7 +113,7 @@ export class RuntimeDomainOwner {
     this.#options = {
       maxPendingRequests: options.maxPendingRequests ?? 1024,
       onTrace: options.onTrace,
-      onImToolRequest: options.onImToolRequest,
+      onImCredentialGrant: options.onImCredentialGrant,
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
     };
     if (!Number.isSafeInteger(this.#options.maxPendingRequests) || this.#options.maxPendingRequests < 1) {
@@ -323,8 +326,8 @@ export class RuntimeDomainOwner {
       },
       laneKey: (frame) => domainLaneKey(frame as ClientRuntimeBusinessFrame),
       handle: (frame, context) => this.handle(frame as ClientRuntimeBusinessFrame, context),
-      failureResult: (frame) => runtimeFailureResult(frame, "IM_TOOL_TRANSIENT_FAILURE"),
-      overloadResult: (frame) => runtimeFailureResult(frame, "IM_TOOL_SERVER_BUSY"),
+      failureResult: (frame) => credentialFailureResult(frame),
+      overloadResult: (frame) => credentialFailureResult(frame),
       maxConcurrent: 32,
       maxQueuedPerKey: 32,
       maxQueuedTotal: 1024,
@@ -334,7 +337,7 @@ export class RuntimeDomainOwner {
   async handle(
     frame: ClientRuntimeBusinessFrame,
     context: RuntimeBusinessContext,
-  ): Promise<TurnReportResult | RuntimeImToolResult | undefined> {
+  ): Promise<TurnReportResult | RuntimeImCredentialGrantResult | undefined> {
     if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
       if (frame.type === "turn:report") {
         return {
@@ -345,7 +348,14 @@ export class RuntimeDomainOwner {
           resultHash: frame.resultHash,
         };
       }
-      return undefined;
+      return frame.type === "im:credential"
+        ? {
+            type: "im:credential:result",
+            requestId: frame.requestId,
+            status: "rejected",
+            code: "placement_stale",
+          }
+        : undefined;
     }
     if (frame.type === "session:reconcile:result") {
       await this.#completeRequest("reconcile", frame.requestId, frame, context);
@@ -368,9 +378,9 @@ export class RuntimeDomainOwner {
       }
       return undefined;
     }
-    if (frame.type === "im:tool") {
-      if (!this.#options.onImToolRequest) return toolFailureResult(frame, "IM_TOOL_UNAVAILABLE");
-      return this.#options.onImToolRequest(frame, context);
+    if (frame.type === "im:credential") {
+      if (!this.#options.onImCredentialGrant) return credentialFailureResult(frame);
+      return this.#options.onImCredentialGrant(frame, context);
     }
     return withSpan(
       "runtime.report",
@@ -665,19 +675,21 @@ function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
   return outcomeAttrs("failed", code);
 }
 
-function runtimeFailureResult(frame: unknown, code: string): RuntimeImToolResult | undefined {
+function credentialFailureResult(frame: unknown): RuntimeImCredentialGrantResult | undefined {
   const parsed = ClientRuntimeBusinessFrameSchema.safeParse(frame);
-  return parsed.success && parsed.data.type === "im:tool" ? toolFailureResult(parsed.data, code) : undefined;
+  return parsed.success && parsed.data.type === "im:credential"
+    ? {
+        type: "im:credential:result",
+        requestId: parsed.data.requestId,
+        status: "rejected",
+        code: "credential_stale",
+      }
+    : undefined;
 }
 
 function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   if (frame.type === "session:reconcile:result") return `request:${frame.requestId}`;
   if (frame.type === "im:deliver:result" || frame.type === "turn:report") return `delivery:${frame.deliveryId}`;
-  if (frame.type === "im:tool") return `session:${frame.sessionId}`;
+  if (frame.type === "im:credential") return `session:${frame.sessionId}`;
   return `turn:${frame.turnId}`;
-}
-
-function toolFailureResult(frame: ClientRuntimeBusinessFrame, code: string): RuntimeImToolResult | undefined {
-  if (frame.type !== "im:tool") return undefined;
-  return { type: "im:tool:result", requestId: frame.requestId, state: "transient_failed", code };
 }

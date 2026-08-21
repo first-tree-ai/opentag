@@ -16,7 +16,7 @@ import {
   type UpdateAgentRequest,
 } from "@opentag/shared";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
@@ -43,7 +43,7 @@ import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store
 import { RuntimeDomainOwner } from "../../runtime/runtime-domain-owner.js";
 import { AgentService } from "../../services/agents/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
-import { ImMessageInbox, ImResourceService, OutboundMessageService } from "../../services/im/index.js";
+import { ImMessageInbox, ImResourceService } from "../../services/im/index.js";
 import {
   type FeishuAdapter,
   FeishuConnectionManager,
@@ -51,16 +51,13 @@ import {
   type FeishuRegistrationGateway,
   FeishuSetupService,
 } from "../../services/im-bindings/feishu/index.js";
-import {
-  createImProviderAdapterResolver,
-  ImBindingService,
-  ProviderAdapterResolutionError,
-} from "../../services/im-bindings/index.js";
+import { createImProviderAdapterResolver, ImBindingService } from "../../services/im-bindings/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../services/runtime-config/index.js";
 import { SessionService } from "../../services/sessions/index.js";
 import { TeamMembershipService } from "../../services/teams/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
+
 let container: StartedPostgreSqlContainer;
 let databaseUrl: string;
 
@@ -143,23 +140,26 @@ async function fixture() {
   const imBindingService = new ImBindingService(client.database, new ApplicationCipher(Buffer.alloc(32, 7)), {
     now: () => new Date("2026-08-19T00:00:00.000Z"),
   });
-  const imBindingId = await imBindingService.activateSlack({
-    agentId: agent.id,
-    appId: "A1",
-    teamId: "T1",
-    botUserId: "U_BOT",
-    grantedBotScopes: [
-      "chat:write",
-      "app_mentions:read",
-      "im:history",
-      "channels:history",
-      "groups:history",
-      "mpim:history",
-    ],
-    botAccessToken: "xoxb-secret",
-    signingSecret: "signing-secret",
-    installedAt: new Date("2026-08-19T00:00:00.000Z"),
-  });
+  const imBindingId = await imBindingService.activateSlack(
+    {
+      agentId: agent.id,
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U_BOT",
+      grantedBotScopes: [
+        "chat:write",
+        "app_mentions:read",
+        "im:history",
+        "channels:history",
+        "groups:history",
+        "mpim:history",
+      ],
+      botAccessToken: "xoxb-secret",
+      signingSecret: "signing-secret",
+      installedAt: new Date("2026-08-19T00:00:00.000Z"),
+    },
+    "B_BOT",
+  );
   return { ...client, agent, bootstrap, computer, imBindingId, imBindingService };
 }
 
@@ -367,7 +367,7 @@ async function respondingRuntime(input: {
   } as unknown as WebSocket;
   await registry.register(
     {
-      capabilities: { imMessageTool: 1 },
+      capabilities: { imCredentialGrant: 1 },
       capabilitiesUpdatedAt: Date.now(),
       computerId: input.computerId,
       instanceId: input.instanceId,
@@ -413,6 +413,7 @@ function inbound(
     providerEventId,
     externalAppId: "A1",
     externalTeamId: "T1",
+    providerContext: { provider: "slack", channelType: "channel" },
     conversation: { externalId: "C1", kind: "channel" as const },
     message: {
       externalId: "1000.1",
@@ -459,7 +460,121 @@ function revisionEvent(input: {
   };
 }
 
+function slackThreadEvent(input: {
+  providerEventId: string;
+  externalMessageId: string;
+  rootExternalMessageId: string;
+  occurredAt: string;
+  channelId?: string;
+  direct?: boolean;
+  text?: string;
+}): NormalizedInboundImEvent {
+  const event = revisionEvent({
+    providerEventId: input.providerEventId,
+    externalMessageId: input.externalMessageId,
+    operation: "created",
+    occurredAt: input.occurredAt,
+    revisionKey: "1",
+  });
+  event.providerContext = {
+    provider: "slack",
+    channelType: "channel",
+    threadTs: input.rootExternalMessageId,
+  };
+  event.conversation.externalId = input.channelId ?? "C1";
+  event.message.threadKey = input.rootExternalMessageId;
+  event.message.content = {
+    version: 1,
+    fallbackText: input.text ?? input.externalMessageId,
+    blocks: [{ type: "text", text: input.text ?? input.externalMessageId }],
+    truncated: false,
+  };
+  event.mentions = input.direct === true ? [{ externalId: "U_BOT", displayName: "Assistant" }] : [];
+  return event;
+}
+
 describe("IM binding persistence", () => {
+  it("filters the bound Bot's own ingress before message persistence and delivery", async () => {
+    const value = await fixture();
+    try {
+      const selfEvent = inbound("Ev-self-message");
+      selfEvent.message.author = { externalId: "B_BOT", kind: "bot", displayName: "Assistant", isSelf: true };
+      await expect(new ImMessageInbox(value.database).ingest(value.imBindingId, 1, selfEvent)).resolves.toEqual({
+        duplicate: false,
+        deliveryIds: [],
+      });
+      await expect(value.database.select().from(imMessages)).resolves.toEqual([]);
+      await expect(value.database.select().from(imMessageDeliveries)).resolves.toEqual([]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("grants only the bound Slack Bot token across attention modes and fences placement authority", async () => {
+    const value = await fixture();
+    try {
+      await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-credential-grant"));
+      const [session] = await value.database.select().from(sessions).limit(1);
+      if (!session) throw new Error("Credential grant Session fixture was not created");
+      const request = {
+        type: "im:credential" as const,
+        requestId: crypto.randomUUID(),
+        sessionId: session.id,
+        agentId: value.agent.id,
+        placementGeneration: 1,
+      };
+
+      const direct = await value.imBindingService.issueRuntimeCredentialGrant(request, value.computer.id);
+      const ambient = await value.imBindingService.issueRuntimeCredentialGrant(
+        { ...request, requestId: crypto.randomUUID() },
+        value.computer.id,
+      );
+      expect(direct).toEqual({
+        type: "im:credential:result",
+        requestId: request.requestId,
+        status: "succeeded",
+        credentialGeneration: 1,
+        grant: { provider: "slack", botAccessToken: "xoxb-secret" },
+      });
+      expect(ambient).toMatchObject({ status: "succeeded", grant: { provider: "slack" } });
+      expect(JSON.stringify(direct)).not.toContain("signing-secret");
+      expect(JSON.stringify(direct)).not.toContain("attention");
+
+      await expect(
+        value.imBindingService.issueRuntimeCredentialGrant(
+          { ...request, requestId: crypto.randomUUID(), placementGeneration: 2 },
+          value.computer.id,
+        ),
+      ).resolves.toMatchObject({ status: "rejected", code: "placement_stale" });
+      await expect(
+        value.imBindingService.issueRuntimeCredentialGrant(request, crypto.randomUUID()),
+      ).resolves.toMatchObject({ status: "rejected", code: "agent_mismatch" });
+      await expect(
+        value.imBindingService.issueRuntimeCredentialGrant(
+          { ...request, requestId: crypto.randomUUID(), agentId: crypto.randomUUID() },
+          value.computer.id,
+        ),
+      ).resolves.toMatchObject({ status: "rejected", code: "agent_mismatch" });
+      await value.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, session.id));
+      await expect(
+        value.imBindingService.issueRuntimeCredentialGrant(
+          { ...request, requestId: crypto.randomUUID() },
+          value.computer.id,
+        ),
+      ).resolves.toMatchObject({ status: "rejected", code: "placement_stale" });
+      await value.database.update(sessions).set({ endedAt: null }).where(eq(sessions.id, session.id));
+      await value.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, value.agent.id));
+      await expect(
+        value.imBindingService.issueRuntimeCredentialGrant(
+          { ...request, requestId: crypto.randomUUID() },
+          value.computer.id,
+        ),
+      ).resolves.toMatchObject({ status: "rejected", code: "agent_mismatch" });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("returns member-safe Slack handoff readiness while preserving Team authorization boundaries", async () => {
     const value = await fixture();
     try {
@@ -483,7 +598,7 @@ describe("IM binding persistence", () => {
       expect(JSON.stringify(handoff)).not.toMatch(/credential|identity|appId|botUserId|error|connection|secret/i);
 
       const runtimeUnavailable = new ImBindingService(value.database, new ApplicationCipher(Buffer.alloc(32, 7)), {
-        runtimeReady: () => false,
+        imCliReadiness: () => "unavailable",
       });
       await expect(runtimeUnavailable.getHandoffForAgent(member.id, value.agent.id)).resolves.toEqual({
         bindingState: "active",
@@ -516,294 +631,6 @@ describe("IM binding persistence", () => {
         statusCode: 403,
       });
     } finally {
-      await value.sql.end();
-    }
-  });
-
-  it("fences suspended work, preserves inbound facts, and deletes execution authority without history loss", async () => {
-    const value = await fixture();
-    const stopSessions = vi.fn(async () => undefined);
-    const agentService = new AgentService(value.database, { stopSessions });
-    try {
-      const instanceId = crypto.randomUUID();
-      await value.database
-        .update(computers)
-        .set({ currentInstanceId: instanceId })
-        .where(eq(computers.id, value.computer.id));
-      const firstEvent = inbound("Ev-lifecycle-active");
-      firstEvent.message.resources = [
-        {
-          providerResourceKey: "file-1",
-          kind: "file",
-          filename: "evidence.txt",
-          mediaType: "text/plain",
-          sizeBytes: 12,
-        },
-      ];
-      const inbox = new ImMessageInbox(value.database);
-      const first = await inbox.ingest(value.imBindingId, 1, firstEvent);
-      const [session] = await value.database.select().from(sessions);
-      if (!session || !first.messageId) throw new Error("Lifecycle fixture was not admitted");
-
-      await expect(agentService.suspendById(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
-        status: "suspended",
-      });
-      expect(stopSessions).toHaveBeenCalledWith([
-        expect.objectContaining({ agentId: value.agent.id, sessionId: session.id }),
-      ]);
-      expect(await value.database.select().from(sessions)).toEqual([expect.objectContaining({ endedAt: null })]);
-      expect(await value.database.select().from(imBindings)).toEqual([
-        expect.objectContaining({ id: value.imBindingId, status: "active", encryptedCredential: expect.any(String) }),
-      ]);
-
-      const suspendedEvent = revisionEvent({
-        providerEventId: "Ev-lifecycle-suspended",
-        externalMessageId: "1000.2",
-        operation: "created",
-        occurredAt: "2026-08-19T00:00:02.000Z",
-        revisionKey: "created:1000.2",
-      });
-      const suspended = await inbox.ingest(value.imBindingId, 1, suspendedEvent);
-      expect(suspended).toMatchObject({ deliveryIds: [] });
-      expect(await value.database.select().from(imMessages)).toHaveLength(2);
-      expect(await value.database.select().from(imMessageDeliveries)).toEqual([
-        expect.objectContaining({ attemptCount: 0, state: "pending" }),
-      ]);
-      const suspendedWorker = new ImDeliveryWorker({
-        database: value.database,
-        assembler: new EffectiveRuntimeSnapshotAssembler(value.database),
-        domain: {} as RuntimeDomainOwner,
-        registry: new ConnectionRegistry(),
-      });
-      await suspendedWorker.runOnce();
-      expect(await value.database.select().from(imMessageDeliveries)).toEqual([
-        expect.objectContaining({ attemptCount: 0, state: "pending" }),
-      ]);
-
-      await expect(
-        new SessionService(value.database).ensureChatSession(
-          { imBindingId: value.imBindingId, channelId: "C2", conversationKind: "channel" },
-          "channel",
-        ),
-      ).rejects.toMatchObject({ code: "AGENT_NOT_ACTIVE" });
-
-      let providerWrites = 0;
-      const outbound = new OutboundMessageService(value.database, async () => ({
-        provider: "slack" as const,
-        validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
-        normalizeInbound: () => [],
-        send: async () => {
-          providerWrites += 1;
-          return { ok: true as const, externalMessageId: "1000.3", occurredAt: new Date() };
-        },
-        react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
-        fetchResource: async () => ({ stream: Readable.from(Buffer.from("hello world!")) }),
-      }));
-      await expect(
-        outbound.execute({
-          requestId: crypto.randomUUID(),
-          sessionId: session.id,
-          agentId: value.agent.id,
-          computerId: value.computer.id,
-          computerInstanceId: instanceId,
-          placementGeneration: 1,
-          expectedLatestImMessageId: suspended.messageId as string,
-          operation: "send",
-          content: {
-            version: 1,
-            fallbackText: "must not send",
-            blocks: [{ type: "text", text: "must not send" }],
-            truncated: false,
-          },
-        }),
-      ).rejects.toThrow("OUTBOUND_AGENT_NOT_ACTIVE");
-      expect(providerWrites).toBe(0);
-
-      let resourceFetches = 0;
-      const resources = new ImResourceService(value.database, async () => ({
-        provider: "slack" as const,
-        validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
-        normalizeInbound: () => [],
-        send: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
-        react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
-        fetchResource: async () => {
-          resourceFetches += 1;
-          return { stream: Readable.from(Buffer.from("hello world!")) };
-        },
-      }));
-      await expect(
-        resources.open(
-          value.bootstrap.userId,
-          { sessionId: session.id, computerId: value.computer.id, instanceId, placementGeneration: 1 },
-          first.messageId,
-          0,
-        ),
-      ).rejects.toMatchObject({ statusCode: 404 });
-      expect(resourceFetches).toBe(0);
-
-      await expect(agentService.reactivateById(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
-        status: "active",
-      });
-      expect(await value.database.select().from(imMessageDeliveries)).toHaveLength(1);
-      await agentService.suspendById(value.bootstrap.userId, value.agent.id);
-      await agentService.deleteById(value.bootstrap.userId, value.agent.id);
-
-      expect(await value.database.select().from(agents)).toEqual([
-        expect.objectContaining({ id: value.agent.id, status: "deleted" }),
-      ]);
-      expect(await value.database.select().from(agentRuntimeConfigs)).toHaveLength(0);
-      expect(await value.database.select().from(imBindings)).toEqual([
-        expect.objectContaining({
-          id: value.imBindingId,
-          status: "disabled",
-          encryptedCredential: null,
-          encryptedSetupContext: null,
-          connectionOwnerInstanceId: null,
-          connectionLeaseExpiresAt: null,
-        }),
-      ]);
-      expect(await value.database.select().from(sessions)).toEqual([
-        expect.objectContaining({ id: session.id, endedAt: expect.any(Date) }),
-      ]);
-      expect(await value.database.select().from(imMessages)).toHaveLength(2);
-    } finally {
-      await value.sql.end();
-    }
-  });
-
-  it("serializes suspension ahead of concurrent outbound admission", async () => {
-    const value = await fixture();
-    const authorityLocked = deferred<void>();
-    const releaseSuspend = deferred<void>();
-    const agentService = new AgentService(value.database, {
-      afterAgentLocked: async () => {
-        authorityLocked.resolve();
-        await releaseSuspend.promise;
-      },
-    });
-    try {
-      const instanceId = crypto.randomUUID();
-      await value.database
-        .update(computers)
-        .set({ currentInstanceId: instanceId })
-        .where(eq(computers.id, value.computer.id));
-      const admitted = await new ImMessageInbox(value.database).ingest(
-        value.imBindingId,
-        1,
-        inbound("Ev-lifecycle-outbound-race"),
-      );
-      const [session] = await value.database.select().from(sessions);
-      if (!session || !admitted.messageId) throw new Error("Concurrent lifecycle fixture was not admitted");
-      let providerWrites = 0;
-      const outbound = new OutboundMessageService(value.database, async () => ({
-        provider: "slack" as const,
-        validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
-        normalizeInbound: () => [],
-        send: async () => {
-          providerWrites += 1;
-          return { ok: true as const, externalMessageId: "1000.2", occurredAt: new Date() };
-        },
-        react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
-        fetchResource: async () => ({ stream: Readable.from(Buffer.alloc(0)) }),
-      }));
-
-      const suspend = agentService.suspendById(value.bootstrap.userId, value.agent.id);
-      await authorityLocked.promise;
-      const send = outbound.execute({
-        requestId: crypto.randomUUID(),
-        sessionId: session.id,
-        agentId: value.agent.id,
-        computerId: value.computer.id,
-        computerInstanceId: instanceId,
-        placementGeneration: 1,
-        expectedLatestImMessageId: admitted.messageId,
-        operation: "send",
-        content: {
-          version: 1,
-          fallbackText: "must remain fenced",
-          blocks: [{ type: "text", text: "must remain fenced" }],
-          truncated: false,
-        },
-      });
-      releaseSuspend.resolve();
-      await expect(settleWithin(suspend)).resolves.toMatchObject({ status: "suspended" });
-      await expect(settleWithin(send)).rejects.toThrow("OUTBOUND_AGENT_NOT_ACTIVE");
-      expect(providerWrites).toBe(0);
-    } finally {
-      releaseSuspend.resolve();
-      await value.sql.end();
-    }
-  });
-
-  it("serializes an admitted outbound side effect before suspension", async () => {
-    const value = await fixture();
-    const authorityLocked = deferred<void>();
-    const releaseAdmission = deferred<void>();
-    try {
-      const instanceId = crypto.randomUUID();
-      await value.database
-        .update(computers)
-        .set({ currentInstanceId: instanceId })
-        .where(eq(computers.id, value.computer.id));
-      const admitted = await new ImMessageInbox(value.database).ingest(
-        value.imBindingId,
-        1,
-        inbound("Ev-lifecycle-outbound-admission-wins"),
-      );
-      const [session] = await value.database.select().from(sessions);
-      if (!session || !admitted.messageId) throw new Error("Concurrent outbound fixture was not admitted");
-      let providerWrites = 0;
-      const outbound = new OutboundMessageService(
-        value.database,
-        async () => ({
-          provider: "slack" as const,
-          validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
-          normalizeInbound: () => [],
-          send: async () => {
-            providerWrites += 1;
-            return { ok: true as const, externalMessageId: "1000.2", occurredAt: new Date() };
-          },
-          react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
-          fetchResource: async () => ({ stream: Readable.from(Buffer.alloc(0)) }),
-        }),
-        {
-          afterAgentLocked: async () => {
-            authorityLocked.resolve();
-            await releaseAdmission.promise;
-          },
-        },
-      );
-
-      const send = outbound.execute({
-        requestId: crypto.randomUUID(),
-        sessionId: session.id,
-        agentId: value.agent.id,
-        computerId: value.computer.id,
-        computerInstanceId: instanceId,
-        placementGeneration: 1,
-        expectedLatestImMessageId: admitted.messageId,
-        operation: "send",
-        content: {
-          version: 1,
-          fallbackText: "admitted before suspend",
-          blocks: [{ type: "text", text: "admitted before suspend" }],
-          truncated: false,
-        },
-      });
-      await authorityLocked.promise;
-      const suspend = new AgentService(value.database).suspendById(value.bootstrap.userId, value.agent.id);
-      let suspendSettled = false;
-      void suspend.finally(() => {
-        suspendSettled = true;
-      });
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      expect(suspendSettled).toBe(false);
-      releaseAdmission.resolve();
-      await expect(settleWithin(send)).resolves.toMatchObject({ state: "succeeded" });
-      await expect(settleWithin(suspend)).resolves.toMatchObject({ status: "suspended" });
-      expect(providerWrites).toBe(1);
-    } finally {
-      releaseAdmission.resolve();
       await value.sql.end();
     }
   });
@@ -1627,6 +1454,7 @@ describe("IM binding persistence", () => {
             providerRevisionKey: "1",
             operation: "created" as const,
             direction: "inbound" as const,
+            providerContext: { provider: "slack" as const, channelType: "channel" },
             threadKey: null,
             replyToExternalId: null,
             authorKind: "human" as const,
@@ -1695,6 +1523,797 @@ describe("IM binding persistence", () => {
     }
   });
 
+  it("lazily materializes Slack Thread Sessions from existing, current-direct, or root-direct evidence", async () => {
+    const value = await fixture();
+    try {
+      const inbox = new ImMessageInbox(value.database);
+      const directRoot = revisionEvent({
+        providerEventId: "lazy-root",
+        externalMessageId: "2000.100",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:01.000Z",
+        revisionKey: "1",
+      });
+      expect((await inbox.ingest(value.imBindingId, 1, directRoot)).deliveryIds).toHaveLength(1);
+      expect(await value.database.select().from(sessions)).toEqual([
+        expect.objectContaining({ kind: "channel", threadKey: null }),
+      ]);
+
+      const firstReply = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "lazy-thread-first",
+          externalMessageId: "2000.101",
+          rootExternalMessageId: "2000.100",
+          occurredAt: "2026-08-19T00:00:02.000Z",
+        }),
+      );
+      const [firstThreadDelivery] = await value.database
+        .select({ attention: imMessageDeliveries.attention, sessionId: sessions.id, kind: sessions.kind })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(imMessageDeliveries.id, firstReply.deliveryIds[0] as string));
+      expect(firstThreadDelivery).toMatchObject({ attention: "direct", kind: "thread" });
+
+      const followUp = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "lazy-thread-follow-up",
+          externalMessageId: "2000.102",
+          rootExternalMessageId: "2000.100",
+          occurredAt: "2026-08-19T00:00:03.000Z",
+        }),
+      );
+      const [followUpDelivery] = await value.database
+        .select({ attention: imMessageDeliveries.attention, sessionId: sessions.id, kind: sessions.kind })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(imMessageDeliveries.id, followUp.deliveryIds[0] as string));
+      expect(followUpDelivery).toEqual({
+        attention: "direct",
+        kind: "thread",
+        sessionId: firstThreadDelivery?.sessionId,
+      });
+
+      const unrelatedRoot = revisionEvent({
+        providerEventId: "unrelated-root",
+        externalMessageId: "3000.100",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:04.000Z",
+        revisionKey: "1",
+      });
+      unrelatedRoot.mentions = [];
+      expect((await inbox.ingest(value.imBindingId, 1, unrelatedRoot)).deliveryIds).toEqual([]);
+      expect(
+        (
+          await inbox.ingest(
+            value.imBindingId,
+            1,
+            slackThreadEvent({
+              providerEventId: "unrelated-thread",
+              externalMessageId: "3000.101",
+              rootExternalMessageId: "3000.100",
+              occurredAt: "2026-08-19T00:00:05.000Z",
+            }),
+          )
+        ).deliveryIds,
+      ).toEqual([]);
+
+      const otherChannelRoot = revisionEvent({
+        providerEventId: "other-channel-root",
+        externalMessageId: "3500.100",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:05.100Z",
+        revisionKey: "1",
+      });
+      otherChannelRoot.conversation.externalId = "C_OTHER";
+      await inbox.ingest(value.imBindingId, 1, otherChannelRoot);
+      expect(
+        (
+          await inbox.ingest(
+            value.imBindingId,
+            1,
+            slackThreadEvent({
+              providerEventId: "other-channel-thread",
+              externalMessageId: "3500.101",
+              rootExternalMessageId: "3500.100",
+              occurredAt: "2026-08-19T00:00:05.200Z",
+            }),
+          )
+        ).deliveryIds,
+      ).toEqual([]);
+
+      const otherAgent = await new AgentService(value.database).createForTeam(
+        value.bootstrap.userId,
+        value.bootstrap.teamId,
+        {
+          name: "other-assistant",
+          displayName: "Other Assistant",
+          runtimeProvider: "codex",
+          computerId: value.computer.id,
+        },
+      );
+      const otherBindingId = await value.imBindingService.activateSlack(
+        {
+          agentId: otherAgent.id,
+          appId: "A2",
+          teamId: "T2",
+          botUserId: "U_OTHER_BOT",
+          grantedBotScopes: [
+            "chat:write",
+            "app_mentions:read",
+            "im:history",
+            "channels:history",
+            "groups:history",
+            "mpim:history",
+          ],
+          botAccessToken: "xoxb-other",
+          signingSecret: "other-signing-secret",
+          installedAt: new Date("2026-08-19T00:00:00.000Z"),
+        },
+        "B_OTHER_BOT",
+      );
+      const otherBindingRoot = revisionEvent({
+        providerEventId: "other-binding-root",
+        externalMessageId: "3600.100",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:05.300Z",
+        revisionKey: "1",
+      });
+      otherBindingRoot.externalAppId = "A2";
+      otherBindingRoot.externalTeamId = "T2";
+      otherBindingRoot.mentions = [{ externalId: "U_OTHER_BOT", displayName: "Other Assistant" }];
+      await inbox.ingest(otherBindingId, 1, otherBindingRoot);
+      expect(
+        (
+          await inbox.ingest(
+            value.imBindingId,
+            1,
+            slackThreadEvent({
+              providerEventId: "other-binding-thread",
+              externalMessageId: "3600.101",
+              rootExternalMessageId: "3600.100",
+              occurredAt: "2026-08-19T00:00:05.400Z",
+            }),
+          )
+        ).deliveryIds,
+      ).toEqual([]);
+
+      const currentDirect = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "unrelated-thread-direct",
+          externalMessageId: "3000.102",
+          rootExternalMessageId: "3000.100",
+          occurredAt: "2026-08-19T00:00:06.000Z",
+          direct: true,
+        }),
+      );
+      expect(
+        await value.database
+          .select({ kind: sessions.kind, threadKey: sessions.threadKey })
+          .from(imMessageDeliveries)
+          .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+          .where(eq(imMessageDeliveries.id, currentDirect.deliveryIds[0] as string)),
+      ).toEqual([{ kind: "thread", threadKey: "3000.100" }]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("reconciles a Thread reply that commits before its direct root", async () => {
+    const value = await fixture();
+    try {
+      const replyHeld = deferred<void>();
+      const releaseReply = deferred<void>();
+      const replyInbox = new ImMessageInbox(value.database, {
+        afterMessageAuthority: async () => {
+          replyHeld.resolve();
+          await releaseReply.promise;
+        },
+      });
+      const replyRun = replyInbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "reordered-thread-reply",
+          externalMessageId: "2100.101",
+          rootExternalMessageId: "2100.100",
+          occurredAt: "2026-08-19T00:00:02.000Z",
+        }),
+      );
+      await replyHeld.promise;
+
+      let rootSettled = false;
+      const rootRun = new ImMessageInbox(value.database)
+        .ingest(
+          value.imBindingId,
+          1,
+          revisionEvent({
+            providerEventId: "reordered-direct-root",
+            externalMessageId: "2100.100",
+            operation: "created",
+            occurredAt: "2026-08-19T00:00:01.000Z",
+            revisionKey: "1",
+          }),
+        )
+        .finally(() => {
+          rootSettled = true;
+        });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(rootSettled).toBe(false);
+      releaseReply.resolve();
+
+      const [reply, root] = await Promise.all([replyRun, rootRun]);
+      expect(reply.deliveryIds).toEqual([]);
+      expect(root.deliveryIds).toHaveLength(1);
+      expect(
+        await value.database
+          .select({ attention: imMessageDeliveries.attention, kind: sessions.kind, threadKey: sessions.threadKey })
+          .from(imMessageDeliveries)
+          .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+          .where(eq(imMessageDeliveries.messageId, reply.messageId as string)),
+      ).toEqual([{ attention: "direct", kind: "thread", threadKey: "2100.100" }]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("uses only a reliable Feishu rootId for implicit Thread admission", async () => {
+    const value = await unboundFixture();
+    try {
+      const imBindingId = await value.imBindingService.activateFeishu({
+        agentId: value.agent.id,
+        appId: "cli_1",
+        teamId: "team_1",
+        botOpenId: "ou_bot",
+        teamBrand: "feishu",
+        appSecret: "secret",
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+      });
+      const inbox = new ImMessageInbox(value.database);
+      const root = revisionEvent({
+        providerEventId: "feishu-root",
+        externalMessageId: "om_root",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:01.000Z",
+        revisionKey: "1",
+      });
+      root.externalAppId = "cli_1";
+      root.externalTeamId = "team_1";
+      root.providerContext = { provider: "feishu", chatType: "group" };
+      root.mentions = [{ externalId: "ou_bot", displayName: "Assistant" }];
+      await inbox.ingest(imBindingId, 1, root);
+
+      const reliable = revisionEvent({
+        providerEventId: "feishu-thread-reliable",
+        externalMessageId: "om_reply",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:02.000Z",
+        revisionKey: "1",
+      });
+      reliable.externalAppId = "cli_1";
+      reliable.externalTeamId = "team_1";
+      reliable.providerContext = { provider: "feishu", chatType: "group", threadId: "omt_1", rootId: "om_root" };
+      reliable.message.threadKey = "omt_1";
+      reliable.mentions = [];
+      expect((await inbox.ingest(imBindingId, 1, reliable)).deliveryIds).toHaveLength(1);
+
+      const secondRoot = {
+        ...root,
+        providerEventId: "feishu-root-2",
+        message: { ...root.message, externalId: "om_root_2" },
+      };
+      await inbox.ingest(imBindingId, 1, secondRoot);
+      const missingRoot = revisionEvent({
+        providerEventId: "feishu-thread-missing-root",
+        externalMessageId: "om_reply_2",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:04.000Z",
+        revisionKey: "1",
+      });
+      missingRoot.externalAppId = "cli_1";
+      missingRoot.externalTeamId = "team_1";
+      missingRoot.providerContext = {
+        provider: "feishu",
+        chatType: "group",
+        threadId: "omt_2",
+        parentId: "om_root_2",
+      };
+      missingRoot.message.threadKey = "omt_2";
+      missingRoot.mentions = [];
+      expect((await inbox.ingest(imBindingId, 1, missingRoot)).deliveryIds).toEqual([]);
+      missingRoot.providerEventId = "feishu-thread-current-direct";
+      missingRoot.message = { ...missingRoot.message, externalId: "om_reply_3" };
+      missingRoot.mentions = [{ externalId: "ou_bot", displayName: "Assistant" }];
+      expect((await inbox.ingest(imBindingId, 1, missingRoot)).deliveryIds).toHaveLength(1);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("inherits an unknown Feishu revision when only a Thread Session exists", async () => {
+    const value = await unboundFixture();
+    try {
+      const imBindingId = await value.imBindingService.activateFeishu({
+        agentId: value.agent.id,
+        appId: "cli_revision",
+        teamId: "team_revision",
+        botOpenId: "ou_revision_bot",
+        teamBrand: "feishu",
+        appSecret: "secret",
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+      });
+      const inbox = new ImMessageInbox(value.database);
+      const created = revisionEvent({
+        providerEventId: "feishu-thread-created",
+        externalMessageId: "om_thread_message",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:01.000Z",
+        revisionKey: "1",
+      });
+      created.externalAppId = "cli_revision";
+      created.externalTeamId = "team_revision";
+      created.providerContext = {
+        provider: "feishu",
+        chatType: "group",
+        threadId: "omt_revision",
+        rootId: "om_unseen_root",
+      };
+      created.message.threadKey = "omt_revision";
+      created.mentions = [{ externalId: "ou_revision_bot", displayName: "Assistant" }];
+      const first = await inbox.ingest(imBindingId, 1, created);
+      const [firstTarget] = await value.database
+        .select({ sessionId: sessions.id, kind: sessions.kind })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(imMessageDeliveries.id, first.deliveryIds[0] as string));
+      expect(firstTarget).toMatchObject({ kind: "thread" });
+      expect(await value.database.select().from(sessions).where(eq(sessions.kind, "channel"))).toEqual([]);
+
+      const recalled = revisionEvent({
+        providerEventId: "feishu-thread-recalled",
+        externalMessageId: "om_thread_message",
+        operation: "deleted",
+        occurredAt: "2026-08-19T00:00:02.000Z",
+        revisionKey: "2",
+      });
+      recalled.externalAppId = "cli_revision";
+      recalled.externalTeamId = "team_revision";
+      recalled.providerContext = { provider: "feishu" };
+      recalled.conversation.kind = "unknown";
+      recalled.message.threadKey = null;
+      recalled.mentions = [];
+      const revision = await inbox.ingest(imBindingId, 1, recalled);
+      const [revisionTarget] = await value.database
+        .select({ sessionId: sessions.id, kind: sessions.kind })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(imMessageDeliveries.id, revision.deliveryIds[0] as string));
+      expect(revisionTarget).toEqual(firstTarget);
+      expect(
+        await value.database
+          .select({ threadKey: imMessages.threadKey })
+          .from(imMessages)
+          .where(eq(imMessages.id, revision.messageId as string)),
+      ).toEqual([{ threadKey: "omt_revision" }]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("keeps all-message Channel ambient fan-out independent and does not implicitly revive ended Threads", async () => {
+    const value = await fixture();
+    try {
+      await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
+      const inbox = new ImMessageInbox(value.database);
+      await inbox.ingest(
+        value.imBindingId,
+        1,
+        revisionEvent({
+          providerEventId: "fanout-root",
+          externalMessageId: "4000.100",
+          operation: "created",
+          occurredAt: "2026-08-19T00:00:01.000Z",
+          revisionKey: "1",
+        }),
+      );
+      const admission = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "fanout-thread",
+          externalMessageId: "4000.101",
+          rootExternalMessageId: "4000.100",
+          occurredAt: "2026-08-19T00:00:02.000Z",
+        }),
+      );
+      const scopes = await value.database
+        .select({ attention: imMessageDeliveries.attention, kind: sessions.kind, threadKey: sessions.threadKey })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(imMessageDeliveries.messageId, admission.messageId as string));
+      expect(scopes).toEqual(
+        expect.arrayContaining([
+          { attention: "direct", kind: "thread", threadKey: "4000.100" },
+          { attention: "ambient", kind: "channel", threadKey: null },
+        ]),
+      );
+      const thread = await value.database
+        .select()
+        .from(sessions)
+        .where(and(eq(sessions.kind, "thread"), eq(sessions.threadKey, "4000.100"), isNull(sessions.endedAt)))
+        .then((rows) => rows[0]);
+      if (!thread) throw new Error("Thread Session fixture was not created");
+      await new SessionService(value.database).end(thread.id);
+
+      const unmentioned = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "ended-thread-unmentioned",
+          externalMessageId: "4000.102",
+          rootExternalMessageId: "4000.100",
+          occurredAt: "2026-08-19T00:00:03.000Z",
+        }),
+      );
+      expect(
+        await value.database
+          .select({ attention: imMessageDeliveries.attention, kind: sessions.kind })
+          .from(imMessageDeliveries)
+          .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+          .where(eq(imMessageDeliveries.messageId, unmentioned.messageId as string)),
+      ).toEqual([{ attention: "ambient", kind: "channel" }]);
+      expect(
+        await value.database
+          .select({ id: sessions.id })
+          .from(sessions)
+          .where(and(eq(sessions.kind, "thread"), eq(sessions.threadKey, "4000.100"), isNull(sessions.endedAt))),
+      ).toEqual([]);
+
+      const currentDirect = slackThreadEvent({
+        providerEventId: "ended-thread-current-direct",
+        externalMessageId: "4000.103",
+        rootExternalMessageId: "4000.100",
+        occurredAt: "2026-08-19T00:00:04.000Z",
+        direct: true,
+      });
+      expect((await inbox.ingest(value.imBindingId, 1, currentDirect)).deliveryIds).toHaveLength(2);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("converges concurrent first Thread admissions on one active Session and placement", async () => {
+    const value = await fixture();
+    try {
+      const inbox = new ImMessageInbox(value.database);
+      await inbox.ingest(
+        value.imBindingId,
+        1,
+        revisionEvent({
+          providerEventId: "concurrent-root",
+          externalMessageId: "6000.100",
+          operation: "created",
+          occurredAt: "2026-08-19T00:00:01.000Z",
+          revisionKey: "1",
+        }),
+      );
+      const admissions = await Promise.all([
+        inbox.ingest(
+          value.imBindingId,
+          1,
+          slackThreadEvent({
+            providerEventId: "concurrent-thread-a",
+            externalMessageId: "6000.101",
+            rootExternalMessageId: "6000.100",
+            occurredAt: "2026-08-19T00:00:02.000Z",
+          }),
+        ),
+        inbox.ingest(
+          value.imBindingId,
+          1,
+          slackThreadEvent({
+            providerEventId: "concurrent-thread-b",
+            externalMessageId: "6000.102",
+            rootExternalMessageId: "6000.100",
+            occurredAt: "2026-08-19T00:00:03.000Z",
+          }),
+        ),
+      ]);
+      expect(admissions.every((admission) => admission.deliveryIds.length === 1)).toBe(true);
+      const threadRows = await value.database
+        .select({ id: sessions.id })
+        .from(sessions)
+        .where(and(eq(sessions.kind, "thread"), eq(sessions.threadKey, "6000.100"), isNull(sessions.endedAt)));
+      expect(threadRows).toHaveLength(1);
+      expect(
+        await value.database
+          .select({ sessionId: sessionPlacements.sessionId })
+          .from(sessionPlacements)
+          .where(eq(sessionPlacements.sessionId, threadRows[0]?.id as string)),
+      ).toHaveLength(1);
+      expect(
+        await value.database
+          .select({ sessionId: imMessageDeliveries.sessionId })
+          .from(imMessageDeliveries)
+          .where(
+            inArray(
+              imMessageDeliveries.id,
+              admissions.flatMap((admission) => admission.deliveryIds),
+            ),
+          ),
+      ).toEqual([{ sessionId: threadRows[0]?.id }, { sessionId: threadRows[0]?.id }]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("bootstraps a cold Thread delivery with root and same-thread inbound history", async () => {
+    const value = await fixture();
+    try {
+      await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        userId: value.bootstrap.userId,
+      });
+      const inbox = new ImMessageInbox(value.database);
+      const rootEvent = revisionEvent({
+        providerEventId: "history-root",
+        externalMessageId: "7000.100",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:01.000Z",
+        revisionKey: "1",
+      });
+      rootEvent.message.content = {
+        version: 1,
+        fallbackText: "root message",
+        blocks: [{ type: "text", text: "root message" }],
+        truncated: false,
+      };
+      const root = await inbox.ingest(value.imBindingId, 1, rootEvent);
+      const rootEditEvent = revisionEvent({
+        providerEventId: "history-root-edit",
+        externalMessageId: "7000.100",
+        operation: "edited",
+        occurredAt: "2026-08-19T00:00:01.500Z",
+        revisionKey: "2",
+      });
+      rootEditEvent.message.content = {
+        version: 1,
+        fallbackText: "edited root message",
+        blocks: [{ type: "text", text: "edited root message" }],
+        truncated: false,
+      };
+      const rootEdit = await inbox.ingest(value.imBindingId, 1, rootEditEvent);
+      const firstThread = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "history-thread-first",
+          externalMessageId: "7000.101",
+          rootExternalMessageId: "7000.100",
+          occurredAt: "2026-08-19T00:00:02.000Z",
+          text: "first thread message",
+        }),
+      );
+      const firstThreadDeleteEvent = revisionEvent({
+        providerEventId: "history-thread-first-delete",
+        externalMessageId: "7000.101",
+        operation: "deleted",
+        occurredAt: "2026-08-19T00:00:02.250Z",
+        revisionKey: "2",
+      });
+      firstThreadDeleteEvent.conversation.kind = "unknown";
+      firstThreadDeleteEvent.message.threadKey = null;
+      firstThreadDeleteEvent.mentions = [];
+      const firstThreadDelete = await inbox.ingest(value.imBindingId, 1, firstThreadDeleteEvent);
+      const sibling = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "history-sibling",
+          externalMessageId: "8000.101",
+          rootExternalMessageId: "8000.100",
+          occurredAt: "2026-08-19T00:00:02.500Z",
+          text: "sibling thread message",
+        }),
+      );
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ state: "expired", reason: "history_fixture" })
+        .where(
+          inArray(
+            imMessageDeliveries.messageId,
+            [
+              root.messageId,
+              rootEdit.messageId,
+              firstThread.messageId,
+              firstThreadDelete.messageId,
+              sibling.messageId,
+            ].filter((messageId): messageId is string => messageId !== undefined),
+          ),
+        );
+      await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "history-thread-current",
+          externalMessageId: "7000.102",
+          rootExternalMessageId: "7000.100",
+          occurredAt: "2026-08-19T00:00:03.000Z",
+          text: "deleted current thread message",
+        }),
+      );
+      const currentDeleteEvent = slackThreadEvent({
+        providerEventId: "history-thread-current-delete",
+        externalMessageId: "7000.102",
+        rootExternalMessageId: "7000.100",
+        occurredAt: "2026-08-19T00:00:03.250Z",
+        text: "deleted current thread message",
+      });
+      currentDeleteEvent.message.operation = "deleted";
+      currentDeleteEvent.message.revisionKey = "2";
+      const current = await inbox.ingest(value.imBindingId, 1, currentDeleteEvent);
+      const currentDeliveries = await value.database
+        .select({ id: imMessageDeliveries.id, kind: sessions.kind })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(imMessageDeliveries.messageId, current.messageId as string));
+      const threadDelivery = currentDeliveries.find((delivery) => delivery.kind === "thread");
+      if (!threadDelivery) throw new Error("Current Thread delivery fixture was not created");
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ state: "expired", reason: "history_fixture" })
+        .where(
+          inArray(
+            imMessageDeliveries.id,
+            currentDeliveries.filter((delivery) => delivery.kind !== "thread").map((delivery) => delivery.id),
+          ),
+        );
+
+      await imDeliveryWorker({
+        database: value.database,
+        registry: runtime.registry,
+        domain: runtime.domain,
+      }).runOnce();
+      const delivered = runtime.frames.find(
+        (frame) =>
+          (frame as { type?: string; deliveryId?: string }).type === "im:deliver" &&
+          (frame as { deliveryId?: string }).deliveryId === threadDelivery.id,
+      ) as DirectImMessageDeliveryRequest | undefined;
+      expect(delivered?.content.text).toBe("[deleted]");
+      expect(delivered?.content.history).toEqual([
+        expect.objectContaining({
+          imMessageId: rootEdit.messageId,
+          occurredAt: "2026-08-19T00:00:01.500Z",
+          text: "edited root message",
+          providerRef: expect.objectContaining({ provider: "slack", messageTs: "7000.100" }),
+        }),
+        expect.objectContaining({
+          imMessageId: firstThreadDelete.messageId,
+          occurredAt: "2026-08-19T00:00:02.250Z",
+          text: "[deleted]",
+          providerRef: expect.objectContaining({
+            provider: "slack",
+            messageTs: "7000.101",
+          }),
+        }),
+      ]);
+      const serializedHistory = JSON.stringify(delivered?.content.history);
+      expect(serializedHistory).not.toContain('"text":"root message"');
+      expect(serializedHistory).not.toContain("first thread message");
+      expect(serializedHistory).not.toContain("deleted current thread message");
+      expect(serializedHistory).not.toContain("sibling thread message");
+      runtime.domain.close();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("reserves the verified root beyond the rolling Thread history item cap", async () => {
+    const value = await fixture();
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        userId: value.bootstrap.userId,
+      });
+      const inbox = new ImMessageInbox(value.database);
+      const rootEvent = revisionEvent({
+        providerEventId: "history-cap-root",
+        externalMessageId: "7100.100",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:01.000Z",
+        revisionKey: "1",
+      });
+      rootEvent.message.content = {
+        version: 1,
+        fallbackText: "reserved root message",
+        blocks: [{ type: "text", text: "reserved root message" }],
+        truncated: false,
+      };
+      const root = await inbox.ingest(value.imBindingId, 1, rootEvent);
+      const priorMessageIds = [root.messageId];
+      for (let index = 0; index < 101; index += 1) {
+        const reply = await inbox.ingest(
+          value.imBindingId,
+          1,
+          slackThreadEvent({
+            providerEventId: `history-cap-thread-${index}`,
+            externalMessageId: `7100.${index + 101}`,
+            rootExternalMessageId: "7100.100",
+            occurredAt: new Date(Date.parse("2026-08-19T00:00:02.000Z") + index * 1_000).toISOString(),
+            text: `boundary thread message ${index}`,
+          }),
+        );
+        priorMessageIds.push(reply.messageId);
+      }
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ state: "expired", reason: "history_fixture" })
+        .where(
+          inArray(
+            imMessageDeliveries.messageId,
+            priorMessageIds.filter((messageId): messageId is string => messageId !== undefined),
+          ),
+        );
+      const current = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "history-cap-current",
+          externalMessageId: "7100.999",
+          rootExternalMessageId: "7100.100",
+          occurredAt: "2026-08-19T00:03:00.000Z",
+          text: "current message after history cap",
+        }),
+      );
+      const [currentDelivery] = await value.database
+        .select({ id: imMessageDeliveries.id })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.messageId, current.messageId as string));
+      if (!currentDelivery) throw new Error("Current Thread delivery fixture was not created");
+
+      await imDeliveryWorker({
+        database: value.database,
+        registry: runtime.registry,
+        domain: runtime.domain,
+      }).runOnce();
+      const delivered = runtime.frames.find(
+        (frame) =>
+          (frame as { type?: string; deliveryId?: string }).type === "im:deliver" &&
+          (frame as { deliveryId?: string }).deliveryId === currentDelivery.id,
+      ) as DirectImMessageDeliveryRequest | undefined;
+      expect(delivered?.content.history).toHaveLength(100);
+      expect(delivered?.content.history?.[0]).toEqual(expect.objectContaining({ text: "reserved root message" }));
+      expect(delivered?.content.history?.[1]).toEqual(expect.objectContaining({ text: "boundary thread message 2" }));
+      expect(delivered?.content.history?.[99]).toEqual(
+        expect.objectContaining({ text: "boundary thread message 100" }),
+      );
+      expect(delivered?.content.historyTruncated).toBe(true);
+      runtime.domain.close();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("inherits DM scope for a Feishu recall without guessing provider fields", async () => {
     const value = await fixture();
     try {
@@ -1726,255 +2345,6 @@ describe("IM binding persistence", () => {
       expect(message).toMatchObject({ threadKey: null, operation: "deleted" });
       expect(message).not.toHaveProperty("conversationKind");
       expect(result.deliveryIds).toHaveLength(1);
-    } finally {
-      await value.sql.end();
-    }
-  });
-
-  it("inherits direct attention for Feishu recall and advances the latest Session input", async () => {
-    const value = await fixture();
-    try {
-      await value.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, value.agent.id));
-      const inbox = new ImMessageInbox(value.database);
-      const createdEvent = revisionEvent({
-        providerEventId: "mention-create",
-        externalMessageId: "mention-message",
-        operation: "created",
-        occurredAt: "2026-08-19T00:00:01.000Z",
-        revisionKey: "1",
-      });
-      const created = await inbox.ingest(value.imBindingId, 1, createdEvent);
-      const createdDeliveryId = created.deliveryIds[0];
-      if (!created.messageId || !createdDeliveryId) throw new Error("Mention delivery fixture was not created");
-      await value.database
-        .update(imMessageDeliveries)
-        .set({
-          state: "accepted",
-          inputHash: "accepted-input",
-          turnId: "accepted-turn",
-          reportOwnerInstanceId: crypto.randomUUID(),
-          acceptedAt: new Date(),
-        })
-        .where(eq(imMessageDeliveries.id, createdDeliveryId));
-
-      const recalledEvent = revisionEvent({
-        providerEventId: "mention-recall",
-        externalMessageId: "mention-message",
-        operation: "deleted",
-        occurredAt: "2026-08-19T00:00:02.000Z",
-        revisionKey: "2",
-      });
-      recalledEvent.conversation.kind = "unknown";
-      recalledEvent.mentions = [];
-      const recalled = await inbox.ingest(value.imBindingId, 1, recalledEvent);
-      expect(recalled.deliveryIds).toHaveLength(1);
-      const [recalledDelivery] = await value.database
-        .select()
-        .from(imMessageDeliveries)
-        .where(eq(imMessageDeliveries.id, recalled.deliveryIds[0] as string));
-      expect(recalledDelivery).toMatchObject({ attention: "direct", state: "pending" });
-
-      const computerInstanceId = crypto.randomUUID();
-      await value.database
-        .update(computers)
-        .set({ currentInstanceId: computerInstanceId })
-        .where(eq(computers.id, value.computer.id));
-      let providerWrites = 0;
-      const outbound = new OutboundMessageService(value.database, async () => ({
-        provider: "slack" as const,
-        validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
-        normalizeInbound: () => [],
-        send: async () => {
-          providerWrites += 1;
-          return { ok: true as const, externalMessageId: "unused", occurredAt: new Date() };
-        },
-        react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
-        fetchResource: async () => ({ stream: Readable.from(Buffer.alloc(0)) }),
-      }));
-      const [session] = await value.database.select().from(sessions).where(eq(sessions.channelId, "C1")).limit(1);
-      if (!session) throw new Error("Channel Session fixture was not created");
-      await expect(
-        outbound.execute({
-          requestId: crypto.randomUUID(),
-          sessionId: session.id,
-          agentId: value.agent.id,
-          computerId: value.computer.id,
-          computerInstanceId,
-          placementGeneration: 1,
-          expectedLatestImMessageId: created.messageId,
-          operation: "send",
-          content: {
-            version: 1,
-            fallbackText: "stale answer",
-            blocks: [{ type: "text", text: "stale answer" }],
-            truncated: false,
-          },
-        }),
-      ).rejects.toThrow("OUTBOUND_LATEST_MESSAGE_STALE");
-      expect(providerWrites).toBe(0);
-
-      await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
-      const secondCreated = revisionEvent({
-        providerEventId: "all-message-create",
-        externalMessageId: "all-message-message",
-        operation: "created",
-        occurredAt: "2026-08-19T00:00:03.000Z",
-        revisionKey: "1",
-      });
-      const second = await inbox.ingest(value.imBindingId, 1, secondCreated);
-      const secondRecall = revisionEvent({
-        providerEventId: "all-message-recall",
-        externalMessageId: "all-message-message",
-        operation: "deleted",
-        occurredAt: "2026-08-19T00:00:04.000Z",
-        revisionKey: "2",
-      });
-      secondRecall.conversation.kind = "unknown";
-      secondRecall.mentions = [];
-      const secondRecalled = await inbox.ingest(value.imBindingId, 1, secondRecall);
-      expect(second.deliveryIds).toHaveLength(1);
-      expect(secondRecalled.deliveryIds).toHaveLength(1);
-      const [secondRecallDelivery] = await value.database
-        .select()
-        .from(imMessageDeliveries)
-        .where(eq(imMessageDeliveries.id, secondRecalled.deliveryIds[0] as string));
-      expect(secondRecallDelivery?.attention).toBe("direct");
-    } finally {
-      await value.sql.end();
-    }
-  });
-
-  it("includes unmentioned messages in mention-only history and stale-reply fencing", async () => {
-    const value = await fixture();
-    try {
-      await value.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, value.agent.id));
-      const instanceId = crypto.randomUUID();
-      await value.database
-        .update(computers)
-        .set({ currentInstanceId: instanceId })
-        .where(eq(computers.id, value.computer.id));
-      const runtime = await respondingRuntime({
-        database: value.database,
-        computerId: value.computer.id,
-        instanceId,
-        userId: value.bootstrap.userId,
-      });
-      const worker = imDeliveryWorker({
-        database: value.database,
-        registry: runtime.registry,
-        domain: runtime.domain,
-      });
-      const inbox = new ImMessageInbox(value.database);
-      const directA = await inbox.ingest(
-        value.imBindingId,
-        1,
-        revisionEvent({
-          providerEventId: "mention-only-a",
-          externalMessageId: "message-a",
-          operation: "created",
-          occurredAt: "2026-08-19T00:00:01.000Z",
-          revisionKey: "1",
-        }),
-      );
-      await worker.runOnce();
-      expect(directA.deliveryIds).toHaveLength(1);
-      const [acceptedA] = await value.database
-        .select()
-        .from(imMessageDeliveries)
-        .where(eq(imMessageDeliveries.id, directA.deliveryIds[0] as string));
-      if (!acceptedA?.turnId) throw new Error("Initial mention-only delivery was not accepted");
-      await expect(
-        runtime.domain.handle(
-          turnReportFor({
-            agentId: value.agent.id,
-            deliveryId: acceptedA.id,
-            placementGeneration: acceptedA.placementGeneration,
-            sessionId: acceptedA.sessionId,
-            turnId: acceptedA.turnId,
-          }),
-          runtime.context,
-        ),
-      ).resolves.toMatchObject({ status: "recorded" });
-
-      const interveningEvent = revisionEvent({
-        providerEventId: "mention-only-b",
-        externalMessageId: "message-b",
-        operation: "created",
-        occurredAt: "2026-08-19T00:00:02.000Z",
-        revisionKey: "1",
-      });
-      interveningEvent.mentions = [];
-      interveningEvent.message.content = {
-        version: 1,
-        fallbackText: "intervening",
-        blocks: [{ type: "text", text: "intervening" }],
-        truncated: false,
-      };
-      const intervening = await inbox.ingest(value.imBindingId, 1, interveningEvent);
-      expect(intervening.deliveryIds).toEqual([]);
-
-      const [session] = await value.database.select().from(sessions).where(eq(sessions.channelId, "C1")).limit(1);
-      if (!session || !directA.messageId || !intervening.messageId)
-        throw new Error("Mention-only fixture is incomplete");
-      let providerWrites = 0;
-      const outbound = new OutboundMessageService(value.database, async () => ({
-        provider: "slack" as const,
-        validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
-        normalizeInbound: () => [],
-        send: async () => {
-          providerWrites += 1;
-          return { ok: true as const, externalMessageId: "unused", occurredAt: new Date() };
-        },
-        react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
-        fetchResource: async () => ({ stream: Readable.from(Buffer.alloc(0)) }),
-      }));
-      await expect(
-        outbound.execute({
-          requestId: crypto.randomUUID(),
-          sessionId: session.id,
-          agentId: value.agent.id,
-          computerId: value.computer.id,
-          computerInstanceId: instanceId,
-          placementGeneration: 1,
-          expectedLatestImMessageId: directA.messageId,
-          operation: "send",
-          content: {
-            version: 1,
-            fallbackText: "stale answer",
-            blocks: [{ type: "text", text: "stale answer" }],
-            truncated: false,
-          },
-        }),
-      ).rejects.toThrow("OUTBOUND_LATEST_MESSAGE_STALE");
-      expect(providerWrites).toBe(0);
-
-      const directC = await inbox.ingest(
-        value.imBindingId,
-        1,
-        revisionEvent({
-          providerEventId: "mention-only-c",
-          externalMessageId: "message-c",
-          operation: "created",
-          occurredAt: "2026-08-19T00:00:03.000Z",
-          revisionKey: "1",
-        }),
-      );
-      expect(directC.deliveryIds).toHaveLength(1);
-      await value.database
-        .update(imMessageDeliveries)
-        .set({ nextAttemptAt: new Date(0) })
-        .where(eq(imMessageDeliveries.id, directC.deliveryIds[0] as string));
-      await worker.runOnce();
-      const deliveredC = runtime.frames.find(
-        (frame) =>
-          (frame as { type?: string; deliveryId?: string }).type === "im:deliver" &&
-          (frame as { deliveryId?: string }).deliveryId === directC.deliveryIds[0],
-      ) as DirectImMessageDeliveryRequest | undefined;
-      expect(deliveredC).toBeDefined();
-      expect(deliveredC?.content.history).toEqual([
-        { imMessageId: intervening.messageId, occurredAt: "2026-08-19T00:00:02.000Z", text: "intervening" },
-      ]);
-      runtime.domain.close();
     } finally {
       await value.sql.end();
     }
@@ -2102,9 +2472,7 @@ describe("IM binding persistence", () => {
         expect.objectContaining({
           type: "im:deliver",
           attention: "direct",
-          runtime: expect.objectContaining({
-            allowedTools: ["opentag_message_react", "opentag_message_reply", "opentag_message_send"],
-          }),
+          runtime: expect.objectContaining({}),
         }),
       ]);
       recovered.domain.close();
@@ -2189,10 +2557,6 @@ describe("IM binding persistence", () => {
         { runtimeConfig: { model: "gpt-5" }, expected: { model: "gpt-5" } },
         { runtimeConfig: { reasoningEffort: "high" }, expected: { reasoningEffort: "high" } },
         { runtimeConfig: { instructions: "Updated instructions." }, expected: {} },
-        {
-          runtimeConfig: { allowedTools: ["opentag_message_send"] },
-          expected: { allowedTools: ["opentag_message_send"] },
-        },
         { runtimeConfig: { maxDurationMs: 45_000 }, expected: { budget: { maxDurationMs: 45_000 } } },
       ];
       for (const [index, change] of changes.entries()) {
@@ -2419,7 +2783,18 @@ describe("IM binding persistence", () => {
         agentId: value.agent.id,
         placementGeneration: firstDelivery.placementGeneration,
         attention: firstDelivery.attention,
-        content: { kind: "text", text: "late accepted input" },
+        content: {
+          kind: "text",
+          text: "late accepted input",
+          providerRef: {
+            provider: "slack",
+            appId: "A1",
+            teamId: "T1",
+            botUserId: "U_BOT",
+            channelId: "C1",
+            messageTs: "1000.1",
+          },
+        },
         runtime: pinnedRuntime,
         deadlineAt: firstDelivery.expiresAt.toISOString(),
       };
@@ -4007,23 +4382,26 @@ describe("IM binding persistence", () => {
         code: "SESSION_PLACEMENT_STALE",
       });
 
-      const replacementImBindingId = await value.imBindingService.activateSlack({
-        agentId: value.agent.id,
-        appId: "A2",
-        teamId: "T1",
-        botUserId: "U_BOT_2",
-        grantedBotScopes: [
-          "chat:write",
-          "app_mentions:read",
-          "im:history",
-          "channels:history",
-          "groups:history",
-          "mpim:history",
-        ],
-        botAccessToken: "xoxb-replacement",
-        signingSecret: "replacement-secret",
-        installedAt: new Date(),
-      });
+      const replacementImBindingId = await value.imBindingService.activateSlack(
+        {
+          agentId: value.agent.id,
+          appId: "A2",
+          teamId: "T1",
+          botUserId: "U_BOT_2",
+          grantedBotScopes: [
+            "chat:write",
+            "app_mentions:read",
+            "im:history",
+            "channels:history",
+            "groups:history",
+            "mpim:history",
+          ],
+          botAccessToken: "xoxb-replacement",
+          signingSecret: "replacement-secret",
+          installedAt: new Date(),
+        },
+        "B_BOT_2",
+      );
       expect(
         (await value.database.select().from(sessions).where(eq(sessions.id, session.id)))[0]?.endedAt,
       ).not.toBeNull();
@@ -4107,382 +4485,6 @@ describe("IM binding persistence", () => {
       ).rejects.toMatchObject({ statusCode: 404 });
       await expect(resources.open(value.bootstrap.userId, runtimeScope, message.id, 1)).rejects.toMatchObject({
         statusCode: 413,
-      });
-    } finally {
-      await value.sql.end();
-    }
-  });
-
-  it("guards outbound writes by immutable request, latest input, and placement authority", async () => {
-    const value = await fixture();
-    try {
-      const computerInstanceId = crypto.randomUUID();
-      await value.database
-        .update(computers)
-        .set({ currentInstanceId: computerInstanceId })
-        .where(eq(computers.id, value.computer.id));
-      const admitted = await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound("Ev-outbound"));
-      const [session] = await value.database.select().from(sessions);
-      if (!session || !admitted.messageId) throw new Error("Outbound fixture was not created");
-      let sends = 0;
-      let rateLimited = false;
-      const providerRelease = deferred<void>();
-      const outbound = new OutboundMessageService(value.database, async () => ({
-        provider: "slack" as const,
-        validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
-        normalizeInbound: () => [],
-        send: async () => {
-          sends += 1;
-          await providerRelease.promise;
-          if (rateLimited) {
-            return {
-              ok: false as const,
-              category: "rate_limited" as const,
-              code: "ratelimited",
-              retryAfterSeconds: 17,
-            };
-          }
-          return { ok: true as const, externalMessageId: "1000.2", occurredAt: new Date() };
-        },
-        react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
-        fetchResource: async () => ({ stream: Readable.from(Buffer.alloc(0)) }),
-      }));
-      const requestId = crypto.randomUUID();
-      const request = {
-        requestId,
-        sessionId: session.id,
-        agentId: value.agent.id,
-        computerId: value.computer.id,
-        computerInstanceId,
-        placementGeneration: 1,
-        expectedLatestImMessageId: admitted.messageId,
-        operation: "send" as const,
-        content: {
-          version: 1 as const,
-          fallbackText: "answer",
-          blocks: [{ type: "text" as const, text: "answer" }],
-          truncated: false,
-        },
-      };
-      const firstWrite = outbound.execute(request);
-      const concurrentWrite = outbound.execute(request);
-      await expect.poll(() => sends).toBe(1);
-      providerRelease.resolve();
-      await expect(firstWrite).resolves.toMatchObject({ state: "succeeded" });
-      await expect(concurrentWrite).resolves.toMatchObject({ state: "succeeded" });
-      expect(sends).toBe(1);
-      const replacementInstanceId = crypto.randomUUID();
-      await value.database
-        .update(computers)
-        .set({ currentInstanceId: replacementInstanceId })
-        .where(eq(computers.id, value.computer.id));
-      const replayRequest = { ...request, computerInstanceId: replacementInstanceId };
-      await expect(outbound.execute(replayRequest)).resolves.toMatchObject({ state: "succeeded" });
-      expect(sends).toBe(1);
-      rateLimited = true;
-      const rateLimitedRequest = { ...replayRequest, requestId: crypto.randomUUID() };
-      await expect(outbound.execute(rateLimitedRequest)).resolves.toEqual({
-        state: "transient_failed",
-        code: "ratelimited",
-        retryAfterSeconds: 17,
-      });
-      await expect(outbound.execute(rateLimitedRequest)).resolves.toEqual({
-        state: "transient_failed",
-        code: "ratelimited",
-        retryAfterSeconds: 17,
-      });
-      expect(sends).toBe(2);
-      await expect(
-        outbound.execute({ ...replayRequest, content: { ...request.content, fallbackText: "different" } }),
-      ).rejects.toThrow("OUTBOUND_REQUEST_CONFLICT");
-      await expect(
-        outbound.execute({
-          ...replayRequest,
-          requestId: crypto.randomUUID(),
-          expectedLatestImMessageId: crypto.randomUUID(),
-        }),
-      ).rejects.toThrow("OUTBOUND_LATEST_MESSAGE_STALE");
-
-      const internal = await new SessionService(value.database).createInternalSession(session.id);
-      await expect(
-        outbound.execute({ ...replayRequest, requestId: crypto.randomUUID(), sessionId: internal.session.id }),
-      ).rejects.toThrow("OUTBOUND_SESSION_UNAUTHORIZED");
-
-      let unknownWrites = 0;
-      const unknownOutbound = new OutboundMessageService(value.database, async () => ({
-        provider: "slack" as const,
-        validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
-        normalizeInbound: () => [],
-        send: async () => {
-          unknownWrites += 1;
-          return { ok: false as const, category: "unknown" as const, code: "provider_unavailable" };
-        },
-        react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
-        fetchResource: async () => ({ stream: Readable.from(Buffer.alloc(0)) }),
-      }));
-      const unknownRequest = { ...replayRequest, requestId: crypto.randomUUID() };
-      await expect(unknownOutbound.execute(unknownRequest)).resolves.toMatchObject({ state: "unknown" });
-      await expect(unknownOutbound.execute(unknownRequest)).resolves.toMatchObject({ state: "unknown" });
-      expect(unknownWrites).toBe(1);
-
-      const resolutionFailure = new OutboundMessageService(value.database, async () => {
-        throw new ProviderAdapterResolutionError("IM_BINDING_ADAPTER_UNAVAILABLE");
-      });
-      await expect(
-        resolutionFailure.execute({ ...replayRequest, requestId: crypto.randomUUID() }),
-      ).resolves.toMatchObject({ state: "transient_failed", code: "provider_unavailable" });
-    } finally {
-      await value.sql.end();
-    }
-  });
-
-  it("marks the ImBinding reauthorization-required in the credential failure transaction", async () => {
-    const value = await fixture();
-    try {
-      const computerInstanceId = crypto.randomUUID();
-      await value.database
-        .update(computers)
-        .set({ currentInstanceId: computerInstanceId })
-        .where(eq(computers.id, value.computer.id));
-      const admitted = await new ImMessageInbox(value.database).ingest(
-        value.imBindingId,
-        1,
-        inbound("Ev-credential-failed"),
-      );
-      const [session] = await value.database.select().from(sessions);
-      if (!session || !admitted.messageId) throw new Error("Outbound fixture was not created");
-      const outbound = new OutboundMessageService(value.database, async () => ({
-        provider: "slack" as const,
-        validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
-        normalizeInbound: () => [],
-        send: async () => ({ ok: false as const, category: "credential" as const, code: "invalid_auth" }),
-        react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
-        fetchResource: async () => ({ stream: Readable.from(Buffer.alloc(0)) }),
-      }));
-      await expect(
-        outbound.execute({
-          requestId: crypto.randomUUID(),
-          sessionId: session.id,
-          agentId: value.agent.id,
-          computerId: value.computer.id,
-          computerInstanceId,
-          placementGeneration: 1,
-          expectedLatestImMessageId: admitted.messageId,
-          operation: "send",
-          content: {
-            version: 1,
-            fallbackText: "answer",
-            blocks: [{ type: "text", text: "answer" }],
-            truncated: false,
-          },
-        }),
-      ).resolves.toEqual({ state: "credential_failed", code: "invalid_auth", retryAfterSeconds: undefined });
-      expect((await value.database.select().from(imBindings))[0]).toMatchObject({
-        status: "reauthorization_required",
-        lastErrorCode: "invalid_auth",
-      });
-      await expect(
-        value.imBindingService.diagnostics(value.bootstrap.userId, value.imBindingId),
-      ).resolves.toMatchObject({ ready: false, reauthorizationRequired: true, lastErrorCode: "invalid_auth" });
-    } finally {
-      await value.sql.end();
-    }
-  });
-
-  it("rejects reply and reaction targets whose current provider revision is deleted", async () => {
-    const value = await fixture();
-    try {
-      const computerInstanceId = crypto.randomUUID();
-      await value.database
-        .update(computers)
-        .set({ currentInstanceId: computerInstanceId })
-        .where(eq(computers.id, value.computer.id));
-      await value.database
-        .update(imBindings)
-        .set({
-          grantedCapabilities: [
-            "chat:write",
-            "app_mentions:read",
-            "im:history",
-            "channels:history",
-            "groups:history",
-            "mpim:history",
-            "reactions:write",
-          ],
-        })
-        .where(eq(imBindings.id, value.imBindingId));
-      const inbox = new ImMessageInbox(value.database);
-      const created = await inbox.ingest(
-        value.imBindingId,
-        1,
-        revisionEvent({
-          providerEventId: "target-create",
-          externalMessageId: "target-message",
-          operation: "created",
-          occurredAt: "2026-08-19T00:00:01.000Z",
-          revisionKey: "1",
-        }),
-      );
-      const [createdDelivery] = await value.database
-        .select()
-        .from(imMessageDeliveries)
-        .where(eq(imMessageDeliveries.messageId, created.messageId as string));
-      if (!created.messageId || !createdDelivery) throw new Error("Deleted target fixture was not created");
-      await value.database
-        .update(imMessageDeliveries)
-        .set({
-          state: "accepted",
-          inputHash: "input-hash",
-          turnId: "accepted-target-turn",
-          reportOwnerInstanceId: crypto.randomUUID(),
-          acceptedAt: new Date(),
-        })
-        .where(eq(imMessageDeliveries.id, createdDelivery.id));
-      await inbox.ingest(
-        value.imBindingId,
-        1,
-        revisionEvent({
-          providerEventId: "target-delete",
-          externalMessageId: "target-message",
-          operation: "deleted",
-          occurredAt: "2026-08-19T00:00:02.000Z",
-          revisionKey: "2",
-        }),
-      );
-      const latest = await inbox.ingest(
-        value.imBindingId,
-        1,
-        revisionEvent({
-          providerEventId: "new-message",
-          externalMessageId: "new-message",
-          operation: "created",
-          occurredAt: "2026-08-19T00:00:03.000Z",
-          revisionKey: "1",
-        }),
-      );
-      const [session] = await value.database.select().from(sessions);
-      if (!session || !latest.messageId) throw new Error("Latest message fixture was not created");
-      let providerCalls = 0;
-      const outbound = new OutboundMessageService(value.database, async () => ({
-        provider: "slack" as const,
-        validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
-        normalizeInbound: () => [],
-        send: async () => {
-          providerCalls += 1;
-          return { ok: true as const, externalMessageId: "sent", occurredAt: new Date() };
-        },
-        react: async () => {
-          providerCalls += 1;
-          return { ok: true as const, externalMessageId: "reacted", occurredAt: new Date() };
-        },
-        fetchResource: async () => ({ stream: Readable.from(Buffer.alloc(0)) }),
-      }));
-      const base = {
-        sessionId: session.id,
-        agentId: value.agent.id,
-        computerId: value.computer.id,
-        computerInstanceId,
-        placementGeneration: 1,
-        expectedLatestImMessageId: latest.messageId,
-      };
-      await expect(
-        outbound.execute({
-          ...base,
-          requestId: crypto.randomUUID(),
-          operation: "reply",
-          replyToImMessageId: created.messageId,
-          content: {
-            version: 1,
-            fallbackText: "reply",
-            blocks: [{ type: "text", text: "reply" }],
-            truncated: false,
-          },
-        }),
-      ).rejects.toThrow("OUTBOUND_TARGET_INVALID");
-      await expect(
-        outbound.execute({
-          ...base,
-          requestId: crypto.randomUUID(),
-          operation: "react",
-          targetImMessageId: created.messageId,
-          emoji: "thumbsup",
-        }),
-      ).rejects.toThrow("OUTBOUND_TARGET_INVALID");
-      expect(providerCalls).toBe(0);
-    } finally {
-      await value.sql.end();
-    }
-  });
-
-  it("does not let a delayed old-generation credential failure invalidate a rotated binding", async () => {
-    const value = await fixture();
-    try {
-      const computerInstanceId = crypto.randomUUID();
-      await value.database
-        .update(computers)
-        .set({ currentInstanceId: computerInstanceId })
-        .where(eq(computers.id, value.computer.id));
-      const admitted = await new ImMessageInbox(value.database).ingest(
-        value.imBindingId,
-        1,
-        inbound("Ev-old-generation"),
-      );
-      const [session] = await value.database.select().from(sessions);
-      if (!session || !admitted.messageId) throw new Error("Outbound fixture was not created");
-      const providerResult = deferred<{ ok: false; category: "credential"; code: "invalid_auth" }>();
-      const providerEntered = deferred<void>();
-      const outbound = new OutboundMessageService(value.database, async (_imBindingId, generation) => ({
-        provider: "slack" as const,
-        validateBinding: async () => ({ externalAppId: "A1", externalTeamId: "T1", externalBotId: "U_BOT" }),
-        normalizeInbound: () => [],
-        send: async () => {
-          expect(generation).toBe(1);
-          providerEntered.resolve();
-          return providerResult.promise;
-        },
-        react: async () => ({ ok: false as const, category: "unknown" as const, code: "unused" }),
-        fetchResource: async () => ({ stream: Readable.from(Buffer.alloc(0)) }),
-      }));
-      const executing = outbound.execute({
-        requestId: crypto.randomUUID(),
-        sessionId: session.id,
-        agentId: value.agent.id,
-        computerId: value.computer.id,
-        computerInstanceId,
-        placementGeneration: 1,
-        expectedLatestImMessageId: admitted.messageId,
-        operation: "send",
-        content: {
-          version: 1,
-          fallbackText: "answer",
-          blocks: [{ type: "text", text: "answer" }],
-          truncated: false,
-        },
-      });
-      await providerEntered.promise;
-      await value.imBindingService.activateSlack({
-        agentId: value.agent.id,
-        appId: "A1",
-        teamId: "T1",
-        botUserId: "U_BOT",
-        grantedBotScopes: [
-          "chat:write",
-          "app_mentions:read",
-          "im:history",
-          "channels:history",
-          "groups:history",
-          "mpim:history",
-        ],
-        botAccessToken: "xoxb-rotated",
-        signingSecret: "signing-secret-rotated",
-        installedAt: new Date(),
-      });
-      providerResult.resolve({ ok: false, category: "credential", code: "invalid_auth" });
-      await expect(executing).resolves.toMatchObject({ state: "credential_failed", code: "invalid_auth" });
-      expect((await value.database.select().from(imBindings))[0]).toMatchObject({
-        credentialGeneration: 2,
-        status: "active",
-        lastErrorCode: null,
       });
     } finally {
       await value.sql.end();
@@ -4693,10 +4695,12 @@ describe("IM binding persistence", () => {
     const value = await unboundFixture();
     try {
       const now = new Date("2026-08-19T00:00:00.000Z");
-      let runtimeReady = true;
+      let agentRuntimeReady = true;
+      let providerCliReady = true;
       const service = new ImBindingService(value.database, value.cipher, {
         now: () => now,
-        runtimeReady: () => runtimeReady,
+        agentRuntimeReadiness: () => (agentRuntimeReady ? "ready" : "unavailable"),
+        imCliReadiness: () => (providerCliReady ? "ready" : "unavailable"),
       });
       const imBindingId = await service.activateFeishu({
         agentId: value.agent.id,
@@ -4719,7 +4723,8 @@ describe("IM binding persistence", () => {
         .where(eq(imBindings.id, imBindingId));
       await expect(service.diagnostics(value.bootstrap.userId, imBindingId)).resolves.toMatchObject({
         ready: false,
-        runtimeToolAvailable: true,
+        agentRuntimeReadiness: "ready",
+        providerCliReadiness: "ready",
         connection: { state: "disconnected" },
       });
       await expect(service.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toEqual({
@@ -4756,6 +4761,8 @@ describe("IM binding persistence", () => {
         .where(eq(imBindings.id, imBindingId));
       await expect(service.diagnostics(value.bootstrap.userId, imBindingId)).resolves.toMatchObject({
         ready: true,
+        agentRuntimeReadiness: "ready",
+        providerCliReadiness: "ready",
         connection: { state: "connected" },
       });
       await expect(service.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toEqual({
@@ -4763,15 +4770,25 @@ describe("IM binding persistence", () => {
         handoffReady: true,
       });
 
-      runtimeReady = false;
+      agentRuntimeReady = false;
       await expect(service.diagnostics(value.bootstrap.userId, imBindingId)).resolves.toMatchObject({
         ready: false,
-        runtimeToolAvailable: false,
+        agentRuntimeReadiness: "unavailable",
+        providerCliReadiness: "ready",
         connection: { state: "connected" },
       });
       await expect(service.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toEqual({
         bindingState: "active",
         handoffReady: false,
+      });
+
+      agentRuntimeReady = true;
+      providerCliReady = false;
+      await expect(service.diagnostics(value.bootstrap.userId, imBindingId)).resolves.toMatchObject({
+        ready: false,
+        agentRuntimeReadiness: "ready",
+        providerCliReadiness: "unavailable",
+        connection: { state: "connected" },
       });
     } finally {
       await value.sql.end();
@@ -5026,7 +5043,7 @@ describe("IM binding persistence", () => {
     }
   });
 
-  it("builds Feishu outbound and resource HTTP capability on a replica that does not own the Channel lease", async () => {
+  it("builds Feishu resource HTTP capability on a replica that does not own the Channel lease", async () => {
     const value = await unboundFixture();
     try {
       const imBindingId = await value.imBindingService.activateFeishu({
@@ -5046,7 +5063,6 @@ describe("IM binding persistence", () => {
           connectionLeaseExpiresAt: new Date(Date.now() + 60_000),
         })
         .where(eq(imBindings.id, imBindingId));
-      const sends: string[] = [];
       const resources: string[] = [];
       const resolver = createImProviderAdapterResolver({
         imBindings: value.imBindingService,
@@ -5060,11 +5076,6 @@ describe("IM binding persistence", () => {
               externalBotId: "ou_http",
             });
             normalizeInbound = () => [];
-            send = async () => {
-              sends.push(options.appSecret);
-              return { ok: true as const, externalMessageId: "om_http", occurredAt: new Date() };
-            };
-            react = async () => ({ ok: true as const, externalMessageId: "om_http", occurredAt: new Date() });
             fetchResource = async () => {
               resources.push(options.appSecret);
               return { stream: Readable.from(Buffer.from("resource")) };
@@ -5073,12 +5084,8 @@ describe("IM binding persistence", () => {
       });
       const adapter = await resolver(imBindingId, 1);
       await expect(
-        adapter.send({ requestId: crypto.randomUUID(), conversationExternalId: "chat", fallbackText: "hello" }),
-      ).resolves.toMatchObject({ ok: true, externalMessageId: "om_http" });
-      await expect(
         adapter.fetchResource({ messageExternalId: "om_1", providerResourceKey: "file_1", kind: "file" }),
       ).resolves.toMatchObject({ stream: expect.any(Readable) });
-      expect(sends).toEqual(["secret-http"]);
       expect(resources).toEqual(["secret-http"]);
     } finally {
       await value.sql.end();

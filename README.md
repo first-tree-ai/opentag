@@ -14,10 +14,13 @@ This repository currently provides the engineering foundation and first control-
 - one-time connect-code login with sliding stateless refresh JWTs;
 - explicit Team membership, role, leave/remove/restore, and seven-day invitation lifecycles;
 - user-owned Computer registration and presence;
-- Team-owned Agent registry with immutable Computer/provider binding and revision fencing; and
+- Team-owned Agent registry with immutable Computer/provider binding and revision fencing;
+- durable Agent Runtime execution, delivery custody, reporting, and recovery;
+- Feishu and Slack inbound normalization, persistence, and Channel/Thread Session routing;
+- direct provider CLI credential handoff for Agent-controlled replies and reactions; and
 - a same-origin, read-only Admin Web plus `doctor`, `login`, `team`, `agent`, `computer`, and daemon service management commands.
 
-Agent execution, Feishu/Slack integrations, IM persistence, and session runtimes are not implemented yet.
+These runtime and messaging paths are implemented but remain pre-alpha. Installation, administration, and end-to-end product workflows are still being completed.
 
 ## Quick start
 
@@ -66,7 +69,7 @@ pnpm --filter open-tag start agent create \
 pnpm --filter open-tag start agent list
 ```
 
-This records the Agent identity and Computer binding only; it does not start a Codex or Claude Code turn.
+This records the Agent identity and Computer binding. Agent Runtime turns start when admitted work is delivered to that Agent.
 
 Team Admins manage model, reasoning effort, and the maximum Turn duration for Codex Agents from the Agent's **Runtime**
 tab or the corresponding `agent update` flags. A blank model or reasoning value leaves the choice to Codex; a blank
@@ -96,14 +99,16 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full local workflow.
 ## Project status
 
 OpenTag is being built in small, validated vertical slices. Public APIs and package boundaries may change before the
-first stable release. The current code establishes database bootstrap, user authentication, the local Computer
-connection, the Agent registry, account/Team lifecycle, and read-only Admin Web; agent execution and messaging remain
-future vertical slices.
+first stable release. The current code includes the control plane, local Computer connection, Agent Runtime, durable IM
+delivery, Feishu/Slack inbound routing, Channel/Thread Sessions, and direct provider CLI handoff. Product administration
+and broader collaboration workflows remain under development.
 
 ## Documentation
 
 - [Development guide](./DEVELOPMENT.md)
 - [Server observability](./docs/observability.md)
+- [Direct provider CLI messaging](./docs/direct-provider-cli.md)
+- [IM Channel and Thread Sessions](./docs/thread-sessions.md)
 - [Contributing guide](./CONTRIBUTING.md)
 - [Release guide](./docs/releasing.md)
 - [Deployment guide](./docs/deploying.md)

@@ -82,14 +82,14 @@ describe("ClaudeCodeAgentRuntime", () => {
     const runtime = await claudeFactory(processes, "complete").create({
       ...request,
       hostedTools: {
-        definitions: [{ name: "opentag_message_reply", inputSchema: { type: "object" } }],
+        definitions: [{ name: "example_tool", inputSchema: { type: "object" } }],
         handler: async () => ({ success: true, content: [] }),
       },
     });
 
     await runtime.prompt({ runId: "run-hosted", input: input("reply") });
     expect(processes[0]?.args).toContain("--allowedTools");
-    expect(processes[0]?.args).toContain("mcp__opentag__opentag_message_reply");
+    expect(processes[0]?.args).toContain("mcp__opentag__example_tool");
     expect(processes[0]?.args).not.toContain("mcp__opentag__Read");
     await runtime.close();
   });

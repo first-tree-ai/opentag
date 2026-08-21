@@ -3,7 +3,11 @@ import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { computers } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
-import { type ProviderReadinessSource, projectComputerProviderReadiness } from "./provider-readiness.js";
+import {
+  type ProviderReadinessSource,
+  projectComputerImCliReadiness,
+  projectComputerProviderReadiness,
+} from "./provider-readiness.js";
 
 export interface ActiveUserResolver {
   getActiveUserById(userId: string): Promise<MeResponse>;
@@ -139,6 +143,12 @@ export class ComputerService {
           ...(includeProviderReadiness
             ? {
                 providerReadiness: projectComputerProviderReadiness(
+                  row.id,
+                  connectionStatus,
+                  observedAt,
+                  this.#providerReadiness,
+                ),
+                imCliReadiness: projectComputerImCliReadiness(
                   row.id,
                   connectionStatus,
                   observedAt,

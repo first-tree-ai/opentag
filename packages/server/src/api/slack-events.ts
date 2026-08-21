@@ -96,6 +96,7 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
         appId: binding.appId,
         teamId: binding.teamId,
         botUserId: binding.botUserId,
+        botId: binding.botId,
         event: envelope.event,
         eventTime: envelope.event_time,
       });

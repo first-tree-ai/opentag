@@ -20,7 +20,6 @@ export const agentRuntimeConfigs = pgTable(
     model: text("model"),
     reasoningEffort: text("reasoning_effort"),
     instructions: text("instructions").notNull(),
-    allowedTools: text("allowed_tools").array().notNull(),
     maxDurationMs: integer("max_duration_ms"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

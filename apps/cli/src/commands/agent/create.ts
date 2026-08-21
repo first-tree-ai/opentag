@@ -16,7 +16,6 @@ export function registerAgentCreateCommand(agent: Command): void {
     .addOption(
       new Option("--instructions-file <path>", "read Agent instructions from a UTF-8 file").conflicts("instructions"),
     )
-    .option("--allowed-tool <tool-id>", "allow an OpenTag runtime tool (repeatable)", collectValue)
     .option(
       "--max-duration-ms <integer>",
       "maximum duration of one Turn in milliseconds; omit to use the OpenTag default",
@@ -32,14 +31,9 @@ export function registerAgentCreateCommand(agent: Command): void {
         reasoningEffort: options.reasoningEffort,
         instructions: options.instructions,
         instructionsFile: options.instructionsFile,
-        allowedTools: options.allowedTool,
         maxDurationMs: options.maxDurationMs,
       });
       if (result.warning) process.stderr.write(`${result.warning}\n`);
       process.stdout.write(`${formatAgentCreated(result)}\n`);
     });
-}
-
-function collectValue(value: string, previous: string[] | undefined): string[] {
-  return [...(previous ?? []), value];
 }

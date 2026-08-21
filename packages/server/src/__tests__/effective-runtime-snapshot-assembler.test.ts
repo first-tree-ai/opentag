@@ -20,7 +20,6 @@ function authority(overrides: Record<string, unknown> = {}) {
       model: "gpt-5",
       reasoningEffort: "high",
       instructions: "Review the change.",
-      allowedTools: ["opentag_message_reply", "opentag_message_send"],
       maxDurationMs: 30_000,
     },
     runtimeProvider: "codex",
@@ -49,7 +48,6 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
       model: "gpt-5",
       reasoningEffort: "high",
       instructions: { platform: OPENTAG_PLATFORM_INSTRUCTIONS, agent: "Review the change." },
-      allowedTools: ["opentag_message_reply", "opentag_message_send"],
       budget: { maxDurationMs: 30_000 },
       revision: {
         agent: { sequence: 7, id: expect.stringMatching(/^[a-f0-9]{64}$/) },
@@ -95,7 +93,6 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
     expect(snapshot).not.toHaveProperty("reasoningEffort");
     expect(snapshot).not.toHaveProperty("budget");
     expect(snapshot.instructions.agent).toBe(DEFAULT_AGENT_RUNTIME_CONFIG.instructions);
-    expect(snapshot.allowedTools).toEqual(DEFAULT_AGENT_RUNTIME_CONFIG.allowedTools);
   });
 
   it("compiles the reviewed Claude Code execution policy without changing the snapshot contract", async () => {

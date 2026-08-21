@@ -23,24 +23,17 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  Link,
-  Navigate,
-  NavLink,
-  Outlet,
-  Route,
-  Routes,
-  useLocation,
-  useNavigate,
-  useOutletContext,
-  useParams,
-} from "react-router-dom";
+import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ApiError, browserApi } from "./api.js";
 import { ComputerSetup } from "./computer-setup.js";
 import { CreateTeamForm } from "./create-team-form.js";
+import { IntegrationsPage } from "./features/integrations-page.js";
+import { SkillsPage } from "./features/skills-page.js";
+import { UsagePage } from "./features/usage-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
 import { OnboardingPage } from "./onboarding/page.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
+import { Button, Dialog, Field, Icon, StatusIndicator, type StatusTone } from "./ui/design-system.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
 
@@ -311,12 +304,6 @@ interface TeamSession {
   selectTeam: (teamId: string) => void;
 }
 
-interface AppShellOutletContext {
-  invitationMutationPending: boolean;
-  invitationOpen: boolean;
-  setInvitationMutationPending: (pending: boolean) => void;
-}
-
 const teamContext = createContext<TeamSession | undefined>(undefined);
 const TeamContext = teamContext.Provider;
 
@@ -331,7 +318,8 @@ export function AppRouter() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/invites/:token" element={<InvitePage />} />
-      <Route path="/teams/new" element={<NewTeamPage />} />
+      <Route path="/teams/new" element={<Navigate replace to="/workspaces/new" />} />
+      <Route path="/workspaces/new" element={<NewTeamPage />} />
       <Route element={<AuthenticatedTeamGate />}>
         <Route path="/onboarding" element={<OnboardingRoute />} />
         <Route element={<AppShell />}>
@@ -340,11 +328,24 @@ export function AppRouter() {
           <Route path="/agents/new" element={<NewAgentPage />} />
           <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
           <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
+          <Route path="/tasks" element={<TasksPage />} />
+          <Route path="/integrations" element={<IntegrationsPage />} />
+          <Route path="/skills" element={<SkillsPage />} />
+          <Route path="/resources" element={<Navigate replace to="/skills" />} />
+          <Route path="/usage" element={<UsagePage />} />
+          <Route path="/members" element={<MembersPage />} />
           <Route path="/account" element={<AccountPage />} />
-          <Route path="/settings" element={<Navigate replace to="team" />} />
+          <Route path="/settings" element={<Navigate replace to="/members" />} />
           <Route path="/settings/account" element={<Navigate replace to="/account" />} />
-          <Route path="/settings/members" element={<Navigate replace to="/settings/team#members" />} />
-          <Route path="/settings/:section" element={<SettingsPage />} />
+          <Route path="/settings/team" element={<Navigate replace to="/account#workspace-management" />} />
+          <Route path="/settings/members" element={<Navigate replace to="/members" />} />
+          <Route path="/settings/access" element={<Navigate replace to="/members" />} />
+          <Route path="/settings/security" element={<Navigate replace to="/members" />} />
+          <Route path="/settings/computers" element={<Navigate replace to="/agents#agent-runtime" />} />
+          <Route path="/settings/resources" element={<Navigate replace to="/skills" />} />
+          <Route path="/settings/integrations" element={<Navigate replace to="/integrations" />} />
+          <Route path="/settings/usage" element={<Navigate replace to="/usage" />} />
+          <Route path="/settings/:section" element={<Navigate replace to="/members" />} />
         </Route>
       </Route>
       <Route path="*" element={<StandaloneNotFoundPage />} />
@@ -359,7 +360,7 @@ function LoginPage() {
     <main className="center-card decorative-page">
       <span className="eyebrow">OpenTag</span>
       <h1>Sign in</h1>
-      <p>Choose an available sign-in method. Team permissions are checked by the server on every request.</p>
+      <p>Choose an available sign-in method. Permissions are checked by the server on every request.</p>
       <AsyncState state={providers}>
         {(value) => (
           <div className="actions">
@@ -404,7 +405,7 @@ function InvitePage() {
         const redemption = await browserApi.redeemInvitation(token);
         const me = await browserApi.me();
         if (!me.memberships.some((membership: MeMembership) => membership.teamId === redemption.membership.teamId)) {
-          throw new Error("The invited Team is not available to the signed-in account");
+          throw new Error("The invited Workspace is not available to the signed-in account");
         }
         clearPendingInvitation(token);
         rememberTeamPreference(redemption.membership.teamId);
@@ -437,13 +438,13 @@ function InvitePage() {
       <AsyncState state={preview}>
         {(value) => (
           <>
-            <span className="eyebrow">Team invitation</span>
+            <span className="eyebrow">Workspace invitation</span>
             <h1>Join {value.teamDisplayName}</h1>
             <p>
               This invitation grants the {value.role} role and expires {formatDate(value.expiresAt)}.
             </p>
             <button className="button" disabled={joining} type="button" onClick={join}>
-              {joining ? "Joining…" : "Join Team"}
+              {joining ? "Joining…" : "Join Workspace"}
             </button>
           </>
         )}
@@ -493,7 +494,7 @@ function NewTeamPage() {
   return (
     <main className="center-card decorative-page">
       <span className="eyebrow">OpenTag</span>
-      <h1>Create your team</h1>
+      <h1>Create your Workspace</h1>
       <p>You can invite people and add Agents next.</p>
       <CreateTeamForm
         onCreated={(created) => {
@@ -520,7 +521,9 @@ function AuthenticatedTeamGate() {
       {(me) => {
         const membership =
           me.memberships.find((item: MeMembership) => item.teamId === selectedTeamId) ?? me.memberships[0];
-        if (!membership) return <Navigate replace to="/teams/new" />;
+        if (!membership) {
+          return <WorkspaceSetupIncomplete onRetry={() => setMeRevision((value) => value + 1)} />;
+        }
         const selectTeam = (teamId: string) => {
           if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
           rememberTeamPreference(teamId);
@@ -533,6 +536,22 @@ function AuthenticatedTeamGate() {
         );
       }}
     </AsyncState>
+  );
+}
+
+function WorkspaceSetupIncomplete({ onRetry }: { onRetry: () => void }) {
+  return (
+    <main className="center-card decorative-page">
+      <span className="eyebrow">Workspace setup</span>
+      <h1>Workspace setup incomplete</h1>
+      <p>OpenTag could not find a Workspace membership for this account.</p>
+      <div className="notice error" role="alert">
+        The server must finish Workspace setup before the Web app can continue.
+      </div>
+      <button className="button" type="button" onClick={onRetry}>
+        Check again
+      </button>
+    </main>
   );
 }
 
@@ -570,42 +589,27 @@ function AppShell() {
   const { me, membership, selectTeam } = useTeam();
   const navigate = useNavigate();
   const [navigationOpen, setNavigationOpen] = useState(false);
-  const [openMenu, setOpenMenu] = useState<"team" | "account">();
-  const [invitationOpen, setInvitationOpen] = useState(false);
-  const [invitationMutationPending, setInvitationMutationPending] = useState(false);
-  const [teamQuery, setTeamQuery] = useState("");
+  const [openMenu, setOpenMenu] = useState<"account">();
   const [loggingOut, setLoggingOut] = useState(false);
   const [accountError, setAccountError] = useState<string>();
-  const teamMenuRef = useRef<HTMLDivElement>(null);
   const accountMenuRef = useRef<HTMLDivElement>(null);
-  const teamTriggerRef = useRef<HTMLButtonElement>(null);
   const accountTriggerRef = useRef<HTMLButtonElement>(null);
-  const filteredMemberships = me.memberships.filter((item) =>
-    item.teamDisplayName.toLocaleLowerCase().includes(teamQuery.trim().toLocaleLowerCase()),
-  );
   useEffect(() => {
     if (!openMenu) return;
-    const menu = openMenu === "team" ? teamMenuRef.current : accountMenuRef.current;
-    const initialFocus =
-      openMenu === "team"
-        ? (menu?.querySelector<HTMLInputElement>('input[type="search"]') ??
-          menu?.querySelector<HTMLElement>('[aria-current="true"]') ??
-          menu?.querySelector<HTMLElement>("button, a"))
-        : menu?.querySelector<HTMLElement>('[role="menuitem"]');
+    const menu = accountMenuRef.current;
+    const initialFocus = menu?.querySelector<HTMLElement>('[role="menuitem"]');
     initialFocus?.focus();
 
     const closeOutside = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
-      const activeMenu = openMenu === "team" ? teamMenuRef.current : accountMenuRef.current;
-      if (!activeMenu?.contains(target)) setOpenMenu(undefined);
+      if (!accountMenuRef.current?.contains(target)) setOpenMenu(undefined);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      const trigger = openMenu === "team" ? teamTriggerRef.current : accountTriggerRef.current;
       setOpenMenu(undefined);
-      trigger?.focus();
+      accountTriggerRef.current?.focus();
     };
     document.addEventListener("pointerdown", closeOutside);
     document.addEventListener("keydown", closeOnEscape);
@@ -658,117 +662,30 @@ function AppShell() {
           <Link className="brand" to="/agents" onClick={() => setNavigationOpen(false)}>
             OpenTag
           </Link>
-          <div className="team-menu" ref={teamMenuRef}>
-            <button
-              aria-controls="team-menu-popover"
-              aria-expanded={openMenu === "team"}
-              aria-haspopup="dialog"
-              className="team-switcher"
-              ref={teamTriggerRef}
-              type="button"
-              onClick={() => {
-                setTeamQuery("");
-                setOpenMenu((value) => (value === "team" ? undefined : "team"));
-              }}
-            >
-              <span className="team-avatar" aria-hidden="true">
-                {initials(membership.teamDisplayName)}
-              </span>
-              <span>{membership.teamDisplayName}</span>
-              <span className="team-menu-chevron" aria-hidden="true">
-                {openMenu === "team" ? "⌃" : "⌄"}
-              </span>
-            </button>
-            {openMenu === "team" ? (
-              <section aria-label="Switch Team" className="team-menu-popover" id="team-menu-popover" role="dialog">
-                <span className="menu-label">Switch Team</span>
-                {me.memberships.length > 6 ? (
-                  <label className="team-search">
-                    <span className="visually-hidden">Search Teams</span>
-                    <input
-                      placeholder="Search Teams"
-                      type="search"
-                      value={teamQuery}
-                      onChange={(event) => setTeamQuery(event.currentTarget.value)}
-                    />
-                  </label>
-                ) : null}
-                <div className="team-menu-list">
-                  {filteredMemberships.map((item: MeMembership) => {
-                    const current = item.teamId === membership.teamId;
-                    return (
-                      <button
-                        aria-current={current ? "true" : undefined}
-                        className="team-menu-option"
-                        key={item.teamId}
-                        type="button"
-                        onClick={() => {
-                          setOpenMenu(undefined);
-                          setNavigationOpen(false);
-                          if (!current) selectTeam(item.teamId);
-                        }}
-                      >
-                        <span className="team-avatar" aria-hidden="true">
-                          {initials(item.teamDisplayName)}
-                        </span>
-                        <span className="team-option-copy">
-                          <strong>{item.teamDisplayName}</strong>
-                          <small>{titleCase(item.role)}</small>
-                        </span>
-                        {current ? (
-                          <span className="team-option-check" aria-hidden="true">
-                            ✓
-                          </span>
-                        ) : null}
-                      </button>
-                    );
-                  })}
-                  {filteredMemberships.length === 0 ? <span className="team-menu-empty">No matching Teams</span> : null}
-                </div>
-                <div className="team-menu-actions">
-                  {membership.role === "admin" ? (
-                    <button
-                      className="team-menu-action"
-                      disabled={invitationMutationPending}
-                      type="button"
-                      onClick={() => {
-                        if (invitationMutationPending) return;
-                        setOpenMenu(undefined);
-                        setNavigationOpen(false);
-                        setInvitationOpen(true);
-                      }}
-                    >
-                      <span aria-hidden="true">↗</span>
-                      Invite people
-                    </button>
-                  ) : null}
-                  <Link
-                    className="team-menu-action"
-                    to="/teams/new"
-                    onClick={() => {
-                      setOpenMenu(undefined);
-                      setNavigationOpen(false);
-                    }}
-                  >
-                    <span aria-hidden="true">＋</span>
-                    Create Team
-                  </Link>
-                </div>
-              </section>
-            ) : null}
-          </div>
-          <nav aria-label="Workspace" className="primary-nav">
+          <nav aria-label="Product" className="primary-nav">
             <NavLink to="/agents" onClick={() => setNavigationOpen(false)}>
               <WorkspaceNavIcon name="agents" />
               Agents
             </NavLink>
-            <span className="nav-placeholder" aria-disabled="true">
+            <NavLink to="/tasks" onClick={() => setNavigationOpen(false)}>
               <WorkspaceNavIcon name="tasks" />
               Tasks
-            </span>
-            <NavLink to="/settings" onClick={() => setNavigationOpen(false)}>
-              <WorkspaceNavIcon name="settings" />
-              Settings
+            </NavLink>
+            <NavLink to="/integrations" onClick={() => setNavigationOpen(false)}>
+              <WorkspaceNavIcon name="integrations" />
+              Integrations
+            </NavLink>
+            <NavLink to="/skills" onClick={() => setNavigationOpen(false)}>
+              <WorkspaceNavIcon name="skills" />
+              Skills
+            </NavLink>
+            <NavLink to="/usage" onClick={() => setNavigationOpen(false)}>
+              <WorkspaceNavIcon name="usage" />
+              Usage
+            </NavLink>
+            <NavLink to="/members" onClick={() => setNavigationOpen(false)}>
+              <WorkspaceNavIcon name="members" />
+              Members
             </NavLink>
           </nav>
         </div>
@@ -802,19 +719,71 @@ function AppShell() {
                 role="menu"
                 onKeyDown={handleAccountMenuKeyDown}
               >
-                <Link
-                  role="menuitem"
-                  to="/account"
-                  onClick={() => {
-                    setOpenMenu(undefined);
-                    setNavigationOpen(false);
-                  }}
-                >
-                  Account settings
-                </Link>
-                <button disabled={loggingOut} role="menuitem" type="button" onClick={() => void logout()}>
-                  {loggingOut ? "Signing out…" : "Sign out"}
-                </button>
+                {me.memberships.length > 1 ? (
+                  <fieldset className="account-workspace-group">
+                    <legend className="menu-label">Switch Workspace</legend>
+                    {me.memberships.map((item: MeMembership) => {
+                      const current = item.teamId === membership.teamId;
+                      return (
+                        <button
+                          aria-current={current ? "true" : undefined}
+                          className="account-workspace-option"
+                          key={item.teamId}
+                          role="menuitem"
+                          type="button"
+                          onClick={() => {
+                            setOpenMenu(undefined);
+                            setNavigationOpen(false);
+                            if (!current) {
+                              navigate("/agents");
+                              selectTeam(item.teamId);
+                            }
+                          }}
+                        >
+                          <span className="team-avatar" aria-hidden="true">
+                            {initials(item.teamDisplayName)}
+                          </span>
+                          <span className="team-option-copy">
+                            <strong>{item.teamDisplayName}</strong>
+                            <small>{titleCase(item.role)}</small>
+                          </span>
+                          {current ? (
+                            <span className="team-option-check" aria-hidden="true">
+                              ✓
+                            </span>
+                          ) : null}
+                        </button>
+                      );
+                    })}
+                    <Link
+                      className="account-workspace-manage"
+                      role="menuitem"
+                      to="/account#workspace-management"
+                      onClick={() => {
+                        setOpenMenu(undefined);
+                        setNavigationOpen(false);
+                      }}
+                    >
+                      <span>Manage Workspaces</span>
+                      <Icon name="chevron-right" />
+                    </Link>
+                  </fieldset>
+                ) : null}
+                <div className="account-menu-actions">
+                  <Link
+                    role="menuitem"
+                    to="/account"
+                    onClick={() => {
+                      setOpenMenu(undefined);
+                      setNavigationOpen(false);
+                    }}
+                  >
+                    Account settings
+                  </Link>
+                  <button disabled={loggingOut} role="menuitem" type="button" onClick={() => void logout()}>
+                    {loggingOut ? "Signing out…" : "Sign out"}
+                  </button>
+                </div>
                 {accountError ? (
                   <span className="account-menu-error" role="alert">
                     {accountError}
@@ -835,24 +804,14 @@ function AppShell() {
           </button>
         </header>
         <main className="content">
-          <Outlet context={{ invitationMutationPending, invitationOpen, setInvitationMutationPending }} />
+          <Outlet />
         </main>
       </div>
-      {invitationOpen ? (
-        <InvitationDialog
-          mutationPending={invitationMutationPending}
-          onMutationPendingChange={setInvitationMutationPending}
-          returnFocusRef={teamTriggerRef}
-          teamDisplayName={membership.teamDisplayName}
-          teamId={membership.teamId}
-          onClose={() => setInvitationOpen(false)}
-        />
-      ) : null}
     </div>
   );
 }
 
-function WorkspaceNavIcon({ name }: { name: "agents" | "settings" | "tasks" }) {
+function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "members" | "skills" | "tasks" | "usage" }) {
   return (
     <svg
       aria-hidden="true"
@@ -878,10 +837,30 @@ function WorkspaceNavIcon({ name }: { name: "agents" | "settings" | "tasks" }) {
           <path d="m7.5 12 3 3 6-6" />
         </>
       ) : null}
-      {name === "settings" ? (
+      {name === "integrations" ? (
         <>
-          <path d="m9.8 3.8.6-1.6h3.2l.6 1.6 1.8.7 1.5-.7 2.3 2.3-.7 1.5.7 1.8 1.6.6v3.2l-1.6.6-.7 1.8.7 1.5-2.3 2.3-1.5-.7-1.8.7-.6 1.6h-3.2l-.6-1.6-1.8-.7-1.5.7-2.3-2.3.7-1.5-.7-1.8-1.6-.6V10l1.6-.6.7-1.8-.7-1.5 2.3-2.3 1.5.7 1.8-.7Z" />
-          <circle cx="12" cy="12" r="3" />
+          <path d="M8 12h8M12 8v8" />
+          <path d="M7 4.5h10A2.5 2.5 0 0 1 19.5 7v10a2.5 2.5 0 0 1-2.5 2.5H7A2.5 2.5 0 0 1 4.5 17V7A2.5 2.5 0 0 1 7 4.5Z" />
+        </>
+      ) : null}
+      {name === "skills" ? (
+        <>
+          <path d="m12 3 1.5 4.2L18 9l-4.5 1.8L12 15l-1.5-4.2L6 9l4.5-1.8L12 3Z" />
+          <path d="m18 14 .8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8L18 14Z" />
+        </>
+      ) : null}
+      {name === "usage" ? (
+        <>
+          <path d="M5 19V9M12 19V5M19 19v-7" />
+          <path d="M3.5 19.5h17" />
+        </>
+      ) : null}
+      {name === "members" ? (
+        <>
+          <circle cx="9" cy="8" r="3" />
+          <path d="M3.5 19v-1.5A4.5 4.5 0 0 1 8 13h2a4.5 4.5 0 0 1 4.5 4.5V19" />
+          <circle cx="17" cy="10" r="2" />
+          <path d="M16 14.5h1.5a3 3 0 0 1 3 3V19" />
         </>
       ) : null}
     </svg>
@@ -901,16 +880,26 @@ function AgentsPage() {
     <>
       <Page
         title="Agents"
-        description="Shared AI teammates configured for your Team."
+        description="Shared AI teammates configured for your team."
         action={
           membership.role === "admin" ? (
-            <button className="button" ref={createTriggerRef} type="button" onClick={() => setCreateOpen(true)}>
+            <Button ref={createTriggerRef} onClick={() => setCreateOpen(true)}>
               New Agent
-            </button>
+            </Button>
           ) : undefined
         }
       >
         <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
+        <section className="agent-runtime-section" id="agent-runtime">
+          <header className="settings-subheader">
+            <div>
+              <span className="eyebrow">Infrastructure</span>
+              <h2>Agent runtime</h2>
+              <p>Connect and inspect the computers available to run Agents.</p>
+            </div>
+          </header>
+          <ComputersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
+        </section>
       </Page>
       {createOpen ? <NewAgentDialog returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} /> : null}
     </>
@@ -919,7 +908,7 @@ function AgentsPage() {
 
 function AgentsContent({ agents }: { agents: AgentListItem[] }) {
   return agents.length === 0 ? (
-    <EmptyState title="No Agents yet">A Team Admin can create the first Agent.</EmptyState>
+    <EmptyState title="No Agents yet">An Admin can create the first Agent.</EmptyState>
   ) : (
     <AgentList agents={agents} />
   );
@@ -927,7 +916,7 @@ function AgentsContent({ agents }: { agents: AgentListItem[] }) {
 
 function AgentList({ agents }: { agents: AgentListItem[] }) {
   return (
-    <section className="agent-list-section" aria-label="Team Agents">
+    <section className="agent-list-section" aria-label="Agents">
       <div className="agent-summary-strip">
         <span>
           <strong>{agents.length}</strong> Agents
@@ -952,10 +941,10 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
 function AgentRow({ agent }: { agent: AgentListItem }) {
   const status =
     agent.status === "suspended"
-      ? { label: "Suspended", reason: "Not receiving new work", tone: "suspended" }
+      ? { label: "Suspended", reason: "Not receiving new work", tone: "neutral" as const }
       : agent.evidenceConfirmed
-        ? { label: "Active", reason: undefined, tone: "ready" }
-        : { label: "Unconfirmed", reason: "Unable to refresh Agent", tone: "unconfirmed" };
+        ? { label: "Active", reason: undefined, tone: "success" as const }
+        : { label: "Unconfirmed", reason: "Unable to refresh Agent", tone: "neutral" as const };
   return (
     <div className="agent-row">
       <Link aria-label={`Open ${agent.displayName}`} className="agent-row-link" to={`/agents/${agent.id}/general`} />
@@ -971,14 +960,10 @@ function AgentRow({ agent }: { agent: AgentListItem }) {
         </span>
       </span>
       <span className="cell-stack availability-cell" data-label="State">
-        <strong>
-          <i className={`availability-dot ${status.tone}`} aria-hidden="true" />
-          {status.label}
-        </strong>
-        {status.reason ? <small>{status.reason}</small> : null}
+        <StatusIndicator detail={status.reason} label={status.label} tone={status.tone} />
       </span>
       <span className="agent-row-action" aria-hidden="true">
-        ›
+        <Icon name="chevron-right" />
       </span>
     </div>
   );
@@ -996,7 +981,7 @@ function NewAgentPage() {
   const { membership } = useTeam();
   const navigate = useNavigate();
   const computers = useOwnComputersResource(membership.teamId);
-  if (membership.role !== "admin") return <UnavailablePage title="Team Admin access required" />;
+  if (membership.role !== "admin") return <UnavailablePage title="Admin access required" />;
   return (
     <Page title="Create Agent" description="Create the identity first. Complete its setup from the Agent overview.">
       <AgentCreationContent
@@ -1018,117 +1003,28 @@ function NewAgentDialog({
   const { membership } = useTeam();
   const navigate = useNavigate();
   const computers = useOwnComputersResource(membership.teamId);
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [submitting, setSubmitting] = useState(false);
-  const submittingRef = useRef(submitting);
-  const onCloseRef = useRef(onClose);
-  submittingRef.current = submitting;
-  onCloseRef.current = onClose;
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    const target = dialog.querySelector<HTMLElement>(
-      "button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled])",
-    );
-    if (submitting) {
-      if (!activeElement || !dialog.contains(activeElement) || activeElement.matches(":disabled")) {
-        (target ?? dialog).focus();
-      }
-    } else if (activeElement === dialog) {
-      target?.focus();
-    }
-  }, [submitting]);
-
-  useEffect(() => {
-    closeButtonRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        if (!submittingRef.current) onCloseRef.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = Array.from(
-        dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        ) ?? [],
-      );
-      if (focusable.length === 0) {
-        event.preventDefault();
-        dialogRef.current?.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (!dialogRef.current?.contains(document.activeElement) || document.activeElement === dialogRef.current) {
-        event.preventDefault();
-        (event.shiftKey ? last : first)?.focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first?.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      returnFocusRef.current?.focus();
-    };
-  }, [returnFocusRef]);
 
   return (
-    <div className="dialog-layer">
-      <button
-        aria-label="Dismiss new Agent dialog"
-        className="dialog-backdrop"
-        disabled={submitting}
-        tabIndex={-1}
-        type="button"
-        onClick={onClose}
+    <Dialog
+      busy={submitting}
+      className="new-agent-dialog"
+      closeLabel="Close new Agent dialog"
+      description="Give the Agent an identity and choose where it runs. You can finish its setup from the overview."
+      eyebrow="Create"
+      returnFocusRef={returnFocusRef}
+      title="New Agent"
+      onClose={onClose}
+    >
+      <AgentCreationContent
+        computers={computers}
+        presentation="dialog"
+        teamId={membership.teamId}
+        onCancel={onClose}
+        onCreated={(agentId) => navigate(`/agents/${agentId}/general`)}
+        onSubmittingChange={setSubmitting}
       />
-      <div
-        aria-describedby="new-agent-dialog-description"
-        aria-labelledby="new-agent-dialog-title"
-        aria-modal="true"
-        className="dialog-card new-agent-dialog"
-        ref={dialogRef}
-        role="dialog"
-        tabIndex={-1}
-      >
-        <header className="dialog-header">
-          <div>
-            <span className="eyebrow dialog-eyebrow">Create</span>
-            <h2 id="new-agent-dialog-title">New Agent</h2>
-          </div>
-          <button
-            aria-label="Close new Agent dialog"
-            className="dialog-close"
-            disabled={submitting}
-            ref={closeButtonRef}
-            type="button"
-            onClick={onClose}
-          >
-            ×
-          </button>
-        </header>
-        <p className="dialog-description" id="new-agent-dialog-description">
-          Give the Agent an identity and choose where it runs. You can finish its setup from the overview.
-        </p>
-        <AgentCreationContent
-          computers={computers}
-          presentation="dialog"
-          teamId={membership.teamId}
-          onCancel={onClose}
-          onCreated={(agentId) => navigate(`/agents/${agentId}/general`)}
-          onSubmittingChange={setSubmitting}
-        />
-      </div>
-    </div>
+    </Dialog>
   );
 }
 
@@ -1214,14 +1110,24 @@ function AgentCreationContent({
         const readiness = computer?.providerReadiness?.find((entry) => entry.provider === runtimeProvider);
         return value.computers.length === 0 ? (
           <EmptyState title="Connect a Local Computer first">
-            Open <Link to="/settings/computers">Computer settings</Link> to generate a connection command.
+            Open the{" "}
+            <Link to="/agents#agent-runtime" onClick={onCancel}>
+              Agent runtime
+            </Link>{" "}
+            section to generate a connection command.
           </EmptyState>
         ) : (
           <form className="form-card agent-create-form" onSubmit={submit}>
-            <div className="agent-create-field">
-              <label htmlFor="new-agent-display-name">Display name</label>
+            <Field
+              className="agent-create-field"
+              hint="How teammates will see this Agent in lists and conversations."
+              hintId="new-agent-display-name-hint"
+              htmlFor="new-agent-display-name"
+              label="Display name"
+            >
               <input
                 aria-describedby="new-agent-display-name-hint"
+                className="ds-control"
                 id="new-agent-display-name"
                 ref={firstFieldRef}
                 name="displayName"
@@ -1229,12 +1135,16 @@ function AgentCreationContent({
                 disabled={submitting}
                 required
               />
-              <span className="field-hint" id="new-agent-display-name-hint">
-                How teammates will see this Agent in lists and conversations.
-              </span>
-            </div>
-            <div className="agent-create-field">
-              <label htmlFor="new-agent-name">Agent name</label>
+            </Field>
+            <Field
+              className="agent-create-field"
+              error={nameError}
+              errorId="agent-name-error"
+              hint="Used for mentions. Lowercase letters, numbers, and hyphens only."
+              hintId="new-agent-name-hint"
+              htmlFor="new-agent-name"
+              label="Agent name"
+            >
               <span className="agent-name-input">
                 <span aria-hidden="true">@</span>
                 <input
@@ -1248,19 +1158,11 @@ function AgentCreationContent({
                   required
                 />
               </span>
-              <span className="field-hint" id="new-agent-name-hint">
-                Used for mentions. Lowercase letters, numbers, and hyphens only.
-              </span>
-              {nameError ? (
-                <span className="field-error" id="agent-name-error" role="alert">
-                  {nameError}
-                </span>
-              ) : null}
-            </div>
+            </Field>
             <div className="agent-create-grid">
-              <div className="agent-create-field">
-                <label htmlFor="new-agent-provider">Provider</label>
+              <Field className="agent-create-field" htmlFor="new-agent-provider" label="Provider">
                 <select
+                  className="ds-control"
                   id="new-agent-provider"
                   name="runtimeProvider"
                   disabled={submitting}
@@ -1270,10 +1172,10 @@ function AgentCreationContent({
                   <option value="codex">Codex</option>
                   <option value="claude-code">Claude Code</option>
                 </select>
-              </div>
-              <div className="agent-create-field">
-                <label htmlFor="new-agent-computer">Computer</label>
+              </Field>
+              <Field className="agent-create-field" htmlFor="new-agent-computer" label="Computer">
                 <select
+                  className="ds-control"
                   id="new-agent-computer"
                   name="computerId"
                   disabled={submitting}
@@ -1287,7 +1189,7 @@ function AgentCreationContent({
                     </option>
                   ))}
                 </select>
-              </div>
+              </Field>
             </div>
             <div
               className={`notice ${readiness?.status === "ready" && computer?.connectionStatus === "online" ? "" : "warning"}`}
@@ -1303,13 +1205,13 @@ function AgentCreationContent({
             ) : null}
             <div className="agent-create-actions">
               {presentation === "dialog" ? (
-                <button className="secondary" disabled={submitting} type="button" onClick={onCancel}>
+                <Button disabled={submitting} variant="secondary" onClick={onCancel}>
                   Cancel
-                </button>
+                </Button>
               ) : null}
-              <button className="button" disabled={submitting} type="submit">
+              <Button disabled={submitting} type="submit">
                 {submitting ? "Creating…" : "Create Agent"}
-              </button>
+              </Button>
             </div>
           </form>
         );
@@ -1371,7 +1273,8 @@ function AgentDetailPage() {
         <section className="object-page">
           <header className="object-header">
             <Link className="breadcrumb" to="/agents">
-              ← Agents
+              <Icon name="arrow-left" />
+              Agents
             </Link>
             <div className="object-title-row">
               <div className="object-identity">
@@ -1422,10 +1325,38 @@ function AgentDetailPage() {
 }
 
 function AccountPage() {
-  const { me, refreshMe } = useTeam();
+  const { me, membership, refreshMe } = useTeam();
+  const location = useLocation();
   return (
-    <Page title="Account" description="Manage the identity used across every Team you belong to.">
-      <AccountSettings refreshMe={refreshMe} user={me.user} />
+    <Page title="Account" description="Manage your profile and advanced account options.">
+      <div className="account-settings-stack">
+        <AccountSettings refreshMe={refreshMe} user={me.user} />
+        <details
+          className="account-advanced"
+          id="workspace-management"
+          open={location.hash === "#workspace-management"}
+        >
+          <summary>Advanced</summary>
+          <div className="account-advanced-content">
+            <header className="settings-subheader">
+              <div>
+                <h2>Workspace management</h2>
+                <p>For people who operate more than one organization.</p>
+              </div>
+            </header>
+            <TeamProfileSettings membership={membership} refreshMe={refreshMe} />
+            <div className="account-workspace-create">
+              <div>
+                <strong>Additional Workspace</strong>
+                <p>Create another isolated organization for a separate client or team.</p>
+              </div>
+              <Link className="secondary" to="/workspaces/new">
+                Create another Workspace
+              </Link>
+            </div>
+          </div>
+        </details>
+      </div>
     </Page>
   );
 }
@@ -1489,7 +1420,7 @@ function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgent
         <DefinitionList
           rows={[
             ["Manager", agent.manager.displayName],
-            ["Who can use", "Team members"],
+            ["Who can use", "Members"],
           ]}
         />
       </section>
@@ -1500,15 +1431,14 @@ function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgent
 
 function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
   const recovery = agentAvailabilityRecovery(agent);
+  const tone = availabilityTone(agent.availability.state);
   return (
-    <div className={`availability-action ${availabilityTone(agent.availability.state)}`}>
-      <span>
-        <strong>
-          <i className={`availability-dot ${availabilityTone(agent.availability.state)}`} aria-hidden="true" />
-          {availabilityStateLabel(agent.availability.state)}
-        </strong>
-        <small>{agentAvailabilitySummary(agent)}</small>
-      </span>
+    <div className={`availability-action ${tone}`}>
+      <StatusIndicator
+        detail={agentAvailabilitySummary(agent)}
+        label={availabilityStateLabel(agent.availability.state)}
+        tone={tone}
+      />
       {recovery ? <Link to={recovery.to}>{recovery.label}</Link> : null}
     </div>
   );
@@ -1589,26 +1519,30 @@ function GeneralConfigForm({
   return (
     <form className="form-card" onSubmit={submit}>
       <h2>Admin configuration</h2>
-      <label>
-        Display name
-        <input defaultValue={config.displayName} key={config.revision} name="displayName" required />
-      </label>
-      <button className="button commit" type="submit">
+      <Field htmlFor="agent-display-name" label="Display name">
+        <input
+          className="ds-control"
+          defaultValue={config.displayName}
+          id="agent-display-name"
+          key={config.revision}
+          name="displayName"
+          required
+        />
+      </Field>
+      <Button variant="commit" type="submit">
         Save General settings
-      </button>
+      </Button>
       <div className="actions">
         {config.status === "active" ? (
-          <button className="secondary" type="button" onClick={() => void changeLifecycle("suspend")}>
+          <Button variant="secondary" onClick={() => void changeLifecycle("suspend")}>
             Suspend Agent
-          </button>
+          </Button>
         ) : (
           <>
-            <button className="button" type="button" onClick={() => void changeLifecycle("reactivate")}>
-              Reactivate Agent
-            </button>
-            <button className="danger" type="button" onClick={() => void deleteAgent()}>
+            <Button onClick={() => void changeLifecycle("reactivate")}>Reactivate Agent</Button>
+            <Button variant="danger" onClick={() => void deleteAgent()}>
               Delete Agent permanently
-            </button>
+            </Button>
           </>
         )}
       </div>
@@ -1638,7 +1572,7 @@ function RuntimeTab({ agent }: { agent: AgentDetailView }) {
               save={(input) => browserApi.updateAgent(config.id, input)}
             />
           ) : (
-            <p className="muted">Runtime instructions and tuning are visible only to Team Admins.</p>
+            <p className="muted">Runtime instructions and tuning are visible only to Admins.</p>
           )}
         </>
       )}
@@ -1795,7 +1729,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                         </div>
                       </section>
                     ) : (
-                      <p className="muted">IM setup is managed by Team Admins.</p>
+                      <p className="muted">IM setup is managed by Admins.</p>
                     )}
                   </>
                 ) : (
@@ -1814,7 +1748,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                         </button>
                       </div>
                     ) : (
-                      <p className="muted">IM setup is managed by Team Admins.</p>
+                      <p className="muted">IM setup is managed by Admins.</p>
                     )}
                   </section>
                 )}
@@ -1850,137 +1784,55 @@ function AccessTab({ agent }: { agent: AgentDetailView }) {
   return (
     <DefinitionList
       rows={[
-        ["Safe read", "All active Team members"],
-        ["Use", "All active Team members (fixed v0.1 policy)"],
-        ["Manage", agent.viewerCapabilities.canManage ? "Team Admins (you can manage)" : "Team Admins"],
+        ["Safe read", "All active members"],
+        ["Use", "All active members (fixed v0.1 policy)"],
+        ["Manage", agent.viewerCapabilities.canManage ? "Admins (you can manage)" : "Admins"],
       ]}
     />
   );
 }
 
-const settingsSections = [
-  { key: "team", label: "Team" },
-  { key: "computers", label: "Computers" },
-  { key: "resources", label: "Resources" },
-  { key: "integrations", label: "Integrations" },
-  { key: "access", label: "Access" },
-  { key: "usage", label: "Usage" },
-  { key: "security", label: "Security" },
-] as const;
-
-function SettingsPage() {
-  const { section = "team" } = useParams();
-  const { invitationOpen, setInvitationMutationPending } = useOutletContext<AppShellOutletContext>();
-  const location = useLocation();
-  const navigate = useNavigate();
+function MembersPage() {
   const { me, membership, refreshMe } = useTeam();
-  const currentSection = settingsSections.find((item) => item.key === section);
-
-  useEffect(() => {
-    if (section !== "team" || location.hash !== "#members") return;
-    document.getElementById("members")?.scrollIntoView({ block: "start" });
-  }, [location.hash, section]);
-
-  if (!currentSection) return <NotFoundPage />;
+  function focusInvitationPanel() {
+    const panel = document.getElementById("member-invitations");
+    panel?.scrollIntoView({ block: "nearest" });
+    panel?.focus({ preventScroll: true });
+  }
   return (
-    <section className="settings-page">
-      <header className="settings-title">
-        <h1>Settings</h1>
-        <p>Manage the current Team's identity, infrastructure, access, and security.</p>
-      </header>
-      <label className="local-nav-select">
-        <span>Settings section</span>
-        <select value={section} onChange={(event) => navigate(`/settings/${event.currentTarget.value}`)}>
-          {settingsSections.map((item) => (
-            <option value={item.key} key={item.key}>
-              {item.label}
-            </option>
-          ))}
-        </select>
-      </label>
-      <div className="settings-layout">
-        <nav className="local-nav" aria-label="Settings">
-          {settingsSections.map((item) => (
-            <NavLink to={`/settings/${item.key}`} key={item.key}>
-              {item.label}
-            </NavLink>
-          ))}
-        </nav>
-        <div className="settings-content">
-          <header className="section-header">
-            <h2>{currentSection.label}</h2>
-            <p>{settingsSectionDescription(currentSection.key)}</p>
-          </header>
-          {section === "team" ? (
-            <TeamSettings
-              currentUserId={me.user.id}
-              invitationDialogOpen={invitationOpen}
-              membership={membership}
-              onInvitationMutationPendingChange={setInvitationMutationPending}
-              refreshMe={refreshMe}
-            />
-          ) : null}
-          {section === "computers" ? (
-            <ComputersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
-          ) : null}
-          {section === "resources" ? (
-            <SettingsUnavailable
-              details={[
-                "This page does not create or infer Team Resource records.",
-                "No Resource assignment projection is exposed by the current API.",
-              ]}
-              title="Team Resources are not enabled"
-            >
-              Repositories, skills, tools, and prompts will appear here only after OpenTag has an authoritative Team
-              Resource model.
-            </SettingsUnavailable>
-          ) : null}
-          {section === "integrations" ? (
-            <SettingsUnavailable
-              action={{ label: "Open Agents", to: "/agents" }}
-              details={[
-                "Supported bot connections remain owned by individual Agents.",
-                "Open an Agent's IM tab to review its current Feishu or Slack connection state.",
-              ]}
-              title="Team Integrations are not enabled"
-            >
-              OpenTag does not promote Agent credentials into shared Team connections or imply that a provider is
-              available Team-wide.
-            </SettingsUnavailable>
-          ) : null}
-          {section === "access" ? <AccessSettings membership={membership} /> : null}
-          {section === "usage" ? (
-            <SettingsUnavailable
-              details={[
-                "Task, Turn, and provider totals are not estimated from partial activity.",
-                "Cost reporting will require authoritative provider billing metadata.",
-              ]}
-              title="Usage reporting is not enabled"
-            >
-              This page will stay intentionally empty until OpenTag can report complete, measured Team activity.
-            </SettingsUnavailable>
-          ) : null}
-          {section === "security" ? (
-            <SettingsUnavailable
-              details={[
-                "Sensitive credentials are never returned to the browser.",
-                "Team administration remains limited to active Admin memberships.",
-                "Browser sessions and audit events are not available in this version.",
-              ]}
-              status="Current safeguards"
-              title="Security data is intentionally limited"
-            >
-              OpenTag only reports security state that the server can verify. It does not show inferred checks or an
-              unsupported all-clear status.
-            </SettingsUnavailable>
-          ) : null}
-        </div>
-      </div>
-    </section>
+    <Page
+      title="Members"
+      description="Manage members, invitations, and roles."
+      action={membership.role === "admin" ? <Button onClick={focusInvitationPanel}>Invite members</Button> : null}
+    >
+      <MembersSettings
+        canManage={membership.role === "admin"}
+        currentUserId={me.user.id}
+        refreshMe={refreshMe}
+        teamId={membership.teamId}
+      />
+    </Page>
   );
 }
 
-function SettingsUnavailable({
+function TasksPage() {
+  return (
+    <Page title="Tasks" description="Track work assigned to Agents.">
+      <CapabilityUnavailable
+        details={[
+          "The current server does not expose a Tasks API.",
+          "No sample, inferred, or locally generated Task records are shown.",
+        ]}
+        status="Coming later"
+        title="Tasks are not available yet"
+      >
+        Tasks will appear here after OpenTag can load authoritative Task records from the server.
+      </CapabilityUnavailable>
+    </Page>
+  );
+}
+
+function CapabilityUnavailable({
   action,
   children,
   details,
@@ -2012,42 +1864,9 @@ function SettingsUnavailable({
   );
 }
 
-function AccessSettings({ membership }: { membership: MeMembership }) {
-  return (
-    <div className="settings-policy-stack">
-      <section className="settings-policy-banner">
-        <div>
-          <span className="settings-state-label">Server-returned membership</span>
-          <h2>Authorization follows your active Team membership</h2>
-          <p>OpenTag checks authorization on every request. This page only reports facts exposed by the API.</p>
-        </div>
-        <span className="settings-role-badge">Your role: {titleCase(membership.role)}</span>
-      </section>
-      <section className="settings-list-section">
-        <header className="settings-subheader">
-          <div>
-            <h2>Available policy detail</h2>
-            <p>The current API does not publish a complete Team capability matrix.</p>
-          </div>
-        </header>
-        <DefinitionList
-          rows={[
-            ["Selected Team role", titleCase(membership.role)],
-            ["Custom roles", "Not enabled"],
-            ["Per-resource policies", "Not exposed by the API"],
-          ]}
-        />
-        <p className="settings-footnote">
-          Management controls use server-returned capabilities where available; the server remains authoritative for
-          every operation.
-        </p>
-      </section>
-    </div>
-  );
-}
-
 function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeResponse["user"] }) {
   const saveInFlight = useRef(false);
+  const confirmedDisplayNameRef = useRef(user.displayName);
   const [displayName, setDisplayName] = useState(user.displayName);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string>();
@@ -2055,6 +1874,8 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
   const dirty = displayName !== user.displayName;
 
   useEffect(() => {
+    if (confirmedDisplayNameRef.current === user.displayName) return;
+    confirmedDisplayNameRef.current = user.displayName;
     setDisplayName(user.displayName);
   }, [user.displayName]);
 
@@ -2096,7 +1917,7 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
         <div className="settings-field-row">
           <div className="settings-field-copy">
             <strong>Display name</strong>
-            <p>This identity is shared across every Team you belong to.</p>
+            <p>This identity is used throughout OpenTag.</p>
           </div>
           <label>
             Display name
@@ -2151,34 +1972,6 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
   );
 }
 
-function TeamSettings({
-  currentUserId,
-  invitationDialogOpen,
-  membership,
-  onInvitationMutationPendingChange,
-  refreshMe,
-}: {
-  currentUserId: string;
-  invitationDialogOpen: boolean;
-  membership: MeMembership;
-  onInvitationMutationPendingChange: (pending: boolean) => void;
-  refreshMe: () => void;
-}) {
-  return (
-    <div className="settings-team-stack">
-      <TeamProfileSettings membership={membership} refreshMe={refreshMe} />
-      <MembersSettings
-        canManage={membership.role === "admin"}
-        currentUserId={currentUserId}
-        invitationDialogOpen={invitationDialogOpen}
-        onInvitationMutationPendingChange={onInvitationMutationPendingChange}
-        refreshMe={refreshMe}
-        teamId={membership.teamId}
-      />
-    </div>
-  );
-}
-
 function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembership; refreshMe: () => void }) {
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
@@ -2195,14 +1988,14 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
       <section className="settings-readonly-panel">
         <div className="settings-readonly-heading">
           <div>
-            <h2>Team profile</h2>
-            <p>Only Team Admins can change these fields.</p>
+            <h2>Workspace profile</h2>
+            <p>Only Workspace Admins can change these fields.</p>
           </div>
           <span className="settings-role-badge">Your role: {titleCase(membership.role)}</span>
         </div>
         <DefinitionList
           rows={[
-            ["Team name", membership.teamDisplayName],
+            ["Workspace name", membership.teamDisplayName],
             ["CLI identifier", membership.teamName],
           ]}
         />
@@ -2219,24 +2012,24 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
         displayName: teamDisplayName,
       });
       refreshMe();
-      setMessage("Team profile saved.");
+      setMessage("Workspace profile saved.");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to save the Team profile");
+      setError(cause instanceof Error ? cause.message : "Unable to save the Workspace profile");
     } finally {
       setSaving(false);
     }
   }
   return (
     <form className="settings-profile-form" onSubmit={submit}>
-      <h2>Team profile</h2>
+      <h2 className="visually-hidden">Workspace profile fields</h2>
       <div className="settings-field-list">
         <div className="settings-field-row">
           <div className="settings-field-copy">
-            <strong>Team name</strong>
+            <strong>Workspace name</strong>
             <p>What people see in navigation and invitations.</p>
           </div>
           <label>
-            Team name
+            Workspace name
             <input
               name="displayName"
               required
@@ -2252,7 +2045,7 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
         <div className="settings-field-row">
           <div className="settings-field-copy">
             <strong>CLI identifier</strong>
-            <p>Created automatically for CLI commands. It stays the same when you rename the Team.</p>
+            <p>Created automatically for CLI commands. It stays the same when you rename the Workspace.</p>
           </div>
           <dl className="settings-readonly-value">
             <div>
@@ -2289,7 +2082,7 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
               Discard
             </button>
             <button className="button commit" disabled={saving} type="submit">
-              {saving ? "Saving…" : "Save Team profile"}
+              {saving ? "Saving…" : "Save Workspace profile"}
             </button>
           </div>
         </div>
@@ -2311,15 +2104,11 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
 function MembersSettings({
   canManage,
   currentUserId,
-  invitationDialogOpen,
-  onInvitationMutationPendingChange,
   refreshMe,
   teamId,
 }: {
   canManage: boolean;
   currentUserId: string;
-  invitationDialogOpen: boolean;
-  onInvitationMutationPendingChange: (pending: boolean) => void;
   refreshMe: () => void;
   teamId: string;
 }) {
@@ -2356,7 +2145,7 @@ function MembersSettings({
             <>
               <header className="settings-subheader">
                 <div>
-                  <h2>Team members</h2>
+                  <h2>Members</h2>
                   <p>
                     {value.members.length} {value.members.length === 1 ? "member" : "members"} · {adminCount}{" "}
                     {adminCount === 1 ? "admin" : "admins"}
@@ -2364,10 +2153,10 @@ function MembersSettings({
                 </div>
                 {!canManage ? <span className="settings-role-badge">Read only</span> : null}
               </header>
-              <table className="settings-member-table" aria-label="Team members">
+              <table className="settings-member-table" aria-label="Members">
                 <thead>
                   <tr className="settings-table-header">
-                    <th scope="col">Team member</th>
+                    <th scope="col">Member</th>
                     <th scope="col">Role</th>
                   </tr>
                 </thead>
@@ -2387,6 +2176,7 @@ function MembersSettings({
                         {canManage ? (
                           <select
                             aria-label={`Role for ${member.displayName}`}
+                            className="ds-control"
                             disabled={pendingUserIds.has(member.userId)}
                             value={member.role}
                             onChange={(event) => void changeRole(member, event.currentTarget.value)}
@@ -2414,138 +2204,17 @@ function MembersSettings({
           {error}
         </p>
       ) : null}
-      {canManage && !invitationDialogOpen ? (
-        <InvitationSettings teamId={teamId} onMutationPendingChange={onInvitationMutationPendingChange} />
-      ) : null}
+      {canManage ? <InvitationSettings teamId={teamId} /> : null}
     </section>
   );
 }
 
-function InvitationDialog({
-  mutationPending,
-  onClose,
-  onMutationPendingChange,
-  returnFocusRef,
-  teamDisplayName,
-  teamId,
-}: {
-  mutationPending: boolean;
-  onClose: () => void;
-  onMutationPendingChange: (pending: boolean) => void;
-  returnFocusRef: { current: HTMLButtonElement | null };
-  teamDisplayName: string;
-  teamId: string;
-}) {
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const closeButtonRef = useRef<HTMLButtonElement>(null);
-  const mutationPendingRef = useRef(mutationPending);
-  const onCloseRef = useRef(onClose);
-  mutationPendingRef.current = mutationPending;
-  onCloseRef.current = onClose;
-
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    const target = dialog?.querySelector<HTMLElement>(
-      "button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled])",
-    );
-    if (mutationPending) {
-      if (!dialog.contains(document.activeElement)) (target ?? dialog).focus();
-    } else if (document.activeElement === dialog) {
-      target?.focus();
-    }
-  }, [mutationPending]);
-
-  useEffect(() => {
-    closeButtonRef.current?.focus();
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        if (mutationPendingRef.current) return;
-        onCloseRef.current();
-        return;
-      }
-      if (event.key !== "Tab") return;
-      const focusable = Array.from(
-        dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button:not([disabled]), input:not([disabled]), a[href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-        ) ?? [],
-      );
-      if (focusable.length === 0) {
-        event.preventDefault();
-        dialogRef.current?.focus();
-        return;
-      }
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (!dialogRef.current?.contains(document.activeElement) || document.activeElement === dialogRef.current) {
-        event.preventDefault();
-        (event.shiftKey ? last : first)?.focus();
-      } else if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last?.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first?.focus();
-      }
-    };
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      returnFocusRef.current?.focus();
-    };
-  }, [returnFocusRef]);
-
-  return (
-    <div className="dialog-layer">
-      <button
-        aria-label="Dismiss invitation dialog"
-        className="dialog-backdrop"
-        disabled={mutationPending}
-        tabIndex={-1}
-        type="button"
-        onClick={onClose}
-      />
-      <div
-        aria-describedby="invitation-dialog-description"
-        aria-labelledby="invitation-dialog-title"
-        aria-modal="true"
-        className="dialog-card invitation-dialog"
-        ref={dialogRef}
-        role="dialog"
-        tabIndex={-1}
-      >
-        <header className="dialog-header">
-          <div>
-            <span className="eyebrow dialog-eyebrow">{teamDisplayName}</span>
-            <h2 id="invitation-dialog-title">Invite people</h2>
-          </div>
-          <button
-            aria-label="Close invitation dialog"
-            className="dialog-close"
-            disabled={mutationPending}
-            ref={closeButtonRef}
-            type="button"
-            onClick={onClose}
-          >
-            ×
-          </button>
-        </header>
-        <p className="dialog-description" id="invitation-dialog-description">
-          This link lets anyone join the Team as a member until it expires.
-        </p>
-        <InvitationSettings presentation="dialog" teamId={teamId} onMutationPendingChange={onMutationPendingChange} />
-      </div>
-    </div>
-  );
-}
-
 function InvitationSettings({
-  onMutationPendingChange,
+  onMutationPendingChange = () => undefined,
   presentation = "panel",
   teamId,
 }: {
-  onMutationPendingChange: (pending: boolean) => void;
+  onMutationPendingChange?: (pending: boolean) => void;
   presentation?: "dialog" | "panel";
   teamId: string;
 }) {
@@ -2593,11 +2262,16 @@ function InvitationSettings({
   }
 
   return (
-    <section className={presentation === "dialog" ? "invitation-dialog-content" : "settings-invitation-panel"}>
+    <section
+      aria-labelledby={presentation === "panel" ? "invite-members-heading" : undefined}
+      className={presentation === "dialog" ? "invitation-dialog-content" : "settings-invitation-panel"}
+      id={presentation === "panel" ? "member-invitations" : undefined}
+      tabIndex={presentation === "panel" ? -1 : undefined}
+    >
       {presentation === "panel" ? (
         <>
-          <h3>Invite members</h3>
-          <p>This link lets anyone join the Team as a member until it expires.</p>
+          <h3 id="invite-members-heading">Invite members</h3>
+          <p>This link lets anyone join as a member until it expires.</p>
         </>
       ) : null}
       <AsyncState state={state}>
@@ -2607,22 +2281,26 @@ function InvitationSettings({
             <>
               <label className="invite-link">
                 Invite link
-                <input aria-label="Invite link" readOnly type="url" value={invitation.inviteUrl} />
+                <input
+                  className="ds-control"
+                  aria-label="Invite link"
+                  readOnly
+                  type="url"
+                  value={invitation.inviteUrl}
+                />
               </label>
               <p className="muted">Expires {formatInviteExpiry(invitation.expiresAt)}.</p>
               <div className={presentation === "dialog" ? "actions dialog-actions" : "actions"}>
-                <button type="button" onClick={() => void copyInvitation(invitation.inviteUrl)}>
-                  Copy link
-                </button>
-                <button className="secondary" disabled={busy} type="button" onClick={() => void rotateInvitation()}>
+                <Button onClick={() => void copyInvitation(invitation.inviteUrl)}>Copy link</Button>
+                <Button disabled={busy} variant="secondary" onClick={() => void rotateInvitation()}>
                   {busy ? "Replacing…" : "Replace link"}
-                </button>
+                </Button>
               </div>
             </>
           ) : (
-            <button className="button" disabled={busy} type="button" onClick={() => void createInvitation()}>
+            <Button disabled={busy} onClick={() => void createInvitation()}>
               {busy ? "Creating…" : "Create invite link"}
-            </button>
+            </Button>
           );
         }}
       </AsyncState>
@@ -2647,7 +2325,7 @@ function ComputersSettings({ canManage, teamId }: { canManage: boolean; teamId: 
           <section className="settings-list-section">
             <header className="settings-subheader">
               <div>
-                <h2>Team computers</h2>
+                <h2>Computers</h2>
                 <p>
                   {value.computers.length} {value.computers.length === 1 ? "computer" : "computers"} ·{" "}
                   {
@@ -2662,12 +2340,10 @@ function ComputersSettings({ canManage, teamId }: { canManage: boolean; teamId: 
             {value.computers.length === 0 ? (
               <div className="settings-compact-empty">
                 <strong>No computers connected</strong>
-                <p>
-                  {canManage ? "Use the connection flow above to add one." : "A Team Admin must connect a computer."}
-                </p>
+                <p>{canManage ? "Use the connection flow above to add one." : "An Admin must connect a computer."}</p>
               </div>
             ) : (
-              <table className="settings-computer-table" aria-label="Team computers">
+              <table className="settings-computer-table" aria-label="Computers">
                 <thead>
                   <tr className="settings-table-header">
                     <th scope="col">Computer</th>
@@ -2695,10 +2371,10 @@ function ComputersSettings({ canManage, teamId }: { canManage: boolean; teamId: 
                         </small>
                       </td>
                       <td data-label="Status">
-                        <span className="settings-status">
-                          <span className={`settings-status-dot ${computer.connectionStatus}`} aria-hidden="true" />
-                          {titleCase(computer.connectionStatus)}
-                        </span>
+                        <StatusIndicator
+                          label={titleCase(computer.connectionStatus)}
+                          tone={computer.connectionStatus === "online" ? "success" : "neutral"}
+                        />
                       </td>
                       <td data-label="Last seen">{formatDate(computer.lastSeenAt)}</td>
                       <td data-label="Agents">{computer.agentIds.length}</td>
@@ -2809,13 +2485,11 @@ function receiveModeLabel(receiveMode: AgentSummary["receiveMode"]): string {
   return receiveMode === "all_message" ? "All messages" : "Mentions only";
 }
 
-function availabilityTone(state: AgentAvailability["state"]): string {
-  if (state === "ready") return "ready";
-  if (state === "setting_up") return "setting-up";
-  if (state === "suspended") return "suspended";
-  if (state === "not_connected") return "not-connected";
-  if (state === "unconfirmed") return "unconfirmed";
-  return "action-required";
+function availabilityTone(state: AgentAvailability["state"]): StatusTone {
+  if (state === "ready") return "success";
+  if (state === "setting_up") return "info";
+  if (state === "action_required") return "warning";
+  return "neutral";
 }
 
 function availabilityStateLabel(state: AgentAvailability["state"]): string {
@@ -2885,19 +2559,6 @@ function agentSectionDescription(section: (typeof agentSections)[number]["key"])
     im: "Manage the Agent's Feishu or Slack bot and message policy.",
     access: "Understand who can use, inspect, and manage this Agent.",
   } satisfies Record<(typeof agentSections)[number]["key"], string>;
-  return descriptions[section];
-}
-
-function settingsSectionDescription(section: (typeof settingsSections)[number]["key"]): string {
-  const descriptions = {
-    team: "Manage the current Team's profile, members, and invitation link.",
-    computers: "Connect and inspect the Computers available to the current Team.",
-    resources: "Review reusable repositories, skills, tools, and prompts.",
-    integrations: "Review supported Team and Agent connection surfaces.",
-    access: "Review Team-wide access and administration boundaries.",
-    usage: "Review measured Task, Turn, and provider usage when available.",
-    security: "Review authorization health without exposing credentials.",
-  } satisfies Record<(typeof settingsSections)[number]["key"], string>;
   return descriptions[section];
 }
 

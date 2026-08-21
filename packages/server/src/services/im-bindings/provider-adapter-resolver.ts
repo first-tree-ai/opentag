@@ -35,6 +35,7 @@ export function createImProviderAdapterResolver(input: {
         appId: slack.appId,
         teamId: slack.teamId,
         botUserId: slack.botUserId,
+        botId: slack.botId,
       });
     }
     const feishu = await input.imBindings.getFeishuConnectionMaterial(imBindingId);

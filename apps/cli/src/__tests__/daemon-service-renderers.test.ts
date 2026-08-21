@@ -553,6 +553,153 @@ describe("launchd service backend", () => {
     expect(plist).not.toContain("relative");
   });
 
+  it("treats launchctl bootout no such process as an already unloaded service", async () => {
+    const userHome = await temporaryDirectory("opentag-launchd-");
+    const home = join(userHome, ".opentag");
+    const calls: string[] = [];
+    let loaded = false;
+    const runner = fakeRunner((_, args) => {
+      calls.push(args.join(" "));
+      if (args[0] === "print" && args[1] === "gui/501") return result(0, "domain", "");
+      if (args[0] === "print") {
+        return loaded ? result(0, "state = running\npid = 77", "") : result(113, "", "Could not find service");
+      }
+      if (args[0] === "bootout") return result(3, "", "Boot-out failed: 3: No such process");
+      if (args[0] === "bootstrap") loaded = true;
+      return result(0, "", "");
+    });
+    const backend = createLaunchdBackend({
+      activationDelayMs: 0,
+      evictionDelayMs: 0,
+      home,
+      invocation: { args: [], program: "/usr/local/bin/opentag" },
+      runner,
+      serviceId: "opentag",
+      sleep: async () => undefined,
+      uid: 501,
+      userHome,
+    });
+
+    await expect(backend.installAndStart()).resolves.toMatchObject({ pid: 77, state: "active" });
+    expect(calls).toContain("bootout gui/501/opentag");
+    expect(calls).toContain(`bootstrap gui/501 ${join(userHome, "Library", "LaunchAgents", "opentag.plist")}`);
+  });
+
+  it.each(["installAndStart", "start", "restart"] as const)(
+    "waits for launchd to leave xpcproxy after %s",
+    async (mutation) => {
+      const userHome = await temporaryDirectory("opentag-launchd-");
+      const home = join(userHome, ".opentag");
+      const invocation = { args: [], program: "/usr/local/bin/opentag" };
+      if (mutation !== "installAndStart") await writeLaunchdDefinitions({ home, invocation, userHome });
+      let loaded = mutation === "restart";
+      let activationChecks = 0;
+      let activating = false;
+      const wait = vi.fn(async () => undefined);
+      const runner = fakeRunner((_, args) => {
+        if (args[0] === "print" && args[1] === "gui/501") return result(0, "domain", "");
+        if (args[0] === "print") {
+          if (!loaded) return result(113, "", "Could not find service");
+          if (activating && activationChecks < 2) {
+            activationChecks += 1;
+            return result(0, "state = xpcproxy", "");
+          }
+          return result(0, "state = running\npid = 91", "");
+        }
+        if (args[0] === "bootout") {
+          loaded = false;
+          return result(0, "", "");
+        }
+        if (args[0] === "bootstrap" || args[0] === "kickstart") {
+          activating = true;
+          loaded = true;
+        }
+        return result(0, "", "");
+      });
+      const backend = createLaunchdBackend({
+        activationAttempts: 3,
+        activationDelayMs: 0,
+        evictionDelayMs: 0,
+        home,
+        invocation,
+        runner,
+        serviceId: "opentag",
+        sleep: wait,
+        uid: 501,
+        userHome,
+      });
+
+      await expect(backend[mutation]()).resolves.toMatchObject({ pid: 91, state: "active" });
+      expect(wait).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("fails activation with the last launchd state after a bounded wait", async () => {
+    const userHome = await temporaryDirectory("opentag-launchd-");
+    const home = join(userHome, ".opentag");
+    const invocation = { args: [], program: "/usr/local/bin/opentag" };
+    await writeLaunchdDefinitions({ home, invocation, userHome });
+    let loaded = false;
+    const runner = fakeRunner((_, args) => {
+      if (args[0] === "print" && args[1] === "gui/501") return result(0, "domain", "");
+      if (args[0] === "print") {
+        return loaded ? result(0, "state = xpcproxy", "") : result(113, "", "Could not find service");
+      }
+      if (args[0] === "bootstrap") loaded = true;
+      return result(0, "", "");
+    });
+    const backend = createLaunchdBackend({
+      activationAttempts: 2,
+      activationDelayMs: 0,
+      home,
+      invocation,
+      runner,
+      serviceId: "opentag",
+      sleep: async () => undefined,
+      uid: 501,
+      userHome,
+    });
+
+    await expect(backend.start()).rejects.toThrow(
+      "last state: inactive (LaunchAgent is loaded but process state is xpcproxy)",
+    );
+  });
+
+  it("fails activation immediately when launchctl status times out", async () => {
+    const userHome = await temporaryDirectory("opentag-launchd-");
+    const home = join(userHome, ".opentag");
+    let loaded = false;
+    let activationChecks = 0;
+    const wait = vi.fn(async () => undefined);
+    const runner = fakeRunner((_, args) => {
+      if (args[0] === "print" && args[1] === "gui/501") return result(0, "domain", "");
+      if (args[0] === "print") {
+        if (!loaded) return result(113, "", "Could not find service");
+        activationChecks += 1;
+        return { code: null, stderr: "", stdout: "", timedOut: true };
+      }
+      if (args[0] === "bootout") return result(3, "", "Boot-out failed: 3: No such process");
+      if (args[0] === "bootstrap") loaded = true;
+      return result(0, "", "");
+    });
+    const backend = createLaunchdBackend({
+      activationAttempts: 50,
+      activationDelayMs: 100,
+      evictionDelayMs: 0,
+      home,
+      invocation: { args: [], program: "/usr/local/bin/opentag" },
+      runner,
+      serviceId: "opentag",
+      sleep: wait,
+      uid: 501,
+      userHome,
+    });
+
+    await expect(backend.installAndStart()).rejects.toThrow("launchd activation status check timed out");
+    expect(activationChecks).toBe(1);
+    expect(wait).not.toHaveBeenCalled();
+  });
+
   it("reports a loaded waiting LaunchAgent without a PID as inactive", async () => {
     const userHome = await temporaryDirectory("opentag-launchd-");
     const home = join(userHome, ".opentag");

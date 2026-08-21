@@ -30,7 +30,6 @@ import { AgentTurnRunner } from "../runtime/agent-turn-runner.js";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
 import { MvpTurnReportRecovery } from "../runtime/mvp-turn-report-recovery.js";
 import type { RuntimeBusinessFrame, RuntimeConnectionState } from "../runtime/runtime-connection.js";
-import { RuntimeToolHost } from "../runtime/runtime-tool-host.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import { SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
@@ -45,6 +44,12 @@ afterEach(async () => {
 });
 
 describe("Agent Runtime Client Turn vertical", () => {
+  it("maps the rejected disabled-network Codex snapshot without silently enabling it", () => {
+    const disabled = { ...snapshot(), execution: { approvalPolicy: "never" as const, networkAccess: false } };
+    expect(codexRuntimePolicy(disabled).network).toBe("disabled");
+    expect(validateCodexRuntimePolicy(disabled)).toBe("configuration_unsupported");
+  });
+
   it("E-01/E-02 completes sequential Turns on one Session-scoped Provider runtime", async () => {
     const fixture = await runtimeFixture();
     const first = await fixture.custody.accept(delivery(fixture.runtime, "delivery-1", "first"));
@@ -257,7 +262,6 @@ async function runtimeFixture(
   const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
   const connection = new FakeConnection();
   const reportOwner = new TurnReportOwner({ connection });
-  const toolHost = new RuntimeToolHost(connection);
   const clients: ScriptedTurnClient[] = [];
   const claudeProcesses: ScriptedClaudeCodeProcess[] = [];
   const logs: RecordedLog[] = [];
@@ -294,7 +298,7 @@ async function runtimeFixture(
     bindingStore: store,
     ensureProviderReady: (providerId, signal) => providers.ensureReady(providerId, signal),
     providers,
-    toolHost,
+    providerEnvironmentPath: () => "/tmp/provider-env.sh",
     workspace,
   });
   const reconciler = new SessionReconciler({ computerId, preparation: runtimeManager, localPolicy: runtimeManager });
@@ -323,7 +327,10 @@ async function runtimeFixture(
       },
     } as never,
     runtimeManager,
-    toolHost,
+    credentialEnvironment: {
+      prepare: async () => "/tmp/provider-env.sh",
+      cleanup: async () => undefined,
+    },
     logger: recordingLogger(logs, { computerId, instanceId: "instance-1" }),
   });
   const reconcile: SessionReconcileRequest = {
@@ -448,7 +455,7 @@ class ScriptedTurnClient implements InteractiveCodexAppServerClient {
         thread: { id: this.threadId, ephemeral: false },
         cwd: input.cwd,
         approvalPolicy: "never",
-        sandbox: { type: "workspaceWrite", networkAccess: false },
+        sandbox: { type: "workspaceWrite", networkAccess: true },
         instructionSources: [resolve(input.cwd, "AGENTS.md")],
         model: "default-model",
       };
@@ -558,8 +565,7 @@ function snapshot(revision = 1, provider: "codex" | "claude-code" = "codex"): Ef
     provider,
     model: `model-${revision}`,
     instructions: { platform: "platform", agent: "agent", session: "session" },
-    allowedTools: [],
-    execution: { approvalPolicy: "never", networkAccess: provider === "claude-code" },
+    execution: { approvalPolicy: "never", networkAccess: true },
     workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
   };
 }
@@ -574,7 +580,18 @@ function delivery(runtime: EffectiveRuntimeSnapshot, deliveryId: string, text: s
     agentId: "agent-1",
     placementGeneration: 1,
     attention: "direct",
-    content: { kind: "text", text },
+    content: {
+      kind: "text",
+      text,
+      providerRef: {
+        provider: "slack",
+        appId: "app-1",
+        teamId: "team-1",
+        botUserId: "bot-1",
+        channelId: "channel-1",
+        messageTs: "1710000000.000001",
+      },
+    },
     runtime,
   };
 }

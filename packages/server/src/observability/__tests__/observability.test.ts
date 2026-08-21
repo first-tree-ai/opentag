@@ -19,7 +19,6 @@ import { ConnectionRegistry, RuntimeRegistrySendError } from "../../runtime/conn
 import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
 import { RuntimeDomainOwner } from "../../runtime/runtime-domain-owner.js";
 import { ImInboundPersistenceError, ImMessageInbox } from "../../services/im/im-message-inbox.js";
-import { OutboundMessageService } from "../../services/im/outbound-message-service.js";
 import { FeishuConnectionManager } from "../../services/im-bindings/feishu/connection-manager.js";
 import { safeFeishuSetupErrorCode } from "../../services/im-bindings/feishu/errors.js";
 import { FeishuSetupService } from "../../services/im-bindings/feishu/setup-service.js";
@@ -365,76 +364,6 @@ describe("background and WebSocket tracing", () => {
     });
     await expect(failingWorker.runOnce()).rejects.toBe(deliveryFailure);
 
-    const outboundFailure = Object.assign(new Error("PRIVATE_OUTBOUND_PROVIDER_BODY"), {
-      code: "PRIVATE_OUTBOUND_TOOL_OUTPUT",
-    });
-    const outbound = new OutboundMessageService(
-      { transaction: vi.fn().mockRejectedValue(outboundFailure) } as never,
-      vi.fn() as never,
-    );
-    await expect(
-      outbound.execute({
-        requestId: randomUUID(),
-        sessionId: randomUUID(),
-        agentId: randomUUID(),
-        computerId: randomUUID(),
-        computerInstanceId: randomUUID(),
-        placementGeneration: 1,
-        expectedLatestImMessageId: randomUUID(),
-        operation: "send",
-        content: {
-          version: 1,
-          fallbackText: "private outbound message body",
-          blocks: [{ type: "text", text: "private outbound message body" }],
-          truncated: false,
-        },
-      }),
-    ).rejects.toBe(outboundFailure);
-
-    const outboundProviderCode = "plain provider diagnostic with private sender name";
-    const providerRequestId = randomUUID();
-    const providerDatabase = {
-      transaction: vi
-        .fn()
-        .mockResolvedValueOnce({
-          request: { requestId: providerRequestId, admittedCredentialGeneration: 1 },
-          scope: {
-            imBinding: { id: randomUUID(), provider: "slack", externalBotId: "bot" },
-            session: { channelId: "channel", threadKey: null },
-          },
-          targetExternalId: undefined,
-        })
-        .mockResolvedValueOnce({
-          admitted: true,
-          result: Promise.resolve({ ok: false, category: "unknown", code: outboundProviderCode }),
-        })
-        .mockResolvedValueOnce(undefined),
-    };
-    const outboundProviderFailure = new OutboundMessageService(
-      providerDatabase as never,
-      vi.fn().mockResolvedValue({
-        send: vi.fn().mockResolvedValue({ ok: false, category: "unknown", code: outboundProviderCode }),
-      }) as never,
-    );
-    await expect(
-      outboundProviderFailure.execute({
-        requestId: providerRequestId,
-        sessionId: randomUUID(),
-        agentId: randomUUID(),
-        computerId: randomUUID(),
-        computerInstanceId: randomUUID(),
-        placementGeneration: 1,
-        expectedLatestImMessageId: randomUUID(),
-        operation: "send",
-        content: {
-          version: 1,
-          fallbackText: "private provider-bound outbound body",
-          blocks: [{ type: "text", text: "private provider-bound outbound body" }],
-          truncated: false,
-        },
-      }),
-    ).resolves.toEqual({ state: "unknown", code: "provider_unknown", retryAfterSeconds: undefined });
-
     const capture = JSON.stringify(
       exporter
         .getFinishedSpans()
@@ -444,16 +373,9 @@ describe("background and WebSocket tracing", () => {
     expect(capture).not.toContain(inboxFailure.code);
     expect(capture).not.toContain(deliveryFailure.message);
     expect(capture).not.toContain(deliveryFailure.code);
-    expect(capture).not.toContain(outboundFailure.message);
-    expect(capture).not.toContain(outboundFailure.code);
-    expect(capture).not.toContain("private outbound message body");
-    expect(capture).not.toContain(outboundProviderCode);
-    expect(capture).not.toContain("private provider-bound outbound body");
     expect(exporter.getFinishedSpans().map((span) => span.name)).toEqual([
       "im.inbound.persist",
       "im.delivery.dispatch",
-      "im.outbound.execute",
-      "im.outbound.execute",
     ]);
   });
 
@@ -986,6 +908,7 @@ function normalizedInboundEvent() {
     providerEventId: "event-1",
     externalAppId: "app-1",
     externalTeamId: "team-1",
+    providerContext: { provider: "slack" as const, channelType: "channel" },
     conversation: { externalId: "channel-1", kind: "channel" as const },
     message: {
       externalId: "message-1",
@@ -1059,7 +982,6 @@ function runtimeSnapshot(agentId: string): EffectiveRuntimeSnapshot {
       agent: "private agent prompt",
       session: "private session prompt",
     },
-    allowedTools: [],
     execution: { approvalPolicy: "never", networkAccess: false },
     workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
   };
@@ -1090,7 +1012,18 @@ function runtimeDeliveryRequest(): DirectImMessageDeliveryRequest {
     agentId,
     placementGeneration: 1,
     attention: "direct",
-    content: { kind: "text", text: "private inbound message and tool payload" },
+    content: {
+      kind: "text",
+      text: "private inbound message and tool payload",
+      providerRef: {
+        provider: "slack",
+        appId: "app-1",
+        teamId: "team-1",
+        botUserId: "bot-1",
+        channelId: "channel-1",
+        messageTs: "1710000000.000001",
+      },
+    },
     runtime: runtimeSnapshot(agentId),
   };
 }

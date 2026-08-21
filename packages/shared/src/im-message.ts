@@ -7,6 +7,25 @@ export const ImMessageDirectionSchema = z.enum(["inbound", "outbound"]);
 export const ImAuthorKindSchema = z.enum(["human", "bot", "system"]);
 export const ImAttentionSchema = z.enum(["direct", "ambient"]);
 
+export const ProviderInboundContextSchema = z.discriminatedUnion("provider", [
+  z
+    .object({
+      provider: z.literal("feishu"),
+      chatType: z.string().min(1).max(160).optional(),
+      threadId: z.string().min(1).max(512).optional(),
+      rootId: z.string().min(1).max(512).optional(),
+      parentId: z.string().min(1).max(512).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      provider: z.literal("slack"),
+      channelType: z.string().min(1).max(160).optional(),
+      threadTs: z.string().min(1).max(512).optional(),
+    })
+    .strict(),
+]);
+
 export const ImResourceDescriptorSchema = z
   .object({
     providerResourceKey: z.string().min(1).max(2048),
@@ -75,6 +94,7 @@ export const NormalizedInboundImEventSchema = z
     providerEventId: z.string().min(1).max(512),
     externalAppId: z.string().min(1).max(255),
     externalTeamId: z.string().min(1).max(255),
+    providerContext: ProviderInboundContextSchema,
     conversation: z
       .object({
         externalId: z.string().min(1).max(512),
@@ -94,6 +114,7 @@ export const NormalizedInboundImEventSchema = z
             externalId: z.string().min(1).max(255),
             kind: ImAuthorKindSchema,
             displayName: z.string().max(512).nullable().optional(),
+            isSelf: z.boolean().optional(),
           })
           .strict(),
         occurredAt: z.coerce.date(),
@@ -105,32 +126,9 @@ export const NormalizedInboundImEventSchema = z
   })
   .strict();
 
-export const ProviderWriteErrorCategorySchema = z.enum([
-  "validation",
-  "deterministic",
-  "authorization",
-  "credential",
-  "rate_limited",
-  "transient",
-  "unknown",
-  "stale",
-]);
-
-export const ProviderWriteResultSchema = z.discriminatedUnion("ok", [
-  z.object({ ok: z.literal(true), externalMessageId: z.string().min(1), occurredAt: z.coerce.date() }).strict(),
-  z
-    .object({
-      ok: z.literal(false),
-      category: ProviderWriteErrorCategorySchema,
-      code: z.string().min(1).max(160),
-      retryAfterSeconds: z.number().int().positive().optional(),
-    })
-    .strict(),
-]);
-
 export type ImConversationKind = z.infer<typeof ImConversationKindSchema>;
 export type ImMessageOperation = z.infer<typeof ImMessageOperationSchema>;
 export type ImAttention = z.infer<typeof ImAttentionSchema>;
 export type ImContentV1 = z.infer<typeof ImContentV1Schema>;
+export type ProviderInboundContext = z.infer<typeof ProviderInboundContextSchema>;
 export type NormalizedInboundImEvent = z.infer<typeof NormalizedInboundImEventSchema>;
-export type ProviderWriteResult = z.infer<typeof ProviderWriteResultSchema>;

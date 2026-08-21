@@ -429,7 +429,6 @@ function snapshot(): EffectiveRuntimeSnapshot {
     agentId: "agent-1",
     provider: "codex",
     instructions: { platform: "platform", agent: "agent", session: "session" },
-    allowedTools: [],
     execution: { approvalPolicy: "never", networkAccess: false },
     workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
   };
@@ -445,7 +444,18 @@ function delivery(runtime: EffectiveRuntimeSnapshot, index: number): DirectImMes
     agentId: "agent-1",
     placementGeneration: 1,
     attention: "direct",
-    content: { kind: "text", text: `direct text ${index}` },
+    content: {
+      kind: "text",
+      text: `direct text ${index}`,
+      providerRef: {
+        provider: "slack",
+        appId: "app-1",
+        teamId: "team-1",
+        botUserId: "bot-1",
+        channelId: "channel-1",
+        messageTs: `1710000000.00000${index}`,
+      },
+    },
     runtime,
   };
 }

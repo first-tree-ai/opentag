@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { ComputerSchema, HTTP_PATHS, PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
+import { ComputerSchema, HTTP_PATHS, PROVIDER_READINESS_V1_HEADER, RUNTIME_PROTOCOL_V2 } from "@opentag/shared";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
@@ -60,7 +60,10 @@ function registerFrame(computerId: string, instanceId: string) {
     platform: "linux" as const,
     arch: "x64",
     clientVersion: "0.0.1",
-    capabilities: { imMessageTool: 0 as const },
+    capabilities: { imCredentialGrant: 0 as const },
+    protocolVersion: RUNTIME_PROTOCOL_V2,
+    supportedCapabilities: { imCredentialGrant: { min: 1, max: 1 } },
+    requiredServerCapabilities: [],
   };
 }
 

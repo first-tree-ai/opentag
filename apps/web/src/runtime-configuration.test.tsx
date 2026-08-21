@@ -21,7 +21,6 @@ const config: AgentAdminConfig = {
     model: null,
     reasoningEffort: null,
     instructions: "Review carefully.",
-    allowedTools: ["opentag_message_reply"],
     maxDurationMs: null,
   },
   createdAt: "2026-08-20T00:00:00.000Z",

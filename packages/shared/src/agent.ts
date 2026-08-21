@@ -1,8 +1,6 @@
 import { z } from "zod";
 import {
-  OPENTAG_MESSAGE_TOOLS,
   OPENTAG_PLATFORM_INSTRUCTIONS,
-  RUNTIME_ALLOWED_TOOLS_MAX_COUNT,
   RuntimeInstructionSchema,
   RuntimeInstructionsSchema,
   RuntimeMaxDurationMsSchema,
@@ -26,7 +24,6 @@ export const AgentRuntimeProviderSchema = z.enum(AGENT_RUNTIME_PROVIDERS);
 export const ReceiveModeSchema = z.enum(["all_message", "mention_only"]);
 export const AgentStatusSchema = z.enum(["active", "suspended"]);
 
-const OpenTagMessageToolSchema = z.enum(OPENTAG_MESSAGE_TOOLS);
 const AgentInstructionsSchema = RuntimeInstructionSchema.superRefine((instructions, context) => {
   const combined = RuntimeInstructionsSchema.safeParse({
     platform: OPENTAG_PLATFORM_INSTRUCTIONS,
@@ -39,34 +36,12 @@ const AgentInstructionsSchema = RuntimeInstructionSchema.superRefine((instructio
     });
   }
 });
-const AgentAllowedToolsInputSchema = z
-  .array(OpenTagMessageToolSchema)
-  .max(RUNTIME_ALLOWED_TOOLS_MAX_COUNT)
-  .superRefine((toolIds, context) => {
-    if (new Set(toolIds).size !== toolIds.length) {
-      context.addIssue({ code: "custom", message: "Agent tool IDs must be unique" });
-    }
-  })
-  .transform((toolIds) => [...toolIds].sort());
-const AgentAllowedToolsSchema = z
-  .array(OpenTagMessageToolSchema)
-  .max(RUNTIME_ALLOWED_TOOLS_MAX_COUNT)
-  .superRefine((toolIds, context) => {
-    if (new Set(toolIds).size !== toolIds.length) {
-      context.addIssue({ code: "custom", message: "Agent tool IDs must be unique" });
-    }
-    if (toolIds.some((toolId, index) => index > 0 && toolId < (toolIds[index - 1] ?? ""))) {
-      context.addIssue({ code: "custom", message: "Agent tool IDs must use canonical order" });
-    }
-  });
-
 export const AgentRuntimeConfigSchema = z
   .object({
     revision: z.number().int().safe().positive(),
     model: RuntimeModelSchema.nullable(),
     reasoningEffort: RuntimeReasoningEffortSchema.nullable(),
     instructions: AgentInstructionsSchema,
-    allowedTools: AgentAllowedToolsSchema,
     maxDurationMs: RuntimeMaxDurationMsSchema.nullable(),
   })
   .strict();
@@ -76,7 +51,6 @@ export const CreateAgentRuntimeConfigSchema = z
     model: RuntimeModelSchema.nullable().optional(),
     reasoningEffort: RuntimeReasoningEffortSchema.nullable().optional(),
     instructions: AgentInstructionsSchema.optional(),
-    allowedTools: AgentAllowedToolsInputSchema.optional(),
     maxDurationMs: RuntimeMaxDurationMsSchema.nullable().optional(),
   })
   .strict();
@@ -86,7 +60,6 @@ export const UpdateAgentRuntimeConfigSchema = z
     model: RuntimeModelSchema.nullable().optional(),
     reasoningEffort: RuntimeReasoningEffortSchema.nullable().optional(),
     instructions: AgentInstructionsSchema.optional(),
-    allowedTools: AgentAllowedToolsInputSchema.optional(),
     maxDurationMs: RuntimeMaxDurationMsSchema.nullable().optional(),
   })
   .strict()

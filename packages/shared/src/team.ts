@@ -8,6 +8,7 @@ import {
 } from "./auth.js";
 import {
   ComputerConnectionStatusSchema,
+  ComputerImCliReadinessCollectionSchema,
   ComputerPlatformSchema,
   ComputerProviderReadinessCollectionSchema,
 } from "./computer.js";
@@ -85,6 +86,7 @@ export const TeamComputerSummarySchema = z
     platform: ComputerPlatformSchema,
     connectionStatus: ComputerConnectionStatusSchema,
     providerReadiness: ComputerProviderReadinessCollectionSchema.optional(),
+    imCliReadiness: ComputerImCliReadinessCollectionSchema.optional(),
     connectedAt: z.string().datetime().nullable(),
     lastSeenAt: z.string().datetime(),
     observedAt: z.string().datetime(),
@@ -103,6 +105,7 @@ export const TeamComputerAdminConfigSchema = z
     clientVersion: z.string().min(1),
     connectionStatus: ComputerConnectionStatusSchema,
     providerReadiness: ComputerProviderReadinessCollectionSchema.optional(),
+    imCliReadiness: ComputerImCliReadinessCollectionSchema.optional(),
     connectedAt: z.string().datetime().nullable(),
     lastSeenAt: z.string().datetime(),
     observedAt: z.string().datetime(),

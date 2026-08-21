@@ -74,7 +74,6 @@ function adminConfig(): AgentAdminConfig {
       model: null,
       reasoningEffort: null,
       instructions: "",
-      allowedTools: [],
       maxDurationMs: null,
     },
   };
@@ -143,7 +142,26 @@ describe("OnboardingPage", () => {
     expect(await screen.findByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Generate connection command" })).toBeTruthy();
     expect(screen.queryByRole("navigation", { name: "Workspace" })).toBeNull();
-    expect(screen.queryByText("Create Team")).toBeNull();
+    expect(screen.queryByText("Create Workspace")).toBeNull();
+  });
+
+  it("presents the conditional setup as two product-level steps", async () => {
+    installFacts();
+    renderPage();
+    expect(await screen.findByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
+
+    const steps = screen.getByRole("navigation", { name: "Onboarding steps" });
+    expect(steps.querySelectorAll("li")).toHaveLength(2);
+    expect(steps.textContent).toContain("Prepare your Agent");
+    expect(steps.textContent).toContain("Add to Feishu");
+    expect(steps.textContent).toContain("In progress");
+    expect(steps.textContent).toContain("Up next");
+
+    const summary = screen.getByRole("region", { name: "Agent preparation summary" });
+    expect(summary.textContent).toContain("ComputerNot connected");
+    expect(summary.textContent).toContain("RuntimeWaiting");
+    expect(summary.textContent).toContain("AgentNot created");
+    expect(screen.queryByRole("img")).toBeNull();
   });
 
   it("asks for the existing Computer to be reconnected when every Computer is offline", async () => {
@@ -165,6 +183,23 @@ describe("OnboardingPage", () => {
     expect(screen.getByRole("button", { name: /Ada's Mac/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Studio Mac/ })).toBeTruthy();
     expect(vi.spyOn(browserApi, "createAgent")).not.toHaveBeenCalled();
+  });
+
+  it("summarizes the explicitly selected Computer instead of the first online Computer", async () => {
+    installFacts({ computers: [computerA, computerB] });
+    renderPage({
+      runtime: runtimeFacts([
+        { computerId: computerAId, provider: "codex", runtimeReady: true },
+        { computerId: computerBId, provider: "codex", runtimeReady: true },
+      ]),
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /Studio Mac/ }));
+
+    expect(await screen.findByRole("heading", { name: "Create your Agent" })).toBeTruthy();
+    const summary = screen.getByRole("region", { name: "Agent preparation summary" });
+    expect(summary.textContent).toContain("ComputerStudio Mac");
+    expect(summary.textContent).not.toContain("ComputerAda's Mac");
   });
 
   it("keeps an ambiguous Computer choice actionable before runtime facts arrive", async () => {
@@ -377,6 +412,19 @@ describe("OnboardingPage", () => {
     expect(screen.queryByRole("heading", { name: "OpenTag is ready" })).toBeNull();
   });
 
+  it("shows the Agent-bound Computer as offline instead of substituting another online Computer", async () => {
+    installFacts({
+      agents: [agent],
+      computers: [computerB, { ...computerA, connectionStatus: "offline" }],
+    });
+    renderPage({ runtime: runtimeFacts([{ computerId: computerBId, provider: "codex", runtimeReady: true }]) });
+
+    expect(await screen.findByRole("heading", { name: "OpenTag needs its runtime route" })).toBeTruthy();
+    const route = screen.getByText("Ada's Mac · Offline");
+    expect(route.closest("div")?.dataset.status).toBe("attention");
+    expect(screen.getByRole("region", { name: "Agent preparation summary" }).textContent).not.toContain("Studio Mac");
+  });
+
   it.each([
     [undefined, "Connect OpenTag to Feishu", "Connect existing or new Feishu Bot"],
     [
@@ -394,6 +442,7 @@ describe("OnboardingPage", () => {
     renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]) });
     expect(await screen.findByRole("heading", { name: heading })).toBeTruthy();
     expect(screen.getByRole("button", { name: action })).toBeTruthy();
+    expect(screen.getByRole("region", { name: /OpenTag Agent .* Feishu/ })).toBeTruthy();
   });
 
   it("renders Ready only when runtime and authoritative handoff are both ready", async () => {
@@ -412,15 +461,15 @@ describe("OnboardingPage", () => {
     });
     expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
     expect(screen.getByText("Read only")).toBeTruthy();
-    expect(screen.getByText(/A Team admin can complete this action/)).toBeTruthy();
+    expect(screen.getByText(/An admin can complete this action/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Feishu/ })).toBeNull();
   });
 
   it.each([
-    [["Ada"], "Ask a Team admin to continue: Ada."],
-    [["Ada", "Grace"], "Ask a Team admin to continue: Ada or Grace."],
-    [["Ada", "Grace", "Linus"], "Ask a Team admin to continue: Ada, Grace, or 1 more."],
-    [["Ada", "Grace", "Linus", "Ken"], "Ask a Team admin to continue: Ada, Grace, or 2 more."],
+    [["Ada"], "Ask an admin to continue: Ada."],
+    [["Ada", "Grace"], "Ask an admin to continue: Ada or Grace."],
+    [["Ada", "Grace", "Linus"], "Ask an admin to continue: Ada, Grace, or 1 more."],
+    [["Ada", "Grace", "Linus", "Ken"], "Ask an admin to continue: Ada, Grace, or 2 more."],
   ])("names the admins a member can ask", async (names, expected) => {
     installFacts({
       agents: [agent],
@@ -451,7 +500,7 @@ describe("OnboardingPage", () => {
     });
 
     expect(await screen.findByRole("heading", { name: "Prepare Codex or Claude Code" })).toBeTruthy();
-    expect(screen.getByText(/Ask a Team admin to continue: Ada or Grace\./)).toBeTruthy();
+    expect(screen.getByText(/Ask an admin to continue: Ada or Grace\./)).toBeTruthy();
     expect(screen.queryByText(/can complete this action/)).toBeNull();
   });
 
@@ -464,7 +513,7 @@ describe("OnboardingPage", () => {
     });
 
     expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
-    expect(screen.getByText(/A Team admin can complete this action/)).toBeTruthy();
+    expect(screen.getByText(/An admin can complete this action/)).toBeTruthy();
   });
 
   it("does not ask for the member list when the viewer manages the Team", async () => {

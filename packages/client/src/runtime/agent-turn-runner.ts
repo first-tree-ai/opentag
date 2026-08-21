@@ -9,9 +9,12 @@ import {
 import type { AgentInput, AgentRunResult, AgentRuntimeEvent } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { AgentRuntimeProviderUnavailableError } from "./agent-runtime-provider-registry.js";
+import {
+  ImCredentialEnvironmentError,
+  type ImCredentialEnvironmentManager,
+} from "./im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "./im-resource-fetcher.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
-import type { RuntimeToolHost } from "./runtime-tool-host.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
 import { ClientRuntimeProviderStartError, type SessionRuntimeManager } from "./session-runtime-manager.js";
 import { TurnTraceBuffer } from "./trace-buffer.js";
@@ -28,7 +31,7 @@ export interface AgentTurnRunnerOptions {
   readonly reportOwner: TurnReportOwner;
   readonly resourceFetcher?: ImResourceFetcher;
   readonly runtimeManager: SessionRuntimeManager;
-  readonly toolHost: RuntimeToolHost;
+  readonly credentialEnvironment: Pick<ImCredentialEnvironmentManager, "cleanup" | "prepare">;
 }
 
 interface RunningTurn {
@@ -54,7 +57,7 @@ export class AgentTurnRunner {
   readonly #reportOwner: TurnReportOwner;
   readonly #resourceFetcher?: ImResourceFetcher;
   readonly #runtimeManager: SessionRuntimeManager;
-  readonly #toolHost: RuntimeToolHost;
+  readonly #credentialEnvironment: AgentTurnRunnerOptions["credentialEnvironment"];
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
 
@@ -68,7 +71,7 @@ export class AgentTurnRunner {
     this.#reportOwner = options.reportOwner;
     this.#resourceFetcher = options.resourceFetcher;
     this.#runtimeManager = options.runtimeManager;
-    this.#toolHost = options.toolHost;
+    this.#credentialEnvironment = options.credentialEnvironment;
   }
 
   get activeCount(): number {
@@ -116,7 +119,6 @@ export class AgentTurnRunner {
     });
     let completion: TurnCompletion;
     let terminalObserved = false;
-    let releaseTools: () => void = () => undefined;
     let releaseObserver: () => void = () => undefined;
     try {
       await this.#bindingStore.updateUnresolved(
@@ -125,10 +127,10 @@ export class AgentTurnRunner {
         owner.turnId,
         "starting",
       );
+      await this.#credentialEnvironment.prepare(owner.request, signal);
       const runtime = await this.#runtimeManager.ensureRuntime(owner.request.sessionId, signal);
       const cwd = this.#runtimeManager.cwd(owner.request.sessionId);
       const supplementalContext = await this.#resourceFetcher?.fetchForTurn(owner.request, cwd);
-      releaseTools = this.#toolHost.activateRun(owner.turnId, owner.request, owner.request.runtime.allowedTools);
       releaseObserver = this.#runtimeManager.observe(owner.request.sessionId, async (event) => {
         trace.record(event);
         if (event.type === "run_started" && event.runId === owner.turnId) {
@@ -169,7 +171,7 @@ export class AgentTurnRunner {
       if (!terminalObserved) trace.turnCompleted(completion.outcome);
     } finally {
       releaseObserver();
-      releaseTools();
+      await this.#credentialEnvironment.cleanup(owner.request.sessionId).catch(() => undefined);
       clearTimeout(timer);
     }
 
@@ -209,17 +211,33 @@ export class AgentTurnRunner {
 
 export function buildAgentInput(request: DirectImMessageDeliveryRequest, supplementalContext?: string): AgentInput {
   const sessionInstructions = request.runtime.instructions.session?.trim() || "No additional Session instructions.";
+  const provider = request.content.providerRef.provider;
+  const providerCommand = provider === "feishu" ? "lark-cli" : "slack api";
+  const attentionMeaning =
+    request.attention === "direct"
+      ? "A human explicitly addressed this Agent/Session. Handle the message normally, then choose whether to reply, react, send proactively, or take no provider action."
+      : "This Agent overheard the message. Use the conversation context to choose whether to reply, react, send proactively, or take no action; by default avoid meaningless, duplicate, intrusive, or attention-seeking intervention.";
   const context = [
+    '<opentag-im-context source="managed">',
     "OpenTag managed runtime context (not user-authored).",
     `Agent: ${request.agentId}`,
     `Session: ${request.sessionId}`,
     `Agent revision: ${request.runtime.revision.agent.sequence}/${request.runtime.revision.agent.id}`,
     `Session revision: ${request.runtime.revision.session.sequence}/${request.runtime.revision.session.id}`,
     "Reload and obey the managed AGENTS.md before acting.",
-    "For a new IM write, omit retryRequestId; OpenTag assigns the request identity.",
-    "Never automatically repeat an unknown IM write. Only when explicitly retrying the exact same payload, reuse the returned requestId as retryRequestId.",
+    "Your final text is not sent to the IM provider automatically.",
+    `To write to this ${provider} conversation, load the credentials from $OPENTAG_PROVIDER_ENV_FILE in your shell, then use the official ${providerCommand} CLI directly.`,
+    "OpenTag has no message send, reply, or reaction interface, and you do not report provider send results to OpenTag.",
+    "Use the provider-native identifiers below. Do not substitute an OpenTag Session or message ID.",
+    "If a provider result is unknown, query the provider before deciding whether to retry.",
+    `Attention: ${request.attention}`,
+    `Attention meaning: ${attentionMeaning}`,
+    "Attention does not change provider CLI or credential availability for this Turn.",
+    `Current provider reference: ${JSON.stringify(request.content.providerRef)}`,
+    `For version-specific commands and native formats, run ${provider === "feishu" ? "lark-cli im --help" : "slack api --help"}.`,
     "Session instructions:",
     sessionInstructions,
+    "</opentag-im-context>",
   ].join("\n");
   return {
     items: [
@@ -230,7 +248,7 @@ export function buildAgentInput(request: DirectImMessageDeliveryRequest, supplem
             {
               type: "text" as const,
               text: `Bounded prior IM history${request.content.historyTruncated ? " (truncated)" : ""}:\n${request.content.history
-                .map((item) => `[${item.occurredAt}] ${item.imMessageId}: ${item.text}`)
+                .map((item) => `[${item.occurredAt}] ${JSON.stringify(item.providerRef)}: ${item.text}`)
                 .join("\n")}`,
             },
           ]
@@ -291,6 +309,9 @@ export function completionForError(error: unknown, abortReason: unknown): TurnCo
   }
   if (abortReason === "turn_timeout") {
     return { outcome: "failed", executionEffects: "may_have_occurred", errorReason: "turn_timeout" };
+  }
+  if (error instanceof ImCredentialEnvironmentError) {
+    return { outcome: "failed", executionEffects: "not_started", errorReason: "credential_unavailable" };
   }
   if (error instanceof AgentRuntimeProviderUnavailableError) {
     return {

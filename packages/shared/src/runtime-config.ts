@@ -2,17 +2,10 @@ import { z } from "zod";
 
 export const RUNTIME_ID_MAX_BYTES = 128;
 export const RUNTIME_INSTRUCTIONS_MAX_BYTES = 24 * 1024;
-export const RUNTIME_ALLOWED_TOOLS_MAX_COUNT = 64;
 export const RUNTIME_DEFAULT_MAX_DURATION_MS = 30 * 60 * 1_000;
 export const RUNTIME_MAX_DURATION_MS = 24 * 60 * 60 * 1_000;
-export const OPENTAG_MESSAGE_TOOLS = [
-  "opentag_message_send",
-  "opentag_message_reply",
-  "opentag_message_react",
-] as const;
 // Changing this policy requires a migration that advances every active Agent runtime config revision.
-export const OPENTAG_PLATFORM_INSTRUCTIONS =
-  "You run inside OpenTag. IM output is never sent automatically. Use an opentag_message_* tool only when you intend to write to the current IM conversation.";
+export const OPENTAG_PLATFORM_INSTRUCTIONS = "You run inside OpenTag. IM output is never sent automatically.";
 
 const utf8 = new TextEncoder();
 
@@ -49,15 +42,6 @@ export const RuntimeInstructionsSchema = z
       runtimeUtf8Length(instructions.session ?? "");
     if (totalBytes > RUNTIME_INSTRUCTIONS_MAX_BYTES) {
       context.addIssue({ code: "custom", message: "Combined instructions exceed the 24 KiB limit" });
-    }
-  });
-export const RuntimeToolIdSchema = runtimeByteString(RUNTIME_ID_MAX_BYTES, "Tool ID exceeds the 128-byte limit", 1);
-export const RuntimeAllowedToolsSchema = z
-  .array(RuntimeToolIdSchema)
-  .max(RUNTIME_ALLOWED_TOOLS_MAX_COUNT)
-  .superRefine((toolIds, context) => {
-    if (new Set(toolIds).size !== toolIds.length) {
-      context.addIssue({ code: "custom", message: "Tool IDs must be unique" });
     }
   });
 export const RuntimeMaxDurationMsSchema = z.number().int().safe().positive().max(RUNTIME_MAX_DURATION_MS);

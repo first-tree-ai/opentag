@@ -104,7 +104,7 @@ describe("Computer runtime WebSocket", () => {
     expect(await frames.next()).toMatchObject({ type: "computer:register:result", ok: true });
     expect(computers.register).toHaveBeenCalledWith(me.user.id, {
       ...register,
-      capabilities: { imMessageTool: 0 },
+      capabilities: { imCredentialGrant: 0 },
     });
     expect(registry.providerReadiness(register.computerId)).toMatchObject([
       {
@@ -185,7 +185,7 @@ describe("Computer runtime WebSocket", () => {
       platform: "linux",
       arch: "x64",
       clientVersion: "0.0.2",
-      capabilities: { imMessageTool: 1 },
+      capabilities: { imCredentialGrant: 1 },
       supportedCapabilities: {
         ...RUNTIME_CLIENT_CAPABILITY_OFFERS,
         "client.unknownOptional": { min: 1, max: 1 },
@@ -211,7 +211,7 @@ describe("Computer runtime WebSocket", () => {
         connectionId,
         computerId: register.computerId,
         instanceId: register.instanceId,
-        capabilities: { imMessageTool: 1 },
+        capabilities: { imCredentialGrant: 1 },
       }),
     );
     expect(await frames.next()).toMatchObject({
@@ -246,7 +246,7 @@ describe("Computer runtime WebSocket", () => {
         connectionId: randomUUID(),
         computerId: register.computerId,
         instanceId: register.instanceId,
-        capabilities: { imMessageTool: 1 },
+        capabilities: { imCredentialGrant: 1 },
       }),
     );
     expect(await frames.next()).toMatchObject({ type: "error", code: "COMPUTER_NOT_REGISTERED" });
@@ -272,7 +272,7 @@ describe("Computer runtime WebSocket", () => {
         platform: "linux",
         arch: "x64",
         clientVersion: "0.0.2",
-        capabilities: { imMessageTool: 0 },
+        capabilities: { imCredentialGrant: 0 },
         supportedCapabilities: RUNTIME_CLIENT_CAPABILITY_OFFERS,
         requiredServerCapabilities: ["future.requiredFeature"],
       }),

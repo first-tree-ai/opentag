@@ -2,7 +2,7 @@
 
 [English](../observability.md)
 
-OpenTag Server 可选地通过 OTLP/HTTP 导出 OpenTelemetry traces。实现遵循 First Tree 已验证的默认关闭、仅 trace 模式，并为 OpenTag 的 provider 连接、IM 入站、持久 delivery、Runtime 和 outbound 边界增加专属 spans。
+OpenTag Server 可选地通过 OTLP/HTTP 导出 OpenTelemetry traces。该能力默认关闭，覆盖 provider 连接、IM 入站、持久 delivery 与 Runtime 生命周期边界。
 
 Tracing 不等于日志上传。Pino 仍将 server 日志写到 stdout；本能力不会把全部 stdout 日志上传到 Logfire。Logfire 只接收 spans、span attributes 和有界的 exception events。
 
@@ -38,7 +38,7 @@ Server 自行管理显式的 OpenTelemetry trace provider 和 OTLP exporter，�
 - `runtime.ws.connection` 以及非 heartbeat 的短 Runtime business-frame spans。
 - 飞书连接 attempt、transition、error 短 spans。
 - 每个飞书 SDK callback 都有独立的 `im.inbound.process` root，覆盖 normalize 和 persistence 失败。
-- Provider-neutral 的 `im.inbound.persist`、delivery/recovery、Runtime reconcile/delivery/report 和 outbound spans。
+- Provider-neutral 的 `im.inbound.persist`、delivery/recovery 与 Runtime reconcile/delivery/report spans。
 
 异步任务有意使用独立 roots。请用稳定属性查询，而不是期待一条连续 parent 链：
 
@@ -69,9 +69,9 @@ opentag agent im diagnose <agent-id>
 1. 按 `opentag.im.binding.id` 查询 `feishu.connection.connect`、`feishu.connection.transition` 和 `feishu.connection.error`，确认当前 replica 已连接，且没有持续重连或凭据失败。
 2. 用同一 binding 查询 `im.inbound.process`。存在该 span 才能证明 OpenTag SDK callback 被调用；error code 可区分 admission、normalization、fencing 和 persistence 失败。
 3. persistence 成功后，使用 `opentag.im.message.id` 和 `opentag.im.delivery.id` 串联 `im.delivery.dispatch`、`runtime.reconcile`、`runtime.delivery` 和 `runtime.report`。
-4. 回复失败时，用 `opentag.session.id`、`opentag.agent.id` 或 `opentag.request.id` 查询 `im.outbound.execute`。
+4. 若 Agent 已运行但 provider 中没有回复，检查 Agent trace 与 provider CLI 结果；OpenTag 不接收或追踪 provider 出站写入。
 
-没有 `im.inbound.process` 只表示 OpenTag 在已采样时间窗口内没有观测到 provider callback，不能证明飞书已经投递 event。需要结合 `connection`、`lastInboundAt`、`runtimeToolAvailable`、已授权 scopes 和飞书事件订阅状态判断。
+没有 `im.inbound.process` 只表示 OpenTag 在已采样时间窗口内没有观测到 provider callback，不能证明飞书已经投递 event。需要结合 `connection`、`lastInboundAt`、`providerCliReadiness`、已授权 scopes 和飞书事件订阅状态判断。
 
 ## 采样与限制
 

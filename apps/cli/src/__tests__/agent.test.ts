@@ -60,7 +60,6 @@ const agent: AgentAdminConfig = {
     model: null,
     reasoningEffort: null,
     instructions: "Follow instructions.",
-    allowedTools: ["opentag_message_react", "opentag_message_reply", "opentag_message_send"],
     maxDurationMs: null,
   },
   createdAt: "2026-08-19T00:00:00.000Z",
@@ -102,20 +101,21 @@ function api() {
 }
 
 describe("Agent CLI core", () => {
-  it("shows runtime message-tool readiness in IM diagnostics", () => {
+  it("shows provider CLI readiness in IM diagnostics", () => {
     const diagnostics: ImBindingDiagnostics = {
       imBindingId: crypto.randomUUID(),
       provider: "feishu",
       ready: false,
-      runtimeToolAvailable: false,
+      agentRuntimeReadiness: "ready",
+      providerCliReadiness: "install",
       credentialGeneration: 1,
       reauthorizationRequired: false,
       connection: null,
       lastInboundAt: null,
-      lastOutboundAt: null,
       lastErrorCode: null,
     };
-    expect(formatImBindingDiagnostics(diagnostics)).toContain("runtimeToolAvailable\tfalse");
+    expect(formatImBindingDiagnostics(diagnostics)).toContain("providerCliReadiness\tinstall");
+    expect(formatImBindingDiagnostics(diagnostics)).toContain("agentRuntimeReadiness\tready");
   });
 
   it("resolves one Team automatically and requires an explicit choice for multiple Teams", () => {
@@ -174,7 +174,6 @@ describe("Agent CLI core", () => {
         model: "gpt-5",
         reasoningEffort: "high",
         instructionsFile,
-        allowedTools: ["opentag_message_send", "opentag_message_reply"],
         maxDurationMs: "30000",
       });
       expect(client.createAgent).toHaveBeenCalledWith("access", teamId, {
@@ -186,7 +185,6 @@ describe("Agent CLI core", () => {
           model: "gpt-5",
           reasoningEffort: "high",
           instructions: "请逐行检查。\n\n",
-          allowedTools: ["opentag_message_reply", "opentag_message_send"],
           maxDurationMs: 30_000,
         },
       });
@@ -232,7 +230,6 @@ describe("Agent CLI core", () => {
       instructions: "",
       clearModel: true,
       clearReasoningEffort: true,
-      clearAllowedTools: true,
       clearMaxDuration: true,
     });
     expect(client.updateAgent).toHaveBeenCalledWith("access", agentId, {
@@ -241,7 +238,6 @@ describe("Agent CLI core", () => {
         model: null,
         reasoningEffort: null,
         instructions: "",
-        allowedTools: [],
         maxDurationMs: null,
       },
     });
@@ -265,7 +261,6 @@ describe("Agent CLI core", () => {
     for (const options of [
       { model: "gpt-5", clearModel: true },
       { reasoningEffort: "high", clearReasoningEffort: true },
-      { allowedTools: ["opentag_message_send"], clearAllowedTools: true },
       { maxDurationMs: "100", clearMaxDuration: true },
       { instructions: "inline", instructionsFile: "/tmp/unused" },
     ]) {
@@ -288,22 +283,6 @@ describe("Agent CLI core", () => {
     ).rejects.toThrow();
     expect(excessiveDuration.getAgentConfig).not.toHaveBeenCalled();
 
-    const unknownTool = api();
-    await expect(
-      runAgentUpdate(agentId, { accessToken: "access", api: unknownTool, allowedTools: ["unknown_tool"] }),
-    ).rejects.toThrow();
-    expect(unknownTool.getAgentConfig).not.toHaveBeenCalled();
-
-    const duplicateTools = api();
-    await expect(
-      runAgentUpdate(agentId, {
-        accessToken: "access",
-        api: duplicateTools,
-        allowedTools: ["opentag_message_send", "opentag_message_send"],
-      }),
-    ).rejects.toThrow("Agent tool IDs must be unique");
-    expect(duplicateTools.getAgentConfig).not.toHaveBeenCalled();
-
     const empty = api();
     await expect(runAgentUpdate(agentId, { accessToken: "access", api: empty })).rejects.toThrow(
       "No Agent changes were provided",
@@ -322,7 +301,6 @@ describe("Agent CLI core", () => {
         "--reasoning-effort",
         "--instructions",
         "--instructions-file",
-        "--allowed-tool",
         "--max-duration-ms",
       ]),
     );
@@ -334,8 +312,6 @@ describe("Agent CLI core", () => {
         "--clear-reasoning-effort",
         "--instructions",
         "--instructions-file",
-        "--allowed-tool",
-        "--clear-allowed-tools",
         "--max-duration-ms",
         "--clear-max-duration",
       ]),

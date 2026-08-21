@@ -24,12 +24,6 @@ export function registerAgentUpdateCommand(agent: Command): void {
       new Option("--instructions-file <path>", "read Agent instructions from a UTF-8 file").conflicts("instructions"),
     )
     .addOption(
-      new Option("--allowed-tool <tool-id>", "allow an OpenTag runtime tool (repeatable)")
-        .argParser(collectValue)
-        .conflicts("clearAllowedTools"),
-    )
-    .addOption(new Option("--clear-allowed-tools", "clear the runtime tool allowlist").conflicts("allowedTool"))
-    .addOption(
       new Option("--max-duration-ms <integer>", "maximum duration of one Turn in milliseconds").conflicts(
         "clearMaxDuration",
       ),
@@ -46,16 +40,10 @@ export function registerAgentUpdateCommand(agent: Command): void {
             clearReasoningEffort: options.clearReasoningEffort,
             instructions: options.instructions,
             instructionsFile: options.instructionsFile,
-            allowedTools: options.allowedTool,
-            clearAllowedTools: options.clearAllowedTools,
             maxDurationMs: options.maxDurationMs,
             clearMaxDuration: options.clearMaxDuration,
           }),
         )}\n`,
       );
     });
-}
-
-function collectValue(value: string, previous: string[] | undefined): string[] {
-  return [...(previous ?? []), value];
 }

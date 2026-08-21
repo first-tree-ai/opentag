@@ -1,7 +1,7 @@
 # OpenTag
 
 > Canonical source: [README.md](./README.md)
-> Last synced with: 2026-08-20
+> Last synced with: 2026-08-21
 
 OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与 AI 编码 Agent。项目目前处于 **pre-alpha**
 阶段：产品工作流仍在开发中，尚不适合生产使用。
@@ -16,9 +16,12 @@ OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与
 - 显式 Team membership、角色、离开/移除/恢复和七天邀请链接生命周期；
 - 用户所有的 Computer 注册与在线状态；
 - Team 所有的 Agent Registry、不可变 Computer/provider 绑定与 revision fencing；
+- 持久化 Agent Runtime 执行、delivery custody、上报与恢复；
+- 飞书和 Slack 入站标准化、持久化及 Channel/Thread Session 路由；
+- 供 Agent 自主回复和 Reaction 的 provider CLI 凭证交接；
 - 同源只读 Admin Web，以及 `doctor`、`login`、`team`、`agent`、`computer` 和 daemon 服务管理命令。
 
-仓库尚未实现 Agent 执行、飞书/Slack 集成、IM 持久化或 Session Runtime。
+这些 Runtime 与消息路径已经实现，但仍处于 pre-alpha 阶段；安装、管理和端到端产品工作流仍在完善。
 
 ## 快速开始
 
@@ -67,7 +70,7 @@ pnpm --filter open-tag start agent create \
 pnpm --filter open-tag start agent list
 ```
 
-这只会记录 Agent identity 和 Computer binding，不会启动 Codex 或 Claude Code turn。
+这会记录 Agent identity 和 Computer binding。Agent 收到已准入工作后，Agent Runtime turn 才会启动。
 
 Team Admin 可在 Codex Agent 的 **Runtime** 页面或对应的 `agent update` 参数中管理 model、reasoning effort 和单个
 Turn 的最长执行时间。model 或 reasoning 留空表示交由 Codex 管理；duration 留空则使用 OpenTag 的 30 分钟默认值。
@@ -96,13 +99,15 @@ pnpm --filter open-tag start team invitation rotate
 ## 项目状态
 
 OpenTag 正通过小型、可验证的纵向切片逐步构建。首个稳定版本发布前，公开 API 和 package 边界可能变化。
-当前代码已建立数据库 bootstrap、用户认证、本地 Computer 连接、Agent Registry、账号/Team 生命周期和只读
-Admin Web；Agent 执行与即时通信仍属于后续纵向切片。
+当前代码已包含控制面、本地 Computer 连接、Agent Runtime、持久 IM delivery、飞书/Slack 入站路由、
+Channel/Thread Session 与 provider CLI 直接交接。产品管理面和更广泛的协作工作流仍在开发中。
 
 ## 文档
 
 - [开发指南](./DEVELOPMENT.zh-CN.md)
 - [Server 可观测性](./docs/zh-CN/observability.md)
+- [直接使用 Provider CLI 发送消息](./docs/zh-CN/direct-provider-cli.md)
+- [IM Channel 与 Thread Session](./docs/zh-CN/thread-sessions.md)
 - [贡献指南](./CONTRIBUTING.zh-CN.md)
 - [发布指南](./docs/zh-CN/releasing.md)
 - [部署指南](./docs/zh-CN/deploying.md)

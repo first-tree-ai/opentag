@@ -597,7 +597,6 @@ describe("Agent persistence and authorization", () => {
       const created = await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, {
         ...createInput(computer.id),
         runtimeConfig: {
-          allowedTools: ["opentag_message_send", "opentag_message_react"],
           instructions: "Custom instructions",
           maxDurationMs: 30_000,
           model: "gpt-5.6",
@@ -605,7 +604,6 @@ describe("Agent persistence and authorization", () => {
         },
       });
       expect(created.runtimeConfig).toMatchObject({
-        allowedTools: ["opentag_message_react", "opentag_message_send"],
         instructions: "Custom instructions",
         maxDurationMs: 30_000,
         model: "gpt-5.6",
@@ -619,14 +617,8 @@ describe("Agent persistence and authorization", () => {
       });
       expect(profileOnly).toMatchObject({ revision: 2, runtimeConfig: { revision: initialRuntimeRevision } });
 
-      const sameConfig = await value.service.updateById(value.bootstrap.userId, created.id, {
-        expectedRevision: 2,
-        runtimeConfig: { allowedTools: ["opentag_message_send", "opentag_message_react"] },
-      });
-      expect(sameConfig).toMatchObject({ revision: 3, runtimeConfig: { revision: initialRuntimeRevision } });
-
       const cleared = await value.service.updateById(value.bootstrap.userId, created.id, {
-        expectedRevision: 3,
+        expectedRevision: 2,
         runtimeConfig: { maxDurationMs: null, model: null, reasoningEffort: null },
       });
       expect(cleared.runtimeConfig.revision).toBeGreaterThan(initialRuntimeRevision);
@@ -639,7 +631,7 @@ describe("Agent persistence and authorization", () => {
       expect(secondAgent.runtimeConfig.revision).toBeGreaterThan(cleared.runtimeConfig.revision);
       await expect(
         value.service.updateById(value.bootstrap.userId, created.id, {
-          expectedRevision: 3,
+          expectedRevision: 2,
           runtimeConfig: { instructions: "stale" },
         }),
       ).rejects.toMatchObject({ code: "AGENT_REVISION_CONFLICT", statusCode: 409 });

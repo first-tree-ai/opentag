@@ -3,9 +3,40 @@ import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { normalizeSlackEnvelope } from "../services/im-bindings/slack/adapter.js";
 import { SlackBindingActivator } from "../services/im-bindings/slack/binding-activator.js";
+import { DefaultSlackApiClient } from "../services/im-bindings/slack/default-api-client.js";
 import { preparseSlackRoute, verifySlackSignature } from "../services/im-bindings/slack/signature.js";
 
 describe("Slack installed-binding adapter", () => {
+  it("derives installation identity and granted scopes from Slack instead of browser input", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          app_id: "A1",
+          team_id: "T1",
+          enterprise_id: "E1",
+          user_id: "U1",
+          bot_id: "B1",
+        }),
+        { status: 200, headers: { "x-oauth-scopes": "chat:write, app_mentions:read, im:history" } },
+      ),
+    );
+    const api = new DefaultSlackApiClient(undefined, fetchImpl);
+
+    await expect(api.inspectInstallation("xoxb-secret")).resolves.toEqual({
+      appId: "A1",
+      teamId: "T1",
+      enterpriseId: "E1",
+      botUserId: "U1",
+      botId: "B1",
+      grantedBotScopes: ["app_mentions:read", "chat:write", "im:history"],
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://slack.com/api/auth.test",
+      expect.objectContaining({ headers: expect.objectContaining({ authorization: "Bearer xoxb-secret" }) }),
+    );
+  });
+
   it("verifies the raw body and rejects replayed timestamps", () => {
     const now = new Date("2026-08-19T00:00:00.000Z");
     const timestamp = String(Math.floor(now.getTime() / 1000));
@@ -180,7 +211,14 @@ describe("Slack installed-binding adapter", () => {
   it("validates installation identity before activation", async () => {
     const activateSlack = vi.fn().mockResolvedValue("im-binding-id");
     const api = {
-      authTest: vi.fn().mockResolvedValue({ appId: "A2", teamId: "T1", botUserId: "U1", botId: "B1" }),
+      inspectInstallation: vi.fn().mockResolvedValue({
+        appId: "A2",
+        teamId: "T1",
+        enterpriseId: null,
+        botUserId: "U1",
+        botId: "B1",
+        grantedBotScopes: ["chat:write"],
+      }),
     };
     const activator = new SlackBindingActivator({ activateSlack } as never, api as never);
     await expect(
@@ -201,7 +239,14 @@ describe("Slack installed-binding adapter", () => {
   it("persists the verified Slack bot ID namespace during activation", async () => {
     const activateSlack = vi.fn().mockResolvedValue("im-binding-id");
     const api = {
-      authTest: vi.fn().mockResolvedValue({ appId: "A1", teamId: "T1", botUserId: "U1", botId: "B1" }),
+      inspectInstallation: vi.fn().mockResolvedValue({
+        appId: "A1",
+        teamId: "T1",
+        enterpriseId: "E1",
+        botUserId: "U1",
+        botId: "B1",
+        grantedBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
+      }),
     };
     const activator = new SlackBindingActivator({ activateSlack } as never, api as never);
     const input = {
@@ -216,6 +261,13 @@ describe("Slack installed-binding adapter", () => {
     };
 
     await expect(activator.activate(input)).resolves.toBe("im-binding-id");
-    expect(activateSlack).toHaveBeenCalledWith(input, "B1");
+    expect(activateSlack).toHaveBeenCalledWith(
+      {
+        ...input,
+        enterpriseId: "E1",
+        grantedBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
+      },
+      "B1",
+    );
   });
 });

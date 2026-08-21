@@ -23,6 +23,7 @@ import type { ComputerService } from "./services/computers/index.js";
 import type { ImResourceService } from "./services/im/index.js";
 import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
 import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
+import { type SlackSetupService, SlackSetupServiceError } from "./services/im-bindings/slack/index.js";
 import type { InvitationService } from "./services/invitations/index.js";
 import type { TeamMembershipService } from "./services/teams/index.js";
 import { registerWebApp } from "./web-app.js";
@@ -42,6 +43,7 @@ export interface CreateAppOptions {
   imBindingService?: ImBindingService;
   imResourceService?: ImResourceService;
   feishuSetupService?: FeishuSetupService;
+  slackSetupService?: SlackSetupService;
   loggerStream?: FastifyLoggerOptions["stream"];
   readiness?: BootstrapReadiness;
   runtime?: RuntimeRoutesOptions;
@@ -180,7 +182,14 @@ export function createApp(options: CreateAppOptions = {}) {
       registerInvitationRoutes(app, authService, options.invitationService, publicOrigin);
     }
     if (options.imBindingService) {
-      registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, publicOrigin);
+      registerImBindingRoutes(
+        app,
+        authService,
+        options.imBindingService,
+        options.feishuSetupService,
+        options.slackSetupService,
+        publicOrigin,
+      );
     }
     if (options.imResourceService) {
       registerImResourceRoute(app, authService, options.imResourceService, publicOrigin);
@@ -226,7 +235,8 @@ export function createApp(options: CreateAppOptions = {}) {
     if (
       error instanceof AuthServiceError ||
       error instanceof AgentServiceError ||
-      error instanceof ImBindingServiceError
+      error instanceof ImBindingServiceError ||
+      error instanceof SlackSetupServiceError
     ) {
       const envelope = ErrorEnvelopeSchema.parse({
         error: {

@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -52,6 +53,7 @@ import {
   FeishuSetupService,
 } from "../../services/im-bindings/feishu/index.js";
 import { createImProviderAdapterResolver, ImBindingService } from "../../services/im-bindings/index.js";
+import { SlackSetupService } from "../../services/im-bindings/slack/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../services/runtime-config/index.js";
 import { SessionService } from "../../services/sessions/index.js";
 import { TeamMembershipService } from "../../services/teams/index.js";
@@ -149,6 +151,7 @@ async function fixture() {
       grantedBotScopes: [
         "chat:write",
         "app_mentions:read",
+        "files:read",
         "im:history",
         "channels:history",
         "groups:history",
@@ -1644,6 +1647,7 @@ describe("IM binding persistence", () => {
           grantedBotScopes: [
             "chat:write",
             "app_mentions:read",
+            "files:read",
             "im:history",
             "channels:history",
             "groups:history",
@@ -4391,6 +4395,7 @@ describe("IM binding persistence", () => {
           grantedBotScopes: [
             "chat:write",
             "app_mentions:read",
+            "files:read",
             "im:history",
             "channels:history",
             "groups:history",
@@ -5410,6 +5415,99 @@ describe("IM binding persistence", () => {
     } finally {
       await first.stop();
       await second.stop();
+      await value.sql.end();
+    }
+  });
+
+  it("activates Slack only after token inspection, a signed challenge, and a matching identity event", async () => {
+    const value = await unboundFixture();
+    const now = new Date("2026-08-21T00:00:00.000Z");
+    const signingSecret = "signing-secret";
+    const setup = new SlackSetupService({
+      api: {
+        inspectInstallation: vi.fn().mockResolvedValue({
+          appId: "A_SETUP",
+          teamId: "T_SETUP",
+          enterpriseId: null,
+          botUserId: "U_SETUP",
+          botId: "B_SETUP",
+          grantedBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
+        }),
+      } as never,
+      cipher: value.cipher,
+      database: value.database,
+      imBindings: value.imBindingService,
+      instanceId: crypto.randomUUID(),
+      publicOrigin: "https://opentag.example.com",
+      now: () => now,
+    });
+    try {
+      const created = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      expect(created).toMatchObject({
+        state: "awaiting_credentials",
+        requiredBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
+      });
+      expect(created.manifestUrl).toContain("https://api.slack.com/apps?");
+      expect(created.eventsUrl).toBe(
+        `https://opentag.example.com/api/v1/agents/${value.agent.id}/im-binding/slack/events`,
+      );
+
+      const submitted = await setup.submitCredentials(value.bootstrap.userId, created.id, {
+        botAccessToken: "xoxb-setup-secret",
+        signingSecret,
+      });
+      expect(submitted).toMatchObject({
+        state: "awaiting_verification",
+        identity: { appId: "A_SETUP", teamId: "T_SETUP", botUserId: "U_SETUP" },
+      });
+      expect(JSON.stringify(submitted)).not.toMatch(/xoxb-setup-secret|signing-secret/);
+      expect(await value.imBindingService.findSlackIngressBindingForAgent(value.agent.id)).toBeUndefined();
+
+      const timestamp = String(Math.floor(now.getTime() / 1000));
+      const challengeBody = Buffer.from(JSON.stringify({ type: "url_verification", challenge: "challenge-ok" }));
+      const challengeSignature = `v0=${createHmac("sha256", signingSecret)
+        .update(`v0:${timestamp}:`)
+        .update(challengeBody)
+        .digest("hex")}`;
+      await expect(
+        setup.verifyChallenge({
+          agentId: value.agent.id,
+          rawBody: challengeBody,
+          timestamp,
+          signature: challengeSignature,
+        }),
+      ).resolves.toBe("challenge-ok");
+      expect(await value.imBindingService.findSlackIngressBindingForAgent(value.agent.id)).toBeUndefined();
+
+      const eventBody = Buffer.from(
+        JSON.stringify({
+          type: "event_callback",
+          api_app_id: "A_SETUP",
+          team_id: "T_SETUP",
+          event_id: "Ev-setup",
+          event: { type: "app_mention" },
+        }),
+      );
+      const eventSignature = `v0=${createHmac("sha256", signingSecret)
+        .update(`v0:${timestamp}:`)
+        .update(eventBody)
+        .digest("hex")}`;
+      await expect(
+        setup.tryActivateFromEvent({
+          agentId: value.agent.id,
+          appId: "A_SETUP",
+          teamId: "T_SETUP",
+          rawBody: eventBody,
+          timestamp,
+          signature: eventSignature,
+        }),
+      ).resolves.toMatchObject({ appId: "A_SETUP", teamId: "T_SETUP", botUserId: "U_SETUP" });
+      await expect(setup.get(value.bootstrap.userId, created.id)).resolves.toMatchObject({ state: "succeeded" });
+      const [stored] = await value.database.select().from(imBindings).where(eq(imBindings.agentId, value.agent.id));
+      expect(stored).toMatchObject({ status: "active", externalAppId: "A_SETUP", externalTeamId: "T_SETUP" });
+      expect(stored?.encryptedSetupContext).toBeNull();
+      expect(stored?.encryptedCredential).not.toMatch(/xoxb-setup-secret|signing-secret/);
+    } finally {
       await value.sql.end();
     }
   });

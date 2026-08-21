@@ -368,6 +368,42 @@ export class ImBindingService {
     };
   }
 
+  async findSlackIngressBindingForAgent(agentId: string): Promise<SlackIngressBinding | undefined> {
+    const [row] = await this.#database
+      .select({ imBinding: imBindings })
+      .from(imBindings)
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .where(
+        and(
+          eq(imBindings.agentId, agentId),
+          eq(imBindings.provider, "slack"),
+          eq(imBindings.status, "active"),
+          ne(agents.status, "deleted"),
+        ),
+      )
+      .limit(1);
+    const imBinding = row?.imBinding;
+    if (
+      !imBinding?.encryptedCredential ||
+      !imBinding.externalAppId ||
+      !imBinding.externalTeamId ||
+      !imBinding.externalBotId
+    ) {
+      return undefined;
+    }
+    const credential = SlackCredentialSchema.parse(JSON.parse(this.#cipher.decrypt(imBinding.encryptedCredential)));
+    return {
+      imBindingId: imBinding.id,
+      generation: imBinding.credentialGeneration,
+      appId: imBinding.externalAppId,
+      teamId: imBinding.externalTeamId,
+      botUserId: imBinding.externalBotId,
+      botId: credential.botId,
+      botAccessToken: credential.botAccessToken,
+      signingSecret: credential.signingSecret,
+    };
+  }
+
   async getSlackConnectionMaterial(imBindingId: string): Promise<SlackConnectionMaterial | undefined> {
     const imBinding = await this.#activeMaterial(imBindingId, "slack");
     if (
@@ -791,10 +827,32 @@ export class ImBindingService {
           );
         }
       }
+      if (input.provider === "slack" && input.identity.teamId) {
+        const [conflicting] = await transaction
+          .select({ id: imBindings.id })
+          .from(imBindings)
+          .where(
+            and(
+              eq(imBindings.provider, "slack"),
+              eq(imBindings.externalAppId, input.identity.appId),
+              eq(imBindings.externalTeamId, input.identity.teamId),
+              ne(imBindings.agentId, input.agentId),
+              ne(imBindings.status, "disabled"),
+            ),
+          )
+          .limit(1);
+        if (conflicting) {
+          throw new ImBindingServiceError(
+            "SLACK_APP_TEAM_ALREADY_BOUND",
+            409,
+            "This Slack App installation is already bound to another Agent",
+          );
+        }
+      }
       const requiredCapabilities =
         input.provider === "feishu"
           ? [...FEISHU_REQUIRED_TENANT_SCOPES]
-          : ["chat:write", "app_mentions:read", "im:history"];
+          : ["chat:write", "app_mentions:read", "files:read", "im:history"];
       if (input.provider === "slack" && agent.receiveMode === "all_message") {
         requiredCapabilities.push("channels:history", "groups:history", "mpim:history");
       }

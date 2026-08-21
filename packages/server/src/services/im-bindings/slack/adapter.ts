@@ -60,7 +60,17 @@ export interface VerifiedSlackEnvelope {
 
 export interface SlackApiClient {
   authTest(token: string): Promise<{ appId: string; teamId: string; botUserId: string; botId: string }>;
+  inspectInstallation(token: string): Promise<SlackInstallationInspection>;
   fetchResource(input: ProviderResourceInput & { token: string }): Promise<ReadableResource>;
+}
+
+export interface SlackInstallationInspection {
+  appId: string;
+  teamId: string;
+  enterpriseId: string | null;
+  botUserId: string;
+  botId: string;
+  grantedBotScopes: string[];
 }
 
 function slackTimestampToDate(value: string | undefined, fallbackSeconds?: number): Date {

@@ -41,6 +41,7 @@ function createServices(overrides: Record<string, unknown> = {}, loggerStream?: 
   const current = binding();
   const imBindings = {
     findSlackIngressBinding: vi.fn().mockResolvedValue(current),
+    findSlackIngressBindingForAgent: vi.fn().mockResolvedValue(current),
     disableFromProvider: vi.fn().mockResolvedValue(undefined),
     requireReauthorization: vi.fn().mockResolvedValue(undefined),
   };
@@ -62,6 +63,42 @@ function createServices(overrides: Record<string, unknown> = {}, loggerStream?: 
 }
 
 describe("Slack Events API ingress", () => {
+  it("uses the Agent Events URL for signing-secret proof and first-event activation", async () => {
+    const setup = {
+      verifyChallenge: vi.fn().mockResolvedValue("challenge-ok"),
+      tryActivateFromEvent: vi.fn().mockResolvedValue(binding()),
+    };
+    const { app, adapter } = createServices({ setup });
+    const agentEventsUrl = "/api/v1/agents/1a63a21e-f6c7-4474-91ea-4dabf0566a24/im-binding/slack/events";
+    const challenge = await app.inject({
+      ...signedRequest({ type: "url_verification", challenge: "challenge-ok" }),
+      url: agentEventsUrl,
+    });
+    expect(challenge.statusCode).toBe(200);
+    expect(challenge.json()).toEqual({ challenge: "challenge-ok" });
+    expect(setup.verifyChallenge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
+        rawBody: expect.any(Buffer),
+        timestamp,
+      }),
+    );
+
+    const event = {
+      type: "event_callback",
+      api_app_id: "A1",
+      team_id: "T1",
+      event_id: "Ev-activate",
+      event: { type: "app_mention", channel: "C1", text: "<@U_BOT> test", ts: "1.0" },
+    };
+    const activated = await app.inject({ ...signedRequest(event), url: agentEventsUrl });
+    expect(activated.statusCode).toBe(200);
+    expect(setup.tryActivateFromEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "1a63a21e-f6c7-4474-91ea-4dabf0566a24", appId: "A1", teamId: "T1" }),
+    );
+    expect(adapter.normalizeInbound).toHaveBeenCalled();
+  });
+
   it("rejects non-buffer and unroutable bodies before credential lookup", async () => {
     const { app, imBindings } = createServices();
     const nonBuffer = await app.inject({

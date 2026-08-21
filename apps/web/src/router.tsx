@@ -1303,7 +1303,7 @@ function AgentCreationContent({
         const readiness = computer?.providerReadiness?.find((entry) => entry.provider === runtimeProvider);
         return value.computers.length === 0 ? (
           <div className="agent-create-runtime-setup">
-            <ComputerSetup teamId={teamId} onConnected={onComputerConnected} />
+            <ComputerSetup teamId={teamId} onConnected={handleComputerConnected} />
           </div>
         ) : (
           <form className="form-card agent-create-form" onSubmit={submit}>

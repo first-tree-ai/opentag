@@ -732,14 +732,64 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it("keeps Computer connection inside the New Agent dialog when no runtime is available", async () => {
-    installApi("admin");
+    const connectedComputer = {
+      id: computerId,
+      ownerUserId: userId,
+      displayName: "Ada's Mac",
+      platform: "darwin",
+      arch: "arm64",
+      clientVersion: "0.0.1",
+      connectionStatus: "online",
+      connectedAt: "2026-08-20T00:00:02.000Z",
+      lastSeenAt: "2026-08-20T00:00:02.000Z",
+    };
+    let ownComputerReads = 0;
+    let finishRefresh: (() => void) | undefined;
+    const refreshPending = new Promise<void>((resolve) => {
+      finishRefresh = resolve;
+    });
+    installApi("admin", {
+      computers: async () => {
+        ownComputerReads += 1;
+        if (ownComputerReads === 4) await refreshPending;
+        return ownComputerReads >= 3 ? [connectedComputer] : [];
+      },
+    });
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
 
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
     expect(within(dialog).getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
-    expect(within(dialog).getByRole("button", { name: "Generate connection command" })).toBeTruthy();
+    const generateButton = within(dialog).getByRole("button", { name: "Generate connection command" });
     expect(within(dialog).queryByRole("link", { name: "Agent runtime" })).toBeNull();
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-08-20T00:00:00.000Z");
+    try {
+      generateButton.focus();
+      await act(async () => {
+        fireEvent.click(generateButton);
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(1_500);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      await act(async () => {
+        finishRefresh?.();
+        await Promise.resolve();
+      });
+
+      expect((within(dialog).getByLabelText("Computer") as HTMLSelectElement).value).toBe(computerId);
+      expect(within(dialog).getByRole("button", { name: "Connect another Computer" })).toBe(document.activeElement);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("creates an Agent from the dialog without a second creation screen", async () => {

@@ -10,7 +10,7 @@ const COPY_FALLBACK_HINT = "Copying is unavailable here. The command is selected
 
 export interface ComputerSetupProps {
   teamId: string;
-  onConnected?: () => void;
+  onConnected?: (computer: Computer) => void;
 }
 
 function errorMessage(cause: unknown, fallback: string): string {
@@ -138,7 +138,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
       void browserApi.ownComputers().then(
         (value) => {
           if (!active || completed || activePollCycle.current !== pollCycle) return;
-          const connected = value.computers.some(
+          const connected = value.computers.find(
             (computer: Computer) =>
               computer.connectionStatus === "online" &&
               ((!baseline.has(computer.id) && computer.connectedAt !== null) ||
@@ -153,7 +153,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
           setWaitingForComputer(false);
           setComputerConnected(true);
           setRemainingMs(undefined);
-          onConnectedRef.current?.();
+          onConnectedRef.current?.(connected);
         },
         (cause: unknown) => {
           if (active && !completed && activePollCycle.current === pollCycle) {

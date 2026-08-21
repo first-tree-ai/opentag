@@ -1208,11 +1208,12 @@ function AgentCreationContent({
   const [computerSetupOpen, setComputerSetupOpen] = useState(false);
   const [runtimeProvider, setRuntimeProvider] = useState<"codex" | "claude-code">("codex");
   const firstFieldRef = useRef<HTMLInputElement>(null);
+  const computerSetupToggleRef = useRef<HTMLButtonElement>(null);
   const initialDialogFocusSetRef = useRef(false);
   const inFlightRef = useRef(false);
   const creationIntentRef = useRef<{ fingerprint: string; id: string } | null>(null);
-  const computerIdsBeforeSetupRef = useRef<Set<string>>(new Set());
-  const awaitingConnectedComputerRef = useRef(false);
+  const restoreComputerSetupFocusRef = useRef(false);
+  const computerRefreshStartedRef = useRef(false);
 
   useEffect(() => {
     if (presentation !== "dialog" || computers.kind !== "ready" || initialDialogFocusSetRef.current) return;
@@ -1223,28 +1224,26 @@ function AgentCreationContent({
   }, [computers.kind, presentation]);
 
   useEffect(() => {
-    if (!awaitingConnectedComputerRef.current || computers.kind !== "ready") return;
-    const connectedComputer = computers.value.computers.find(
-      (computer) => !computerIdsBeforeSetupRef.current.has(computer.id),
-    );
-    if (!connectedComputer) return;
-    awaitingConnectedComputerRef.current = false;
-    setComputerId(connectedComputer.id);
-    setComputerSetupOpen(false);
-  }, [computers]);
+    if (!restoreComputerSetupFocusRef.current) return;
+    if (computers.kind === "loading") {
+      computerRefreshStartedRef.current = true;
+      return;
+    }
+    if (computers.kind !== "ready" || !computerRefreshStartedRef.current) return;
+    restoreComputerSetupFocusRef.current = false;
+    computerRefreshStartedRef.current = false;
+    computerSetupToggleRef.current?.focus();
+  }, [computers.kind]);
 
-  function toggleComputerSetup(availableComputers: Computer[]) {
-    setComputerSetupOpen((open) => {
-      if (!open) {
-        computerIdsBeforeSetupRef.current = new Set(availableComputers.map((computer) => computer.id));
-        awaitingConnectedComputerRef.current = false;
-      }
-      return !open;
-    });
+  function toggleComputerSetup() {
+    setComputerSetupOpen((open) => !open);
   }
 
-  function handleComputerConnected() {
-    awaitingConnectedComputerRef.current = true;
+  function handleComputerConnected(computer: Computer) {
+    setComputerId(computer.id);
+    setComputerSetupOpen(false);
+    restoreComputerSetupFocusRef.current = presentation === "dialog";
+    computerRefreshStartedRef.current = false;
     onComputerConnected();
   }
 
@@ -1390,9 +1389,10 @@ function AgentCreationContent({
                 aria-controls="new-agent-computer-setup"
                 aria-expanded={computerSetupOpen}
                 disabled={submitting}
+                ref={computerSetupToggleRef}
                 size="compact"
                 variant="inline"
-                onClick={() => toggleComputerSetup(value.computers)}
+                onClick={toggleComputerSetup}
               >
                 {computerSetupOpen ? "Cancel Computer connection" : "Connect another Computer"}
               </Button>

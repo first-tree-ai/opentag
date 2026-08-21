@@ -642,8 +642,10 @@ describe("OpenTag Web App Shell", () => {
     vi.useFakeTimers();
     vi.setSystemTime("2026-08-20T00:00:00.000Z");
     try {
+      const generateButton = within(dialog).getByRole("button", { name: "Generate connection command" });
+      generateButton.focus();
       await act(async () => {
-        fireEvent.click(within(dialog).getByRole("button", { name: "Generate connection command" }));
+        fireEvent.click(generateButton);
       });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1_500);
@@ -653,6 +655,61 @@ describe("OpenTag Web App Shell", () => {
       expect((within(dialog).getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Assistant");
       expect((within(dialog).getByLabelText("Agent name") as HTMLInputElement).value).toBe("research-assistant");
       expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
+      expect(within(dialog).getByRole("button", { name: "Connect another Computer" })).toBe(document.activeElement);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("completes an existing Computer reconnection in New Agent", async () => {
+    const disconnectedAt = "2026-08-20T00:00:00.000Z";
+    const reconnectedAt = "2026-08-20T00:00:02.000Z";
+    const existingComputer = {
+      id: computerId,
+      ownerUserId: userId,
+      displayName: "Ada's Mac",
+      platform: "darwin",
+      arch: "arm64",
+      clientVersion: "0.0.1",
+      connectionStatus: "online",
+      connectedAt: disconnectedAt,
+      lastSeenAt: "2026-08-20T00:00:01.000Z",
+    };
+    let ownComputerReads = 0;
+    installApi("admin", {
+      computers: () => {
+        ownComputerReads += 1;
+        return ownComputerReads >= 3 ? [{ ...existingComputer, connectedAt: reconnectedAt }] : [existingComputer];
+      },
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
+    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    fireEvent.change(within(dialog).getByLabelText("Display name"), {
+      target: { value: "Research Assistant" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Agent name"), {
+      target: { value: "research-assistant" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect another Computer" }));
+
+    vi.useFakeTimers();
+    vi.setSystemTime(disconnectedAt);
+    try {
+      const generateButton = within(dialog).getByRole("button", { name: "Generate connection command" });
+      generateButton.focus();
+      await act(async () => {
+        fireEvent.click(generateButton);
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_500);
+      });
+
+      expect((within(dialog).getByLabelText("Computer") as HTMLSelectElement).value).toBe(computerId);
+      expect((within(dialog).getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Assistant");
+      expect((within(dialog).getByLabelText("Agent name") as HTMLInputElement).value).toBe("research-assistant");
+      expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
+      expect(within(dialog).getByRole("button", { name: "Connect another Computer" })).toBe(document.activeElement);
     } finally {
       vi.useRealTimers();
     }

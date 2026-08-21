@@ -1305,7 +1305,7 @@ function AgentDetailPage() {
             </select>
           </label>
           <div className="object-layout">
-            <nav className="local-nav" aria-label="Agent settings">
+            <nav className="object-tabs" aria-label="Agent settings">
               {agentSections.map((section) => (
                 <NavLink to={`/agents/${agentId}/${section.key}`} key={section.key}>
                   {section.label}
@@ -1531,9 +1531,7 @@ function GeneralConfigForm({
           required
         />
       </Field>
-      <Button variant="commit" type="submit">
-        Save General settings
-      </Button>
+      <Button type="submit">Save General settings</Button>
       <div className="actions">
         {config.status === "active" ? (
           <Button variant="secondary" onClick={() => void changeLifecycle("suspend")}>
@@ -1965,7 +1963,7 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
           <div className="dirty-actions">
             <Button
               disabled={saving}
-              variant="tertiary"
+              variant="ghost"
               onClick={() => {
                 setDisplayName(user.displayName);
                 setMessage(undefined);
@@ -1974,7 +1972,7 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
             >
               Discard
             </Button>
-            <Button disabled={saving} type="submit" variant="commit">
+            <Button disabled={saving} type="submit">
               {saving ? "Saving…" : "Save account profile"}
             </Button>
           </div>
@@ -2094,7 +2092,7 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
           <div className="dirty-actions">
             <Button
               disabled={saving}
-              variant="tertiary"
+              variant="ghost"
               onClick={() => {
                 setTeamDisplayName(membership.teamDisplayName);
                 setMessage(undefined);
@@ -2103,7 +2101,7 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
             >
               Discard
             </Button>
-            <Button disabled={saving} type="submit" variant="commit">
+            <Button disabled={saving} type="submit">
               {saving ? "Saving…" : "Save Workspace profile"}
             </Button>
           </div>

@@ -734,7 +734,7 @@ function OnboardingContent({
               aria-expanded={routeChangeOpen}
               disabled={pending}
               size="compact"
-              variant="tertiary"
+              variant="ghost"
               onClick={() => setRouteChangeOpen((open) => !open)}
             >
               Change

@@ -9,6 +9,19 @@ describe("design system primitives", () => {
     expect(screen.getByRole("button", { name: "Cancel" }).className).toContain("ds-button--secondary");
   });
 
+  it("exposes the Viktor-aligned button hierarchy without a separate save color", () => {
+    render(
+      <>
+        <Button variant="outline">Review</Button>
+        <Button variant="ghost">Dismiss</Button>
+        <Button variant="inline">Details</Button>
+      </>,
+    );
+    expect(screen.getByRole("button", { name: "Review" }).className).toContain("ds-button--outline");
+    expect(screen.getByRole("button", { name: "Dismiss" }).className).toContain("ds-button--ghost");
+    expect(screen.getByRole("button", { name: "Details" }).className).toContain("ds-button--inline");
+  });
+
   it("shares button styling with semantic links", () => {
     render(
       <a className={buttonClassName({ variant: "secondary" })} href="/continue">

@@ -23,15 +23,34 @@ function declarationValue(stylesheet: Root, selector: string, property: string):
   return value;
 }
 
+function topLevelDeclarationValue(stylesheet: Root, selector: string, property: string): string {
+  let value: string | undefined;
+  stylesheet.walkRules((rule) => {
+    if (rule.parent?.type !== "root" || !rule.selectors.includes(selector)) return;
+    rule.walkDecls(property, (declaration) => {
+      value = declaration.value;
+    });
+  });
+  if (!value) throw new Error(`Missing top-level ${property} declaration for ${selector}`);
+  return value;
+}
+
 const appStyles = postcss.parse(readFileSync(locateStylesheet("src/styles.css"), "utf8"));
 const capabilityStyles = postcss.parse(readFileSync(locateStylesheet("src/mock-pages.css"), "utf8"));
 
 describe("workspace page layout", () => {
-  it("uses one 960px width contract for top-level workspace routes", () => {
+  it("uses one 1024px frame with a 960px visible content contract", () => {
+    expect(declarationValue(appStyles, ":root", "--workspace-page-frame")).toBe("1024px");
+    expect(declarationValue(appStyles, ":root", "--workspace-page-gutter")).toBe("32px");
     expect(declarationValue(appStyles, ":root", "--workspace-page-width")).toBe("960px");
-    expect(declarationValue(appStyles, ".page", "width")).toBe("min(100%, var(--workspace-page-width))");
+    expect(declarationValue(appStyles, ".page", "width")).toBe("min(100%, var(--workspace-page-frame))");
+    expect(declarationValue(appStyles, ".object-page", "width")).toBe("min(100%, var(--workspace-page-frame))");
+    expect(declarationValue(appStyles, ".settings-page", "width")).toBe("min(100%, var(--workspace-page-frame))");
     expect(declarationValue(capabilityStyles, ".capability-page", "width")).toBe(
-      "min(100%, var(--workspace-page-width, 960px))",
+      "min(100%, var(--workspace-page-frame, 1024px))",
+    );
+    expect(topLevelDeclarationValue(capabilityStyles, ".capability-page", "padding-inline")).toBe(
+      "var(--workspace-page-gutter, 32px)",
     );
   });
 
@@ -39,5 +58,13 @@ describe("workspace page layout", () => {
     expect(declarationValue(appStyles, ".agent-runtime-section", "width")).toBe("100%");
     expect(declarationValue(appStyles, ".settings-members-section", "width")).toBe("100%");
     expect(declarationValue(appStyles, ".settings-members-section .settings-invitation-panel", "width")).toBe("100%");
+  });
+
+  it("does not introduce nested page-level width contracts", () => {
+    expect(declarationValue(appStyles, ".object-content", "width")).toBe("100%");
+    expect(declarationValue(appStyles, ".settings-content", "width")).toBe("100%");
+    expect(declarationValue(appStyles, ".overview-section", "width")).toBe("100%");
+    expect(declarationValue(appStyles, ".settings-profile-form", "width")).toBe("100%");
+    expect(declarationValue(appStyles, ".settings-list-section", "width")).toBe("100%");
   });
 });

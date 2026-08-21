@@ -780,7 +780,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    expect(screen.getByText("Ada's Mac")).toBeTruthy();
+    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
     expect(screen.getByText("macOS")).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Execution choices" })).toBeTruthy();
@@ -984,21 +984,36 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
     expect(window.location.pathname).toBe("/account");
+    expect(screen.getByRole("navigation", { name: "Account settings" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Profile" }).getAttribute("aria-current")).toBe("page");
+    expect(screen.getByRole("link", { name: "Workspace" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Create Workspace" })).toBeNull();
     const displayName = screen.getByLabelText("Display name") as HTMLInputElement;
     expect(displayName.readOnly).toBe(false);
     fireEvent.change(displayName, { target: { value: "Legacy Account" } });
     expect(await screen.findByRole("button", { name: "Save account profile" })).toBeTruthy();
   });
 
-  it("redirects the legacy Team profile URL to advanced Workspace management", async () => {
+  it("redirects the legacy Team profile URL to the Workspace Account tab", async () => {
     installApi("admin");
     window.history.replaceState({}, "", "/settings/team");
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Workspace management" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/account");
-    expect(window.location.hash).toBe("#workspace-management");
+    expect(await screen.findByRole("heading", { name: "Workspace profile" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/account/workspace");
+    expect(window.location.hash).toBe("");
+    expect(screen.getByRole("link", { name: "Workspace" }).getAttribute("aria-current")).toBe("page");
     expect(screen.getByLabelText("Workspace name")).toBeTruthy();
+  });
+
+  it("keeps the legacy Workspace management hash compatible with the Workspace Account tab", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/account#workspace-management");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Workspace profile" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/account/workspace");
+    expect(window.location.hash).toBe("");
   });
 
   it.each(["/resources", "/settings/resources"])(
@@ -1029,12 +1044,11 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByLabelText("Usage metrics")).toBeTruthy();
   });
 
-  it("lets admins rename a Workspace from advanced Account management without changing the CLI identifier", async () => {
+  it("lets admins rename a Workspace from the Workspace Account tab without changing the CLI identifier", async () => {
     installApi("admin");
     window.localStorage.setItem("opentag.selectedTeamId", teamId);
-    window.history.replaceState({}, "", "/account");
+    window.history.replaceState({}, "", "/account/workspace");
     render(<App />);
-    fireEvent.click(await screen.findByText("Advanced"));
     const displayName = await screen.findByLabelText("Workspace name");
     const profileForm = displayName.closest("form");
     if (!profileForm) throw new Error("Workspace profile form was not rendered");
@@ -1060,9 +1074,8 @@ describe("OpenTag Web App Shell", () => {
 
   it("keeps Workspace profile fields read-only for members", async () => {
     installApi("member");
-    window.history.replaceState({}, "", "/account");
+    window.history.replaceState({}, "", "/account/workspace");
     render(<App />);
-    fireEvent.click(await screen.findByText("Advanced"));
     expect(await screen.findByText("example")).toBeTruthy();
     expect(screen.getByText("Workspace name").parentElement?.querySelector("dd")?.textContent).toBe("Example");
     expect(screen.queryByRole("button", { name: "Save Workspace profile" })).toBeNull();
@@ -1079,7 +1092,7 @@ describe("OpenTag Web App Shell", () => {
     expect(window.sessionStorage.getItem("opentag.pendingInvitationToken")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
     expect(
-      within(screen.getByRole("group", { name: "Switch Workspace" }))
+      within(screen.getByRole("group", { name: "Workspaces" }))
         .getByRole("menuitem", { name: /Invited Team Member/ })
         .getAttribute("aria-current"),
     ).toBe("true");
@@ -1119,7 +1132,7 @@ describe("OpenTag Web App Shell", () => {
       expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
       expect(
-        within(screen.getByRole("group", { name: "Switch Workspace" })).getByRole("menuitem", {
+        within(screen.getByRole("group", { name: "Workspaces" })).getByRole("menuitem", {
           name: /Invited Team Member/,
         }),
       ).toBeTruthy();
@@ -1185,11 +1198,13 @@ describe("OpenTag Web App Shell", () => {
     confirm.mockRestore();
   });
 
-  it("does not expose Workspace or invitation shortcuts to single-Workspace members", async () => {
+  it("shows the current Workspace without exposing switch or invitation shortcuts to single-Workspace members", async () => {
     installApi("member");
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
-    expect(screen.queryByRole("group", { name: "Switch Workspace" })).toBeNull();
+    const workspaces = screen.getByRole("group", { name: "Workspaces" });
+    expect(within(workspaces).getByText("Example").closest('[aria-current="true"]')).toBeTruthy();
+    expect(within(workspaces).queryByRole("menuitem")).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Invite people" })).toBeNull();
     expect(screen.queryByText("Create Workspace")).toBeNull();
   });
@@ -1680,29 +1695,30 @@ describe("OpenTag Web App Shell", () => {
     expect(new Set(bodies.map((body) => body.name))).toHaveProperty("size", 3);
   });
 
-  it("creates an additional Workspace from advanced Account management and offers both in the account menu", async () => {
+  it("creates an additional Workspace from the Workspace Account tab and offers both in the account menu", async () => {
     installApi("admin");
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Account settings" }));
-    fireEvent.click(await screen.findByText("Advanced"));
-    fireEvent.click(screen.getByRole("link", { name: "Create another Workspace" }));
+    expect(screen.queryByRole("menuitem", { name: "Create Workspace" })).toBeNull();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Profile" }));
+    fireEvent.click(await screen.findByRole("link", { name: "Workspace" }));
+    fireEvent.click(screen.getByRole("link", { name: "Create Workspace" }));
     fireEvent.change(await screen.findByLabelText("Workspace name"), { target: { value: "Second Team" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Workspace" }));
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
-    const menu = screen.getByRole("group", { name: "Switch Workspace" });
+    const menu = screen.getByRole("group", { name: "Workspaces" });
     expect(within(menu).getByRole("menuitem", { name: /Example Admin/ })).toBeTruthy();
     expect(
       within(menu)
         .getByRole("menuitem", { name: /Second Team Admin/ })
         .getAttribute("aria-current"),
     ).toBe("true");
-    fireEvent.click(within(menu).getByRole("menuitem", { name: "Manage Workspaces" }));
-    expect(await screen.findByRole("heading", { name: "Workspace management" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/account");
-    expect(window.location.hash).toBe("#workspace-management");
-    expect(screen.getByRole("link", { name: "Create another Workspace" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Workspace" }));
+    expect(await screen.findByRole("heading", { name: "Workspace profile" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/account/workspace");
+    expect(window.location.hash).toBe("");
+    expect(screen.getByRole("link", { name: "Create Workspace" })).toBeTruthy();
   });
 
   it("switches Teams when Team preference storage is unavailable", async () => {
@@ -1715,13 +1731,13 @@ describe("OpenTag Web App Shell", () => {
       render(<App />);
       fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
       fireEvent.click(
-        within(screen.getByRole("group", { name: "Switch Workspace" })).getByRole("menuitem", {
+        within(screen.getByRole("group", { name: "Workspaces" })).getByRole("menuitem", {
           name: /Invited Team Member/,
         }),
       );
       fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
       expect(
-        within(screen.getByRole("group", { name: "Switch Workspace" }))
+        within(screen.getByRole("group", { name: "Workspaces" }))
           .getByRole("menuitem", { name: /Invited Team Member/ })
           .getAttribute("aria-current"),
       ).toBe("true");
@@ -1740,7 +1756,7 @@ describe("OpenTag Web App Shell", () => {
       render(<App />);
 
       fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
-      const targetWorkspace = within(screen.getByRole("group", { name: "Switch Workspace" }))
+      const targetWorkspace = within(screen.getByRole("group", { name: "Workspaces" }))
         .getAllByRole("menuitem")
         .find(
           (item) => item.classList.contains("account-workspace-option") && item.getAttribute("aria-current") !== "true",
@@ -1753,7 +1769,7 @@ describe("OpenTag Web App Shell", () => {
       expect(window.location.pathname).toBe("/agents");
       fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
       const selectedWorkspace = screen
-        .getByRole("group", { name: "Switch Workspace" })
+        .getByRole("group", { name: "Workspaces" })
         .querySelector<HTMLElement>('[aria-current="true"]');
       expect(selectedWorkspace?.querySelector("strong")?.textContent).toBe(targetWorkspaceName);
     },
@@ -1763,7 +1779,9 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin");
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Account settings" }));
+    expect(within(screen.getByRole("group", { name: "Workspaces" })).getByText("Example")).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Workspace" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Profile" }));
     expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
     expect(window.location.pathname).toBe("/account");
     const displayName = screen.getByLabelText("Display name") as HTMLInputElement;
@@ -1796,14 +1814,17 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     const trigger = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.click(trigger);
-    const accountSettings = screen.getByRole("menuitem", { name: "Account settings" });
+    const profile = screen.getByRole("menuitem", { name: "Profile" });
+    const workspace = screen.getByRole("menuitem", { name: "Workspace" });
     const signOut = screen.getByRole("menuitem", { name: "Sign out" });
-    expect(document.activeElement).toBe(accountSettings);
-    fireEvent.keyDown(accountSettings, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(profile);
+    fireEvent.keyDown(profile, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(workspace);
+    fireEvent.keyDown(workspace, { key: "ArrowDown" });
     expect(document.activeElement).toBe(signOut);
     fireEvent.keyDown(signOut, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(accountSettings);
-    fireEvent.keyDown(accountSettings, { key: "End" });
+    expect(document.activeElement).toBe(profile);
+    fireEvent.keyDown(profile, { key: "End" });
     expect(document.activeElement).toBe(signOut);
     fireEvent.keyDown(signOut, { key: "Escape" });
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();

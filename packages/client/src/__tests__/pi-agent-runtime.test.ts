@@ -20,7 +20,7 @@ describe("PiAgentRuntime", () => {
         {
           model: "deepseek/deepseek-v4-flash",
           reasoningEffort: "high",
-          provider: { appendSystemPrompt: "Be concise", sessionName: "runtime-test" },
+          provider: { sessionName: "runtime-test" },
         },
       ),
     );
@@ -70,7 +70,7 @@ describe("PiAgentRuntime", () => {
         "--thinking",
         "high",
         "--append-system-prompt",
-        "Be concise",
+        "OpenTag managed system prompt",
         "--name",
         "runtime-test",
       ]),
@@ -80,10 +80,10 @@ describe("PiAgentRuntime", () => {
     await runtime.close();
   });
 
-  it("resumes the exact binding in a new process and preserves prompt overrides", async () => {
+  it("resumes the exact binding in a new process and preserves non-prompt overrides", async () => {
     const client = new ScriptedPiClient("complete");
     const runtime = await piFactory(client).resume({
-      ...createRequest(() => undefined, { provider: { appendSystemPrompt: "base" } }),
+      ...createRequest(() => undefined, { provider: { sessionName: "base" } }),
       binding: materializedBinding(),
     });
     await runtime.prompt({
@@ -96,11 +96,13 @@ describe("PiAgentRuntime", () => {
       },
       configuration: {
         reasoningEffort: "max",
-        provider: { appendSystemPrompt: "override", sessionName: "resumed" },
+        provider: { sessionName: "resumed" },
       },
     });
     expect(client.args).toEqual(expect.arrayContaining(["--session-id", SESSION_ID, "--thinking", "max"]));
-    expect(client.args).toEqual(expect.arrayContaining(["--append-system-prompt", "override", "--name", "resumed"]));
+    expect(client.args).toEqual(
+      expect.arrayContaining(["--append-system-prompt", "OpenTag managed system prompt", "--name", "resumed"]),
+    );
     expect(client.commands.at(-1)).toEqual({ type: "prompt", message: "one\ntwo" });
     await runtime.close();
   });
@@ -345,6 +347,7 @@ function createRequest(
 ): CreateAgentRuntimeRequest {
   return {
     eventSink,
+    systemPrompt: "OpenTag managed system prompt",
     workspace: { cwd: "/workspace" },
     policy: basePolicy(),
     ...(configuration ? { configuration } : {}),

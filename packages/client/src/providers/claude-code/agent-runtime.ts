@@ -26,6 +26,7 @@ import {
   assertBinding,
   assertHostedTools,
   assertJsonValue,
+  assertSystemPrompt,
   runWithAbortSignal,
 } from "../../agent-runtime/validation.js";
 import { type ClaudeCodeHostedToolBridge, startClaudeCodeHostedToolBridge } from "./hosted-tool-bridge.js";
@@ -49,7 +50,6 @@ export const CLAUDE_CODE_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.f
 });
 
 interface ClaudeCodeProviderConfiguration {
-  readonly appendSystemPrompt?: string;
   readonly maxBudgetUsd?: number;
   readonly maxTurns?: number;
 }
@@ -62,6 +62,7 @@ interface ClaudeCodeRuntimeOptions {
   readonly hostedTools?: AgentHostedTools;
   readonly resume: boolean;
   readonly startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
+  readonly systemPrompt: string;
 }
 
 export interface ClaudeCodeAgentRuntimeFactoryOptions {
@@ -125,6 +126,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #createProcess: (args: readonly string[]) => ClaudeCodeProcessClient;
   readonly #hostedTools?: AgentHostedTools;
   readonly #startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
+  readonly #systemPrompt: string;
   readonly #textBlocks = new Map<string, TextBlockState>();
   readonly #tools = new Map<string, ToolState>();
   readonly #toolBlocks = new Map<string, string>();
@@ -151,6 +153,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#createProcess = options.createProcess;
     this.#hostedTools = options.hostedTools;
     this.#startHostedToolBridge = options.startHostedToolBridge;
+    this.#systemPrompt = options.systemPrompt;
     this.#sessionExists = options.resume;
   }
 
@@ -252,7 +255,8 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       "bypassPermissions",
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--effort", configuration.reasoningEffort] : []),
-      ...(provider.appendSystemPrompt ? ["--append-system-prompt", provider.appendSystemPrompt] : []),
+      "--append-system-prompt",
+      this.#systemPrompt,
       ...(provider.maxBudgetUsd !== undefined ? ["--max-budget-usd", String(provider.maxBudgetUsd)] : []),
       ...(provider.maxTurns !== undefined ? ["--max-turns", String(provider.maxTurns)] : []),
     ];
@@ -653,6 +657,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
         hostedTools: request.hostedTools,
         resume: mode === "resume",
         startHostedToolBridge: this.#startHostedToolBridge,
+        systemPrompt: request.systemPrompt,
       });
     } catch (error) {
       throw new AgentRuntimeError(mode === "create" ? "create_failed" : "resume_failed", `Claude Code ${mode} failed`, {
@@ -725,7 +730,8 @@ async function probeClaudeCode(
     helpResult.stdout.includes("--resume") &&
     helpResult.stdout.includes("--mcp-config") &&
     helpResult.stdout.includes("--strict-mcp-config") &&
-    helpResult.stdout.includes("--allowedTools");
+    helpResult.stdout.includes("--allowedTools") &&
+    helpResult.stdout.includes("--append-system-prompt");
   const credential =
     hasCredentialEnvironment(environment) || (await probeClaudeCodeCredential(command, execution, signal));
   return { credential, streamJson, version };
@@ -781,6 +787,7 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
   if (!request.workspace || !isAbsolute(request.workspace.cwd)) {
     throw new AgentRuntimeError("configuration_invalid", "workspace.cwd must be absolute");
   }
+  assertSystemPrompt(request.systemPrompt);
   for (const root of request.workspace.writableRoots ?? []) {
     if (!isAbsolute(root)) throw new AgentRuntimeError("configuration_invalid", "writable roots must be absolute");
   }
@@ -837,15 +844,11 @@ function parseProviderConfiguration(value: JsonValue | undefined): ClaudeCodePro
   if (!object) {
     throw new AgentRuntimeError("configuration_invalid", "Claude Code provider configuration must be an object");
   }
-  const allowed = new Set(["appendSystemPrompt", "maxBudgetUsd", "maxTurns"]);
+  const allowed = new Set(["maxBudgetUsd", "maxTurns"]);
   for (const key of Object.keys(object)) {
     if (!allowed.has(key)) {
       throw new AgentRuntimeError("configuration_invalid", `unknown Claude Code configuration field: ${key}`);
     }
-  }
-  const appendSystemPrompt = object.appendSystemPrompt;
-  if (appendSystemPrompt !== undefined && (typeof appendSystemPrompt !== "string" || !appendSystemPrompt.trim())) {
-    throw new AgentRuntimeError("configuration_invalid", "Claude Code appendSystemPrompt must be non-empty");
   }
   const maxBudgetUsd = object.maxBudgetUsd;
   if (
@@ -859,7 +862,6 @@ function parseProviderConfiguration(value: JsonValue | undefined): ClaudeCodePro
     throw new AgentRuntimeError("configuration_invalid", "Claude Code maxTurns must be a positive safe integer");
   }
   return {
-    ...(typeof appendSystemPrompt === "string" ? { appendSystemPrompt } : {}),
     ...(typeof maxBudgetUsd === "number" ? { maxBudgetUsd } : {}),
     ...(typeof maxTurns === "number" ? { maxTurns } : {}),
   };

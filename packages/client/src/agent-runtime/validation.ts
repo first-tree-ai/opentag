@@ -37,6 +37,16 @@ export function assertAgentInput(input: AgentInput): void {
   }
 }
 
+export function assertSystemPrompt(value: string): void {
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    Buffer.byteLength(value, "utf8") > AGENT_RUNTIME_TEXT_MAX_BYTES
+  ) {
+    throw new AgentRuntimeError("configuration_invalid", "systemPrompt must be a non-empty bounded string");
+  }
+}
+
 export function assertPromptRequest(request: AgentPromptRequest): void {
   if (!request || typeof request !== "object") {
     throw new AgentRuntimeError("invalid_request", "prompt request is required");

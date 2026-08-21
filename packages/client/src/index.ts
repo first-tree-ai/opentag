@@ -145,8 +145,6 @@ export { AgentTurnRunner, type AgentTurnRunnerOptions, buildAgentInput } from ".
 export {
   AgentWorkspaceManager,
   type AgentWorkspaceManagerOptions,
-  type LocalAgentWorkspaceState,
-  renderManagedInstructions,
 } from "./runtime/agent-workspace.js";
 export {
   ClientRuntime,
@@ -176,6 +174,7 @@ export {
   serializeEnvironment,
 } from "./runtime/im-credential-environment-manager.js";
 export { ImResourceFetcher } from "./runtime/im-resource-fetcher.js";
+export { renderManagedSystemPrompt } from "./runtime/managed-instructions.js";
 export {
   type RuntimeBusinessFrame,
   RuntimeConnection,

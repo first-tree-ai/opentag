@@ -25,7 +25,12 @@ import {
   type JsonValue,
   type ResumeAgentRuntimeRequest,
 } from "../../agent-runtime/types.js";
-import { assertBinding, assertJsonValue, runWithAbortSignal } from "../../agent-runtime/validation.js";
+import {
+  assertBinding,
+  assertJsonValue,
+  assertSystemPrompt,
+  runWithAbortSignal,
+} from "../../agent-runtime/validation.js";
 import { type PiRpcClient, PiRpcError, PiRpcProcess, type PiRpcProcessSpawnOptions } from "./rpc-wire.js";
 
 const execFileAsync = promisify(execFile);
@@ -53,7 +58,6 @@ export const PI_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
 });
 
 interface PiProviderConfiguration {
-  readonly appendSystemPrompt?: string;
   readonly sessionName?: string;
 }
 
@@ -65,6 +69,7 @@ interface PiRuntimeOptions {
   readonly policy: AgentRuntimePolicy;
   readonly resume: boolean;
   readonly sessionDirectory?: string;
+  readonly systemPrompt: string;
 }
 
 export interface PiAgentRuntimeFactoryOptions {
@@ -123,6 +128,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   readonly #policy: AgentRuntimePolicy;
   readonly #configuration?: AgentRunConfiguration;
   readonly #sessionDirectory?: string;
+  readonly #systemPrompt: string;
   readonly #createClient: (args: readonly string[]) => PiRpcClient;
   readonly #tools = new Map<string, PiTool>();
   #client?: PiRpcClient;
@@ -158,6 +164,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     this.#policy = options.policy;
     this.#configuration = options.configuration;
     this.#sessionDirectory = options.sessionDirectory;
+    this.#systemPrompt = options.systemPrompt;
     this.#createClient = options.createClient;
     this.#sessionExists = options.resume;
   }
@@ -282,7 +289,8 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       ...piPolicyArguments(this.#policy),
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--thinking", configuration.reasoningEffort] : []),
-      ...(provider.appendSystemPrompt ? ["--append-system-prompt", provider.appendSystemPrompt] : []),
+      "--append-system-prompt",
+      this.#systemPrompt,
       ...(provider.sessionName ? ["--name", provider.sessionName] : []),
     ];
   }
@@ -690,6 +698,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
         policy: request.policy,
         resume: mode === "resume",
         sessionDirectory: this.#sessionDirectory,
+        systemPrompt: request.systemPrompt,
       });
     } catch (error) {
       throw new AgentRuntimeError(mode === "create" ? "create_failed" : "resume_failed", `Pi ${mode} failed`, {
@@ -833,6 +842,7 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
   if (!request.workspace || !isAbsolute(request.workspace.cwd)) {
     throw new AgentRuntimeError("configuration_invalid", "workspace.cwd must be absolute");
   }
+  assertSystemPrompt(request.systemPrompt);
   for (const root of request.workspace.writableRoots ?? []) {
     if (!isAbsolute(root)) throw new AgentRuntimeError("configuration_invalid", "writable roots must be absolute");
   }
@@ -889,15 +899,13 @@ function parseProviderConfiguration(value: JsonValue | undefined): PiProviderCon
   assertJsonValue(value, "configuration.provider");
   const object = record(value);
   if (!object) throw new AgentRuntimeError("configuration_invalid", "Pi provider configuration must be an object");
-  const allowed = new Set(["appendSystemPrompt", "sessionName"]);
+  const allowed = new Set(["sessionName"]);
   for (const key of Object.keys(object)) {
     if (!allowed.has(key))
       throw new AgentRuntimeError("configuration_invalid", `unknown Pi configuration field: ${key}`);
   }
-  const appendSystemPrompt = boundedConfigurationString(object.appendSystemPrompt, "appendSystemPrompt");
   const sessionName = boundedConfigurationString(object.sessionName, "sessionName", 4_096);
   return {
-    ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
     ...(sessionName ? { sessionName } : {}),
   };
 }

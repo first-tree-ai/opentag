@@ -1,6 +1,11 @@
 import type { AgentRuntimeProvider, EffectiveRuntimeSnapshot, InputRejectReason } from "@opentag/shared";
 import { isAgentRuntimeProviderId } from "../agent-runtime/provider-id.js";
-import type { AgentRuntimeFactory, AgentRuntimePolicy, AgentRuntimeProbeResult } from "../agent-runtime/types.js";
+import {
+  AGENT_RUNTIME_CONTRACT_VERSION,
+  type AgentRuntimeFactory,
+  type AgentRuntimePolicy,
+  type AgentRuntimeProbeResult,
+} from "../agent-runtime/types.js";
 
 export interface AgentRuntimeProviderRegistration {
   readonly artifactIdentity: string;
@@ -40,6 +45,11 @@ export class AgentRuntimeProviderRegistry {
       const providerId = registration.factory.manifest.providerId;
       if (!isAgentRuntimeProviderId(providerId) || this.#providers.has(providerId)) {
         throw new Error(`Agent Runtime provider registration is invalid or duplicated: ${providerId}`);
+      }
+      if (registration.factory.manifest.contractVersion !== AGENT_RUNTIME_CONTRACT_VERSION) {
+        throw new Error(
+          `Agent Runtime provider contract version is incompatible: ${providerId} requires ${AGENT_RUNTIME_CONTRACT_VERSION}`,
+        );
       }
       if (!/^[0-9a-f]{64}$/.test(registration.artifactIdentity)) {
         throw new Error(`Agent Runtime provider artifact identity is invalid: ${providerId}`);

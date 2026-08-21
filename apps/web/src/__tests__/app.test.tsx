@@ -40,6 +40,7 @@ function installApi(
     agentCreate?: (input: Record<string, unknown>) => Promise<void> | void;
     alreadyJoinedInvitation?: boolean;
     agentCreateError?: "generic" | "name";
+    authProviders?: readonly { enabled: boolean; id: string; startUrl: string | null }[];
     bindingReauth?: boolean;
     bindingEvidenceFails?: boolean;
     bound?: boolean;
@@ -109,7 +110,9 @@ function installApi(
   vi.mocked(fetch).mockImplementation(async (input, init) => {
     const path = String(input);
     if (path === "/api/v1/auth/providers") {
-      return json({ providers: [{ id: "dev", enabled: true, startUrl: "/api/v1/auth/dev/callback" }] });
+      return json({
+        providers: options.authProviders ?? [{ id: "dev", enabled: true, startUrl: "/api/v1/auth/dev/callback" }],
+      });
     }
     if (path === "/api/v1/me" && init?.method === "PATCH") {
       const body = JSON.parse(String(init.body)) as { displayName: string };
@@ -485,10 +488,28 @@ describe("OpenTag Web App Shell", () => {
     installApi("member", { unauthenticated: true });
     window.history.replaceState({}, "", path);
     render(<App />);
-    const heading = await screen.findByRole("heading", { name: "Sign in" });
+    const heading = await screen.findByRole("heading", { name: "Welcome back" });
     expect(heading.closest("main")?.classList.contains("decorative-page")).toBe(true);
+    expect(screen.getByText("OpenTag").closest(".login-brand-lockup")).toBeTruthy();
+    expect(screen.getByText("Sign in to continue to OpenTag.")).toBeTruthy();
+    expect(screen.queryByText(/Permissions are checked/)).toBeNull();
     const expectedNext = path === "/" ? "/agents" : path;
     expect(window.location.search).toBe(`?next=${encodeURIComponent(expectedNext)}`);
+  });
+
+  it("renders the Google provider with its branded sign-in treatment", async () => {
+    installApi("member", {
+      authProviders: [{ id: "google", enabled: true, startUrl: "/api/v1/auth/google/start" }],
+      unauthenticated: true,
+    });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+
+    const signIn = await screen.findByRole("link", { name: "Sign in with Google" });
+    expect(signIn.classList.contains("login-provider-button--google")).toBe(true);
+    expect(signIn.querySelector('img[alt="Sign in with Google"]')).toBeTruthy();
+    expect(new URL(signIn.getAttribute("href") ?? "", window.location.origin).searchParams.get("next")).toBe("/agents");
+    expect(screen.getByText("Access is managed by your workspace.")).toBeTruthy();
   });
 
   it("keeps authenticated invalid Agent tabs on the plain workspace canvas", async () => {
@@ -1100,7 +1121,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/invites/${invitationToken}`);
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Join Workspace" }));
-    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
     expect(window.location.search).toBe(`?next=${encodeURIComponent(`/invites/${invitationToken}`)}`);
     expect(window.sessionStorage.getItem("opentag.pendingInvitationToken")).toBe(invitationToken);
   });
@@ -1735,7 +1756,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("button", { name: "Save account profile" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
-    expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
     expect(vi.mocked(fetch)).toHaveBeenCalledWith(
       "/api/v1/auth/browser/logout",
       expect.objectContaining({ method: "POST" }),

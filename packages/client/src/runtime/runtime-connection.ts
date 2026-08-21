@@ -32,6 +32,7 @@ import WebSocket, { type ClientOptions, type RawData } from "ws";
 import { OpenTagApiError } from "../api.js";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
+import { RuntimeStorageError } from "../storage/durable-file.js";
 import type { ComputerIdentity } from "./computer-identity.js";
 
 const SERVER_CONTROL_FRAME_TYPES = new Set([
@@ -954,7 +955,12 @@ export class RuntimeConnection {
     for (const listener of this.#businessListeners) {
       Promise.resolve()
         .then(() => listener(frame))
-        .catch(() => this.#logger.warn({ category: "listener" }, "Runtime business frame listener failed"));
+        .catch((error: unknown) =>
+          this.#logger.warn(
+            { category: "listener", errorCategory: listenerFailureCategory(error), frameType: frame.type },
+            "Runtime business frame listener failed",
+          ),
+        );
     }
   }
 
@@ -1004,6 +1010,13 @@ export class RuntimeConnection {
       signal.addEventListener("abort", onAbort, { once: true });
     });
   }
+}
+
+function listenerFailureCategory(error: unknown): string {
+  if (error instanceof RuntimeStorageError) return `runtime_storage_${error.code}`;
+  if (error instanceof RuntimeSendError) return `runtime_send_${error.code}`;
+  if (error instanceof RuntimeConnectionError) return "runtime_connection";
+  return error instanceof Error ? "error" : "non_error";
 }
 
 function connectionErrorCategory(error: unknown): string {

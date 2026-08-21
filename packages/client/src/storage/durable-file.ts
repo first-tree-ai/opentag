@@ -183,6 +183,10 @@ async function syncDirectory(path: string): Promise<void> {
   }
 }
 
+export async function syncDurableDirectory(path: string): Promise<void> {
+  await syncDirectory(path);
+}
+
 function noFollowFlag(): number {
   return constants.O_NOFOLLOW ?? 0;
 }

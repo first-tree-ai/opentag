@@ -706,7 +706,49 @@ button.danger:hover {
   left: 0;
   display: grid;
   gap: 2px;
+  max-height: min(560px, calc(100dvh - 32px));
+  overflow-y: auto;
   padding: 7px;
+}
+
+.account-workspace-group {
+  display: grid;
+  max-height: min(304px, 42dvh);
+  gap: 2px;
+  overflow-y: auto;
+  min-width: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 5px;
+  padding: 0 0 7px;
+}
+
+.account-menu-popover .account-workspace-option {
+  display: grid;
+  min-height: 48px;
+  grid-template-columns: 24px minmax(0, 1fr) 16px;
+  gap: 10px;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.account-menu-popover .account-workspace-option[aria-current="true"] {
+  background: var(--brand-light);
+  color: var(--foreground);
+}
+
+.account-menu-popover .account-workspace-manage {
+  justify-content: space-between;
+  min-height: 40px;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 7px 7px;
+  padding-top: 4px;
+}
+
+.account-menu-actions {
+  display: grid;
+  gap: 2px;
 }
 
 .account-menu-popover a,
@@ -738,6 +780,48 @@ button.danger:hover {
   font-size: var(--text-meta);
   line-height: var(--lh-ui);
   padding: 6px 9px;
+}
+
+.account-settings-stack {
+  display: grid;
+  gap: 32px;
+}
+
+.account-advanced {
+  border-top: 1px solid var(--border);
+  padding-top: 18px;
+}
+
+.account-advanced > summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
+}
+
+.account-advanced[open] > summary {
+  color: var(--foreground);
+}
+
+.account-advanced-content {
+  display: grid;
+  gap: 22px;
+  margin-top: 22px;
+}
+
+.account-workspace-create {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
+}
+
+.account-workspace-create p {
+  margin: 5px 0 0;
+  color: var(--muted);
 }
 
 .sidebar-backdrop,
@@ -837,6 +921,14 @@ button.danger:hover {
   margin-top: 4px;
 }
 
+.workspace-profile-dialog {
+  width: min(100%, 760px);
+}
+
+.workspace-profile-dialog .dialog-header {
+  margin-bottom: 20px;
+}
+
 .app-main {
   min-width: 0;
 }
@@ -916,6 +1008,16 @@ button.danger:hover {
 .agent-list-section {
   display: grid;
   gap: 24px;
+}
+
+.agent-runtime-section {
+  display: grid;
+  width: min(100%, 860px);
+  gap: 24px;
+  margin-top: 64px;
+  border-top: 1px solid var(--border);
+  padding-top: 36px;
+  scroll-margin-top: 28px;
 }
 
 .agent-summary-strip {
@@ -2944,6 +3046,11 @@ textarea:focus {
   gap: 18px;
 }
 
+.agent-runtime-section > .panel,
+.agent-runtime-section > .settings-list-section {
+  width: 100%;
+}
+
 .settings-content > .panel .button {
   justify-self: start;
 }
@@ -2982,6 +3089,11 @@ textarea:focus {
   border-radius: var(--radius);
   background: var(--surface-soft);
   padding: 22px;
+}
+
+.settings-invitation-panel:focus-visible {
+  outline: 3px solid var(--brand-ink);
+  outline-offset: 3px;
 }
 
 .settings-invitation-panel h3 {
@@ -3400,6 +3512,16 @@ textarea:focus {
 }
 
 @media (max-width: 720px) {
+  .account-workspace-create {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .account-workspace-create .secondary {
+    justify-content: center;
+    width: 100%;
+  }
+
   .onboarding-header {
     min-height: 60px;
     padding: 10px 18px;

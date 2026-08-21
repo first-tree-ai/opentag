@@ -2378,9 +2378,11 @@ function InvitationSettings({
               </div>
             </>
           ) : (
-            <Button disabled={busy} onClick={() => void createInvitation()}>
-              {busy ? "Creating…" : "Create invite link"}
-            </Button>
+            <div className="actions">
+              <Button disabled={busy} onClick={() => void createInvitation()}>
+                {busy ? "Creating…" : "Create invite link"}
+              </Button>
+            </div>
           );
         }}
       </AsyncState>

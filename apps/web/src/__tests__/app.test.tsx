@@ -1136,7 +1136,9 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/members");
     render(<App />);
     expect(await screen.findByText("This link lets anyone join as a member until it expires.")).toBeTruthy();
-    fireEvent.click(await screen.findByRole("button", { name: "Create invite link" }));
+    const createInviteLink = await screen.findByRole("button", { name: "Create invite link" });
+    expect(createInviteLink.parentElement?.classList.contains("actions")).toBe(true);
+    fireEvent.click(createInviteLink);
     const link = (await screen.findByLabelText("Invite link")) as HTMLInputElement;
     expect(link.value).toBe(`https://opentag.example.com/invites/${"A".repeat(43)}`);
     expect(screen.getByText(/^Expires Aug 27, 2026 at /)).toBeTruthy();

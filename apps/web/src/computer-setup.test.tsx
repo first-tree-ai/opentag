@@ -63,6 +63,9 @@ describe("ComputerSetup", () => {
     });
 
     render(<ComputerSetup teamId={teamId} />);
+    expect(
+      screen.getByRole("button", { name: "Generate connection command" }).classList.contains("connect-command-primary"),
+    ).toBe(true);
     await clickGenerate();
 
     expect(calls).toEqual(["baseline", "issue"]);

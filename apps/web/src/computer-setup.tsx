@@ -173,7 +173,9 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
     <section className="panel">
       <h2>Connect a Local Computer</h2>
       <p>Generate a short-lived command, then run it in a terminal on the Computer.</p>
-      <Button onClick={() => void connectComputer()}>Generate connection command</Button>
+      <Button className="connect-command-primary" onClick={() => void connectComputer()}>
+        Generate connection command
+      </Button>
       {bootstrapCommand ? (
         <>
           <pre>

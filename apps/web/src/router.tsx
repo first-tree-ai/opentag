@@ -70,7 +70,11 @@ type AgentAvailability = {
   };
 };
 
-type AgentListItem = AgentSummary & { evidenceConfirmed: boolean };
+type AgentListItem = AgentSummary & {
+  evidenceConfirmed: boolean;
+  computerConnectionStatus: TeamComputerSummary["connectionStatus"] | null;
+  computerEvidenceConfirmed: boolean;
+};
 type AgentDetailView = AgentDetail & { availability: AgentAvailability };
 
 function projectAgentAvailability(
@@ -156,8 +160,23 @@ function projectAgentAvailability(
 }
 
 async function loadAgentList(teamId: string): Promise<{ agents: AgentListItem[] }> {
-  const { agents } = await browserApi.agents(teamId);
-  return { agents: agents.map((agent) => ({ ...agent, evidenceConfirmed: true })) };
+  const [{ agents }, computersResult] = await Promise.all([
+    browserApi.agents(teamId),
+    browserApi.computers(teamId).then(
+      (value) => ({ kind: "ready" as const, value }),
+      () => ({ kind: "unconfirmed" as const }),
+    ),
+  ]);
+  const computers = computersResult.kind === "ready" ? computersResult.value.computers : [];
+  return {
+    agents: agents.map((agent) => ({
+      ...agent,
+      evidenceConfirmed: true,
+      computerConnectionStatus:
+        computers.find((computer) => computer.id === agent.computer.id)?.connectionStatus ?? null,
+      computerEvidenceConfirmed: computersResult.kind === "ready",
+    })),
+  };
 }
 
 async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
@@ -184,7 +203,14 @@ async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
 }
 
 function markAgentListUnconfirmed(value: { agents: AgentListItem[] }): { agents: AgentListItem[] } {
-  return { agents: value.agents.map((agent) => ({ ...agent, evidenceConfirmed: false })) };
+  return {
+    agents: value.agents.map((agent) => ({
+      ...agent,
+      evidenceConfirmed: false,
+      computerConnectionStatus: null,
+      computerEvidenceConfirmed: false,
+    })),
+  };
 }
 
 function markAgentDetailUnconfirmed(agent: AgentDetailView): AgentDetailView {
@@ -344,7 +370,7 @@ export function AppRouter() {
           <Route path="/settings/members" element={<Navigate replace to="/members" />} />
           <Route path="/settings/access" element={<Navigate replace to="/members" />} />
           <Route path="/settings/security" element={<Navigate replace to="/members" />} />
-          <Route path="/settings/computers" element={<Navigate replace to="/agents#agent-runtime" />} />
+          <Route path="/settings/computers" element={<Navigate replace to="/agents/new" />} />
           <Route path="/settings/resources" element={<Navigate replace to="/skills" />} />
           <Route path="/settings/integrations" element={<Navigate replace to="/integrations" />} />
           <Route path="/settings/usage" element={<Navigate replace to="/usage" />} />
@@ -950,16 +976,6 @@ function AgentsPage() {
         }
       >
         <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
-        <section className="agent-runtime-section" id="agent-runtime">
-          <header className="settings-subheader">
-            <div>
-              <span className="eyebrow">Infrastructure</span>
-              <h2>Agent runtime</h2>
-              <p>Connect and inspect the computers available to run Agents.</p>
-            </div>
-          </header>
-          <ComputersSettings canManage={membership.role === "admin"} teamId={membership.teamId} />
-        </section>
       </Page>
       {createOpen ? <NewAgentDialog returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} /> : null}
     </>
@@ -977,60 +993,71 @@ function AgentsContent({ agents }: { agents: AgentListItem[] }) {
 function AgentList({ agents }: { agents: AgentListItem[] }) {
   return (
     <section className="agent-list-section" aria-label="Agents">
-      <div className="agent-summary-strip">
-        <span>
-          <strong>{agents.length}</strong> Agents
-        </span>
-      </div>
-      <div className="agent-table">
-        <div className="agent-table-header" aria-hidden="true">
-          <span>Agent</span>
-          <span>State</span>
-          <span />
-        </div>
-        <div className="agent-table-body">
-          {agents.map((agent) => (
-            <AgentRow agent={agent} key={agent.id} />
-          ))}
-        </div>
+      <div className="agent-card-grid">
+        {agents.map((agent) => (
+          <AgentCard agent={agent} key={agent.id} />
+        ))}
       </div>
     </section>
   );
 }
 
-function AgentRow({ agent }: { agent: AgentListItem }) {
+function AgentCard({ agent }: { agent: AgentListItem }) {
   const status =
     agent.status === "suspended"
       ? { label: "Suspended", reason: "Not receiving new work", tone: "neutral" as const }
-      : agent.evidenceConfirmed
-        ? { label: "Active", reason: undefined, tone: "success" as const }
-        : { label: "Unconfirmed", reason: "Unable to refresh Agent", tone: "neutral" as const };
+      : !agent.evidenceConfirmed
+        ? { label: "Unconfirmed", reason: "Unable to refresh Agent", tone: "neutral" as const }
+        : !agent.computerEvidenceConfirmed || agent.computerConnectionStatus === null
+          ? { label: "Unconfirmed", reason: "Unable to confirm runtime", tone: "neutral" as const }
+          : agent.computerConnectionStatus === "online"
+            ? { label: "Active", reason: "Computer online", tone: "success" as const }
+            : { label: "Action required", reason: "Computer offline", tone: "warning" as const };
   return (
-    <div className="agent-row">
-      <Link aria-label={`Open ${agent.displayName}`} className="agent-row-link" to={`/agents/${agent.id}/general`} />
-      <span className="agent-identity">
-        <span className="agent-avatar" aria-hidden="true">
-          {initials(agent.displayName)}
+    <Link aria-label={`Open ${agent.displayName}`} className="agent-card" to={`/agents/${agent.id}/general`}>
+      <article>
+        <header className="agent-card-header">
+          <span className="agent-identity">
+            <span className="agent-avatar" aria-hidden="true">
+              {initials(agent.displayName)}
+            </span>
+            <span>
+              <strong>{agent.displayName}</strong>
+              <small>@{agent.name}</small>
+            </span>
+          </span>
+          <StatusIndicator detail={status.reason} label={status.label} tone={status.tone} />
+        </header>
+        <dl className="agent-card-facts">
+          <div>
+            <dt>Runtime</dt>
+            <dd>{providerLabel(agent.runtimeProvider)}</dd>
+          </div>
+          <div>
+            <dt>Computer</dt>
+            <dd>
+              {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
+            </dd>
+          </div>
+          <div>
+            <dt>Manager</dt>
+            <dd>{agent.manager.displayName}</dd>
+          </div>
+          <div>
+            <dt>Messaging</dt>
+            <dd>{receiveModeLabel(agent.receiveMode)}</dd>
+          </div>
+        </dl>
+        <span className="agent-card-action" aria-hidden="true">
+          View Agent <Icon name="chevron-right" />
         </span>
-        <span>
-          <strong>{agent.displayName}</strong>
-          <small>
-            @{agent.name} · {providerLabel(agent.runtimeProvider)}
-          </small>
-        </span>
-      </span>
-      <span className="cell-stack availability-cell" data-label="State">
-        <StatusIndicator detail={status.reason} label={status.label} tone={status.tone} />
-      </span>
-      <span className="agent-row-action" aria-hidden="true">
-        <Icon name="chevron-right" />
-      </span>
-    </div>
+      </article>
+    </Link>
   );
 }
 
-function useOwnComputersResource(teamId: string) {
-  return useResource(() => browserApi.ownComputers(), teamId, {
+function useOwnComputersResource(teamId: string, refreshVersion = 0) {
+  return useResource(() => browserApi.ownComputers(), `${teamId}:${refreshVersion}`, {
     onBackgroundError: markOwnComputersUnconfirmed,
     revalidateMs: 30_000,
     refreshOnFocus: true,
@@ -1040,13 +1067,15 @@ function useOwnComputersResource(teamId: string) {
 function NewAgentPage() {
   const { membership } = useTeam();
   const navigate = useNavigate();
-  const computers = useOwnComputersResource(membership.teamId);
+  const [computerRefreshVersion, setComputerRefreshVersion] = useState(0);
+  const computers = useOwnComputersResource(membership.teamId, computerRefreshVersion);
   if (membership.role !== "admin") return <UnavailablePage title="Admin access required" />;
   return (
     <Page title="Create Agent" description="Create the identity first. Complete its setup from the Agent overview.">
       <AgentCreationContent
         computers={computers}
         teamId={membership.teamId}
+        onComputerConnected={() => setComputerRefreshVersion((current) => current + 1)}
         onCreated={(agentId) => navigate(`/agents/${agentId}/general`)}
       />
     </Page>
@@ -1062,7 +1091,8 @@ function NewAgentDialog({
 }) {
   const { membership } = useTeam();
   const navigate = useNavigate();
-  const computers = useOwnComputersResource(membership.teamId);
+  const [computerRefreshVersion, setComputerRefreshVersion] = useState(0);
+  const computers = useOwnComputersResource(membership.teamId, computerRefreshVersion);
   const [submitting, setSubmitting] = useState(false);
 
   return (
@@ -1071,7 +1101,6 @@ function NewAgentDialog({
       className="new-agent-dialog"
       closeLabel="Close new Agent dialog"
       description="Give the Agent an identity and choose where it runs. You can finish its setup from the overview."
-      eyebrow="Create"
       returnFocusRef={returnFocusRef}
       title="New Agent"
       onClose={onClose}
@@ -1081,6 +1110,7 @@ function NewAgentDialog({
         presentation="dialog"
         teamId={membership.teamId}
         onCancel={onClose}
+        onComputerConnected={() => setComputerRefreshVersion((current) => current + 1)}
         onCreated={(agentId) => navigate(`/agents/${agentId}/general`)}
         onSubmittingChange={setSubmitting}
       />
@@ -1091,6 +1121,7 @@ function NewAgentDialog({
 function AgentCreationContent({
   computers,
   onCancel,
+  onComputerConnected,
   onCreated,
   onSubmittingChange,
   presentation = "page",
@@ -1098,6 +1129,7 @@ function AgentCreationContent({
 }: {
   computers: LoadState<{ computers: Computer[] }>;
   onCancel?: () => void;
+  onComputerConnected: () => void;
   onCreated: (agentId: string) => void;
   onSubmittingChange?: (submitting: boolean) => void;
   presentation?: "dialog" | "page";
@@ -1169,13 +1201,9 @@ function AgentCreationContent({
         const selectedComputerId = computer?.id ?? "";
         const readiness = computer?.providerReadiness?.find((entry) => entry.provider === runtimeProvider);
         return value.computers.length === 0 ? (
-          <EmptyState title="Connect a Local Computer first">
-            Open the{" "}
-            <Link to="/agents#agent-runtime" onClick={onCancel}>
-              Agent runtime
-            </Link>{" "}
-            section to generate a connection command.
-          </EmptyState>
+          <div className="agent-create-runtime-setup">
+            <ComputerSetup teamId={teamId} onConnected={onComputerConnected} />
+          </div>
         ) : (
           <form className="form-card agent-create-form" onSubmit={submit}>
             <Field
@@ -1620,8 +1648,17 @@ function RuntimeTab({ agent }: { agent: AgentDetailView }) {
         <>
           <DefinitionList
             rows={[
-              ["Provider", agent.runtimeProvider],
+              ["Provider", providerLabel(agent.runtimeProvider)],
               ["Computer", agent.computer.displayName],
+              ["System", platformLabel(agent.computer.platform)],
+              [
+                "Connection",
+                agent.availability.dependencies.computer.state === "ready"
+                  ? "Online"
+                  : agent.availability.dependencies.computer.state === "action_required"
+                    ? "Offline"
+                    : "Unable to confirm",
+              ],
             ]}
           />
           {config ? (
@@ -2376,7 +2413,7 @@ function InvitationSettings({
               </div>
             </>
           ) : (
-            <div className="actions">
+            <div className="actions settings-invitation-create">
               <Button disabled={busy} onClick={() => void createInvitation()}>
                 {busy ? "Creating…" : "Create invite link"}
               </Button>
@@ -2391,82 +2428,6 @@ function InvitationSettings({
         </p>
       ) : null}
     </section>
-  );
-}
-
-function ComputersSettings({ canManage, teamId }: { canManage: boolean; teamId: string }) {
-  const [reload, setReload] = useState(0);
-  const state = useResource(() => browserApi.computers(teamId), `${teamId}:${reload}`);
-  return (
-    <>
-      {canManage ? <ComputerSetup teamId={teamId} onConnected={() => setReload((current) => current + 1)} /> : null}
-      <AsyncState state={state}>
-        {(value) => (
-          <section className="settings-list-section">
-            <header className="settings-subheader">
-              <div>
-                <h2>Computers</h2>
-                <p>
-                  {value.computers.length} {value.computers.length === 1 ? "computer" : "computers"} ·{" "}
-                  {
-                    value.computers.filter((computer: TeamComputerSummary) => computer.connectionStatus === "online")
-                      .length
-                  }{" "}
-                  online
-                </p>
-              </div>
-              {!canManage ? <span className="settings-role-badge">Read only</span> : null}
-            </header>
-            {value.computers.length === 0 ? (
-              <div className="settings-compact-empty">
-                <strong>No computers connected</strong>
-                <p>{canManage ? "Use the connection flow above to add one." : "An Admin must connect a computer."}</p>
-              </div>
-            ) : (
-              <table className="settings-computer-table" aria-label="Computers">
-                <thead>
-                  <tr className="settings-table-header">
-                    <th scope="col">Computer</th>
-                    <th scope="col">Owner &amp; system</th>
-                    <th scope="col">Status</th>
-                    <th scope="col">Last seen</th>
-                    <th scope="col">Agents</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {value.computers.map((computer: TeamComputerSummary) => (
-                    <tr className="settings-computer-row" key={computer.id}>
-                      <th className="settings-computer-identity" scope="row">
-                        <span className="settings-computer-icon" aria-hidden="true" />
-                        <strong>{computer.displayName}</strong>
-                      </th>
-                      <td data-label="Owner & system">
-                        <strong>{computer.ownerDisplayName}</strong>
-                        <small>
-                          {computer.platform === "darwin"
-                            ? "macOS"
-                            : computer.platform === "win32"
-                              ? "Windows"
-                              : "Linux"}
-                        </small>
-                      </td>
-                      <td data-label="Status">
-                        <StatusIndicator
-                          label={titleCase(computer.connectionStatus)}
-                          tone={computer.connectionStatus === "online" ? "success" : "neutral"}
-                        />
-                      </td>
-                      <td data-label="Last seen">{formatDate(computer.lastSeenAt)}</td>
-                      <td data-label="Agents">{computer.agentIds.length}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </section>
-        )}
-      </AsyncState>
-    </>
   );
 }
 
@@ -2559,6 +2520,12 @@ function titleCase(value: string) {
 
 function providerLabel(provider: AgentSummary["runtimeProvider"]): string {
   return provider === "claude-code" ? "Claude Code" : "Codex";
+}
+
+function platformLabel(platform: AgentSummary["computer"]["platform"]): string {
+  if (platform === "darwin") return "macOS";
+  if (platform === "win32") return "Windows";
+  return "Linux";
 }
 
 function receiveModeLabel(receiveMode: AgentSummary["receiveMode"]): string {

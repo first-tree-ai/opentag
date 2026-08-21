@@ -468,11 +468,17 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(screen.queryByText("Infrastructure")).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Agent runtime" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Computers" })).toBeNull();
     expect(screen.getByRole("main").classList.contains("decorative-page")).toBe(false);
     expect(screen.getByRole("link", { name: "Agents" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
     expect(screen.getByRole("button", { name: "New Agent" })).toBeTruthy();
     expect(screen.queryByText("Example")).toBeNull();
+    expect(await screen.findByRole("link", { name: "Open Reviewer" })).toBeTruthy();
+    expect(screen.getByText("Ada's Mac · macOS")).toBeTruthy();
+    expect(screen.getByText("Mentions only")).toBeTruthy();
     const workspaceNavigation = screen.getByRole("navigation", { name: "Product" });
     expect(
       within(workspaceNavigation)
@@ -547,6 +553,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(trigger);
 
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    expect(within(dialog).queryByText("Create")).toBeNull();
     expect(window.location.pathname).toBe("/agents");
     await waitFor(() => expect(within(dialog).getByLabelText("Display name")).toBe(document.activeElement));
     expect(within(dialog).getByLabelText("Agent name")).toBeTruthy();
@@ -557,6 +564,17 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog", { name: "New Agent" })).toBeNull();
     expect(trigger).toBe(document.activeElement);
+  });
+
+  it("keeps Computer connection inside the New Agent dialog when no runtime is available", async () => {
+    installApi("admin");
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    expect(within(dialog).getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Generate connection command" })).toBeTruthy();
+    expect(within(dialog).queryByRole("link", { name: "Agent runtime" })).toBeNull();
   });
 
   it("creates an Agent from the dialog without a second creation screen", async () => {
@@ -777,6 +795,18 @@ describe("OpenTag Web App Shell", () => {
     ).toEqual(["Overview", "Runtime", "Messaging", "Access"]);
   });
 
+  it("keeps bound Computer details with the individual Agent runtime", async () => {
+    installApi("admin", { bound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/runtime`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    expect(screen.getByText("Ada's Mac")).toBeTruthy();
+    expect(screen.getByText("macOS")).toBeTruthy();
+    expect(screen.getByText("Online")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Execution choices" })).toBeTruthy();
+  });
+
   it("refreshes Agent availability when the page regains focus", async () => {
     let computerStatus: "online" | "offline" = "online";
     installApi("admin", { bound: true, computerStatus: () => computerStatus });
@@ -790,15 +820,16 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("link", { name: "Review runtime" })).toBeTruthy();
   });
 
-  it("keeps infrastructure details out of Agent rows while loading the runtime section independently", async () => {
+  it("keeps Agent cards useful when Computer status cannot be confirmed", async () => {
     installApi("admin", { bound: true, computerEvidenceFails: true });
     window.history.replaceState({}, "", "/agents");
     render(<App />);
 
     expect(await screen.findByText("Reviewer")).toBeTruthy();
-    expect(screen.getByText("Active")).toBeTruthy();
-    expect(screen.queryByText("Ada's Mac")).toBeNull();
-    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.getByText("Unconfirmed")).toBeTruthy();
+    expect(screen.getByText("Unable to confirm runtime")).toBeTruthy();
+    expect(screen.getByText("Ada's Mac · macOS")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/computers"))).toBe(true);
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes(`/agents/${agentId}/im-binding`))).toBe(
       false,
@@ -1391,9 +1422,9 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin");
     window.history.replaceState({}, "", "/settings/computers");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Agent runtime" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/agents");
-    expect(window.location.hash).toBe("#agent-runtime");
+    expect(await screen.findByRole("heading", { name: "Create Agent" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents/new");
     const button = await screen.findByRole("button", { name: "Generate connection command" });
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
     fireEvent.click(button);
@@ -1404,8 +1435,9 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin");
     window.history.replaceState({}, "", "/agents/new");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Connect a Local Computer first" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Agent runtime" }).getAttribute("href")).toBe("/agents#agent-runtime");
+    expect(await screen.findByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Generate connection command" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Agent runtime" })).toBeNull();
   });
 
   it("validates Agent name locally with an accessible field error before sending a request", async () => {

@@ -287,11 +287,6 @@ textarea.ds-control:focus {
   height: 18px;
 }
 
-.agent-row-action .ds-icon {
-  width: 18px;
-  height: 18px;
-}
-
 .availability-action .ds-status {
   display: inline-flex;
   flex: 1;

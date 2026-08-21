@@ -21,6 +21,8 @@ import { DaemonServiceError } from "./types.js";
 const LAUNCHD_TIMEOUT_MS = 15_000;
 
 export interface LaunchdBackendOptions {
+  activationAttempts?: number;
+  activationDelayMs?: number;
   evictionAttempts?: number;
   evictionDelayMs?: number;
   home: string;
@@ -107,14 +109,19 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
     wrapperPath,
   });
   const wait = options.sleep ?? sleep;
+  const activationAttempts = options.activationAttempts ?? 50;
+  const activationDelayMs = options.activationDelayMs ?? 100;
   const evictionAttempts = options.evictionAttempts ?? 20;
   const evictionDelayMs = options.evictionDelayMs ?? 100;
 
-  const status = async (): Promise<DaemonServiceInfo> => {
+  const readStatus = async (failOnTimeout = false): Promise<DaemonServiceInfo> => {
     const plist = await readRegularFile(plistPath);
     if (plist === undefined) {
       const orphaned = await options.runner.run(launchctl, ["print", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
       if (orphaned.timedOut) {
+        if (failOnTimeout) {
+          throw new DaemonServiceError("OPERATION_FAILED", "launchd activation status check timed out");
+        }
         return info("unknown", {
           detail: "launchctl could not verify whether a definition-less service target is loaded",
           drifted: true,
@@ -143,7 +150,12 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
     }
     const result = await options.runner.run(launchctl, ["print", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
     const drifted = plist !== expectedPlist || wrapper !== expectedWrapper;
-    if (result.timedOut) return info("unknown", { configuredHome, detail: "launchctl print timed out", drifted });
+    if (result.timedOut) {
+      if (failOnTimeout) {
+        throw new DaemonServiceError("OPERATION_FAILED", "launchd activation status check timed out");
+      }
+      return info("unknown", { configuredHome, detail: "launchctl print timed out", drifted });
+    }
     if (result.code !== 0) {
       return isManagerNotLoaded(result)
         ? info("inactive", { configuredHome, drifted })
@@ -168,6 +180,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
       drifted,
     });
   };
+  const status = (): Promise<DaemonServiceInfo> => readStatus();
 
   const preflight = async (): Promise<void> => {
     const result = await options.runner.run(launchctl, ["print", domain], { timeoutMs: LAUNCHD_TIMEOUT_MS });
@@ -212,6 +225,20 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
     }
   };
 
+  const waitForActivation = async (): Promise<DaemonServiceInfo> => {
+    let current: DaemonServiceInfo | undefined;
+    for (let attempt = 0; attempt < activationAttempts; attempt += 1) {
+      current = await readStatus(true);
+      if (current.state === "active") return current;
+      if (attempt + 1 < activationAttempts) await wait(activationDelayMs);
+    }
+    const lastState = current ? `; last state: ${current.state}${current.detail ? ` (${current.detail})` : ""}` : "";
+    throw new DaemonServiceError(
+      "OPERATION_FAILED",
+      `launchd reported that the OpenTag service did not become active${lastState}`,
+    );
+  };
+
   return {
     platform: "launchd",
     preflight,
@@ -224,14 +251,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
       await waitForEviction();
       await bootstrap();
       await runRequired(options.runner, launchctl, ["enable", target], "launchd enable");
-      const current = await status();
-      if (current.state !== "active") {
-        throw new DaemonServiceError(
-          "OPERATION_FAILED",
-          "launchd reported that the OpenTag service did not become active",
-        );
-      }
-      return current;
+      return waitForActivation();
     },
     async start() {
       await preflight();
@@ -254,7 +274,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
           `launchd start state check failed: ${loaded.stderr || "unknown error"}`,
         );
       }
-      return status();
+      return waitForActivation();
     },
     async stop() {
       if ((await readRegularFile(plistPath)) === undefined) return info("not-installed", { drifted: true });
@@ -270,7 +290,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
       await bootout();
       await waitForEviction();
       await bootstrap();
-      return status();
+      return waitForActivation();
     },
     status,
     async uninstall() {

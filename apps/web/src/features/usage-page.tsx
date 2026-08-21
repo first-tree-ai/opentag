@@ -10,34 +10,39 @@ export function UsagePage() {
 
   return (
     <section className="capability-page" aria-labelledby="usage-page-title">
-      <header className="capability-page-header capability-usage-header">
+      <header className="capability-page-header">
         <div>
           <span className="capability-preview-label">Demo data preview</span>
           <h1 id="usage-page-title">Usage</h1>
           <p>A simple view of sample Agent activity across this Workspace.</p>
         </div>
-        <Field className="capability-range-field" htmlFor="usage-range" label="Time range">
-          <select
-            className="ds-control"
-            id="usage-range"
-            value={range}
-            onChange={(event) => setRange(event.currentTarget.value as UsageRange)}
-          >
-            {usageRanges.map((option) => (
-              <option value={option} key={option}>
-                Last {option}
-              </option>
-            ))}
-          </select>
-        </Field>
       </header>
 
-      <dl className="capability-metric-grid" aria-label="Usage metrics" aria-live="polite">
-        <Metric label="Tasks" value={snapshot.metrics.tasks} />
-        <Metric label="Turns" value={snapshot.metrics.turns} />
-        <Metric label="Active Agents" value={snapshot.metrics.activeAgents} />
-        <Metric label="Providers" value={snapshot.metrics.providers} />
-      </dl>
+      <div className="capability-usage-summary">
+        <div className="capability-usage-toolbar">
+          <Field className="capability-range-field" htmlFor="usage-range" label="Time range">
+            <select
+              className="ds-control"
+              id="usage-range"
+              value={range}
+              onChange={(event) => setRange(event.currentTarget.value as UsageRange)}
+            >
+              {usageRanges.map((option) => (
+                <option value={option} key={option}>
+                  Last {option}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+
+        <dl className="capability-metric-grid" aria-label="Usage metrics" aria-live="polite">
+          <Metric label="Tasks" value={snapshot.metrics.tasks} />
+          <Metric label="Turns" value={snapshot.metrics.turns} />
+          <Metric label="Active Agents" value={snapshot.metrics.activeAgents} />
+          <Metric label="Providers" value={snapshot.metrics.providers} />
+        </dl>
+      </div>
 
       <div className="capability-usage-grid">
         <section className="capability-chart-panel" aria-labelledby="activity-trend-title">
@@ -46,7 +51,6 @@ export function UsagePage() {
               <h2 id="activity-trend-title">Activity trend</h2>
               <p>Turns completed during the selected demo period.</p>
             </div>
-            <span>{range}</span>
           </div>
           <svg
             className="capability-trend-chart"

@@ -631,6 +631,12 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    fireEvent.change(within(dialog).getByLabelText("Display name"), {
+      target: { value: "Research Assistant" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Agent name"), {
+      target: { value: "research-assistant" },
+    });
     fireEvent.click(within(dialog).getByRole("button", { name: "Connect another Computer" }));
 
     vi.useFakeTimers();
@@ -644,6 +650,8 @@ describe("OpenTag Web App Shell", () => {
       });
 
       expect((within(dialog).getByLabelText("Computer") as HTMLSelectElement).value).toBe(connectedComputerId);
+      expect((within(dialog).getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Assistant");
+      expect((within(dialog).getByLabelText("Agent name") as HTMLInputElement).value).toBe("research-assistant");
       expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
     } finally {
       vi.useRealTimers();

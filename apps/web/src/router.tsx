@@ -1202,6 +1202,8 @@ function AgentCreationContent({
   const [error, setError] = useState<string>();
   const [nameError, setNameError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
+  const [displayName, setDisplayName] = useState("");
+  const [agentName, setAgentName] = useState("");
   const [computerId, setComputerId] = useState("");
   const [computerSetupOpen, setComputerSetupOpen] = useState(false);
   const [runtimeProvider, setRuntimeProvider] = useState<"codex" | "claude-code">("codex");
@@ -1317,6 +1319,8 @@ function AgentCreationContent({
                 id="new-agent-display-name"
                 ref={firstFieldRef}
                 name="displayName"
+                value={displayName}
+                onChange={(event) => setDisplayName(event.currentTarget.value)}
                 placeholder="Research Assistant"
                 disabled={submitting}
                 required
@@ -1338,7 +1342,11 @@ function AgentCreationContent({
                   aria-invalid={nameError ? true : undefined}
                   id="new-agent-name"
                   name="name"
-                  onChange={() => setNameError(undefined)}
+                  value={agentName}
+                  onChange={(event) => {
+                    setAgentName(event.currentTarget.value);
+                    setNameError(undefined);
+                  }}
                   placeholder="research-assistant"
                   disabled={submitting}
                   required

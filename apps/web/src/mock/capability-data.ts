@@ -43,22 +43,6 @@ export const resourcePreviews: readonly ResourcePreview[] = [
   },
 ];
 
-export type IntegrationPreview = {
-  name: string;
-  category: string;
-  status: "Connected" | "Available";
-  agentCount: number;
-  mark: string;
-};
-
-export const integrationPreviews: readonly IntegrationPreview[] = [
-  { name: "GitHub", category: "Source control", status: "Connected", agentCount: 4, mark: "GH" },
-  { name: "Slack", category: "Messaging", status: "Connected", agentCount: 2, mark: "SL" },
-  { name: "Linear", category: "Issue tracking", status: "Available", agentCount: 0, mark: "LI" },
-  { name: "Notion", category: "Knowledge", status: "Available", agentCount: 0, mark: "NO" },
-  { name: "Google Drive", category: "Files", status: "Available", agentCount: 0, mark: "GD" },
-];
-
 export const usageRanges = ["7 days", "30 days", "90 days"] as const;
 
 export type UsageRange = (typeof usageRanges)[number];

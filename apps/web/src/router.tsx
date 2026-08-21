@@ -26,7 +26,7 @@ import {
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ApiError, browserApi } from "./api.js";
 import { ComputerSetup } from "./computer-setup.js";
-import { CreateTeamForm, createTeamWithUniqueHandle } from "./create-team-form.js";
+import { CreateTeamForm } from "./create-team-form.js";
 import { IntegrationsPage } from "./features/integrations-page.js";
 import { ResourcesPage } from "./features/resources-page.js";
 import { UsagePage } from "./features/usage-page.js";
@@ -336,11 +336,11 @@ export function AppRouter() {
           <Route path="/account" element={<AccountPage />} />
           <Route path="/settings" element={<Navigate replace to="/members" />} />
           <Route path="/settings/account" element={<Navigate replace to="/account" />} />
-          <Route path="/settings/team" element={<Navigate replace to="/members" />} />
+          <Route path="/settings/team" element={<Navigate replace to="/account#workspace-management" />} />
           <Route path="/settings/members" element={<Navigate replace to="/members" />} />
           <Route path="/settings/access" element={<Navigate replace to="/members" />} />
           <Route path="/settings/security" element={<Navigate replace to="/members" />} />
-          <Route path="/settings/computers" element={<Navigate replace to="/agents" />} />
+          <Route path="/settings/computers" element={<Navigate replace to="/agents#agent-runtime" />} />
           <Route path="/settings/resources" element={<Navigate replace to="/resources" />} />
           <Route path="/settings/integrations" element={<Navigate replace to="/integrations" />} />
           <Route path="/settings/usage" element={<Navigate replace to="/usage" />} />
@@ -521,16 +521,7 @@ function AuthenticatedTeamGate() {
         const membership =
           me.memberships.find((item: MeMembership) => item.teamId === selectedTeamId) ?? me.memberships[0];
         if (!membership) {
-          return (
-            <DefaultWorkspaceProvisioner
-              me={me}
-              onCreated={(teamId) => {
-                rememberTeamPreference(teamId);
-                setSelectedTeamId(teamId);
-                setMeRevision((value) => value + 1);
-              }}
-            />
-          );
+          return <WorkspaceSetupIncomplete onRetry={() => setMeRevision((value) => value + 1)} />;
         }
         const selectTeam = (teamId: string) => {
           if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
@@ -547,61 +538,18 @@ function AuthenticatedTeamGate() {
   );
 }
 
-function DefaultWorkspaceProvisioner({ me, onCreated }: { me: MeResponse; onCreated: (teamId: string) => void }) {
-  const [attempt, setAttempt] = useState(0);
-  const [error, setError] = useState<string>();
-  const onCreatedRef = useRef(onCreated);
-  const creationRef = useRef<ReturnType<typeof createTeamWithUniqueHandle> | undefined>(undefined);
-  const lastAttemptRef = useRef(attempt);
-  onCreatedRef.current = onCreated;
-
-  useEffect(() => {
-    let active = true;
-    if (lastAttemptRef.current !== attempt) {
-      lastAttemptRef.current = attempt;
-      creationRef.current = undefined;
-    }
-    setError(undefined);
-    const ownerName = me.user.displayName.trim() || me.user.email.split("@")[0] || "Personal";
-    creationRef.current ??= createTeamWithUniqueHandle(`${ownerName}'s Workspace`);
-    void creationRef.current.then(
-      (created) => {
-        if (active) onCreatedRef.current(created.id);
-      },
-      (cause) => {
-        if (active) setError(cause instanceof Error ? cause.message : "OpenTag could not finish account setup");
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, [attempt, me.user.displayName, me.user.email]);
-
+function WorkspaceSetupIncomplete({ onRetry }: { onRetry: () => void }) {
   return (
     <main className="center-card decorative-page">
-      <span className="eyebrow">OpenTag</span>
-      <h1>{error ? "Account setup needs another try" : "Setting up your account"}</h1>
-      <p>
-        {error
-          ? "Your account is ready, but its private working space could not be prepared."
-          : "This only takes a moment."}
-      </p>
-      {error ? (
-        <>
-          <div className="notice error" role="alert">
-            {error}
-          </div>
-          <button className="button" type="button" onClick={() => setAttempt((value) => value + 1)}>
-            Try again
-          </button>
-        </>
-      ) : (
-        <div aria-label="Preparing your account" className="loading-state" role="status">
-          <span />
-          <span />
-          <span />
-        </div>
-      )}
+      <span className="eyebrow">Workspace setup</span>
+      <h1>Workspace setup incomplete</h1>
+      <p>OpenTag could not find a Workspace membership for this account.</p>
+      <div className="notice error" role="alert">
+        The server must finish Workspace setup before the Web app can continue.
+      </div>
+      <button className="button" type="button" onClick={onRetry}>
+        Check again
+      </button>
     </main>
   );
 }

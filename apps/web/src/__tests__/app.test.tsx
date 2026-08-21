@@ -922,7 +922,7 @@ describe("OpenTag Web App Shell", () => {
     expect(document.activeElement).toBe(invitationPanel);
   });
 
-  it.each(["/settings", "/settings/team", "/settings/members", "/settings/access", "/settings/security"])(
+  it.each(["/settings", "/settings/members", "/settings/access", "/settings/security"])(
     "redirects legacy member administration URL %s",
     async (path) => {
       installApi("member");
@@ -956,6 +956,17 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("button", { name: "Save account profile" })).toBeTruthy();
   });
 
+  it("redirects the legacy Team profile URL to advanced Workspace management", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/settings/team");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Workspace management" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/account");
+    expect(window.location.hash).toBe("#workspace-management");
+    expect(screen.getByLabelText("Workspace name")).toBeTruthy();
+  });
+
   it("redirects legacy capability URLs to the minimal preview pages", async () => {
     installApi("admin");
     window.history.replaceState({}, "", "/settings/resources");
@@ -966,7 +977,8 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Demo data preview")).toBeTruthy();
     fireEvent.click(screen.getByRole("link", { name: "Integrations" }));
     expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
-    expect(screen.getByText("GitHub")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Workspace Integrations are not available yet" })).toBeTruthy();
+    expect(screen.queryByText("GitHub")).toBeNull();
     fireEvent.click(screen.getByRole("link", { name: "Usage" }));
     expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
     expect(screen.getByLabelText("Usage metrics")).toBeTruthy();
@@ -1344,6 +1356,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Agent runtime" })).toBeTruthy();
     expect(window.location.pathname).toBe("/agents");
+    expect(window.location.hash).toBe("#agent-runtime");
     const button = await screen.findByRole("button", { name: "Generate connection command" });
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
     fireEvent.click(button);
@@ -1532,54 +1545,34 @@ describe("OpenTag Web App Shell", () => {
     expect(within(dialog).getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(false);
   });
 
-  it("automatically creates a default Workspace for a Team-less session", async () => {
+  it("keeps the Team-less authenticated gate read-only while the server finishes Workspace setup", async () => {
     installApi("admin", { teamless: true });
     render(
       <StrictMode>
         <App />
       </StrictMode>,
     );
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Workspace setup incomplete" })).toBeTruthy();
     expect(window.location.pathname).toBe("/agents");
-    expect(screen.queryByLabelText("Workspace name")).toBeNull();
-    const createCalls = vi
-      .mocked(fetch)
-      .mock.calls.filter(([path, init]) => path === "/api/v1/teams" && init?.method === "POST");
-    expect(createCalls).toHaveLength(1);
-    expect(JSON.parse(String(createCalls[0]?.[1]?.body))).toEqual({
-      displayName: "Ada's Workspace",
-      name: "ada-s-workspace",
-    });
-    expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(createdTeamId);
+    expect(screen.getByRole("alert").textContent).toContain("The server must finish Workspace setup");
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+    const initialMeReads = vi.mocked(fetch).mock.calls.filter(([path]) => path === "/api/v1/me").length;
+    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
+    await waitFor(() =>
+      expect(vi.mocked(fetch).mock.calls.filter(([path]) => path === "/api/v1/me")).toHaveLength(initialMeReads + 1),
+    );
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
   });
 
-  it("lands on the automatic default Workspace when Team preference storage is unavailable", async () => {
-    installApi("admin", { teamless: true });
-    window.localStorage.setItem("opentag.selectedTeamId", teamId);
-    const setItem = vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
-      throw new Error("Storage unavailable");
-    });
-    try {
-      render(<App />);
-      expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-      fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
-      expect(screen.queryByRole("group", { name: "Switch Workspace" })).toBeNull();
-      expect(window.location.pathname).toBe("/agents");
-      expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(teamId);
-    } finally {
-      setItem.mockRestore();
-    }
-  });
-
-  it("automatically establishes the default Workspace before standalone onboarding", async () => {
+  it("keeps standalone onboarding behind the read-only Workspace setup gate", async () => {
     installApi("admin", { teamless: true });
     window.history.replaceState({}, "", "/onboarding");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Reviewer needs its runtime route" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Workspace setup incomplete" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
     expect(
       vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/teams" && init?.method === "POST"),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("loads standalone onboarding when selected Team preference storage is unavailable", async () => {

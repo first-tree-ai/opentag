@@ -4,7 +4,7 @@ import { IntegrationsPage } from "../features/integrations-page.js";
 import { ResourcesPage } from "../features/resources-page.js";
 import { UsagePage } from "../features/usage-page.js";
 
-describe("capability mock pages", () => {
+describe("capability entry pages", () => {
   it("renders Resources as an explicit demo and filters the static resource list", () => {
     render(<ResourcesPage />);
 
@@ -30,18 +30,16 @@ describe("capability mock pages", () => {
     expect(addResource.textContent).toContain("Coming soon");
   });
 
-  it("shows connected and available integration previews without actionable connects", () => {
+  it("keeps Integrations truthful until a Workspace Integration contract exists", () => {
     render(<IntegrationsPage />);
 
     expect(screen.getByRole("heading", { name: "Integrations" })).toBeTruthy();
-    expect(screen.getByText("Demo data preview")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Connected" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Available" })).toBeTruthy();
-    expect(screen.getByText("GitHub")).toBeTruthy();
-
-    const connectButtons = screen.getAllByRole("button", { name: "Connect (Coming soon)" });
-    expect(connectButtons.length).toBeGreaterThan(0);
-    expect(connectButtons.every((button) => (button as HTMLButtonElement).disabled)).toBe(true);
+    expect(screen.getByText("Coming later")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Workspace Integrations are not available yet" })).toBeTruthy();
+    expect(screen.getByText(/Provider Bot connections remain managed/)).toBeTruthy();
+    expect(screen.queryByText("GitHub")).toBeNull();
+    expect(screen.queryByText("Connected")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
   });
 
   it("updates the Usage overview when the demo range changes", () => {

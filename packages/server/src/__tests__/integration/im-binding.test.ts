@@ -2144,7 +2144,7 @@ describe("IM binding persistence", () => {
             ].filter((messageId): messageId is string => messageId !== undefined),
           ),
         );
-      const current = await inbox.ingest(
+      await inbox.ingest(
         value.imBindingId,
         1,
         slackThreadEvent({
@@ -2152,9 +2152,19 @@ describe("IM binding persistence", () => {
           externalMessageId: "7000.102",
           rootExternalMessageId: "7000.100",
           occurredAt: "2026-08-19T00:00:03.000Z",
-          text: "current thread message",
+          text: "deleted current thread message",
         }),
       );
+      const currentDeleteEvent = slackThreadEvent({
+        providerEventId: "history-thread-current-delete",
+        externalMessageId: "7000.102",
+        rootExternalMessageId: "7000.100",
+        occurredAt: "2026-08-19T00:00:03.250Z",
+        text: "deleted current thread message",
+      });
+      currentDeleteEvent.message.operation = "deleted";
+      currentDeleteEvent.message.revisionKey = "2";
+      const current = await inbox.ingest(value.imBindingId, 1, currentDeleteEvent);
       const currentDeliveries = await value.database
         .select({ id: imMessageDeliveries.id, kind: sessions.kind })
         .from(imMessageDeliveries)
@@ -2182,6 +2192,7 @@ describe("IM binding persistence", () => {
           (frame as { type?: string; deliveryId?: string }).type === "im:deliver" &&
           (frame as { deliveryId?: string }).deliveryId === threadDelivery.id,
       ) as DirectImMessageDeliveryRequest | undefined;
+      expect(delivered?.content.text).toBe("[deleted]");
       expect(delivered?.content.history).toEqual([
         expect.objectContaining({
           imMessageId: rootEdit.messageId,
@@ -2202,6 +2213,7 @@ describe("IM binding persistence", () => {
       const serializedHistory = JSON.stringify(delivered?.content.history);
       expect(serializedHistory).not.toContain('"text":"root message"');
       expect(serializedHistory).not.toContain("first thread message");
+      expect(serializedHistory).not.toContain("deleted current thread message");
       expect(serializedHistory).not.toContain("sibling thread message");
       runtime.domain.close();
     } finally {

@@ -416,6 +416,7 @@ export class ImDeliveryWorker {
           ? await this.#history(
               row.session,
               row.message.providerContext,
+              row.message.externalMessageId,
               row.message.occurredAt,
               row.message.providerRevisionKey,
               row.message.id,
@@ -752,6 +753,7 @@ export class ImDeliveryWorker {
   async #history(
     session: typeof sessions.$inferSelect,
     providerContext: ProviderInboundContext,
+    externalMessageId: string,
     occurredAt: Date,
     providerRevisionKey: string,
     messageId: string,
@@ -800,6 +802,7 @@ export class ImDeliveryWorker {
           eq(imMessages.imBindingId, session.imBindingId),
           eq(imMessages.channelId, session.channelId),
           eq(imMessages.direction, "inbound"),
+          ne(imMessages.externalMessageId, externalMessageId),
           ...(session.kind === "thread" && session.threadKey
             ? [
                 or(

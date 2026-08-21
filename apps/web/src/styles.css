@@ -15,7 +15,6 @@
   --font-display:
     "Bricolage Grotesque Variable", "Geist Variable", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei",
     "Noto Sans SC", sans-serif;
-  --font-google: Arial, sans-serif;
 
   /* Raw steps. Whole pixels only: fractional rem values round differently
      across engines. Nothing outside this block may introduce a new step. */
@@ -57,7 +56,6 @@
      tracking crowds CJK, which has no side bearings to give back. */
   --track-tight: -0.02em;
   --track-label: 0.06em;
-  --track-google: 0.01em;
 
   --background: #f8f7f0;
   --surface: #fdfcf7;
@@ -1746,13 +1744,14 @@ code {
 }
 
 .login-provider-button--google {
-  border-color: #747775;
-  background: #fff;
-  color: #1f1f1f;
-  font-family: var(--font-google);
-  font-size: var(--text-ui);
-  font-weight: var(--fw-medium);
-  letter-spacing: var(--track-google);
+  width: fit-content;
+  min-height: 0;
+  justify-self: center;
+  overflow: visible;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 0;
 }
 
 .login-provider-button:hover {
@@ -1761,32 +1760,17 @@ code {
 }
 
 .login-provider-button--google:hover {
-  border-color: #747775;
-  background: #fff;
-  box-shadow:
-    0 1px 2px rgb(60 64 67 / 30%),
-    0 1px 3px 1px rgb(60 64 67 / 15%);
+  border-color: transparent;
+  background: transparent;
+  box-shadow: none;
 }
 
 .login-provider-button:active {
   transform: translateY(1px);
 }
 
-.login-provider-button-state {
-  position: absolute;
-  inset: 0;
-  background: #303030;
-  opacity: 0;
-  transition: opacity 180ms ease;
-}
-
-.login-provider-button--google:hover .login-provider-button-state {
-  opacity: 0.08;
-}
-
-.login-provider-button--google:active .login-provider-button-state,
-.login-provider-button--google:focus .login-provider-button-state {
-  opacity: 0.12;
+.login-provider-button--google:active {
+  transform: none;
 }
 
 .login-provider-button-content {
@@ -1797,17 +1781,10 @@ code {
   justify-content: center;
 }
 
-.login-provider-button--google .login-provider-button-content {
-  display: grid;
-  grid-template-columns: 20px minmax(0, 1fr) 20px;
-  gap: 12px;
-}
-
-.login-provider-button-icon,
-.login-provider-button-spacer {
+.login-provider-button-image {
   display: block;
-  width: 20px;
-  height: 20px;
+  width: 180px;
+  height: 40px;
 }
 
 .login-provider-button-label {

@@ -505,9 +505,9 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/agents");
     render(<App />);
 
-    const signIn = await screen.findByRole("link", { name: "Continue with Google" });
+    const signIn = await screen.findByRole("link", { name: "Sign in with Google" });
     expect(signIn.classList.contains("login-provider-button--google")).toBe(true);
-    expect(signIn.querySelector(".login-provider-button-icon")).toBeTruthy();
+    expect(signIn.querySelector('img[alt="Sign in with Google"]')).toBeTruthy();
     expect(new URL(signIn.getAttribute("href") ?? "", window.location.origin).searchParams.get("next")).toBe("/agents");
     expect(screen.getByText("Access is managed by your workspace.")).toBeTruthy();
   });

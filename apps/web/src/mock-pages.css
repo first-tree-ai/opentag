@@ -1,7 +1,8 @@
 .capability-page {
-  width: min(100%, var(--workspace-page-width, 960px));
+  width: min(100%, var(--workspace-page-frame, 1024px));
   margin: 0 auto;
   color: var(--foreground, #16211b);
+  padding-inline: var(--workspace-page-gutter, 32px);
 }
 
 .capability-page-header {
@@ -15,7 +16,7 @@
 .capability-page-header h1 {
   margin: 0 0 7px;
   font-family: var(--font-display, sans-serif);
-  font-size: var(--text-title, 1.5rem);
+  font-size: var(--text-display, 1.875rem);
   font-weight: var(--fw-semibold, 600);
   letter-spacing: var(--track-tight, -0.02em);
   line-height: var(--lh-tight, 1.2);
@@ -348,6 +349,12 @@
 
 .capability-provider-list small {
   text-align: right;
+}
+
+@media (max-width: 900px) {
+  .capability-page {
+    padding-inline: 0;
+  }
 }
 
 @media (max-width: 720px) {

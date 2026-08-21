@@ -763,12 +763,13 @@ describe("OpenTag Web App Shell", () => {
     confirm.mockRestore();
   });
 
-  it("uses a flat local navigation for Agent detail", async () => {
+  it("uses top tabs for Agent detail navigation", async () => {
     installApi("admin");
     window.history.replaceState({}, "", `/agents/${agentId}/general`);
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     const navigation = screen.getByRole("navigation", { name: "Agent settings" });
+    expect(navigation.className).toBe("object-tabs");
     expect(
       within(navigation)
         .getAllByRole("link")

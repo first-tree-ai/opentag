@@ -35,14 +35,14 @@
   --space-4: 16px;
   --space-6: 24px;
   --space-8: 32px;
-  --radius-control: 9px;
-  --radius-panel: 13px;
+  --radius-control: 8px;
+  --radius-panel: 12px;
   --radius-overlay: 16px;
 }
 
 .ds-button {
   display: inline-flex;
-  min-height: 42px;
+  min-height: 40px;
   align-items: center;
   justify-content: center;
   gap: var(--space-2);
@@ -51,13 +51,13 @@
   cursor: pointer;
   font-size: var(--text-ui);
   font-weight: var(--fw-semibold);
-  padding: 0.58rem 0.95rem;
+  padding: 0.5rem 1rem;
   text-decoration: none;
   transition:
-    background-color 140ms ease,
-    border-color 140ms ease,
-    color 140ms ease,
-    transform 140ms ease;
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    transform 180ms ease;
   white-space: nowrap;
 }
 
@@ -71,7 +71,7 @@
 }
 
 .ds-button--secondary {
-  background: var(--color-bg-hover);
+  background: var(--color-bg-subtle);
   color: var(--color-text-primary);
 }
 
@@ -80,47 +80,68 @@
   color: var(--color-text-primary);
 }
 
-.ds-button--commit {
-  background: var(--color-text-primary);
-  color: var(--color-on-accent);
-}
-
-.ds-button--commit:hover {
-  background: var(--color-text-primary-hover);
-}
-
-.ds-button--tertiary,
-.ds-button--danger {
-  min-height: 34px;
+.ds-button--outline {
+  border-color: var(--color-border-divider);
   background: transparent;
-  padding: 0 0.45rem;
+  color: var(--color-text-primary);
 }
 
-.ds-button--tertiary {
+.ds-button--outline:hover {
+  border-color: var(--color-border-control);
+  background: var(--color-bg-hover);
+}
+
+.ds-button--ghost,
+.ds-button--inline {
+  background: transparent;
+}
+
+.ds-button--ghost {
   color: var(--color-text-muted);
 }
 
-.ds-button--tertiary:hover {
+.ds-button--ghost:hover {
   background: var(--color-bg-hover);
   color: var(--color-text-primary);
 }
 
 .ds-button--danger {
-  color: var(--color-status-danger);
+  background: var(--color-status-danger);
+  color: var(--color-on-accent);
 }
 
 .ds-button--danger:hover {
-  background: var(--color-status-danger-surface);
-  color: var(--color-status-danger);
+  background: #6f211c;
+  color: var(--color-on-accent);
+}
+
+.ds-button--inline {
+  min-height: 0;
+  border-radius: 4px;
+  color: var(--color-brand-hover);
+  padding: 0;
+  text-decoration: underline;
+  text-decoration-color: transparent;
+  text-underline-offset: 3px;
+}
+
+.ds-button--inline:hover {
+  color: var(--color-brand);
+  text-decoration-color: currentColor;
 }
 
 .ds-button--compact {
-  min-height: 36px;
-  padding: 0.42rem 0.75rem;
+  min-height: 32px;
+  padding: 0.375rem 0.75rem;
 }
 
 .ds-button:active {
-  transform: translateY(1px);
+  transform: scale(0.96);
+}
+
+.ds-button:focus-visible {
+  outline: 2px solid var(--color-brand-hover);
+  outline-offset: 2px;
 }
 
 .ds-button:disabled {
@@ -145,9 +166,16 @@
 input.ds-control,
 select.ds-control,
 textarea.ds-control {
+  min-height: 40px;
   border-color: var(--color-border-control);
   border-radius: var(--radius-control);
   background: var(--color-bg-surface);
+  padding: 0.55rem 0.75rem;
+}
+
+.ds-field textarea,
+textarea.ds-control {
+  min-height: 150px;
 }
 
 .ds-field input:focus,
@@ -207,13 +235,13 @@ textarea.ds-control:focus {
 }
 
 .ds-status__dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   flex: 0 0 auto;
   margin-top: 0.42em;
   border-radius: 999px;
   background: var(--status-color);
-  box-shadow: 0 0 0 3px var(--status-surface);
+  box-shadow: 0 0 0 2px var(--status-surface);
 }
 
 .ds-status__copy,
@@ -250,7 +278,7 @@ textarea.ds-control:focus {
 }
 
 .dialog-close.ds-button {
-  width: 34px;
+  width: 40px;
   padding: 0;
 }
 
@@ -292,7 +320,7 @@ textarea.ds-control:focus {
 }
 
 .settings-member-row select.ds-control {
-  min-height: 36px;
+  min-height: 40px;
 }
 
 @media (prefers-reduced-motion: reduce) {

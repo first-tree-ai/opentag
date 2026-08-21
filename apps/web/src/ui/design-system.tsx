@@ -14,7 +14,7 @@ function classes(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(" ");
 }
 
-export type ButtonVariant = "primary" | "secondary" | "commit" | "tertiary" | "danger";
+export type ButtonVariant = "primary" | "secondary" | "outline" | "ghost" | "danger" | "inline";
 
 export type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   size?: "default" | "compact";
@@ -238,7 +238,7 @@ export function Dialog({
             className="dialog-close"
             disabled={busy}
             ref={closeButtonRef}
-            variant="tertiary"
+            variant="ghost"
             onClick={onClose}
           >
             <Icon name="close" />

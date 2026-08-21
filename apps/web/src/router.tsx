@@ -11,7 +11,7 @@ import type {
   TeamComputerSummary,
   TeamMemberSummary,
 } from "@opentag/shared/browser";
-import { AgentNameSchema, MembershipRoleSchema } from "@opentag/shared/browser";
+import { MembershipRoleSchema } from "@opentag/shared/browser";
 import {
   createContext,
   type FormEvent,
@@ -25,10 +25,10 @@ import {
   useState,
 } from "react";
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import { type AgentCreationFacts, AgentCreationFlow } from "./agent-creation/agent-creation-flow.js";
 import { ApiError, browserApi } from "./api.js";
 // Google-provided, pre-approved button asset: https://developers.google.com/identity/branding-guidelines
 import googleSignInButton from "./assets/google-sign-in-light@2x.png";
-import { ComputerSetup } from "./computer-setup.js";
 import { CreateTeamForm } from "./create-team-form.js";
 import { IntegrationsPage } from "./features/integrations-page.js";
 import { SkillsPage } from "./features/skills-page.js";
@@ -1132,16 +1132,28 @@ function NewAgentPage() {
   const { membership } = useTeam();
   const navigate = useNavigate();
   const [computerRefreshVersion, setComputerRefreshVersion] = useState(0);
+  const [created, setCreated] = useState<AgentAdminConfig>();
   const computers = useOwnComputersResource(membership.teamId, computerRefreshVersion);
   if (membership.role !== "admin") return <UnavailablePage title="Admin access required" />;
   return (
-    <Page title="Create Agent" description="Create the identity first. Complete its setup from the Agent overview.">
-      <AgentCreationContent
-        computers={computers}
-        teamId={membership.teamId}
-        onComputerConnected={() => setComputerRefreshVersion((current) => current + 1)}
-        onCreated={(agentId) => navigate(`/agents/${agentId}/general`)}
-      />
+    <Page
+      title={created ? "Agent created" : "Create Agent"}
+      description={
+        created
+          ? "Connect messaging now or continue from the Agent overview."
+          : "Name the Agent and prepare where it runs."
+      }
+    >
+      {created ? (
+        <NewAgentMessagingStep agent={created} onFinish={() => navigate(`/agents/${created.id}/general`)} />
+      ) : (
+        <AgentCreationContent
+          computers={computers}
+          teamId={membership.teamId}
+          onCreated={setCreated}
+          onRefresh={() => setComputerRefreshVersion((current) => current + 1)}
+        />
+      )}
     </Page>
   );
 }
@@ -1158,26 +1170,36 @@ function NewAgentDialog({
   const [computerRefreshVersion, setComputerRefreshVersion] = useState(0);
   const computers = useOwnComputersResource(membership.teamId, computerRefreshVersion);
   const [submitting, setSubmitting] = useState(false);
+  const [created, setCreated] = useState<AgentAdminConfig>();
+  const finish = () => {
+    if (created) navigate(`/agents/${created.id}/general`);
+  };
+  const close = () => {
+    if (created) finish();
+    else onClose();
+  };
 
   return (
     <Dialog
       busy={submitting}
       className="new-agent-dialog"
       closeLabel="Close new Agent dialog"
-      description="Give the Agent an identity and choose where it runs. You can finish its setup from the overview."
       returnFocusRef={returnFocusRef}
       title="New Agent"
-      onClose={onClose}
+      onClose={close}
     >
-      <AgentCreationContent
-        computers={computers}
-        presentation="dialog"
-        teamId={membership.teamId}
-        onCancel={onClose}
-        onComputerConnected={() => setComputerRefreshVersion((current) => current + 1)}
-        onCreated={(agentId) => navigate(`/agents/${agentId}/general`)}
-        onSubmittingChange={setSubmitting}
-      />
+      {created ? (
+        <NewAgentMessagingStep agent={created} onFinish={finish} />
+      ) : (
+        <AgentCreationContent
+          computers={computers}
+          teamId={membership.teamId}
+          onCancel={onClose}
+          onCreated={setCreated}
+          onRefresh={() => setComputerRefreshVersion((current) => current + 1)}
+          onSubmittingChange={setSubmitting}
+        />
+      )}
     </Dialog>
   );
 }
@@ -1185,298 +1207,124 @@ function NewAgentDialog({
 function AgentCreationContent({
   computers,
   onCancel,
-  onComputerConnected,
   onCreated,
+  onRefresh,
   onSubmittingChange,
-  presentation = "page",
   teamId,
 }: {
   computers: LoadState<{ computers: Computer[] }>;
   onCancel?: () => void;
-  onComputerConnected: () => void;
-  onCreated: (agentId: string) => void;
+  onCreated: (agent: AgentAdminConfig) => void;
+  onRefresh: () => void;
   onSubmittingChange?: (submitting: boolean) => void;
-  presentation?: "dialog" | "page";
   teamId: string;
 }) {
-  const [error, setError] = useState<string>();
-  const [nameError, setNameError] = useState<string>();
-  const [submitting, setSubmitting] = useState(false);
-  const [displayName, setDisplayName] = useState("");
-  const [agentName, setAgentName] = useState("");
-  const [computerId, setComputerId] = useState("");
-  const [computerSetupOpen, setComputerSetupOpen] = useState(false);
-  const [runtimeProvider, setRuntimeProvider] = useState<"codex" | "claude-code">("codex");
-  const firstFieldRef = useRef<HTMLInputElement>(null);
+  const current = computers.kind === "ready" ? computers.value : undefined;
+  const [retained, setRetained] = useState(current);
+  const [computerRefreshFocusActive, setComputerRefreshFocusActive] = useState(false);
   const computerRefreshFocusRef = useRef<HTMLSpanElement>(null);
-  const computerSetupToggleRef = useRef<HTMLButtonElement>(null);
-  const initialDialogFocusSetRef = useRef(false);
-  const inFlightRef = useRef(false);
-  const creationIntentRef = useRef<{ fingerprint: string; id: string } | null>(null);
-  const restoreComputerSetupFocusRef = useRef(false);
-  const computerRefreshStartedRef = useRef(false);
 
   useEffect(() => {
-    if (presentation !== "dialog" || computers.kind !== "ready" || initialDialogFocusSetRef.current) return;
-    const firstField = firstFieldRef.current;
-    if (!firstField) return;
-    firstField.focus();
-    initialDialogFocusSetRef.current = true;
-  }, [computers.kind, presentation]);
+    if (computers.kind === "ready") setRetained(computers.value);
+  }, [computers]);
 
-  useEffect(() => {
-    if (!restoreComputerSetupFocusRef.current) return;
-    if (computers.kind === "loading") {
-      computerRefreshStartedRef.current = true;
-      return;
-    }
-    if (computers.kind !== "ready" || !computerRefreshStartedRef.current) return;
-    restoreComputerSetupFocusRef.current = false;
-    computerRefreshStartedRef.current = false;
-    computerSetupToggleRef.current?.focus();
-  }, [computers.kind]);
+  const refreshFocusTarget = onCancel ? (
+    <span
+      className="visually-hidden"
+      ref={computerRefreshFocusRef}
+      role={computerRefreshFocusActive ? "status" : undefined}
+      tabIndex={-1}
+    >
+      {computerRefreshFocusActive
+        ? computers.kind === "loading"
+          ? "Refreshing Computers"
+          : computers.kind === "error"
+            ? "Computer refresh failed"
+            : "Computer connection updated"
+        : null}
+    </span>
+  ) : null;
 
-  function toggleComputerSetup() {
-    setComputerSetupOpen((open) => !open);
+  if (computers.kind === "error") {
+    return (
+      <>
+        {refreshFocusTarget}
+        <AsyncState state={computers}>{() => null}</AsyncState>
+      </>
+    );
   }
-
-  function handleComputerConnected(computer: Computer) {
-    setComputerId(computer.id);
-    setComputerSetupOpen(false);
-    restoreComputerSetupFocusRef.current = presentation === "dialog";
-    computerRefreshStartedRef.current = false;
-    if (presentation === "dialog") computerRefreshFocusRef.current?.focus();
-    onComputerConnected();
+  const value = current ?? retained;
+  if (!value) {
+    return (
+      <>
+        {refreshFocusTarget}
+        <AsyncState state={computers}>{() => null}</AsyncState>
+      </>
+    );
   }
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (inFlightRef.current) return;
-    const data = new FormData(event.currentTarget);
-    setError(undefined);
-    setNameError(undefined);
-    const name = AgentNameSchema.safeParse(String(data.get("name") ?? ""));
-    if (!name.success) {
-      setNameError(name.error.issues[0]?.message ?? "Agent name is invalid");
-      return;
-    }
-    const input = {
-      name: name.data,
-      displayName: String(data.get("displayName") ?? ""),
-      runtimeProvider: String(data.get("runtimeProvider") ?? "codex") as "codex" | "claude-code",
-      computerId: String(data.get("computerId") ?? ""),
-    };
-    const fingerprint = JSON.stringify(input);
-    if (creationIntentRef.current?.fingerprint !== fingerprint) {
-      creationIntentRef.current = { fingerprint, id: crypto.randomUUID() };
-    }
-    inFlightRef.current = true;
-    setSubmitting(true);
-    onSubmittingChange?.(true);
-    try {
-      const created = await browserApi.createAgent(teamId, {
-        creationIntentId: creationIntentRef.current.id,
-        ...input,
-      });
-      onCreated(created.id);
-    } catch (cause) {
-      if (cause instanceof ApiError) {
-        const issue = cause.issues?.find(({ path }) => path[0] === "name");
-        if (issue) {
-          setNameError(issue.message);
-          return;
-        }
-      }
-      setError(cause instanceof Error ? cause.message : "Agent creation failed");
-    } finally {
-      inFlightRef.current = false;
-      setSubmitting(false);
-      onSubmittingChange?.(false);
-    }
-  }
-
-  const content = (
-    <AsyncState state={computers}>
-      {(value) => {
-        const computer = value.computers.find((candidate) => candidate.id === computerId) ?? value.computers[0];
-        const selectedComputerId = computer?.id ?? "";
-        const readiness = computer?.providerReadiness?.find((entry) => entry.provider === runtimeProvider);
-        return value.computers.length === 0 ? (
-          <div className="agent-create-runtime-setup">
-            <ComputerSetup teamId={teamId} onConnected={handleComputerConnected} />
-          </div>
-        ) : (
-          <form className="form-card agent-create-form" onSubmit={submit}>
-            <Field
-              className="agent-create-field"
-              hint="How teammates will see this Agent in lists and conversations."
-              hintId="new-agent-display-name-hint"
-              htmlFor="new-agent-display-name"
-              label="Display name"
-            >
-              <input
-                aria-describedby="new-agent-display-name-hint"
-                className="ds-control"
-                id="new-agent-display-name"
-                ref={firstFieldRef}
-                name="displayName"
-                value={displayName}
-                onChange={(event) => setDisplayName(event.currentTarget.value)}
-                placeholder="Research Assistant"
-                disabled={submitting}
-                required
-              />
-            </Field>
-            <Field
-              className="agent-create-field"
-              error={nameError}
-              errorId="agent-name-error"
-              hint="Used for mentions. Lowercase letters, numbers, and hyphens only."
-              hintId="new-agent-name-hint"
-              htmlFor="new-agent-name"
-              label="Agent name"
-            >
-              <span className="agent-name-input">
-                <span aria-hidden="true">@</span>
-                <input
-                  aria-describedby={nameError ? "new-agent-name-hint agent-name-error" : "new-agent-name-hint"}
-                  aria-invalid={nameError ? true : undefined}
-                  id="new-agent-name"
-                  name="name"
-                  value={agentName}
-                  onChange={(event) => {
-                    setAgentName(event.currentTarget.value);
-                    setNameError(undefined);
-                  }}
-                  placeholder="research-assistant"
-                  disabled={submitting}
-                  required
-                />
-              </span>
-            </Field>
-            <div className="agent-create-grid">
-              <Field className="agent-create-field" htmlFor="new-agent-provider" label="Provider">
-                <select
-                  className="ds-control"
-                  id="new-agent-provider"
-                  name="runtimeProvider"
-                  disabled={submitting}
-                  value={runtimeProvider}
-                  onChange={(event) => setRuntimeProvider(event.currentTarget.value as "codex" | "claude-code")}
-                >
-                  <option value="codex">Codex</option>
-                  <option value="claude-code">Claude Code</option>
-                </select>
-              </Field>
-              <Field className="agent-create-field" htmlFor="new-agent-computer" label="Computer">
-                <select
-                  className="ds-control"
-                  id="new-agent-computer"
-                  name="computerId"
-                  disabled={submitting}
-                  required
-                  value={selectedComputerId}
-                  onChange={(event) => setComputerId(event.currentTarget.value)}
-                >
-                  {value.computers.map((computer: Computer) => (
-                    <option value={computer.id} key={computer.id}>
-                      {computer.displayName}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            </div>
-            <div className="agent-create-computer-action">
-              <Button
-                aria-controls="new-agent-computer-setup"
-                aria-expanded={computerSetupOpen}
-                disabled={submitting}
-                ref={computerSetupToggleRef}
-                size="compact"
-                variant="inline"
-                onClick={toggleComputerSetup}
-              >
-                {computerSetupOpen ? "Cancel Computer connection" : "Connect another Computer"}
-              </Button>
-            </div>
-            {computerSetupOpen ? (
-              <div className="agent-create-runtime-setup" id="new-agent-computer-setup">
-                <ComputerSetup teamId={teamId} onConnected={handleComputerConnected} />
-              </div>
-            ) : null}
-            <div
-              className={`notice ${readiness?.status === "ready" && computer?.connectionStatus === "online" ? "" : "warning"}`}
-              role="status"
-            >
-              {providerReadinessMessage(computer, runtimeProvider, readiness?.status)}
-            </div>
-            <p className="agent-create-note">New Agents receive only direct mentions by default.</p>
-            {error ? (
-              <div className="notice error" role="alert">
-                {error}
-              </div>
-            ) : null}
-            <div className="agent-create-actions">
-              {presentation === "dialog" ? (
-                <Button disabled={submitting} variant="secondary" onClick={onCancel}>
-                  Cancel
-                </Button>
-              ) : null}
-              <Button disabled={submitting} type="submit">
-                {submitting ? "Creating…" : "Create Agent"}
-              </Button>
-            </div>
-          </form>
-        );
-      }}
-    </AsyncState>
-  );
-
   return (
     <>
-      {presentation === "dialog" ? (
-        <span className="visually-hidden" ref={computerRefreshFocusRef} role="status" tabIndex={-1}>
-          {restoreComputerSetupFocusRef.current
-            ? computers.kind === "loading"
-              ? "Refreshing Computers"
-              : computers.kind === "error"
-                ? "Computer refresh failed"
-                : "Computer connection updated"
-            : null}
-        </span>
-      ) : null}
-      {content}
+      {refreshFocusTarget}
+      <AgentCreationFlow
+        facts={agentCreationFactsFromOwnComputers(value.computers)}
+        refreshing={computers.kind === "loading"}
+        teamId={teamId}
+        onCancel={onCancel}
+        onComputerRefreshFocus={() => {
+          setComputerRefreshFocusActive(true);
+          computerRefreshFocusRef.current?.focus();
+        }}
+        onCreated={onCreated}
+        onRefresh={onRefresh}
+        onSubmittingChange={onSubmittingChange}
+      />
     </>
   );
+}
+
+function NewAgentMessagingStep({ agent, onFinish }: { agent: AgentAdminConfig; onFinish: () => void }) {
+  return (
+    <FeishuSetup agentId={agent.id} onSuccess={onFinish}>
+      {(setup) => (
+        <section className="agent-create-complete" aria-labelledby="agent-created-heading">
+          <div>
+            <span className="eyebrow">Agent created</span>
+            <h2 id="agent-created-heading">Connect messaging</h2>
+            <p>Connect a Feishu Bot so teammates can mention {agent.displayName}.</p>
+          </div>
+          <div className="agent-create-actions">
+            <Button onClick={() => void setup.start()}>Connect Feishu</Button>
+            <Button variant="secondary" onClick={onFinish}>
+              Set up later
+            </Button>
+          </div>
+          {setup.feedback}
+        </section>
+      )}
+    </FeishuSetup>
+  );
+}
+
+function agentCreationFactsFromOwnComputers(computers: readonly Computer[]): AgentCreationFacts {
+  return {
+    computers,
+    providers: computers.flatMap((computer) =>
+      (computer.providerReadiness ?? []).map((readiness) => ({
+        computerId: computer.id,
+        provider: readiness.provider,
+        runtimeReady: readiness.status === "ready",
+        status: readiness.status,
+      })),
+    ),
+    runtimeEvidenceAvailable:
+      computers.length === 0 || computers.some((computer) => computer.providerReadiness !== undefined),
+  };
 }
 
 function markOwnComputersUnconfirmed(value: { computers: Computer[] }): { computers: Computer[] } {
   return {
     computers: value.computers.map(({ providerReadiness: _providerReadiness, ...computer }) => computer),
   };
-}
-
-function providerReadinessMessage(
-  computer: Computer | undefined,
-  provider: "codex" | "claude-code",
-  status: "checking" | "install" | "sign-in" | "ready" | "unavailable" | undefined,
-): string {
-  const label = providerLabel(provider);
-  if (computer?.connectionStatus === "offline") {
-    return `${computer.displayName} is offline. You can still create this Agent; ${label} Turns will fail without starting and can be retried when this Computer reconnects. No other Provider will be substituted.`;
-  }
-  if (status === "ready") return `${label} is ready on ${computer?.displayName ?? "this Computer"}.`;
-  const action =
-    status === "checking"
-      ? "readiness is still being checked"
-      : status === "install"
-        ? "must be installed"
-        : status === "sign-in"
-          ? "requires sign-in"
-          : status === "unavailable"
-            ? "is currently unavailable"
-            : "readiness has not been reported by this Computer";
-  return `${label} ${action}. You can still create this Agent; its Turns will fail without starting and can be retried after readiness is restored. No other Provider will be substituted.`;
 }
 
 const agentSections = [

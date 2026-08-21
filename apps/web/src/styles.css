@@ -2701,11 +2701,14 @@ textarea:focus {
 }
 
 .new-agent-dialog {
-  width: min(100%, 620px);
+  width: min(100%, 680px);
 }
 
 .new-agent-dialog .form-card {
   width: 100%;
+  max-width: none;
+  border: 0;
+  border-radius: 0;
   padding: 0;
   background: transparent;
 }
@@ -2718,7 +2721,8 @@ textarea:focus {
 }
 
 .agent-create-form {
-  gap: 16px;
+  max-width: 760px;
+  gap: 18px;
 }
 
 .agent-create-field {
@@ -2726,10 +2730,126 @@ textarea:focus {
   gap: 7px;
 }
 
+.agent-create-identity {
+  display: grid;
+  gap: 14px;
+}
+
+.agent-name-summary {
+  padding: 0 2px;
+}
+
+.agent-name-handle {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  font-weight: var(--fw-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-name-handle:hover {
+  color: var(--foreground);
+}
+
+#agent-name-editor {
+  border-left: 2px solid var(--brand);
+  padding-left: 14px;
+}
+
+.agent-create-runtime {
+  display: grid;
+  gap: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-soft);
+  padding: 18px;
+}
+
+.agent-create-runtime-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.agent-create-runtime-header h3 {
+  margin: 0;
+  font-size: var(--text-subsection);
+}
+
+.agent-create-runtime-header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
 .agent-create-grid {
   display: grid;
   gap: 14px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+}
+
+.agent-create-runtime-status {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.agent-create-runtime-status .ds-status {
+  width: 100%;
+}
+
+.agent-create-runtime-status .ds-status__copy small {
+  max-width: 70ch;
+  line-height: var(--lh-ui);
+}
+
+.agent-create-runtime-attention {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.agent-create-route-list {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.agent-create-route-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.agent-create-route-option:hover,
+.agent-create-route-option[data-selected="true"] {
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.agent-create-route-option:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+
+.agent-create-route-option span {
+  color: var(--muted);
+  font-size: var(--text-meta);
 }
 
 .agent-create-computer-action {
@@ -2769,21 +2889,35 @@ textarea:focus {
 
 .agent-create-note {
   margin: 0;
-  border: 1px solid var(--border);
-  border-radius: 9px;
-  background: var(--background);
   color: var(--muted);
   font-size: var(--text-meta);
-  padding: 10px 12px;
+  padding: 0 2px;
 }
 
 .agent-create-actions {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
-  margin-top: 2px;
+  margin-top: 4px;
   border-top: 1px solid var(--border);
-  padding-top: 18px;
+  padding-top: 20px;
+}
+
+.agent-create-complete {
+  display: grid;
+  max-width: 680px;
+  gap: 22px;
+}
+
+.agent-create-complete h2 {
+  margin: 6px 0 0;
+  font-size: var(--text-section);
+}
+
+.agent-create-complete p {
+  max-width: 56ch;
+  margin: 8px 0 0;
+  color: var(--muted);
 }
 
 .definition-list {

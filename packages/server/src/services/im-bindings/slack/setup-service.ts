@@ -7,9 +7,9 @@ import {
   type SlackSetupIntent,
   type SubmitSlackSetupCredentialsRequest,
 } from "@opentag/shared";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, eq, gt, inArray, ne, sql } from "drizzle-orm";
 import { z } from "zod";
-import type { DatabaseClient } from "../../../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../../../db/client.js";
 import { agents, imBindings } from "../../../db/schema/index.js";
 import type { ApplicationCipher } from "../../crypto.js";
 import type { ImBindingService, SlackIngressBinding } from "../im-binding-service.js";
@@ -75,6 +75,7 @@ export class SlackSetupService {
   readonly #instanceId: string;
   readonly #now: () => Date;
   readonly #publicOrigin: string;
+  readonly #beforeActivationTransaction?: () => Promise<void>;
 
   constructor(input: {
     api: SlackApiClient;
@@ -84,6 +85,7 @@ export class SlackSetupService {
     instanceId: string;
     publicOrigin: string;
     now?: () => Date;
+    beforeActivationTransaction?: () => Promise<void>;
   }) {
     this.#api = input.api;
     this.#cipher = input.cipher;
@@ -92,6 +94,7 @@ export class SlackSetupService {
     this.#instanceId = input.instanceId;
     this.#publicOrigin = input.publicOrigin;
     this.#now = input.now ?? (() => new Date());
+    this.#beforeActivationTransaction = input.beforeActivationTransaction;
   }
 
   async createOrReuse(callerUserId: string, agentId: string, intent: SlackSetupIntent): Promise<SlackSetupAttempt> {
@@ -203,8 +206,12 @@ export class SlackSetupService {
       if (row.setupState === "validating") return this.#toAttempt(row, agent);
       throw new SlackSetupServiceError("SLACK_SETUP_NOT_ACTIVE", 409, "The Slack setup attempt is not active");
     }
+    const currentContext = this.#context(row);
+    if (currentContext?.stage !== "awaiting_credentials") {
+      throw new SlackSetupServiceError("SLACK_SETUP_CONFLICT", 409, "Slack setup context is not awaiting credentials");
+    }
     const installation = await this.#inspect(input.botAccessToken);
-    const required = requiredSlackBotScopes(agent.receiveMode);
+    const required = requiredSlackBotScopes(this.#targetReceiveMode(row, agent));
     const granted = new Set(installation.grantedBotScopes);
     const missing = required.filter((scope) => !granted.has(scope));
     if (missing.length > 0) {
@@ -286,6 +293,7 @@ export class SlackSetupService {
         setupOwnerHeartbeatAt: null,
         encryptedSetupContext: null,
         setupExpiresAt: null,
+        ...(attempt.intent === "reauthorize" ? { pendingReceiveMode: null } : {}),
         lastErrorCode: "SLACK_SETUP_CANCELED",
         updatedAt: now,
       })
@@ -302,7 +310,7 @@ export class SlackSetupService {
   }): Promise<string> {
     const row = await this.#pendingForAgent(input.agentId);
     const context = row ? this.#context(row) : undefined;
-    if (!row || context?.stage !== "awaiting_verification") {
+    if (!row?.setupAttemptId || context?.stage !== "awaiting_verification") {
       throw new SlackSetupServiceError(
         "SLACK_SETUP_NOT_READY",
         409,
@@ -321,7 +329,14 @@ export class SlackSetupService {
       await this.#database
         .update(imBindings)
         .set({ encryptedSetupContext: this.#encrypt(next), updatedAt: this.#now() })
-        .where(and(eq(imBindings.id, row.id), eq(imBindings.setupState, "validating")));
+        .where(
+          and(
+            eq(imBindings.id, row.id),
+            eq(imBindings.setupAttemptId, row.setupAttemptId),
+            eq(imBindings.setupState, "validating"),
+            gt(imBindings.setupExpiresAt, this.#now()),
+          ),
+        );
     }
     return payload.challenge;
   }
@@ -336,7 +351,7 @@ export class SlackSetupService {
   }): Promise<SlackIngressBinding | undefined> {
     const row = await this.#pendingForAgent(input.agentId);
     const context = row ? this.#context(row) : undefined;
-    if (!row || context?.stage !== "awaiting_verification") return undefined;
+    if (!row?.setupAttemptId || context?.stage !== "awaiting_verification") return undefined;
     if (!this.#signatureMatches(input, context.signingSecret)) return undefined;
     if (!context.challengeVerified) {
       throw new SlackSetupServiceError(
@@ -353,6 +368,81 @@ export class SlackSetupService {
         "The signed Slack event did not match the token installation identity",
       );
     }
+    await this.#beforeActivationTransaction?.();
+    const attemptId = row.setupAttemptId;
+    try {
+      const activated = await this.#database.transaction(async (transaction) =>
+        this.#activateCurrentAttempt(transaction, input, row.id, attemptId),
+      );
+      if (!activated) return undefined;
+    } catch (error) {
+      await this.#fail(attemptId, this.#safeActivationCode(error));
+      throw error;
+    }
+    const binding = await this.#imBindings.findSlackIngressBindingForAgent(row.agentId);
+    if (!binding)
+      throw new SlackSetupServiceError("SLACK_ACTIVATION_INCOMPLETE", 500, "Slack activation did not converge");
+    return binding;
+  }
+
+  async #activateCurrentAttempt(
+    transaction: DatabaseTransaction,
+    input: {
+      agentId: string;
+      appId: string;
+      teamId: string;
+      rawBody: Buffer;
+      timestamp: string | undefined;
+      signature: string | undefined;
+    },
+    imBindingId: string,
+    attemptId: string,
+  ): Promise<string | undefined> {
+    const [agent] = await transaction
+      .select({ receiveMode: agents.receiveMode })
+      .from(agents)
+      .where(and(eq(agents.id, input.agentId), ne(agents.status, "deleted")))
+      .limit(1)
+      .for("update");
+    if (!agent) return undefined;
+    const [row] = await transaction
+      .select()
+      .from(imBindings)
+      .where(
+        and(
+          eq(imBindings.id, imBindingId),
+          eq(imBindings.agentId, input.agentId),
+          eq(imBindings.provider, "slack"),
+          eq(imBindings.setupAttemptId, attemptId),
+          eq(imBindings.setupState, "validating"),
+          ne(imBindings.status, "disabled"),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    const context = row ? this.#context(row) : undefined;
+    const now = this.#now();
+    if (!row?.setupExpiresAt || row.setupExpiresAt <= now || context?.stage !== "awaiting_verification") {
+      return undefined;
+    }
+    const targetReceiveMode = this.#targetReceiveMode(row, agent);
+    if (!this.#signatureMatches(input, context.signingSecret)) return undefined;
+    if (!context.challengeVerified) {
+      throw new SlackSetupServiceError(
+        "SLACK_SIGNING_CHALLENGE_REQUIRED",
+        409,
+        "Verify the Slack Events Request URL before activating the binding",
+      );
+    }
+    if (context.installation.appId !== input.appId || context.installation.teamId !== input.teamId) return undefined;
+    if (targetReceiveMode !== agent.receiveMode) {
+      const [updatedAgent] = await transaction
+        .update(agents)
+        .set({ receiveMode: targetReceiveMode, revision: sql`${agents.revision} + 1`, updatedAt: now })
+        .where(and(eq(agents.id, input.agentId), ne(agents.status, "deleted")))
+        .returning({ id: agents.id });
+      if (!updatedAgent) return undefined;
+    }
     const activation: SlackBindingActivation = {
       agentId: row.agentId,
       appId: context.installation.appId,
@@ -362,19 +452,37 @@ export class SlackSetupService {
       grantedBotScopes: context.installation.grantedBotScopes,
       botAccessToken: context.botAccessToken,
       signingSecret: context.signingSecret,
-      installedAt: this.#now(),
+      installedAt: now,
     };
-    try {
-      await this.#imBindings.activateSlack(activation, context.installation.botId);
-      await this.#succeed(row.setupAttemptId);
-    } catch (error) {
-      await this.#fail(row.setupAttemptId, this.#safeActivationCode(error));
-      throw error;
+    const activatedImBindingId = await this.#imBindings.activateSlack(
+      activation,
+      context.installation.botId,
+      transaction,
+    );
+    const [finished] = await transaction
+      .update(imBindings)
+      .set({
+        setupState: "succeeded",
+        setupOwnerInstanceId: null,
+        setupOwnerHeartbeatAt: null,
+        encryptedSetupContext: null,
+        setupExpiresAt: null,
+        pendingReceiveMode: null,
+        lastErrorCode: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(imBindings.id, imBindingId),
+          eq(imBindings.setupAttemptId, attemptId),
+          eq(imBindings.setupState, "validating"),
+        ),
+      )
+      .returning({ id: imBindings.id });
+    if (!finished) {
+      throw new SlackSetupServiceError("SLACK_SETUP_CONFLICT", 409, "Slack setup changed concurrently");
     }
-    const binding = await this.#imBindings.findSlackIngressBindingForAgent(row.agentId);
-    if (!binding)
-      throw new SlackSetupServiceError("SLACK_ACTIVATION_INCOMPLETE", 500, "Slack activation did not converge");
-    return binding;
+    return activatedImBindingId;
   }
 
   async #inspect(token: string): Promise<SlackInstallationInspection> {
@@ -434,6 +542,7 @@ export class SlackSetupService {
           eq(imBindings.agentId, agentId),
           eq(imBindings.provider, "slack"),
           inArray(imBindings.setupState, ACTIVE_SETUP_STATES),
+          gt(imBindings.setupExpiresAt, this.#now()),
           ne(imBindings.status, "disabled"),
         ),
       )
@@ -463,17 +572,17 @@ export class SlackSetupService {
     return new URL(agentSlackEventsPath(agentId), this.#publicOrigin).toString();
   }
 
-  #manifestUrl(agentId: string, agent: AgentSetupFacts): string {
+  #manifestUrl(agentId: string, agent: AgentSetupFacts, targetReceiveMode: AgentSetupFacts["receiveMode"]): string {
     const name = `${agent.displayName} - OpenTag`.slice(0, 35);
     const manifest = {
       _metadata: { major_version: 1 },
       display_information: { name },
       features: { bot_user: { display_name: name, always_online: false } },
-      oauth_config: { scopes: { bot: requiredSlackBotScopes(agent.receiveMode) } },
+      oauth_config: { scopes: { bot: requiredSlackBotScopes(targetReceiveMode) } },
       settings: {
         event_subscriptions: {
           request_url: this.#eventsUrl(agentId),
-          bot_events: slackBotEvents(agent.receiveMode),
+          bot_events: slackBotEvents(targetReceiveMode),
         },
         org_deploy_enabled: false,
         socket_mode_enabled: false,
@@ -491,6 +600,7 @@ export class SlackSetupService {
       throw new SlackSetupServiceError("SLACK_SETUP_NOT_FOUND", 404, "The Slack setup attempt was not found");
     }
     const context = this.#context(row);
+    const targetReceiveMode = this.#targetReceiveMode(row, agent);
     const terminal = !ACTIVE_SETUP_STATES.includes(row.setupState as (typeof ACTIVE_SETUP_STATES)[number]);
     const state =
       row.setupState === "awaiting_user"
@@ -503,9 +613,9 @@ export class SlackSetupService {
       agentId: row.agentId,
       intent: row.setupIntent,
       state,
-      manifestUrl: this.#manifestUrl(row.agentId, agent),
+      manifestUrl: this.#manifestUrl(row.agentId, agent, targetReceiveMode),
       eventsUrl: this.#eventsUrl(row.agentId),
-      requiredBotScopes: requiredSlackBotScopes(agent.receiveMode),
+      requiredBotScopes: requiredSlackBotScopes(targetReceiveMode),
       identity:
         context?.stage === "awaiting_verification"
           ? {
@@ -526,19 +636,18 @@ export class SlackSetupService {
     await this.#finish(attemptId, "expired", "SLACK_SETUP_EXPIRED");
   }
 
-  async #succeed(attemptId: string | null): Promise<void> {
-    if (attemptId) await this.#finish(attemptId, "succeeded", null);
+  #targetReceiveMode(
+    row: typeof imBindings.$inferSelect,
+    agent: Pick<AgentSetupFacts, "receiveMode">,
+  ): AgentSetupFacts["receiveMode"] {
+    return row.pendingReceiveMode ?? agent.receiveMode;
   }
 
   async #fail(attemptId: string | null, code: string): Promise<void> {
     if (attemptId) await this.#finish(attemptId, "failed", code);
   }
 
-  async #finish(
-    attemptId: string,
-    state: "succeeded" | "failed" | "expired",
-    lastErrorCode: string | null,
-  ): Promise<void> {
+  async #finish(attemptId: string, state: "failed" | "expired", lastErrorCode: string | null): Promise<void> {
     await this.#database
       .update(imBindings)
       .set({
@@ -550,7 +659,7 @@ export class SlackSetupService {
         lastErrorCode,
         updatedAt: this.#now(),
       })
-      .where(eq(imBindings.setupAttemptId, attemptId));
+      .where(and(eq(imBindings.setupAttemptId, attemptId), inArray(imBindings.setupState, ACTIVE_SETUP_STATES)));
   }
 
   #safeActivationCode(error: unknown): string {

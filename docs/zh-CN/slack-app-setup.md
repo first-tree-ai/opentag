@@ -13,8 +13,8 @@ Agent 加入同一个 Slack 工作区或频道，每个 Agent 仍保持独立的
 - `reauthorize` 为当前 App、Team 和 Bot User 身份轮换凭证或补充 scopes。在新凭证通过验证之前，当前绑定继续可用。
 - `replace` 切换到另一个 Slack App 安装。激活时结束由旧绑定持有的会话。
 
-OpenTag 为 Agent 生成专属的 Slack App manifest 和 Events API Request URL。manifest 只请求 Agent 当前接收模式所需的
-bot scopes 和事件。
+OpenTag 为 Agent 生成专属的 Slack App manifest 和 Events API Request URL。manifest 只请求 Agent 当前接收模式或
+Server 已记录的待生效接收模式所需的 bot scopes 和事件。
 
 ## 管理员流程
 
@@ -45,7 +45,8 @@ Slack 可能在 manifest 创建后立即尝试 URL 验证，此时 OpenTag 尚�
 
 `all_message` 模式还要求 `channels:history`、`groups:history` 和 `mpim:history`，并订阅对应的
 `message.channels`、`message.groups` 与 `message.mpim`。从仅 mention 切换到全量消息时，在 Slack 确认全部新增 scopes
-之前必须失败关闭并要求重新授权。
+之前，OpenTag 会在 Server 记录目标模式、失败关闭并要求重新授权。重新授权期间当前仅 mention 策略仍然有效，生成的
+manifest 则请求目标 scopes；只有激活成功时才会原子应用目标模式。
 
 `mention_only` 不承诺自动提供 mention 前后的频道消息。任务需要更多 provider 原生上下文时，Agent 可以通过官方
 Slack CLI 主动查询；实际范围受已安装 Bot Token 的 scopes 和 conversation membership 限制。
@@ -62,6 +63,8 @@ Slack CLI 主动查询；实际范围受已安装 Bot Token 的 scopes 和 conve
   签名事件。
 - 一个 Slack App 安装最多只能当前绑定一个 Agent；冲突失败且不改变任一绑定。
 - 重新授权在新凭证代际就绪前保留当前绑定；替换只在激活时创建新绑定身份并禁用旧绑定。
+- 事件激活会锁定并重新核验当前 setup attempt 的精确 ID、活动状态和过期时间，再在同一事务中推进 credential、应用
+  待生效接收模式并完成 setup slot。已过期、已取消或已替换 attempt 的旧事件不能激活。
 - 当前 bot token 出现在 `tokens_revoked` 时，绑定进入需要重新授权状态。
 - `app_uninstalled` 会禁用绑定。管理员可以重试过期或失败的 setup、重新授权、替换或显式禁用绑定。
 

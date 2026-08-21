@@ -10,7 +10,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { agents } from "./agents.js";
+import { agentReceiveMode, agents } from "./agents.js";
 
 export const imProvider = pgEnum("im_provider", ["feishu", "slack"]);
 export const imBindingStatus = pgEnum("im_binding_status", [
@@ -62,6 +62,7 @@ export const imBindings = pgTable(
     setupOwnerHeartbeatAt: timestamp("setup_owner_heartbeat_at", { withTimezone: true }),
     encryptedSetupContext: text("encrypted_setup_context"),
     setupExpiresAt: timestamp("setup_expires_at", { withTimezone: true }),
+    pendingReceiveMode: agentReceiveMode("pending_receive_mode"),
     replacementImBindingId: uuid("replacement_im_binding_id").references((): AnyPgColumn => imBindings.id, {
       onDelete: "set null",
     }),

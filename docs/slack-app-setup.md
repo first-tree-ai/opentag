@@ -16,7 +16,7 @@ An Agent can have at most one current IM binding. A Slack setup attempt has one 
 - `replace` switches to a different Slack App installation. Activation ends sessions owned by the previous binding.
 
 OpenTag generates an Agent-specific Slack App manifest and Events API Request URL. The manifest requests only the bot
-scopes and events required by the Agent's current receive mode.
+scopes and events required by the Agent's current receive mode or a server-recorded pending receive-mode target.
 
 ## Admin flow
 
@@ -47,7 +47,9 @@ They subscribe to `app_mention`, `message.im`, `app_uninstalled`, and `tokens_re
 
 `all_message` mode additionally requires `channels:history`, `groups:history`, and `mpim:history`, and subscribes to the
 matching `message.channels`, `message.groups`, and `message.mpim` events. Changing from mentions-only to all-message
-fails closed with a reauthorization requirement until Slack reports all additional scopes.
+records the target on the Server and fails closed with a reauthorization requirement until Slack reports all additional
+scopes. The current mentions-only policy remains effective while the generated reauthorization manifest requests the
+target scopes; successful activation applies the target atomically.
 
 `mention_only` does not promise automatic intervening channel messages around a mention. When a task needs more native
 context, the Agent may query Slack directly through the official CLI, subject to the installed Bot Token's scopes and
@@ -67,6 +69,9 @@ conversation membership.
 - A Slack App installation can be current for only one Agent. Conflicts fail without changing either binding.
 - Reauthorization preserves the current binding until the new credential generation is ready. Replacement creates a
   new binding identity and disables the previous one only at activation.
+- Event activation locks and rechecks the exact current setup attempt, active state, and expiry before atomically
+  advancing credentials, applying a pending receive-mode target, and completing the setup slot. Expired, canceled, or
+  replaced attempts cannot activate from a stale event.
 - `tokens_revoked` moves the binding to reauthorization-required when the current bot token is affected.
 - `app_uninstalled` disables the binding. Admins can retry an expired or failed setup, reauthorize, replace, or explicitly
   disable the binding.

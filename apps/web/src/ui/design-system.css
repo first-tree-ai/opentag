@@ -5,18 +5,21 @@
   --color-bg-surface: var(--surface);
   --color-bg-subtle: var(--surface-soft);
   --color-bg-hover: #e9ebe1;
+  --color-bg-hover-strong: #dde1d3;
   --color-bg-selected: var(--brand-light);
   --color-text-primary: var(--foreground);
   --color-text-secondary: var(--secondary-foreground);
   --color-text-muted: var(--muted);
   --color-border-divider: var(--border);
-  --color-border-control: #929a8e;
+  --color-border-control: #899184;
   --color-border-strong: var(--strong-border);
   --color-brand: var(--brand);
   --color-brand-hover: var(--brand-ink);
   --color-brand-subtle: var(--brand-light);
-  --color-status-success: #4d7413;
-  --color-status-success-surface: #edf3df;
+  --color-on-accent: #fff;
+  --color-text-primary-hover: #26332c;
+  --color-status-success: #2f6f59;
+  --color-status-success-surface: #e7f1ec;
   --color-status-info: #356775;
   --color-status-info-surface: #e8f1f2;
   --color-status-warning: #94510d;
@@ -60,7 +63,7 @@
 
 .ds-button--primary {
   background: var(--color-brand);
-  color: #fff;
+  color: var(--color-on-accent);
 }
 
 .ds-button--primary:hover {
@@ -73,17 +76,17 @@
 }
 
 .ds-button--secondary:hover {
-  background: #dde1d3;
+  background: var(--color-bg-hover-strong);
   color: var(--color-text-primary);
 }
 
 .ds-button--commit {
   background: var(--color-text-primary);
-  color: #fff;
+  color: var(--color-on-accent);
 }
 
 .ds-button--commit:hover {
-  background: #26332c;
+  background: var(--color-text-primary-hover);
 }
 
 .ds-button--tertiary,

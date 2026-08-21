@@ -813,7 +813,7 @@ function AppShell() {
                       }}
                     >
                       <span>Manage Workspaces</span>
-                      <span aria-hidden="true">›</span>
+                      <Icon name="chevron-right" />
                     </Link>
                   </fieldset>
                 ) : null}

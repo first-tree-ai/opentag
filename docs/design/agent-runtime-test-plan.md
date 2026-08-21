@@ -170,7 +170,7 @@ use the installed and authenticated local CLIs. Each performs:
 6. a second prompt proving conversation continuity;
 7. ordered-event and clean-close assertions.
 
-The live Codex test uses a temporary read-only workspace, disabled network
+The live Codex test uses a temporary read-only workspace, enabled network
 policy, `approvalPolicy: never`, no tool request, and bounded Run timeouts. It
 makes real model requests and is therefore intentionally excluded from the
 default test command.
@@ -206,8 +206,9 @@ The production-path tests verify:
 - legacy v1 Codex bindings migrate on read and resume the exact Provider Thread;
 - effective configuration or tool-policy changes close the old Runtime and
   create a new Provider session instead of silently reusing stale definitions;
-- IM hosted tools remain scoped to the active Run identity, allow-list, Session,
-  placement generation, and idempotent request correlation;
+- IM Turns receive only a temporary provider credential-file path, while the
+  Server fences the secret-bearing grant by Agent, Session, Computer, placement
+  generation, active binding, and credential generation;
 - Agent Runtime events feed generic traces and typed results feed the existing
   Turn Report path while Client Runtime retains custody;
 - restart recovery reports accepted-but-not-started work as `not_started` and

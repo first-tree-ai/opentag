@@ -5,21 +5,14 @@ import {
   Domain,
   EventDispatcher,
   type LarkChannel,
-  LarkChannelError,
   LoggerLevel,
   type NormalizedMessage,
   WSClient,
 } from "@larksuiteoapi/node-sdk";
-import {
-  type NormalizedInboundImEvent,
-  NormalizedInboundImEventSchema,
-  type ProviderWriteResult,
-} from "@opentag/shared";
+import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
 import type {
   ImProviderAdapter,
-  ProviderReactionInput,
   ProviderResourceInput,
-  ProviderSendInput,
   ReadableResource,
   VerifiedBotIdentity,
 } from "../provider-adapter.js";
@@ -78,39 +71,20 @@ export interface FeishuChannel {
     reconnected?: () => void;
     error?: (error: unknown) => void;
   }): () => void;
-  send: LarkChannel["send"];
-  addReaction: LarkChannel["addReaction"];
 }
 
 export interface FeishuHttpCapability {
-  send(input: ProviderSendInput): Promise<ProviderWriteResult>;
-  react(input: ProviderReactionInput): Promise<ProviderWriteResult>;
   fetchResource(input: ProviderResourceInput): Promise<ReadableResource>;
 }
 
 export interface FeishuHttpClient {
   im: {
     v1: {
-      message: {
-        create(input: unknown): Promise<FeishuMessageWriteResponse>;
-        reply(input: unknown): Promise<FeishuMessageWriteResponse>;
-      };
-      messageReaction: {
-        create(input: unknown): Promise<FeishuApiResponse>;
-      };
       messageResource: {
         get(input: unknown): Promise<{ getReadableStream(): Readable }>;
       };
     };
   };
-}
-
-interface FeishuApiResponse {
-  code?: number;
-}
-
-interface FeishuMessageWriteResponse extends FeishuApiResponse {
-  data?: { message_id?: string; create_time?: string };
 }
 
 export interface VerifiedFeishuEnvelope {
@@ -277,6 +251,13 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
       externalAppId: input.appId,
       externalTeamId:
         raw?.header?.tenant_key ?? raw?.tenant_key ?? raw?.event?.sender?.tenant_key ?? input.teamId ?? input.appId,
+      providerContext: {
+        provider: "feishu",
+        ...(input.message.chatType ? { chatType: input.message.chatType } : {}),
+        ...(input.message.threadId ? { threadId: input.message.threadId } : {}),
+        ...(input.message.rootId ? { rootId: input.message.rootId } : {}),
+        ...(input.message.replyToMessageId ? { parentId: input.message.replyToMessageId } : {}),
+      },
       conversation: {
         externalId: input.message.chatId,
         kind:
@@ -307,49 +288,6 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
       mentions,
     }),
   ];
-}
-
-export function mapFeishuError(error: unknown): ProviderWriteResult {
-  if (!(error instanceof LarkChannelError)) {
-    const record = typeof error === "object" && error !== null ? (error as Record<string, unknown>) : undefined;
-    const response =
-      typeof record?.response === "object" && record.response !== null
-        ? (record.response as Record<string, unknown>)
-        : undefined;
-    const data =
-      typeof response?.data === "object" && response.data !== null
-        ? (response.data as Record<string, unknown>)
-        : typeof record?.data === "object" && record.data !== null
-          ? (record.data as Record<string, unknown>)
-          : undefined;
-    const code =
-      typeof data?.code === "number" ? data.code : typeof record?.code === "number" ? record.code : undefined;
-    const apiFailure = mapKnownFeishuApiFailure(code);
-    if (apiFailure) return apiFailure;
-    const status =
-      typeof response?.status === "number"
-        ? response.status
-        : typeof record?.status === "number"
-          ? record.status
-          : undefined;
-    if (status === 429) return { ok: false, category: "rate_limited", code: "feishu_rate_limited" };
-    if (status === 401 || status === 403) {
-      return { ok: false, category: "credential", code: "feishu_permission_denied" };
-    }
-    if (status === 400) return { ok: false, category: "deterministic", code: "feishu_invalid_request" };
-    if (status === 404) return { ok: false, category: "deterministic", code: "feishu_invalid_target" };
-    if (code !== undefined) return { ok: false, category: "unknown", code: "feishu_api_error" };
-    return { ok: false, category: "unknown", code: "feishu_unknown" };
-  }
-  if (error.code === "rate_limited") return { ok: false, category: "rate_limited", code: error.code };
-  if (error.code === "permission_denied") {
-    return { ok: false, category: "credential", code: error.code };
-  }
-  if (error.code === "not_connected") return { ok: false, category: "transient", code: error.code };
-  if (["format_error", "target_revoked", "ssrf_blocked"].includes(error.code)) {
-    return { ok: false, category: "deterministic", code: error.code };
-  }
-  return { ok: false, category: "unknown", code: error.code };
 }
 
 export function createReliableFeishuDispatcher(
@@ -436,14 +374,6 @@ class ReliableFeishuChannel implements FeishuChannel {
       if (this.#handlers === handlers) this.#handlers = {};
     };
   }
-
-  send(...args: Parameters<LarkChannel["send"]>): ReturnType<LarkChannel["send"]> {
-    return this.#outbound.send(...args);
-  }
-
-  addReaction(...args: Parameters<LarkChannel["addReaction"]>): ReturnType<LarkChannel["addReaction"]> {
-    return this.#outbound.addReaction(...args);
-  }
 }
 
 export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> {
@@ -514,87 +444,13 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
     return normalizeFeishuMessage(input);
   }
 
-  async send(input: ProviderSendInput): Promise<ProviderWriteResult> {
-    return this.#http.send(input);
-  }
-
-  async react(input: ProviderReactionInput): Promise<ProviderWriteResult> {
-    return this.#http.react(input);
-  }
-
   async fetchResource(input: ProviderResourceInput): Promise<ReadableResource> {
     return this.#http.fetchResource(input);
   }
 }
 
-function mapKnownFeishuApiFailure(code: number | undefined): ProviderWriteResult | undefined {
-  if (code === undefined || code === 0) return undefined;
-  if (code === 99991400) return { ok: false, category: "rate_limited", code: "feishu_rate_limited" };
-  if ([99991401, 99991663, 99991664, 99991668, 99991672, 99991677, 230006, 230027].includes(code)) {
-    return { ok: false, category: "credential", code: "feishu_permission_denied" };
-  }
-  if ([230017, 230020, 230030].includes(code)) {
-    return { ok: false, category: "deterministic", code: "feishu_invalid_target" };
-  }
-  if ([230001, 230002, 230012].includes(code)) {
-    return { ok: false, category: "deterministic", code: "feishu_invalid_request" };
-  }
-  return undefined;
-}
-
-export function mapFeishuApiFailure(code: number | undefined): ProviderWriteResult | undefined {
-  const known = mapKnownFeishuApiFailure(code);
-  if (known || code === undefined || code === 0) return known;
-  return { ok: false, category: "unknown", code: "feishu_api_error" };
-}
-
 export function createFeishuHttpCapability(client: FeishuHttpClient): FeishuHttpCapability {
   return {
-    async send(input) {
-      try {
-        const content = JSON.stringify({ text: input.fallbackText });
-        const replyTarget = input.replyToExternalId ?? input.threadKey;
-        const response = replyTarget
-          ? await client.im.v1.message.reply({
-              data: {
-                content,
-                msg_type: "text",
-                reply_in_thread: Boolean(input.threadKey),
-                ...(input.requestId ? { uuid: input.requestId } : {}),
-              },
-              path: { message_id: replyTarget },
-            })
-          : await client.im.v1.message.create({
-              data: {
-                receive_id: input.conversationExternalId,
-                msg_type: "text",
-                content,
-                ...(input.requestId ? { uuid: input.requestId } : {}),
-              },
-              params: { receive_id_type: "chat_id" },
-            });
-        const failure = mapFeishuApiFailure(response.code);
-        if (failure) return failure;
-        if (!response.data?.message_id) return { ok: false, category: "unknown", code: "feishu_api_error" };
-        const occurredAt = response.data.create_time ? new Date(Number(response.data.create_time)) : new Date();
-        return { ok: true, externalMessageId: response.data.message_id, occurredAt };
-      } catch (error) {
-        return mapFeishuError(error);
-      }
-    },
-    async react(input) {
-      try {
-        const response = await client.im.v1.messageReaction.create({
-          data: { reaction_type: { emoji_type: input.emoji } },
-          path: { message_id: input.messageExternalId },
-        });
-        const failure = mapFeishuApiFailure(response.code);
-        if (failure) return failure;
-        return { ok: true, externalMessageId: input.messageExternalId, occurredAt: new Date() };
-      } catch (error) {
-        return mapFeishuError(error);
-      }
-    },
     async fetchResource(input) {
       const response = await client.im.v1.messageResource.get({
         path: { message_id: input.messageExternalId, file_key: input.providerResourceKey },

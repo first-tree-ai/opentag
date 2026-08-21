@@ -4,7 +4,6 @@ import { AgentRuntimeProviderSchema } from "./agent.js";
 import {
   runtimeByteString as byteString,
   RUNTIME_ID_MAX_BYTES,
-  RuntimeAllowedToolsSchema,
   RuntimeInstructionsSchema,
   RuntimeMaxDurationMsSchema,
   RuntimeModelSchema,
@@ -14,20 +13,16 @@ import {
 import { RuntimeRequestIdSchema } from "./runtime-protocol.js";
 
 export {
-  OPENTAG_MESSAGE_TOOLS,
   OPENTAG_PLATFORM_INSTRUCTIONS,
-  RUNTIME_ALLOWED_TOOLS_MAX_COUNT,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_ID_MAX_BYTES,
   RUNTIME_INSTRUCTIONS_MAX_BYTES,
   RUNTIME_MAX_DURATION_MS,
-  RuntimeAllowedToolsSchema,
   RuntimeInstructionSchema,
   RuntimeInstructionsSchema,
   RuntimeMaxDurationMsSchema,
   RuntimeModelSchema,
   RuntimeReasoningEffortSchema,
-  RuntimeToolIdSchema,
 } from "./runtime-config.js";
 
 export const RUNTIME_DIRECT_TEXT_MAX_BYTES = 16 * 1024;
@@ -78,7 +73,6 @@ export const EffectiveRuntimeSnapshotSchema = z
     model: RuntimeModelSchema.optional(),
     reasoningEffort: RuntimeReasoningEffortSchema.optional(),
     instructions: RuntimeInstructionsSchema,
-    allowedTools: RuntimeAllowedToolsSchema,
     execution: z
       .object({
         approvalPolicy: z.literal("never"),
@@ -183,11 +177,44 @@ export const RuntimeImResourceReferenceSchema = z
   })
   .strict();
 
+const RuntimeProviderExternalIdSchema = byteString(512, "Provider reference exceeds the 512-byte limit", 1);
+
+export const RuntimeProviderMessageRefSchema = z.discriminatedUnion("provider", [
+  z
+    .object({
+      provider: z.literal("feishu"),
+      teamBrand: z.enum(["feishu", "lark"]),
+      appId: RuntimeProviderExternalIdSchema,
+      botOpenId: RuntimeProviderExternalIdSchema,
+      chatId: RuntimeProviderExternalIdSchema,
+      chatType: byteString(160, "Feishu chat type exceeds the 160-byte limit", 1).optional(),
+      messageId: RuntimeProviderExternalIdSchema,
+      threadId: RuntimeProviderExternalIdSchema.optional(),
+      rootId: RuntimeProviderExternalIdSchema.optional(),
+      parentId: RuntimeProviderExternalIdSchema.optional(),
+    })
+    .strict(),
+  z
+    .object({
+      provider: z.literal("slack"),
+      appId: RuntimeProviderExternalIdSchema,
+      teamId: RuntimeProviderExternalIdSchema,
+      enterpriseId: RuntimeProviderExternalIdSchema.optional(),
+      botUserId: RuntimeProviderExternalIdSchema,
+      channelId: RuntimeProviderExternalIdSchema,
+      channelType: byteString(160, "Slack channel type exceeds the 160-byte limit", 1).optional(),
+      messageTs: RuntimeProviderExternalIdSchema,
+      threadTs: RuntimeProviderExternalIdSchema.optional(),
+    })
+    .strict(),
+]);
+
 export const RuntimeImHistoryItemSchema = z
   .object({
     imMessageId: RuntimeOpaqueIdSchema,
     occurredAt: z.string().datetime({ offset: true }),
     text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "History item exceeds the 16 KiB limit"),
+    providerRef: RuntimeProviderMessageRefSchema,
   })
   .strict();
 
@@ -280,6 +307,7 @@ export const DirectImMessageDeliveryRequestSchema = z
       .object({
         kind: z.literal("text"),
         text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "Direct text exceeds the 16 KiB limit", 1),
+        providerRef: RuntimeProviderMessageRefSchema,
         history: z.array(RuntimeImHistoryItemSchema).max(100).optional(),
         historyTruncated: z.boolean().optional(),
         resources: z.array(RuntimeImResourceReferenceSchema).max(RUNTIME_IM_RESOURCE_MAX_COUNT).optional(),
@@ -299,46 +327,52 @@ export const DirectImMessageDeliveryRequestSchema = z
     }
   });
 
-export const RuntimeImToolRequestSchema = z
+export const RuntimeImCredentialGrantRequestSchema = z
   .object({
-    type: z.literal("im:tool"),
+    type: z.literal("im:credential"),
     requestId: RuntimeRequestIdSchema,
     sessionId: RuntimeOpaqueIdSchema,
     agentId: RuntimeOpaqueIdSchema,
     placementGeneration: RuntimeSequenceSchema,
-    expectedLatestImMessageId: RuntimeOpaqueIdSchema,
-    operation: z.enum(["send", "reply", "react"]),
-    text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "Outbound text exceeds the 16 KiB limit", 1).optional(),
-    replyToImMessageId: RuntimeOpaqueIdSchema.optional(),
-    targetImMessageId: RuntimeOpaqueIdSchema.optional(),
-    emoji: byteString(128, "Reaction emoji exceeds the 128-byte limit", 1).optional(),
-  })
-  .strict()
-  .superRefine((frame, context) => {
-    if (frame.operation === "react") {
-      if (!frame.targetImMessageId)
-        context.addIssue({ code: "custom", path: ["targetImMessageId"], message: "Reaction target is required" });
-      if (!frame.emoji) context.addIssue({ code: "custom", path: ["emoji"], message: "Reaction emoji is required" });
-      if (frame.text || frame.replyToImMessageId)
-        context.addIssue({ code: "custom", message: "Reaction payload is invalid" });
-      return;
-    }
-    if (!frame.text) context.addIssue({ code: "custom", path: ["text"], message: "Outbound text is required" });
-    if (frame.operation === "reply" && !frame.replyToImMessageId) {
-      context.addIssue({ code: "custom", path: ["replyToImMessageId"], message: "Reply target is required" });
-    }
-  });
-
-export const RuntimeImToolResultSchema = z
-  .object({
-    type: z.literal("im:tool:result"),
-    requestId: RuntimeRequestIdSchema,
-    state: z.enum(["succeeded", "deterministic_failed", "credential_failed", "transient_failed", "unknown"]),
-    code: byteString(160, "IM tool result code exceeds the 160-byte limit", 1).optional(),
-    providerMessageId: byteString(512, "Provider message ID exceeds the 512-byte limit", 1).optional(),
-    retryAfterSeconds: z.number().int().positive().optional(),
   })
   .strict();
+
+const RuntimeImCredentialGrantSchema = z.discriminatedUnion("provider", [
+  z
+    .object({
+      provider: z.literal("feishu"),
+      appId: byteString(512, "Feishu App ID exceeds the 512-byte limit", 1),
+      appSecret: byteString(4096, "Feishu App secret exceeds the 4 KiB limit", 1),
+      teamBrand: z.enum(["feishu", "lark"]),
+    })
+    .strict(),
+  z
+    .object({
+      provider: z.literal("slack"),
+      botAccessToken: byteString(4096, "Slack Bot token exceeds the 4 KiB limit", 1),
+    })
+    .strict(),
+]);
+
+export const RuntimeImCredentialGrantResultSchema = z.discriminatedUnion("status", [
+  z
+    .object({
+      type: z.literal("im:credential:result"),
+      requestId: RuntimeRequestIdSchema,
+      status: z.literal("succeeded"),
+      credentialGeneration: z.number().int().safe().positive(),
+      grant: RuntimeImCredentialGrantSchema,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("im:credential:result"),
+      requestId: RuntimeRequestIdSchema,
+      status: z.literal("rejected"),
+      code: z.enum(["binding_inactive", "credential_stale", "placement_stale", "agent_mismatch"]),
+    })
+    .strict(),
+]);
 
 export const ImMessageDeliveryResultSchema = z
   .object({
@@ -466,7 +500,7 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionReconcileRequestSchema,
   DirectImMessageDeliveryRequestSchema,
   TurnReportResultSchema,
-  RuntimeImToolResultSchema,
+  RuntimeImCredentialGrantResultSchema,
 ]);
 
 export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
@@ -474,7 +508,7 @@ export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   ImMessageDeliveryResultSchema,
   AgentTraceBatchSchema,
   TurnReportRequestSchema,
-  RuntimeImToolRequestSchema,
+  RuntimeImCredentialGrantRequestSchema,
 ]);
 
 export type RuntimeRevision = z.infer<typeof RuntimeRevisionSchema>;
@@ -488,8 +522,9 @@ export type RetainedTurnReportClaim = z.infer<typeof RetainedTurnReportClaimSche
 export type DirectImMessageDeliveryRequest = z.infer<typeof DirectImMessageDeliveryRequestSchema>;
 export type RuntimeImResourceReference = z.infer<typeof RuntimeImResourceReferenceSchema>;
 export type RuntimeImHistoryItem = z.infer<typeof RuntimeImHistoryItemSchema>;
-export type RuntimeImToolRequest = z.infer<typeof RuntimeImToolRequestSchema>;
-export type RuntimeImToolResult = z.infer<typeof RuntimeImToolResultSchema>;
+export type RuntimeProviderMessageRef = z.infer<typeof RuntimeProviderMessageRefSchema>;
+export type RuntimeImCredentialGrantRequest = z.infer<typeof RuntimeImCredentialGrantRequestSchema>;
+export type RuntimeImCredentialGrantResult = z.infer<typeof RuntimeImCredentialGrantResultSchema>;
 export type ImMessageDeliveryResult = z.infer<typeof ImMessageDeliveryResultSchema>;
 export type AgentTraceEvent = z.infer<typeof AgentTraceEventSchema>;
 export type AgentTraceBatch = z.infer<typeof AgentTraceBatchSchema>;
@@ -525,7 +560,6 @@ export function computeRuntimeSnapshotHashes(input: EffectiveRuntimeSnapshot): R
     snapshot.model ?? null,
     snapshot.reasoningEffort ?? null,
     snapshot.instructions.session ?? null,
-    [...snapshot.allowedTools].sort(),
     snapshot.execution.approvalPolicy,
     snapshot.execution.networkAccess,
     snapshot.budget?.maxDurationMs ?? null,
@@ -548,6 +582,7 @@ export function computeDirectInputHash(input: DirectImMessageDeliveryRequest): s
     frame.attention,
     frame.content.kind,
     frame.content.text,
+    frame.content.providerRef,
     frame.content.history ?? [],
     frame.content.historyTruncated ?? false,
     frame.content.resources ?? [],

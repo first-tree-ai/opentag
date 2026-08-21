@@ -17,19 +17,19 @@ describe("Claude Code hosted tool bridge", () => {
 
   it("serves only authenticated OpenTag tools over owned loopback HTTP", async () => {
     const handler = vi.fn<AgentHostedTools["handler"]>(async (call) => ({
-      success: call.name === "opentag_message_reply",
+      success: call.name === "example_success",
       content: [{ type: "text", text: call.name }],
-      ...(call.name === "opentag_message_send" ? { error: { code: "IM_FAILED", message: "send failed" } } : {}),
+      ...(call.name === "example_failure" ? { error: { code: "EXAMPLE_FAILED", message: "example failed" } } : {}),
     }));
     const bridge = await startClaudeCodeHostedToolBridge(
       {
         definitions: [
           {
-            name: "opentag_message_reply",
+            name: "example_success",
             description: "Reply to the current conversation",
             inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
           },
-          { name: "opentag_message_send", inputSchema: { type: "object" } },
+          { name: "example_failure", inputSchema: { type: "object" } },
         ],
         handler,
       },
@@ -47,14 +47,14 @@ describe("Claude Code hosted tool bridge", () => {
         body: typeof body === "string" ? body : JSON.stringify(body),
       });
 
-    expect(bridge.allowedTools).toEqual(["mcp__opentag__opentag_message_reply", "mcp__opentag__opentag_message_send"]);
+    expect(bridge.allowedTools).toEqual(["mcp__opentag__example_success", "mcp__opentag__example_failure"]);
     await expect(
       rpc({ jsonrpc: "2.0", id: 1, method: "initialize" }).then((response) => response.json()),
     ).resolves.toMatchObject({ result: { capabilities: { tools: {} }, serverInfo: { name: "OpenTag" } } });
     await expect(
       rpc({ jsonrpc: "2.0", id: "list", method: "tools/list" }).then((response) => response.json()),
     ).resolves.toMatchObject({
-      result: { tools: [{ name: "opentag_message_reply" }, { name: "opentag_message_send" }] },
+      result: { tools: [{ name: "example_success" }, { name: "example_failure" }] },
     });
     expect((await rpc({ jsonrpc: "2.0", method: "notifications/initialized" })).status).toBe(202);
 
@@ -63,14 +63,14 @@ describe("Claude Code hosted tool bridge", () => {
         jsonrpc: "2.0",
         id: "call-1",
         method: "tools/call",
-        params: { name: "opentag_message_reply", arguments: { text: "hello" } },
+        params: { name: "example_success", arguments: { text: "hello" } },
       }).then((response) => response.json()),
-    ).resolves.toMatchObject({ result: { content: [{ text: "opentag_message_reply" }], isError: false } });
+    ).resolves.toMatchObject({ result: { content: [{ text: "example_success" }], isError: false } });
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({
         runId: "run-1",
         toolCallId: "call-1",
-        name: "opentag_message_reply",
+        name: "example_success",
         input: { text: "hello" },
       }),
     );
@@ -79,9 +79,9 @@ describe("Claude Code hosted tool bridge", () => {
         jsonrpc: "2.0",
         id: 2,
         method: "tools/call",
-        params: { name: "opentag_message_send", arguments: {} },
+        params: { name: "example_failure", arguments: {} },
       }).then((response) => response.json()),
-    ).resolves.toMatchObject({ result: { isError: true, structuredContent: { error: { code: "IM_FAILED" } } } });
+    ).resolves.toMatchObject({ result: { isError: true, structuredContent: { error: { code: "EXAMPLE_FAILED" } } } });
     await expect(
       rpc({ jsonrpc: "2.0", id: null, method: "tools/call", params: { name: "missing", arguments: {} } }).then(
         (response) => response.json(),
@@ -92,7 +92,7 @@ describe("Claude Code hosted tool bridge", () => {
         jsonrpc: "2.0",
         id: "",
         method: "tools/call",
-        params: { name: "opentag_message_reply", arguments: undefined },
+        params: { name: "example_success", arguments: undefined },
       }).then((response) => response.json()),
     ).resolves.toMatchObject({ result: { isError: false } });
     await expect(
@@ -100,13 +100,13 @@ describe("Claude Code hosted tool bridge", () => {
         jsonrpc: "2.0",
         id: {},
         method: "tools/call",
-        params: { name: "opentag_message_reply", arguments: BigInt(1).toString() },
+        params: { name: "example_success", arguments: BigInt(1).toString() },
       }).then((response) => response.json()),
     ).resolves.toMatchObject({ result: { isError: false } });
     await expect(
-      rpc(
-        '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"opentag_message_reply","arguments":1e400}}',
-      ).then((response) => response.json()),
+      rpc('{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"example_success","arguments":1e400}}').then(
+        (response) => response.json(),
+      ),
     ).resolves.toMatchObject({ result: { isError: true } });
     await expect(
       rpc({ jsonrpc: "2.0", id: 4, method: "unknown" }).then((response) => response.json()),

@@ -53,7 +53,6 @@ describe("BrowserApi", () => {
         model: null,
         reasoningEffort: null,
         instructions: "",
-        allowedTools: [],
         maxDurationMs: null,
       },
       createdAt: "2030-01-01T00:00:00.000Z",

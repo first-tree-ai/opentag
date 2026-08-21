@@ -255,7 +255,6 @@ function snapshot(): EffectiveRuntimeSnapshot {
     agentId: "agent-1",
     provider: "codex",
     instructions: { platform: "platform", agent: "agent", session: "session" },
-    allowedTools: [],
     execution: { approvalPolicy: "never", networkAccess: false },
     workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
   };

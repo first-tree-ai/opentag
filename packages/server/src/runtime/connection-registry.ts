@@ -1,10 +1,12 @@
 import {
   type AgentRuntimeProvider,
+  type ImCliProvider,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_V1,
   RUNTIME_PROTOCOL_V2,
   type RuntimeClientCapabilities,
+  type RuntimeImCliReadinessCollection,
   type RuntimeProtocolVersion,
   type RuntimeProviderReadinessCollection,
   runtimeFrameByteLength,
@@ -33,6 +35,8 @@ export interface RuntimeConnectionEntry {
   providerReadiness?: RuntimeProviderReadinessCollection;
   providerReadinessObservedAt?: number;
   providerReadinessProviders?: readonly AgentRuntimeProvider[];
+  imCliReadiness?: RuntimeImCliReadinessCollection;
+  imCliReadinessObservedAt?: number;
   socket: WebSocket;
   userId: string;
 }
@@ -107,23 +111,39 @@ export class ConnectionRegistry {
       }
       return current.providerReadiness.map((observation) => ({ observation: { ...observation }, observedAt }));
     }
-    if (!current || !this.supports(computerId, current.instanceId, "imMessageTool", now)) return [];
-    return [
-      {
-        observation: { provider: "codex", status: "ready" },
-        observedAt: current.capabilitiesUpdatedAt ?? current.lastHeartbeatAt,
-      },
-    ];
+    return [];
   }
 
   supportsProvider(computerId: string, instanceId: string, provider: AgentRuntimeProvider, now = Date.now()): boolean {
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId || current.active === false) return false;
-    if (!current.providerReadinessProviders) {
-      return provider === "codex" && this.supports(computerId, instanceId, "imMessageTool", now);
-    }
+    if (!current.providerReadinessProviders) return false;
     if (!current.providerReadinessProviders.includes(provider)) return false;
     return this.providerReadiness(computerId, now).some(
+      ({ observation }) => observation.provider === provider && observation.status === "ready",
+    );
+  }
+
+  imCliReadiness(
+    computerId: string,
+    now = Date.now(),
+  ): readonly { observation: RuntimeImCliReadinessCollection[number]; observedAt: number }[] {
+    const current = this.#entries.get(computerId);
+    const observedAt = current?.imCliReadinessObservedAt;
+    if (
+      !current ||
+      current.active === false ||
+      !current.imCliReadiness ||
+      observedAt === undefined ||
+      now - observedAt > RUNTIME_CLIENT_CAPABILITY_TTL_MS
+    ) {
+      return [];
+    }
+    return current.imCliReadiness.map((observation) => ({ observation: { ...observation }, observedAt }));
+  }
+
+  supportsImCli(computerId: string, provider: ImCliProvider, now = Date.now()): boolean {
+    return this.imCliReadiness(computerId, now).some(
       ({ observation }) => observation.provider === provider && observation.status === "ready",
     );
   }
@@ -179,6 +199,7 @@ export class ConnectionRegistry {
     now = Date.now(),
     capabilities?: RuntimeClientCapabilities,
     providerReadiness?: RuntimeProviderReadinessCollection,
+    imCliReadiness?: RuntimeImCliReadinessCollection,
   ): boolean {
     const current = this.#entries.get(computerId);
     if (!current || current.instanceId !== instanceId || current.socket !== socket || current.active === false) {
@@ -196,6 +217,15 @@ export class ConnectionRegistry {
       } else {
         delete current.providerReadiness;
         delete current.providerReadinessObservedAt;
+      }
+    }
+    if (imCliReadiness !== undefined) {
+      if (imCliReadiness.length > 0) {
+        current.imCliReadiness = imCliReadiness.map((observation) => ({ ...observation }));
+        current.imCliReadinessObservedAt = now;
+      } else {
+        delete current.imCliReadiness;
+        delete current.imCliReadinessObservedAt;
       }
     }
     return true;

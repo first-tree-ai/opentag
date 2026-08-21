@@ -16,31 +16,24 @@ function bindings() {
 describe("IM provider adapter resolver", () => {
   it("prefers matching Slack material without reading Feishu credentials", async () => {
     const imBindings = bindings();
-    const postMessage = vi.fn().mockResolvedValue({ ok: true, ts: "1.2" });
     imBindings.getSlackConnectionMaterial.mockResolvedValue({
       imBindingId,
       generation: 3,
       appId: "A1",
       teamId: "T1",
       botUserId: "U1",
+      botId: "B1",
       botAccessToken: "xoxb-current",
       signingSecret: "signing-secret",
       grantedScopes: ["chat:write"],
     });
     const resolve = createImProviderAdapterResolver({
       imBindings: imBindings as never,
-      slackApi: { postMessage } as never,
+      slackApi: {} as never,
     });
 
     const adapter = await resolve(imBindingId, 3);
-    await adapter.send({ conversationExternalId: "C1", fallbackText: "hello" });
-
-    expect(postMessage).toHaveBeenCalledWith({
-      token: "xoxb-current",
-      channel: "C1",
-      text: "hello",
-      threadTs: undefined,
-    });
+    expect(adapter.provider).toBe("slack");
     expect(imBindings.getFeishuConnectionMaterial).not.toHaveBeenCalled();
   });
 
@@ -52,6 +45,7 @@ describe("IM provider adapter resolver", () => {
       appId: "A1",
       teamId: "T1",
       botUserId: "U1",
+      botId: "B1",
       botAccessToken: "xoxb-sensitive",
       signingSecret: "signing-sensitive",
       grantedScopes: [],
@@ -85,7 +79,7 @@ describe("IM provider adapter resolver", () => {
       teamBrand: "feishu",
       grantedScopes: ["im:message"],
     });
-    const adapter = { send: vi.fn() };
+    const adapter = { provider: "feishu" };
     const createFeishuAdapter = vi.fn(() => adapter as never);
     const resolve = createImProviderAdapterResolver({
       imBindings: imBindings as never,

@@ -72,7 +72,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
               turnId: turn.id,
               callId: "call-1",
               namespace: null,
-              tool: "opentag_message_send",
+              tool: "example_tool",
               arguments: { text: "hello" },
             },
           });
@@ -85,7 +85,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
                 turnId: turn.id,
                 callId: "call-2",
                 namespace: null,
-                tool: "opentag_message_send",
+                tool: "example_tool",
                 arguments: { text: "duplicate" },
               },
             });
@@ -144,7 +144,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         turnId: "turn-1",
         callId: "call-1",
         namespace: message.method === "fixture/hosted-tool" ? null : 42,
-        tool: "opentag_message_send",
+        tool: "example_tool",
         arguments: { text: "hello" },
       },
     });

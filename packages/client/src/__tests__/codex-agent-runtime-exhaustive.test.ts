@@ -1,10 +1,8 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { DirectImMessageDeliveryRequest } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRuntimeError } from "../agent-runtime/errors.js";
 import type {
@@ -29,8 +27,6 @@ import type {
   InteractiveCodexAppServerClient,
 } from "../providers/codex/app-server-wire.js";
 import { CodexAppServerError } from "../providers/codex/app-server-wire.js";
-import type { RuntimeBusinessFrame } from "../runtime/runtime-connection.js";
-import { RuntimeToolHost } from "../runtime/runtime-tool-host.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex-app-server.mjs", import.meta.url));
 const directories: string[] = [];
@@ -55,12 +51,12 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       return { success: true, content: [{ type: "text" as const, text: "sent" }] };
     });
     const definition = {
-      name: "opentag_message_send",
+      name: "example_tool",
       description: "Send a message.",
       inputSchema: { type: "object", properties: { text: { type: "string" } } },
     } as const;
     const definitionWithoutDescription = {
-      name: "opentag_message_reply",
+      name: "example_failure",
       inputSchema: { type: "object", properties: { text: { type: "string" } } },
     } as const;
     const runtime = await factory(client).create({
@@ -1066,73 +1062,6 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     await defaultArgs.close();
   });
 
-  it("routes a real App Server dynamic tool call exactly once through RuntimeToolHost", async () => {
-    const cwd = await temporaryDirectory("opentag-codex-hosted-tool-process-");
-    const responseLog = join(cwd, "responses.jsonl");
-    let listener: ((frame: RuntimeBusinessFrame) => void | Promise<void>) | undefined;
-    const send = vi.fn(async (frame: unknown) => {
-      const request = frame as { requestId: string };
-      queueMicrotask(() =>
-        listener?.({
-          type: "im:tool:result",
-          requestId: request.requestId,
-          state: "succeeded",
-          providerMessageId: "provider-1",
-        }),
-      );
-    });
-    const host = new RuntimeToolHost({
-      send,
-      subscribeBusinessFrames: (next) => {
-        listener = next;
-        return () => {
-          listener = undefined;
-        };
-      },
-    });
-    const delivery = hostedToolDelivery();
-    const release = host.activateRun("hosted-tool-process", delivery, ["opentag_message_send"]);
-    const hostedTools = host.hostedTools(["opentag_message_send"]);
-    const runtimeFactory = new CodexAgentRuntimeFactory({
-      clientVersion: "0.0.1-test",
-      process: {
-        command: process.execPath,
-        args: [fixture],
-        env: {
-          PATH: process.env.PATH,
-          CODEX_FIXTURE_SCENARIO: "hosted-tool-run",
-          CODEX_FIXTURE_RESPONSE_LOG: responseLog,
-        },
-        requestTimeoutMs: 2_000,
-      },
-      probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "fixture" }),
-    });
-    const runtime = await runtimeFactory.create({
-      ...createRequest(() => undefined),
-      workspace: { cwd },
-      policy: {
-        fileSystem: "workspace-write",
-        network: "disabled",
-        approvals: "never",
-        tools: { mode: "allow-list", names: ["opentag_message_send"] },
-      },
-      hostedTools,
-    });
-
-    const result = await runtime.prompt({ runId: "hosted-tool-process", input: input("use the hosted tool") });
-    expect(send).toHaveBeenCalledTimes(1);
-    expect(result).toMatchObject({
-      status: "completed",
-      output: [{ text: expect.stringContaining('"responses":1') }],
-    });
-    const responses = (await readFile(responseLog, "utf8")).trim().split("\n");
-    expect(responses).toHaveLength(1);
-
-    await runtime.close();
-    release();
-    host.close();
-  });
-
   it("runs the default local probe against controlled CLI artifacts and credential sources", async () => {
     const directory = await temporaryDirectory("opentag-codex-probe-");
     const command = join(directory, "codex-fixture");
@@ -1408,33 +1337,6 @@ function factory(client: ManualCodexClient): CodexAgentRuntimeFactory {
     createClient: () => client,
     probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "test" }),
   });
-}
-
-function hostedToolDelivery(): DirectImMessageDeliveryRequest {
-  const agentId = randomUUID();
-  return {
-    type: "im:deliver",
-    requestId: randomUUID(),
-    deliveryId: randomUUID(),
-    imMessageId: randomUUID(),
-    sessionId: randomUUID(),
-    agentId,
-    placementGeneration: 1,
-    attention: "direct",
-    content: { kind: "text", text: "hello" },
-    runtime: {
-      revision: {
-        agent: { sequence: 1, id: agentId },
-        session: { sequence: 1, id: "session-1" },
-      },
-      agentId,
-      provider: "codex",
-      instructions: { platform: "platform", agent: "agent" },
-      allowedTools: ["opentag_message_send"],
-      execution: { approvalPolicy: "never", networkAccess: false },
-      workspace: { workspaceId: agentId, mode: "empty_on_create", sharing: "agent" },
-    },
-  };
 }
 
 function createRequest(eventSink: CreateAgentRuntimeRequest["eventSink"]): CreateAgentRuntimeRequest {

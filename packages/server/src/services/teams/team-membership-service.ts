@@ -20,7 +20,11 @@ import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agents, computers, memberships, teams, users } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
-import { type ProviderReadinessSource, projectComputerProviderReadiness } from "../computers/provider-readiness.js";
+import {
+  type ProviderReadinessSource,
+  projectComputerImCliReadiness,
+  projectComputerProviderReadiness,
+} from "../computers/provider-readiness.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
@@ -487,6 +491,12 @@ export class TeamMembershipService {
                 observedAt,
                 this.#providerReadiness,
               ),
+              imCliReadiness: projectComputerImCliReadiness(
+                row.computer.id,
+                connectionStatus,
+                observedAt,
+                this.#providerReadiness,
+              ),
             }
           : {}),
         connectedAt: row.computer.connectedAt?.toISOString() ?? null,
@@ -528,6 +538,12 @@ export class TeamMembershipService {
         ...(includeProviderReadiness
           ? {
               providerReadiness: projectComputerProviderReadiness(
+                row.computer.id,
+                connectionStatus,
+                observedAt,
+                this.#providerReadiness,
+              ),
+              imCliReadiness: projectComputerImCliReadiness(
                 row.computer.id,
                 connectionStatus,
                 observedAt,

@@ -189,13 +189,13 @@ describe("runtime domain contract", () => {
     expect(
       DirectImMessageDeliveryRequestSchema.parse({
         ...valid,
-        content: { kind: "text", text: "你".repeat(Math.floor(RUNTIME_DIRECT_TEXT_MAX_BYTES / 3)) },
+        content: { ...valid.content, text: "你".repeat(Math.floor(RUNTIME_DIRECT_TEXT_MAX_BYTES / 3)) },
       }),
     ).toBeDefined();
     expect(() =>
       DirectImMessageDeliveryRequestSchema.parse({
         ...valid,
-        content: { kind: "text", text: `${"你".repeat(Math.floor(RUNTIME_DIRECT_TEXT_MAX_BYTES / 3))}你` },
+        content: { ...valid.content, text: `${"你".repeat(Math.floor(RUNTIME_DIRECT_TEXT_MAX_BYTES / 3))}你` },
       }),
     ).toThrow();
     expect(() =>
@@ -211,12 +211,11 @@ describe("runtime domain contract", () => {
     const hashes = computeRuntimeSnapshotHashes(runtime);
     expect(hashes).toEqual({
       agentConfigHash: "9c345d5a6bbd8c2ddaf49112c5bb110c053ad7fb9619fd66f2036f2685c85838",
-      sessionConfigHash: "932ed754f30eaf7c643c9550d2f092bb7f17e0df2f9e07451699bedcf693f850",
-      effectiveSnapshotHash: "02018089a05da18452e77e14694f3c24f76a9b0dd7e0fddbc0da77fdcc43a149",
+      sessionConfigHash: "9b51b9872c3617a33b57b2068500c3c645be5f1ed4662e613101b8c20546eea6",
+      effectiveSnapshotHash: "647fac0b2c511e583846e9daf95e2fabe2f028e95de699f5d6d03df25ba4623f",
     });
-    expect(computeRuntimeSnapshotHashes({ ...runtime, allowedTools: ["read", "write"] })).toEqual(hashes);
     expect(computeDirectInputHash(directDelivery(runtime))).toBe(
-      "a38ede98941af44199dfef03456eb2d6f887c8c6771a664c78a89f3f9b2dc3d0",
+      "8d3349d6a28f7f5b2ffd0dff52df4fdeefbe4d019c3f186914f34556a535eef6",
     );
     expect(turnReport().resultHash).toBe("1531ebd9cb35b71727fd8913be9afad9f44e24fb3299ced53716085642e460c9");
   });
@@ -243,8 +242,7 @@ function snapshot(): EffectiveRuntimeSnapshot {
     model: "gpt-5.6-codex",
     reasoningEffort: "high",
     instructions: { platform: "platform α", agent: "agent β", session: "session γ" },
-    allowedTools: ["write", "read"],
-    execution: { approvalPolicy: "never", networkAccess: false },
+    execution: { approvalPolicy: "never", networkAccess: true },
     workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
     budget: { maxDurationMs: 60_000 },
   };
@@ -260,7 +258,18 @@ function directDelivery(runtime: EffectiveRuntimeSnapshot) {
     agentId: "agent-1",
     placementGeneration: 1,
     attention: "direct" as const,
-    content: { kind: "text" as const, text: "你好 OpenTag" },
+    content: {
+      kind: "text" as const,
+      text: "你好 OpenTag",
+      providerRef: {
+        provider: "slack" as const,
+        appId: "app-1",
+        teamId: "team-1",
+        botUserId: "bot-1",
+        channelId: "channel-1",
+        messageTs: "1710000000.000001",
+      },
+    },
     runtime,
     deadlineAt: "2026-08-18T01:00:00.000Z",
   };

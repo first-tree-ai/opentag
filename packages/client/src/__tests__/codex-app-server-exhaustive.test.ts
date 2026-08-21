@@ -324,7 +324,7 @@ describe("CodexAppServerProcess exhaustive behavior", () => {
       callId: "call-1",
       namespace: null,
       threadId: "thread-1",
-      tool: "opentag_message_send",
+      tool: "example_tool",
       turnId: "turn-1",
     };
 
@@ -567,7 +567,7 @@ function dynamicToolRequest(id: string, callId: string): Record<string, unknown>
       callId,
       namespace: null,
       threadId: "thread-1",
-      tool: "opentag_message_send",
+      tool: "example_tool",
       turnId: "turn-1",
     },
   };

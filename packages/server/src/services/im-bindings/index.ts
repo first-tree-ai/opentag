@@ -6,9 +6,7 @@ export {
 } from "./im-binding-service.js";
 export type {
   ImProviderAdapter,
-  ProviderReactionInput,
   ProviderResourceInput,
-  ProviderSendInput,
   ReadableResource,
   VerifiedBotIdentity,
 } from "./provider-adapter.js";

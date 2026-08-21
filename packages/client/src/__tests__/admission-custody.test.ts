@@ -128,7 +128,7 @@ describe("TurnCustodyOwner", () => {
     });
     const accepted = readyOwner.accept(request);
     await expect(
-      readyOwner.accept({ ...request, content: { kind: "text", text: "different" } }),
+      readyOwner.accept({ ...request, content: { ...request.content, text: "different" } }),
     ).resolves.toMatchObject({ result: { status: "rejected", reason: "input_conflict" } });
     await expect(accepted).resolves.toMatchObject({ result: { status: "accepted" } });
   });
@@ -246,7 +246,6 @@ function snapshot(): EffectiveRuntimeSnapshot {
     agentId: "agent-1",
     provider: "codex",
     instructions: { platform: "platform", agent: "agent", session: "session" },
-    allowedTools: [],
     execution: { approvalPolicy: "never", networkAccess: false },
     workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
   };
@@ -266,8 +265,19 @@ function delivery(
     agentId: "agent-1",
     placementGeneration: 1,
     attention: "direct",
-    content: { kind: "text", text: "hello" },
+    content: { kind: "text", text: "hello", providerRef: providerRef(`message-${deliveryId}`) },
     runtime,
+  };
+}
+
+function providerRef(messageTs: string) {
+  return {
+    provider: "slack" as const,
+    appId: "app-1",
+    teamId: "team-1",
+    botUserId: "bot-1",
+    channelId: "channel-1",
+    messageTs,
   };
 }
 

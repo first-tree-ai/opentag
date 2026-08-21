@@ -1,7 +1,6 @@
 import {
   type CreateAgentRuntimeConfig,
   CreateAgentRuntimeConfigSchema,
-  OPENTAG_MESSAGE_TOOLS,
   OPENTAG_PLATFORM_INSTRUCTIONS,
 } from "@opentag/shared";
 
@@ -14,7 +13,6 @@ export const DEFAULT_AGENT_RUNTIME_CONFIG = Object.freeze({
   model: null,
   reasoningEffort: null,
   instructions: DEFAULT_AGENT_INSTRUCTIONS,
-  allowedTools: [...OPENTAG_MESSAGE_TOOLS].sort(),
   maxDurationMs: null,
 }) satisfies Readonly<Required<CreateAgentRuntimeConfig>>;
 

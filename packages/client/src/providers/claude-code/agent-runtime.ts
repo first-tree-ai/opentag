@@ -77,7 +77,11 @@ export interface ClaudeCodeAgentRuntimeFactoryOptions {
       options: ClaudeCodeProcessSpawnOptions,
     ) => ChildProcessWithoutNullStreams;
   };
-  readonly createProcess?: (cwd: string, args: readonly string[]) => ClaudeCodeProcessClient;
+  readonly createProcess?: (
+    cwd: string,
+    args: readonly string[],
+    environment?: Readonly<Record<string, string>>,
+  ) => ClaudeCodeProcessClient;
   readonly createSessionId?: () => string;
   readonly startHostedToolBridge?: typeof startClaudeCodeHostedToolBridge;
   readonly probeRunner?: (signal?: AbortSignal) => Promise<{
@@ -562,7 +566,11 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
 export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
   readonly manifest = CLAUDE_CODE_AGENT_RUNTIME_MANIFEST;
   readonly #createSessionId: () => string;
-  readonly #createProcess: (cwd: string, args: readonly string[]) => ClaudeCodeProcessClient;
+  readonly #createProcess: (
+    cwd: string,
+    args: readonly string[],
+    environment?: Readonly<Record<string, string>>,
+  ) => ClaudeCodeProcessClient;
   readonly #probeRunner: (signal?: AbortSignal) => Promise<{
     readonly credential: boolean;
     readonly streamJson: boolean;
@@ -577,12 +585,12 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
     const prefix = options.process?.args ?? [];
     this.#createProcess =
       options.createProcess ??
-      ((cwd, args) =>
+      ((cwd, args, workspaceEnvironment) =>
         new ClaudeCodeProcess({
           command,
           args: [...prefix, ...args],
           cwd,
-          env: environment,
+          env: { ...environment, ...workspaceEnvironment },
           maxLineBytes: options.process?.maxLineBytes,
           maxStderrBytes: options.process?.maxStderrBytes,
           spawnProcess: options.process?.spawnProcess,
@@ -640,7 +648,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
       return new ClaudeCodeAgentRuntime({
         binding,
         configuration: request.configuration,
-        createProcess: (args) => this.#createProcess(request.workspace.cwd, args),
+        createProcess: (args) => this.#createProcess(request.workspace.cwd, args, request.workspace.environment),
         eventSink: request.eventSink,
         hostedTools: request.hostedTools,
         resume: mode === "resume",
@@ -673,6 +681,7 @@ export function claudeCodeAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = pr
     "LOCALAPPDATA",
     "LOGNAME",
     "NODE_EXTRA_CA_CERTS",
+    "OPENTAG_PROVIDER_ENV_FILE",
     "PATH",
     "PATHEXT",
     "SHELL",

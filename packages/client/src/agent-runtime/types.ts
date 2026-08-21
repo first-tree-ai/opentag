@@ -127,6 +127,7 @@ export interface AgentRunResult {
 
 export interface AgentRuntimeWorkspace {
   readonly cwd: string;
+  readonly environment?: Readonly<Record<string, string>>;
   readonly writableRoots?: readonly string[];
 }
 

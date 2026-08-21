@@ -221,7 +221,6 @@ function snapshot(agentId: string, workspaceId: string): EffectiveRuntimeSnapsho
     agentId,
     provider: "codex",
     instructions: { platform: "platform", agent: "agent", session: "session" },
-    allowedTools: [],
     execution: { approvalPolicy: "never", networkAccess: false },
     workspace: { workspaceId, mode: "empty_on_create", sharing: "agent" },
   };
@@ -256,7 +255,18 @@ function directDelivery(request: SessionReconcileRequest): DirectImMessageDelive
     agentId: request.agentId,
     placementGeneration: request.placementGeneration,
     attention: "direct",
-    content: { kind: "text", text: "hello" },
+    content: {
+      kind: "text",
+      text: "hello",
+      providerRef: {
+        provider: "slack",
+        appId: "app-1",
+        teamId: "team-1",
+        botUserId: "bot-1",
+        channelId: "channel-1",
+        messageTs: "1710000000.000001",
+      },
+    },
     runtime: request.runtime,
   };
 }

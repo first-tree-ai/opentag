@@ -301,7 +301,6 @@ function reconcileRequest(agentId: string, sessionId: string): SessionReconcileR
       agentId,
       provider: "codex",
       instructions: { platform: "platform", agent: "agent", session: "session" },
-      allowedTools: [],
       execution: { approvalPolicy: "never", networkAccess: false },
       workspace: { workspaceId: `${agentId}-workspace`, mode: "empty_on_create", sharing: "agent" },
     },

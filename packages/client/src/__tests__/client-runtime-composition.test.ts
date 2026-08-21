@@ -22,6 +22,7 @@ import {
   createClientRuntime,
   createClientRuntimeHandlers,
   createClientRuntimePreflight,
+  refreshImCliReadiness,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
@@ -40,6 +41,42 @@ afterEach(async () => {
 });
 
 describe("createClientRuntime production composition", () => {
+  it("probes Feishu and Slack CLI readiness independently from Agent Runtime providers", async () => {
+    const home = await temporaryDirectory("opentag-im-cli-readiness-");
+    const lark = resolve(home, "lark-cli");
+    const slack = resolve(home, "slack");
+    const brokenSlack = resolve(home, "broken-slack");
+    await writeFile(
+      lark,
+      '#!/bin/sh\nif [ "$1" = "--version" ] || { [ "$1" = "im" ] && [ "$2" = "--help" ]; }; then exit 0; fi\nexit 1\n',
+      "utf8",
+    );
+    await writeFile(
+      slack,
+      '#!/bin/sh\nif [ "$1" = "version" ] || { [ "$1" = "api" ] && [ "$2" = "--help" ]; }; then exit 0; fi\nexit 1\n',
+      "utf8",
+    );
+    await writeFile(brokenSlack, "#!/bin/sh\nexit 1\n", "utf8");
+    await Promise.all([chmod(lark, 0o700), chmod(slack, 0o700), chmod(brokenSlack, 0o700)]);
+    const setImCliReadiness = vi.fn();
+
+    await refreshImCliReadiness({ setImCliReadiness } as never, "feishu", lark, {});
+    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", slack, {});
+    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", brokenSlack, {});
+    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", resolve(home, "missing"), {});
+
+    expect(setImCliReadiness.mock.calls.map(([observation]) => observation)).toEqual([
+      { provider: "feishu", status: "checking" },
+      { provider: "feishu", status: "ready" },
+      { provider: "slack", status: "checking" },
+      { provider: "slack", status: "ready" },
+      { provider: "slack", status: "checking" },
+      { provider: "slack", status: "unavailable" },
+      { provider: "slack", status: "checking" },
+      { provider: "slack", status: "install" },
+    ]);
+  });
+
   it("projects Codex probe outcomes without exposing provider diagnostics", () => {
     expect(
       codexProviderReadiness(false, { ready: false, issues: [{ code: "artifact_missing", message: "secret" }] }),
@@ -84,10 +121,9 @@ describe("createClientRuntime production composition", () => {
       environment: { HOME: home, PATH: process.env.PATH },
       home,
     });
-    expect(runtime.messageToolAvailable).toBe(true);
     const result = await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()));
     expect(result).toMatchObject({ status: "ready" });
-    await runtime.runtimeManager.ensureRuntime("session-1");
+    await runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal);
     expect(await runtime.bindingStore.read("agent-1", "session-1")).toMatchObject({
       schemaVersion: 2,
       runtimeBinding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "thread-1" } },
@@ -97,10 +133,18 @@ describe("createClientRuntime production composition", () => {
     expect(launches).toContain("app-server --help");
     expect(launches).toContain("login status");
     expect(launches.filter((line) => line === CODEX_AGENT_RUNTIME_APP_SERVER_ARGS.join(" "))).toHaveLength(2);
+    await expect(
+      runtime.reconciler.reconcile({
+        ...reconcileRequest(connection.computerId, snapshot()),
+        requestId: randomUUID(),
+        desired: "stopped",
+        runtime: undefined,
+      }),
+    ).resolves.toMatchObject({ status: "stopped" });
 
     await runtime.runtimeManager.close();
     runtime.reportOwner.stop();
-    runtime.toolHost.close();
+    await runtime.credentialEnvironment.close();
   });
 
   it("keeps placement composable and defers unavailable Codex failure to the exact Turn runtime start", async () => {
@@ -113,14 +157,15 @@ describe("createClientRuntime production composition", () => {
       environment: { HOME: home, PATH: process.env.PATH },
       home,
     });
-    expect(runtime.messageToolAvailable).toBe(false);
     await expect(
       runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot())),
     ).resolves.toMatchObject({ status: "ready" });
-    await expect(runtime.runtimeManager.ensureRuntime("session-1")).rejects.toMatchObject({
-      name: "AgentRuntimeProviderUnavailableError",
-      providerId: "codex",
-    });
+    await expect(runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal)).rejects.toMatchObject(
+      {
+        name: "AgentRuntimeProviderUnavailableError",
+        providerId: "codex",
+      },
+    );
     runtime.stop();
     runtime.reportOwner.stop();
 
@@ -202,7 +247,6 @@ describe("createClientRuntime production composition", () => {
       logger: { child: () => createLogger("composition-child") } as never,
       signal: new AbortController().signal,
     });
-    expect(replaced.messageToolAvailable).toBe(false);
     replaced.stop();
     replaced.stop();
 
@@ -307,9 +351,6 @@ describe("createClientRuntime production composition", () => {
         execution: { approvalPolicy: "never", networkAccess: false },
       }),
     ).toBe("configuration_unsupported");
-    expect(validateClaudeCodeRuntimePolicy({ ...claudeSnapshot, allowedTools: ["unknown"] })).toBe(
-      "configuration_unsupported",
-    );
   });
 
   it("unit-tests composition delegates and every preflight outcome", async () => {
@@ -357,12 +398,11 @@ describe("createClientRuntime production composition", () => {
     const components = {
       bindingStore: {},
       custody: {},
-      messageToolAvailable: true,
+      credentialEnvironment: { close: vi.fn(async () => undefined) },
       reconciler: {},
       reportOwner: { stop: vi.fn() },
       runner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       runtimeManager: { close: vi.fn(async () => undefined) },
-      toolHost: { close: vi.fn() },
       workspace: {},
       refreshCapability: vi.fn(async () => undefined),
       capabilityRefreshIntervalMs: 10,
@@ -422,9 +462,27 @@ describe("createClientRuntime production composition", () => {
     await Promise.resolve();
     finishRefresh();
     await running;
+
+    const runtimeCloseFailure = new Error("runtime close failed");
+    const credentialClose = vi.fn(async () => undefined);
+    const failingClose = new ComposedClientRuntime(
+      { run: vi.fn(async () => undefined), stop: vi.fn() } as never,
+      {
+        ...components,
+        capabilityAbort: new AbortController(),
+        credentialEnvironment: { close: credentialClose },
+        runtimeManager: {
+          close: vi.fn(async () => {
+            throw runtimeCloseFailure;
+          }),
+        },
+      } as never,
+    );
+    await expect(failingClose.run()).rejects.toBe(runtimeCloseFailure);
+    expect(credentialClose).toHaveBeenCalledOnce();
   });
 
-  it("revokes and restores the advertised message-tool capability after fresh Provider probes", async () => {
+  it("keeps the credential-grant capability while refreshing Provider readiness", async () => {
     const home = await temporaryDirectory("opentag-client-capability-");
     const server = await runtimeServer();
     cleanup.push(server.close);
@@ -457,12 +515,12 @@ describe("createClientRuntime production composition", () => {
           return;
         }
         if (frame.type === "computer:register") {
-          observed.push((frame.capabilities as { imMessageTool: number }).imMessageTool);
+          observed.push((frame.capabilities as { imCredentialGrant: number }).imCredentialGrant);
           socket.send(JSON.stringify({ type: "computer:register:result", requestId: frame.requestId, ok: true }));
           return;
         }
         if (frame.type === "heartbeat") {
-          observed.push((frame.capabilities as { imMessageTool: number }).imMessageTool);
+          observed.push((frame.capabilities as { imCredentialGrant: number }).imCredentialGrant);
           socket.send(
             JSON.stringify({
               type: "heartbeat:result",
@@ -484,9 +542,7 @@ describe("createClientRuntime production composition", () => {
     const running = runtime.run();
     await vi.waitFor(() => expect(observed[0]).toBe(1));
     ready = false;
-    await vi.waitFor(() => expect(observed).toContain(0));
-    ready = true;
-    await vi.waitFor(() => expect(observed.slice(observed.indexOf(0) + 1)).toContain(1));
+    await vi.waitFor(() => expect(observed.filter((value) => value === 1).length).toBeGreaterThan(1));
     runtime.stop();
     await running;
   });
@@ -816,7 +872,7 @@ function completeLegacyAuth(socket: WebSocket, frame: Record<string, unknown>, p
     JSON.stringify({
       type: "server:welcome",
       protocolVersion: 1,
-      capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
+      capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imCredentialGrant: 1 },
       ...(providerReadiness ? { providerReadiness: { version: 1, providers: ["codex"] } } : {}),
       heartbeatIntervalMs: 10,
       heartbeatTimeoutMs: 100,
@@ -870,8 +926,7 @@ function snapshot(): EffectiveRuntimeSnapshot {
     agentId: "agent-1",
     provider: "codex",
     instructions: { platform: "platform", agent: "agent", session: "session" },
-    allowedTools: [],
-    execution: { approvalPolicy: "never", networkAccess: false },
+    execution: { approvalPolicy: "never", networkAccess: true },
     workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
   };
 }
@@ -886,7 +941,18 @@ function delivery(runtime: EffectiveRuntimeSnapshot): DirectImMessageDeliveryReq
     agentId: "agent-1",
     placementGeneration: 1,
     attention: "direct",
-    content: { kind: "text", text: "hello" },
+    content: {
+      kind: "text",
+      text: "hello",
+      providerRef: {
+        provider: "slack",
+        appId: "app-1",
+        teamId: "team-1",
+        botUserId: "bot-1",
+        channelId: "channel-1",
+        messageTs: "1710000000.000001",
+      },
+    },
     runtime,
   };
 }

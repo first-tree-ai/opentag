@@ -16,6 +16,7 @@ function binding() {
     appId: "A1",
     teamId: "T1",
     botUserId: "U_BOT",
+    botId: "B_BOT",
     botAccessToken: "xoxb-sensitive",
     signingSecret: "signing-sensitive",
   };
@@ -163,6 +164,7 @@ describe("Slack Events API ingress", () => {
       appId: current.appId,
       teamId: current.teamId,
       botUserId: current.botUserId,
+      botId: current.botId,
       event: envelope.event,
       eventTime: envelope.event_time,
     });

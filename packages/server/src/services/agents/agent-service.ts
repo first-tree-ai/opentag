@@ -71,7 +71,6 @@ function toRuntimeConfig(row: AgentRuntimeConfigRow): AgentRuntimeConfig {
     model: row.model,
     reasoningEffort: row.reasoningEffort,
     instructions: row.instructions,
-    allowedTools: row.allowedTools,
     maxDurationMs: row.maxDurationMs,
   });
 }
@@ -124,9 +123,7 @@ function runtimeConfigsEqual(
     left.model === right.model &&
     left.reasoningEffort === right.reasoningEffort &&
     left.instructions === right.instructions &&
-    left.maxDurationMs === right.maxDurationMs &&
-    left.allowedTools.length === right.allowedTools.length &&
-    left.allowedTools.every((toolId, index) => toolId === right.allowedTools[index])
+    left.maxDurationMs === right.maxDurationMs
   );
 }
 
@@ -135,7 +132,6 @@ function creationIntentFingerprint(input: CreateAgentRequest): string {
   const explicitRuntimeConfig =
     runtimeConfig && Object.values(runtimeConfig).some((value) => value !== undefined)
       ? {
-          allowedTools: runtimeConfig.allowedTools,
           instructions: runtimeConfig.instructions,
           maxDurationMs: runtimeConfig.maxDurationMs,
           model: runtimeConfig.model,
@@ -428,7 +424,6 @@ export class AgentService {
             ? input.runtimeConfig.reasoningEffort
             : currentRuntimeProjection.reasoningEffort,
         instructions: input.runtimeConfig?.instructions ?? currentRuntimeProjection.instructions,
-        allowedTools: input.runtimeConfig?.allowedTools ?? currentRuntimeProjection.allowedTools,
         maxDurationMs:
           input.runtimeConfig?.maxDurationMs !== undefined
             ? input.runtimeConfig.maxDurationMs

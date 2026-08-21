@@ -352,6 +352,8 @@ export class RuntimeSession {
             frame.providerReadiness && frame.providerReadiness.length > 0 ? this.#options.now().getTime() : undefined,
           providerReadinessProviders:
             this.#options.providerReadiness.length > 0 ? [...this.#options.providerReadiness] : undefined,
+          imCliReadiness: frame.imCliReadiness,
+          imCliReadinessObservedAt: frame.imCliReadiness?.length ? this.#options.now().getTime() : undefined,
           socket: this.#socket,
           userId,
         },
@@ -401,7 +403,7 @@ export class RuntimeSession {
   }
 
   async #heartbeat(frame: HeartbeatFrame): Promise<void> {
-    const { requestId, computerId, instanceId, capabilities, providerReadiness } = frame;
+    const { requestId, computerId, instanceId, capabilities, providerReadiness, imCliReadiness } = frame;
     try {
       if (!this.#userId || computerId !== this.#computerId || instanceId !== this.#instanceId) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance is not registered", 4409, requestId);
@@ -427,6 +429,7 @@ export class RuntimeSession {
           this.#options.now().getTime(),
           capabilities,
           this.#options.providerReadiness.length > 0 ? (providerReadiness ?? []) : undefined,
+          imCliReadiness,
         )
       ) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, requestId);

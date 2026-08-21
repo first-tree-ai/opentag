@@ -7,6 +7,7 @@ import {
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_IM_HISTORY_MAX_BYTES,
   RUNTIME_MAX_FRAME_BYTES,
+  type RuntimeProviderMessageRef,
   runtimeFrameByteLength,
 } from "@opentag/shared";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, like, lt, lte, ne, notExists, or, sql } from "drizzle-orm";
@@ -425,6 +426,7 @@ export class ImDeliveryWorker {
             row.message.operation === "deleted" ? "[deleted]" : row.message.content.fallbackText,
             RUNTIME_DIRECT_TEXT_MAX_BYTES,
           ),
+          providerRef: runtimeProviderMessageRef(row.message, row.imBinding),
           ...(history.items.length > 0 ? { history: history.items, historyTruncated: history.truncated } : {}),
           ...(resources.length > 0
             ? {
@@ -743,7 +745,12 @@ export class ImDeliveryWorker {
     providerRevisionKey: string,
     messageId: string,
   ): Promise<{
-    items: Array<{ imMessageId: string; occurredAt: string; text: string }>;
+    items: Array<{
+      imMessageId: string;
+      occurredAt: string;
+      text: string;
+      providerRef: RuntimeProviderMessageRef;
+    }>;
     truncated: boolean;
   }> {
     const [lastAccepted] = await this.#database
@@ -764,8 +771,17 @@ export class ImDeliveryWorker {
       .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
       .limit(1);
     const rows = await this.#database
-      .select({ id: imMessages.id, occurredAt: imMessages.occurredAt, content: imMessages.content })
+      .select({
+        id: imMessages.id,
+        occurredAt: imMessages.occurredAt,
+        content: imMessages.content,
+        channelId: imMessages.channelId,
+        externalMessageId: imMessages.externalMessageId,
+        providerContext: imMessages.providerContext,
+        imBinding: imBindings,
+      })
       .from(imMessages)
+      .innerJoin(imBindings, eq(imBindings.id, imMessages.imBindingId))
       .where(
         and(
           eq(imMessages.imBindingId, session.imBindingId),
@@ -781,7 +797,12 @@ export class ImDeliveryWorker {
       .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
       .limit(101);
     const selected = rows.slice(0, 100);
-    const items: Array<{ imMessageId: string; occurredAt: string; text: string }> = [];
+    const items: Array<{
+      imMessageId: string;
+      occurredAt: string;
+      text: string;
+      providerRef: RuntimeProviderMessageRef;
+    }> = [];
     let bytes = 2;
     let truncated = rows.length > selected.length;
     for (const row of selected) {
@@ -789,6 +810,7 @@ export class ImDeliveryWorker {
         imMessageId: row.id,
         occurredAt: row.occurredAt.toISOString(),
         text: truncateUtf8(row.content.fallbackText, RUNTIME_DIRECT_TEXT_MAX_BYTES),
+        providerRef: runtimeProviderMessageRef(row, row.imBinding),
       };
       const itemBytes = Buffer.byteLength(JSON.stringify(item), "utf8") + (items.length > 0 ? 1 : 0);
       if (bytes + itemBytes > RUNTIME_IM_HISTORY_MAX_BYTES) {
@@ -800,6 +822,37 @@ export class ImDeliveryWorker {
     }
     return { items: items.reverse(), truncated };
   }
+}
+
+function runtimeProviderMessageRef(
+  message: Pick<typeof imMessages.$inferSelect, "channelId" | "externalMessageId" | "providerContext">,
+  binding: typeof imBindings.$inferSelect,
+): RuntimeProviderMessageRef {
+  if (!binding.externalAppId || !binding.externalBotId) throw new Error("IM_BINDING_IDENTITY_INCOMPLETE");
+  if (message.providerContext.provider === "feishu") {
+    const { provider: _provider, ...context } = message.providerContext;
+    return {
+      provider: "feishu",
+      teamBrand: binding.externalTeamBrand === "lark" ? "lark" : "feishu",
+      appId: binding.externalAppId,
+      botOpenId: binding.externalBotId,
+      chatId: message.channelId,
+      messageId: message.externalMessageId,
+      ...context,
+    };
+  }
+  if (!binding.externalTeamId) throw new Error("IM_BINDING_IDENTITY_INCOMPLETE");
+  const { provider: _provider, ...context } = message.providerContext;
+  return {
+    provider: "slack",
+    appId: binding.externalAppId,
+    teamId: binding.externalTeamId,
+    ...(binding.externalEnterpriseId ? { enterpriseId: binding.externalEnterpriseId } : {}),
+    botUserId: binding.externalBotId,
+    channelId: message.channelId,
+    messageTs: message.externalMessageId,
+    ...context,
+  };
 }
 
 type CustodyQuery = Pick<DatabaseClient | DatabaseTransaction, "select">;

@@ -665,6 +665,41 @@ describe("launchd service backend", () => {
     );
   });
 
+  it("fails activation immediately when launchctl status times out", async () => {
+    const userHome = await temporaryDirectory("opentag-launchd-");
+    const home = join(userHome, ".opentag");
+    let loaded = false;
+    let activationChecks = 0;
+    const wait = vi.fn(async () => undefined);
+    const runner = fakeRunner((_, args) => {
+      if (args[0] === "print" && args[1] === "gui/501") return result(0, "domain", "");
+      if (args[0] === "print") {
+        if (!loaded) return result(113, "", "Could not find service");
+        activationChecks += 1;
+        return { code: null, stderr: "", stdout: "", timedOut: true };
+      }
+      if (args[0] === "bootout") return result(3, "", "Boot-out failed: 3: No such process");
+      if (args[0] === "bootstrap") loaded = true;
+      return result(0, "", "");
+    });
+    const backend = createLaunchdBackend({
+      activationAttempts: 50,
+      activationDelayMs: 100,
+      evictionDelayMs: 0,
+      home,
+      invocation: { args: [], program: "/usr/local/bin/opentag" },
+      runner,
+      serviceId: "opentag",
+      sleep: wait,
+      uid: 501,
+      userHome,
+    });
+
+    await expect(backend.installAndStart()).rejects.toThrow("launchd activation status check timed out");
+    expect(activationChecks).toBe(1);
+    expect(wait).not.toHaveBeenCalled();
+  });
+
   it("reports a loaded waiting LaunchAgent without a PID as inactive", async () => {
     const userHome = await temporaryDirectory("opentag-launchd-");
     const home = join(userHome, ".opentag");

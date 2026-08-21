@@ -114,11 +114,14 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
   const evictionAttempts = options.evictionAttempts ?? 20;
   const evictionDelayMs = options.evictionDelayMs ?? 100;
 
-  const status = async (): Promise<DaemonServiceInfo> => {
+  const readStatus = async (failOnTimeout = false): Promise<DaemonServiceInfo> => {
     const plist = await readRegularFile(plistPath);
     if (plist === undefined) {
       const orphaned = await options.runner.run(launchctl, ["print", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
       if (orphaned.timedOut) {
+        if (failOnTimeout) {
+          throw new DaemonServiceError("OPERATION_FAILED", "launchd activation status check timed out");
+        }
         return info("unknown", {
           detail: "launchctl could not verify whether a definition-less service target is loaded",
           drifted: true,
@@ -147,7 +150,12 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
     }
     const result = await options.runner.run(launchctl, ["print", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
     const drifted = plist !== expectedPlist || wrapper !== expectedWrapper;
-    if (result.timedOut) return info("unknown", { configuredHome, detail: "launchctl print timed out", drifted });
+    if (result.timedOut) {
+      if (failOnTimeout) {
+        throw new DaemonServiceError("OPERATION_FAILED", "launchd activation status check timed out");
+      }
+      return info("unknown", { configuredHome, detail: "launchctl print timed out", drifted });
+    }
     if (result.code !== 0) {
       return isManagerNotLoaded(result)
         ? info("inactive", { configuredHome, drifted })
@@ -172,6 +180,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
       drifted,
     });
   };
+  const status = (): Promise<DaemonServiceInfo> => readStatus();
 
   const preflight = async (): Promise<void> => {
     const result = await options.runner.run(launchctl, ["print", domain], { timeoutMs: LAUNCHD_TIMEOUT_MS });
@@ -219,7 +228,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
   const waitForActivation = async (): Promise<DaemonServiceInfo> => {
     let current: DaemonServiceInfo | undefined;
     for (let attempt = 0; attempt < activationAttempts; attempt += 1) {
-      current = await status();
+      current = await readStatus(true);
       if (current.state === "active") return current;
       if (attempt + 1 < activationAttempts) await wait(activationDelayMs);
     }

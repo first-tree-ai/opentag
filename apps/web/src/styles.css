@@ -3091,7 +3091,7 @@ textarea:focus {
 
 .settings-members-section {
   width: 100%;
-  gap: 36px;
+  gap: 32px;
 }
 
 .settings-readonly-heading,
@@ -3124,12 +3124,9 @@ textarea:focus {
 .settings-invitation-panel {
   display: grid;
   width: 100%;
-  align-items: start;
-  column-gap: 40px;
+  gap: 14px;
   border-top: 1px solid var(--strong-border);
   background: transparent;
-  grid-template-columns: minmax(0, 220px) minmax(0, 1fr);
-  row-gap: 10px;
   padding: 28px 0 0;
 }
 
@@ -3138,21 +3135,16 @@ textarea:focus {
 }
 
 .settings-invitation-panel h3 {
-  grid-column: 1;
-  grid-row: 1;
   margin: 0;
   font-size: var(--text-subsection);
   font-weight: var(--fw-semibold);
 }
 
 .settings-invitation-panel > p {
-  grid-column: 1;
-  grid-row: 2 / span 2;
   max-width: 590px;
-  margin: 0;
+  margin: -7px 0 1px;
   color: var(--muted);
   font-size: var(--text-meta);
-  line-height: var(--lh-ui);
 }
 
 .settings-invitation-panel:has(.settings-invitation-create) {
@@ -3179,23 +3171,16 @@ textarea:focus {
 }
 
 .settings-invitation-panel .invite-link {
-  grid-column: 2;
-  grid-row: 1;
   grid-template-columns: minmax(0, 1fr);
 }
 
 .settings-invitation-panel .invite-link + .muted {
-  grid-column: 2;
-  grid-row: 2;
   margin: 0;
   font-size: var(--text-meta);
 }
 
 .settings-invitation-panel .actions {
-  grid-column: 2;
-  grid-row: 3;
   justify-content: flex-end;
-  margin-top: 4px;
 }
 
 .settings-member-list {
@@ -3256,12 +3241,12 @@ textarea:focus {
 
 .settings-member-table .settings-table-header,
 .settings-member-row {
-  grid-template-columns: minmax(240px, 390px) 104px;
+  grid-template-columns: minmax(0, 1fr) 112px;
 }
 
 .settings-member-row {
-  min-height: 52px;
-  padding-block: 6px;
+  min-height: 56px;
+  padding-block: 7px;
 }
 
 .settings-member-row:last-child {
@@ -3277,7 +3262,7 @@ textarea:focus {
 
 .settings-member-identity strong,
 .settings-member-identity small {
-  display: inline;
+  display: block;
 }
 
 .settings-member-identity strong {
@@ -3286,15 +3271,15 @@ textarea:focus {
 }
 
 .settings-member-identity small {
-  margin-left: 8px;
+  margin-top: 3px;
   color: var(--muted);
   font-size: var(--text-meta);
 }
 
 .settings-member-avatar {
   display: inline-flex;
-  width: 30px;
-  height: 30px;
+  width: 32px;
+  height: 32px;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;

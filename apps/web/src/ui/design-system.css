@@ -269,25 +269,6 @@ textarea.ds-control--compact {
   padding: 0.4rem 0.65rem;
 }
 
-select.ds-control--quiet {
-  border-color: transparent;
-  background-color: transparent;
-  box-shadow: none;
-  color: var(--color-text-secondary);
-  font-weight: var(--fw-medium);
-}
-
-select.ds-control--quiet:hover:not(:disabled) {
-  border-color: var(--color-border-divider);
-  background-color: var(--color-bg-hover);
-  color: var(--color-text-primary);
-}
-
-select.ds-control--quiet:focus {
-  border-color: var(--color-brand);
-  background-color: var(--color-bg-surface);
-}
-
 .ds-field textarea,
 textarea.ds-control {
   min-height: 150px;

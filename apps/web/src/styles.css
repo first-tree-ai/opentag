@@ -1702,9 +1702,9 @@ code {
   display: grid;
   width: min(430px, 100%);
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: var(--radius-xl);
   background: var(--surface);
-  box-shadow: 0 22px 64px rgb(43 55 38 / 10%);
+  box-shadow: var(--shadow-entry);
   padding: 44px;
   text-align: center;
 }
@@ -1758,7 +1758,7 @@ code {
   overflow: hidden;
   justify-content: center;
   border: 1px solid var(--strong-border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--surface-soft);
   color: var(--foreground);
   font-size: var(--text-ui);
@@ -1766,10 +1766,10 @@ code {
   padding: 0 12px;
   text-decoration: none;
   transition:
-    background-color 180ms ease,
-    border-color 180ms ease,
-    box-shadow 180ms ease,
-    transform 140ms ease;
+    background-color var(--motion-slow) var(--ease-standard),
+    border-color var(--motion-slow) var(--ease-standard),
+    box-shadow var(--motion-slow) var(--ease-standard),
+    transform var(--motion-fast) var(--ease-standard);
 }
 
 .login-provider-button--google {
@@ -1778,7 +1778,7 @@ code {
   justify-self: center;
   overflow: visible;
   border: 0;
-  border-radius: 4px;
+  border-radius: var(--radius-xs);
   background: transparent;
   padding: 0;
 }
@@ -1832,7 +1832,7 @@ code {
 
 .login-unavailable {
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   background: var(--background);
   padding: 12px 14px;
 }
@@ -1843,7 +1843,7 @@ code {
 
 .login-card .loading-state span:first-child {
   height: 48px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
 }
 
 .login-card .loading-state span:not(:first-child) {
@@ -1864,7 +1864,7 @@ code {
   }
 
   .login-card {
-    border-radius: 14px;
+    border-radius: var(--radius-lg);
     padding: 34px 24px;
   }
 

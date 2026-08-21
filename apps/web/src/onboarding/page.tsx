@@ -1,16 +1,16 @@
 import type {
   AgentRuntimeProvider,
   AgentSummary,
-  CreateAgentRequest,
   MeMembership,
   TeamComputerSummary,
   UserProfile,
 } from "@opentag/shared/browser";
-import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type AgentCreationFacts, AgentCreationFlow } from "../agent-creation/agent-creation-flow.js";
 import { browserApi } from "../api.js";
 import { ComputerSetup } from "../computer-setup.js";
 import { FeishuSetup, type FeishuSetupControl } from "../im/feishu-setup.js";
-import { Button, buttonClassName, Field } from "../ui/design-system.js";
+import { Button, buttonClassName } from "../ui/design-system.js";
 import {
   deriveOnboardingState,
   type OnboardingAgent,
@@ -28,7 +28,6 @@ import {
 } from "./runtime-facts.js";
 
 const FEISHU_BOT_APP_LINK = "https://applink.feishu.cn/client/bot/open";
-const CREATE_INTENT_VERSION = 1;
 /** A Computer republishes Provider readiness about twice a minute, so a slower poll loses nothing. */
 const RUNTIME_POLL_INTERVAL_MS = 5_000;
 const RUNTIME_POLL_LIMIT_MS = 10 * 60 * 1_000;
@@ -55,23 +54,6 @@ interface OnboardingSnapshot {
   readonly runtime: RuntimeFactsResult;
   /** Team admins a member can ask; empty whenever the viewer manages the Team. */
   readonly admins: readonly string[];
-}
-
-interface RouteSelection {
-  readonly computerId: string;
-  readonly provider?: AgentRuntimeProvider;
-}
-
-interface CreationIntentRecord {
-  readonly version: typeof CREATE_INTENT_VERSION;
-  readonly teamId: string;
-  readonly creationIntentId: string;
-  readonly request: Omit<CreateAgentRequest, "creationIntentId">;
-}
-
-interface CreationState {
-  readonly kind: "pending" | "error";
-  readonly message?: string;
 }
 
 type JourneyStatus = "complete" | "current" | "upcoming";
@@ -112,13 +94,8 @@ export function OnboardingPage({
 }: OnboardingPageProps) {
   const [revision, setRevision] = useState(0);
   const [loadState, setLoadState] = useState<PageLoadState>({ kind: "loading" });
-  const [creation, setCreation] = useState<CreationState>();
-  const [agentDisplayName, setAgentDisplayName] = useState(
-    () => readCreationIntent(membership.teamId)?.request.displayName ?? "OpenTag",
-  );
   const [refreshPending, setRefreshPending] = useState(false);
   const [attendedWindow, setAttendedWindow] = useState(0);
-  const creationInFlight = useRef(false);
   const refreshInFlight = useRef(false);
   const reload = useCallback(() => {
     if (refreshInFlight.current) return;
@@ -181,6 +158,8 @@ export function OnboardingPage({
   const journey = onboardingJourney(
     resolved?.state.currentState,
     loadState.kind === "ready" ? loadState.snapshot : undefined,
+    user.id,
+    resolved?.state.canManage ?? membership.role === "admin",
   );
 
   const waitingForRuntime = resolved !== undefined && RUNTIME_WAIT_STATES.includes(resolved.state.currentState.kind);
@@ -200,44 +179,6 @@ export function OnboardingPage({
     return () => window.clearInterval(timer);
   }, [attendedWindow, reload, waitingForRuntime]);
 
-  const runAgentCreation = useCallback(
-    (request: Omit<CreateAgentRequest, "creationIntentId">) => {
-      if (refreshInFlight.current || creationInFlight.current) return;
-      creationInFlight.current = true;
-      setCreation({ kind: "pending" });
-      void createOnboardingAgent(membership.teamId, request).then(
-        (agent) => {
-          creationInFlight.current = false;
-          rememberTargetAgent(membership.teamId, agent.id);
-          setCreation(undefined);
-          reload();
-        },
-        (cause: unknown) => {
-          creationInFlight.current = false;
-          setCreation({
-            kind: "error",
-            message: cause instanceof Error ? cause.message : "Unable to prepare OpenTag",
-          });
-        },
-      );
-    },
-    [membership.teamId, reload],
-  );
-
-  useEffect(() => {
-    if (!resolved?.state.canManage || resolved.state.currentState.kind !== "agent") return;
-    const current = resolved.state.currentState;
-    const record = readCreationIntent(membership.teamId);
-    if (
-      !record ||
-      record.request.computerId !== current.computer.id ||
-      record.request.runtimeProvider !== current.provider.provider
-    )
-      return;
-    setAgentDisplayName(record.request.displayName);
-    runAgentCreation(record.request);
-  }, [membership.teamId, resolved, runAgentCreation]);
-
   return (
     <div className="onboarding-shell">
       <OnboardingHeader user={user} />
@@ -255,19 +196,16 @@ export function OnboardingPage({
               ) : null}
               {loadState.kind === "ready" && resolved ? (
                 <OnboardingContent
-                  agentDisplayName={agentDisplayName}
                   canManage={resolved.state.canManage}
-                  creation={creation}
+                  ownerUserId={user.id}
                   onChooseAgent={(agentId) => {
                     rememberTargetAgent(membership.teamId, agentId);
                     reload();
                   }}
-                  onChooseRoute={(selection) => {
-                    rememberRouteSelection(membership.teamId, selection);
+                  onAgentCreated={(agentId) => {
+                    rememberTargetAgent(membership.teamId, agentId);
                     reload();
                   }}
-                  onAgentDisplayNameChange={setAgentDisplayName}
-                  onCreateAgent={(current) => runAgentCreation(normalizedAgentRequest(current, agentDisplayName))}
                   onReload={attendedReload}
                   refreshPending={refreshPending}
                   snapshot={loadState.snapshot}
@@ -405,6 +343,8 @@ function OnboardingStageContext({ journey }: { journey: OnboardingJourneyState }
 function onboardingJourney(
   current: OnboardingCurrentState | undefined,
   snapshot: OnboardingSnapshot | undefined,
+  ownerUserId: string,
+  canManage: boolean,
 ): OnboardingJourneyState {
   if (!current) {
     return {
@@ -419,6 +359,59 @@ function onboardingJourney(
       prepare: "current",
       stageDescription: "We’re reading your Computer and runtime state.",
       stageStatus: "Checking setup",
+      stageTitle: "Prepare your Agent",
+    };
+  }
+
+  if (snapshot && !snapshot.targetAgent) {
+    const ownComputers = snapshot.computers.filter((computer) => computer.ownerUserId === ownerUserId);
+    const relevantComputers = canManage ? ownComputers : snapshot.computers;
+    const onlineComputers = relevantComputers
+      .filter((computer) => computer.connectionStatus === "online")
+      .sort((left, right) => left.displayName.localeCompare(right.displayName));
+    const computerById = new Map(onlineComputers.map((computer) => [computer.id, computer]));
+    const readyRoute =
+      snapshot.runtime.kind === "available"
+        ? snapshot.runtime.providers
+            .filter((provider) => provider.runtimeReady && computerById.has(provider.computerId))
+            .sort((left, right) => {
+              const computerOrder = (computerById.get(left.computerId)?.displayName ?? "").localeCompare(
+                computerById.get(right.computerId)?.displayName ?? "",
+              );
+              return computerOrder !== 0 ? computerOrder : compareProviderFacts(left, right);
+            })[0]
+        : undefined;
+    const readyComputer = readyRoute ? computerById.get(readyRoute.computerId) : undefined;
+    const computerFact = readyComputer
+      ? journeyComputerRouteFact(readyComputer)
+      : relevantComputers.length === 0
+        ? { label: "Computer", status: "current" as const, value: "Not connected" }
+        : onlineComputers.length === 0
+          ? { label: "Computer", status: "attention" as const, value: "Reconnect" }
+          : journeyComputerRouteFact(onlineComputers[0] as TeamComputerSummary);
+    const runtimeFact: JourneyFact = readyRoute
+      ? { label: "Runtime", status: "ready", value: providerLabel(readyRoute.provider) }
+      : relevantComputers.length === 0 || onlineComputers.length === 0
+        ? { label: "Runtime", status: "waiting", value: "Waiting" }
+        : snapshot.runtime.kind === "available"
+          ? { label: "Runtime", status: "current", value: "Setup required" }
+          : { label: "Runtime", status: "current", value: "Checking" };
+    return {
+      activeStep: 1,
+      agentName: "OpenTag",
+      messaging: "upcoming",
+      prepare: "current",
+      prepareFacts: [computerFact, runtimeFact, { label: "Agent", status: "current", value: "Name pending" }],
+      stageDescription: "Name your Agent, then confirm its ready runtime.",
+      stageStatus: readyRoute
+        ? "Ready to create"
+        : relevantComputers.length === 0
+          ? "Computer needed"
+          : onlineComputers.length === 0
+            ? "Computer offline"
+            : snapshot.runtime.kind === "available"
+              ? "Runtime needs setup"
+              : "Checking runtime",
       stageTitle: "Prepare your Agent",
     };
   }
@@ -557,33 +550,26 @@ function OnboardingLoading() {
 }
 
 function OnboardingContent({
-  agentDisplayName,
   canManage,
-  creation,
-  onAgentDisplayNameChange,
+  onAgentCreated,
   onChooseAgent,
-  onChooseRoute,
-  onCreateAgent,
   onReload,
+  ownerUserId,
   refreshPending,
   snapshot,
   state,
   teamId,
 }: {
-  agentDisplayName: string;
   canManage: boolean;
-  creation: CreationState | undefined;
-  onAgentDisplayNameChange: (value: string) => void;
+  onAgentCreated: (agentId: string) => void;
   onChooseAgent: (agentId: string) => void;
-  onChooseRoute: (selection: RouteSelection) => void;
-  onCreateAgent: (current: Extract<OnboardingCurrentState, { kind: "agent" }>) => void;
   onReload: () => void;
+  ownerUserId: string;
   refreshPending: boolean;
   snapshot: OnboardingSnapshot;
   state: OnboardingState;
   teamId: string;
 }) {
-  const [routeChangeOpen, setRouteChangeOpen] = useState(false);
   if (snapshot.targetCandidates.length > 1 && !snapshot.targetAgent) {
     return (
       <ActionSection
@@ -611,6 +597,20 @@ function OnboardingContent({
           <ReadOnlyCopy admins={snapshot.admins} />
         )}
       </ActionSection>
+    );
+  }
+  if (canManage && !snapshot.targetAgent) {
+    return (
+      <section className="onboarding-action">
+        <AgentCreationFlow
+          facts={onboardingAgentCreationFacts(snapshot, ownerUserId)}
+          initialDisplayName="OpenTag"
+          refreshing={refreshPending}
+          teamId={teamId}
+          onCreated={(agent) => onAgentCreated(agent.id)}
+          onRefresh={onReload}
+        />
+      </section>
     );
   }
 
@@ -658,31 +658,7 @@ function OnboardingContent({
         title="Choose a runnable Computer"
         description="OpenTag could not safely choose between these Computers."
       >
-        {canManage ? (
-          <div className="onboarding-choice-list">
-            {current.computers.map((computer) => {
-              const providers = runnableProviders(snapshot.runtime, computer.id);
-              const provider = providers.sort(compareProviderFacts)[0];
-              return (
-                <button
-                  className="onboarding-choice"
-                  key={computer.id}
-                  type="button"
-                  onClick={() =>
-                    onChooseRoute({ computerId: computer.id, ...(provider ? { provider: provider.provider } : {}) })
-                  }
-                >
-                  <strong>{computer.displayName}</strong>
-                  <span>
-                    {provider ? `${providerLabel(provider.provider)} ready` : "No runnable Provider confirmed"}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          <ReadOnlyCopy admins={snapshot.admins} />
-        )}
+        <ReadOnlyCopy admins={snapshot.admins} />
       </ActionSection>
     );
   }
@@ -710,96 +686,13 @@ function OnboardingContent({
     );
   }
   if (current.kind === "agent") {
-    if (!canManage) {
-      return (
-        <ActionSection
-          readonly
-          title="Create the Agent"
-          description={`The runnable route is ${providerLabel(current.provider.provider)} on ${current.computer.displayName}.`}
-        >
-          <ReadOnlyCopy admins={snapshot.admins} />
-        </ActionSection>
-      );
-    }
-    const creationPending = creation?.kind === "pending";
-    const pending = creationPending || refreshPending;
     return (
       <ActionSection
-        title="Create your Agent"
-        description={`OpenTag will run with ${providerLabel(current.provider.provider)} on ${current.computer.displayName}.`}
+        readonly
+        title="Create the Agent"
+        description={`The runnable route is ${providerLabel(current.provider.provider)} on ${current.computer.displayName}.`}
       >
-        {current.alternatives.length > 0 ? (
-          <div className="onboarding-route-change">
-            <Button
-              aria-expanded={routeChangeOpen}
-              disabled={pending}
-              size="compact"
-              variant="ghost"
-              onClick={() => setRouteChangeOpen((open) => !open)}
-            >
-              Change
-            </Button>
-            {routeChangeOpen ? (
-              <div className="onboarding-choice-list">
-                {current.alternatives.map((alternative) => (
-                  <button
-                    className="onboarding-choice"
-                    disabled={pending}
-                    key={`${alternative.computerId}:${alternative.provider}`}
-                    type="button"
-                    onClick={() => {
-                      setRouteChangeOpen(false);
-                      onChooseRoute({ computerId: alternative.computerId, provider: alternative.provider });
-                    }}
-                  >
-                    <strong>{providerLabel(alternative.provider)}</strong>
-                    <span>
-                      {snapshot.computers.find((computer) => computer.id === alternative.computerId)?.displayName ??
-                        current.computer.displayName}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        <form
-          className="onboarding-agent-form"
-          onSubmit={(event: FormEvent<HTMLFormElement>) => {
-            event.preventDefault();
-            onCreateAgent(current);
-          }}
-        >
-          <Field htmlFor="onboarding-agent-display-name" label="Agent display name">
-            <input
-              autoComplete="off"
-              disabled={pending}
-              id="onboarding-agent-display-name"
-              maxLength={120}
-              required
-              value={agentDisplayName}
-              onChange={(event) => onAgentDisplayNameChange(event.target.value)}
-            />
-          </Field>
-          <div className="onboarding-feedback">
-            {creation?.kind === "error" ? (
-              <div className="notice error" role="alert">
-                {creation.message}
-              </div>
-            ) : null}
-            <Button disabled={pending} type="submit">
-              {refreshPending
-                ? "Updating route…"
-                : creationPending
-                  ? "Creating agent…"
-                  : creation?.kind === "error"
-                    ? "Try again"
-                    : "Create agent"}
-            </Button>
-            {refreshPending ? <p role="status">Confirming the selected runtime route…</p> : null}
-            {creationPending ? <p role="status">Creating Agent identity and runtime binding…</p> : null}
-          </div>
-        </form>
+        <ReadOnlyCopy admins={snapshot.admins} />
       </ActionSection>
     );
   }
@@ -995,7 +888,6 @@ async function loadTeamAdmins(teamId: string): Promise<readonly string[]> {
 }
 
 function resolveSnapshot(membership: MeMembership, snapshot: OnboardingSnapshot): { state: OnboardingState } {
-  const route = readRouteSelection(membership.teamId);
   const providers = snapshot.runtime.kind === "available" ? snapshot.runtime.providers : [];
   const agent: OnboardingAgent | undefined = snapshot.targetAgent
     ? {
@@ -1013,165 +905,27 @@ function resolveSnapshot(membership: MeMembership, snapshot: OnboardingSnapshot)
         connectionStatus,
       })),
       providers,
-      ...(route ? { computerSelection: { computerId: route.computerId } } : {}),
-      ...(route?.provider ? { providerSelection: { computerId: route.computerId, provider: route.provider } } : {}),
       agent,
       handoff: snapshot.handoff,
     }),
   };
 }
 
-function normalizedAgentRequest(
-  current: Extract<OnboardingCurrentState, { kind: "agent" }>,
-  displayName: string,
-): Omit<CreateAgentRequest, "creationIntentId"> {
+function onboardingAgentCreationFacts(snapshot: OnboardingSnapshot, ownerUserId: string): AgentCreationFacts {
+  const computers = snapshot.computers.filter((computer) => computer.ownerUserId === ownerUserId);
+  const computerIds = new Set(computers.map((computer) => computer.id));
   return {
-    name: "opentag",
-    displayName: displayName.trim(),
-    computerId: current.computer.id,
-    runtimeProvider: current.provider.provider,
+    computers,
+    providers:
+      snapshot.runtime.kind === "available"
+        ? snapshot.runtime.providers.filter((provider) => computerIds.has(provider.computerId))
+        : [],
+    runtimeEvidenceAvailable: snapshot.runtime.kind === "available",
   };
 }
 
-async function createOnboardingAgent(
-  teamId: string,
-  request: Omit<CreateAgentRequest, "creationIntentId">,
-): Promise<{ id: string }> {
-  return withCreationLock(teamId, async () => {
-    const authoritative = (await browserApi.agents(teamId)).agents.filter((agent) => agent.status === "active");
-    if (authoritative.length === 1) {
-      clearCreationIntent(teamId);
-      return authoritative[0] as { id: string };
-    }
-    if (authoritative.length > 1) throw new Error("Choose the Agent to continue before creating another one.");
-    const record = getOrCreateCreationIntent(teamId, request);
-    const created = await browserApi.createAgent(teamId, {
-      ...record.request,
-      creationIntentId: record.creationIntentId,
-    });
-    clearCreationIntent(teamId);
-    return created;
-  });
-}
-
-const memoryIntentRecords = new Map<string, CreationIntentRecord>();
-const memoryRouteSelections = new Map<string, RouteSelection>();
 const memoryTargetAgents = new Map<string, string>();
-const memoryRouteFallbackTeams = new Set<string>();
 const memoryTargetFallbackTeams = new Set<string>();
-const fallbackCreationLocks = new Map<string, Promise<void>>();
-
-async function withCreationLock<T>(teamId: string, task: () => Promise<T>): Promise<T> {
-  const lockName = `opentag:onboarding:create-agent:${teamId}`;
-  if (navigator.locks) return navigator.locks.request(lockName, task);
-  const prior = fallbackCreationLocks.get(lockName) ?? Promise.resolve();
-  let release: () => void = () => {};
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const queued = prior.then(() => current);
-  fallbackCreationLocks.set(lockName, queued);
-  await prior;
-  try {
-    return await task();
-  } finally {
-    release();
-    if (fallbackCreationLocks.get(lockName) === queued) fallbackCreationLocks.delete(lockName);
-  }
-}
-
-function getOrCreateCreationIntent(
-  teamId: string,
-  request: Omit<CreateAgentRequest, "creationIntentId">,
-): CreationIntentRecord {
-  const existing = readCreationIntent(teamId);
-  if (existing && requestsEqual(existing.request, request)) return existing;
-  // A different normalized route is the one intentional request change that replaces a pending replay record.
-  const next: CreationIntentRecord = {
-    version: CREATE_INTENT_VERSION,
-    teamId,
-    creationIntentId: crypto.randomUUID(),
-    request,
-  };
-  memoryIntentRecords.set(teamId, next);
-  try {
-    window.localStorage.setItem(creationIntentKey(teamId), JSON.stringify(next));
-  } catch {
-    // The in-memory record still protects retries in this page lifetime.
-  }
-  return next;
-}
-
-function readCreationIntent(teamId: string): CreationIntentRecord | undefined {
-  try {
-    const raw = window.localStorage.getItem(creationIntentKey(teamId));
-    if (!raw) return memoryIntentRecords.get(teamId);
-    const value = JSON.parse(raw) as Partial<CreationIntentRecord>;
-    if (
-      value.version !== CREATE_INTENT_VERSION ||
-      value.teamId !== teamId ||
-      typeof value.creationIntentId !== "string" ||
-      !value.request ||
-      typeof value.request.computerId !== "string" ||
-      (value.request.runtimeProvider !== "codex" && value.request.runtimeProvider !== "claude-code")
-    ) {
-      return undefined;
-    }
-    return value as CreationIntentRecord;
-  } catch {
-    return memoryIntentRecords.get(teamId);
-  }
-}
-
-function clearCreationIntent(teamId: string): void {
-  memoryIntentRecords.delete(teamId);
-  try {
-    window.localStorage.removeItem(creationIntentKey(teamId));
-  } catch {
-    // No durable record is available to clear.
-  }
-}
-
-function requestsEqual(
-  left: Omit<CreateAgentRequest, "creationIntentId">,
-  right: Omit<CreateAgentRequest, "creationIntentId">,
-): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function creationIntentKey(teamId: string): string {
-  return `opentag.onboarding.creation-intent:${teamId}`;
-}
-
-function routeSelectionKey(teamId: string): string {
-  return `opentag.onboarding.route:${teamId}`;
-}
-
-function readRouteSelection(teamId: string): RouteSelection | undefined {
-  try {
-    const raw = window.localStorage.getItem(routeSelectionKey(teamId));
-    if (!raw) return memoryRouteFallbackTeams.has(teamId) ? memoryRouteSelections.get(teamId) : undefined;
-    const value = JSON.parse(raw) as Partial<RouteSelection> | null;
-    if (!value || typeof value.computerId !== "string") return undefined;
-    if (value.provider !== undefined && value.provider !== "codex" && value.provider !== "claude-code")
-      return undefined;
-    const selection = { computerId: value.computerId, ...(value.provider ? { provider: value.provider } : {}) };
-    memoryRouteSelections.set(teamId, selection);
-    return selection;
-  } catch {
-    return memoryRouteSelections.get(teamId);
-  }
-}
-
-function rememberRouteSelection(teamId: string, selection: RouteSelection): void {
-  memoryRouteSelections.set(teamId, selection);
-  try {
-    window.localStorage.setItem(routeSelectionKey(teamId), JSON.stringify(selection));
-    memoryRouteFallbackTeams.delete(teamId);
-  } catch {
-    memoryRouteFallbackTeams.add(teamId);
-  }
-}
 
 function targetAgentKey(teamId: string): string {
   return `opentag.onboarding.agent:${teamId}`;
@@ -1197,12 +951,6 @@ function rememberTargetAgent(teamId: string, agentId: string): void {
   } catch {
     memoryTargetFallbackTeams.add(teamId);
   }
-}
-
-function runnableProviders(runtime: RuntimeFactsResult, computerId: string): OnboardingProvider[] {
-  return runtime.kind === "available"
-    ? runtime.providers.filter((provider) => provider.computerId === computerId && provider.runtimeReady)
-    : [];
 }
 
 function runtimeAttention(

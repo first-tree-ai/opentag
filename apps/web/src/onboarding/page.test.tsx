@@ -11,6 +11,7 @@ import type {
 } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AgentCreationFlow } from "../agent-creation/agent-creation-flow.js";
 import { browserApi } from "../api.js";
 import { OnboardingPage } from "./page.js";
 import type { RuntimeFactsAdapter, RuntimeFactsResult, RuntimeProviderStatus } from "./runtime-facts.js";
@@ -160,18 +161,20 @@ describe("OnboardingPage", () => {
     const summary = screen.getByRole("region", { name: "Agent preparation summary" });
     expect(summary.textContent).toContain("ComputerNot connected");
     expect(summary.textContent).toContain("RuntimeWaiting");
-    expect(summary.textContent).toContain("AgentNot created");
+    expect(summary.textContent).toContain("AgentName pending");
     expect(screen.queryByRole("img")).toBeNull();
   });
 
   it("asks for the existing Computer to be reconnected when every Computer is offline", async () => {
     installFacts({ computers: [{ ...computerA, connectionStatus: "offline" }] });
     renderPage();
-    expect(await screen.findByRole("heading", { name: "Reconnect your Computer" })).toBeTruthy();
-    expect(screen.getByText(/Ada's Mac/)).toBeTruthy();
+    const runtime = await screen.findByRole("region", { name: "Where it runs" });
+    expect(runtime.textContent).toContain("Computer offline");
+    expect(runtime.textContent).toContain("Reconnect one of your Computers to continue.");
+    expect(screen.getByRole("button", { name: "Create Agent" })).toHaveProperty("disabled", true);
   });
 
-  it("asks only for real Computer ambiguity", async () => {
+  it("selects a ready route by default and progressively reveals alternatives", async () => {
     installFacts({ computers: [computerA, computerB] });
     renderPage({
       runtime: runtimeFacts([
@@ -179,13 +182,14 @@ describe("OnboardingPage", () => {
         { computerId: computerBId, provider: "codex", runtimeReady: true },
       ]),
     });
-    expect(await screen.findByRole("heading", { name: "Choose a runnable Computer" })).toBeTruthy();
+    expect(await screen.findByText("Codex · Ada's Mac")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Change" }));
     expect(screen.getByRole("button", { name: /Ada's Mac/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Studio Mac/ })).toBeTruthy();
     expect(vi.spyOn(browserApi, "createAgent")).not.toHaveBeenCalled();
   });
 
-  it("summarizes the explicitly selected Computer instead of the first online Computer", async () => {
+  it("updates the shared runtime summary when another ready Computer is selected", async () => {
     installFacts({ computers: [computerA, computerB] });
     renderPage({
       runtime: runtimeFacts([
@@ -194,26 +198,24 @@ describe("OnboardingPage", () => {
       ]),
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: /Studio Mac/ }));
-
-    expect(await screen.findByRole("heading", { name: "Create your Agent" })).toBeTruthy();
-    const summary = screen.getByRole("region", { name: "Agent preparation summary" });
-    expect(summary.textContent).toContain("ComputerStudio Mac");
-    expect(summary.textContent).not.toContain("ComputerAda's Mac");
+    fireEvent.click(await screen.findByRole("button", { name: "Change" }));
+    fireEvent.click(screen.getByRole("button", { name: /Studio Mac/ }));
+    expect(await screen.findByText("Codex · Studio Mac")).toBeTruthy();
   });
 
-  it("keeps an ambiguous Computer choice actionable before runtime facts arrive", async () => {
+  it("does not offer an unconfirmed Computer route before runtime facts arrive", async () => {
     installFacts({ computers: [computerA, computerB] });
     renderPage();
-    fireEvent.click(await screen.findByRole("button", { name: /Ada's Mac/ }));
-    expect(await screen.findByRole("heading", { name: "Confirm the runtime route" })).toBeTruthy();
+    expect(await screen.findByText("Readiness unconfirmed")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toHaveProperty("disabled", true);
   });
 
   it("does not invent runtime readiness when the production fact seam is unavailable", async () => {
     installFacts({ computers: [computerA] });
     renderPage();
-    expect(await screen.findByRole("heading", { name: "Confirm the runtime route" })).toBeTruthy();
-    expect(screen.getByText(/cannot yet confirm an Agent-ready Provider/)).toBeTruthy();
+    expect(await screen.findByText("Readiness unconfirmed")).toBeTruthy();
+    expect(screen.getByText(/cannot confirm a ready Provider/)).toBeTruthy();
     expect(screen.queryByText("Preparing OpenTag")).toBeNull();
   });
 
@@ -227,8 +229,8 @@ describe("OnboardingPage", () => {
       ],
     });
     render(<OnboardingPage membership={admin} user={user} />);
-    expect(await screen.findByRole("heading", { name: "Install Codex" })).toBeTruthy();
-    expect(screen.getByText("Install Codex on Ada's Mac, then check again.")).toBeTruthy();
+    expect(await screen.findByText("Install Codex")).toBeTruthy();
+    expect(screen.getByText("Install Codex on Ada's Mac.")).toBeTruthy();
   });
 
   it("reaches Ready from production runtime and authoritative handoff facts", async () => {
@@ -277,7 +279,8 @@ describe("OnboardingPage", () => {
   it("shows Provider recovery when authoritative facts say no route is runnable", async () => {
     installFacts({ computers: [computerA] });
     renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false }]) });
-    expect(await screen.findByRole("heading", { name: "Prepare Codex or Claude Code" })).toBeTruthy();
+    expect(await screen.findByText("Provider unavailable")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toHaveProperty("disabled", true);
   });
 
   it("advances from Provider setup without asking the user to check again", async () => {
@@ -304,7 +307,7 @@ describe("OnboardingPage", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(screen.getByRole("heading", { name: "Install Codex" })).toBeTruthy();
+    expect(screen.getByText("Install Codex")).toBeTruthy();
     const loadsBeforePolling = computers.mock.calls.length;
 
     runtimeReady = true;
@@ -313,7 +316,7 @@ describe("OnboardingPage", () => {
     });
 
     expect(computers.mock.calls.length).toBeGreaterThan(loadsBeforePolling);
-    expect(screen.getByRole("heading", { name: "Create your Agent" })).toBeTruthy();
+    expect(screen.getByText("Ready to run")).toBeTruthy();
   });
 
   it("leaves a state that waits on this user alone", async () => {
@@ -324,7 +327,7 @@ describe("OnboardingPage", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(screen.getByRole("heading", { name: "Create your Agent" })).toBeTruthy();
+    expect(screen.getByText("Ready to run")).toBeTruthy();
     const loads = computers.mock.calls.length;
 
     await act(async () => {
@@ -342,7 +345,7 @@ describe("OnboardingPage", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(screen.getByRole("heading", { name: "Prepare Codex or Claude Code" })).toBeTruthy();
+    expect(screen.getByText("Provider unavailable")).toBeTruthy();
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(10 * 60 * 1_000);
@@ -390,17 +393,17 @@ describe("OnboardingPage", () => {
   });
 
   it.each([
-    ["checking", "Checking Codex", "OpenTag is checking Codex readiness on Ada's Mac."],
-    ["install", "Install Codex", "Install Codex on Ada's Mac, then check again."],
-    ["sign-in", "Sign in to Codex", "Sign in to Codex on Ada's Mac, then check again."],
-    ["unavailable", "Restore Codex", "Codex is currently unavailable on Ada's Mac. Restore it, then check again."],
+    ["checking", "Checking setup", "Codex readiness is still being checked."],
+    ["install", "Install Codex", "Install Codex on Ada's Mac."],
+    ["sign-in", "Sign in to Codex", "Finish sign-in on Ada's Mac."],
+    ["unavailable", "Provider unavailable", "Prepare Codex or Claude Code on Ada's Mac."],
   ] as const)("shows the current %s Provider action", async (status, heading, description) => {
     installFacts({ computers: [computerA] });
     renderPage({
       runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false, status }]),
     });
-    expect(await screen.findByRole("heading", { name: heading })).toBeTruthy();
-    expect(screen.getByText(description)).toBeTruthy();
+    expect(await screen.findByText(heading)).toBeTruthy();
+    expect(await screen.findByText(description)).toBeTruthy();
   });
 
   it("preserves an existing Agent identity during runtime outage", async () => {
@@ -463,6 +466,28 @@ describe("OnboardingPage", () => {
     expect(screen.getByText("Read only")).toBeTruthy();
     expect(screen.getByText(/An admin can complete this action/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Feishu/ })).toBeNull();
+  });
+
+  it("shows members the Team-wide runnable route in both the action and preparation summary", async () => {
+    const ownerAdminId = "00000001-0000-4000-8000-000000000001";
+    const adminComputer = {
+      ...computerA,
+      ownerUserId: ownerAdminId,
+      ownerDisplayName: "Grace",
+      displayName: "Grace's Mac",
+    };
+    installFacts({ computers: [adminComputer], members: [teamAdmin("Grace", ownerAdminId)] });
+    renderPage({
+      membership: member,
+      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]),
+    });
+
+    expect(await screen.findByRole("heading", { name: "Create the Agent" })).toBeTruthy();
+    expect(screen.getByText(/Codex on Grace's Mac/)).toBeTruthy();
+    const summary = screen.getByRole("region", { name: "Agent preparation summary" });
+    expect(summary.textContent).toContain("ComputerGrace's Mac");
+    expect(summary.textContent).toContain("RuntimeCodex");
+    expect(screen.getByText("Ready to create")).toBeTruthy();
   });
 
   it.each([
@@ -530,16 +555,16 @@ describe("OnboardingPage", () => {
     const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
     renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]) });
 
-    const name = await screen.findByLabelText("Agent display name");
+    const name = await screen.findByLabelText("Display name");
     expect(name).toHaveProperty("value", "OpenTag");
     expect(create).not.toHaveBeenCalled();
     fireEvent.change(name, { target: { value: "Research Partner" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
 
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith(
         teamId,
-        expect.objectContaining({ displayName: "Research Partner", name: "opentag" }),
+        expect.objectContaining({ displayName: "Research Partner", name: "research-partner" }),
       ),
     );
   });
@@ -554,14 +579,14 @@ describe("OnboardingPage", () => {
       ]),
     });
 
-    expect(await screen.findByText("OpenTag will run with Codex on Ada's Mac.")).toBeTruthy();
+    expect(await screen.findByText("Codex · Ada's Mac")).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Change" }));
     fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
-    expect(await screen.findByText("OpenTag will run with Claude Code on Ada's Mac.")).toBeTruthy();
+    expect(await screen.findByText("Claude Code · Ada's Mac")).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith(
         teamId,
@@ -570,13 +595,9 @@ describe("OnboardingPage", () => {
     );
   });
 
-  it("does not create on the stale route while an explicit Provider choice reloads", async () => {
+  it("changes a confirmed ready route locally without an intermediate reload", async () => {
     installFacts({ computers: [computerA] });
     const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
-    let finishReload: ((value: RuntimeFactsResult) => void) | undefined;
-    const pendingReload = new Promise<RuntimeFactsResult>((resolve) => {
-      finishReload = resolve;
-    });
     const available = {
       kind: "available" as const,
       providers: [
@@ -584,26 +605,15 @@ describe("OnboardingPage", () => {
         { computerId: computerAId, provider: "claude-code" as const, runtimeReady: true },
       ],
     };
-    const runtime: RuntimeFactsAdapter = {
-      load: vi.fn().mockResolvedValue(available).mockResolvedValueOnce(available).mockReturnValueOnce(pendingReload),
-    };
+    const runtime: RuntimeFactsAdapter = { load: vi.fn().mockResolvedValue(available) };
     renderPage({ runtime });
 
-    await screen.findByText("OpenTag will run with Codex on Ada's Mac.");
+    await screen.findByText("Codex · Ada's Mac");
     fireEvent.click(screen.getByRole("button", { name: "Change" }));
     fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
-
-    const createButton = screen.getByRole("button", { name: "Updating route…" });
-    expect(createButton).toHaveProperty("disabled", true);
-    expect(screen.getByRole("status").textContent).toBe("Confirming the selected runtime route…");
-    fireEvent.click(createButton);
-    expect(create).not.toHaveBeenCalled();
-
-    await act(async () => {
-      finishReload?.(available);
-    });
-    expect(await screen.findByText("OpenTag will run with Claude Code on Ada's Mac.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Create agent" }));
+    expect(await screen.findByText("Claude Code · Ada's Mac")).toBeTruthy();
+    expect(runtime.load).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith(
         teamId,
@@ -625,9 +635,9 @@ describe("OnboardingPage", () => {
       return adminConfig();
     });
     renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]) });
-    fireEvent.click(await screen.findByRole("button", { name: "Create agent" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create Agent" }));
     expect((await screen.findByRole("alert")).textContent).toBe("Response was lost");
-    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
     expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
     expect(requests).toHaveLength(2);
     expect(requests[0]?.creationIntentId).toBe(requests[1]?.creationIntentId);
@@ -649,9 +659,9 @@ describe("OnboardingPage", () => {
     });
     const runtime = runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]);
     const firstPage = renderPage({ runtime });
-    fireEvent.click(await screen.findByRole("button", { name: "Create agent" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create Agent" }));
     expect((await screen.findByRole("alert")).textContent).toBe("Connection closed before the response");
-    const durableRecord = window.localStorage.getItem(`opentag.onboarding.creation-intent:${teamId}`);
+    const durableRecord = window.localStorage.getItem(`opentag.agent-creation.intent:${teamId}`);
     expect(durableRecord).toBeTruthy();
 
     firstPage.unmount();
@@ -659,7 +669,7 @@ describe("OnboardingPage", () => {
     expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
     expect(create).toHaveBeenCalledTimes(2);
     expect(requests[0]?.creationIntentId).toBe(requests[1]?.creationIntentId);
-    expect(window.localStorage.getItem(`opentag.onboarding.creation-intent:${teamId}`)).toBeNull();
+    expect(window.localStorage.getItem(`opentag.agent-creation.intent:${teamId}`)).toBeNull();
   });
 
   it("uses one logical create across parallel page controllers", async () => {
@@ -674,11 +684,69 @@ describe("OnboardingPage", () => {
     const runtime = runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]);
     render(<OnboardingPage membership={admin} runtimeFacts={runtime} user={user} />);
     render(<OnboardingPage membership={admin} runtimeFacts={runtime} user={user} />);
-    await waitFor(() => expect(screen.getAllByRole("button", { name: "Create agent" })).toHaveLength(2));
-    const actions = screen.getAllByRole("button", { name: "Create agent" });
+    await waitFor(() => expect(screen.getAllByRole("button", { name: "Create Agent" })).toHaveLength(2));
+    const actions = screen.getAllByRole("button", { name: "Create Agent" });
     fireEvent.click(actions[0] as HTMLButtonElement);
     fireEvent.click(actions[1] as HTMLButtonElement);
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps distinct concurrent creation intents isolated", async () => {
+    const requests: CreateAgentRequest[] = [];
+    let betaAttempts = 0;
+    vi.spyOn(browserApi, "createAgent").mockImplementation(async (_teamId, request) => {
+      requests.push(request);
+      if (request.displayName === "Beta" && betaAttempts++ === 0) throw new Error("Beta response was lost");
+      return adminConfig();
+    });
+    const facts = {
+      computers: [{ id: computerAId, displayName: computerA.displayName, connectionStatus: "online" as const }],
+      providers: [{ computerId: computerAId, provider: "codex" as const, runtimeReady: true }],
+      runtimeEvidenceAvailable: true,
+    };
+    const alphaCreated = vi.fn();
+    const betaCreated = vi.fn();
+    render(
+      <>
+        <AgentCreationFlow
+          facts={facts}
+          initialDisplayName="Alpha"
+          teamId={teamId}
+          onCreated={alphaCreated}
+          onRefresh={() => undefined}
+        />
+        <AgentCreationFlow
+          facts={facts}
+          initialDisplayName="Beta"
+          teamId={teamId}
+          onCreated={betaCreated}
+          onRefresh={() => undefined}
+        />
+      </>,
+    );
+
+    const actions = screen.getAllByRole("button", { name: "Create Agent" });
+    const alphaAction = actions[0];
+    const betaAction = actions[1];
+    if (!alphaAction || !betaAction) throw new Error("Expected two Agent creation actions");
+    fireEvent.click(alphaAction);
+    fireEvent.click(betaAction);
+
+    await waitFor(() => expect(alphaCreated).toHaveBeenCalledTimes(1));
+    expect((await screen.findByRole("alert")).textContent).toContain("Beta response was lost");
+    const betaRequest = requests.find((request) => request.displayName === "Beta");
+    const stored = JSON.parse(String(window.localStorage.getItem(`opentag.agent-creation.intent:${teamId}`))) as {
+      records: { creationIntentId: string }[];
+    };
+    expect(stored.records).toHaveLength(1);
+    expect(stored.records[0]?.creationIntentId).toBe(betaRequest?.creationIntentId);
+
+    fireEvent.click(betaAction);
+    await waitFor(() => expect(betaCreated).toHaveBeenCalledTimes(1));
+    const betaRequests = requests.filter((request) => request.displayName === "Beta");
+    expect(betaRequests).toHaveLength(2);
+    expect(betaRequests[1]?.creationIntentId).toBe(betaRequests[0]?.creationIntentId);
+    expect(window.localStorage.getItem(`opentag.agent-creation.intent:${teamId}`)).toBeNull();
   });
 
   it("reloads Server facts after Computer setup succeeds", async () => {
@@ -766,7 +834,6 @@ describe("OnboardingPage", () => {
     });
 
     expect(await screen.findByRole("button", { name: "Checking…" })).toHaveProperty("disabled", true);
-    expect(screen.getByRole("status").textContent).toBe("Refreshing Server facts…");
     expect(computers).toHaveBeenCalledTimes(2);
     expect(agents).toHaveBeenCalledTimes(2);
 
@@ -774,7 +841,7 @@ describe("OnboardingPage", () => {
     expect(await screen.findByRole("button", { name: "Check again" })).toHaveProperty("disabled", false);
   });
 
-  it("keeps an explicit Computer choice in memory when localStorage throws", async () => {
+  it("keeps ready route selection usable when localStorage throws", async () => {
     const storageTeamId = "a3fda800-7ce2-4338-aae8-3d2120401ed6";
     const storageAdmin = { ...admin, teamId: storageTeamId };
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
@@ -785,10 +852,17 @@ describe("OnboardingPage", () => {
     });
     installFacts({ computers: [computerA, computerB] });
 
-    renderPage({ membership: storageAdmin });
-    fireEvent.click(await screen.findByRole("button", { name: /Ada's Mac/ }));
+    renderPage({
+      membership: storageAdmin,
+      runtime: runtimeFacts([
+        { computerId: computerAId, provider: "codex", runtimeReady: true },
+        { computerId: computerBId, provider: "codex", runtimeReady: true },
+      ]),
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Change" }));
+    fireEvent.click(screen.getByRole("button", { name: /Studio Mac/ }));
 
-    expect(await screen.findByRole("heading", { name: "Confirm the runtime route" })).toBeTruthy();
+    expect(await screen.findByText("Codex · Studio Mac")).toBeTruthy();
   });
 
   it("keeps an explicit Agent choice in memory when localStorage throws", async () => {

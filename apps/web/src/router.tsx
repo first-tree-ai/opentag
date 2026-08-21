@@ -1203,14 +1203,48 @@ function AgentCreationContent({
   const [nameError, setNameError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
   const [computerId, setComputerId] = useState("");
+  const [computerSetupOpen, setComputerSetupOpen] = useState(false);
   const [runtimeProvider, setRuntimeProvider] = useState<"codex" | "claude-code">("codex");
   const firstFieldRef = useRef<HTMLInputElement>(null);
+  const initialDialogFocusSetRef = useRef(false);
   const inFlightRef = useRef(false);
   const creationIntentRef = useRef<{ fingerprint: string; id: string } | null>(null);
+  const computerIdsBeforeSetupRef = useRef<Set<string>>(new Set());
+  const awaitingConnectedComputerRef = useRef(false);
 
   useEffect(() => {
-    if (presentation === "dialog" && computers.kind === "ready") firstFieldRef.current?.focus();
+    if (presentation !== "dialog" || computers.kind !== "ready" || initialDialogFocusSetRef.current) return;
+    const firstField = firstFieldRef.current;
+    if (!firstField) return;
+    firstField.focus();
+    initialDialogFocusSetRef.current = true;
   }, [computers.kind, presentation]);
+
+  useEffect(() => {
+    if (!awaitingConnectedComputerRef.current || computers.kind !== "ready") return;
+    const connectedComputer = computers.value.computers.find(
+      (computer) => !computerIdsBeforeSetupRef.current.has(computer.id),
+    );
+    if (!connectedComputer) return;
+    awaitingConnectedComputerRef.current = false;
+    setComputerId(connectedComputer.id);
+    setComputerSetupOpen(false);
+  }, [computers]);
+
+  function toggleComputerSetup(availableComputers: Computer[]) {
+    setComputerSetupOpen((open) => {
+      if (!open) {
+        computerIdsBeforeSetupRef.current = new Set(availableComputers.map((computer) => computer.id));
+        awaitingConnectedComputerRef.current = false;
+      }
+      return !open;
+    });
+  }
+
+  function handleComputerConnected() {
+    awaitingConnectedComputerRef.current = true;
+    onComputerConnected();
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1343,6 +1377,23 @@ function AgentCreationContent({
                 </select>
               </Field>
             </div>
+            <div className="agent-create-computer-action">
+              <Button
+                aria-controls="new-agent-computer-setup"
+                aria-expanded={computerSetupOpen}
+                disabled={submitting}
+                size="compact"
+                variant="inline"
+                onClick={() => toggleComputerSetup(value.computers)}
+              >
+                {computerSetupOpen ? "Cancel Computer connection" : "Connect another Computer"}
+              </Button>
+            </div>
+            {computerSetupOpen ? (
+              <div className="agent-create-runtime-setup" id="new-agent-computer-setup">
+                <ComputerSetup teamId={teamId} onConnected={handleComputerConnected} />
+              </div>
+            ) : null}
             <div
               className={`notice ${readiness?.status === "ready" && computer?.connectionStatus === "online" ? "" : "warning"}`}
               role="status"

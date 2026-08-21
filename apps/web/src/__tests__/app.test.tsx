@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
@@ -45,7 +45,7 @@ function installApi(
     bindingReauth?: boolean;
     bindingEvidenceFails?: boolean;
     bound?: boolean;
-    computers?: readonly Record<string, unknown>[];
+    computers?: readonly Record<string, unknown>[] | (() => readonly Record<string, unknown>[]);
     computerEvidenceFails?: boolean;
     computerStatus?: () => "online" | "offline";
     ownComputerReadStatus?: () => number | undefined;
@@ -342,7 +342,7 @@ function installApi(
       if (failureStatus) return json({ error: { message: "Computer readiness unavailable" } }, failureStatus);
       return json({
         computers:
-          options.computers ??
+          (typeof options.computers === "function" ? options.computers() : options.computers) ??
           (options.ownComputer
             ? [
                 {
@@ -574,11 +574,80 @@ describe("OpenTag Web App Shell", () => {
     expect(within(dialog).getByLabelText("Agent name")).toBeTruthy();
     expect(within(dialog).getByLabelText("Provider")).toBeTruthy();
     expect(within(dialog).getByLabelText("Computer")).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Connect another Computer" })).toBeTruthy();
     expect(within(dialog).getByRole("button", { name: "Create Agent" })).toBeTruthy();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog", { name: "New Agent" })).toBeNull();
     expect(trigger).toBe(document.activeElement);
+  });
+
+  it("lets an existing Computer owner connect another Computer from New Agent", async () => {
+    installApi("admin", { ownComputer: true });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    const trigger = within(dialog).getByRole("button", { name: "Connect another Computer" });
+    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.click(trigger);
+
+    expect(within(dialog).getByRole("heading", { name: "Connect a Local Computer" })).toBeTruthy();
+    expect(within(dialog).getByRole("button", { name: "Generate connection command" })).toBeTruthy();
+    expect(
+      within(dialog).getByRole("button", { name: "Cancel Computer connection" }).getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(within(dialog).getByLabelText("Computer")).toBeTruthy();
+  });
+
+  it("refreshes and selects a newly connected Computer in New Agent", async () => {
+    const connectedComputerId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
+    const existingComputer = {
+      id: computerId,
+      ownerUserId: userId,
+      displayName: "Ada's Mac",
+      platform: "darwin",
+      arch: "arm64",
+      clientVersion: "0.0.1",
+      connectionStatus: "online",
+      connectedAt: "2026-08-20T00:00:00.000Z",
+      lastSeenAt: "2026-08-20T00:00:01.000Z",
+    };
+    const connectedComputer = {
+      ...existingComputer,
+      id: connectedComputerId,
+      displayName: "Ada's Linux Computer",
+      platform: "linux",
+      connectedAt: "2026-08-20T00:00:02.000Z",
+    };
+    let ownComputerReads = 0;
+    installApi("admin", {
+      computers: () => {
+        ownComputerReads += 1;
+        return ownComputerReads >= 3 ? [existingComputer, connectedComputer] : [existingComputer];
+      },
+    });
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
+    const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Connect another Computer" }));
+
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-08-20T00:00:00.000Z");
+    try {
+      await act(async () => {
+        fireEvent.click(within(dialog).getByRole("button", { name: "Generate connection command" }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_500);
+      });
+
+      expect((within(dialog).getByLabelText("Computer") as HTMLSelectElement).value).toBe(connectedComputerId);
+      expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps Computer connection inside the New Agent dialog when no runtime is available", async () => {

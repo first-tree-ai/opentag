@@ -23,6 +23,7 @@ try {
     eventSink: (event) => {
       firstEvents.push(event);
     },
+    systemPrompt: "Follow the user's exact response-format request.",
     workspace: { cwd: workspace },
     policy: {
       fileSystem: "unrestricted",
@@ -55,6 +56,7 @@ try {
     eventSink: (event) => {
       resumedEvents.push(event);
     },
+    systemPrompt: "Follow the user's exact response-format request.",
     workspace: { cwd: workspace },
     policy: {
       fileSystem: "unrestricted",

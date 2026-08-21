@@ -26,6 +26,7 @@ try {
     eventSink: (event: AgentRuntimeEvent) => {
       events.push(event);
     },
+    systemPrompt: "Follow the user's exact response-format request.",
     workspace: { cwd: workspace },
     policy: {
       fileSystem: "read-only" as const,

@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
+import { RuntimeStorageError } from "../storage/durable-file.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 const cleanup: Array<() => Promise<void>> = [];
@@ -640,7 +641,7 @@ describe("RuntimeConnection", () => {
     });
     connection.subscribeState((state) => states.push(state));
     connection.subscribeBusinessFrames(() => {
-      throw new Error("listener failure");
+      throw new RuntimeStorageError("conflict", "secret-bearing listener failure");
     });
     connection.subscribeBusinessFrames((frame) => {
       received.push(frame);
@@ -658,9 +659,18 @@ describe("RuntimeConnection", () => {
     });
     await vi.waitFor(() =>
       expect(logs).toContainEqual(
-        expect.objectContaining({ level: "warn", message: "Runtime business frame listener failed" }),
+        expect.objectContaining({
+          fields: expect.objectContaining({
+            category: "listener",
+            errorCategory: "runtime_storage_conflict",
+            frameType: "test:event",
+          }),
+          level: "warn",
+          message: "Runtime business frame listener failed",
+        }),
       ),
     );
+    expect(JSON.stringify(logs)).not.toContain("secret-bearing listener failure");
     connection.stop();
     await running;
 

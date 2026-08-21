@@ -19,6 +19,7 @@ export interface AgentRuntimePaths {
   workspaceRoot: string;
   workspaceState: string;
   workspaceStatesRoot: string;
+  workspaceTransitionRoot: string;
 }
 
 export function agentRuntimePaths(home: string, agentId: string): AgentRuntimePaths {
@@ -37,6 +38,7 @@ export function agentRuntimePaths(home: string, agentId: string): AgentRuntimePa
     workspaceRoot,
     workspaceState: resolve(layout.runtimeWorkspaceStates, `${key}.json`),
     workspaceStatesRoot: layout.runtimeWorkspaceStates,
+    workspaceTransitionRoot: resolve(layout.runtime, "workspace-transitions", key),
   };
 }
 

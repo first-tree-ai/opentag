@@ -7,6 +7,7 @@ import type {
 import type { AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
 import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-registry.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
+import { renderManagedSystemPrompt } from "./managed-instructions.js";
 import type { LocalSessionBinding, SessionBindingStore, SessionPreparationResult } from "./session-binding-store.js";
 import type { RuntimeLocalPolicy, RuntimePreparation } from "./session-reconciler.js";
 
@@ -178,6 +179,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     };
     const common = {
       eventSink,
+      systemPrompt: renderManagedSystemPrompt(managed.snapshot),
       workspace: {
         cwd: managed.cwd,
         environment: { OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId) },

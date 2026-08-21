@@ -20,7 +20,7 @@ import {
 const manifest = {
   providerId: "test",
   displayName: "Test",
-  contractVersion: 1 as const,
+  contractVersion: 2 as const,
   bindingSchemaVersion: 1,
 };
 

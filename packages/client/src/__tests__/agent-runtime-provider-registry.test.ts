@@ -47,6 +47,12 @@ describe("AgentRuntimeProviderRegistry", () => {
     expect(() => new AgentRuntimeProviderRegistry([registration(factory("codex"), "bad")])).toThrow(
       "artifact identity",
     );
+    const current = factory("codex");
+    const incompatible = {
+      ...current,
+      manifest: { ...current.manifest, contractVersion: 1 },
+    } as unknown as AgentRuntimeFactory;
+    expect(() => new AgentRuntimeProviderRegistry([registration(incompatible)])).toThrow("contract version");
   });
 
   it("refreshes readiness, verifies the artifact, and revokes availability after failure", async () => {
@@ -223,7 +229,7 @@ describe("AgentRuntimeProviderRegistry", () => {
 
 function factory(providerId: string, probe: AgentRuntimeFactory["probe"] = async () => ({ ready: true, issues: [] })) {
   return {
-    manifest: { providerId, displayName: providerId, contractVersion: 1, bindingSchemaVersion: 1 },
+    manifest: { providerId, displayName: providerId, contractVersion: 2, bindingSchemaVersion: 1 },
     probe,
     create: async () => {
       throw new Error("not used");

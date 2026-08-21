@@ -224,7 +224,6 @@ export function buildAgentInput(request: DirectImMessageDeliveryRequest, supplem
     `Session: ${request.sessionId}`,
     `Agent revision: ${request.runtime.revision.agent.sequence}/${request.runtime.revision.agent.id}`,
     `Session revision: ${request.runtime.revision.session.sequence}/${request.runtime.revision.session.id}`,
-    "Reload and obey the managed AGENTS.md before acting.",
     "Your final text is not sent to the IM provider automatically.",
     `To write to this ${provider} conversation, load the credentials from $OPENTAG_PROVIDER_ENV_FILE in your shell, then use the official ${providerCommand} CLI directly.`,
     "OpenTag has no message send, reply, or reaction interface, and you do not report provider send results to OpenTag.",

@@ -3091,6 +3091,7 @@ textarea:focus {
 
 .settings-members-section {
   width: 100%;
+  gap: 32px;
 }
 
 .settings-readonly-heading,
@@ -3123,20 +3124,14 @@ textarea:focus {
 .settings-invitation-panel {
   display: grid;
   width: 100%;
-  gap: 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  padding: 24px;
+  gap: 14px;
+  border-top: 1px solid var(--strong-border);
+  background: transparent;
+  padding: 28px 0 0;
 }
 
 .settings-members-section .settings-invitation-panel {
   width: 100%;
-}
-
-.settings-invitation-panel:focus-visible {
-  outline: 3px solid var(--brand-ink);
-  outline-offset: 3px;
 }
 
 .settings-invitation-panel h3 {
@@ -3183,13 +3178,32 @@ textarea:focus {
   justify-content: flex-end;
 }
 
+.settings-member-list {
+  display: grid;
+  gap: 12px;
+}
+
+.settings-member-summary {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-member-summary p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+}
+
 .settings-member-table {
   display: block;
   width: 100%;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
+  border-top: 1px solid var(--strong-border);
+  border-bottom: 1px solid var(--border);
+  background: transparent;
   border-collapse: collapse;
 }
 
@@ -3211,11 +3225,10 @@ textarea:focus {
   align-items: center;
   border-bottom: 1px solid var(--border);
   gap: 16px;
-  padding-inline: 16px;
 }
 
 .settings-table-header {
-  min-height: 40px;
+  min-height: 38px;
   color: var(--muted);
   font-size: var(--text-micro);
   font-weight: var(--fw-semibold);
@@ -3223,12 +3236,12 @@ textarea:focus {
 
 .settings-member-table .settings-table-header,
 .settings-member-row {
-  grid-template-columns: minmax(0, 1fr) 132px;
+  grid-template-columns: minmax(0, 1fr) 112px;
 }
 
 .settings-member-row {
-  min-height: 64px;
-  padding-block: 8px;
+  min-height: 56px;
+  padding-block: 7px;
 }
 
 .settings-member-row:last-child {
@@ -3261,8 +3274,8 @@ textarea:focus {
 
 .settings-member-avatar {
   display: inline-flex;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
@@ -3274,9 +3287,7 @@ textarea:focus {
 }
 
 .settings-member-row select {
-  min-height: 36px;
-  font-size: var(--text-ui);
-  padding-block: 0.35rem;
+  width: 100%;
 }
 
 .settings-status {

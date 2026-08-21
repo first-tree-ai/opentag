@@ -35,7 +35,18 @@ import { UsagePage } from "./features/usage-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
 import { OnboardingPage } from "./onboarding/page.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
-import { Button, buttonClassName, Dialog, Field, Icon, StatusIndicator, type StatusTone } from "./ui/design-system.js";
+import {
+  Button,
+  buttonClassName,
+  Dialog,
+  Field,
+  Icon,
+  SettingsList,
+  SettingsRow,
+  StatusIndicator,
+  type StatusTone,
+  Tabs,
+} from "./ui/design-system.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
 type AuthProvider = AuthProvidersResponse["providers"][number];
@@ -1397,13 +1408,13 @@ function AgentDetailPage() {
             </select>
           </label>
           <div className="object-layout">
-            <nav className="object-tabs" aria-label="Agent settings">
+            <Tabs collapseOnMobile label="Agent settings">
               {agentSections.map((section) => (
                 <NavLink to={`/agents/${agentId}/${section.key}`} key={section.key}>
                   {section.label}
                 </NavLink>
               ))}
-            </nav>
+            </Tabs>
             <div className="object-content">
               <header className="section-header">
                 <h2>{currentSection.label}</h2>
@@ -1426,12 +1437,12 @@ function AccountPage({ section }: { section: "profile" | "workspace" }) {
   }
   return (
     <Page title="Account" description="Manage your profile and Workspace settings.">
-      <nav aria-label="Account settings" className="object-tabs account-tabs">
+      <Tabs className="account-tabs" label="Account settings">
         <NavLink end to="/account">
           Profile
         </NavLink>
         <NavLink to="/account/workspace">Workspace</NavLink>
-      </nav>
+      </Tabs>
       <div className="account-settings-content">
         {section === "profile" ? (
           <AccountSettings refreshMe={refreshMe} user={me.user} />
@@ -2027,12 +2038,8 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
   return (
     <form className="settings-profile-form" onSubmit={submit}>
       <h2>Account profile</h2>
-      <div className="settings-field-list">
-        <div className="settings-field-row">
-          <div className="settings-field-copy">
-            <strong>Email</strong>
-            <p>Your sign-in email cannot be changed here.</p>
-          </div>
+      <SettingsList>
+        <SettingsRow label="Email" description="Your sign-in email cannot be changed here.">
           <Field
             className="settings-profile-field"
             hint="Read only"
@@ -2050,12 +2057,8 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
               value={user.email}
             />
           </Field>
-        </div>
-        <div className="settings-field-row">
-          <div className="settings-field-copy">
-            <strong>Display name</strong>
-            <p>This identity is used throughout OpenTag.</p>
-          </div>
+        </SettingsRow>
+        <SettingsRow label="Display name" description="This identity is used throughout OpenTag.">
           <Field className="settings-profile-field" htmlFor="account-display-name" label="Display name">
             <input
               autoComplete="name"
@@ -2072,8 +2075,8 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
               value={displayName}
             />
           </Field>
-        </div>
-      </div>
+        </SettingsRow>
+      </SettingsList>
       {dirty ? (
         <div className="dirty-bar">
           <span>Unsaved changes</span>
@@ -2151,12 +2154,8 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
   }
   return (
     <form aria-labelledby="workspace-profile-heading" className="settings-profile-form" onSubmit={submit}>
-      <div className="settings-field-list">
-        <div className="settings-field-row">
-          <div className="settings-field-copy">
-            <strong>Workspace name</strong>
-            <p>What people see in navigation and invitations.</p>
-          </div>
+      <SettingsList>
+        <SettingsRow label="Workspace name" description="What people see in navigation and invitations.">
           <Field className="settings-profile-field" htmlFor="workspace-profile-name" label="Workspace name">
             <input
               className="ds-control"
@@ -2171,12 +2170,11 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
               }}
             />
           </Field>
-        </div>
-        <div className="settings-field-row">
-          <div className="settings-field-copy">
-            <strong>CLI identifier</strong>
-            <p>Created automatically for CLI commands. It stays the same when you rename the Workspace.</p>
-          </div>
+        </SettingsRow>
+        <SettingsRow
+          label="CLI identifier"
+          description="Created automatically for CLI commands. It stays the same when you rename the Workspace."
+        >
           <dl className="settings-readonly-value">
             <div>
               <dt className="visually-hidden">CLI identifier</dt>
@@ -2193,8 +2191,8 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
               </dd>
             </div>
           </dl>
-        </div>
-      </div>
+        </SettingsRow>
+      </SettingsList>
       {dirty ? (
         <div className="dirty-bar">
           <span>Unsaved changes</span>

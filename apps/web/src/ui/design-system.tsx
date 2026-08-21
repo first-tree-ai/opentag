@@ -40,6 +40,48 @@ export const Button = forwardRef<HTMLButtonElement, ButtonProps>(function Button
   return <button className={buttonClassName({ className, size, variant })} ref={ref} type={type} {...props} />;
 });
 
+export function Tabs({
+  children,
+  className,
+  collapseOnMobile = false,
+  label,
+}: {
+  children: ReactNode;
+  className?: string;
+  collapseOnMobile?: boolean;
+  label: string;
+}) {
+  return (
+    <nav aria-label={label} className={classes("ds-tabs", collapseOnMobile && "ds-tabs--collapsible", className)}>
+      {children}
+    </nav>
+  );
+}
+
+export function SettingsList({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={classes("ds-settings-list", className)}>{children}</div>;
+}
+
+export function SettingsRow({
+  children,
+  description,
+  label,
+}: {
+  children: ReactNode;
+  description?: ReactNode;
+  label: ReactNode;
+}) {
+  return (
+    <div className="ds-settings-row">
+      <div className="ds-settings-row__copy">
+        <strong>{label}</strong>
+        {description ? <p>{description}</p> : null}
+      </div>
+      <div className="ds-settings-row__control">{children}</div>
+    </div>
+  );
+}
+
 export function Field({
   children,
   className,

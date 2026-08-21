@@ -36,6 +36,7 @@ function topLevelDeclarationValue(stylesheet: Root, selector: string, property: 
 }
 
 const appStyles = postcss.parse(readFileSync(locateStylesheet("src/styles.css"), "utf8"));
+const designSystemStyles = postcss.parse(readFileSync(locateStylesheet("src/ui/design-system.css"), "utf8"));
 const capabilityStyles = postcss.parse(readFileSync(locateStylesheet("src/mock-pages.css"), "utf8"));
 
 describe("workspace page layout", () => {
@@ -66,5 +67,14 @@ describe("workspace page layout", () => {
     expect(declarationValue(appStyles, ".overview-section", "width")).toBe("100%");
     expect(declarationValue(appStyles, ".settings-profile-form", "width")).toBe("100%");
     expect(declarationValue(appStyles, ".settings-list-section", "width")).toBe("100%");
+  });
+
+  it("centralizes tab and settings-row geometry in the design system", () => {
+    expect(declarationValue(designSystemStyles, ".ds-tabs", "gap")).toBe("var(--space-8)");
+    expect(declarationValue(designSystemStyles, ".ds-tabs", "border-bottom")).toBe(
+      "1px solid var(--color-border-divider)",
+    );
+    expect(declarationValue(designSystemStyles, ".ds-settings-list", "border-radius")).toBe("var(--radius-panel)");
+    expect(declarationValue(designSystemStyles, ".ds-settings-row", "padding")).toBe("var(--space-6)");
   });
 });

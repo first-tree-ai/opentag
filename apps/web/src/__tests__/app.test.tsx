@@ -766,7 +766,8 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     const navigation = screen.getByRole("navigation", { name: "Agent settings" });
-    expect(navigation.className).toBe("object-tabs");
+    expect(navigation.className).toContain("ds-tabs");
+    expect(navigation.className).toContain("ds-tabs--collapsible");
     expect(
       within(navigation)
         .getAllByRole("link")

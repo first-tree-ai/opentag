@@ -363,10 +363,11 @@ export function AppRouter() {
           <Route path="/resources" element={<Navigate replace to="/skills" />} />
           <Route path="/usage" element={<UsagePage />} />
           <Route path="/members" element={<MembersPage />} />
-          <Route path="/account" element={<AccountPage />} />
+          <Route path="/account" element={<AccountPage section="profile" />} />
+          <Route path="/account/workspace" element={<AccountPage section="workspace" />} />
           <Route path="/settings" element={<Navigate replace to="/members" />} />
           <Route path="/settings/account" element={<Navigate replace to="/account" />} />
-          <Route path="/settings/team" element={<Navigate replace to="/account#workspace-management" />} />
+          <Route path="/settings/team" element={<Navigate replace to="/account/workspace" />} />
           <Route path="/settings/members" element={<Navigate replace to="/members" />} />
           <Route path="/settings/access" element={<Navigate replace to="/members" />} />
           <Route path="/settings/security" element={<Navigate replace to="/members" />} />
@@ -805,56 +806,51 @@ function AppShell() {
                 role="menu"
                 onKeyDown={handleAccountMenuKeyDown}
               >
-                {me.memberships.length > 1 ? (
-                  <fieldset className="account-workspace-group">
-                    <legend className="menu-label">Switch Workspace</legend>
-                    {me.memberships.map((item: MeMembership) => {
-                      const current = item.teamId === membership.teamId;
-                      return (
-                        <button
-                          aria-current={current ? "true" : undefined}
-                          className="account-workspace-option"
-                          key={item.teamId}
-                          role="menuitem"
-                          type="button"
-                          onClick={() => {
-                            setOpenMenu(undefined);
-                            setNavigationOpen(false);
-                            if (!current) {
-                              navigate("/agents");
-                              selectTeam(item.teamId);
-                            }
-                          }}
-                        >
-                          <span className="team-avatar" aria-hidden="true">
-                            {initials(item.teamDisplayName)}
+                <fieldset className="account-workspace-group">
+                  <legend className="menu-label">Workspaces</legend>
+                  {me.memberships.map((item: MeMembership) => {
+                    const current = item.teamId === membership.teamId;
+                    const content = (
+                      <>
+                        <span className="team-avatar" aria-hidden="true">
+                          {initials(item.teamDisplayName)}
+                        </span>
+                        <span className="team-option-copy">
+                          <strong>{item.teamDisplayName}</strong>
+                          <small>{titleCase(item.role)}</small>
+                        </span>
+                        {current ? (
+                          <span className="team-option-check" aria-hidden="true">
+                            <Icon name="check" />
                           </span>
-                          <span className="team-option-copy">
-                            <strong>{item.teamDisplayName}</strong>
-                            <small>{titleCase(item.role)}</small>
-                          </span>
-                          {current ? (
-                            <span className="team-option-check" aria-hidden="true">
-                              <Icon name="check" />
-                            </span>
-                          ) : null}
-                        </button>
-                      );
-                    })}
-                    <Link
-                      className="account-workspace-manage"
-                      role="menuitem"
-                      to="/account#workspace-management"
-                      onClick={() => {
-                        setOpenMenu(undefined);
-                        setNavigationOpen(false);
-                      }}
-                    >
-                      <span>Manage Workspaces</span>
-                      <Icon name="chevron-right" />
-                    </Link>
-                  </fieldset>
-                ) : null}
+                        ) : null}
+                      </>
+                    );
+                    return me.memberships.length > 1 ? (
+                      <button
+                        aria-current={current ? "true" : undefined}
+                        className="account-workspace-option"
+                        key={item.teamId}
+                        role="menuitem"
+                        type="button"
+                        onClick={() => {
+                          setOpenMenu(undefined);
+                          setNavigationOpen(false);
+                          if (!current) {
+                            navigate("/agents");
+                            selectTeam(item.teamId);
+                          }
+                        }}
+                      >
+                        {content}
+                      </button>
+                    ) : (
+                      <div aria-current="true" className="account-workspace-option is-static" key={item.teamId}>
+                        {content}
+                      </div>
+                    );
+                  })}
+                </fieldset>
                 <div className="account-menu-actions">
                   <Link
                     role="menuitem"
@@ -864,7 +860,17 @@ function AppShell() {
                       setNavigationOpen(false);
                     }}
                   >
-                    Account settings
+                    Profile
+                  </Link>
+                  <Link
+                    role="menuitem"
+                    to="/account/workspace"
+                    onClick={() => {
+                      setOpenMenu(undefined);
+                      setNavigationOpen(false);
+                    }}
+                  >
+                    Workspace
                   </Link>
                   <button disabled={loggingOut} role="menuitem" type="button" onClick={() => void logout()}>
                     {loggingOut ? "Signing out…" : "Sign out"}
@@ -1412,40 +1418,56 @@ function AgentDetailPage() {
   );
 }
 
-function AccountPage() {
+function AccountPage({ section }: { section: "profile" | "workspace" }) {
   const { me, membership, refreshMe } = useTeam();
   const location = useLocation();
+  if (section === "profile" && location.hash === "#workspace-management") {
+    return <Navigate replace to="/account/workspace" />;
+  }
   return (
-    <Page title="Account" description="Manage your profile and advanced account options.">
-      <div className="account-settings-stack">
-        <AccountSettings refreshMe={refreshMe} user={me.user} />
-        <details
-          className="account-advanced"
-          id="workspace-management"
-          open={location.hash === "#workspace-management"}
-        >
-          <summary>Advanced</summary>
-          <div className="account-advanced-content">
-            <header className="settings-subheader">
-              <div>
-                <h2>Workspace management</h2>
-                <p>For people who operate more than one organization.</p>
-              </div>
-            </header>
-            <TeamProfileSettings membership={membership} refreshMe={refreshMe} />
-            <div className="account-workspace-create">
-              <div>
-                <strong>Additional Workspace</strong>
-                <p>Create another isolated organization for a separate client or team.</p>
-              </div>
-              <Link className={buttonClassName({ variant: "secondary" })} to="/workspaces/new">
-                Create another Workspace
-              </Link>
-            </div>
-          </div>
-        </details>
+    <Page title="Account" description="Manage your profile and Workspace settings.">
+      <nav aria-label="Account settings" className="object-tabs account-tabs">
+        <NavLink end to="/account">
+          Profile
+        </NavLink>
+        <NavLink to="/account/workspace">Workspace</NavLink>
+      </nav>
+      <div className="account-settings-content">
+        {section === "profile" ? (
+          <AccountSettings refreshMe={refreshMe} user={me.user} />
+        ) : (
+          <WorkspaceSettings membership={membership} refreshMe={refreshMe} />
+        )}
       </div>
     </Page>
+  );
+}
+
+function WorkspaceSettings({ membership, refreshMe }: { membership: MeMembership; refreshMe: () => void }) {
+  return (
+    <div className="account-workspace-stack">
+      <section aria-labelledby="workspace-profile-heading" className="account-workspace-profile">
+        <header className="settings-subheader">
+          <div>
+            <h2 id="workspace-profile-heading">Workspace profile</h2>
+            <p>Manage the name and CLI identity of the current Workspace.</p>
+          </div>
+          {membership.role !== "admin" ? (
+            <span className="settings-role-badge">Your role: {titleCase(membership.role)}</span>
+          ) : null}
+        </header>
+        <TeamProfileSettings membership={membership} refreshMe={refreshMe} />
+      </section>
+      <section aria-labelledby="additional-workspace-heading" className="account-workspace-create">
+        <div>
+          <h2 id="additional-workspace-heading">Additional Workspace</h2>
+          <p>Create an isolated Workspace for another client or team.</p>
+        </div>
+        <Link className={buttonClassName({ variant: "secondary" })} to="/workspaces/new">
+          Create Workspace
+        </Link>
+      </section>
+    </div>
   );
 }
 
@@ -2100,21 +2122,14 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
 
   if (membership.role !== "admin") {
     return (
-      <section className="settings-readonly-panel">
-        <div className="settings-readonly-heading">
-          <div>
-            <h2>Workspace profile</h2>
-            <p>Only Workspace Admins can change these fields.</p>
-          </div>
-          <span className="settings-role-badge">Your role: {titleCase(membership.role)}</span>
-        </div>
+      <div className="settings-readonly-panel">
         <DefinitionList
           rows={[
             ["Workspace name", membership.teamDisplayName],
             ["CLI identifier", membership.teamName],
           ]}
         />
-      </section>
+      </div>
     );
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -2135,8 +2150,7 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
     }
   }
   return (
-    <form className="settings-profile-form" onSubmit={submit}>
-      <h2 className="visually-hidden">Workspace profile fields</h2>
+    <form aria-labelledby="workspace-profile-heading" className="settings-profile-form" onSubmit={submit}>
       <div className="settings-field-list">
         <div className="settings-field-row">
           <div className="settings-field-copy">

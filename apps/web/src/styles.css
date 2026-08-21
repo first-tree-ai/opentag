@@ -671,13 +671,8 @@ pre {
   color: var(--foreground);
 }
 
-.account-menu-popover .account-workspace-manage {
-  justify-content: space-between;
-  min-height: 40px;
-  margin-top: 4px;
-  border-top: 1px solid var(--border);
-  border-radius: 0 0 7px 7px;
-  padding-top: 4px;
+.account-menu-popover .account-workspace-option.is-static {
+  cursor: default;
 }
 
 .account-menu-actions {
@@ -716,32 +711,23 @@ pre {
   padding: 6px 9px;
 }
 
-.account-settings-stack {
+.account-tabs {
+  margin-bottom: 32px;
+}
+
+.account-settings-content,
+.account-workspace-profile {
+  width: 100%;
+}
+
+.account-workspace-stack,
+.account-workspace-profile {
   display: grid;
+  gap: 24px;
+}
+
+.account-workspace-stack {
   gap: 32px;
-}
-
-.account-advanced {
-  border-top: 1px solid var(--border);
-  padding-top: 18px;
-}
-
-.account-advanced > summary {
-  width: fit-content;
-  cursor: pointer;
-  color: var(--muted);
-  font-size: var(--text-ui);
-  font-weight: var(--fw-semibold);
-}
-
-.account-advanced[open] > summary {
-  color: var(--foreground);
-}
-
-.account-advanced-content {
-  display: grid;
-  gap: 22px;
-  margin-top: 22px;
 }
 
 .account-workspace-create {
@@ -751,6 +737,12 @@ pre {
   gap: 24px;
   border-top: 1px solid var(--border);
   padding-top: 20px;
+}
+
+.account-workspace-create h2 {
+  margin: 0;
+  font-size: var(--text-subsection);
+  font-weight: var(--fw-semibold);
 }
 
 .account-workspace-create p {
@@ -3506,6 +3498,10 @@ textarea:focus {
 
   .object-tabs {
     display: none;
+  }
+
+  .account-tabs {
+    display: flex;
   }
 
   .object-tabs + .object-content {

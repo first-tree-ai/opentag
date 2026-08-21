@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
+import { constants, type Stats } from "node:fs";
 import { copyFile, cp, link, lstat, open, readdir, readlink, realpath, rename, symlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
@@ -55,6 +55,24 @@ export interface LocalAgentWorkspaceState extends AgentWorkspaceIdentity {
 }
 
 type ParsedAgentWorkspaceState = LegacyAgentWorkspaceState | PendingAgentWorkspaceState | LocalAgentWorkspaceState;
+
+const LEGACY_MANAGED_PLATFORM_PREFIX = [
+  "# OpenTag managed instructions",
+  "",
+  "This file is managed by OpenTag. Session-specific instructions are injected per turn.",
+  "",
+  "## Platform",
+  "",
+].join("\n");
+const LEGACY_MANAGED_AGENT_SEPARATOR = "\n\n## Agent\n\n";
+// This exact platform transition shipped between staging.67.1 and staging.92.1, the two Issue #101 endpoints.
+const KNOWN_LEGACY_PARTIAL_MIGRATIONS = [
+  {
+    sourcePlatform:
+      "You run inside OpenTag. IM output is never sent automatically. Use an opentag_message_* tool only when you intend to write to the current IM conversation.",
+    targetPlatform: "You run inside OpenTag. IM output is never sent automatically.",
+  },
+] as const;
 
 export interface AgentWorkspaceManagerOptions {
   bindingStore: SessionBindingStore;
@@ -145,7 +163,9 @@ async function beginLegacyTransition(
   const managedFilesHash =
     state.schemaVersion === 2
       ? state.managedInstructionsHash
-      : files !== undefined && (await isInterruptedLegacyMigration(paths.agentsFile, files, snapshot))
+      : root !== undefined &&
+          files !== undefined &&
+          (await isKnownLegacyPartialMigration(paths.agentsFile, root, files))
         ? filesHash
         : undefined;
   if (filesHash !== undefined && filesHash !== managedFilesHash) {
@@ -189,14 +209,16 @@ async function removeProvenManagedFile(
   const quarantine = resolve(quarantineRoot, `${kind}-${expectedHash}.managed`);
   assertWithin(quarantineRoot, quarantine);
   let stranded: string | undefined;
+  let strandedIsReadOnly = false;
   try {
     stranded = await readSecureFile(quarantine);
+    if (stranded !== undefined) strandedIsReadOnly = isReadOnlyRegularFile(await lstat(quarantine));
   } catch {
     await restoreQuarantinedEntry(quarantine, path);
     throw new RuntimeStorageError("conflict", "A non-file Workspace entry was isolated during cleanup");
   }
   if (stranded !== undefined) {
-    if (sha256(stranded) !== expectedHash) {
+    if (sha256(stranded) !== expectedHash || !strandedIsReadOnly) {
       await restoreQuarantinedEntry(quarantine, path);
       throw new RuntimeStorageError("conflict", "A Workspace file changed while OpenTag isolated it for cleanup");
     }
@@ -209,6 +231,9 @@ async function removeProvenManagedFile(
     throw new RuntimeStorageError("conflict", "A proven OpenTag-managed instruction file changed during transition");
   }
   const originalIdentity = await lstat(path);
+  if (!isReadOnlyRegularFile(originalIdentity)) {
+    throw new RuntimeStorageError("conflict", "A proven OpenTag-managed instruction file is no longer read-only");
+  }
   await assertRealDirectory(dirname(path));
   await assertRealDirectory(quarantineRoot);
   try {
@@ -226,7 +251,8 @@ async function removeProvenManagedFile(
       !isolatedIdentity.isFile() ||
       isolatedIdentity.isSymbolicLink() ||
       isolatedIdentity.dev !== originalIdentity.dev ||
-      isolatedIdentity.ino !== originalIdentity.ino
+      isolatedIdentity.ino !== originalIdentity.ino ||
+      !isReadOnlyRegularFile(isolatedIdentity)
     ) {
       await restoreQuarantinedEntry(quarantine, path);
       throw new RuntimeStorageError("conflict", "A Workspace entry was replaced during cleanup");
@@ -242,6 +268,11 @@ async function removeProvenManagedFile(
     throw new RuntimeStorageError("conflict", "A proven OpenTag-managed instruction file changed during cleanup");
   }
   await removeDurableFile(quarantine);
+}
+
+function isReadOnlyRegularFile(identity: Stats): boolean {
+  // Every historical OpenTag-managed instruction file was durably published as mode 0444.
+  return identity.isFile() && !identity.isSymbolicLink() && (identity.mode & 0o222) === 0;
 }
 
 async function restoreQuarantinedEntry(quarantine: string, path: string): Promise<void> {
@@ -287,30 +318,25 @@ async function syncRestoredRegularFile(path: string): Promise<void> {
   }
 }
 
-async function isInterruptedLegacyMigration(
+async function isKnownLegacyPartialMigration(
   path: string,
+  provenRootContent: string,
   content: string,
-  snapshot: EffectiveRuntimeSnapshot,
 ): Promise<boolean> {
-  if (content !== renderLegacyManagedInstructions(snapshot)) return false;
+  const expected = knownLegacyPartialMigrationContent(provenRootContent);
+  if (expected === undefined || content !== expected) return false;
   return ((await lstat(path)).mode & 0o222) === 0;
 }
 
-function renderLegacyManagedInstructions(snapshot: EffectiveRuntimeSnapshot): string {
-  return [
-    "# OpenTag managed instructions",
-    "",
-    "This file is managed by OpenTag. Session-specific instructions are injected per turn.",
-    "",
-    "## Platform",
-    "",
-    snapshot.instructions.platform,
-    "",
-    "## Agent",
-    "",
-    snapshot.instructions.agent,
-    "",
-  ].join("\n");
+function knownLegacyPartialMigrationContent(provenRootContent: string): string | undefined {
+  for (const migration of KNOWN_LEGACY_PARTIAL_MIGRATIONS) {
+    const sourcePrefix = `${LEGACY_MANAGED_PLATFORM_PREFIX}\n${migration.sourcePlatform}${LEGACY_MANAGED_AGENT_SEPARATOR}`;
+    if (!provenRootContent.startsWith(sourcePrefix)) continue;
+    const agentSuffix = provenRootContent.slice(sourcePrefix.length);
+    if (!agentSuffix.endsWith("\n")) return undefined;
+    return `${LEGACY_MANAGED_PLATFORM_PREFIX}\n${migration.targetPlatform}${LEGACY_MANAGED_AGENT_SEPARATOR}${agentSuffix}`;
+  }
+  return undefined;
 }
 
 function completeState(

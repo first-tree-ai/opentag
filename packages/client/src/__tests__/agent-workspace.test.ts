@@ -14,6 +14,9 @@ import { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 
 const homes: string[] = [];
+const ISSUE_101_SCHEMA_V1_PLATFORM =
+  "You run inside OpenTag. IM output is never sent automatically. Use an opentag_message_* tool only when you intend to write to the current IM conversation.";
+const ISSUE_101_PARTIAL_MIGRATION_PLATFORM = "You run inside OpenTag. IM output is never sent automatically.";
 afterEach(async () => Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))));
 
 describe("AgentWorkspaceManager", () => {
@@ -57,20 +60,34 @@ describe("AgentWorkspaceManager", () => {
 
   it("preserves the exact Issue #101 legacy view while removing only proven managed instructions", async () => {
     const fixture = await workspaceFixture();
-    const runtime = snapshot("agent-1", "workspace-1", "session");
-    const legacy = managedInstructions("old platform", "old agent");
-    const stalePartial = managedInstructions(runtime.instructions.platform, runtime.instructions.agent);
+    const base = snapshot("agent-1", "workspace-1", "session");
+    const legacyRuntime: EffectiveRuntimeSnapshot = {
+      ...base,
+      instructions: {
+        ...base.instructions,
+        platform: ISSUE_101_SCHEMA_V1_PLATFORM,
+        agent: "Issue #101 Agent instructions",
+      },
+    };
+    const runtime: EffectiveRuntimeSnapshot = {
+      ...legacyRuntime,
+      revision: { ...legacyRuntime.revision, agent: { sequence: 2, id: "agent-revision-2" } },
+      instructions: { ...legacyRuntime.instructions, platform: "current post-Issue-101 platform instructions" },
+    };
+    const legacy = managedInstructions(ISSUE_101_SCHEMA_V1_PLATFORM, legacyRuntime.instructions.agent);
+    const stalePartial = managedInstructions(ISSUE_101_PARTIAL_MIGRATION_PLATFORM, legacyRuntime.instructions.agent);
     const paths = await writeLegacyWorkspace(fixture, runtime, {
       schemaVersion: 1,
       rootInstructions: legacy,
       filesInstructions: stalePartial,
+      stateSnapshot: legacyRuntime,
     });
     await writeFile(resolve(paths.files, "user.txt"), "keep", "utf8");
     await writeFile(resolve(paths.workspaceRoot, "root-user.txt"), "also keep", "utf8");
 
     await expect(
-      fixture.workspace.prepareAgent(runtime, computeRuntimeSnapshotHashes(runtime)),
-    ).resolves.toBeUndefined();
+      fixture.reconciler.reconcile(reconcileRequest(fixture.computerId, "session-1", runtime)),
+    ).resolves.toMatchObject({ status: "ready" });
 
     expect(await fixture.workspace.cwd(runtime.agentId)).toBe(await realpathForTest(paths.files));
     await expect(readFile(resolve(paths.files, "user.txt"), "utf8")).resolves.toBe("keep");
@@ -85,6 +102,15 @@ describe("AgentWorkspaceManager", () => {
       layout: "legacy-files",
       transition: "complete",
     });
+
+    await expect(
+      fixture.reconciler.reconcile(reconcileRequest(fixture.computerId, "session-2", runtime)),
+    ).resolves.toMatchObject({ status: "ready" });
+    expect(await fixture.workspace.cwd(runtime.agentId)).toBe(await realpathForTest(paths.files));
+    await expect(readFile(resolve(paths.files, "user.txt"), "utf8")).resolves.toBe("keep");
+    await expect(readFile(resolve(paths.workspaceRoot, "root-user.txt"), "utf8")).resolves.toBe("also keep");
+    await expect(stat(paths.legacyAgentsFile)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(paths.agentsFile)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("upgrades a completed schema-v2 managed Workspace without changing its cwd", async () => {
@@ -104,11 +130,11 @@ describe("AgentWorkspaceManager", () => {
     await expect(stat(paths.agentsFile)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("finishes an interrupted schema-v1 migration after the legacy root file was removed", async () => {
+  it("fails closed if a schema-v1 partial migration lost its hash-proven root anchor", async () => {
     const fixture = await workspaceFixture();
     const runtime = snapshot("agent-1", "workspace-1", "session");
-    const oldManaged = managedInstructions("old platform", "old agent");
-    const migratedManaged = managedInstructions(runtime.instructions.platform, runtime.instructions.agent);
+    const oldManaged = managedInstructions(ISSUE_101_SCHEMA_V1_PLATFORM, runtime.instructions.agent);
+    const migratedManaged = managedInstructions(ISSUE_101_PARTIAL_MIGRATION_PLATFORM, runtime.instructions.agent);
     const paths = await writeLegacyWorkspace(fixture, runtime, {
       schemaVersion: 1,
       filesInstructions: migratedManaged,
@@ -116,18 +142,12 @@ describe("AgentWorkspaceManager", () => {
     });
     await writeFile(resolve(paths.files, "kept.txt"), "keep", "utf8");
 
-    await expect(
-      fixture.workspace.prepareAgent(runtime, computeRuntimeSnapshotHashes(runtime)),
-    ).resolves.toBeUndefined();
-
-    expect(await fixture.workspace.cwd(runtime.agentId)).toBe(await realpathForTest(paths.files));
+    await expect(fixture.workspace.prepareAgent(runtime, computeRuntimeSnapshotHashes(runtime))).rejects.toThrow(
+      /files\/AGENTS\.md is not proven/i,
+    );
     await expect(readFile(resolve(paths.files, "kept.txt"), "utf8")).resolves.toBe("keep");
-    await expect(stat(paths.agentsFile)).rejects.toMatchObject({ code: "ENOENT" });
-    await expect(readWorkspaceState(fixture.workspace, runtime.agentId)).resolves.toMatchObject({
-      schemaVersion: 3,
-      transition: "complete",
-      layout: "legacy-files",
-    });
+    await expect(readFile(paths.agentsFile, "utf8")).resolves.toBe(migratedManaged);
+    await expect(readWorkspaceState(fixture.workspace, runtime.agentId)).resolves.toMatchObject({ schemaVersion: 1 });
   });
 
   it.each(["before-removal", "after-root-removal", "after-all-removal"] as const)(
@@ -207,7 +227,6 @@ describe("AgentWorkspaceManager", () => {
   });
 
   it("does not apply schema-v1 provenance to a copied files/AGENTS.md with identical bytes", async () => {
-    if (process.platform === "win32") return;
     const fixture = await workspaceFixture();
     const runtime = snapshot("agent-1", "workspace-1", "session");
     const managed = managedInstructions("old platform", "old agent");
@@ -216,7 +235,6 @@ describe("AgentWorkspaceManager", () => {
       rootInstructions: managed,
       filesInstructions: managed,
     });
-    await chmod(paths.agentsFile, 0o600);
 
     await expect(fixture.workspace.prepareAgent(runtime, computeRuntimeSnapshotHashes(runtime))).rejects.toThrow(
       /files\/AGENTS\.md is not proven/i,
@@ -228,11 +246,11 @@ describe("AgentWorkspaceManager", () => {
     if (process.platform === "win32") return;
     const fixture = await workspaceFixture();
     const runtime = snapshot("agent-1", "workspace-1", "session");
-    const managed = managedInstructions("old platform", "old agent");
+    const managed = managedInstructions(ISSUE_101_SCHEMA_V1_PLATFORM, runtime.instructions.agent);
     const paths = await writeLegacyWorkspace(fixture, runtime, {
       schemaVersion: 1,
       rootInstructions: managed,
-      filesInstructions: managedInstructions("other platform", "other agent"),
+      filesInstructions: managedInstructions(ISSUE_101_PARTIAL_MIGRATION_PLATFORM, runtime.instructions.agent),
     });
     await chmod(paths.agentsFile, 0o600);
 
@@ -240,6 +258,24 @@ describe("AgentWorkspaceManager", () => {
       /not proven OpenTag-managed/i,
     );
     await expect(stat(paths.agentsFile)).resolves.toBeDefined();
+  });
+
+  it("fails closed if a historical partial migration changed the opaque Agent suffix", async () => {
+    const fixture = await workspaceFixture();
+    const runtime = snapshot("agent-1", "workspace-1", "session");
+    const managed = managedInstructions(ISSUE_101_SCHEMA_V1_PLATFORM, runtime.instructions.agent);
+    const changed = managedInstructions(ISSUE_101_PARTIAL_MIGRATION_PLATFORM, "different Agent instructions");
+    const paths = await writeLegacyWorkspace(fixture, runtime, {
+      schemaVersion: 1,
+      rootInstructions: managed,
+      filesInstructions: changed,
+    });
+
+    await expect(fixture.workspace.prepareAgent(runtime, computeRuntimeSnapshotHashes(runtime))).rejects.toThrow(
+      /not proven OpenTag-managed/i,
+    );
+    await expect(readFile(paths.agentsFile, "utf8")).resolves.toBe(changed);
+    await expect(readWorkspaceState(fixture.workspace, runtime.agentId)).resolves.toMatchObject({ schemaVersion: 1 });
   });
 
   it("fails closed if a proven file changes after pending provenance was recorded", async () => {
@@ -268,6 +304,39 @@ describe("AgentWorkspaceManager", () => {
       /changed during transition/i,
     );
     await expect(readFile(paths.agentsFile, "utf8")).resolves.toBe("# User replacement\n");
+  });
+
+  it("fails closed if a proven file becomes writable after pending provenance was recorded", async () => {
+    if (process.platform === "win32") return;
+    const fixture = await workspaceFixture();
+    const runtime = snapshot("agent-1", "workspace-1", "session");
+    const paths = fixture.workspace.paths(runtime.agentId);
+    const managed = managedInstructions("old", "old");
+    await mkdir(paths.files, { recursive: true, mode: 0o700 });
+    await mkdir(paths.workspaceStatesRoot, { recursive: true, mode: 0o700 });
+    await writeFile(paths.agentsFile, managed, { mode: 0o444 });
+    await writeFile(
+      paths.workspaceState,
+      `${JSON.stringify({
+        schemaVersion: 3,
+        agentId: runtime.agentId,
+        workspaceId: runtime.workspace.workspaceId,
+        provider: runtime.provider,
+        layout: "legacy-files",
+        transition: "pending",
+        managedFiles: { files: sha256(managed) },
+      })}\n`,
+      "utf8",
+    );
+    await chmod(paths.agentsFile, 0o600);
+
+    await expect(fixture.workspace.prepareAgent(runtime, computeRuntimeSnapshotHashes(runtime))).rejects.toThrow(
+      /no longer read-only/i,
+    );
+    await expect(readFile(paths.agentsFile, "utf8")).resolves.toBe(managed);
+    await expect(readWorkspaceState(fixture.workspace, runtime.agentId)).resolves.toMatchObject({
+      transition: "pending",
+    });
   });
 
   it("restores a replacement that was atomically isolated during cleanup", async () => {
@@ -472,6 +541,7 @@ async function writeLegacyWorkspace(
     rootInstructions?: string;
     filesInstructions?: string;
     provenanceInstructions?: string;
+    stateSnapshot?: EffectiveRuntimeSnapshot;
   },
 ) {
   const paths = fixture.workspace.paths(runtime.agentId);
@@ -485,7 +555,8 @@ async function writeLegacyWorkspace(
   }
   const provenance = options.provenanceInstructions ?? options.rootInstructions ?? options.filesInstructions;
   if (provenance === undefined) throw new Error("legacy fixture requires managed instruction provenance");
-  const hashes = computeRuntimeSnapshotHashes(runtime);
+  const stateSnapshot = options.stateSnapshot ?? runtime;
+  const hashes = computeRuntimeSnapshotHashes(stateSnapshot);
   await writeFile(
     paths.workspaceState,
     `${JSON.stringify({
@@ -493,8 +564,8 @@ async function writeLegacyWorkspace(
       agentId: runtime.agentId,
       workspaceId: runtime.workspace.workspaceId,
       provider: runtime.provider,
-      appliedAgentRevisionSequence: runtime.revision.agent.sequence,
-      appliedAgentRevisionId: runtime.revision.agent.id,
+      appliedAgentRevisionSequence: stateSnapshot.revision.agent.sequence,
+      appliedAgentRevisionId: stateSnapshot.revision.agent.id,
       agentConfigHash: hashes.agentConfigHash,
       managedInstructionsHash: sha256(provenance),
     })}\n`,

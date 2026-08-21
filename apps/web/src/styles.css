@@ -78,6 +78,7 @@
   --radius: 13px;
   --sidebar-width: 232px;
   --local-nav-width: 170px;
+  --workspace-page-width: 960px;
   --layer-sidebar: 30;
   --layer-backdrop: 20;
 }
@@ -903,7 +904,11 @@ pre {
   }
 }
 
-.page,
+.page {
+  width: min(100%, var(--workspace-page-width));
+  margin: 0 auto;
+}
+
 .object-page,
 .settings-page {
   width: min(100%, 1200px);
@@ -945,7 +950,7 @@ pre {
 
 .agent-runtime-section {
   display: grid;
-  width: min(100%, 860px);
+  width: 100%;
   gap: 24px;
   margin-top: 64px;
   border-top: 1px solid var(--border);
@@ -1429,6 +1434,10 @@ dd {
   padding: 28px;
 }
 
+.page > .empty-state {
+  width: 100%;
+}
+
 .empty-state h2 {
   margin-bottom: 8px;
   font-size: var(--text-subsection);
@@ -1534,6 +1543,10 @@ code {
   align-items: center;
   gap: 12px;
   margin-top: 12px;
+}
+
+.connect-command-primary {
+  justify-self: start;
 }
 
 .connect-command-meta {
@@ -2924,6 +2937,10 @@ textarea:focus {
   gap: 18px;
 }
 
+.settings-members-section {
+  width: 100%;
+}
+
 .agent-runtime-section > .panel,
 .agent-runtime-section > .settings-list-section {
   width: 100%;
@@ -2963,6 +2980,10 @@ textarea:focus {
   border-radius: var(--radius);
   background: var(--surface-soft);
   padding: 22px;
+}
+
+.settings-members-section .settings-invitation-panel {
+  width: 100%;
 }
 
 .settings-invitation-panel:focus-visible {
@@ -3513,6 +3534,11 @@ textarea:focus {
 
   .onboarding-action .ds-button,
   .onboarding-feedback > .ds-button {
+    width: 100%;
+  }
+
+  .connect-command-primary {
+    justify-self: stretch;
     width: 100%;
   }
 

@@ -1,5 +1,5 @@
 .capability-page {
-  width: min(100%, 960px);
+  width: min(100%, var(--workspace-page-width, 960px));
   margin: 0 auto;
   color: var(--foreground, #16211b);
 }

@@ -1,0 +1,43 @@
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import postcss, { type Root } from "postcss";
+import { describe, expect, it } from "vitest";
+
+function locateStylesheet(relativePath: string): string {
+  for (const candidate of [relativePath, `apps/web/${relativePath}`]) {
+    const path = resolve(process.cwd(), candidate);
+    if (existsSync(path)) return path;
+  }
+  throw new Error(`The Web stylesheet ${relativePath} was not found from ${process.cwd()}`);
+}
+
+function declarationValue(stylesheet: Root, selector: string, property: string): string {
+  let value: string | undefined;
+  stylesheet.walkRules((rule) => {
+    if (!rule.selectors.includes(selector)) return;
+    rule.walkDecls(property, (declaration) => {
+      value = declaration.value;
+    });
+  });
+  if (!value) throw new Error(`Missing ${property} declaration for ${selector}`);
+  return value;
+}
+
+const appStyles = postcss.parse(readFileSync(locateStylesheet("src/styles.css"), "utf8"));
+const capabilityStyles = postcss.parse(readFileSync(locateStylesheet("src/mock-pages.css"), "utf8"));
+
+describe("workspace page layout", () => {
+  it("uses one 960px width contract for top-level workspace routes", () => {
+    expect(declarationValue(appStyles, ":root", "--workspace-page-width")).toBe("960px");
+    expect(declarationValue(appStyles, ".page", "width")).toBe("min(100%, var(--workspace-page-width))");
+    expect(declarationValue(capabilityStyles, ".capability-page", "width")).toBe(
+      "min(100%, var(--workspace-page-width, 960px))",
+    );
+  });
+
+  it("lets list-heavy Agent and Member sections use the shared page width", () => {
+    expect(declarationValue(appStyles, ".agent-runtime-section", "width")).toBe("100%");
+    expect(declarationValue(appStyles, ".settings-members-section", "width")).toBe("100%");
+    expect(declarationValue(appStyles, ".settings-members-section .settings-invitation-panel", "width")).toBe("100%");
+  });
+});

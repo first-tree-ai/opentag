@@ -429,7 +429,6 @@ function onboardingJourney(
   const messagingCurrent = current.kind === "handoff";
   const setupReady = current.kind === "ready";
   const agentNeedsAttention = current.kind === "agent-runtime";
-  const availableComputer = snapshot?.computers.find((computer) => computer.connectionStatus === "online");
   const runtimeProvider =
     current.kind === "agent"
       ? current.provider.provider
@@ -437,16 +436,7 @@ function onboardingJourney(
         (current.kind === "handoff" || current.kind === "ready" || current.kind === "agent-runtime"
           ? current.agent.runtimeProvider
           : undefined));
-  const computerFact: JourneyFact =
-    current.kind === "computer"
-      ? current.availability === "none"
-        ? { label: "Computer", status: "current", value: "Not connected" }
-        : current.availability === "offline"
-          ? { label: "Computer", status: "attention", value: "Reconnect" }
-          : { label: "Computer", status: "current", value: "Choose one" }
-      : current.kind === "team"
-        ? { label: "Computer", status: "current", value: "Checking" }
-        : { label: "Computer", status: "ready", value: availableComputer?.displayName ?? "Connected" };
+  const computerFact = journeyComputerFact(current, snapshot);
   const runtimeFact: JourneyFact =
     current.kind === "team" || current.kind === "computer"
       ? { label: "Runtime", status: "waiting", value: "Waiting" }
@@ -481,6 +471,40 @@ function onboardingJourney(
         : "Add your Agent to Feishu"
       : "Prepare your Agent",
   };
+}
+
+function journeyComputerFact(current: OnboardingCurrentState, snapshot: OnboardingSnapshot | undefined): JourneyFact {
+  if (current.kind === "team") return { label: "Computer", status: "current", value: "Checking" };
+  if (current.kind === "computer") {
+    if (current.availability === "none") return { label: "Computer", status: "current", value: "Not connected" };
+    if (current.availability === "offline") return { label: "Computer", status: "attention", value: "Reconnect" };
+    return { label: "Computer", status: "current", value: "Choose one" };
+  }
+
+  if (current.kind === "provider" || current.kind === "agent") {
+    return journeyComputerRouteFact(current.computer);
+  }
+
+  const boundComputer = snapshot?.computers.find((computer) => computer.id === current.agent.computerId);
+  if (boundComputer) return journeyComputerRouteFact(boundComputer);
+
+  const knownName =
+    snapshot?.targetAgent?.computer.id === current.agent.computerId
+      ? snapshot.targetAgent.computer.displayName
+      : undefined;
+  return {
+    label: "Computer",
+    status: "attention",
+    value: knownName ? `${knownName} unavailable` : "Unavailable",
+  };
+}
+
+function journeyComputerRouteFact(
+  computer: Pick<TeamComputerSummary, "connectionStatus" | "displayName">,
+): JourneyFact {
+  return computer.connectionStatus === "online"
+    ? { label: "Computer", status: "ready", value: computer.displayName }
+    : { label: "Computer", status: "attention", value: `${computer.displayName} · Offline` };
 }
 
 function onboardingStageStatus(current: OnboardingCurrentState): string {

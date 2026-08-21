@@ -185,6 +185,23 @@ describe("OnboardingPage", () => {
     expect(vi.spyOn(browserApi, "createAgent")).not.toHaveBeenCalled();
   });
 
+  it("summarizes the explicitly selected Computer instead of the first online Computer", async () => {
+    installFacts({ computers: [computerA, computerB] });
+    renderPage({
+      runtime: runtimeFacts([
+        { computerId: computerAId, provider: "codex", runtimeReady: true },
+        { computerId: computerBId, provider: "codex", runtimeReady: true },
+      ]),
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: /Studio Mac/ }));
+
+    expect(await screen.findByRole("heading", { name: "Create your Agent" })).toBeTruthy();
+    const summary = screen.getByRole("region", { name: "Agent preparation summary" });
+    expect(summary.textContent).toContain("ComputerStudio Mac");
+    expect(summary.textContent).not.toContain("ComputerAda's Mac");
+  });
+
   it("keeps an ambiguous Computer choice actionable before runtime facts arrive", async () => {
     installFacts({ computers: [computerA, computerB] });
     renderPage();
@@ -393,6 +410,19 @@ describe("OnboardingPage", () => {
     expect(screen.getByText(/identity and Feishu setup are unchanged/)).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "OpenTag is ready" })).toBeNull();
+  });
+
+  it("shows the Agent-bound Computer as offline instead of substituting another online Computer", async () => {
+    installFacts({
+      agents: [agent],
+      computers: [computerB, { ...computerA, connectionStatus: "offline" }],
+    });
+    renderPage({ runtime: runtimeFacts([{ computerId: computerBId, provider: "codex", runtimeReady: true }]) });
+
+    expect(await screen.findByRole("heading", { name: "OpenTag needs its runtime route" })).toBeTruthy();
+    const route = screen.getByText("Ada's Mac · Offline");
+    expect(route.closest("div")?.dataset.status).toBe("attention");
+    expect(screen.getByRole("region", { name: "Agent preparation summary" }).textContent).not.toContain("Studio Mac");
   });
 
   it.each([

@@ -3601,6 +3601,31 @@ textarea:focus {
     padding-left: 14px;
   }
 
+  .onboarding-messaging-connection {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .onboarding-connection-endpoint-feishu {
+    justify-content: flex-start;
+  }
+
+  .onboarding-messaging-bridge {
+    min-height: 42px;
+    justify-content: flex-start;
+    padding-left: 21px;
+  }
+
+  .onboarding-messaging-bridge::before {
+    inset: 0 auto 0 21px;
+    width: 1px;
+    height: auto;
+  }
+
+  .onboarding-messaging-bridge span {
+    margin-left: 24px;
+  }
+
   .onboarding-workspace-body {
     padding-top: 28px;
     padding-bottom: 34px;

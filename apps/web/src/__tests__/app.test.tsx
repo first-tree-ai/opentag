@@ -1691,6 +1691,33 @@ describe("OpenTag Web App Shell", () => {
     }
   });
 
+  it.each([`/agents/${agentId}/general`, "/agents/new"])(
+    "leaves Workspace-scoped Agent route %s when switching Workspaces",
+    async (path) => {
+      installApi("admin", { alreadyJoinedInvitation: true });
+      window.history.replaceState({}, "", path);
+      render(<App />);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+      const targetWorkspace = within(screen.getByRole("group", { name: "Switch Workspace" }))
+        .getAllByRole("menuitem")
+        .find(
+          (item) => item.classList.contains("account-workspace-option") && item.getAttribute("aria-current") !== "true",
+        );
+      if (!targetWorkspace) throw new Error("A second Workspace option was not rendered");
+      const targetWorkspaceName = targetWorkspace.querySelector("strong")?.textContent;
+      fireEvent.click(targetWorkspace);
+
+      expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/agents");
+      fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
+      const selectedWorkspace = screen
+        .getByRole("group", { name: "Switch Workspace" })
+        .querySelector<HTMLElement>('[aria-current="true"]');
+      expect(selectedWorkspace?.querySelector("strong")?.textContent).toBe(targetWorkspaceName);
+    },
+  );
+
   it("keeps account controls personal and signs out from the account menu", async () => {
     installApi("admin");
     render(<App />);

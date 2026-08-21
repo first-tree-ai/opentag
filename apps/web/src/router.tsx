@@ -785,7 +785,10 @@ function AppShell() {
                           onClick={() => {
                             setOpenMenu(undefined);
                             setNavigationOpen(false);
-                            if (!current) selectTeam(item.teamId);
+                            if (!current) {
+                              navigate("/agents");
+                              selectTeam(item.teamId);
+                            }
                           }}
                         >
                           <span className="team-avatar" aria-hidden="true">

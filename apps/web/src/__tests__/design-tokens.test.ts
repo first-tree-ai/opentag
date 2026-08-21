@@ -30,10 +30,19 @@ const FAMILIES = ["fs", "text", "fw", "track", "font", "lh", "radius", "shadow",
  * The computer icon is drawn with two nested boxes rather than an asset, so its
  * corners are part of the drawing at that size -- not a step anyone should
  * reuse. Like the geometric line heights, the exception names where it applies.
+ *
+ * The runtime-summary marker is the same kind of thing: an 8px square whose 2px
+ * corner is the shape of the glyph. The smallest step is 4px, which on an 8px
+ * box is half its width and draws a circle instead.
  */
 const EXCEPTIONS: Exception[] = [
   { property: "border-radius", value: "3px", selectors: new Set([".settings-computer-icon"]) },
   { property: "border-radius", value: "2px", selectors: new Set([".settings-computer-icon::after"]) },
+  {
+    property: "border-radius",
+    value: "2px",
+    selectors: new Set([".onboarding-runtime-summary dd::before"]),
+  },
 ];
 
 function excepted(declaration: Declared, property: string): boolean {
@@ -215,6 +224,25 @@ function untokenizedMotion(css: string): string[] {
  */
 const SHADOW_LAYER = /^(inset\s+)?((-?[0-9.]+px|0)\s+){2,4}rgb\(var\(--shadow-color\)\s*\/\s*[0-9.]+%\)$/;
 
+/**
+ * Not every box-shadow describes elevation. Two layers in this stylesheet draw
+ * something else and so carry their own colour: a rim light along the top edge
+ * of the onboarding workspace card, and the brand halo behind the stage
+ * header, which is concentric spread with no offset and no blur.
+ *
+ * They are listed as exact strings under the token that earns them, for the
+ * same reason the corner exceptions name a selector: a rule broad enough to
+ * describe "a rim light" is broad enough to let an unrelated second hue back
+ * in, and a layer granted to the whole stylesheet could be borrowed by any
+ * other token. Any other value, including a changed alpha, is still reported --
+ * and the elevation layer beside the rim light is an ordinary --shadow-color
+ * layer, checked like every other.
+ */
+const NON_ELEVATION_LAYERS = new Map<string, ReadonlySet<string>>([
+  ["--shadow-workspace", new Set(["0 1px 0 rgb(255 255 255 / 80%) inset"])],
+  ["--shadow-halo", new Set(["0 0 0 2.5rem rgb(78 122 6 / 4%)", "0 0 0 5rem rgb(78 122 6 / 3%)"])],
+]);
+
 function elevationTokens(css: string): Declared[] {
   return declarations(css).filter(
     (declaration) =>
@@ -224,12 +252,13 @@ function elevationTokens(css: string): Declared[] {
 
 function malformedElevations(css: string): string[] {
   return elevationTokens(css)
-    .filter((declaration) =>
-      declaration.value
+    .filter((declaration) => {
+      const granted = NON_ELEVATION_LAYERS.get(declaration.name) ?? new Set<string>();
+      return declaration.value
         .split(",")
-        .map((layer) => layer.trim())
-        .some((layer) => !SHADOW_LAYER.test(layer)),
-    )
+        .map((layer) => layer.trim().replace(/\s+/g, " "))
+        .some((layer) => !SHADOW_LAYER.test(layer) && !granted.has(layer));
+    })
     .map((declaration) => `${declaration.name}: ${declaration.value}`);
 }
 
@@ -464,6 +493,26 @@ describe("the guard itself", () => {
     expect(malformedElevations(css)).toEqual([
       "--shadow-raised: 0 1px 4px red, 0 1px 4px rgb(var(--shadow-color) / 8%)",
     ]);
+  });
+
+  it("grants the non-elevation layers only their exact value", () => {
+    const halo = ":root { --shadow-halo: 0 0 0 2.5rem rgb(78 122 6 / 9%); }";
+    expect(malformedElevations(halo)).toEqual(["--shadow-halo: 0 0 0 2.5rem rgb(78 122 6 / 9%)"]);
+
+    const rim = ":root { --shadow-workspace: 0 1px 0 rgb(255 0 0 / 80%) inset; }";
+    expect(malformedElevations(rim)).toEqual(["--shadow-workspace: 0 1px 0 rgb(255 0 0 / 80%) inset"]);
+  });
+
+  it("still checks the elevation layer beside a granted rim light", () => {
+    const css = ":root { --shadow-workspace: 0 1px 0 rgb(255 255 255 / 80%) inset, 0 28px 74px red; }";
+    expect(malformedElevations(css)).toEqual([
+      "--shadow-workspace: 0 1px 0 rgb(255 255 255 / 80%) inset, 0 28px 74px red",
+    ]);
+  });
+
+  it("does not lend a granted layer to another token", () => {
+    const css = ":root { --shadow-raised: 0 0 0 2.5rem rgb(78 122 6 / 4%); }";
+    expect(malformedElevations(css)).toEqual(["--shadow-raised: 0 0 0 2.5rem rgb(78 122 6 / 4%)"]);
   });
 
   it("accepts a two-layer elevation drawn in one colour", () => {

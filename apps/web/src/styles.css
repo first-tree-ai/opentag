@@ -80,6 +80,7 @@
   --radius-md: 9px;
   --radius-lg: 13px;
   --radius-xl: 16px;
+  --radius-2xl: 24px;
   --radius-pill: 999px;
   --radius-circle: 50%;
 
@@ -89,6 +90,15 @@
   --shadow-entry: 0 24px 80px rgb(var(--shadow-color) / 10%);
   --shadow-dialog: 0 24px 70px rgb(var(--shadow-color) / 22%);
   --shadow-drawer: 24px 0 70px rgb(var(--shadow-color) / 16%);
+
+  /*
+   * Two roles that are drawn with box-shadow but are not elevation, so they
+   * carry their own colour rather than --shadow-color: a rim light along the
+   * workspace card's top edge, and the brand halo behind the stage header.
+   * Both are listed as elevation exceptions in the design-token guard.
+   */
+  --shadow-workspace: 0 1px 0 rgb(255 255 255 / 80%) inset, 0 28px 74px rgb(var(--shadow-color) / 10%);
+  --shadow-halo: 0 0 0 2.5rem rgb(78 122 6 / 4%), 0 0 0 5rem rgb(78 122 6 / 3%);
 
   --motion-fast: 140ms;
   --motion-slow: 180ms;
@@ -761,7 +771,7 @@ button.danger:hover {
   min-height: 40px;
   margin-top: 4px;
   border-top: 1px solid var(--border);
-  border-radius: 0 0 7px 7px;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
   padding-top: 4px;
 }
 
@@ -1855,8 +1865,8 @@ code {
   color: var(--muted);
   padding: 22px 0;
   transition:
-    color 200ms ease,
-    opacity 200ms ease;
+    color var(--motion-slow) var(--ease-standard),
+    opacity var(--motion-slow) var(--ease-standard);
 }
 
 .onboarding-step[data-status="current"] {
@@ -1874,7 +1884,7 @@ code {
   align-items: center;
   justify-content: center;
   border: 1px solid var(--strong-border);
-  border-radius: 9px;
+  border-radius: var(--radius-md);
   background: rgb(253 252 247 / 54%);
   color: var(--muted);
   font-family: var(--font-mono);
@@ -1882,10 +1892,10 @@ code {
   font-variant-numeric: tabular-nums;
   font-weight: var(--fw-semibold);
   transition:
-    background-color 200ms ease,
-    border-color 200ms ease,
-    color 200ms ease,
-    transform 200ms ease;
+    background-color var(--motion-slow) var(--ease-standard),
+    border-color var(--motion-slow) var(--ease-standard),
+    color var(--motion-slow) var(--ease-standard),
+    transform var(--motion-slow) var(--ease-standard);
 }
 
 .onboarding-step[data-status="current"] .onboarding-step-number {
@@ -1945,11 +1955,9 @@ code {
   min-height: 630px;
   overflow: hidden;
   border: 1px solid rgb(201 204 187 / 88%);
-  border-radius: 24px;
+  border-radius: var(--radius-2xl);
   background: rgb(253 252 247 / 96%);
-  box-shadow:
-    0 1px 0 rgb(255 255 255 / 80%) inset,
-    0 28px 74px rgb(45 62 34 / 10%);
+  box-shadow: var(--shadow-workspace);
 }
 
 .onboarding-stage-header {
@@ -1969,10 +1977,8 @@ code {
   width: 16rem;
   height: 16rem;
   border: 1px solid rgb(78 122 6 / 13%);
-  border-radius: 50%;
-  box-shadow:
-    0 0 0 2.5rem rgb(78 122 6 / 4%),
-    0 0 0 5rem rgb(78 122 6 / 3%);
+  border-radius: var(--radius-circle);
+  box-shadow: var(--shadow-halo);
   content: "";
   pointer-events: none;
 }
@@ -2130,7 +2136,7 @@ code {
   align-items: center;
   justify-content: center;
   border: 1px solid #b6c399;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--surface);
   color: var(--brand-ink);
   font-family: var(--font-mono);
@@ -2178,7 +2184,7 @@ code {
 .onboarding-messaging-bridge span {
   position: relative;
   border: 1px solid #bfc8b0;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: #f0f2e7;
   color: var(--brand-ink);
   font-family: var(--font-mono);
@@ -2252,7 +2258,7 @@ code {
 .onboarding-action .button:not(.compact-button) {
   min-height: 46px;
   min-width: 190px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   padding-inline: 20px;
 }
 
@@ -3591,7 +3597,7 @@ textarea:focus {
 
   .onboarding-workspace {
     min-height: 0;
-    border-radius: 17px;
+    border-radius: var(--radius-xl);
   }
 
   .onboarding-stage-header,

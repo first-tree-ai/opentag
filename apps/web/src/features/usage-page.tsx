@@ -1,53 +1,42 @@
-import { useState } from "react";
-import { type UsageRange, usageRanges, usageSnapshots } from "../mock/capability-data.js";
+import { usageSnapshots } from "../mock/capability-data.js";
 import "../mock-pages.css";
 
 export function UsagePage() {
-  const [range, setRange] = useState<UsageRange>("30 days");
-  const snapshot = usageSnapshots[range];
+  const snapshot = usageSnapshots["30 days"];
   const trendPoints = makeTrendPoints(snapshot.trend);
 
   return (
     <section className="capability-page" aria-labelledby="usage-page-title">
-      <header className="capability-page-header capability-usage-header">
+      <header className="capability-page-header">
         <div>
           <span className="capability-preview-label">Demo data preview</span>
           <h1 id="usage-page-title">Usage</h1>
           <p>A simple view of sample Agent activity across this Workspace.</p>
         </div>
-        <label className="capability-range-field">
-          <span>Time range</span>
-          <select value={range} onChange={(event) => setRange(event.currentTarget.value as UsageRange)}>
-            {usageRanges.map((option) => (
-              <option value={option} key={option}>
-                Last {option}
-              </option>
-            ))}
-          </select>
-        </label>
       </header>
 
-      <dl className="capability-metric-grid" aria-label="Usage metrics" aria-live="polite">
-        <Metric label="Tasks" value={snapshot.metrics.tasks} />
-        <Metric label="Turns" value={snapshot.metrics.turns} />
-        <Metric label="Active Agents" value={snapshot.metrics.activeAgents} />
-        <Metric label="Providers" value={snapshot.metrics.providers} />
-      </dl>
+      <div className="capability-usage-summary">
+        <dl className="capability-metric-grid" aria-label="Usage metrics" aria-live="polite">
+          <Metric label="Tasks" value={snapshot.metrics.tasks} />
+          <Metric label="Turns" value={snapshot.metrics.turns} />
+          <Metric label="Active Agents" value={snapshot.metrics.activeAgents} />
+          <Metric label="Providers" value={snapshot.metrics.providers} />
+        </dl>
+      </div>
 
       <div className="capability-usage-grid">
         <section className="capability-chart-panel" aria-labelledby="activity-trend-title">
           <div className="capability-section-heading">
             <div>
               <h2 id="activity-trend-title">Activity trend</h2>
-              <p>Turns completed during the selected demo period.</p>
+              <p>Turns completed during the last 30 days.</p>
             </div>
-            <span>{range}</span>
           </div>
           <svg
             className="capability-trend-chart"
             viewBox="0 0 640 220"
             role="img"
-            aria-label={`Demo activity trend for the last ${range}`}
+            aria-label="Demo activity trend for the last 30 days"
             preserveAspectRatio="none"
           >
             <line x1="0" y1="40" x2="640" y2="40" />

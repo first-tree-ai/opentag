@@ -2,6 +2,7 @@ import type { FeishuSetupAttempt, FeishuSetupIntent } from "@opentag/shared/brow
 import { toString as qrToString } from "qrcode";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
+import { Button } from "../ui/design-system.js";
 
 const ACTIVE_STATES: readonly FeishuSetupAttempt["state"][] = ["awaiting_user", "validating"];
 const RETRYABLE_STATES: readonly FeishuSetupAttempt["state"][] = ["expired", "failed", "canceled"];
@@ -189,9 +190,7 @@ function FeishuSetupFeedback({
       {RETRYABLE_STATES.includes(attempt.state) ? (
         <>
           <br />
-          <button className="button" type="button" onClick={() => void onRetry(attempt.intent)}>
-            Retry Feishu setup
-          </button>
+          <Button onClick={() => void onRetry(attempt.intent)}>Retry Feishu setup</Button>
         </>
       ) : null}
     </div>

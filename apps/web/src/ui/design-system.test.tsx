@@ -1,12 +1,73 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { createRef, useState } from "react";
 import { describe, expect, it } from "vitest";
-import { Button, Dialog, Field, Icon, StatusIndicator } from "./design-system.js";
+import {
+  Button,
+  buttonClassName,
+  Dialog,
+  Field,
+  Icon,
+  SettingsList,
+  SettingsRow,
+  StatusIndicator,
+  Tabs,
+} from "./design-system.js";
 
 describe("design system primitives", () => {
   it("maps button intent to an explicit visual variant", () => {
     render(<Button variant="secondary">Cancel</Button>);
     expect(screen.getByRole("button", { name: "Cancel" }).className).toContain("ds-button--secondary");
+  });
+
+  it("exposes the Viktor-aligned button hierarchy without a separate save color", () => {
+    render(
+      <>
+        <Button variant="outline">Review</Button>
+        <Button variant="ghost">Dismiss</Button>
+        <Button variant="inline">Details</Button>
+      </>,
+    );
+    expect(screen.getByRole("button", { name: "Review" }).className).toContain("ds-button--outline");
+    expect(screen.getByRole("button", { name: "Dismiss" }).className).toContain("ds-button--ghost");
+    expect(screen.getByRole("button", { name: "Details" }).className).toContain("ds-button--inline");
+  });
+
+  it("shares button styling with semantic links", () => {
+    render(
+      <a className={buttonClassName({ variant: "secondary" })} href="/continue">
+        Continue
+      </a>,
+    );
+    expect(screen.getByText("Continue").className).toContain("ds-button--secondary");
+  });
+
+  it("provides labelled tabs with an explicit mobile-collapse contract", () => {
+    render(
+      <Tabs collapseOnMobile label="Example settings">
+        <a href="/general">General</a>
+        <a href="/runtime">Runtime</a>
+      </Tabs>,
+    );
+    const navigation = screen.getByRole("navigation", { name: "Example settings" });
+    expect(navigation.className).toContain("ds-tabs");
+    expect(navigation.className).toContain("ds-tabs--collapsible");
+    expect(screen.getAllByRole("link")).toHaveLength(2);
+  });
+
+  it("keeps setting copy and controls in one consistent row", () => {
+    render(
+      <SettingsList>
+        <SettingsRow label="Display name" description="Visible throughout the product.">
+          <Field htmlFor="display-name" label="Display name">
+            <input id="display-name" />
+          </Field>
+        </SettingsRow>
+      </SettingsList>,
+    );
+    const row = screen.getByText("Visible throughout the product.").closest(".ds-settings-row");
+    expect(row).toBeTruthy();
+    expect(screen.getByLabelText("Display name")).toBeTruthy();
+    expect(row?.querySelector(".ds-settings-row__control")).toBeTruthy();
   });
 
   it("keeps field labels, help and errors associated with the control", () => {
@@ -33,7 +94,7 @@ describe("design system primitives", () => {
   });
 
   it("provides consistent vector icons", () => {
-    const { container } = render(<Icon name="chevron-right" />);
+    const { container } = render(<Icon name="check" />);
     expect(container.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
     expect(container.querySelector("path")).toBeTruthy();
   });

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { IntegrationsPage } from "../features/integrations-page.js";
 import { SkillsPage } from "../features/skills-page.js";
@@ -38,7 +38,7 @@ describe("capability entry pages", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("updates the Usage overview when the demo range changes", () => {
+  it("renders the fixed 30-day Usage overview without a range control", () => {
     render(<UsagePage />);
 
     expect(screen.getByText("Demo data preview")).toBeTruthy();
@@ -47,10 +47,9 @@ describe("capability entry pages", () => {
     expect(within(metrics).getByText("728")).toBeTruthy();
     expect(screen.getByRole("img").getAttribute("aria-label")).toContain("30 days");
 
-    fireEvent.change(screen.getByLabelText("Time range"), { target: { value: "7 days" } });
-
-    expect(within(metrics).getByText("38")).toBeTruthy();
-    expect(within(metrics).getByText("184")).toBeTruthy();
-    expect(screen.getByRole("img").getAttribute("aria-label")).toContain("7 days");
+    expect(screen.queryByLabelText("Time range")).toBeNull();
+    expect(metrics.closest(".capability-usage-summary")).toBeTruthy();
+    expect(document.querySelector(".capability-section-heading > span")).toBeNull();
+    expect(screen.getByText("Turns completed during the last 30 days.")).toBeTruthy();
   });
 });

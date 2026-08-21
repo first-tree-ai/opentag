@@ -1,6 +1,7 @@
 import type { Computer } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "./api.js";
+import { Button } from "./ui/design-system.js";
 
 const COMPUTER_POLL_INTERVAL_MS = 1_500;
 const COPY_FEEDBACK_MS = 2_000;
@@ -9,7 +10,7 @@ const COPY_FALLBACK_HINT = "Copying is unavailable here. The command is selected
 
 export interface ComputerSetupProps {
   teamId: string;
-  onConnected?: () => void;
+  onConnected?: (computer: Computer) => void;
 }
 
 function errorMessage(cause: unknown, fallback: string): string {
@@ -137,7 +138,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
       void browserApi.ownComputers().then(
         (value) => {
           if (!active || completed || activePollCycle.current !== pollCycle) return;
-          const connected = value.computers.some(
+          const connected = value.computers.find(
             (computer: Computer) =>
               computer.connectionStatus === "online" &&
               ((!baseline.has(computer.id) && computer.connectedAt !== null) ||
@@ -152,7 +153,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
           setWaitingForComputer(false);
           setComputerConnected(true);
           setRemainingMs(undefined);
-          onConnectedRef.current?.();
+          onConnectedRef.current?.(connected);
         },
         (cause: unknown) => {
           if (active && !completed && activePollCycle.current === pollCycle) {
@@ -172,18 +173,18 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
     <section className="panel">
       <h2>Connect a Local Computer</h2>
       <p>Generate a short-lived command, then run it in a terminal on the Computer.</p>
-      <button className="button" type="button" onClick={() => void connectComputer()}>
+      <Button className="connect-command-primary" onClick={() => void connectComputer()}>
         Generate connection command
-      </button>
+      </Button>
       {bootstrapCommand ? (
         <>
           <pre>
             <code ref={commandRef}>{bootstrapCommand}</code>
           </pre>
           <div className="connect-command-actions">
-            <button className="button secondary" type="button" onClick={() => void copyCommand(bootstrapCommand)}>
+            <Button variant="secondary" onClick={() => void copyCommand(bootstrapCommand)}>
               {copied ? "Copied" : "Copy command"}
-            </button>
+            </Button>
             {waitingForComputer && remainingMs !== undefined ? (
               <p className="connect-command-meta">Expires in {formatRemaining(remainingMs)}</p>
             ) : null}

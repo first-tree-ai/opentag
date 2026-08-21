@@ -21,6 +21,8 @@ import { DaemonServiceError } from "./types.js";
 const LAUNCHD_TIMEOUT_MS = 15_000;
 
 export interface LaunchdBackendOptions {
+  activationAttempts?: number;
+  activationDelayMs?: number;
   evictionAttempts?: number;
   evictionDelayMs?: number;
   home: string;
@@ -107,6 +109,8 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
     wrapperPath,
   });
   const wait = options.sleep ?? sleep;
+  const activationAttempts = options.activationAttempts ?? 50;
+  const activationDelayMs = options.activationDelayMs ?? 100;
   const evictionAttempts = options.evictionAttempts ?? 20;
   const evictionDelayMs = options.evictionDelayMs ?? 100;
 
@@ -212,6 +216,20 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
     }
   };
 
+  const waitForActivation = async (): Promise<DaemonServiceInfo> => {
+    let current: DaemonServiceInfo | undefined;
+    for (let attempt = 0; attempt < activationAttempts; attempt += 1) {
+      current = await status();
+      if (current.state === "active") return current;
+      if (attempt + 1 < activationAttempts) await wait(activationDelayMs);
+    }
+    const lastState = current ? `; last state: ${current.state}${current.detail ? ` (${current.detail})` : ""}` : "";
+    throw new DaemonServiceError(
+      "OPERATION_FAILED",
+      `launchd reported that the OpenTag service did not become active${lastState}`,
+    );
+  };
+
   return {
     platform: "launchd",
     preflight,
@@ -224,14 +242,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
       await waitForEviction();
       await bootstrap();
       await runRequired(options.runner, launchctl, ["enable", target], "launchd enable");
-      const current = await status();
-      if (current.state !== "active") {
-        throw new DaemonServiceError(
-          "OPERATION_FAILED",
-          "launchd reported that the OpenTag service did not become active",
-        );
-      }
-      return current;
+      return waitForActivation();
     },
     async start() {
       await preflight();
@@ -254,7 +265,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
           `launchd start state check failed: ${loaded.stderr || "unknown error"}`,
         );
       }
-      return status();
+      return waitForActivation();
     },
     async stop() {
       if ((await readRegularFile(plistPath)) === undefined) return info("not-installed", { drifted: true });
@@ -270,7 +281,7 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
       await bootout();
       await waitForEviction();
       await bootstrap();
-      return status();
+      return waitForActivation();
     },
     status,
     async uninstall() {

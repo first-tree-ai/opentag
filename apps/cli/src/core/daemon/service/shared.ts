@@ -276,7 +276,10 @@ export function isManagerNotLoaded(result: CommandResult): boolean {
   const detail = `${result.stdout}\n${result.stderr}`.toLowerCase();
   return (
     result.code !== 0 &&
-    (detail.includes("not loaded") || detail.includes("could not find service") || detail.includes("not found"))
+    (detail.includes("not loaded") ||
+      detail.includes("could not find service") ||
+      detail.includes("not found") ||
+      detail.includes("no such process"))
   );
 }
 

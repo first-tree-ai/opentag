@@ -50,6 +50,10 @@ describe("capability entry pages", () => {
     const timeRange = screen.getByLabelText("Time range");
     expect(timeRange.className).toContain("ds-control");
     expect(timeRange.closest(".ds-field")).toBeTruthy();
+    expect(timeRange.closest(".capability-usage-toolbar")).toBeTruthy();
+    expect(timeRange.closest(".capability-page-header")).toBeNull();
+    expect(metrics.closest(".capability-usage-summary")).toBeTruthy();
+    expect(document.querySelector(".capability-section-heading > span")).toBeNull();
     fireEvent.change(timeRange, { target: { value: "7 days" } });
 
     expect(within(metrics).getByText("38")).toBeTruthy();

@@ -247,6 +247,17 @@
   font-weight: var(--fw-semibold, 600);
 }
 
+.capability-usage-summary {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 36px;
+}
+
+.capability-usage-toolbar {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .capability-range-field select {
   min-height: 38px;
   padding-block: 0.4rem;
@@ -255,7 +266,7 @@
 .capability-metric-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin: 0 0 36px;
+  margin: 0;
   border-top: 1px solid var(--strong-border, #c9ccbb);
   border-bottom: 1px solid var(--border, #d6d9ca);
 }
@@ -397,10 +408,6 @@
     justify-self: end;
   }
 
-  .capability-usage-header {
-    grid-template-columns: minmax(0, 1fr) 150px;
-  }
-
   .capability-usage-grid {
     grid-template-columns: 1fr;
   }
@@ -429,12 +436,12 @@
     font-size: var(--text-micro, 0.75rem);
   }
 
-  .capability-usage-header {
-    grid-template-columns: 1fr;
-  }
-
   .capability-range-field {
     width: min(100%, 180px);
+  }
+
+  .capability-usage-toolbar {
+    justify-content: flex-start;
   }
 
   .capability-metric-grid {

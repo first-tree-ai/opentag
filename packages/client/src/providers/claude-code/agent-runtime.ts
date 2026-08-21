@@ -730,7 +730,8 @@ async function probeClaudeCode(
     helpResult.stdout.includes("--resume") &&
     helpResult.stdout.includes("--mcp-config") &&
     helpResult.stdout.includes("--strict-mcp-config") &&
-    helpResult.stdout.includes("--allowedTools");
+    helpResult.stdout.includes("--allowedTools") &&
+    helpResult.stdout.includes("--append-system-prompt");
   const credential =
     hasCredentialEnvironment(environment) || (await probeClaudeCodeCredential(command, execution, signal));
   return { credential, streamJson, version };

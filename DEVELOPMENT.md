@@ -134,9 +134,10 @@ ${OPENTAG_HOME}/
 │   └── daemon.env
 ├── data/
 │   ├── runtime/
+│   │   ├── workspace-states/<agent-key>.json
 │   │   ├── session-bindings/<agent-key>/<session-key>.json
 │   │   └── effective-snapshots/<agent-key>/<snapshot-key>.json
-│   └── workspaces/<agent-key>/  # Agent cwd and writable root
+│   └── workspaces/<agent-key>/  # New Agent cwd and writable root
 ├── state/
 │   ├── daemon/owner.json
 │   └── service/
@@ -151,11 +152,13 @@ files (`0600`). Directories and files are created only when their owner needs th
 creates only `config/credentials.json`; runtime recovery records and workspaces appear on the first relevant reconcile.
 
 OpenTag does not maintain control files inside an Agent Workspace. Platform and Agent instructions are injected through
-the selected Provider's native system-prompt surface. The Workspace root is the Provider cwd. The Client provisions and
-validates that private root directory but otherwise treats its contents as user-owned: it does not inspect, migrate,
-rename, or delete Workspace entries, and it does not read the obsolete workspace-state record. Data written by an older
-Client under `workspaces/<agent-key>/files/` remains there as an ordinary `files/` subdirectory. Back it up and reorganize
-it manually if a different layout is desired.
+the selected Provider's native system-prompt surface. A new Workspace root is the Provider cwd. For an existing
+schema-v1/v2 Workspace, one compatibility transition preserves `files/` as the cwd instead of moving user files. It
+removes only legacy instruction files whose OpenTag provenance can be established from the old state; a user-authored or
+changed conflict is preserved and fails closed. The transition state is written before cleanup so an interrupted attempt
+is idempotent. After it completes, the Client uses workspace state only to preserve layout and identity and no longer
+inspects or manages Workspace entries. Schema v3 is also a downgrade fence: older v1/v2 Clients reject it instead of
+reinterpreting an upgraded Workspace.
 
 This layout is a clean break: OpenTag does not read, migrate, delete, or fall back to root-level `credentials.json`,
 `computer.json`, `daemon-owner.json`, `runtime/`, `service/`, `data/computer.json`, `data/runtime/agents`, or
@@ -173,12 +176,13 @@ that identity or repair old bindings.
 Provider bindings, evidence for Turns not yet reported successfully, Workspace files, and local `daemon.env` values are
 local-only. Losing a Session binding can reset exact Provider resume continuity and can leave accepted-but-unreported
 work requiring explicit repair. Workspace files require Git, external storage, or a local backup; the OpenTag Server
-cannot restore them. Effective snapshots are reproducible and are not a primary backup target.
+cannot restore them. Losing workspace state while its Workspace is non-empty fails closed instead of silently choosing a
+different cwd. Effective snapshots are reproducible and are not a primary backup target.
 
 Daemon/service owner and lease state plus logs are locally reproducible only while the daemon is stopped and no service
 mutation is running. Deleting owner or lease evidence while operations are live can break single-daemon and service
 mutual exclusion. Backups should prioritize `config/computer.json`, local `config/daemon.env`,
-`data/runtime/session-bindings`, and `data/workspaces`.
+`data/runtime/session-bindings`, and `data/runtime/workspace-states` together with `data/workspaces`.
 
 Manage the daemon with `daemon install/start/stop/restart/status/uninstall`. `uninstall` preserves `config/` and `data/`.
 Windows services are not supported in v0.1. Linux logs are available through

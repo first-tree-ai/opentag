@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1079,9 +1079,22 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     await mkdir(codexHome);
     await writeFile(join(codexHome, "auth.json"), "{}", "utf8");
 
+    const promptSurfaceClients = [
+      new ManualCodexClient(),
+      new ManualCodexClient({ threadResumeResponse: { thread: { id: "bootstrap-thread" } } }),
+      new ManualCodexClient(),
+    ];
+    let promptSurfaceClientIndex = 0;
+    let isolatedProbeHome: string | undefined;
     const withFile = new CodexAgentRuntimeFactory({
       clientVersion: "test",
-      createClient: () => new ManualCodexClient(),
+      createClient: (_cwd, probeEnvironment) => {
+        isolatedProbeHome = probeEnvironment?.CODEX_HOME;
+        const client = promptSurfaceClients[promptSurfaceClientIndex];
+        promptSurfaceClientIndex += 1;
+        if (!client) throw new Error("unexpected prompt-surface client creation");
+        return client;
+      },
       process: {
         command,
         env: { PATH: process.env.PATH, CODEX_HOME: codexHome, CODEX_FIXTURE_LOGIN_VALID: "1" },
@@ -1089,6 +1102,61 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       },
     });
     await expect(withFile.probe({})).resolves.toEqual({ ready: true, version: "codex-cli test", issues: [] });
+    expect(promptSurfaceClients[0]?.call("thread/start")?.params).toMatchObject({
+      ephemeral: false,
+      developerInstructions: "OpenTag Provider prompt-surface capability probe.",
+    });
+    expect(promptSurfaceClients[1]?.call("thread/resume")?.params).toMatchObject({
+      threadId: "thread-1",
+      developerInstructions: "OpenTag Provider prompt-surface capability probe.",
+      history: [
+        {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "OpenTag capability probe history." }],
+        },
+      ],
+    });
+    expect(promptSurfaceClients[2]?.call("thread/resume")?.params).toEqual({
+      threadId: "bootstrap-thread",
+      cwd: process.cwd(),
+      developerInstructions: "OpenTag Provider prompt-surface capability probe.",
+      approvalPolicy: "never",
+      sandbox: "read-only",
+    });
+    expect(isolatedProbeHome).toContain("opentag-codex-capability-");
+    await expect(stat(isolatedProbeHome ?? "")).rejects.toMatchObject({ code: "ENOENT" });
+
+    for (const clients of [
+      [new ManualCodexClient({ threadStartResponse: {} })],
+      [new ManualCodexClient(), new ManualCodexClient({ threadResumeResponse: {} })],
+      [new ManualCodexClient(), new ManualCodexClient(), new ManualCodexClient({ threadResumeResponse: {} })],
+      [
+        new ManualCodexClient(),
+        new ManualCodexClient(),
+        new ManualCodexClient({ threadResumeResponse: { thread: { id: "replacement-thread" } } }),
+      ],
+    ]) {
+      let clientIndex = 0;
+      const incompatiblePromptSurface = new CodexAgentRuntimeFactory({
+        clientVersion: "test",
+        createClient: () => {
+          const client = clients[clientIndex];
+          clientIndex += 1;
+          if (!client) throw new Error("unexpected incompatible prompt-surface client creation");
+          return client;
+        },
+        process: {
+          command,
+          env: { PATH: process.env.PATH, CODEX_FIXTURE_LOGIN_VALID: "1" },
+        },
+      });
+      await expect(incompatiblePromptSurface.probe({})).resolves.toMatchObject({
+        ready: false,
+        issues: [{ code: "version_incompatible" }],
+      });
+      expect(clients.every((client) => client.closed)).toBe(true);
+    }
 
     const withKey = new CodexAgentRuntimeFactory({
       clientVersion: "test",
@@ -1198,6 +1266,7 @@ interface ManualClientOptions {
   readonly interruptResponse?: Promise<void>;
   readonly steerTurnId?: string;
   readonly threadStartResponse?: unknown;
+  readonly threadResumeResponse?: unknown;
   readonly turnStartResponse?: unknown | Promise<unknown>;
 }
 
@@ -1237,7 +1306,11 @@ class ManualCodexClient implements InteractiveCodexAppServerClient {
         ? this.#options.threadStartResponse
         : { thread: { id: "thread-1" } };
     }
-    if (method === "thread/resume") return { thread: { id: (params as { threadId: string }).threadId } };
+    if (method === "thread/resume") {
+      return Object.hasOwn(this.#options, "threadResumeResponse")
+        ? this.#options.threadResumeResponse
+        : { thread: { id: (params as { threadId: string }).threadId } };
+    }
     if (method === "turn/steer") return { turnId: this.#options.steerTurnId ?? `turn-${this.turn}` };
     if (method !== "turn/start") throw new Error(`unexpected request: ${method}`);
     this.turn += 1;

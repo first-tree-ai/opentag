@@ -27,6 +27,7 @@ describe("OpenTag Home layout", () => {
       runtime: join(root, "data", "runtime"),
       runtimeEffectiveSnapshots: join(root, "data", "runtime", "effective-snapshots"),
       runtimeSessionBindings: join(root, "data", "runtime", "session-bindings"),
+      runtimeWorkspaceStates: join(root, "data", "runtime", "workspace-states"),
       serviceState: join(root, "state", "service"),
       state: join(root, "state"),
       workspaces: join(root, "data", "workspaces"),
@@ -41,6 +42,10 @@ describe("OpenTag Home layout", () => {
     expect(paths.runtimeRoot).toBe(join(home, "data", "runtime"));
     expect(paths.sessionBindingsRoot).toBe(join(home, "data", "runtime", "session-bindings"));
     expect(paths.effectiveSnapshotsRoot).toBe(join(home, "data", "runtime", "effective-snapshots"));
+    expect(paths.workspaceStatesRoot).toBe(join(home, "data", "runtime", "workspace-states"));
+    expect(paths.workspaceTransitionRoot).toMatch(
+      new RegExp(`^${escapeRegExp(join(home, "data", "runtime", "workspace-transitions"))}/a-[a-f0-9]{40}$`, "u"),
+    );
     expect(paths.sessions).toMatch(new RegExp(`^${escapeRegExp(paths.sessionBindingsRoot)}/a-[a-f0-9]{40}$`, "u"));
     expect(paths.snapshots).toMatch(new RegExp(`^${escapeRegExp(paths.effectiveSnapshotsRoot)}/a-[a-f0-9]{40}$`, "u"));
     expect(paths.workspaceRoot).toMatch(

@@ -29,7 +29,23 @@ createInterface({ input: process.stdin }).on("line", (line) => {
   }
   if (message.method === "thread/start") {
     const tools = message.params?.dynamicTools;
-    if (!Array.isArray(tools) || tools.length !== 3) {
+    if (
+      !Array.isArray(tools) ||
+      tools.length !== 1 ||
+      message.params?.ephemeral !== false ||
+      message.params?.developerInstructions !== "OpenTag Provider prompt-surface capability probe."
+    ) {
+      send({ id: message.id, result: { unsupported: true } });
+      return;
+    }
+    send({ id: message.id, result: { thread: { id: "readiness-thread" } } });
+    return;
+  }
+  if (message.method === "thread/resume") {
+    if (
+      message.params?.threadId !== "readiness-thread" ||
+      message.params?.developerInstructions !== "OpenTag Provider prompt-surface capability probe."
+    ) {
       send({ id: message.id, result: { unsupported: true } });
       return;
     }

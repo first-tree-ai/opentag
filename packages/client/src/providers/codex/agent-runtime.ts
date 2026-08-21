@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
-import { isAbsolute } from "node:path";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
@@ -50,6 +52,7 @@ import {
 const execFileAsync = promisify(execFile);
 const CODEX_BINDING_SCHEMA_VERSION = 1;
 const CODEX_PROVIDER_ID = "codex";
+const CODEX_CAPABILITY_PROBE_INSTRUCTIONS = "OpenTag Provider prompt-surface capability probe.";
 export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "app-server",
   "--stdio",
@@ -714,35 +717,46 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
     this.#clientVersion = options.clientVersion;
     const environment = options.process?.env ?? codexAgentRuntimeEnvironment();
     const command = options.process?.command ?? "codex";
-    this.#createClient =
+    const createDefaultClient = (
+      cwd: string,
+      workspaceEnvironment?: Readonly<Record<string, string>>,
+      expectedCodexHome = options.process?.expectedCodexHome,
+    ) =>
+      new CodexAppServerProcess({
+        command,
+        args: options.process?.args ?? [...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS],
+        cwd,
+        env: { ...environment, ...workspaceEnvironment },
+        expectedCodexHome,
+        maxLineBytes: options.process?.maxLineBytes,
+        requestTimeoutMs: options.process?.requestTimeoutMs,
+        spawnProcess: options.process?.spawnProcess,
+      });
+    this.#createClient = options.createClient ?? createDefaultClient;
+    const createProbeClient =
       options.createClient ??
-      ((cwd, workspaceEnvironment) =>
-        new CodexAppServerProcess({
-          command,
-          args: options.process?.args ?? [...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS],
-          cwd,
-          env: { ...environment, ...workspaceEnvironment },
-          expectedCodexHome: options.process?.expectedCodexHome,
-          maxLineBytes: options.process?.maxLineBytes,
-          requestTimeoutMs: options.process?.requestTimeoutMs,
-          spawnProcess: options.process?.spawnProcess,
-        }));
+      ((cwd: string, probeEnvironment?: Readonly<Record<string, string>>) =>
+        createDefaultClient(cwd, probeEnvironment, probeEnvironment?.CODEX_HOME));
     this.#probeRunner =
       options.probeRunner ??
       (async (signal) => {
         const local = await probeCodex(command, environment, signal);
         if (!local.credential) return { ...local, experimentalTools: false };
-        const client = this.#createClient(process.cwd());
+        const probeHome = await realpath(await mkdtemp(join(tmpdir(), "opentag-codex-capability-")));
+        const startClient = createProbeClient(process.cwd(), { CODEX_HOME: probeHome });
+        let bootstrapClient: InteractiveCodexAppServerClient | undefined;
+        let resumeClient: InteractiveCodexAppServerClient | undefined;
         try {
-          await client.initialize(this.#clientVersion, signal);
-          const response = requireRecord(
-            await client.request(
+          await startClient.initialize(this.#clientVersion, signal);
+          const startResponse = requireRecord(
+            await startClient.request(
               "thread/start",
               {
                 cwd: process.cwd(),
+                developerInstructions: CODEX_CAPABILITY_PROBE_INSTRUCTIONS,
                 approvalPolicy: "never",
                 sandbox: "read-only",
-                ephemeral: true,
+                ephemeral: false,
                 dynamicTools: [
                   {
                     type: "function",
@@ -754,12 +768,75 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
               },
               signal,
             ),
-            "Codex dynamic tool probe returned an invalid response",
+            "Codex capability probe start returned an invalid response",
           );
-          requireRecord(response.thread, "Codex dynamic tool probe returned no thread");
+          const startedThread = requireRecord(startResponse.thread, "Codex capability probe start returned no thread");
+          const threadId = requireString(startedThread.id, "Codex capability probe start returned no thread id");
+          await startClient.close().catch(() => undefined);
+          bootstrapClient = createProbeClient(process.cwd(), { CODEX_HOME: probeHome });
+          await bootstrapClient.initialize(this.#clientVersion, signal);
+          const bootstrapResponse = requireRecord(
+            await bootstrapClient.request(
+              "thread/resume",
+              {
+                threadId,
+                cwd: process.cwd(),
+                developerInstructions: CODEX_CAPABILITY_PROBE_INSTRUCTIONS,
+                approvalPolicy: "never",
+                sandbox: "read-only",
+                history: [
+                  {
+                    type: "message",
+                    role: "user",
+                    content: [{ type: "input_text", text: "OpenTag capability probe history." }],
+                  },
+                ],
+              },
+              signal,
+            ),
+            "Codex capability probe bootstrap returned an invalid response",
+          );
+          const bootstrapThread = requireRecord(
+            bootstrapResponse.thread,
+            "Codex capability probe bootstrap returned no thread",
+          );
+          const bootstrapThreadId = requireString(
+            bootstrapThread.id,
+            "Codex capability probe bootstrap returned no thread id",
+          );
+          await bootstrapClient.close().catch(() => undefined);
+          resumeClient = createProbeClient(process.cwd(), { CODEX_HOME: probeHome });
+          await resumeClient.initialize(this.#clientVersion, signal);
+          const resumeResponse = requireRecord(
+            await resumeClient.request(
+              "thread/resume",
+              {
+                threadId: bootstrapThreadId,
+                cwd: process.cwd(),
+                developerInstructions: CODEX_CAPABILITY_PROBE_INSTRUCTIONS,
+                approvalPolicy: "never",
+                sandbox: "read-only",
+              },
+              signal,
+            ),
+            "Codex capability probe exact resume returned an invalid response",
+          );
+          const resumedThread = requireRecord(
+            resumeResponse.thread,
+            "Codex capability probe exact resume returned no thread",
+          );
+          if (
+            requireString(resumedThread.id, "Codex capability probe exact resume returned no thread id") !==
+            bootstrapThreadId
+          ) {
+            throw new CodexAppServerError("protocol", "Codex capability probe resumed another thread");
+          }
           return { ...local, experimentalTools: true };
         } finally {
-          await client.close().catch(() => undefined);
+          await startClient.close().catch(() => undefined);
+          await bootstrapClient?.close().catch(() => undefined);
+          await resumeClient?.close().catch(() => undefined);
+          await rm(probeHome, { recursive: true, force: true }).catch(() => undefined);
         }
       });
   }
@@ -897,6 +974,9 @@ export function codexAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process
 }
 
 function probeIssue(error: unknown): AgentRuntimeProbeResult["issues"][number] {
+  if (error instanceof AgentProviderError && error.code === "provider_protocol_error") {
+    return { code: "version_incompatible", message: `Codex App Server protocol is incompatible: ${error.message}` };
+  }
   if (error instanceof CodexAppServerError) {
     if (error.code === "protocol") {
       return { code: "version_incompatible", message: `Codex App Server protocol is incompatible: ${error.message}` };

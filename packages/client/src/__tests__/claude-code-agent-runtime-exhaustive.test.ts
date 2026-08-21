@@ -519,7 +519,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     const command = join(directory, "claude-fixture");
     await writeFile(
       command,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools\\n"; exit 0; fi\nif [ -n "$CLAUDE_CODE_SKIP_PROMPT_HISTORY" ]; then printf \'{"loggedIn":false}\\n\'; exit 1; fi\nprintf \'{"loggedIn":true}\\n\'\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\nif [ -n "$CLAUDE_CODE_SKIP_PROMPT_HISTORY" ]; then printf \'{"loggedIn":false}\\n\'; exit 1; fi\nprintf \'{"loggedIn":true}\\n\'\n',
       "utf8",
     );
     await chmod(command, 0o755);
@@ -529,6 +529,18 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       version: "2.1.210 (Claude Code)",
       issues: [],
     });
+    const missingPromptFlagCommand = join(directory, "claude-no-prompt-flag");
+    await writeFile(
+      missingPromptFlagCommand,
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools\\n"; exit 0; fi\nprintf \'{"loggedIn":true}\\n\'\n',
+      "utf8",
+    );
+    await chmod(missingPromptFlagCommand, 0o755);
+    await expect(
+      new ClaudeCodeAgentRuntimeFactory({
+        process: { command: missingPromptFlagCommand, env: { PATH: process.env.PATH } },
+      }).probe({}),
+    ).resolves.toMatchObject({ ready: false, issues: [{ code: "version_incompatible" }] });
     const persistenceSafe = new ClaudeCodeAgentRuntimeFactory({
       process: {
         command,
@@ -562,7 +574,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
             : "exit 1";
       await writeFile(
         missingCommand,
-        `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools\\n"; exit 0; fi\n${authResponse}\n`,
+        `#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; exit 0; fi\n${authResponse}\n`,
         "utf8",
       );
       await chmod(missingCommand, 0o755);
@@ -578,7 +590,7 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     const vanishingCommand = join(directory, "claude-vanishing");
     await writeFile(
       vanishingCommand,
-      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools\\n"; mv "$0" "$0.gone"; exit 0; fi\n',
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "2.1.210 (Claude Code)\\n"; exit 0; fi\nif [ "$1" = "--help" ]; then printf "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\\n"; mv "$0" "$0.gone"; exit 0; fi\n',
       "utf8",
     );
     await chmod(vanishingCommand, 0o755);

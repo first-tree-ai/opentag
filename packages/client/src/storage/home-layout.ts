@@ -10,6 +10,7 @@ export interface OpenTagHomeLayout {
   runtime: string;
   runtimeEffectiveSnapshots: string;
   runtimeSessionBindings: string;
+  runtimeWorkspaceStates: string;
   serviceState: string;
   state: string;
   workspaces: string;
@@ -34,6 +35,7 @@ export function resolveOpenTagHomeLayout(home = resolveOpenTagHome()): OpenTagHo
     runtime,
     runtimeEffectiveSnapshots: join(runtime, "effective-snapshots"),
     runtimeSessionBindings: join(runtime, "session-bindings"),
+    runtimeWorkspaceStates: join(runtime, "workspace-states"),
     serviceState: join(state, "service"),
     state,
     workspaces: join(data, "workspaces"),

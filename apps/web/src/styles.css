@@ -15,6 +15,7 @@
   --font-display:
     "Bricolage Grotesque Variable", "Geist Variable", "PingFang SC", "HarmonyOS Sans SC", "Microsoft YaHei",
     "Noto Sans SC", sans-serif;
+  --font-google: Arial, sans-serif;
 
   /* Raw steps. Whole pixels only: fractional rem values round differently
      across engines. Nothing outside this block may introduce a new step. */
@@ -56,6 +57,7 @@
      tracking crowds CJK, which has no side bearings to give back. */
   --track-tight: -0.02em;
   --track-label: 0.06em;
+  --track-google: 0.01em;
 
   --background: #f8f7f0;
   --surface: #fdfcf7;
@@ -1660,6 +1662,209 @@ code {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: #fff;
+}
+
+.login-page {
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: clamp(24px, 6vw, 64px);
+}
+
+.login-card {
+  display: grid;
+  width: min(430px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 22px 64px rgb(43 55 38 / 10%);
+  padding: 44px;
+  text-align: center;
+}
+
+.login-brand-lockup {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  justify-self: center;
+  gap: 12px;
+  color: var(--foreground);
+  font-family: var(--font-display);
+  font-size: var(--text-brand);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--track-tight);
+}
+
+.login-brand-mark {
+  width: 44px;
+  height: 44px;
+  color: #99dd38;
+}
+
+.login-copy {
+  margin-top: 38px;
+}
+
+.login-copy h1 {
+  margin-bottom: 10px;
+  font-size: var(--text-title);
+}
+
+.login-copy p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-body);
+}
+
+.login-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 30px;
+}
+
+.login-provider-button {
+  position: relative;
+  display: flex;
+  width: 100%;
+  min-height: 48px;
+  align-items: center;
+  overflow: hidden;
+  justify-content: center;
+  border: 1px solid var(--strong-border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  color: var(--foreground);
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
+  padding: 0 12px;
+  text-decoration: none;
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 140ms ease;
+}
+
+.login-provider-button--google {
+  border-color: #747775;
+  background: #fff;
+  color: #1f1f1f;
+  font-family: var(--font-google);
+  font-size: var(--text-ui);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--track-google);
+}
+
+.login-provider-button:hover {
+  border-color: var(--brand);
+  background: var(--brand-light);
+}
+
+.login-provider-button--google:hover {
+  border-color: #747775;
+  background: #fff;
+  box-shadow:
+    0 1px 2px rgb(60 64 67 / 30%),
+    0 1px 3px 1px rgb(60 64 67 / 15%);
+}
+
+.login-provider-button:active {
+  transform: translateY(1px);
+}
+
+.login-provider-button-state {
+  position: absolute;
+  inset: 0;
+  background: #303030;
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.login-provider-button--google:hover .login-provider-button-state {
+  opacity: 0.08;
+}
+
+.login-provider-button--google:active .login-provider-button-state,
+.login-provider-button--google:focus .login-provider-button-state {
+  opacity: 0.12;
+}
+
+.login-provider-button-content {
+  position: relative;
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+}
+
+.login-provider-button--google .login-provider-button-content {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) 20px;
+  gap: 12px;
+}
+
+.login-provider-button-icon,
+.login-provider-button-spacer {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+
+.login-provider-button-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.login-access-note,
+.login-unavailable {
+  margin: 24px 0 0;
+  color: var(--muted);
+  font-size: var(--text-meta);
+  line-height: var(--lh-ui);
+}
+
+.login-unavailable {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--background);
+  padding: 12px 14px;
+}
+
+.login-card .loading-state {
+  margin-top: 30px;
+}
+
+.login-card .loading-state span:first-child {
+  height: 48px;
+  border-radius: 8px;
+}
+
+.login-card .loading-state span:not(:first-child) {
+  display: none;
+}
+
+.login-card > .notice {
+  width: 100%;
+  margin: 30px 0 0;
+  font-size: var(--text-meta);
+  text-align: left;
+}
+
+@media (max-width: 560px) {
+  .login-page {
+    align-items: center;
+    padding: 18px;
+  }
+
+  .login-card {
+    border-radius: 14px;
+    padding: 34px 24px;
+  }
+
+  .login-copy {
+    margin-top: 32px;
+  }
 }
 
 .center-card {
@@ -3833,6 +4038,7 @@ textarea:focus {
   .sidebar-backdrop,
   button,
   .button,
+  .login-provider-button,
   .agent-row {
     transition: none;
   }

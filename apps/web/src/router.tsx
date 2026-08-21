@@ -36,6 +36,7 @@ import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import { Button, Dialog, Field, Icon, StatusIndicator, type StatusTone } from "./ui/design-system.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
+type AuthProvider = AuthProvidersResponse["providers"][number];
 
 type AgentAvailability = {
   state: "ready" | "action_required" | "setting_up" | "not_connected" | "suspended" | "unconfirmed";
@@ -357,24 +358,106 @@ function LoginPage() {
   const providers = useResource(() => browserApi.authProviders(), "auth-providers");
   const next = new URLSearchParams(useLocation().search).get("next") ?? "/agents";
   return (
-    <main className="center-card decorative-page">
-      <span className="eyebrow">OpenTag</span>
-      <h1>Sign in</h1>
-      <p>Choose an available sign-in method. Permissions are checked by the server on every request.</p>
-      <AsyncState state={providers}>
-        {(value) => (
-          <div className="actions">
-            {value.providers
-              .filter((provider: AuthProvidersResponse["providers"][number]) => provider.enabled && provider.startUrl)
-              .map((provider: AuthProvidersResponse["providers"][number]) => (
-                <a className="button" href={`${provider.startUrl}?next=${encodeURIComponent(next)}`} key={provider.id}>
-                  Continue with {provider.id === "google" ? "Google" : provider.id}
-                </a>
-              ))}
-          </div>
-        )}
-      </AsyncState>
+    <main className="login-page decorative-page">
+      <section aria-labelledby="login-title" className="login-card">
+        <OpenTagBrandLockup />
+        <header className="login-copy">
+          <h1 id="login-title">Welcome back</h1>
+          <p>Sign in to continue to OpenTag.</p>
+        </header>
+        <AsyncState state={providers}>
+          {(value) => {
+            const availableProviders = value.providers.filter(
+              (provider: AuthProvider) => provider.enabled && provider.startUrl,
+            );
+            if (availableProviders.length === 0) {
+              return (
+                <p className="login-unavailable" role="status">
+                  No sign-in methods are currently available.
+                </p>
+              );
+            }
+            return (
+              <div className="login-actions">
+                {availableProviders.map((provider: AuthProvider) => (
+                  <LoginProviderLink key={provider.id} next={next} provider={provider} />
+                ))}
+              </div>
+            );
+          }}
+        </AsyncState>
+        <p className="login-access-note">Access is managed by your workspace.</p>
+      </section>
     </main>
+  );
+}
+
+function OpenTagBrandLockup() {
+  return (
+    <div className="login-brand-lockup">
+      <svg aria-hidden="true" className="login-brand-mark" focusable="false" viewBox="0 0 48 48">
+        <path
+          d="M23.8 4.4c7.1-.8 14.3 2.6 17.6 8.2 3.5 5.9 3.1 15.3-.8 22-4.2 7.1-12.5 9.6-21.2 9.1-8.3-.5-14.1-4.2-15.2-11.3C2.9 24.6 4.9 15.2 11 9.9c3.3-2.9 7.8-4.9 12.8-5.5Z"
+          fill="currentColor"
+          stroke="var(--foreground)"
+          strokeWidth="1.5"
+        />
+        <path
+          d="M31.3 42.7c.1-6.3 3.8-10.6 11.8-12.7-1.4 6.7-5.7 11-11.8 12.7Z"
+          fill="var(--surface)"
+          stroke="var(--foreground)"
+          strokeLinejoin="round"
+          strokeWidth="1.5"
+        />
+        <circle cx="17.4" cy="23" fill="var(--foreground)" r="1.8" />
+        <circle cx="29.4" cy="23" fill="var(--foreground)" r="1.8" />
+      </svg>
+      <span>OpenTag</span>
+    </div>
+  );
+}
+
+function LoginProviderLink({ next, provider }: { next: string; provider: AuthProvider }) {
+  if (!provider.startUrl) return null;
+  const google = provider.id === "google";
+  const label = `Continue with ${google ? "Google" : provider.id}`;
+  return (
+    <a
+      className={`login-provider-button${google ? " login-provider-button--google" : ""}`}
+      href={`${provider.startUrl}?next=${encodeURIComponent(next)}`}
+    >
+      <span aria-hidden="true" className="login-provider-button-state" />
+      <span className="login-provider-button-content">
+        {google ? <GoogleSignInIcon /> : null}
+        <span className="login-provider-button-label">{label}</span>
+        {google ? <span aria-hidden="true" className="login-provider-button-spacer" /> : null}
+      </span>
+    </a>
+  );
+}
+
+// Google supplies this mark in its generated web button example.
+// https://developers.google.com/identity/branding-guidelines
+function GoogleSignInIcon() {
+  return (
+    <svg aria-hidden="true" className="login-provider-button-icon" focusable="false" viewBox="0 0 48 48">
+      <path
+        d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5Z"
+        fill="#ea4335"
+      />
+      <path
+        d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65Z"
+        fill="#4285f4"
+      />
+      <path
+        d="M10.53 28.59A14 14 0 0 1 9.77 24c0-1.6.27-3.14.76-4.59l-7.98-6.19A24 24 0 0 0 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19Z"
+        fill="#fbbc05"
+      />
+      <path
+        d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48Z"
+        fill="#34a853"
+      />
+    </svg>
   );
 }
 

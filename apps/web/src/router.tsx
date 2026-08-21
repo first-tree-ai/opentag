@@ -25,6 +25,8 @@ import {
 } from "react";
 import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import { ApiError, browserApi } from "./api.js";
+// Google-provided, pre-approved button asset: https://developers.google.com/identity/branding-guidelines
+import googleSignInButton from "./assets/google-sign-in-light@2x.png";
 import { ComputerSetup } from "./computer-setup.js";
 import { CreateTeamForm } from "./create-team-form.js";
 import { IntegrationsPage } from "./features/integrations-page.js";
@@ -36,6 +38,7 @@ import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import { Button, Dialog, Field, Icon, StatusIndicator, type StatusTone } from "./ui/design-system.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
+type AuthProvider = AuthProvidersResponse["providers"][number];
 
 type AgentAvailability = {
   state: "ready" | "action_required" | "setting_up" | "not_connected" | "suspended" | "unconfirmed";
@@ -357,24 +360,83 @@ function LoginPage() {
   const providers = useResource(() => browserApi.authProviders(), "auth-providers");
   const next = new URLSearchParams(useLocation().search).get("next") ?? "/agents";
   return (
-    <main className="center-card decorative-page">
-      <span className="eyebrow">OpenTag</span>
-      <h1>Sign in</h1>
-      <p>Choose an available sign-in method. Permissions are checked by the server on every request.</p>
-      <AsyncState state={providers}>
-        {(value) => (
-          <div className="actions">
-            {value.providers
-              .filter((provider: AuthProvidersResponse["providers"][number]) => provider.enabled && provider.startUrl)
-              .map((provider: AuthProvidersResponse["providers"][number]) => (
-                <a className="button" href={`${provider.startUrl}?next=${encodeURIComponent(next)}`} key={provider.id}>
-                  Continue with {provider.id === "google" ? "Google" : provider.id}
-                </a>
-              ))}
-          </div>
-        )}
-      </AsyncState>
+    <main className="login-page decorative-page">
+      <section aria-labelledby="login-title" className="login-card">
+        <OpenTagBrandLockup />
+        <header className="login-copy">
+          <h1 id="login-title">Welcome back</h1>
+          <p>Sign in to continue to OpenTag.</p>
+        </header>
+        <AsyncState state={providers}>
+          {(value) => {
+            const availableProviders = value.providers.filter(
+              (provider: AuthProvider) => provider.enabled && provider.startUrl,
+            );
+            if (availableProviders.length === 0) {
+              return (
+                <p className="login-unavailable" role="status">
+                  No sign-in methods are currently available.
+                </p>
+              );
+            }
+            return (
+              <div className="login-actions">
+                {availableProviders.map((provider: AuthProvider) => (
+                  <LoginProviderLink key={provider.id} next={next} provider={provider} />
+                ))}
+              </div>
+            );
+          }}
+        </AsyncState>
+        <p className="login-access-note">Access is managed by your workspace.</p>
+      </section>
     </main>
+  );
+}
+
+function OpenTagBrandLockup() {
+  return (
+    <div className="login-brand-lockup">
+      <svg aria-hidden="true" className="login-brand-mark" focusable="false" viewBox="0 0 48 48">
+        <path
+          d="M23.8 4.4c7.1-.8 14.3 2.6 17.6 8.2 3.5 5.9 3.1 15.3-.8 22-4.2 7.1-12.5 9.6-21.2 9.1-8.3-.5-14.1-4.2-15.2-11.3C2.9 24.6 4.9 15.2 11 9.9c3.3-2.9 7.8-4.9 12.8-5.5Z"
+          fill="currentColor"
+          stroke="var(--foreground)"
+          strokeWidth="1.5"
+        />
+        <path
+          d="M31.3 42.7c.1-6.3 3.8-10.6 11.8-12.7-1.4 6.7-5.7 11-11.8 12.7Z"
+          fill="var(--surface)"
+          stroke="var(--foreground)"
+          strokeLinejoin="round"
+          strokeWidth="1.5"
+        />
+        <circle cx="17.4" cy="23" fill="var(--foreground)" r="1.8" />
+        <circle cx="29.4" cy="23" fill="var(--foreground)" r="1.8" />
+      </svg>
+      <span>OpenTag</span>
+    </div>
+  );
+}
+
+function LoginProviderLink({ next, provider }: { next: string; provider: AuthProvider }) {
+  if (!provider.startUrl) return null;
+  const google = provider.id === "google";
+  const href = `${provider.startUrl}?next=${encodeURIComponent(next)}`;
+  if (google) {
+    return (
+      <a className="login-provider-button login-provider-button--google" href={href}>
+        <img alt="Sign in with Google" className="login-provider-button-image" src={googleSignInButton} />
+      </a>
+    );
+  }
+
+  return (
+    <a className="login-provider-button" href={href}>
+      <span className="login-provider-button-content">
+        <span className="login-provider-button-label">Continue with {provider.id}</span>
+      </span>
+    </a>
   );
 }
 

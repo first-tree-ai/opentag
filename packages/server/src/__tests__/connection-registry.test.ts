@@ -73,13 +73,13 @@ describe("ConnectionRegistry", () => {
     expect(fresh.close).toHaveBeenCalledWith(1001, "Server shutting down");
   });
 
-  it("advertises message-tool readiness only for the verified current instance", async () => {
+  it("advertises credential-grant capability only for the verified current instance", async () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();
     const firstInstanceId = randomUUID();
     await registry.register(
       {
-        capabilities: { imMessageTool: 0 },
+        capabilities: { imCredentialGrant: 0 },
         capabilitiesUpdatedAt: 1,
         computerId,
         instanceId: firstInstanceId,
@@ -89,34 +89,37 @@ describe("ConnectionRegistry", () => {
       },
       async () => undefined,
     );
-    expect(registry.supports(computerId, firstInstanceId, "imMessageTool", 1)).toBe(false);
+    expect(registry.supports(computerId, firstInstanceId, "imCredentialGrant", 1)).toBe(false);
 
     const verifiedInstanceId = randomUUID();
     const verifiedSocket = socket();
     await registry.register(
       {
-        capabilities: { imMessageTool: 1 },
+        capabilities: { imCredentialGrant: 1 },
         capabilitiesUpdatedAt: 2,
         computerId,
         instanceId: verifiedInstanceId,
         lastHeartbeatAt: 2,
+        providerReadiness: [{ provider: "codex", status: "ready" }],
+        providerReadinessObservedAt: 2,
+        providerReadinessProviders: ["codex"],
         socket: verifiedSocket,
         userId: randomUUID(),
       },
       async () => undefined,
     );
-    expect(registry.supports(computerId, firstInstanceId, "imMessageTool", 2)).toBe(false);
-    expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 2)).toBe(true);
+    expect(registry.supports(computerId, firstInstanceId, "imCredentialGrant", 2)).toBe(false);
+    expect(registry.supports(computerId, verifiedInstanceId, "imCredentialGrant", 2)).toBe(true);
     expect(registry.supportsProvider(computerId, verifiedInstanceId, "codex", 2)).toBe(true);
     expect(registry.supportsProvider(computerId, verifiedInstanceId, "claude-code", 2)).toBe(false);
     expect(registry.providerReadiness(computerId, 2)).toEqual([
       { observation: { provider: "codex", status: "ready" }, observedAt: 2 },
     ]);
 
-    expect(registry.touch(computerId, verifiedInstanceId, verifiedSocket, 3, { imMessageTool: 0 })).toBe(true);
-    expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 3)).toBe(false);
-    expect(registry.touch(computerId, verifiedInstanceId, verifiedSocket, 4, { imMessageTool: 1 })).toBe(true);
-    expect(registry.supports(computerId, verifiedInstanceId, "imMessageTool", 4)).toBe(true);
+    expect(registry.touch(computerId, verifiedInstanceId, verifiedSocket, 3, { imCredentialGrant: 0 })).toBe(true);
+    expect(registry.supports(computerId, verifiedInstanceId, "imCredentialGrant", 3)).toBe(false);
+    expect(registry.touch(computerId, verifiedInstanceId, verifiedSocket, 4, { imCredentialGrant: 1 })).toBe(true);
+    expect(registry.supports(computerId, verifiedInstanceId, "imCredentialGrant", 4)).toBe(true);
   });
 
   it("adds the current v2 connection fence without changing the domain frame", async () => {
@@ -249,7 +252,7 @@ describe("ConnectionRegistry", () => {
 
     await registry.register(
       {
-        capabilities: { imMessageTool: 0 },
+        capabilities: { imCredentialGrant: 0 },
         capabilitiesUpdatedAt: 2,
         computerId,
         instanceId: newInstanceId,

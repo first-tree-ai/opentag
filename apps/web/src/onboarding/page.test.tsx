@@ -74,7 +74,6 @@ function adminConfig(): AgentAdminConfig {
       model: null,
       reasoningEffort: null,
       instructions: "",
-      allowedTools: [],
       maxDurationMs: null,
     },
   };

@@ -87,7 +87,7 @@ describe("CodexAppServerProcess", () => {
   it("hosts a bounded dynamic tool call inside the daemon process", async () => {
     const process = await appServer("normal");
     process.setDynamicToolHandler(async (call) => ({
-      success: call.tool === "opentag_message_send" && (call.arguments as { text?: string }).text === "hello",
+      success: call.tool === "example_tool" && (call.arguments as { text?: string }).text === "hello",
       text: JSON.stringify({ state: "succeeded" }),
     }));
     await process.initialize("0.0.1");

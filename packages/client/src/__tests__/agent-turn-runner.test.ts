@@ -14,8 +14,8 @@ import {
   completionForResult,
   turnTimeoutMs,
 } from "../runtime/agent-turn-runner.js";
+import { ImCredentialEnvironmentError } from "../runtime/im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "../runtime/im-resource-fetcher.js";
-import type { RuntimeToolHost } from "../runtime/runtime-tool-host.js";
 import type { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { ClientRuntimeProviderStartError, type SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
@@ -26,7 +26,12 @@ describe("AgentTurnRunner", () => {
     const request = delivery();
     request.runtime.instructions.session = "session instructions";
     request.content.history = [
-      { imMessageId: "message-before", occurredAt: "2026-08-20T00:00:00.000Z", text: "before" },
+      {
+        imMessageId: "message-before",
+        occurredAt: "2026-08-20T00:00:00.000Z",
+        text: "before",
+        providerRef: providerRef("1710000000.000000"),
+      },
     ];
     request.content.historyTruncated = true;
     const input = buildAgentInput(request, "resource context");
@@ -38,9 +43,11 @@ describe("AgentTurnRunner", () => {
     ]);
     expect(JSON.stringify(input)).not.toContain(request.runtime.instructions.platform);
     expect(JSON.stringify(input)).not.toContain(request.runtime.instructions.agent);
-    expect(input.items[0]?.text).toContain("For a new IM write, omit retryRequestId");
-    expect(input.items[0]?.text).toContain("Never automatically repeat an unknown IM write");
-    expect(input.items[0]?.text).not.toContain("same requestId");
+    expect(input.items[0]?.text).toContain("slack api");
+    expect(input.items[0]?.text).toContain("OpenTag has no message send, reply, or reaction interface");
+    expect(input.items[0]?.text).toContain("query the provider before deciding whether to retry");
+    expect(input.items[0]?.text).toContain("Attention: direct");
+    expect(input.items[0]?.text).toContain(JSON.stringify(request.content.providerRef));
     expect(
       buildAgentInput({ ...request, runtime: { ...request.runtime, instructions: { platform: "p", agent: "a" } } })
         .items[0]?.text,
@@ -48,6 +55,32 @@ describe("AgentTurnRunner", () => {
     expect(
       buildAgentInput({ ...request, content: { ...request.content, historyTruncated: false } }).items[2]?.text,
     ).toContain("Bounded prior IM history:\n");
+    const feishuInput = buildAgentInput({
+      ...request,
+      content: {
+        ...request.content,
+        providerRef: {
+          provider: "feishu",
+          teamBrand: "feishu",
+          appId: "app-1",
+          botOpenId: "bot-1",
+          chatId: "chat-1",
+          messageId: "message-1",
+        },
+      },
+    });
+    expect(feishuInput.items[0]?.text).toContain("official lark-cli CLI");
+    expect(feishuInput.items[0]?.text).toContain("lark-cli im --help");
+  });
+
+  it("preserves ambient attention beside the provider reference without disabling provider credentials", () => {
+    const request = { ...delivery(), attention: "ambient" as const };
+    const context = buildAgentInput(request).items[0]?.text;
+    expect(context).toContain("Attention: ambient");
+    expect(context).toContain(JSON.stringify(request.content.providerRef));
+    expect(context).toContain("overheard the message");
+    expect(context).toContain("avoid meaningless, duplicate, intrusive");
+    expect(context).toContain("Attention does not change provider CLI or credential availability");
   });
 
   it("maps every typed Agent result and abort reason to the stable Turn taxonomy", () => {
@@ -112,6 +145,11 @@ describe("AgentTurnRunner", () => {
       outcome: "unknown",
       errorReason: "turn_state_unknown",
     });
+    expect(completionForError(new ImCredentialEnvironmentError("credential_stale"), undefined)).toEqual({
+      outcome: "failed",
+      executionEffects: "not_started",
+      errorReason: "credential_unavailable",
+    });
     expect(
       completionForError(
         new AgentRuntimeProviderUnavailableError("claude-code", {
@@ -170,7 +208,7 @@ describe("AgentTurnRunner", () => {
       custody: { markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
       reportOwner: { create, submit } as unknown as TurnReportOwner,
       runtimeManager: {} as SessionRuntimeManager,
-      toolHost: {} as RuntimeToolHost,
+      credentialEnvironment: credentialEnvironment(),
     });
     const owner = liveOwner(request);
     runner.start(owner);
@@ -230,7 +268,7 @@ describe("AgentTurnRunner", () => {
           };
         },
       } as unknown as SessionRuntimeManager,
-      toolHost: { activateRun: () => () => undefined } as unknown as RuntimeToolHost,
+      credentialEnvironment: credentialEnvironment(),
       resourceFetcher: { fetchForTurn: vi.fn(async () => "resource") } as unknown as ImResourceFetcher,
       onRuntimeEvent,
     });
@@ -262,7 +300,7 @@ describe("AgentTurnRunner", () => {
           });
         },
       } as unknown as SessionRuntimeManager,
-      toolHost: {} as RuntimeToolHost,
+      credentialEnvironment: credentialEnvironment(),
     });
 
     const request = delivery();
@@ -308,7 +346,7 @@ describe("AgentTurnRunner", () => {
         cwd: () => "/workspace",
         observe: () => () => undefined,
       } as unknown as SessionRuntimeManager,
-      toolHost: { activateRun: () => () => undefined } as unknown as RuntimeToolHost,
+      credentialEnvironment: credentialEnvironment(),
     });
     runner.start(liveOwner(delivery()));
     await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
@@ -337,7 +375,7 @@ function delivery(): DirectImMessageDeliveryRequest {
     agentId: "agent-1",
     placementGeneration: 1,
     attention: "direct",
-    content: { kind: "text", text: "hello" },
+    content: { kind: "text", text: "hello", providerRef: providerRef("1710000000.000001") },
     runtime: {
       revision: {
         agent: { sequence: 1, id: "agent-revision" },
@@ -346,9 +384,26 @@ function delivery(): DirectImMessageDeliveryRequest {
       agentId: "agent-1",
       provider: "codex",
       instructions: { platform: "platform secret", agent: "agent secret" },
-      allowedTools: [],
-      execution: { approvalPolicy: "never", networkAccess: false },
+      execution: { approvalPolicy: "never", networkAccess: true },
       workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
     },
+  };
+}
+
+function providerRef(messageTs: string) {
+  return {
+    provider: "slack" as const,
+    appId: "app-1",
+    teamId: "team-1",
+    botUserId: "bot-1",
+    channelId: "channel-1",
+    messageTs,
+  };
+}
+
+function credentialEnvironment() {
+  return {
+    prepare: vi.fn(async () => "/tmp/provider-env.sh"),
+    cleanup: vi.fn(async () => undefined),
   };
 }

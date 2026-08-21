@@ -73,7 +73,7 @@ describe("RuntimeDomainOwner", () => {
     expect(await fixture.owner.getDelivery("delivery-1")).toMatchObject({ turnId: "turn-1" });
     const conflictRequest = {
       ...request,
-      content: { kind: "text" as const, text: "different" },
+      content: { ...request.content, text: "different" },
     };
     expect(() => fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, conflictRequest)).toThrow(
       RuntimeDomainConflictError,
@@ -491,7 +491,6 @@ function snapshot(): EffectiveRuntimeSnapshot {
     agentId: "agent-1",
     provider: "codex",
     instructions: { platform: "platform", agent: "agent", session: "session" },
-    allowedTools: [],
     execution: { approvalPolicy: "never", networkAccess: false },
     workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
   };
@@ -520,7 +519,18 @@ function deliveryRequest(): DirectImMessageDeliveryRequest {
     agentId: "agent-1",
     placementGeneration: 1,
     attention: "direct",
-    content: { kind: "text", text: "hello" },
+    content: {
+      kind: "text",
+      text: "hello",
+      providerRef: {
+        provider: "slack",
+        appId: "app-1",
+        teamId: "team-1",
+        botUserId: "bot-1",
+        channelId: "channel-1",
+        messageTs: "1710000000.000001",
+      },
+    },
     runtime: snapshot(),
   };
 }

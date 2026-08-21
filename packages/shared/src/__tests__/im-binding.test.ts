@@ -50,6 +50,7 @@ describe("IM binding contracts", () => {
       providerEventId: "event-1",
       externalAppId: "app-1",
       externalTeamId: "team-1",
+      providerContext: { provider: "slack", channelType: "channel" },
       conversation: { externalId: "chat-1", kind: "channel" },
       message: {
         externalId: "message-1",
@@ -104,7 +105,6 @@ describe("IM binding contracts", () => {
       bot: { displayName: "Reviewer", avatarUrl: null },
       receiveMode: "mention_only",
       lastInboundAt: null,
-      lastOutboundAt: null,
       lastConfirmedAt: "2026-08-19T00:00:00.000Z",
     };
     expect(ImBindingSummarySchema.parse(base)).toEqual(base);

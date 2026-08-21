@@ -57,6 +57,14 @@ function request(): DirectImMessageDeliveryRequest {
     content: {
       kind: "text",
       text: "with resource",
+      providerRef: {
+        provider: "slack",
+        appId: "app-1",
+        teamId: "team-1",
+        botUserId: "bot-1",
+        channelId: "channel-1",
+        messageTs: "1710000000.000001",
+      },
       resources: [
         {
           imMessageId,
@@ -75,7 +83,6 @@ function request(): DirectImMessageDeliveryRequest {
       agentId,
       provider: "codex",
       instructions: { platform: "platform", agent: "agent" },
-      allowedTools: ["opentag_message_reply"],
       execution: { approvalPolicy: "never", networkAccess: false },
       workspace: { workspaceId: agentId, mode: "empty_on_create", sharing: "agent" },
     },

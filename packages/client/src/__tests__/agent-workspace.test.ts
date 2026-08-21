@@ -350,7 +350,6 @@ function snapshot(agentId: string, workspaceId: string, sessionInstructions: str
       agent: "agent instructions",
       session: sessionInstructions,
     },
-    allowedTools: [],
     execution: { approvalPolicy: "never", networkAccess: false },
     workspace: { workspaceId, mode: "empty_on_create", sharing: "agent" },
   };

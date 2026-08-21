@@ -87,7 +87,6 @@ function installApi(
       model: null,
       reasoningEffort: null,
       instructions: "",
-      allowedTools: [],
       maxDurationMs: null,
     },
   });
@@ -423,7 +422,6 @@ function installApi(
         bot: { displayName: "Reviewer", avatarUrl: null },
         receiveMode: "mention_only",
         lastInboundAt: null,
-        lastOutboundAt: null,
         lastConfirmedAt: "2026-08-20T00:00:00.000Z",
       });
     }

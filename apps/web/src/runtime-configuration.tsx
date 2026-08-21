@@ -124,7 +124,6 @@ function CodexRuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigura
           rows={10}
         />
       </div>
-      <p className="muted">Allowed message tools: {config.runtimeConfig.allowedTools.join(", ") || "None"}</p>
       <button className="button" disabled={saving} type="submit">
         {saving ? "Saving…" : "Save Runtime settings"}
       </button>

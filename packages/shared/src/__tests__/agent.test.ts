@@ -37,7 +37,6 @@ const agent = {
     model: null,
     reasoningEffort: null,
     instructions: "Follow the managed workspace instructions.",
-    allowedTools: ["opentag_message_react", "opentag_message_reply", "opentag_message_send"],
     maxDurationMs: null,
   },
   createdAt: "2026-08-19T00:00:00.000Z",
@@ -55,10 +54,7 @@ describe("Agent contracts", () => {
         displayName: " Code Reviewer ",
         runtimeProvider: "claude-code",
         computerId: agent.computerId,
-        runtimeConfig: {
-          allowedTools: ["opentag_message_send", "opentag_message_react"],
-          model: "claude-sonnet",
-        },
+        runtimeConfig: { model: "claude-sonnet" },
       }),
     ).toEqual({
       creationIntentId,
@@ -66,10 +62,7 @@ describe("Agent contracts", () => {
       displayName: "Code Reviewer",
       runtimeProvider: "claude-code",
       computerId: agent.computerId,
-      runtimeConfig: {
-        allowedTools: ["opentag_message_react", "opentag_message_send"],
-        model: "claude-sonnet",
-      },
+      runtimeConfig: { model: "claude-sonnet" },
     });
     expect(UpdateAgentRequestSchema.parse({ expectedRevision: 1, displayName: " Reviewer " })).toEqual({
       expectedRevision: 1,
@@ -78,21 +71,11 @@ describe("Agent contracts", () => {
     expect(
       UpdateAgentRequestSchema.parse({
         expectedRevision: 1,
-        runtimeConfig: {
-          allowedTools: ["opentag_message_send", "opentag_message_reply"],
-          maxDurationMs: null,
-          model: null,
-          reasoningEffort: null,
-        },
+        runtimeConfig: { maxDurationMs: null, model: null, reasoningEffort: null },
       }),
     ).toEqual({
       expectedRevision: 1,
-      runtimeConfig: {
-        allowedTools: ["opentag_message_reply", "opentag_message_send"],
-        maxDurationMs: null,
-        model: null,
-        reasoningEffort: null,
-      },
+      runtimeConfig: { maxDurationMs: null, model: null, reasoningEffort: null },
     });
   });
 
@@ -161,15 +144,10 @@ describe("Agent contracts", () => {
       viewerCapabilities: { canManage: false },
     });
     expect(() => AgentAdminConfigSchema.parse({ ...agent, deletedAt: null })).toThrow();
-    expect(() =>
-      AgentRuntimeConfigSchema.parse({
-        ...agent.runtimeConfig,
-        allowedTools: ["opentag_message_send", "opentag_message_react"],
-      }),
-    ).toThrow();
+    expect(() => AgentRuntimeConfigSchema.parse({ ...agent.runtimeConfig, allowedTools: [] })).toThrow();
   });
 
-  it("enforces runtime config UTF-8, tool, and duration boundaries", () => {
+  it("enforces runtime config UTF-8 and duration boundaries", () => {
     expect(() =>
       CreateAgentRequestSchema.parse({
         computerId: agent.computerId,
@@ -180,16 +158,7 @@ describe("Agent contracts", () => {
       }),
     ).toThrow();
     expect(() =>
-      UpdateAgentRequestSchema.parse({
-        expectedRevision: 1,
-        runtimeConfig: { allowedTools: ["opentag_message_send", "opentag_message_send"] },
-      }),
-    ).toThrow();
-    expect(() =>
-      UpdateAgentRequestSchema.parse({
-        expectedRevision: 1,
-        runtimeConfig: { allowedTools: ["unknown_tool"] },
-      }),
+      UpdateAgentRequestSchema.parse({ expectedRevision: 1, runtimeConfig: { allowedTools: [] } }),
     ).toThrow();
     expect(() =>
       UpdateAgentRequestSchema.parse({ expectedRevision: 1, runtimeConfig: { maxDurationMs: 0 } }),

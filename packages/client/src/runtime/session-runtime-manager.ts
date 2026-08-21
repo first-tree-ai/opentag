@@ -7,7 +7,6 @@ import type {
 import type { AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
 import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-registry.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
-import type { RuntimeToolHost } from "./runtime-tool-host.js";
 import type { LocalSessionBinding, SessionBindingStore, SessionPreparationResult } from "./session-binding-store.js";
 import type { RuntimeLocalPolicy, RuntimePreparation } from "./session-reconciler.js";
 
@@ -36,17 +35,19 @@ export class ClientRuntimeProviderStartError extends Error {
 
 export interface SessionRuntimeManagerOptions {
   readonly bindingStore: SessionBindingStore;
+  readonly cleanupProviderEnvironment?: (sessionId: string) => Promise<void>;
   readonly ensureProviderReady: (providerId: string, signal?: AbortSignal) => Promise<void>;
   readonly providers: AgentRuntimeProviderRegistry;
-  readonly toolHost: RuntimeToolHost;
+  readonly providerEnvironmentPath: (sessionId: string) => string;
   readonly workspace: AgentWorkspaceManager;
 }
 
 export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPolicy {
   readonly #bindingStore: SessionBindingStore;
+  readonly #cleanupProviderEnvironment?: SessionRuntimeManagerOptions["cleanupProviderEnvironment"];
   readonly #ensureProviderReady: SessionRuntimeManagerOptions["ensureProviderReady"];
   readonly #providers: AgentRuntimeProviderRegistry;
-  readonly #toolHost: RuntimeToolHost;
+  readonly #providerEnvironmentPath: SessionRuntimeManagerOptions["providerEnvironmentPath"];
   readonly #workspace: AgentWorkspaceManager;
   readonly #sessions = new Map<string, ManagedSessionRuntime>();
   readonly #prepares = new Set<Promise<SessionPreparationResult>>();
@@ -57,9 +58,10 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
 
   constructor(options: SessionRuntimeManagerOptions) {
     this.#bindingStore = options.bindingStore;
+    this.#cleanupProviderEnvironment = options.cleanupProviderEnvironment;
     this.#ensureProviderReady = options.ensureProviderReady;
     this.#providers = options.providers;
-    this.#toolHost = options.toolHost;
+    this.#providerEnvironmentPath = options.providerEnvironmentPath;
     this.#workspace = options.workspace;
   }
 
@@ -176,8 +178,11 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     };
     const common = {
       eventSink,
-      hostedTools: this.#toolHost.hostedTools(managed.snapshot.allowedTools),
-      workspace: { cwd: managed.cwd, writableRoots: [managed.cwd] },
+      workspace: {
+        cwd: managed.cwd,
+        environment: { OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId) },
+        writableRoots: [managed.cwd],
+      },
       policy: provider.policy(managed.snapshot),
       configuration: {
         ...(managed.snapshot.model ? { model: managed.snapshot.model } : {}),
@@ -226,12 +231,16 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   }
 
   async stopSession(sessionId: string, placementGeneration: number): Promise<void> {
-    const current = this.#sessions.get(sessionId);
-    if (current) {
-      this.#sessions.delete(sessionId);
-      await this.#closeManaged(current);
+    try {
+      const current = this.#sessions.get(sessionId);
+      if (current) {
+        this.#sessions.delete(sessionId);
+        await this.#closeManaged(current);
+      }
+      await this.#workspace.stopSession(sessionId, placementGeneration);
+    } finally {
+      await this.#cleanupProviderEnvironment?.(sessionId);
     }
-    await this.#workspace.stopSession(sessionId, placementGeneration);
   }
 
   runtime(sessionId: string): AgentRuntime {

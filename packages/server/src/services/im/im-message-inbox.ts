@@ -164,6 +164,11 @@ export class ImMessageInbox {
             if (scope.imBinding.externalTeamId !== null && scope.imBinding.externalTeamId !== event.externalTeamId) {
               throw new ImInboundPersistenceError("IM_INBOUND_IDENTITY_MISMATCH", "IM_BINDING_TEAM_IDENTITY_MISMATCH");
             }
+            const isSelf =
+              event.message.author.isSelf === true ||
+              (event.message.author.kind === "bot" &&
+                event.message.author.externalId === scope.imBinding.externalBotId);
+            if (isSelf) return finish({ duplicate: false, deliveryIds: [] }, "self_message");
             await transaction.execute(
               sql`select pg_advisory_xact_lock(hashtextextended(${`im-message:${imBindingId}:${event.conversation.externalId}:${event.message.externalId}`}, 0))`,
             );
@@ -237,6 +242,7 @@ export class ImMessageInbox {
                 authorExternalId: event.message.author.externalId,
                 authorDisplayName: event.message.author.displayName ?? null,
                 content,
+                providerContext: event.providerContext,
                 occurredAt: event.message.occurredAt,
                 receivedAt: now,
               })
@@ -300,9 +306,6 @@ export class ImMessageInbox {
                 ),
               );
 
-            const isSelf =
-              event.message.author.kind === "bot" && event.message.author.externalId === scope.imBinding.externalBotId;
-            if (isSelf) return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "self_message");
             if (conversationKind === null) {
               return finish({ duplicate: false, messageId: created.id, deliveryIds: [] }, "no_delivery");
             }

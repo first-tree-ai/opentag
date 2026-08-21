@@ -93,7 +93,7 @@ export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "-c",
   'shell_environment_policy.inherit="all"',
   "-c",
-  'shell_environment_policy.filters={ PATH = "include", LANG = "include", LC_ALL = "include" }',
+  'shell_environment_policy.filters={ PATH = "include", LANG = "include", LC_ALL = "include", OPENTAG_PROVIDER_ENV_FILE = "include" }',
 ] as const;
 const CODEX_REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 const TOOL_ITEM_TYPES = new Set([
@@ -132,7 +132,10 @@ interface CodexRuntimeOptions {
 
 export interface CodexAgentRuntimeFactoryOptions {
   readonly clientVersion: string;
-  readonly createClient?: (cwd: string) => InteractiveCodexAppServerClient;
+  readonly createClient?: (
+    cwd: string,
+    environment?: Readonly<Record<string, string>>,
+  ) => InteractiveCodexAppServerClient;
   readonly process?: Omit<CodexSpawnOptions, "cwd" | "env"> & { readonly env?: NodeJS.ProcessEnv };
   readonly probeRunner?: (signal?: AbortSignal) => Promise<{
     readonly appServer: boolean;
@@ -691,7 +694,10 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
 export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
   readonly manifest = CODEX_AGENT_RUNTIME_MANIFEST;
   readonly #clientVersion: string;
-  readonly #createClient: (cwd: string) => InteractiveCodexAppServerClient;
+  readonly #createClient: (
+    cwd: string,
+    environment?: Readonly<Record<string, string>>,
+  ) => InteractiveCodexAppServerClient;
   readonly #probeRunner: (signal?: AbortSignal) => Promise<{
     readonly appServer: boolean;
     readonly credential: boolean;
@@ -705,12 +711,12 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
     const command = options.process?.command ?? "codex";
     this.#createClient =
       options.createClient ??
-      ((cwd) =>
+      ((cwd, workspaceEnvironment) =>
         new CodexAppServerProcess({
           command,
           args: options.process?.args ?? [...CODEX_AGENT_RUNTIME_APP_SERVER_ARGS],
           cwd,
-          env: environment,
+          env: { ...environment, ...workspaceEnvironment },
           expectedCodexHome: options.process?.expectedCodexHome,
           maxLineBytes: options.process?.maxLineBytes,
           requestTimeoutMs: options.process?.requestTimeoutMs,
@@ -800,7 +806,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
     const binding = mode === "resume" && "binding" in request ? request.binding : undefined;
     if (binding) assertBinding(binding, this.manifest);
     const expectedThreadId = binding ? parseCodexBinding(binding) : undefined;
-    const client = this.#createClient(request.workspace.cwd);
+    const client = this.#createClient(request.workspace.cwd, request.workspace.environment);
     try {
       if (request.hostedTools && typeof client.setDynamicToolHandler !== "function") {
         throw new AgentRuntimeError(
@@ -868,6 +874,7 @@ export function codexAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process
     "LANG",
     "LC_ALL",
     "LOGNAME",
+    "OPENTAG_PROVIDER_ENV_FILE",
     "PATH",
     "PATHEXT",
     "SHELL",

@@ -116,7 +116,6 @@ export const ImBindingSummarySchema = z
       .strict(),
     receiveMode: ReceiveModeSchema,
     lastInboundAt: z.string().datetime().nullable(),
-    lastOutboundAt: z.string().datetime().nullable(),
     lastConfirmedAt: z.string().datetime().nullable(),
   })
   .strict();
@@ -173,7 +172,8 @@ export const ImBindingDiagnosticsSchema = z
     imBindingId: z.string().uuid(),
     provider: ImProviderSchema,
     ready: z.boolean(),
-    runtimeToolAvailable: z.boolean(),
+    agentRuntimeReadiness: z.enum(["checking", "install", "sign-in", "ready", "unavailable"]),
+    providerCliReadiness: z.enum(["checking", "install", "ready", "unavailable"]),
     credentialGeneration: z.number().int().min(1),
     reauthorizationRequired: z.boolean(),
     connection: z
@@ -183,7 +183,6 @@ export const ImBindingDiagnosticsSchema = z
       })
       .nullable(),
     lastInboundAt: z.string().datetime().nullable(),
-    lastOutboundAt: z.string().datetime().nullable(),
     lastErrorCode: z.string().min(1).max(120).nullable(),
   })
   .strict();

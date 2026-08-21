@@ -820,7 +820,7 @@ function welcome(
     return {
       type: "server:welcome",
       protocolVersion: RUNTIME_PROTOCOL_V1,
-      capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
+      capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imCredentialGrant: 1 },
       heartbeatIntervalMs,
       heartbeatTimeoutMs,
     } as const;

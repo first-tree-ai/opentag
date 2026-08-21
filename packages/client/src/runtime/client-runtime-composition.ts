@@ -1,12 +1,15 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, mkdir, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
+import { promisify } from "node:util";
 import {
   type AgentRuntimeProvider,
   computeRuntimeSnapshotHashes,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+  type RuntimeImCliReadinessObservation,
   type RuntimeProviderReadinessObservation,
 } from "@opentag/shared";
 import type {
@@ -40,10 +43,10 @@ import {
 import { AgentTurnRunner } from "./agent-turn-runner.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
+import { ImCredentialEnvironmentManager } from "./im-credential-environment-manager.js";
 import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
-import { RuntimeToolHost } from "./runtime-tool-host.js";
 import { SessionBindingStore } from "./session-binding-store.js";
 import { SessionReconciler } from "./session-reconciler.js";
 import { SessionRuntimeManager } from "./session-runtime-manager.js";
@@ -51,6 +54,7 @@ import { TurnCustodyOwner } from "./turn-custody-owner.js";
 import { TurnReportOwner } from "./turn-report-owner.js";
 
 const DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS = Math.floor(RUNTIME_CLIENT_CAPABILITY_TTL_MS / 2);
+const execFileAsync = promisify(execFile);
 
 export interface CreateClientRuntimeOptions {
   readonly api?: Pick<OpenTagApi, "openImResource">;
@@ -60,6 +64,8 @@ export interface CreateClientRuntimeOptions {
   readonly codexHome?: string;
   readonly claudeCodeCommand?: string;
   readonly claudeCodeHome?: string;
+  readonly larkCliCommand?: string;
+  readonly slackCliCommand?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly factory?: AgentRuntimeFactory;
   readonly factories?: readonly AgentRuntimeFactory[];
@@ -72,12 +78,11 @@ export interface CreateClientRuntimeOptions {
 export class ComposedClientRuntime {
   readonly bindingStore: SessionBindingStore;
   readonly custody: TurnCustodyOwner;
-  readonly messageToolAvailable: boolean;
+  readonly credentialEnvironment: ImCredentialEnvironmentManager;
   readonly reconciler: SessionReconciler;
   readonly reportOwner: TurnReportOwner;
   readonly runner: AgentTurnRunner;
   readonly runtimeManager: SessionRuntimeManager;
-  readonly toolHost: RuntimeToolHost;
   readonly workspace: AgentWorkspaceManager;
   readonly #runtime: ClientRuntime;
   readonly #refreshCapability: () => Promise<void>;
@@ -92,12 +97,11 @@ export class ComposedClientRuntime {
     components: {
       bindingStore: SessionBindingStore;
       custody: TurnCustodyOwner;
-      messageToolAvailable: boolean;
+      credentialEnvironment: ImCredentialEnvironmentManager;
       reconciler: SessionReconciler;
       reportOwner: TurnReportOwner;
       runner: AgentTurnRunner;
       runtimeManager: SessionRuntimeManager;
-      toolHost: RuntimeToolHost;
       workspace: AgentWorkspaceManager;
       refreshCapability: () => Promise<void>;
       capabilityRefreshIntervalMs: number;
@@ -107,12 +111,11 @@ export class ComposedClientRuntime {
     this.#runtime = runtime;
     this.bindingStore = components.bindingStore;
     this.custody = components.custody;
-    this.messageToolAvailable = components.messageToolAvailable;
+    this.credentialEnvironment = components.credentialEnvironment;
     this.reconciler = components.reconciler;
     this.reportOwner = components.reportOwner;
     this.runner = components.runner;
     this.runtimeManager = components.runtimeManager;
-    this.toolHost = components.toolHost;
     this.workspace = components.workspace;
     this.#refreshCapability = components.refreshCapability;
     this.#capabilityRefreshIntervalMs = components.capabilityRefreshIntervalMs;
@@ -129,9 +132,12 @@ export class ComposedClientRuntime {
       await this.#capabilityRefreshInFlight?.catch(() => undefined);
       this.runner.stop();
       await this.runner.settled();
-      await this.runtimeManager.close();
-      this.reportOwner.stop();
-      this.toolHost.close();
+      try {
+        await this.runtimeManager.close();
+      } finally {
+        this.reportOwner.stop();
+        await this.credentialEnvironment.close();
+      }
     }
   }
 
@@ -141,8 +147,7 @@ export class ComposedClientRuntime {
     this.#stopCapabilityMonitor();
     this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
     this.runner.stop();
-    void this.runtimeManager.close();
-    this.toolHost.close();
+    void Promise.allSettled([this.runtimeManager.close(), this.credentialEnvironment.close()]);
     this.#runtime.stop();
   }
 
@@ -237,14 +242,18 @@ export async function createClientRuntime(
       const available = await providers.refresh(providerId, refreshSignal);
       refreshSignal.throwIfAborted();
       connection.setProviderReadiness(providerReadiness(provider, available, providers.probeResult(providerId)));
-      connection.setVerifiedCapabilities({ imMessageTool: providers.isReady("codex") ? 1 : 0 });
       return available;
     } finally {
       releaseReadiness?.();
     }
   };
   const refreshCapability = async (): Promise<void> => {
-    await Promise.all(providers.providerIds().map((providerId) => refreshProviderReadiness(providerId)));
+    await Promise.all([
+      ...providers.providerIds().map((providerId) => refreshProviderReadiness(providerId)),
+      refreshImCliReadiness(connection, "feishu", options.larkCliCommand ?? "lark-cli", sourceEnvironment),
+      refreshImCliReadiness(connection, "slack", options.slackCliCommand ?? "slack", sourceEnvironment),
+    ]);
+    connection.setVerifiedCapabilities({ imCredentialGrant: 1 });
   };
   const ensureProviderReady = async (providerId: string, signal?: AbortSignal): Promise<void> => {
     if (providers.isReady(providerId)) return;
@@ -271,12 +280,17 @@ export async function createClientRuntime(
   });
   const workspace = new AgentWorkspaceManager({ home: options.home, bindingStore });
   const reportOwner = new TurnReportOwner({ connection });
-  const toolHost = new RuntimeToolHost(connection);
+  const credentialEnvironment = new ImCredentialEnvironmentManager({
+    connection,
+    home: options.home,
+    logger: moduleLogger("im-credential-environment"),
+  });
   const runtimeManager = new SessionRuntimeManager({
     bindingStore,
+    cleanupProviderEnvironment: (sessionId) => credentialEnvironment.cleanup(sessionId),
     ensureProviderReady,
     providers,
-    toolHost,
+    providerEnvironmentPath: (sessionId) => credentialEnvironment.pathForSession(sessionId),
     workspace,
   });
   const reconciler = new SessionReconciler({
@@ -316,7 +330,7 @@ export async function createClientRuntime(
     reportOwner,
     resourceFetcher,
     runtimeManager,
-    toolHost,
+    credentialEnvironment,
   });
   const runtime = new ClientRuntime(connection, {
     logger: moduleLogger("client-runtime"),
@@ -326,12 +340,11 @@ export async function createClientRuntime(
   return new ComposedClientRuntime(runtime, {
     bindingStore,
     custody,
-    messageToolAvailable: providers.providerIds().some((providerId) => providers.isReady(providerId)),
+    credentialEnvironment,
     reconciler,
     reportOwner,
     runner,
     runtimeManager,
-    toolHost,
     workspace,
     refreshCapability,
     capabilityAbort,
@@ -362,6 +375,35 @@ export function providerReadiness(
     return { provider, status: "sign-in" };
   }
   return { provider, status: "unavailable" };
+}
+
+export async function refreshImCliReadiness(
+  connection: Pick<RuntimeConnection, "setImCliReadiness">,
+  provider: RuntimeImCliReadinessObservation["provider"],
+  configuredCommand: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  connection.setImCliReadiness({ provider, status: "checking" });
+  let command: string;
+  try {
+    command = await resolveExecutable(configuredCommand, environment);
+  } catch {
+    connection.setImCliReadiness({ provider, status: "install" });
+    return;
+  }
+  const execution = { env: environment, timeout: 10_000, windowsHide: true } as const;
+  try {
+    if (provider === "feishu") {
+      await execFileAsync(command, ["--version"], execution);
+      await execFileAsync(command, ["im", "--help"], execution);
+    } else {
+      await execFileAsync(command, ["version"], execution);
+      await execFileAsync(command, ["api", "--help"], execution);
+    }
+    connection.setImCliReadiness({ provider, status: "ready" });
+  } catch {
+    connection.setImCliReadiness({ provider, status: "unavailable" });
+  }
 }
 
 export interface ResolvedCodexFactoryOptions {

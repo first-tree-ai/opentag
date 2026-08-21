@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import type { ProviderReadinessStatus } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
@@ -28,7 +29,7 @@ import {
 } from "./services/auth/index.js";
 import { ComputerService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
-import { ImMessageInbox, ImResourceService, OutboundMessageService } from "./services/im/index.js";
+import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import {
   DefaultFeishuRegistrationGateway,
   FeishuConnectionManager,
@@ -113,51 +114,37 @@ export async function startServer(): Promise<void> {
     const teamService = new TeamMembershipService(database, { providerReadiness: registry });
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
     const invitationService = new InvitationService(database, teamService, applicationCipher, config.publicUrl);
-    const runtimeReadyForAgent = async (agentId: string): Promise<boolean> => {
+    const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database
         .select({ computerId: agents.computerId, runtimeProvider: agents.runtimeProvider })
         .from(agents)
         .where(eq(agents.id, agentId))
         .limit(1);
       const currentInstanceId = agent ? registry.currentInstanceId(agent.computerId) : undefined;
-      return Boolean(
-        agent &&
-          currentInstanceId &&
-          registry.supportsProvider(agent.computerId, currentInstanceId, agent.runtimeProvider),
+      if (!agent || !currentInstanceId) return "unavailable";
+      return (
+        registry
+          .providerReadiness(agent.computerId)
+          .find(({ observation }) => observation.provider === agent.runtimeProvider)?.observation.status ?? "checking"
       );
     };
+    const runtimeReadyForAgent = async (agentId: string): Promise<boolean> =>
+      (await agentRuntimeReadinessForAgent(agentId)) === "ready";
     const imBindingService = new ImBindingService(database, applicationCipher, {
-      runtimeReady: runtimeReadyForAgent,
+      agentRuntimeReadiness: agentRuntimeReadinessForAgent,
+      imCliReadiness: async (agentId, provider) => {
+        const computerId = await imBindingService.getAgentComputerId(agentId);
+        if (!computerId) return "unavailable";
+        const observations = registry.imCliReadiness(computerId);
+        return (
+          observations.find(({ observation }) => observation.provider === provider)?.observation.status ?? "checking"
+        );
+      },
     });
     const imMessageInbox = new ImMessageInbox(database);
-    let outboundMessageService: OutboundMessageService;
     const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
-      onImToolRequest: async (request, context) => {
-        const result = await outboundMessageService.execute({
-          requestId: request.requestId,
-          sessionId: request.sessionId,
-          agentId: request.agentId,
-          computerId: context.computerId,
-          computerInstanceId: context.instanceId,
-          placementGeneration: request.placementGeneration,
-          expectedLatestImMessageId: request.expectedLatestImMessageId,
-          operation: request.operation,
-          ...(request.text
-            ? {
-                content: {
-                  version: 1,
-                  fallbackText: request.text,
-                  blocks: [{ type: "text", text: request.text }],
-                  truncated: false,
-                },
-              }
-            : {}),
-          ...(request.replyToImMessageId ? { replyToImMessageId: request.replyToImMessageId } : {}),
-          ...(request.targetImMessageId ? { targetImMessageId: request.targetImMessageId } : {}),
-          ...(request.emoji ? { emoji: request.emoji } : {}),
-        });
-        return { type: "im:tool:result", requestId: request.requestId, ...result };
-      },
+      onImCredentialGrant: (request, context) =>
+        imBindingService.issueRuntimeCredentialGrant(request, context.computerId),
     });
     const agentService = new AgentService(database, {
       membershipService: teamService,
@@ -188,7 +175,6 @@ export async function startServer(): Promise<void> {
     });
     const slackApi = new DefaultSlackApiClient();
     const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
-    outboundMessageService = new OutboundMessageService(database, resolveImAdapter);
     const imResourceService = new ImResourceService(database, resolveImAdapter);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     const imDeliveryWorker = new ImDeliveryWorker({
@@ -245,6 +231,7 @@ export async function startServer(): Promise<void> {
             appId: binding.appId,
             teamId: binding.teamId,
             botUserId: binding.botUserId,
+            botId: binding.botId,
           }),
       },
       teamService,

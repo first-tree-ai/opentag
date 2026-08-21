@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { AGENT_RUNTIME_PROVIDERS, AgentRuntimeProviderSchema } from "./agent.js";
-import { ComputerPlatformSchema, ProviderReadinessStatusSchema } from "./computer.js";
+import {
+  ComputerPlatformSchema,
+  IM_CLI_PROVIDERS,
+  ImCliProviderSchema,
+  ImCliReadinessStatusSchema,
+  ProviderReadinessStatusSchema,
+} from "./computer.js";
 import { ErrorCodeSchema } from "./errors.js";
 
 export const RUNTIME_PROTOCOL_V1 = 1 as const;
@@ -13,13 +19,13 @@ export const RUNTIME_V0_CAPABILITIES = {
   imDelivery: 1,
   turnReport: 1,
   agentTrace: 1,
-  imMessageTool: 1,
+  imCredentialGrant: 1,
 } as const;
 
 export const RUNTIME_CAPABILITY = {
   agentTrace: "runtime.agentTrace",
   imDelivery: "runtime.imDelivery",
-  imMessageTool: "runtime.imMessageTool",
+  imCredentialGrant: "runtime.imCredentialGrant",
   sessionReconcile: "runtime.sessionReconcile",
   turnReport: "runtime.turnReport",
 } as const;
@@ -27,7 +33,7 @@ export const RUNTIME_CAPABILITY = {
 export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.imDelivery]: { min: 1, max: 1 },
-  [RUNTIME_CAPABILITY.imMessageTool]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.imCredentialGrant]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 1 },
 } as const;
@@ -117,13 +123,13 @@ export const RuntimeCapabilitiesSchema = z
     imDelivery: z.literal(1),
     turnReport: z.literal(1),
     agentTrace: z.literal(1),
-    imMessageTool: z.literal(1),
+    imCredentialGrant: z.literal(1),
   })
   .strict();
 
 export const RuntimeClientCapabilitiesSchema = z
   .object({
-    imMessageTool: z.union([z.literal(0), z.literal(1)]),
+    imCredentialGrant: z.union([z.literal(0), z.literal(1)]),
   })
   .strict();
 
@@ -138,6 +144,25 @@ export const RuntimeProviderReadinessCollectionSchema = z
   .array(RuntimeProviderReadinessObservationSchema)
   .max(AGENT_RUNTIME_PROVIDERS.length)
   .superRefine(validateCanonicalProviders);
+
+export const RuntimeImCliReadinessObservationSchema = z
+  .object({
+    provider: ImCliProviderSchema,
+    status: ImCliReadinessStatusSchema,
+  })
+  .strict();
+
+export const RuntimeImCliReadinessCollectionSchema = z
+  .array(RuntimeImCliReadinessObservationSchema)
+  .max(IM_CLI_PROVIDERS.length)
+  .superRefine((observations, context) =>
+    validateCanonicalIds(
+      observations.map((observation) => observation.provider),
+      IM_CLI_PROVIDERS,
+      "IM CLI readiness",
+      context,
+    ),
+  );
 
 export const RuntimeProviderReadinessNegotiationSchema = z
   .object({
@@ -264,8 +289,9 @@ const computerRegistrationShape = {
   platform: ComputerPlatformSchema,
   arch: z.string().trim().min(1).max(64),
   clientVersion: z.string().trim().min(1).max(64),
-  capabilities: RuntimeClientCapabilitiesSchema.default({ imMessageTool: 0 }),
+  capabilities: RuntimeClientCapabilitiesSchema.default({ imCredentialGrant: 0 }),
   providerReadiness: RuntimeProviderReadinessCollectionSchema.optional(),
+  imCliReadiness: RuntimeImCliReadinessCollectionSchema.optional(),
 };
 
 export const ComputerRegisterV1FrameSchema = z.object(computerRegistrationShape).strict();
@@ -317,8 +343,9 @@ const heartbeatShape = {
   requestId: RuntimeRequestIdSchema,
   computerId: z.string().uuid(),
   instanceId: z.string().uuid(),
-  capabilities: RuntimeClientCapabilitiesSchema.default({ imMessageTool: 0 }),
+  capabilities: RuntimeClientCapabilitiesSchema.default({ imCredentialGrant: 0 }),
   providerReadiness: RuntimeProviderReadinessCollectionSchema.optional(),
+  imCliReadiness: RuntimeImCliReadinessCollectionSchema.optional(),
 };
 export const HeartbeatV1FrameSchema = z.object(heartbeatShape).strict();
 export const HeartbeatV2FrameSchema = z
@@ -384,6 +411,8 @@ export type RuntimeClientCapabilities = z.infer<typeof RuntimeClientCapabilities
 export type RuntimeProviderReadinessObservation = z.infer<typeof RuntimeProviderReadinessObservationSchema>;
 export type RuntimeProviderReadinessCollection = z.infer<typeof RuntimeProviderReadinessCollectionSchema>;
 export type RuntimeProviderReadinessNegotiation = z.infer<typeof RuntimeProviderReadinessNegotiationSchema>;
+export type RuntimeImCliReadinessObservation = z.infer<typeof RuntimeImCliReadinessObservationSchema>;
+export type RuntimeImCliReadinessCollection = z.infer<typeof RuntimeImCliReadinessCollectionSchema>;
 export type RuntimeFrameEnvelope = z.infer<typeof RuntimeFrameEnvelopeSchema>;
 export type AuthFrame = z.infer<typeof AuthFrameSchema>;
 export type AuthResultFrame = z.infer<typeof AuthResultFrameSchema>;
@@ -444,8 +473,10 @@ function validateCanonicalProviders(
   observations: readonly { provider: (typeof AGENT_RUNTIME_PROVIDERS)[number] }[],
   context: z.RefinementCtx,
 ): void {
-  validateCanonicalProviderIds(
+  validateCanonicalIds(
     observations.map((observation) => observation.provider),
+    AGENT_RUNTIME_PROVIDERS,
+    "Provider readiness",
     context,
   );
 }
@@ -454,20 +485,27 @@ function validateCanonicalProviderIds(
   providers: readonly (typeof AGENT_RUNTIME_PROVIDERS)[number][],
   context: z.RefinementCtx,
 ): void {
+  validateCanonicalIds(providers, AGENT_RUNTIME_PROVIDERS, "Provider readiness", context);
+}
+
+function validateCanonicalIds<T extends string>(
+  providers: readonly T[],
+  canonical: readonly T[],
+  label: string,
+  context: z.RefinementCtx,
+): void {
   const seen = new Set<string>();
   for (const [index, provider] of providers.entries()) {
     if (seen.has(provider)) {
-      context.addIssue({ code: "custom", path: [index], message: "Provider readiness must be unique" });
+      context.addIssue({ code: "custom", path: [index], message: `${label} must be unique` });
     }
     seen.add(provider);
-    if (
-      index > 0 &&
-      AGENT_RUNTIME_PROVIDERS.indexOf(provider) < AGENT_RUNTIME_PROVIDERS.indexOf(providers[index - 1] ?? "codex")
-    ) {
+    const previousProvider = providers[index - 1];
+    if (previousProvider !== undefined && canonical.indexOf(provider) < canonical.indexOf(previousProvider)) {
       context.addIssue({
         code: "custom",
         path: [index],
-        message: "Provider readiness must use canonical Provider order",
+        message: `${label} must use canonical Provider order`,
       });
     }
   }

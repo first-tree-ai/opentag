@@ -34,7 +34,6 @@ const agent = {
     model: null,
     reasoningEffort: null,
     instructions: "Follow instructions.",
-    allowedTools: ["opentag_message_react", "opentag_message_reply", "opentag_message_send"] as const,
     maxDurationMs: null,
   },
   createdAt: "2026-08-19T00:00:00.000Z",
@@ -110,7 +109,7 @@ describe("Agent HTTP API", () => {
         displayName: " Code Reviewer ",
         runtimeProvider: "codex",
         computerId,
-        runtimeConfig: { allowedTools: ["opentag_message_send", "opentag_message_react"], model: "gpt-5.6" },
+        runtimeConfig: { model: "gpt-5.6" },
       },
     });
     expect(create.statusCode).toBe(201);
@@ -121,7 +120,7 @@ describe("Agent HTTP API", () => {
       displayName: "Code Reviewer",
       runtimeProvider: "codex",
       computerId,
-      runtimeConfig: { allowedTools: ["opentag_message_react", "opentag_message_send"], model: "gpt-5.6" },
+      runtimeConfig: { model: "gpt-5.6" },
     });
 
     const list = await app.inject({ method: "GET", url: teamAgentsPath(teamId), headers: authorization });

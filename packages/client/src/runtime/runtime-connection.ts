@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   type AgentRuntimeProvider,
+  IM_CLI_PROVIDERS,
   missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
   PROVIDER_READINESS_V1_HEADER,
@@ -14,6 +15,8 @@ import {
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   type RuntimeClientCapabilities,
   RuntimeFrameEnvelopeSchema,
+  type RuntimeImCliReadinessCollection,
+  type RuntimeImCliReadinessObservation,
   type RuntimeNegotiatedCapabilities,
   type RuntimeProtocolVersion,
   type RuntimeProviderReadinessCollection,
@@ -170,7 +173,7 @@ export class RuntimeConnection {
   #state: RuntimeConnectionState = "stopped";
   #stopped = false;
   #protocolVersion: RuntimeProtocolVersion = RUNTIME_PROTOCOL_VERSION;
-  #verifiedCapabilities: RuntimeClientCapabilities = { imMessageTool: 0 };
+  #verifiedCapabilities: RuntimeClientCapabilities = { imCredentialGrant: 0 };
   #verifiedCapabilitiesExpiresAt = 0;
   readonly #providerReadiness = new Map<
     AgentRuntimeProvider,
@@ -179,6 +182,10 @@ export class RuntimeConnection {
   readonly #providerReadinessLeases = new Map<
     AgentRuntimeProvider,
     { observation: RuntimeProviderReadinessObservation; token: symbol }
+  >();
+  readonly #imCliReadiness = new Map<
+    RuntimeImCliReadinessObservation["provider"],
+    { observation: RuntimeImCliReadinessObservation; expiresAt: number }
   >();
 
   constructor(options: RuntimeConnectionOptions) {
@@ -244,10 +251,31 @@ export class RuntimeConnection {
     };
   }
 
+  setImCliReadiness(
+    observation: RuntimeImCliReadinessObservation,
+    validForMs = RUNTIME_CLIENT_CAPABILITY_TTL_MS,
+  ): void {
+    if (!Number.isSafeInteger(validForMs) || validForMs < 1 || validForMs > RUNTIME_CLIENT_CAPABILITY_TTL_MS) {
+      throw new RuntimeConnectionError("IM CLI readiness validity is invalid", true);
+    }
+    this.#imCliReadiness.set(observation.provider, {
+      observation: { ...observation },
+      expiresAt: this.#now() + validForMs,
+    });
+  }
+
   #currentCapabilities(): RuntimeClientCapabilities {
     return this.#now() <= this.#verifiedCapabilitiesExpiresAt
       ? { ...this.#verifiedCapabilities }
-      : { imMessageTool: 0 };
+      : { imCredentialGrant: 0 };
+  }
+
+  #currentImCliReadiness(): RuntimeImCliReadinessCollection {
+    const now = this.#now();
+    return IM_CLI_PROVIDERS.flatMap((provider) => {
+      const current = this.#imCliReadiness.get(provider);
+      return current && now <= current.expiresAt ? [{ ...current.observation }] : [];
+    });
   }
 
   #currentProviderReadiness(providers: readonly AgentRuntimeProvider[]): RuntimeProviderReadinessCollection {
@@ -486,6 +514,7 @@ export class RuntimeConnection {
                     providerReadiness: this.#currentProviderReadiness(heartbeatPolicy.providerReadiness.providers),
                   }
                 : {}),
+              imCliReadiness: this.#currentImCliReadiness(),
             },
             { priority: "control", deadline: this.#now() + heartbeatPolicy.heartbeatTimeoutMs },
           ).then(
@@ -635,6 +664,7 @@ export class RuntimeConnection {
             ...(welcome.providerReadiness
               ? { providerReadiness: this.#currentProviderReadiness(welcome.providerReadiness.providers) }
               : {}),
+            imCliReadiness: this.#currentImCliReadiness(),
           } as const;
           void this.#sendDirect(
             socket,

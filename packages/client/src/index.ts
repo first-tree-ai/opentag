@@ -169,6 +169,12 @@ export {
   readComputerIdentity,
   resolveComputerIdentity,
 } from "./runtime/computer-identity.js";
+export {
+  ImCredentialEnvironmentError,
+  ImCredentialEnvironmentManager,
+  type ImCredentialEnvironmentManagerOptions,
+  serializeEnvironment,
+} from "./runtime/im-credential-environment-manager.js";
 export { ImResourceFetcher } from "./runtime/im-resource-fetcher.js";
 export {
   type RuntimeBusinessFrame,
@@ -189,7 +195,6 @@ export {
   sessionBindingPath,
   snapshotPath,
 } from "./runtime/runtime-paths.js";
-export { openTagHostedToolDefinitions, RuntimeToolHost } from "./runtime/runtime-tool-host.js";
 export {
   type CustodyResult,
   type LocalSessionBinding,

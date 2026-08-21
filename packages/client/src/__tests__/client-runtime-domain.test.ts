@@ -172,7 +172,18 @@ function delivery(deliveryId: string, requestId: string, _computerId: string) {
     agentId: "agent-1",
     placementGeneration: 1,
     attention: "direct",
-    content: { kind: "text", text: "hello" },
+    content: {
+      kind: "text",
+      text: "hello",
+      providerRef: {
+        provider: "slack",
+        appId: "app-1",
+        teamId: "team-1",
+        botUserId: "bot-1",
+        channelId: "channel-1",
+        messageTs: "1710000000.000001",
+      },
+    },
     runtime: snapshot(),
   };
 }
@@ -186,8 +197,7 @@ function snapshot(): EffectiveRuntimeSnapshot {
     agentId: "agent-1",
     provider: "codex",
     instructions: { platform: "platform", agent: "agent", session: "session" },
-    allowedTools: [],
-    execution: { approvalPolicy: "never", networkAccess: false },
+    execution: { approvalPolicy: "never", networkAccess: true },
     workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
   };
 }
@@ -227,7 +237,7 @@ function completeLegacyAuth(socket: WebSocket, frame: Record<string, unknown>): 
     JSON.stringify({
       type: "server:welcome",
       protocolVersion: 1,
-      capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imMessageTool: 1 },
+      capabilities: { sessionReconcile: 1, imDelivery: 1, turnReport: 1, agentTrace: 1, imCredentialGrant: 1 },
       heartbeatIntervalMs: 1_000,
       heartbeatTimeoutMs: 2_000,
     }),

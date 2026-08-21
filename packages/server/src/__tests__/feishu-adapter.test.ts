@@ -12,8 +12,6 @@ import {
   createReliableFeishuDispatcher,
   FeishuAdapter,
   feishuDomainForTeamBrand,
-  mapFeishuApiFailure,
-  mapFeishuError,
   normalizeFeishuMessage,
 } from "../services/im-bindings/feishu/adapter.js";
 
@@ -75,12 +73,7 @@ describe("Feishu adapter", () => {
     expect(feishuDomainForTeamBrand("feishu")).toBe(Domain.Feishu);
   });
 
-  it("uses HTTP capabilities without constructing or owning an inbound Channel", async () => {
-    const send = vi.fn(async () => ({
-      ok: true as const,
-      externalMessageId: "om_http",
-      occurredAt: new Date("2026-08-19T00:00:00.000Z"),
-    }));
+  it("uses the HTTP resource capability without constructing or owning an inbound Channel", async () => {
     const fetchResource = vi.fn(async () => ({ stream: Readable.from(Buffer.from("resource")) }));
     const adapter = new FeishuAdapter({
       appId: "cli_http",
@@ -88,68 +81,28 @@ describe("Feishu adapter", () => {
       teamId: "team_http",
       channel: null,
       http: {
-        send,
-        react: async (input) => ({
-          ok: true,
-          externalMessageId: input.messageExternalId,
-          occurredAt: new Date("2026-08-19T00:00:00.000Z"),
-        }),
         fetchResource,
       },
     });
-    const requestId = crypto.randomUUID();
-    await expect(
-      adapter.send({ requestId, conversationExternalId: "oc_1", fallbackText: "hello" }),
-    ).resolves.toMatchObject({ ok: true, externalMessageId: "om_http" });
     await expect(
       adapter.fetchResource({ messageExternalId: "om_1", providerResourceKey: "file_1", kind: "file" }),
     ).resolves.toMatchObject({ stream: expect.any(Readable) });
-    expect(send).toHaveBeenCalledWith({ requestId, conversationExternalId: "oc_1", fallbackText: "hello" });
     expect(() => adapter.channel).toThrow("FEISHU_INBOUND_CHANNEL_UNAVAILABLE");
   });
 
-  it("classifies bounded nonzero HTTP responses and attempts each provider write once", async () => {
-    expect(mapFeishuApiFailure(99991400)).toMatchObject({ category: "rate_limited" });
-    expect(mapFeishuApiFailure(99991663)).toMatchObject({ category: "credential" });
-    expect(mapFeishuApiFailure(230027)).toMatchObject({ category: "credential" });
-    expect(mapFeishuApiFailure(230020)).toMatchObject({ category: "deterministic" });
-    expect(mapFeishuApiFailure(230001)).toMatchObject({ category: "deterministic" });
-    expect(mapFeishuApiFailure(987654)).toMatchObject({ category: "unknown", code: "feishu_api_error" });
-    expect(mapFeishuError({ response: { status: 429 } })).toMatchObject({ category: "rate_limited" });
-    expect(mapFeishuError({ response: { status: 403 } })).toMatchObject({ category: "credential" });
-    expect(mapFeishuError({ response: { status: 429, data: { code: 987654 } } })).toMatchObject({
-      category: "rate_limited",
-      code: "feishu_rate_limited",
-    });
-    expect(mapFeishuError({ response: { status: 403, data: { code: 987654 } } })).toMatchObject({
-      category: "credential",
-      code: "feishu_permission_denied",
-    });
-    expect(mapFeishuError({ response: { status: 404, data: { code: 987654 } } })).toMatchObject({
-      category: "deterministic",
-      code: "feishu_invalid_target",
-    });
-
-    const create = vi.fn().mockResolvedValue({ code: 99991663 });
-    const reaction = vi.fn().mockResolvedValue({ code: 230020 });
+  it("creates a read-only HTTP capability for provider resources", async () => {
+    const get = vi.fn().mockResolvedValue({ getReadableStream: () => Readable.from(Buffer.from("resource")) });
     const http = createFeishuHttpCapability({
       im: {
         v1: {
-          message: { create, reply: vi.fn() },
-          messageReaction: { create: reaction },
-          messageResource: { get: vi.fn() },
+          messageResource: { get },
         },
       },
     });
-    await expect(http.send({ conversationExternalId: "oc_1", fallbackText: "hello" })).resolves.toMatchObject({
-      category: "credential",
-      code: "feishu_permission_denied",
-    });
     await expect(
-      http.react({ conversationExternalId: "oc_1", messageExternalId: "om_1", emoji: "EYES" }),
-    ).resolves.toMatchObject({ category: "deterministic", code: "feishu_invalid_target" });
-    expect(create).toHaveBeenCalledTimes(1);
-    expect(reaction).toHaveBeenCalledTimes(1);
+      http.fetchResource({ messageExternalId: "om_1", providerResourceKey: "file_1", kind: "file" }),
+    ).resolves.toMatchObject({ stream: expect.any(Readable) });
+    expect(get).toHaveBeenCalledTimes(1);
   });
 
   it("awaits each raw provider event and propagates admission failure without safety batching or stale-drop", async () => {

@@ -104,6 +104,7 @@ future vertical slices.
 
 - [Development guide](./DEVELOPMENT.md)
 - [Server observability](./docs/observability.md)
+- [Direct provider CLI messaging](./docs/direct-provider-cli.md)
 - [Contributing guide](./CONTRIBUTING.md)
 - [Release guide](./docs/releasing.md)
 - [Deployment guide](./docs/deploying.md)

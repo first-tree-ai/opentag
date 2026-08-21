@@ -16,6 +16,8 @@ const state = vi.hoisted(() => ({
   createApp: vi.fn(),
   registryCurrentInstanceId: vi.fn(),
   registrySupportsProvider: vi.fn(),
+  registryProviderReadiness: vi.fn(),
+  registryImCliReadiness: vi.fn(),
   imBindingOptions: undefined as unknown,
   imBindingGetAgentComputerId: vi.fn(),
   feishuConnectionOptions: undefined as unknown,
@@ -28,7 +30,7 @@ const state = vi.hoisted(() => ({
   workerStart: vi.fn(),
   workerStop: vi.fn(),
   domainOptions: undefined as unknown,
-  outboundExecute: vi.fn(),
+  issueRuntimeCredentialGrant: vi.fn(),
   googleOptions: undefined as unknown,
   devAuthArgs: undefined as unknown,
   slackAdapterOptions: undefined as unknown,
@@ -62,6 +64,12 @@ vi.mock("../runtime/connection-registry.js", () => ({
     }
     supportsProvider(computerId: string, instanceId: string, provider: string) {
       return state.registrySupportsProvider(computerId, instanceId, provider);
+    }
+    providerReadiness(computerId: string) {
+      return state.registryProviderReadiness(computerId);
+    }
+    imCliReadiness(computerId: string) {
+      return state.registryImCliReadiness(computerId);
     }
   },
   RuntimeRegistrySendError: class extends Error {},
@@ -122,11 +130,6 @@ vi.mock("../services/crypto.js", () => ({ ApplicationCipher: class {} }));
 vi.mock("../services/im/index.js", () => ({
   ImMessageInbox: class {},
   ImResourceService: class {},
-  OutboundMessageService: class {
-    execute(input: unknown) {
-      return state.outboundExecute(input);
-    }
-  },
 }));
 vi.mock("../services/im-bindings/feishu/index.js", () => ({
   DefaultFeishuRegistrationGateway: class {},
@@ -165,6 +168,9 @@ vi.mock("../services/im-bindings/index.js", () => ({
     }
     getAgentComputerId(agentId: string) {
       return state.imBindingGetAgentComputerId(agentId);
+    }
+    issueRuntimeCredentialGrant(request: unknown, computerId: string) {
+      return state.issueRuntimeCredentialGrant(request, computerId);
     }
   },
 }));
@@ -256,8 +262,17 @@ beforeEach(() => {
   state.createDatabaseClient.mockImplementation(() => ({ database: state.database, sql: state.sql }));
   state.registryCurrentInstanceId.mockReturnValue("instance-1");
   state.registrySupportsProvider.mockReturnValue(true);
+  state.registryProviderReadiness.mockReturnValue([
+    { observation: { provider: "codex", status: "ready" }, observedAt: Date.now() },
+  ]);
+  state.registryImCliReadiness.mockReturnValue([]);
   state.imBindingGetAgentComputerId.mockResolvedValue("computer-1");
-  state.outboundExecute.mockResolvedValue({ status: "succeeded" });
+  state.issueRuntimeCredentialGrant.mockResolvedValue({
+    type: "im:credential:result",
+    requestId: "request-1",
+    status: "rejected",
+    code: "binding_inactive",
+  });
   const log = { info: vi.fn(), error: vi.fn() };
   state.app = {
     addHook: vi.fn((_name: string, hook: () => Promise<void>) => {
@@ -326,23 +341,39 @@ describe("Server startup", () => {
       appId: "A1",
       teamId: "T1",
       botUserId: "U1",
+      botId: "B1",
     };
     appOptions.slackEvents.createAdapter(slackBinding);
     expect(state.slackAdapterOptions).toMatchObject({
       appId: "A1",
       teamId: "T1",
       botUserId: "U1",
+      botId: "B1",
       token: "xoxb-current",
     });
 
-    const runtimeReady = (state.imBindingOptions as { runtimeReady(agentId: string): Promise<boolean> }).runtimeReady;
-    await expect(runtimeReady("agent-1")).resolves.toBe(true);
-    expect(state.registrySupportsProvider).toHaveBeenCalledWith("computer-1", "instance-1", "codex");
-    state.registrySupportsProvider.mockReturnValue(false);
-    await expect(runtimeReady("agent-1")).resolves.toBe(false);
-    state.registrySupportsProvider.mockReturnValue(true);
-    state.registryCurrentInstanceId.mockReturnValue(undefined);
-    await expect(runtimeReady("agent-1")).resolves.toBe(false);
+    const imCliReadiness = (
+      state.imBindingOptions as {
+        imCliReadiness(agentId: string, provider: "feishu" | "slack"): Promise<string>;
+      }
+    ).imCliReadiness;
+    state.registryImCliReadiness.mockReturnValue([
+      { observation: { provider: "feishu", status: "ready" }, observedAt: Date.now() },
+    ]);
+    await expect(imCliReadiness("agent-1", "feishu")).resolves.toBe("ready");
+    state.registryImCliReadiness.mockReturnValue([]);
+    await expect(imCliReadiness("agent-1", "slack")).resolves.toBe("checking");
+    state.imBindingGetAgentComputerId.mockResolvedValueOnce(undefined);
+    await expect(imCliReadiness("agent-1", "slack")).resolves.toBe("unavailable");
+
+    const agentRuntimeReadiness = (
+      state.imBindingOptions as { agentRuntimeReadiness(agentId: string): Promise<string> }
+    ).agentRuntimeReadiness;
+    await expect(agentRuntimeReadiness("agent-1")).resolves.toBe("ready");
+    state.registryProviderReadiness.mockReturnValueOnce([
+      { observation: { provider: "codex", status: "sign-in" }, observedAt: Date.now() },
+    ]);
+    await expect(agentRuntimeReadiness("agent-1")).resolves.toBe("sign-in");
 
     const feishuRuntimeReady = (state.feishuConnectionOptions as { runtimeReady(agentId: string): Promise<boolean> })
       .runtimeReady;
@@ -351,37 +382,32 @@ describe("Server startup", () => {
     state.selectedAgents = [];
     await expect(feishuRuntimeReady("agent-1")).resolves.toBe(false);
 
-    const onImToolRequest = (
+    const onImCredentialGrant = (
       state.domainOptions as {
-        onImToolRequest(request: Record<string, unknown>, context: Record<string, unknown>): Promise<unknown>;
+        onImCredentialGrant(request: Record<string, unknown>, context: Record<string, unknown>): Promise<unknown>;
       }
-    ).onImToolRequest;
+    ).onImCredentialGrant;
+    state.issueRuntimeCredentialGrant.mockResolvedValue({
+      type: "im:credential:result",
+      requestId: "request-1",
+      status: "rejected",
+      code: "binding_inactive",
+    });
     await expect(
-      onImToolRequest(
+      onImCredentialGrant(
         {
+          type: "im:credential",
           requestId: "request-1",
           sessionId: "session-1",
           agentId: "agent-1",
           placementGeneration: 3,
-          expectedLatestImMessageId: "message-1",
-          operation: "send",
-          text: "hello",
-          replyToImMessageId: "reply-1",
-          targetImMessageId: "target-1",
-          emoji: "eyes",
         },
         { computerId: "computer-1", instanceId: "instance-1" },
       ),
-    ).resolves.toMatchObject({ type: "im:tool:result", requestId: "request-1", status: "succeeded" });
-    expect(state.outboundExecute).toHaveBeenCalledWith(
-      expect.objectContaining({
-        computerId: "computer-1",
-        computerInstanceId: "instance-1",
-        content: expect.objectContaining({ fallbackText: "hello" }),
-        replyToImMessageId: "reply-1",
-        targetImMessageId: "target-1",
-        emoji: "eyes",
-      }),
+    ).resolves.toMatchObject({ type: "im:credential:result", requestId: "request-1", status: "rejected" });
+    expect(state.issueRuntimeCredentialGrant).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "im:credential", requestId: "request-1" }),
+      "computer-1",
     );
 
     (state.workerOptions as { onDiagnostic(code: string): void }).onDiagnostic("IM_DELIVERY_FAILED");

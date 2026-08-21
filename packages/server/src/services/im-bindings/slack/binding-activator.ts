@@ -17,6 +17,6 @@ export class SlackBindingActivator {
     if (verified.appId !== input.appId || verified.teamId !== input.teamId || verified.botUserId !== input.botUserId) {
       throw new Error("SLACK_BINDING_IDENTITY_MISMATCH");
     }
-    return this.#imBindings.activateSlack(input);
+    return this.#imBindings.activateSlack(input, verified.botId);
   }
 }

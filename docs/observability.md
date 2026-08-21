@@ -2,7 +2,7 @@
 
 [简体中文](./zh-CN/observability.md)
 
-OpenTag Server can export optional OpenTelemetry traces through OTLP/HTTP. The implementation follows First Tree's disabled-by-default, trace-only model, while adding spans for OpenTag's provider connections, IM ingress, durable delivery, Runtime, and outbound message boundaries.
+OpenTag Server can export optional OpenTelemetry traces through OTLP/HTTP. The implementation is disabled by default and covers provider connections, IM ingress, durable delivery, and Runtime lifecycle boundaries.
 
 Tracing is not log shipping. Pino continues to write server logs to stdout, and this feature does not upload all stdout logs to Logfire. Logfire receives spans, span attributes, and bounded exception events only.
 
@@ -38,7 +38,7 @@ The server owns an explicit OpenTelemetry trace provider and OTLP exporter. Only
 - `runtime.ws.connection` plus short, non-heartbeat Runtime business-frame spans.
 - Short Feishu connection attempt, transition, and error spans.
 - One independent `im.inbound.process` root per Feishu SDK callback, including normalize and persistence failures.
-- Provider-neutral `im.inbound.persist`, delivery/recovery, Runtime reconcile/delivery/report, and outbound spans.
+- Provider-neutral `im.inbound.persist`, delivery/recovery, and Runtime reconcile/delivery/report spans.
 
 Asynchronous jobs intentionally use independent roots. Search by stable attributes instead of expecting one continuous parent chain:
 
@@ -69,9 +69,9 @@ Then query traces for the incident time window:
 1. Filter `feishu.connection.connect`, `feishu.connection.transition`, and `feishu.connection.error` by `opentag.im.binding.id`. Confirm that a current replica connected and did not enter a reconnect or credential failure loop.
 2. Search for `im.inbound.process` with the same binding. Its presence proves the OpenTag SDK callback ran; its error code separates admission, normalization, fencing, and persistence failures.
 3. When persistence succeeded, follow `opentag.im.message.id` and `opentag.im.delivery.id` into `im.delivery.dispatch`, `runtime.reconcile`, `runtime.delivery`, and `runtime.report`.
-4. For reply failures, search `im.outbound.execute` by `opentag.session.id`, `opentag.agent.id`, or `opentag.request.id`.
+4. If the Agent ran but no reply appeared, inspect the Agent trace and the provider CLI result. OpenTag does not receive or trace provider outbound writes.
 
-No `im.inbound.process` span means OpenTag did not observe the provider callback during the sampled window. It does not prove that Feishu delivered the event. Combine that negative evidence with `connection`, `lastInboundAt`, `runtimeToolAvailable`, granted scopes, and Feishu event-subscription state.
+No `im.inbound.process` span means OpenTag did not observe the provider callback during the sampled window. It does not prove that Feishu delivered the event. Combine that negative evidence with `connection`, `lastInboundAt`, `providerCliReadiness`, granted scopes, and Feishu event-subscription state.
 
 ## Sampling and limits
 

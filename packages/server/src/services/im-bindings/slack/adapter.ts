@@ -1,14 +1,8 @@
-import {
-  type NormalizedInboundImEvent,
-  NormalizedInboundImEventSchema,
-  type ProviderWriteResult,
-} from "@opentag/shared";
+import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
 import { z } from "zod";
 import type {
   ImProviderAdapter,
-  ProviderReactionInput,
   ProviderResourceInput,
-  ProviderSendInput,
   ReadableResource,
   VerifiedBotIdentity,
 } from "../provider-adapter.js";
@@ -58,25 +52,14 @@ export interface VerifiedSlackEnvelope {
   eventId: string;
   appId: string;
   teamId: string;
-  botUserId?: string;
+  botUserId: string;
+  botId: string;
   event: unknown;
   eventTime?: number;
 }
 
 export interface SlackApiClient {
-  authTest(token: string): Promise<{ appId: string; teamId: string; botUserId: string }>;
-  postMessage(input: {
-    token: string;
-    channel: string;
-    text: string;
-    threadTs?: string;
-  }): Promise<{ ok: boolean; ts?: string; error?: string; retryAfterSeconds?: number }>;
-  addReaction(input: {
-    token: string;
-    channel: string;
-    timestamp: string;
-    emoji: string;
-  }): Promise<{ ok: boolean; error?: string; retryAfterSeconds?: number }>;
+  authTest(token: string): Promise<{ appId: string; teamId: string; botUserId: string; botId: string }>;
   fetchResource(input: ProviderResourceInput & { token: string }): Promise<ReadableResource>;
 }
 
@@ -116,6 +99,10 @@ export function normalizeSlackEnvelope(envelope: VerifiedSlackEnvelope): Normali
   const messageId = nested?.ts ?? (operation === "deleted" ? event.deleted_ts : undefined) ?? event.ts;
   const text = canonical.text ?? "";
   const bounded = boundedText(operation === "deleted" ? "[deleted]" : text);
+  const isSelf =
+    canonical.user === envelope.botUserId ||
+    canonical.bot_id === envelope.botId ||
+    canonical.bot_profile?.app_id === envelope.appId;
   const authorId =
     canonical.user ??
     (canonical.bot_profile?.app_id === envelope.appId ? envelope.botUserId : undefined) ??
@@ -133,6 +120,11 @@ export function normalizeSlackEnvelope(envelope: VerifiedSlackEnvelope): Normali
       providerEventId: envelope.eventId,
       externalAppId: envelope.appId,
       externalTeamId: envelope.teamId,
+      providerContext: {
+        provider: "slack",
+        ...(event.channel_type ? { channelType: event.channel_type } : {}),
+        ...(canonical.thread_ts ? { threadTs: canonical.thread_ts } : {}),
+      },
       conversation: { externalId: event.channel, kind: conversationKind(event.channel_type) },
       message: {
         externalId: messageId,
@@ -143,6 +135,7 @@ export function normalizeSlackEnvelope(envelope: VerifiedSlackEnvelope): Normali
         author: {
           externalId: authorId,
           kind: canonical.bot_id || canonical.bot_profile ? "bot" : canonical.user ? "human" : "system",
+          isSelf,
         },
         occurredAt: slackTimestampToDate(event.event_ts ?? event.ts, envelope.eventTime),
         content: {
@@ -158,44 +151,39 @@ export function normalizeSlackEnvelope(envelope: VerifiedSlackEnvelope): Normali
   ];
 }
 
-export function mapSlackWriteResult(result: {
-  ok: boolean;
-  ts?: string;
-  error?: string;
-  retryAfterSeconds?: number;
-}): ProviderWriteResult {
-  if (result.ok && result.ts)
-    return { ok: true, externalMessageId: result.ts, occurredAt: slackTimestampToDate(result.ts) };
-  const code = result.error ?? "slack_unknown";
-  if (code === "ratelimited")
-    return { ok: false, category: "rate_limited", code, retryAfterSeconds: result.retryAfterSeconds };
-  if (["invalid_auth", "token_revoked", "account_inactive"].includes(code))
-    return { ok: false, category: "credential", code };
-  if (["channel_not_found", "not_in_channel", "missing_scope", "invalid_blocks"].includes(code)) {
-    return { ok: false, category: "deterministic", code };
-  }
-  return { ok: false, category: "unknown", code };
-}
-
 export class SlackAdapter implements ImProviderAdapter<VerifiedSlackEnvelope> {
   readonly provider = "slack" as const;
   readonly #api: SlackApiClient;
   readonly #appId: string;
   readonly #botUserId: string;
+  readonly #botId: string;
   readonly #teamId: string;
   readonly #token: string;
 
-  constructor(input: { api: SlackApiClient; token: string; appId: string; teamId: string; botUserId: string }) {
+  constructor(input: {
+    api: SlackApiClient;
+    token: string;
+    appId: string;
+    teamId: string;
+    botUserId: string;
+    botId: string;
+  }) {
     this.#api = input.api;
     this.#token = input.token;
     this.#appId = input.appId;
     this.#teamId = input.teamId;
     this.#botUserId = input.botUserId;
+    this.#botId = input.botId;
   }
 
   async validateBinding(): Promise<VerifiedBotIdentity> {
     const identity = await this.#api.authTest(this.#token);
-    if (identity.appId !== this.#appId || identity.teamId !== this.#teamId || identity.botUserId !== this.#botUserId) {
+    if (
+      identity.appId !== this.#appId ||
+      identity.teamId !== this.#teamId ||
+      identity.botUserId !== this.#botUserId ||
+      identity.botId !== this.#botId
+    ) {
       throw new Error("SLACK_BINDING_IDENTITY_MISMATCH");
     }
     return { externalAppId: identity.appId, externalTeamId: identity.teamId, externalBotId: identity.botUserId };
@@ -203,28 +191,6 @@ export class SlackAdapter implements ImProviderAdapter<VerifiedSlackEnvelope> {
 
   normalizeInbound(input: VerifiedSlackEnvelope): NormalizedInboundImEvent[] {
     return normalizeSlackEnvelope(input);
-  }
-
-  async send(input: ProviderSendInput): Promise<ProviderWriteResult> {
-    return mapSlackWriteResult(
-      await this.#api.postMessage({
-        token: this.#token,
-        channel: input.conversationExternalId,
-        text: input.fallbackText,
-        threadTs: input.threadKey ?? input.replyToExternalId,
-      }),
-    );
-  }
-
-  async react(input: ProviderReactionInput): Promise<ProviderWriteResult> {
-    const result = await this.#api.addReaction({
-      token: this.#token,
-      channel: input.conversationExternalId,
-      timestamp: input.messageExternalId,
-      emoji: input.emoji,
-    });
-    if (result.ok) return { ok: true, externalMessageId: input.messageExternalId, occurredAt: new Date() };
-    return mapSlackWriteResult(result);
   }
 
   fetchResource(input: ProviderResourceInput): Promise<ReadableResource> {

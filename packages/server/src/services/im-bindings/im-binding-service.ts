@@ -4,6 +4,10 @@ import type {
   ImBindingHandoffStatus,
   ImBindingState,
   ImBindingSummary,
+  ImCliReadinessStatus,
+  ProviderReadinessStatus,
+  RuntimeImCredentialGrantRequest,
+  RuntimeImCredentialGrantResult,
   SlackBindingActivation,
 } from "@opentag/shared";
 import { FEISHU_REQUIRED_TENANT_SCOPES, hasRequiredFeishuTenantScopes } from "@opentag/shared";
@@ -14,8 +18,8 @@ import {
   agents,
   imBindings,
   imMessages,
-  imOutboundRequests,
   memberships,
+  sessionPlacements,
   sessions,
   users,
 } from "../../db/schema/index.js";
@@ -35,6 +39,7 @@ const FeishuCredentialSchema = z
 
 const SlackCredentialSchema = z
   .object({
+    botId: z.string().min(1),
     botAccessToken: z.string().min(1),
     signingSecret: z.string().min(1),
     grantedScopes: z.array(z.string().min(1)).max(128),
@@ -57,6 +62,7 @@ export interface SlackIngressBinding {
   appId: string;
   teamId: string;
   botUserId: string;
+  botId: string;
   botAccessToken: string;
   signingSecret: string;
 }
@@ -88,7 +94,8 @@ interface ImBindingReadinessInput {
 
 interface ImBindingReadiness {
   handoff: ImBindingHandoffStatus;
-  runtimeToolAvailable: boolean;
+  agentRuntimeReadiness: ProviderReadinessStatus;
+  providerCliReadiness: ImCliReadinessStatus;
   reauthorizationRequired: boolean;
   connection: { state: "connected" | "disconnected"; observedAt: string } | null;
 }
@@ -162,7 +169,8 @@ export class ImBindingService {
   readonly #database: DatabaseClient;
   readonly #membershipService: TeamMembershipService;
   readonly #now: () => Date;
-  readonly #runtimeReady: (agentId: string) => Promise<boolean>;
+  readonly #agentRuntimeReadiness: (agentId: string) => Promise<ProviderReadinessStatus>;
+  readonly #imCliReadiness: (agentId: string, provider: "feishu" | "slack") => Promise<ImCliReadinessStatus>;
 
   constructor(
     database: DatabaseClient,
@@ -171,7 +179,11 @@ export class ImBindingService {
       afterMutationAuthorityLocked?: () => Promise<void> | void;
       membershipService?: TeamMembershipService;
       now?: () => Date;
-      runtimeReady?: (agentId: string) => Promise<boolean> | boolean;
+      agentRuntimeReadiness?: (agentId: string) => Promise<ProviderReadinessStatus> | ProviderReadinessStatus;
+      imCliReadiness?: (
+        agentId: string,
+        provider: "feishu" | "slack",
+      ) => Promise<ImCliReadinessStatus> | ImCliReadinessStatus;
     } = {},
   ) {
     this.#database = database;
@@ -179,7 +191,8 @@ export class ImBindingService {
     this.#membershipService = options.membershipService ?? new TeamMembershipService(database);
     this.#cipher = cipher;
     this.#now = options.now ?? (() => new Date());
-    this.#runtimeReady = async (agentId) => (await options.runtimeReady?.(agentId)) ?? true;
+    this.#agentRuntimeReadiness = async (agentId) => (await options.agentRuntimeReadiness?.(agentId)) ?? "ready";
+    this.#imCliReadiness = async (agentId, provider) => (await options.imCliReadiness?.(agentId, provider)) ?? "ready";
   }
 
   async getAgentComputerId(agentId: string): Promise<string | undefined> {
@@ -191,8 +204,88 @@ export class ImBindingService {
     return agent?.computerId;
   }
 
-  async activateSlack(input: SlackBindingActivation): Promise<string> {
+  async issueRuntimeCredentialGrant(
+    request: RuntimeImCredentialGrantRequest,
+    authenticatedComputerId: string,
+  ): Promise<RuntimeImCredentialGrantResult> {
+    const [row] = await this.#database
+      .select({
+        sessionId: sessions.id,
+        sessionEndedAt: sessions.endedAt,
+        binding: imBindings,
+        boundAgentId: imBindings.agentId,
+        agentComputerId: agents.computerId,
+        agentStatus: agents.status,
+        placementComputerId: sessionPlacements.computerId,
+        placementGeneration: sessionPlacements.generation,
+      })
+      .from(sessions)
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .leftJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .where(eq(sessions.id, request.sessionId))
+      .limit(1);
+    const rejected = (
+      code: "binding_inactive" | "credential_stale" | "placement_stale" | "agent_mismatch",
+    ): RuntimeImCredentialGrantResult => ({
+      type: "im:credential:result",
+      requestId: request.requestId,
+      status: "rejected",
+      code,
+    });
+    if (
+      !row ||
+      row.boundAgentId !== request.agentId ||
+      row.agentComputerId !== authenticatedComputerId ||
+      row.agentStatus !== "active"
+    ) {
+      return rejected("agent_mismatch");
+    }
+    if (
+      row.sessionEndedAt !== null ||
+      row.placementComputerId !== authenticatedComputerId ||
+      row.placementGeneration !== request.placementGeneration
+    ) {
+      return rejected("placement_stale");
+    }
+    const binding = row.binding;
+    if (binding.status !== "active") return rejected("binding_inactive");
+    if (!binding.encryptedCredential || !binding.externalAppId || binding.credentialGeneration < 1) {
+      return rejected("credential_stale");
+    }
+    try {
+      if (binding.provider === "feishu") {
+        const credential = FeishuCredentialSchema.parse(JSON.parse(this.#cipher.decrypt(binding.encryptedCredential)));
+        if (credential.appId !== binding.externalAppId) return rejected("credential_stale");
+        return {
+          type: "im:credential:result",
+          requestId: request.requestId,
+          status: "succeeded",
+          credentialGeneration: binding.credentialGeneration,
+          grant: {
+            provider: "feishu",
+            appId: credential.appId,
+            appSecret: credential.appSecret,
+            teamBrand: binding.externalTeamBrand === "lark" ? "lark" : "feishu",
+          },
+        };
+      }
+      const credential = SlackCredentialSchema.parse(JSON.parse(this.#cipher.decrypt(binding.encryptedCredential)));
+      return {
+        type: "im:credential:result",
+        requestId: request.requestId,
+        status: "succeeded",
+        credentialGeneration: binding.credentialGeneration,
+        grant: { provider: "slack", botAccessToken: credential.botAccessToken },
+      };
+    } catch {
+      return rejected("credential_stale");
+    }
+  }
+
+  async activateSlack(input: SlackBindingActivation, verifiedBotId: string): Promise<string> {
     const credential = SlackCredentialSchema.parse({
+      botId: verifiedBotId,
       botAccessToken: input.botAccessToken,
       signingSecret: input.signingSecret,
       grantedScopes: [...new Set(input.grantedBotScopes)].sort(),
@@ -255,7 +348,7 @@ export class ImBindingService {
           eq(imBindings.provider, "slack"),
           eq(imBindings.externalAppId, appId),
           eq(imBindings.externalTeamId, teamId),
-          ne(imBindings.status, "disabled"),
+          eq(imBindings.status, "active"),
           ne(agents.status, "deleted"),
         ),
       )
@@ -269,6 +362,7 @@ export class ImBindingService {
       appId,
       teamId,
       botUserId: imBinding.externalBotId,
+      botId: credential.botId,
       botAccessToken: credential.botAccessToken,
       signingSecret: credential.signingSecret,
     };
@@ -291,6 +385,7 @@ export class ImBindingService {
       appId: imBinding.externalAppId,
       teamId: imBinding.externalTeamId,
       botUserId: imBinding.externalBotId,
+      botId: credential.botId,
       botAccessToken: credential.botAccessToken,
       signingSecret: credential.signingSecret,
       grantedScopes: credential.grantedScopes,
@@ -497,7 +592,8 @@ export class ImBindingService {
       imBindingId,
       provider: imBinding.provider,
       ready: readiness.handoff.handoffReady,
-      runtimeToolAvailable: readiness.runtimeToolAvailable,
+      agentRuntimeReadiness: readiness.agentRuntimeReadiness,
+      providerCliReadiness: readiness.providerCliReadiness,
       credentialGeneration: Math.max(1, imBinding.credentialGeneration),
       reauthorizationRequired: readiness.reauthorizationRequired,
       connection: readiness.connection,
@@ -601,7 +697,10 @@ export class ImBindingService {
   }
 
   async #readiness(imBinding: ImBindingReadinessInput): Promise<ImBindingReadiness> {
-    const runtimeToolAvailable = await this.#runtimeReady(imBinding.agentId);
+    const [agentRuntimeReadiness, providerCliReadiness] = await Promise.all([
+      this.#agentRuntimeReadiness(imBinding.agentId),
+      this.#imCliReadiness(imBinding.agentId, imBinding.provider),
+    ]);
     const reauthorizationRequired =
       imBinding.status === "reauthorization_required" ||
       needsFeishuScopeUpdate(imBinding.status, imBinding.provider, imBinding.grantedCapabilities);
@@ -622,12 +721,13 @@ export class ImBindingService {
     const handoff: ImBindingHandoffStatus =
       bindingState !== "active"
         ? { bindingState, handoffReady: false }
-        : runtimeToolAvailable && connectionReady
+        : agentRuntimeReadiness === "ready" && providerCliReadiness === "ready" && connectionReady
           ? { bindingState, handoffReady: true }
           : { bindingState, handoffReady: false };
     return {
       handoff,
-      runtimeToolAvailable,
+      agentRuntimeReadiness,
+      providerCliReadiness,
       reauthorizationRequired,
       connection,
     };
@@ -839,23 +939,15 @@ export class ImBindingService {
     });
   }
 
-  async #activity(imBindingId: string): Promise<{ lastInboundAt: string | null; lastOutboundAt: string | null }> {
+  async #activity(imBindingId: string): Promise<{ lastInboundAt: string | null }> {
     const [inbound] = await this.#database
       .select({ at: imMessages.receivedAt })
       .from(imMessages)
       .where(and(eq(imMessages.imBindingId, imBindingId), eq(imMessages.direction, "inbound")))
       .orderBy(desc(imMessages.receivedAt))
       .limit(1);
-    const [outbound] = await this.#database
-      .select({ at: imOutboundRequests.completedAt })
-      .from(imOutboundRequests)
-      .innerJoin(sessions, eq(sessions.id, imOutboundRequests.sessionId))
-      .where(and(eq(sessions.imBindingId, imBindingId), eq(imOutboundRequests.state, "succeeded")))
-      .orderBy(desc(imOutboundRequests.completedAt))
-      .limit(1);
     return {
       lastInboundAt: inbound?.at.toISOString() ?? null,
-      lastOutboundAt: outbound?.at?.toISOString() ?? null,
     };
   }
 }

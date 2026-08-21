@@ -2340,7 +2340,7 @@ function MembersSettings({
                         {canManage ? (
                           <select
                             aria-label={`Role for ${member.displayName}`}
-                            className="ds-control ds-control--compact"
+                            className="ds-control ds-control--compact ds-control--quiet"
                             disabled={pendingUserIds.has(member.userId)}
                             value={member.role}
                             onChange={(event) => void changeRole(member, event.currentTarget.value)}

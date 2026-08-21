@@ -2221,6 +2221,99 @@ describe("IM binding persistence", () => {
     }
   });
 
+  it("reserves the verified root beyond the rolling Thread history item cap", async () => {
+    const value = await fixture();
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(computers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(computers.id, value.computer.id));
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        userId: value.bootstrap.userId,
+      });
+      const inbox = new ImMessageInbox(value.database);
+      const rootEvent = revisionEvent({
+        providerEventId: "history-cap-root",
+        externalMessageId: "7100.100",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:01.000Z",
+        revisionKey: "1",
+      });
+      rootEvent.message.content = {
+        version: 1,
+        fallbackText: "reserved root message",
+        blocks: [{ type: "text", text: "reserved root message" }],
+        truncated: false,
+      };
+      const root = await inbox.ingest(value.imBindingId, 1, rootEvent);
+      const priorMessageIds = [root.messageId];
+      for (let index = 0; index < 101; index += 1) {
+        const reply = await inbox.ingest(
+          value.imBindingId,
+          1,
+          slackThreadEvent({
+            providerEventId: `history-cap-thread-${index}`,
+            externalMessageId: `7100.${index + 101}`,
+            rootExternalMessageId: "7100.100",
+            occurredAt: new Date(Date.parse("2026-08-19T00:00:02.000Z") + index * 1_000).toISOString(),
+            text: `boundary thread message ${index}`,
+          }),
+        );
+        priorMessageIds.push(reply.messageId);
+      }
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ state: "expired", reason: "history_fixture" })
+        .where(
+          inArray(
+            imMessageDeliveries.messageId,
+            priorMessageIds.filter((messageId): messageId is string => messageId !== undefined),
+          ),
+        );
+      const current = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "history-cap-current",
+          externalMessageId: "7100.999",
+          rootExternalMessageId: "7100.100",
+          occurredAt: "2026-08-19T00:03:00.000Z",
+          text: "current message after history cap",
+        }),
+      );
+      const [currentDelivery] = await value.database
+        .select({ id: imMessageDeliveries.id })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.messageId, current.messageId as string));
+      if (!currentDelivery) throw new Error("Current Thread delivery fixture was not created");
+
+      await imDeliveryWorker({
+        database: value.database,
+        registry: runtime.registry,
+        domain: runtime.domain,
+      }).runOnce();
+      const delivered = runtime.frames.find(
+        (frame) =>
+          (frame as { type?: string; deliveryId?: string }).type === "im:deliver" &&
+          (frame as { deliveryId?: string }).deliveryId === currentDelivery.id,
+      ) as DirectImMessageDeliveryRequest | undefined;
+      expect(delivered?.content.history).toHaveLength(100);
+      expect(delivered?.content.history?.[0]).toEqual(expect.objectContaining({ text: "reserved root message" }));
+      expect(delivered?.content.history?.[1]).toEqual(expect.objectContaining({ text: "boundary thread message 2" }));
+      expect(delivered?.content.history?.[99]).toEqual(
+        expect.objectContaining({ text: "boundary thread message 100" }),
+      );
+      expect(delivered?.content.historyTruncated).toBe(true);
+      runtime.domain.close();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("inherits DM scope for a Feishu recall without guessing provider fields", async () => {
     const value = await fixture();
     try {

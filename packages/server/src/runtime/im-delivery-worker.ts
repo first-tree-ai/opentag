@@ -784,16 +784,83 @@ export class ImDeliveryWorker {
       )
       .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
       .limit(1);
+    const historyBoundary = and(
+      messageBefore(occurredAt, providerRevisionKey, messageId),
+      ...(lastAccepted
+        ? [messageAfter(lastAccepted.occurredAt, lastAccepted.providerRevisionKey, lastAccepted.id)]
+        : []),
+      notExists(
+        this.#database
+          .select({ id: newerHistoryRevisions.id })
+          .from(newerHistoryRevisions)
+          .where(
+            and(
+              eq(newerHistoryRevisions.imBindingId, imMessages.imBindingId),
+              eq(newerHistoryRevisions.channelId, imMessages.channelId),
+              eq(newerHistoryRevisions.externalMessageId, imMessages.externalMessageId),
+              eq(newerHistoryRevisions.direction, "inbound"),
+              or(
+                gt(newerHistoryRevisions.occurredAt, imMessages.occurredAt),
+                and(
+                  eq(newerHistoryRevisions.occurredAt, imMessages.occurredAt),
+                  or(
+                    gt(newerHistoryRevisions.providerRevisionKey, imMessages.providerRevisionKey),
+                    and(
+                      eq(newerHistoryRevisions.providerRevisionKey, imMessages.providerRevisionKey),
+                      gt(newerHistoryRevisions.id, imMessages.id),
+                    ),
+                  ),
+                ),
+              ),
+              or(
+                lt(newerHistoryRevisions.occurredAt, occurredAt),
+                and(
+                  eq(newerHistoryRevisions.occurredAt, occurredAt),
+                  or(
+                    lt(newerHistoryRevisions.providerRevisionKey, providerRevisionKey),
+                    and(
+                      eq(newerHistoryRevisions.providerRevisionKey, providerRevisionKey),
+                      lt(newerHistoryRevisions.id, messageId),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ),
+    );
+    const selection = {
+      id: imMessages.id,
+      operation: imMessages.operation,
+      occurredAt: imMessages.occurredAt,
+      content: imMessages.content,
+      channelId: imMessages.channelId,
+      externalMessageId: imMessages.externalMessageId,
+      providerContext: imMessages.providerContext,
+      imBinding: imBindings,
+    };
+    const [root] =
+      session.kind === "thread" && rootExternalId
+        ? await this.#database
+            .select(selection)
+            .from(imMessages)
+            .innerJoin(imBindings, eq(imBindings.id, imMessages.imBindingId))
+            .where(
+              and(
+                eq(imMessages.imBindingId, session.imBindingId),
+                eq(imMessages.channelId, session.channelId),
+                eq(imMessages.direction, "inbound"),
+                eq(imMessages.externalMessageId, rootExternalId),
+                ne(imMessages.externalMessageId, externalMessageId),
+                historyBoundary,
+              ),
+            )
+            .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
+            .limit(1)
+        : [];
     const rows = await this.#database
       .select({
-        id: imMessages.id,
-        operation: imMessages.operation,
-        occurredAt: imMessages.occurredAt,
-        content: imMessages.content,
-        channelId: imMessages.channelId,
-        externalMessageId: imMessages.externalMessageId,
-        providerContext: imMessages.providerContext,
-        imBinding: imBindings,
+        ...selection,
       })
       .from(imMessages)
       .innerJoin(imBindings, eq(imBindings.id, imMessages.imBindingId))
@@ -803,62 +870,13 @@ export class ImDeliveryWorker {
           eq(imMessages.channelId, session.channelId),
           eq(imMessages.direction, "inbound"),
           ne(imMessages.externalMessageId, externalMessageId),
-          ...(session.kind === "thread" && session.threadKey
-            ? [
-                or(
-                  eq(imMessages.threadKey, session.threadKey),
-                  ...(rootExternalId ? [eq(imMessages.externalMessageId, rootExternalId)] : []),
-                ),
-              ]
-            : []),
-          messageBefore(occurredAt, providerRevisionKey, messageId),
-          ...(lastAccepted
-            ? [messageAfter(lastAccepted.occurredAt, lastAccepted.providerRevisionKey, lastAccepted.id)]
-            : []),
-          notExists(
-            this.#database
-              .select({ id: newerHistoryRevisions.id })
-              .from(newerHistoryRevisions)
-              .where(
-                and(
-                  eq(newerHistoryRevisions.imBindingId, imMessages.imBindingId),
-                  eq(newerHistoryRevisions.channelId, imMessages.channelId),
-                  eq(newerHistoryRevisions.externalMessageId, imMessages.externalMessageId),
-                  eq(newerHistoryRevisions.direction, "inbound"),
-                  or(
-                    gt(newerHistoryRevisions.occurredAt, imMessages.occurredAt),
-                    and(
-                      eq(newerHistoryRevisions.occurredAt, imMessages.occurredAt),
-                      or(
-                        gt(newerHistoryRevisions.providerRevisionKey, imMessages.providerRevisionKey),
-                        and(
-                          eq(newerHistoryRevisions.providerRevisionKey, imMessages.providerRevisionKey),
-                          gt(newerHistoryRevisions.id, imMessages.id),
-                        ),
-                      ),
-                    ),
-                  ),
-                  or(
-                    lt(newerHistoryRevisions.occurredAt, occurredAt),
-                    and(
-                      eq(newerHistoryRevisions.occurredAt, occurredAt),
-                      or(
-                        lt(newerHistoryRevisions.providerRevisionKey, providerRevisionKey),
-                        and(
-                          eq(newerHistoryRevisions.providerRevisionKey, providerRevisionKey),
-                          lt(newerHistoryRevisions.id, messageId),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-          ),
+          ...(session.kind === "thread" && session.threadKey ? [eq(imMessages.threadKey, session.threadKey)] : []),
+          historyBoundary,
         ),
       )
       .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
       .limit(101);
-    const selected = rows.slice(0, 100);
+    const selected = rows.slice(0, root ? 99 : 100);
     const items: Array<{
       imMessageId: string;
       occurredAt: string;
@@ -867,6 +885,18 @@ export class ImDeliveryWorker {
     }> = [];
     let bytes = 2;
     let truncated = rows.length > selected.length;
+    const rootItem = root
+      ? {
+          imMessageId: root.id,
+          occurredAt: root.occurredAt.toISOString(),
+          text:
+            root.operation === "deleted"
+              ? "[deleted]"
+              : truncateUtf8(root.content.fallbackText, RUNTIME_DIRECT_TEXT_MAX_BYTES),
+          providerRef: runtimeProviderMessageRef(root, root.imBinding),
+        }
+      : undefined;
+    if (rootItem) bytes += Buffer.byteLength(JSON.stringify(rootItem), "utf8");
     for (const row of selected) {
       const item = {
         imMessageId: row.id,
@@ -877,7 +907,7 @@ export class ImDeliveryWorker {
             : truncateUtf8(row.content.fallbackText, RUNTIME_DIRECT_TEXT_MAX_BYTES),
         providerRef: runtimeProviderMessageRef(row, row.imBinding),
       };
-      const itemBytes = Buffer.byteLength(JSON.stringify(item), "utf8") + (items.length > 0 ? 1 : 0);
+      const itemBytes = Buffer.byteLength(JSON.stringify(item), "utf8") + (items.length > 0 || rootItem ? 1 : 0);
       if (bytes + itemBytes > RUNTIME_IM_HISTORY_MAX_BYTES) {
         truncated = true;
         break;
@@ -885,7 +915,7 @@ export class ImDeliveryWorker {
       items.push(item);
       bytes += itemBytes;
     }
-    return { items: items.reverse(), truncated };
+    return { items: [...(rootItem ? [rootItem] : []), ...items.reverse()], truncated };
   }
 }
 

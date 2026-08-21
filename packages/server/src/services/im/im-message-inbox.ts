@@ -1,5 +1,5 @@
 import { ImContentV1Schema, type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
-import { and, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
@@ -202,6 +202,7 @@ export class ImMessageInbox {
                       sessionId: imMessageDeliveries.sessionId,
                       attention: imMessageDeliveries.attention,
                       generation: sessionPlacements.generation,
+                      conversationKind: sessions.conversationKind,
                     })
                     .from(imMessageDeliveries)
                     .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
@@ -216,7 +217,9 @@ export class ImMessageInbox {
                     )
                 : [];
             const conversationKind =
-              event.conversation.kind === "unknown" ? (previousConversationKind ?? null) : event.conversation.kind;
+              event.conversation.kind === "unknown"
+                ? (inheritedDeliveries[0]?.conversationKind ?? previousConversationKind ?? null)
+                : event.conversation.kind;
             const threadKey =
               event.conversation.kind === "unknown"
                 ? (previousCurrent?.threadKey ?? null)
@@ -321,7 +324,13 @@ export class ImMessageInbox {
               event.mentions.some((mention) => mention.externalId === scope.imBinding.externalBotId);
             const deliveries: Array<{ sessionId: string; attention: "direct" | "ambient"; generation: number }> = [];
             if (event.conversation.kind === "unknown") {
-              deliveries.push(...inheritedDeliveries);
+              deliveries.push(
+                ...inheritedDeliveries.map(({ sessionId, attention, generation }) => ({
+                  sessionId,
+                  attention,
+                  generation,
+                })),
+              );
             } else {
               if (threadKey) {
                 const existingThread = await this.#findChatSession(
@@ -409,6 +418,66 @@ export class ImMessageInbox {
                 .returning({ id: imMessageDeliveries.id });
               if (deliveryRow) deliveryIds.push(deliveryRow.id);
               await this.#expireOverflow(transaction, delivery.sessionId, delivery.attention);
+            }
+            if (direct && threadKey === null) {
+              const pendingThreadMessages = await transaction
+                .select({
+                  id: imMessages.id,
+                  externalMessageId: imMessages.externalMessageId,
+                  threadKey: imMessages.threadKey,
+                  providerContext: imMessages.providerContext,
+                  occurredAt: imMessages.occurredAt,
+                  providerRevisionKey: imMessages.providerRevisionKey,
+                })
+                .from(imMessages)
+                .where(
+                  and(
+                    eq(imMessages.imBindingId, imBindingId),
+                    eq(imMessages.channelId, event.conversation.externalId),
+                    eq(imMessages.direction, "inbound"),
+                    isNotNull(imMessages.threadKey),
+                    or(gt(imMessages.occurredAt, created.occurredAt), eq(imMessages.occurredAt, created.occurredAt)),
+                  ),
+                )
+                .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id));
+              const seenExternalMessageIds = new Set<string>();
+              for (const pending of pendingThreadMessages) {
+                if (seenExternalMessageIds.has(pending.externalMessageId)) continue;
+                seenExternalMessageIds.add(pending.externalMessageId);
+                if (
+                  !pending.threadKey ||
+                  threadRootExternalId(pending.providerContext) !== event.message.externalId ||
+                  (await this.#hasEndedThreadSession(
+                    transaction,
+                    imBindingId,
+                    event.conversation.externalId,
+                    pending.threadKey,
+                  ))
+                ) {
+                  continue;
+                }
+                const thread = await this.#ensureChatSession(transaction, {
+                  imBindingId,
+                  channelId: event.conversation.externalId,
+                  conversationKind,
+                  kind: "thread",
+                  threadKey: pending.threadKey,
+                  computerId: scope.agent.computerId,
+                  now,
+                });
+                await transaction
+                  .insert(imMessageDeliveries)
+                  .values({
+                    messageId: pending.id,
+                    sessionId: thread.id,
+                    attention: "direct",
+                    placementGeneration: thread.generation,
+                    nextAttemptAt: now,
+                    expiresAt: new Date(now.getTime() + DIRECT_TTL_MS),
+                  })
+                  .onConflictDoNothing();
+                await this.#expireOverflow(transaction, thread.id, "direct");
+              }
             }
             return finish(
               { duplicate: false, messageId: created.id, deliveryIds },

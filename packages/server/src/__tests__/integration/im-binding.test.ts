@@ -1704,6 +1704,64 @@ describe("IM binding persistence", () => {
     }
   });
 
+  it("reconciles a Thread reply that commits before its direct root", async () => {
+    const value = await fixture();
+    try {
+      const replyHeld = deferred<void>();
+      const releaseReply = deferred<void>();
+      const replyInbox = new ImMessageInbox(value.database, {
+        afterMessageAuthority: async () => {
+          replyHeld.resolve();
+          await releaseReply.promise;
+        },
+      });
+      const replyRun = replyInbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "reordered-thread-reply",
+          externalMessageId: "2100.101",
+          rootExternalMessageId: "2100.100",
+          occurredAt: "2026-08-19T00:00:02.000Z",
+        }),
+      );
+      await replyHeld.promise;
+
+      let rootSettled = false;
+      const rootRun = new ImMessageInbox(value.database)
+        .ingest(
+          value.imBindingId,
+          1,
+          revisionEvent({
+            providerEventId: "reordered-direct-root",
+            externalMessageId: "2100.100",
+            operation: "created",
+            occurredAt: "2026-08-19T00:00:01.000Z",
+            revisionKey: "1",
+          }),
+        )
+        .finally(() => {
+          rootSettled = true;
+        });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(rootSettled).toBe(false);
+      releaseReply.resolve();
+
+      const [reply, root] = await Promise.all([replyRun, rootRun]);
+      expect(reply.deliveryIds).toEqual([]);
+      expect(root.deliveryIds).toHaveLength(1);
+      expect(
+        await value.database
+          .select({ attention: imMessageDeliveries.attention, kind: sessions.kind, threadKey: sessions.threadKey })
+          .from(imMessageDeliveries)
+          .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+          .where(eq(imMessageDeliveries.messageId, reply.messageId as string)),
+      ).toEqual([{ attention: "direct", kind: "thread", threadKey: "2100.100" }]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("uses only a reliable Feishu rootId for implicit Thread admission", async () => {
     const value = await unboundFixture();
     try {
@@ -1772,6 +1830,76 @@ describe("IM binding persistence", () => {
       missingRoot.message = { ...missingRoot.message, externalId: "om_reply_3" };
       missingRoot.mentions = [{ externalId: "ou_bot", displayName: "Assistant" }];
       expect((await inbox.ingest(imBindingId, 1, missingRoot)).deliveryIds).toHaveLength(1);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("inherits an unknown Feishu revision when only a Thread Session exists", async () => {
+    const value = await unboundFixture();
+    try {
+      const imBindingId = await value.imBindingService.activateFeishu({
+        agentId: value.agent.id,
+        appId: "cli_revision",
+        teamId: "team_revision",
+        botOpenId: "ou_revision_bot",
+        teamBrand: "feishu",
+        appSecret: "secret",
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+      });
+      const inbox = new ImMessageInbox(value.database);
+      const created = revisionEvent({
+        providerEventId: "feishu-thread-created",
+        externalMessageId: "om_thread_message",
+        operation: "created",
+        occurredAt: "2026-08-19T00:00:01.000Z",
+        revisionKey: "1",
+      });
+      created.externalAppId = "cli_revision";
+      created.externalTeamId = "team_revision";
+      created.providerContext = {
+        provider: "feishu",
+        chatType: "group",
+        threadId: "omt_revision",
+        rootId: "om_unseen_root",
+      };
+      created.message.threadKey = "omt_revision";
+      created.mentions = [{ externalId: "ou_revision_bot", displayName: "Assistant" }];
+      const first = await inbox.ingest(imBindingId, 1, created);
+      const [firstTarget] = await value.database
+        .select({ sessionId: sessions.id, kind: sessions.kind })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(imMessageDeliveries.id, first.deliveryIds[0] as string));
+      expect(firstTarget).toMatchObject({ kind: "thread" });
+      expect(await value.database.select().from(sessions).where(eq(sessions.kind, "channel"))).toEqual([]);
+
+      const recalled = revisionEvent({
+        providerEventId: "feishu-thread-recalled",
+        externalMessageId: "om_thread_message",
+        operation: "deleted",
+        occurredAt: "2026-08-19T00:00:02.000Z",
+        revisionKey: "2",
+      });
+      recalled.externalAppId = "cli_revision";
+      recalled.externalTeamId = "team_revision";
+      recalled.providerContext = { provider: "feishu" };
+      recalled.conversation.kind = "unknown";
+      recalled.message.threadKey = null;
+      recalled.mentions = [];
+      const revision = await inbox.ingest(imBindingId, 1, recalled);
+      const [revisionTarget] = await value.database
+        .select({ sessionId: sessions.id, kind: sessions.kind })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(imMessageDeliveries.id, revision.deliveryIds[0] as string));
+      expect(revisionTarget).toEqual(firstTarget);
+      expect(
+        await value.database
+          .select({ threadKey: imMessages.threadKey })
+          .from(imMessages)
+          .where(eq(imMessages.id, revision.messageId as string)),
+      ).toEqual([{ threadKey: "omt_revision" }]);
     } finally {
       await value.sql.end();
     }
@@ -1954,6 +2082,20 @@ describe("IM binding persistence", () => {
         truncated: false,
       };
       const root = await inbox.ingest(value.imBindingId, 1, rootEvent);
+      const rootEditEvent = revisionEvent({
+        providerEventId: "history-root-edit",
+        externalMessageId: "7000.100",
+        operation: "edited",
+        occurredAt: "2026-08-19T00:00:01.500Z",
+        revisionKey: "2",
+      });
+      rootEditEvent.message.content = {
+        version: 1,
+        fallbackText: "edited root message",
+        blocks: [{ type: "text", text: "edited root message" }],
+        truncated: false,
+      };
+      const rootEdit = await inbox.ingest(value.imBindingId, 1, rootEditEvent);
       const firstThread = await inbox.ingest(
         value.imBindingId,
         1,
@@ -1965,6 +2107,17 @@ describe("IM binding persistence", () => {
           text: "first thread message",
         }),
       );
+      const firstThreadDeleteEvent = revisionEvent({
+        providerEventId: "history-thread-first-delete",
+        externalMessageId: "7000.101",
+        operation: "deleted",
+        occurredAt: "2026-08-19T00:00:02.250Z",
+        revisionKey: "2",
+      });
+      firstThreadDeleteEvent.conversation.kind = "unknown";
+      firstThreadDeleteEvent.message.threadKey = null;
+      firstThreadDeleteEvent.mentions = [];
+      const firstThreadDelete = await inbox.ingest(value.imBindingId, 1, firstThreadDeleteEvent);
       const sibling = await inbox.ingest(
         value.imBindingId,
         1,
@@ -1982,9 +2135,13 @@ describe("IM binding persistence", () => {
         .where(
           inArray(
             imMessageDeliveries.messageId,
-            [root.messageId, firstThread.messageId, sibling.messageId].filter(
-              (messageId): messageId is string => messageId !== undefined,
-            ),
+            [
+              root.messageId,
+              rootEdit.messageId,
+              firstThread.messageId,
+              firstThreadDelete.messageId,
+              sibling.messageId,
+            ].filter((messageId): messageId is string => messageId !== undefined),
           ),
         );
       const current = await inbox.ingest(
@@ -2027,23 +2184,25 @@ describe("IM binding persistence", () => {
       ) as DirectImMessageDeliveryRequest | undefined;
       expect(delivered?.content.history).toEqual([
         expect.objectContaining({
-          imMessageId: root.messageId,
-          occurredAt: "2026-08-19T00:00:01.000Z",
-          text: "root message",
+          imMessageId: rootEdit.messageId,
+          occurredAt: "2026-08-19T00:00:01.500Z",
+          text: "edited root message",
           providerRef: expect.objectContaining({ provider: "slack", messageTs: "7000.100" }),
         }),
         expect.objectContaining({
-          imMessageId: firstThread.messageId,
-          occurredAt: "2026-08-19T00:00:02.000Z",
-          text: "first thread message",
+          imMessageId: firstThreadDelete.messageId,
+          occurredAt: "2026-08-19T00:00:02.250Z",
+          text: "[deleted]",
           providerRef: expect.objectContaining({
             provider: "slack",
             messageTs: "7000.101",
-            threadTs: "7000.100",
           }),
         }),
       ]);
-      expect(JSON.stringify(delivered?.content.history)).not.toContain("sibling thread message");
+      const serializedHistory = JSON.stringify(delivered?.content.history);
+      expect(serializedHistory).not.toContain('"text":"root message"');
+      expect(serializedHistory).not.toContain("first thread message");
+      expect(serializedHistory).not.toContain("sibling thread message");
       runtime.domain.close();
     } finally {
       await value.sql.end();

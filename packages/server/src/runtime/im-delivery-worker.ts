@@ -49,6 +49,7 @@ const acceptedDeliveries = alias(imMessageDeliveries, "agent_accepted_deliveries
 const acceptedSessions = alias(sessions, "agent_accepted_sessions");
 const acceptedImBindings = alias(imBindings, "agent_accepted_im_bindings");
 const acceptedAgents = alias(agents, "agent_accepted_agents");
+const newerHistoryRevisions = alias(imMessages, "newer_history_revisions");
 
 export class ImDeliveryWorker {
   readonly #database: DatabaseClient;
@@ -784,6 +785,7 @@ export class ImDeliveryWorker {
     const rows = await this.#database
       .select({
         id: imMessages.id,
+        operation: imMessages.operation,
         occurredAt: imMessages.occurredAt,
         content: imMessages.content,
         channelId: imMessages.channelId,
@@ -810,6 +812,45 @@ export class ImDeliveryWorker {
           ...(lastAccepted
             ? [messageAfter(lastAccepted.occurredAt, lastAccepted.providerRevisionKey, lastAccepted.id)]
             : []),
+          notExists(
+            this.#database
+              .select({ id: newerHistoryRevisions.id })
+              .from(newerHistoryRevisions)
+              .where(
+                and(
+                  eq(newerHistoryRevisions.imBindingId, imMessages.imBindingId),
+                  eq(newerHistoryRevisions.channelId, imMessages.channelId),
+                  eq(newerHistoryRevisions.externalMessageId, imMessages.externalMessageId),
+                  eq(newerHistoryRevisions.direction, "inbound"),
+                  or(
+                    gt(newerHistoryRevisions.occurredAt, imMessages.occurredAt),
+                    and(
+                      eq(newerHistoryRevisions.occurredAt, imMessages.occurredAt),
+                      or(
+                        gt(newerHistoryRevisions.providerRevisionKey, imMessages.providerRevisionKey),
+                        and(
+                          eq(newerHistoryRevisions.providerRevisionKey, imMessages.providerRevisionKey),
+                          gt(newerHistoryRevisions.id, imMessages.id),
+                        ),
+                      ),
+                    ),
+                  ),
+                  or(
+                    lt(newerHistoryRevisions.occurredAt, occurredAt),
+                    and(
+                      eq(newerHistoryRevisions.occurredAt, occurredAt),
+                      or(
+                        lt(newerHistoryRevisions.providerRevisionKey, providerRevisionKey),
+                        and(
+                          eq(newerHistoryRevisions.providerRevisionKey, providerRevisionKey),
+                          lt(newerHistoryRevisions.id, messageId),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ),
         ),
       )
       .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
@@ -827,7 +868,10 @@ export class ImDeliveryWorker {
       const item = {
         imMessageId: row.id,
         occurredAt: row.occurredAt.toISOString(),
-        text: truncateUtf8(row.content.fallbackText, RUNTIME_DIRECT_TEXT_MAX_BYTES),
+        text:
+          row.operation === "deleted"
+            ? "[deleted]"
+            : truncateUtf8(row.content.fallbackText, RUNTIME_DIRECT_TEXT_MAX_BYTES),
         providerRef: runtimeProviderMessageRef(row, row.imBinding),
       };
       const itemBytes = Buffer.byteLength(JSON.stringify(item), "utf8") + (items.length > 0 ? 1 : 0);

@@ -45,7 +45,9 @@ function installApi(
     bindingReauth?: boolean;
     bindingEvidenceFails?: boolean;
     bound?: boolean;
-    computers?: readonly Record<string, unknown>[] | (() => readonly Record<string, unknown>[]);
+    computers?:
+      | readonly Record<string, unknown>[]
+      | (() => Promise<readonly Record<string, unknown>[]> | readonly Record<string, unknown>[]);
     computerEvidenceFails?: boolean;
     computerStatus?: () => "online" | "offline";
     ownComputerReadStatus?: () => number | undefined;
@@ -340,9 +342,10 @@ function installApi(
     if (path === "/api/v1/me/computers") {
       const failureStatus = options.ownComputerReadStatus?.();
       if (failureStatus) return json({ error: { message: "Computer readiness unavailable" } }, failureStatus);
+      const computers = typeof options.computers === "function" ? await options.computers() : options.computers;
       return json({
         computers:
-          (typeof options.computers === "function" ? options.computers() : options.computers) ??
+          computers ??
           (options.ownComputer
             ? [
                 {
@@ -622,9 +625,14 @@ describe("OpenTag Web App Shell", () => {
       connectedAt: "2026-08-20T00:00:02.000Z",
     };
     let ownComputerReads = 0;
+    let finishRefresh: (() => void) | undefined;
+    const refreshPending = new Promise<void>((resolve) => {
+      finishRefresh = resolve;
+    });
     installApi("admin", {
-      computers: () => {
+      computers: async () => {
         ownComputerReads += 1;
+        if (ownComputerReads === 4) await refreshPending;
         return ownComputerReads >= 3 ? [existingComputer, connectedComputer] : [existingComputer];
       },
     });
@@ -648,7 +656,15 @@ describe("OpenTag Web App Shell", () => {
         fireEvent.click(generateButton);
       });
       await act(async () => {
-        await vi.advanceTimersByTimeAsync(1_500);
+        vi.advanceTimersByTime(1_500);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(dialog.contains(document.activeElement)).toBe(true);
+      await act(async () => {
+        finishRefresh?.();
+        await Promise.resolve();
       });
 
       expect((within(dialog).getByLabelText("Computer") as HTMLSelectElement).value).toBe(connectedComputerId);

@@ -1208,6 +1208,7 @@ function AgentCreationContent({
   const [computerSetupOpen, setComputerSetupOpen] = useState(false);
   const [runtimeProvider, setRuntimeProvider] = useState<"codex" | "claude-code">("codex");
   const firstFieldRef = useRef<HTMLInputElement>(null);
+  const computerRefreshFocusRef = useRef<HTMLSpanElement>(null);
   const computerSetupToggleRef = useRef<HTMLButtonElement>(null);
   const initialDialogFocusSetRef = useRef(false);
   const inFlightRef = useRef(false);
@@ -1244,6 +1245,7 @@ function AgentCreationContent({
     setComputerSetupOpen(false);
     restoreComputerSetupFocusRef.current = presentation === "dialog";
     computerRefreshStartedRef.current = false;
+    if (presentation === "dialog") computerRefreshFocusRef.current?.focus();
     onComputerConnected();
   }
 
@@ -1293,7 +1295,7 @@ function AgentCreationContent({
     }
   }
 
-  return (
+  const content = (
     <AsyncState state={computers}>
       {(value) => {
         const computer = value.computers.find((candidate) => candidate.id === computerId) ?? value.computers[0];
@@ -1428,6 +1430,23 @@ function AgentCreationContent({
         );
       }}
     </AsyncState>
+  );
+
+  return (
+    <>
+      {presentation === "dialog" ? (
+        <span className="visually-hidden" ref={computerRefreshFocusRef} role="status" tabIndex={-1}>
+          {restoreComputerSetupFocusRef.current
+            ? computers.kind === "loading"
+              ? "Refreshing Computers"
+              : computers.kind === "error"
+                ? "Computer refresh failed"
+                : "Computer connection updated"
+            : null}
+        </span>
+      ) : null}
+      {content}
+    </>
   );
 }
 

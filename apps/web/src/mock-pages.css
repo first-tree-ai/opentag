@@ -237,30 +237,8 @@
   opacity: 1;
 }
 
-.capability-range-field {
-  display: grid;
-  width: 150px;
-  flex: 0 0 auto;
-  gap: 6px;
-  color: var(--muted, #616b62);
-  font-size: var(--text-micro, 0.75rem);
-  font-weight: var(--fw-semibold, 600);
-}
-
 .capability-usage-summary {
-  display: grid;
-  gap: 14px;
   margin-bottom: 36px;
-}
-
-.capability-usage-toolbar {
-  display: flex;
-  justify-content: flex-end;
-}
-
-.capability-range-field select {
-  min-height: 38px;
-  padding-block: 0.4rem;
 }
 
 .capability-metric-grid {
@@ -434,14 +412,6 @@
     color: var(--muted, #616b62);
     content: attr(data-label);
     font-size: var(--text-micro, 0.75rem);
-  }
-
-  .capability-range-field {
-    width: min(100%, 180px);
-  }
-
-  .capability-usage-toolbar {
-    justify-content: flex-start;
   }
 
   .capability-metric-grid {

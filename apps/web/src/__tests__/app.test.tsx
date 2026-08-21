@@ -966,10 +966,7 @@ describe("OpenTag Web App Shell", () => {
     const membersSection = document.querySelector<HTMLElement>("#members");
     if (!membersSection) throw new Error("Members section was not rendered");
     expect(within(membersSection).getByRole("heading", { level: 3, name: "Invite members" })).toBeTruthy();
-    const invitationPanel = document.querySelector<HTMLElement>("#member-invitations");
-    if (!invitationPanel) throw new Error("Invitation panel was not rendered");
-    fireEvent.click(screen.getByRole("button", { name: "Invite members" }));
-    expect(document.activeElement).toBe(invitationPanel);
+    expect(screen.queryByRole("button", { name: "Invite members" })).toBeNull();
   });
 
   it.each(["/settings", "/settings/members", "/settings/access", "/settings/security"])(

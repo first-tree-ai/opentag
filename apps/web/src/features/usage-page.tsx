@@ -1,11 +1,8 @@
-import { useState } from "react";
-import { type UsageRange, usageRanges, usageSnapshots } from "../mock/capability-data.js";
-import { Field } from "../ui/design-system.js";
+import { usageSnapshots } from "../mock/capability-data.js";
 import "../mock-pages.css";
 
 export function UsagePage() {
-  const [range, setRange] = useState<UsageRange>("30 days");
-  const snapshot = usageSnapshots[range];
+  const snapshot = usageSnapshots["30 days"];
   const trendPoints = makeTrendPoints(snapshot.trend);
 
   return (
@@ -19,23 +16,6 @@ export function UsagePage() {
       </header>
 
       <div className="capability-usage-summary">
-        <div className="capability-usage-toolbar">
-          <Field className="capability-range-field" htmlFor="usage-range" label="Time range">
-            <select
-              className="ds-control"
-              id="usage-range"
-              value={range}
-              onChange={(event) => setRange(event.currentTarget.value as UsageRange)}
-            >
-              {usageRanges.map((option) => (
-                <option value={option} key={option}>
-                  Last {option}
-                </option>
-              ))}
-            </select>
-          </Field>
-        </div>
-
         <dl className="capability-metric-grid" aria-label="Usage metrics" aria-live="polite">
           <Metric label="Tasks" value={snapshot.metrics.tasks} />
           <Metric label="Turns" value={snapshot.metrics.turns} />
@@ -49,14 +29,14 @@ export function UsagePage() {
           <div className="capability-section-heading">
             <div>
               <h2 id="activity-trend-title">Activity trend</h2>
-              <p>Turns completed during the selected demo period.</p>
+              <p>Turns completed during the last 30 days.</p>
             </div>
           </div>
           <svg
             className="capability-trend-chart"
             viewBox="0 0 640 220"
             role="img"
-            aria-label={`Demo activity trend for the last ${range}`}
+            aria-label="Demo activity trend for the last 30 days"
             preserveAspectRatio="none"
           >
             <line x1="0" y1="40" x2="640" y2="40" />

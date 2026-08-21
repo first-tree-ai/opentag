@@ -47,10 +47,16 @@ Slack 可能在 manifest 创建后立即尝试 URL 验证，此时 OpenTag 尚�
 `message.channels`、`message.groups` 与 `message.mpim`。从仅 mention 切换到全量消息时，在 Slack 确认全部新增 scopes
 之前必须失败关闭并要求重新授权。
 
+`mention_only` 不承诺自动提供 mention 前后的频道消息。任务需要更多 provider 原生上下文时，Agent 可以通过官方
+Slack CLI 主动查询；实际范围受已安装 Bot Token 的 scopes 和 conversation membership 限制。
+
 ## 安全与恢复
 
 - Bot Token、Signing Secret 和待完成 setup context 在写入数据库前加密，管理员 API 与诊断 API 均不返回这些内容。
   Signing Secret 绝不投影到 Agent runtime。
+- OpenTag 对自动持久化和投递实施 Session 隔离，但不把投影给 Runtime 的 Bot Token 收窄到当前 channel 或 thread。
+  在有效且 Agent 可见的 IM Turn 中，Agent 可以在 Bot Token scopes 与 Slack membership 允许的范围内使用官方 CLI。
+  查询结果只进入 runtime context，不会自动成为 OpenTag `ImMessage` 历史，也不会自动投递给另一个 Session。
 - Slack 签名验证使用原始请求体、五分钟重放窗口和常量时间比较。
 - URL verification challenge 能证明 Signing Secret，但不携带安装身份。因此激活必须等待后续带有匹配 App、Team ID 的
   签名事件。

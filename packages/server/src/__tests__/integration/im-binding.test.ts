@@ -5448,6 +5448,15 @@ describe("IM binding persistence", () => {
         requiredBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
       });
       expect(created.manifestUrl).toContain("https://api.slack.com/apps?");
+      const manifest = JSON.parse(new URL(created.manifestUrl).searchParams.get("manifest_json") ?? "null");
+      expect(manifest.oauth_config.scopes.bot).toEqual(["app_mentions:read", "chat:write", "files:read", "im:history"]);
+      expect(manifest.settings.event_subscriptions.bot_events).toEqual([
+        "app_mention",
+        "app_uninstalled",
+        "message.im",
+        "tokens_revoked",
+      ]);
+      expect(JSON.stringify(manifest)).not.toMatch(/channels:history|groups:history|mpim:history|message\.channels/);
       expect(created.eventsUrl).toBe(
         `https://opentag.example.com/api/v1/agents/${value.agent.id}/im-binding/slack/events`,
       );

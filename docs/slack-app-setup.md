@@ -49,10 +49,18 @@ They subscribe to `app_mention`, `message.im`, `app_uninstalled`, and `tokens_re
 matching `message.channels`, `message.groups`, and `message.mpim` events. Changing from mentions-only to all-message
 fails closed with a reauthorization requirement until Slack reports all additional scopes.
 
+`mention_only` does not promise automatic intervening channel messages around a mention. When a task needs more native
+context, the Agent may query Slack directly through the official CLI, subject to the installed Bot Token's scopes and
+conversation membership.
+
 ## Security and recovery
 
 - Bot Tokens, Signing Secrets, and pending setup context are encrypted before database storage and are never returned by
   an admin or diagnostics API. The Signing Secret is never projected to the Agent runtime.
+- OpenTag isolates automatic persistence and delivery by Session, but does not attenuate the projected Bot Token to the
+  current channel or thread. During a valid visible IM Turn, the Agent may use the official Slack CLI anywhere the Bot
+  Token's scopes and Slack membership allow. Such results stay in runtime context and do not automatically become
+  OpenTag `ImMessage` history or deliveries for another Session.
 - Slack request signatures use the raw request body, a five-minute replay window, and constant-time comparison.
 - A URL-verification challenge proves the Signing Secret but does not carry installation identity. Activation therefore
   waits for a subsequent signed event containing matching App and Team IDs.

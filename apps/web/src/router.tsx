@@ -1973,17 +1973,8 @@ function AccessTab({ agent }: { agent: AgentDetailView }) {
 
 function MembersPage() {
   const { me, membership, refreshMe } = useTeam();
-  function focusInvitationPanel() {
-    const panel = document.getElementById("member-invitations");
-    panel?.scrollIntoView({ block: "nearest" });
-    panel?.focus({ preventScroll: true });
-  }
   return (
-    <Page
-      title="Members"
-      description="Manage members, invitations, and roles."
-      action={membership.role === "admin" ? <Button onClick={focusInvitationPanel}>Invite members</Button> : null}
-    >
+    <Page title="Members" description="Manage members, invitations, and roles.">
       <MembersSettings
         canManage={membership.role === "admin"}
         currentUserId={me.user.id}
@@ -2436,8 +2427,6 @@ function InvitationSettings({
     <section
       aria-labelledby={presentation === "panel" ? "invite-members-heading" : undefined}
       className={presentation === "dialog" ? "invitation-dialog-content" : "settings-invitation-panel"}
-      id={presentation === "panel" ? "member-invitations" : undefined}
-      tabIndex={presentation === "panel" ? -1 : undefined}
     >
       {presentation === "panel" ? (
         <>

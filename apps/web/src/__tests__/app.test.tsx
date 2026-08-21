@@ -642,7 +642,7 @@ describe("OpenTag Web App Shell", () => {
     expect(email.value).toBe("ada@example.com");
     expect(email.readOnly).toBe(true);
     fireEvent.change(displayName, { target: { value: "  Ada Lovelace  " } });
-    fireEvent.click(screen.getByRole("button", { name: "Save account profile" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save account profile" }));
 
     await waitFor(() =>
       expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === "/api/v1/me")).toHaveLength(3),
@@ -668,7 +668,7 @@ describe("OpenTag Web App Shell", () => {
     const form = displayName.closest("form");
     if (!form) throw new Error("Account form was not rendered");
     fireEvent.change(displayName, { target: { value: "Pending Name" } });
-    fireEvent.submit(form);
+    fireEvent.click(await screen.findByRole("button", { name: "Save account profile" }));
     fireEvent.submit(form);
 
     expect(((await screen.findByRole("button", { name: "Saving…" })) as HTMLButtonElement).disabled).toBe(true);
@@ -686,7 +686,7 @@ describe("OpenTag Web App Shell", () => {
 
     const displayName = (await screen.findByLabelText("Display name")) as HTMLInputElement;
     fireEvent.change(displayName, { target: { value: "Rejected Name" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save account profile" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save account profile" }));
     expect((await screen.findByRole("alert")).textContent).toBe("Display name update failed");
     expect(displayName.value).toBe("Ada");
     expect(screen.getByText("Ada")).toBeTruthy();
@@ -953,7 +953,7 @@ describe("OpenTag Web App Shell", () => {
     const displayName = screen.getByLabelText("Display name") as HTMLInputElement;
     expect(displayName.readOnly).toBe(false);
     fireEvent.change(displayName, { target: { value: "Legacy Account" } });
-    expect(screen.getByRole("button", { name: "Save account profile" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Save account profile" })).toBeTruthy();
   });
 
   it("redirects legacy capability URLs to the minimal preview pages", async () => {
@@ -985,7 +985,7 @@ describe("OpenTag Web App Shell", () => {
     expect(cliIdentifier.textContent).toContain("example");
     expect(within(profileForm).getAllByRole("textbox")).toHaveLength(1);
     fireEvent.change(displayName, { target: { value: "Renamed Team" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save Workspace profile" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Save Workspace profile" }));
     await waitFor(() =>
       expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === "/api/v1/me")).toHaveLength(2),
     );
@@ -1701,7 +1701,7 @@ describe("OpenTag Web App Shell", () => {
     const displayName = screen.getByLabelText("Display name") as HTMLInputElement;
     expect(displayName.readOnly).toBe(false);
     fireEvent.change(displayName, { target: { value: "Account Menu" } });
-    expect(screen.getByRole("button", { name: "Save account profile" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Save account profile" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Sign out" }));
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeTruthy();

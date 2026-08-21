@@ -1,5 +1,5 @@
 import { ImContentV1Schema, type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
-import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
@@ -10,6 +10,8 @@ import {
   sessions,
 } from "../../db/schema/index.js";
 import { imAttrs, outcomeAttrs, setActiveSpanAttributes, withSpan } from "../../observability/index.js";
+import { SessionService } from "../sessions/index.js";
+import { threadRootExternalId } from "./provider-thread-context.js";
 
 const DIRECT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const AMBIENT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -46,6 +48,7 @@ export class ImMessageInbox {
   readonly #beforeSupersedeDeliveries: (() => Promise<void>) | undefined;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
+  readonly #sessions: SessionService;
 
   constructor(
     database: DatabaseClient,
@@ -61,6 +64,7 @@ export class ImMessageInbox {
     this.#afterAdmissionFence = options.afterAdmissionFence;
     this.#afterMessageAuthority = options.afterMessageAuthority;
     this.#beforeSupersedeDeliveries = options.beforeSupersedeDeliveries;
+    this.#sessions = new SessionService(database, { now: this.#now });
   }
 
   async ingest(
@@ -198,6 +202,7 @@ export class ImMessageInbox {
                       sessionId: imMessageDeliveries.sessionId,
                       attention: imMessageDeliveries.attention,
                       generation: sessionPlacements.generation,
+                      conversationKind: sessions.conversationKind,
                     })
                     .from(imMessageDeliveries)
                     .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
@@ -212,7 +217,9 @@ export class ImMessageInbox {
                     )
                 : [];
             const conversationKind =
-              event.conversation.kind === "unknown" ? (previousConversationKind ?? null) : event.conversation.kind;
+              event.conversation.kind === "unknown"
+                ? (inheritedDeliveries[0]?.conversationKind ?? previousConversationKind ?? null)
+                : event.conversation.kind;
             const threadKey =
               event.conversation.kind === "unknown"
                 ? (previousCurrent?.threadKey ?? null)
@@ -317,18 +324,14 @@ export class ImMessageInbox {
               event.mentions.some((mention) => mention.externalId === scope.imBinding.externalBotId);
             const deliveries: Array<{ sessionId: string; attention: "direct" | "ambient"; generation: number }> = [];
             if (event.conversation.kind === "unknown") {
-              deliveries.push(...inheritedDeliveries);
-            } else {
-              const channel = await this.#ensureChatSession(
-                transaction,
-                imBindingId,
-                event.conversation.externalId,
-                conversationKind,
-                "channel",
-                null,
-                scope.agent.computerId,
-                now,
+              deliveries.push(
+                ...inheritedDeliveries.map(({ sessionId, attention, generation }) => ({
+                  sessionId,
+                  attention,
+                  generation,
+                })),
               );
+            } else {
               if (threadKey) {
                 const existingThread = await this.#findChatSession(
                   transaction,
@@ -337,28 +340,63 @@ export class ImMessageInbox {
                   "thread",
                   threadKey,
                 );
-                if (existingThread || direct) {
-                  const thread =
-                    existingThread ??
-                    (await this.#ensureChatSession(
+                const endedThreadExists = existingThread
+                  ? false
+                  : await this.#hasEndedThreadSession(
                       transaction,
                       imBindingId,
                       event.conversation.externalId,
-                      conversationKind,
-                      "thread",
                       threadKey,
-                      scope.agent.computerId,
+                    );
+                const rootExternalId = threadRootExternalId(event.providerContext);
+                const rootWasDirect =
+                  !existingThread && !direct && !endedThreadExists && rootExternalId
+                    ? await this.#rootWasDirectToChannelSession(
+                        transaction,
+                        imBindingId,
+                        event.conversation.externalId,
+                        rootExternalId,
+                      )
+                    : false;
+                if (existingThread || direct || rootWasDirect) {
+                  const thread =
+                    existingThread ??
+                    (await this.#ensureChatSession(transaction, {
+                      imBindingId,
+                      channelId: event.conversation.externalId,
+                      conversationKind,
+                      kind: "thread",
+                      threadKey,
+                      computerId: scope.agent.computerId,
                       now,
-                    ));
+                    }));
                   deliveries.push({ sessionId: thread.id, attention: "direct", generation: thread.generation });
                 }
                 if (scope.agent.receiveMode === "all_message") {
+                  const channel = await this.#ensureChatSession(transaction, {
+                    imBindingId,
+                    channelId: event.conversation.externalId,
+                    conversationKind,
+                    kind: "channel",
+                    computerId: scope.agent.computerId,
+                    now,
+                  });
                   deliveries.push({ sessionId: channel.id, attention: "ambient", generation: channel.generation });
                 }
-              } else if (direct) {
-                deliveries.push({ sessionId: channel.id, attention: "direct", generation: channel.generation });
-              } else if (scope.agent.receiveMode === "all_message") {
-                deliveries.push({ sessionId: channel.id, attention: "ambient", generation: channel.generation });
+              } else if (direct || scope.agent.receiveMode === "all_message") {
+                const channel = await this.#ensureChatSession(transaction, {
+                  imBindingId,
+                  channelId: event.conversation.externalId,
+                  conversationKind,
+                  kind: "channel",
+                  computerId: scope.agent.computerId,
+                  now,
+                });
+                deliveries.push({
+                  sessionId: channel.id,
+                  attention: direct ? "direct" : "ambient",
+                  generation: channel.generation,
+                });
               }
             }
 
@@ -380,6 +418,66 @@ export class ImMessageInbox {
                 .returning({ id: imMessageDeliveries.id });
               if (deliveryRow) deliveryIds.push(deliveryRow.id);
               await this.#expireOverflow(transaction, delivery.sessionId, delivery.attention);
+            }
+            if (direct && threadKey === null) {
+              const pendingThreadMessages = await transaction
+                .select({
+                  id: imMessages.id,
+                  externalMessageId: imMessages.externalMessageId,
+                  threadKey: imMessages.threadKey,
+                  providerContext: imMessages.providerContext,
+                  occurredAt: imMessages.occurredAt,
+                  providerRevisionKey: imMessages.providerRevisionKey,
+                })
+                .from(imMessages)
+                .where(
+                  and(
+                    eq(imMessages.imBindingId, imBindingId),
+                    eq(imMessages.channelId, event.conversation.externalId),
+                    eq(imMessages.direction, "inbound"),
+                    isNotNull(imMessages.threadKey),
+                    or(gt(imMessages.occurredAt, created.occurredAt), eq(imMessages.occurredAt, created.occurredAt)),
+                  ),
+                )
+                .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id));
+              const seenExternalMessageIds = new Set<string>();
+              for (const pending of pendingThreadMessages) {
+                if (seenExternalMessageIds.has(pending.externalMessageId)) continue;
+                seenExternalMessageIds.add(pending.externalMessageId);
+                if (
+                  !pending.threadKey ||
+                  threadRootExternalId(pending.providerContext) !== event.message.externalId ||
+                  (await this.#hasEndedThreadSession(
+                    transaction,
+                    imBindingId,
+                    event.conversation.externalId,
+                    pending.threadKey,
+                  ))
+                ) {
+                  continue;
+                }
+                const thread = await this.#ensureChatSession(transaction, {
+                  imBindingId,
+                  channelId: event.conversation.externalId,
+                  conversationKind,
+                  kind: "thread",
+                  threadKey: pending.threadKey,
+                  computerId: scope.agent.computerId,
+                  now,
+                });
+                await transaction
+                  .insert(imMessageDeliveries)
+                  .values({
+                    messageId: pending.id,
+                    sessionId: thread.id,
+                    attention: "direct",
+                    placementGeneration: thread.generation,
+                    nextAttemptAt: now,
+                    expiresAt: new Date(now.getTime() + DIRECT_TTL_MS),
+                  })
+                  .onConflictDoNothing();
+                await this.#expireOverflow(transaction, thread.id, "direct");
+              }
             }
             return finish(
               { duplicate: false, messageId: created.id, deliveryIds },
@@ -466,45 +564,26 @@ export class ImMessageInbox {
 
   async #ensureChatSession(
     transaction: DatabaseTransaction,
-    imBindingId: string,
-    channelId: string,
-    conversationKind: "channel" | "dm" | "group_dm",
-    kind: "channel" | "thread",
-    threadKey: string | null,
-    computerId: string,
-    now: Date,
+    input: {
+      imBindingId: string;
+      channelId: string;
+      conversationKind: "channel" | "dm" | "group_dm";
+      kind: "channel" | "thread";
+      threadKey?: string;
+      computerId: string;
+      now: Date;
+    },
   ): Promise<{ id: string; generation: number }> {
-    const existing = await this.#findChatSession(transaction, imBindingId, channelId, kind, threadKey);
-    if (existing) return existing;
-    const [created] = await transaction
-      .insert(sessions)
-      .values({ imBindingId, channelId, conversationKind, kind, threadKey, createdAt: now })
-      .onConflictDoNothing()
-      .returning({ id: sessions.id });
-    const sessionId = created?.id ?? (await this.#findSessionId(transaction, imBindingId, channelId, kind, threadKey));
-    if (!sessionId) throw new Error("Session ensure did not converge");
-    const [placement] = await transaction
-      .insert(sessionPlacements)
-      .values({ sessionId, computerId, generation: 1, updatedAt: now })
-      .onConflictDoNothing()
-      .returning({ generation: sessionPlacements.generation });
-    if (placement) return { id: sessionId, generation: placement.generation };
-    const [currentPlacement] = await transaction
-      .select({ generation: sessionPlacements.generation })
-      .from(sessionPlacements)
-      .where(eq(sessionPlacements.sessionId, sessionId))
-      .limit(1);
-    if (!currentPlacement) throw new Error("Session placement ensure did not converge");
-    return { id: sessionId, generation: currentPlacement.generation };
+    const result = await this.#sessions.ensureChatSessionInTransaction(transaction, input);
+    return { id: result.session.id, generation: result.placement.generation };
   }
 
-  async #findSessionId(
+  async #hasEndedThreadSession(
     transaction: DatabaseTransaction,
     imBindingId: string,
     channelId: string,
-    kind: "channel" | "thread",
-    threadKey: string | null,
-  ): Promise<string | undefined> {
+    threadKey: string,
+  ): Promise<boolean> {
     const [row] = await transaction
       .select({ id: sessions.id })
       .from(sessions)
@@ -512,12 +591,40 @@ export class ImMessageInbox {
         and(
           eq(sessions.imBindingId, imBindingId),
           eq(sessions.channelId, channelId),
-          eq(sessions.kind, kind),
-          threadKey === null ? isNull(sessions.threadKey) : eq(sessions.threadKey, threadKey),
-          isNull(sessions.endedAt),
+          eq(sessions.kind, "thread"),
+          eq(sessions.threadKey, threadKey),
+          isNotNull(sessions.endedAt),
         ),
       )
       .limit(1);
-    return row?.id;
+    return row !== undefined;
+  }
+
+  async #rootWasDirectToChannelSession(
+    transaction: DatabaseTransaction,
+    imBindingId: string,
+    channelId: string,
+    rootExternalId: string,
+  ): Promise<boolean> {
+    const [row] = await transaction
+      .select({ id: imMessageDeliveries.id })
+      .from(imMessageDeliveries)
+      .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .where(
+        and(
+          eq(imMessages.imBindingId, imBindingId),
+          eq(imMessages.channelId, channelId),
+          eq(imMessages.externalMessageId, rootExternalId),
+          eq(imMessages.direction, "inbound"),
+          eq(imMessageDeliveries.attention, "direct"),
+          eq(sessions.imBindingId, imBindingId),
+          eq(sessions.channelId, channelId),
+          eq(sessions.kind, "channel"),
+          isNull(sessions.threadKey),
+        ),
+      )
+      .limit(1);
+    return row !== undefined;
   }
 }

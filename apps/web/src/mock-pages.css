@@ -44,62 +44,6 @@
   text-transform: uppercase;
 }
 
-.capability-future-action {
-  display: grid;
-  flex: 0 0 auto;
-  justify-items: center;
-}
-
-.capability-future-action button:disabled,
-.capability-future-action button:disabled:hover {
-  border: 1px solid var(--border, #d6d9ca);
-  background: var(--surface-soft, #eff0e6);
-  color: var(--muted, #616b62);
-  opacity: 1;
-}
-
-.capability-filter-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-  margin-bottom: 22px;
-  border: 0;
-  padding: 0;
-}
-
-.capability-filter-label {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-.capability-filter-bar button {
-  min-height: 34px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--muted, #616b62);
-  font-size: var(--text-ui, 0.8125rem);
-  font-weight: var(--fw-medium, 500);
-  padding: 0 11px;
-}
-
-.capability-filter-bar button:hover {
-  border-color: var(--border, #d6d9ca);
-  background: var(--surface, #fdfcf7);
-  color: var(--foreground, #16211b);
-}
-
-.capability-filter-bar button.is-active {
-  border-color: var(--border, #d6d9ca);
-  background: var(--brand-light, #edf3df);
-  color: var(--brand-ink, #385a04);
-}
-
 .capability-table {
   width: 100%;
   border-collapse: collapse;
@@ -118,9 +62,9 @@
   text-align: left;
 }
 
-.capability-resource-grid {
+.capability-skill-grid {
   display: grid;
-  grid-template-columns: minmax(220px, 1.6fr) minmax(130px, 0.75fr) minmax(100px, 0.55fr);
+  grid-template-columns: minmax(220px, 1.6fr) minmax(100px, 0.6fr) minmax(100px, 0.6fr) minmax(80px, 0.45fr);
   gap: 24px;
 }
 
@@ -163,8 +107,7 @@
   font-size: var(--text-meta, 0.75rem);
 }
 
-.capability-type-badge,
-.capability-status {
+.capability-demo-status {
   display: inline-flex;
   align-items: center;
   width: fit-content;
@@ -413,13 +356,8 @@
     gap: 18px;
   }
 
-  .capability-future-action {
-    width: fit-content;
-    justify-items: start;
-  }
-
-  .capability-resource-grid {
-    grid-template-columns: minmax(0, 1fr) 110px 92px;
+  .capability-skill-grid {
+    grid-template-columns: minmax(0, 1fr) 90px 90px 72px;
     gap: 14px;
   }
 
@@ -462,22 +400,11 @@
 }
 
 @media (max-width: 520px) {
-  .capability-filter-bar {
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    padding-bottom: 2px;
-    scrollbar-width: none;
-  }
-
-  .capability-filter-bar::-webkit-scrollbar {
-    display: none;
-  }
-
   .capability-table-header {
     display: none;
   }
 
-  .capability-table-row.capability-resource-grid {
+  .capability-table-row.capability-skill-grid {
     grid-template-columns: 1fr 1fr;
     gap: 12px;
     padding: 15px 0;

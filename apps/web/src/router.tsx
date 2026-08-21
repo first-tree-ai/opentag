@@ -28,7 +28,7 @@ import { ApiError, browserApi } from "./api.js";
 import { ComputerSetup } from "./computer-setup.js";
 import { CreateTeamForm } from "./create-team-form.js";
 import { IntegrationsPage } from "./features/integrations-page.js";
-import { ResourcesPage } from "./features/resources-page.js";
+import { SkillsPage } from "./features/skills-page.js";
 import { UsagePage } from "./features/usage-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
 import { OnboardingPage } from "./onboarding/page.js";
@@ -330,7 +330,8 @@ export function AppRouter() {
           <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
           <Route path="/tasks" element={<TasksPage />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
-          <Route path="/resources" element={<ResourcesPage />} />
+          <Route path="/skills" element={<SkillsPage />} />
+          <Route path="/resources" element={<Navigate replace to="/skills" />} />
           <Route path="/usage" element={<UsagePage />} />
           <Route path="/members" element={<MembersPage />} />
           <Route path="/account" element={<AccountPage />} />
@@ -341,7 +342,7 @@ export function AppRouter() {
           <Route path="/settings/access" element={<Navigate replace to="/members" />} />
           <Route path="/settings/security" element={<Navigate replace to="/members" />} />
           <Route path="/settings/computers" element={<Navigate replace to="/agents#agent-runtime" />} />
-          <Route path="/settings/resources" element={<Navigate replace to="/resources" />} />
+          <Route path="/settings/resources" element={<Navigate replace to="/skills" />} />
           <Route path="/settings/integrations" element={<Navigate replace to="/integrations" />} />
           <Route path="/settings/usage" element={<Navigate replace to="/usage" />} />
           <Route path="/settings/:section" element={<Navigate replace to="/members" />} />
@@ -674,9 +675,9 @@ function AppShell() {
               <WorkspaceNavIcon name="integrations" />
               Integrations
             </NavLink>
-            <NavLink to="/resources" onClick={() => setNavigationOpen(false)}>
-              <WorkspaceNavIcon name="resources" />
-              Resources
+            <NavLink to="/skills" onClick={() => setNavigationOpen(false)}>
+              <WorkspaceNavIcon name="skills" />
+              Skills
             </NavLink>
             <NavLink to="/usage" onClick={() => setNavigationOpen(false)}>
               <WorkspaceNavIcon name="usage" />
@@ -810,7 +811,7 @@ function AppShell() {
   );
 }
 
-function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "members" | "resources" | "tasks" | "usage" }) {
+function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "members" | "skills" | "tasks" | "usage" }) {
   return (
     <svg
       aria-hidden="true"
@@ -842,10 +843,10 @@ function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "members
           <path d="M7 4.5h10A2.5 2.5 0 0 1 19.5 7v10a2.5 2.5 0 0 1-2.5 2.5H7A2.5 2.5 0 0 1 4.5 17V7A2.5 2.5 0 0 1 7 4.5Z" />
         </>
       ) : null}
-      {name === "resources" ? (
+      {name === "skills" ? (
         <>
-          <path d="M4.5 7.5 12 3l7.5 4.5L12 12 4.5 7.5Z" />
-          <path d="m4.5 12 7.5 4.5 7.5-4.5M4.5 16.5 12 21l7.5-4.5" />
+          <path d="m12 3 1.5 4.2L18 9l-4.5 1.8L12 15l-1.5-4.2L6 9l4.5-1.8L12 3Z" />
+          <path d="m18 14 .8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8L18 14Z" />
         </>
       ) : null}
       {name === "usage" ? (

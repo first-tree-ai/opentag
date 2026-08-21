@@ -475,7 +475,7 @@ describe("OpenTag Web App Shell", () => {
       within(workspaceNavigation)
         .getAllByRole("link")
         .map((item) => item.textContent),
-    ).toEqual(["Agents", "Tasks", "Integrations", "Resources", "Usage", "Members"]);
+    ).toEqual(["Agents", "Tasks", "Integrations", "Skills", "Usage", "Members"]);
     const navigationIcons = workspaceNavigation.querySelectorAll(".primary-nav-icon");
     expect(navigationIcons).toHaveLength(6);
     expect(Array.from(navigationIcons).every((icon) => icon.getAttribute("aria-hidden") === "true")).toBe(true);
@@ -967,14 +967,25 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByLabelText("Workspace name")).toBeTruthy();
   });
 
-  it("redirects legacy capability URLs to the minimal preview pages", async () => {
+  it.each(["/resources", "/settings/resources"])(
+    "redirects legacy Skills URL %s to the canonical page",
+    async (path) => {
+      installApi("admin");
+      window.history.replaceState({}, "", path);
+      render(<App />);
+
+      expect(await screen.findByRole("heading", { name: "Skills" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/skills");
+      expect(screen.getByText("Demo data")).toBeTruthy();
+    },
+  );
+
+  it("navigates between the minimal capability pages", async () => {
     installApi("admin");
-    window.history.replaceState({}, "", "/settings/resources");
+    window.history.replaceState({}, "", "/skills");
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Resources" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/resources");
-    expect(screen.getByText("Demo data preview")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Skills" })).toBeTruthy();
     fireEvent.click(screen.getByRole("link", { name: "Integrations" }));
     expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Workspace Integrations are not available yet" })).toBeTruthy();

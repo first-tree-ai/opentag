@@ -1,33 +1,29 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { IntegrationsPage } from "../features/integrations-page.js";
-import { ResourcesPage } from "../features/resources-page.js";
+import { SkillsPage } from "../features/skills-page.js";
 import { UsagePage } from "../features/usage-page.js";
 
 describe("capability entry pages", () => {
-  it("renders Resources as an explicit demo and filters the static resource list", () => {
-    render(<ResourcesPage />);
+  it("renders a minimal static Skills demo without unavailable controls", () => {
+    render(<SkillsPage />);
 
-    expect(screen.getByRole("heading", { name: "Resources" })).toBeTruthy();
-    expect(screen.getByText("Demo data preview")).toBeTruthy();
-    expect(screen.getByText("OpenTag workspace")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy();
+    expect(screen.getByText("Demo data")).toBeTruthy();
     expect(screen.getByText("Release notes writer")).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
-
-    expect(screen.getByText("Release notes writer")).toBeTruthy();
-    expect(screen.queryByText("OpenTag workspace")).toBeNull();
-    expect(screen.getByRole("button", { name: "Skills" }).getAttribute("aria-pressed")).toBe("true");
-  });
-
-  it("keeps resource creation visibly unavailable", () => {
-    render(<ResourcesPage />);
-
-    const addResource = screen.getByRole("button", {
-      name: "Add resource (Coming soon)",
-    }) as HTMLButtonElement;
-    expect(addResource.disabled).toBe(true);
-    expect(addResource.textContent).toContain("Coming soon");
+    expect(screen.getByText("Browser validation")).toBeTruthy();
+    expect(screen.getByText("Issue triage")).toBeTruthy();
+    expect(screen.getAllByText("Demo")).toHaveLength(3);
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
+      "Name",
+      "Source",
+      "Used by",
+      "Status",
+    ]);
+    expect(screen.queryByText("Repositories")).toBeNull();
+    expect(screen.queryByText("Tools")).toBeNull();
+    expect(screen.queryByText("Prompts")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
   });
 
   it("keeps Integrations truthful until a Workspace Integration contract exists", () => {

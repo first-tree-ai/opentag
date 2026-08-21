@@ -2245,18 +2245,20 @@ function MembersSettings({
       <AsyncState state={state}>
         {(value) => {
           const adminCount = value.members.filter((member: TeamMemberSummary) => member.role === "admin").length;
+          const members = [...value.members].sort((left, right) => {
+            if (left.userId === currentUserId) return -1;
+            if (right.userId === currentUserId) return 1;
+            return left.displayName.localeCompare(right.displayName) || left.userId.localeCompare(right.userId);
+          });
           return (
-            <>
-              <header className="settings-subheader">
-                <div>
-                  <h2>Members</h2>
-                  <p>
-                    {value.members.length} {value.members.length === 1 ? "member" : "members"} · {adminCount}{" "}
-                    {adminCount === 1 ? "admin" : "admins"}
-                  </p>
-                </div>
+            <div className="settings-member-list">
+              <div className="settings-member-summary">
+                <p>
+                  {value.members.length} {value.members.length === 1 ? "member" : "members"} · {adminCount}{" "}
+                  {adminCount === 1 ? "admin" : "admins"}
+                </p>
                 {!canManage ? <span className="settings-role-badge">Read only</span> : null}
-              </header>
+              </div>
               <table className="settings-member-table" aria-label="Members">
                 <thead>
                   <tr className="settings-table-header">
@@ -2265,7 +2267,7 @@ function MembersSettings({
                   </tr>
                 </thead>
                 <tbody>
-                  {value.members.map((member: TeamMemberSummary) => (
+                  {members.map((member: TeamMemberSummary) => (
                     <tr className="settings-member-row" key={member.userId}>
                       <th className="settings-member-identity" scope="row">
                         <span className="settings-member-avatar" aria-hidden="true">
@@ -2280,7 +2282,7 @@ function MembersSettings({
                         {canManage ? (
                           <select
                             aria-label={`Role for ${member.displayName}`}
-                            className="ds-control"
+                            className="ds-control ds-control--compact"
                             disabled={pendingUserIds.has(member.userId)}
                             value={member.role}
                             onChange={(event) => void changeRole(member, event.currentTarget.value)}
@@ -2299,7 +2301,7 @@ function MembersSettings({
                   ))}
                 </tbody>
               </table>
-            </>
+            </div>
           );
         }}
       </AsyncState>

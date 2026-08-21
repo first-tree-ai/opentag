@@ -262,6 +262,13 @@ textarea.ds-control {
   padding: 0.55rem 0.75rem;
 }
 
+input.ds-control--compact,
+select.ds-control--compact,
+textarea.ds-control--compact {
+  min-height: 36px;
+  padding: 0.4rem 0.65rem;
+}
+
 .ds-field textarea,
 textarea.ds-control {
   min-height: 150px;
@@ -401,10 +408,6 @@ textarea.ds-control:focus {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-}
-
-.settings-member-row select.ds-control {
-  min-height: 40px;
 }
 
 @media (prefers-reduced-motion: reduce) {

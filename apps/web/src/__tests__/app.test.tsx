@@ -963,8 +963,12 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
+    expect(screen.getAllByRole("heading", { name: "Members" })).toHaveLength(1);
     const membersSection = document.querySelector<HTMLElement>("#members");
     if (!membersSection) throw new Error("Members section was not rendered");
+    const memberRows = within(membersSection).getAllByRole("rowheader");
+    expect(memberRows[0]?.textContent).toContain("Ada");
+    expect(screen.getByLabelText("Role for Ada").classList.contains("ds-control--compact")).toBe(true);
     expect(within(membersSection).getByRole("heading", { level: 3, name: "Invite members" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Invite members" })).toBeNull();
   });

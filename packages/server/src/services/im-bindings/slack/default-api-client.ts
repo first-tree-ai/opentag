@@ -21,17 +21,17 @@ export class DefaultSlackApiClient implements SlackApiClient {
     this.#fetch = fetchImpl;
   }
 
-  async authTest(token: string): Promise<{ appId: string; teamId: string; botUserId: string; botId: string }> {
+  async authTest(token: string): Promise<{ appId: string | null; teamId: string; botUserId: string; botId: string }> {
     const result = await this.#createClient(token).auth.test();
-    if (
-      typeof result.app_id !== "string" ||
-      typeof result.team_id !== "string" ||
-      typeof result.user_id !== "string" ||
-      typeof result.bot_id !== "string"
-    ) {
+    if (typeof result.team_id !== "string" || typeof result.user_id !== "string" || typeof result.bot_id !== "string") {
       throw new Error("SLACK_AUTH_IDENTITY_INCOMPLETE");
     }
-    return { appId: result.app_id, teamId: result.team_id, botUserId: result.user_id, botId: result.bot_id };
+    return {
+      appId: typeof result.app_id === "string" ? result.app_id : null,
+      teamId: result.team_id,
+      botUserId: result.user_id,
+      botId: result.bot_id,
+    };
   }
 
   async inspectInstallation(token: string): Promise<SlackInstallationInspection> {
@@ -58,7 +58,7 @@ export class DefaultSlackApiClient implements SlackApiClient {
       .passthrough()
       .parse(await response.json());
     if (!result.ok) throw new Error(result.error === "invalid_auth" ? "SLACK_AUTH_INVALID" : "SLACK_AUTH_REJECTED");
-    if (!result.app_id || !result.team_id || !result.user_id || !result.bot_id) {
+    if (!result.team_id || !result.user_id || !result.bot_id) {
       throw new Error("SLACK_AUTH_IDENTITY_INCOMPLETE");
     }
     const grantedBotScopes = [
@@ -70,7 +70,7 @@ export class DefaultSlackApiClient implements SlackApiClient {
       ),
     ].sort();
     return {
-      appId: result.app_id,
+      appId: result.app_id ?? null,
       teamId: result.team_id,
       enterpriseId: result.enterprise_id ?? null,
       botUserId: result.user_id,

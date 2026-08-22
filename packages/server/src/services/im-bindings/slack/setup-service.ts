@@ -28,7 +28,7 @@ const SlackSetupContextSchema = z.discriminatedUnion("stage", [
       signingSecret: z.string().min(1),
       installation: z
         .object({
-          appId: z.string().min(1),
+          appId: z.string().min(1).nullable(),
           teamId: z.string().min(1),
           enterpriseId: z.string().nullable(),
           botUserId: z.string().min(1),
@@ -43,6 +43,25 @@ const SlackSetupContextSchema = z.discriminatedUnion("stage", [
 
 type SlackSetupContext = z.infer<typeof SlackSetupContextSchema>;
 type AgentSetupFacts = { displayName: string; receiveMode: "mention_only" | "all_message" };
+
+const SlackActivationEnvelopeSchema = z
+  .object({
+    type: z.literal("event_callback"),
+    api_app_id: z.string().min(1).max(255),
+    team_id: z.string().min(1).max(255),
+    authorizations: z
+      .array(
+        z
+          .object({
+            team_id: z.string().min(1).max(255),
+            user_id: z.string().min(1).max(255),
+            is_bot: z.boolean(),
+          })
+          .passthrough(),
+      )
+      .min(1),
+  })
+  .passthrough();
 
 export class SlackSetupServiceError extends Error {
   constructor(
@@ -224,7 +243,7 @@ export class SlackSetupService {
     }
     if (
       row.setupIntent === "reauthorize" &&
-      (row.externalAppId !== installation.appId ||
+      ((installation.appId !== null && row.externalAppId !== installation.appId) ||
         row.externalTeamId !== installation.teamId ||
         row.externalBotId !== installation.botUserId)
     ) {
@@ -236,9 +255,9 @@ export class SlackSetupService {
     }
     if (
       row.setupIntent === "replace" &&
-      row.externalAppId === installation.appId &&
       row.externalTeamId === installation.teamId &&
-      row.externalBotId === installation.botUserId
+      row.externalBotId === installation.botUserId &&
+      (installation.appId === null || row.externalAppId === installation.appId)
     ) {
       throw new SlackSetupServiceError(
         "SLACK_REPLACEMENT_REQUIRES_DIFFERENT_APP",
@@ -360,12 +379,12 @@ export class SlackSetupService {
         "Verify the Slack Events Request URL before activating the binding",
       );
     }
-    if (context.installation.appId !== input.appId || context.installation.teamId !== input.teamId) {
+    if (!this.#activationIdentityMatches(input, context.installation) || !this.#intentMatchesApp(row, input.appId)) {
       await this.#fail(row.setupAttemptId, "SLACK_BINDING_IDENTITY_MISMATCH");
       throw new SlackSetupServiceError(
         "SLACK_BINDING_IDENTITY_MISMATCH",
         409,
-        "The signed Slack event did not match the token installation identity",
+        "The signed Slack event did not match the token installation and setup intent",
       );
     }
     await this.#beforeActivationTransaction?.();
@@ -434,7 +453,9 @@ export class SlackSetupService {
         "Verify the Slack Events Request URL before activating the binding",
       );
     }
-    if (context.installation.appId !== input.appId || context.installation.teamId !== input.teamId) return undefined;
+    if (!this.#activationIdentityMatches(input, context.installation) || !this.#intentMatchesApp(row, input.appId)) {
+      return undefined;
+    }
     if (targetReceiveMode !== agent.receiveMode) {
       const [updatedAgent] = await transaction
         .update(agents)
@@ -445,7 +466,7 @@ export class SlackSetupService {
     }
     const activation: SlackBindingActivation = {
       agentId: row.agentId,
-      appId: context.installation.appId,
+      appId: input.appId,
       teamId: context.installation.teamId,
       enterpriseId: context.installation.enterpriseId ?? undefined,
       botUserId: context.installation.botUserId,
@@ -512,6 +533,38 @@ export class SlackSetupService {
     signingSecret: string,
   ): boolean {
     return verifySlackSignature({ ...input, signingSecret, now: this.#now() });
+  }
+
+  #activationIdentityMatches(
+    input: { appId: string; teamId: string; rawBody: Buffer },
+    installation: SlackInstallationInspection,
+  ): boolean {
+    try {
+      const envelope = SlackActivationEnvelopeSchema.safeParse(JSON.parse(input.rawBody.toString("utf8")));
+      if (!envelope.success) return false;
+      if (
+        envelope.data.api_app_id !== input.appId ||
+        envelope.data.team_id !== input.teamId ||
+        installation.teamId !== input.teamId ||
+        (installation.appId !== null && installation.appId !== input.appId)
+      ) {
+        return false;
+      }
+      return envelope.data.authorizations.some(
+        (authorization) =>
+          authorization.is_bot &&
+          authorization.team_id === installation.teamId &&
+          authorization.user_id === installation.botUserId,
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  #intentMatchesApp(row: typeof imBindings.$inferSelect, appId: string): boolean {
+    if (row.setupIntent === "reauthorize") return row.externalAppId === appId;
+    if (row.setupIntent === "replace") return row.externalAppId !== appId;
+    return true;
   }
 
   async #agent(agentId: string): Promise<AgentSetupFacts> {
@@ -617,7 +670,7 @@ export class SlackSetupService {
       eventsUrl: this.#eventsUrl(row.agentId),
       requiredBotScopes: requiredSlackBotScopes(targetReceiveMode),
       identity:
-        context?.stage === "awaiting_verification"
+        context?.stage === "awaiting_verification" && context.installation.appId !== null
           ? {
               appId: context.installation.appId,
               teamId: context.installation.teamId,

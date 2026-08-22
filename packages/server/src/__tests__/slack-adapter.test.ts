@@ -1,7 +1,7 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
-import { normalizeSlackEnvelope } from "../services/im-bindings/slack/adapter.js";
+import { normalizeSlackEnvelope, SlackAdapter } from "../services/im-bindings/slack/adapter.js";
 import { SlackBindingActivator } from "../services/im-bindings/slack/binding-activator.js";
 import { DefaultSlackApiClient } from "../services/im-bindings/slack/default-api-client.js";
 import { preparseSlackRoute, verifySlackSignature } from "../services/im-bindings/slack/signature.js";
@@ -35,6 +35,49 @@ describe("Slack installed-binding adapter", () => {
       "https://slack.com/api/auth.test",
       expect.objectContaining({ headers: expect.objectContaining({ authorization: "Bearer xoxb-secret" }) }),
     );
+  });
+
+  it("accepts Slack's documented bot-token identity when auth.test omits app_id", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          team_id: "T1",
+          user_id: "U1",
+          bot_id: "B1",
+        }),
+        { status: 200, headers: { "x-oauth-scopes": "im:history, chat:write, app_mentions:read, files:read" } },
+      ),
+    );
+    const api = new DefaultSlackApiClient(undefined, fetchImpl);
+
+    await expect(api.inspectInstallation("xoxb-secret")).resolves.toEqual({
+      appId: null,
+      teamId: "T1",
+      enterpriseId: null,
+      botUserId: "U1",
+      botId: "B1",
+      grantedBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
+    });
+  });
+
+  it("preserves the signed-event App identity when runtime auth.test omits app_id", async () => {
+    const adapter = new SlackAdapter({
+      api: {
+        authTest: vi.fn().mockResolvedValue({ appId: null, teamId: "T1", botUserId: "U1", botId: "B1" }),
+      } as never,
+      token: "xoxb-secret",
+      appId: "A_SIGNED_EVENT",
+      teamId: "T1",
+      botUserId: "U1",
+      botId: "B1",
+    });
+
+    await expect(adapter.validateBinding()).resolves.toEqual({
+      externalAppId: "A_SIGNED_EVENT",
+      externalTeamId: "T1",
+      externalBotId: "U1",
+    });
   });
 
   it("verifies the raw body and rejects replayed timestamps", () => {
@@ -225,6 +268,35 @@ describe("Slack installed-binding adapter", () => {
       activator.activate({
         agentId: crypto.randomUUID(),
         appId: "A1",
+        teamId: "T1",
+        botUserId: "U1",
+        grantedBotScopes: ["chat:write"],
+        botAccessToken: "xoxb-token",
+        signingSecret: "secret",
+        installedAt: new Date(),
+      }),
+    ).rejects.toThrow("SLACK_BINDING_IDENTITY_MISMATCH");
+    expect(activateSlack).not.toHaveBeenCalled();
+  });
+
+  it("does not let the direct activator trust a caller App ID when auth.test omits it", async () => {
+    const activateSlack = vi.fn();
+    const api = {
+      inspectInstallation: vi.fn().mockResolvedValue({
+        appId: null,
+        teamId: "T1",
+        enterpriseId: null,
+        botUserId: "U1",
+        botId: "B1",
+        grantedBotScopes: ["chat:write"],
+      }),
+    };
+    const activator = new SlackBindingActivator({ activateSlack } as never, api as never);
+
+    await expect(
+      activator.activate({
+        agentId: crypto.randomUUID(),
+        appId: "A_BROWSER",
         teamId: "T1",
         botUserId: "U1",
         grantedBotScopes: ["chat:write"],

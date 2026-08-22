@@ -14,7 +14,12 @@ export class SlackBindingActivator {
   async activate(rawInput: SlackBindingActivation): Promise<string> {
     const input = SlackBindingActivationSchema.parse(rawInput);
     const verified = await this.#api.inspectInstallation(input.botAccessToken);
-    if (verified.appId !== input.appId || verified.teamId !== input.teamId || verified.botUserId !== input.botUserId) {
+    if (
+      verified.appId === null ||
+      verified.appId !== input.appId ||
+      verified.teamId !== input.teamId ||
+      verified.botUserId !== input.botUserId
+    ) {
       throw new Error("SLACK_BINDING_IDENTITY_MISMATCH");
     }
     return this.#imBindings.activateSlack(

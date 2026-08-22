@@ -5426,7 +5426,7 @@ describe("IM binding persistence", () => {
     const setup = new SlackSetupService({
       api: {
         inspectInstallation: vi.fn().mockResolvedValue({
-          appId: "A_SETUP",
+          appId: null,
           teamId: "T_SETUP",
           enterpriseId: null,
           botUserId: "U_SETUP",
@@ -5467,7 +5467,7 @@ describe("IM binding persistence", () => {
       });
       expect(submitted).toMatchObject({
         state: "awaiting_verification",
-        identity: { appId: "A_SETUP", teamId: "T_SETUP", botUserId: "U_SETUP" },
+        identity: null,
       });
       expect(JSON.stringify(submitted)).not.toMatch(/xoxb-setup-secret|signing-secret/);
       expect(await value.imBindingService.findSlackIngressBindingForAgent(value.agent.id)).toBeUndefined();
@@ -5493,6 +5493,7 @@ describe("IM binding persistence", () => {
           type: "event_callback",
           api_app_id: "A_SETUP",
           team_id: "T_SETUP",
+          authorizations: [{ team_id: "T_SETUP", user_id: "U_SETUP", is_bot: true }],
           event_id: "Ev-setup",
           event: { type: "app_mention" },
         }),
@@ -5516,6 +5517,79 @@ describe("IM binding persistence", () => {
       expect(stored).toMatchObject({ status: "active", externalAppId: "A_SETUP", externalTeamId: "T_SETUP" });
       expect(stored?.encryptedSetupContext).toBeNull();
       expect(stored?.encryptedCredential).not.toMatch(/xoxb-setup-secret|signing-secret/);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("rejects a signed Slack App event that is not authorized for the token-derived Bot User", async () => {
+    const value = await unboundFixture();
+    const now = new Date("2026-08-21T00:00:00.000Z");
+    const signingSecret = "mixed-installation-signing-secret";
+    const setup = new SlackSetupService({
+      api: {
+        inspectInstallation: vi.fn().mockResolvedValue({
+          appId: null,
+          teamId: "T_SETUP",
+          enterpriseId: null,
+          botUserId: "U_TOKEN_BOT",
+          botId: "B_TOKEN_BOT",
+          grantedBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
+        }),
+      } as never,
+      cipher: value.cipher,
+      database: value.database,
+      imBindings: value.imBindingService,
+      instanceId: crypto.randomUUID(),
+      publicOrigin: "https://opentag.example.com",
+      now: () => now,
+    });
+    try {
+      const attempt = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      await setup.submitCredentials(value.bootstrap.userId, attempt.id, {
+        botAccessToken: "xoxb-token-installation",
+        signingSecret,
+      });
+      const timestamp = String(Math.floor(now.getTime() / 1000));
+      const challengeBody = Buffer.from(JSON.stringify({ type: "url_verification", challenge: "challenge-ok" }));
+      await setup.verifyChallenge({
+        agentId: value.agent.id,
+        rawBody: challengeBody,
+        timestamp,
+        signature: `v0=${createHmac("sha256", signingSecret)
+          .update(`v0:${timestamp}:`)
+          .update(challengeBody)
+          .digest("hex")}`,
+      });
+      const eventBody = Buffer.from(
+        JSON.stringify({
+          type: "event_callback",
+          api_app_id: "A_SIGNING_SECRET_APP",
+          team_id: "T_SETUP",
+          authorizations: [{ team_id: "T_SETUP", user_id: "U_OTHER_BOT", is_bot: true }],
+          event_id: "Ev-mixed-installation",
+          event: { type: "app_mention" },
+        }),
+      );
+
+      await expect(
+        setup.tryActivateFromEvent({
+          agentId: value.agent.id,
+          appId: "A_SIGNING_SECRET_APP",
+          teamId: "T_SETUP",
+          rawBody: eventBody,
+          timestamp,
+          signature: `v0=${createHmac("sha256", signingSecret)
+            .update(`v0:${timestamp}:`)
+            .update(eventBody)
+            .digest("hex")}`,
+        }),
+      ).rejects.toMatchObject({ code: "SLACK_BINDING_IDENTITY_MISMATCH" });
+      await expect(setup.get(value.bootstrap.userId, attempt.id)).resolves.toMatchObject({
+        state: "failed",
+        errorCode: "SLACK_BINDING_IDENTITY_MISMATCH",
+      });
+      expect(await value.imBindingService.findSlackIngressBindingForAgent(value.agent.id)).toBeUndefined();
     } finally {
       await value.sql.end();
     }
@@ -5562,7 +5636,7 @@ describe("IM binding persistence", () => {
       const setup = new SlackSetupService({
         api: {
           inspectInstallation: vi.fn().mockResolvedValue({
-            appId: "A_REAUTH_TARGET",
+            appId: null,
             teamId: "T_REAUTH_TARGET",
             enterpriseId: null,
             botUserId: "U_REAUTH_TARGET",
@@ -5635,6 +5709,7 @@ describe("IM binding persistence", () => {
           type: "event_callback",
           api_app_id: "A_REAUTH_TARGET",
           team_id: "T_REAUTH_TARGET",
+          authorizations: [{ team_id: "T_REAUTH_TARGET", user_id: "U_REAUTH_TARGET", is_bot: true }],
           event_id: "Ev-reauth-target",
           event: { type: "app_mention" },
         }),
@@ -5673,7 +5748,7 @@ describe("IM binding persistence", () => {
       const setup = new SlackSetupService({
         api: {
           inspectInstallation: vi.fn().mockResolvedValue({
-            appId: "A_EVENT_FENCE",
+            appId: null,
             teamId: "T_EVENT_FENCE",
             enterpriseId: null,
             botUserId: "U_EVENT_FENCE",
@@ -5715,6 +5790,7 @@ describe("IM binding persistence", () => {
             type: "event_callback",
             api_app_id: "A_EVENT_FENCE",
             team_id: "T_EVENT_FENCE",
+            authorizations: [{ team_id: "T_EVENT_FENCE", user_id: "U_EVENT_FENCE", is_bot: true }],
             event_id: `Ev-${race}`,
             event: { type: "app_mention" },
           }),

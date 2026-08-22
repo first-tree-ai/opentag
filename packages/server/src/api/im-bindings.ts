@@ -3,7 +3,9 @@ import {
   AGENT_IM_BINDING_CONFIG_TEMPLATE,
   AGENT_IM_BINDING_HANDOFF_TEMPLATE,
   AGENT_IM_BINDING_TEMPLATE,
+  AGENT_SLACK_SETUP_ATTEMPTS_TEMPLATE,
   CreateFeishuSetupAttemptRequestSchema,
+  CreateSlackSetupAttemptRequestSchema,
   FEISHU_SETUP_ATTEMPT_TEMPLATE,
   FeishuSetupAttemptSchema,
   IM_BINDING_BY_ID_TEMPLATE,
@@ -12,6 +14,9 @@ import {
   ImBindingDiagnosticsSchema,
   ImBindingHandoffStatusSchema,
   ImBindingSummarySchema,
+  SLACK_SETUP_ATTEMPT_TEMPLATE,
+  SlackSetupAttemptSchema,
+  SubmitSlackSetupCredentialsRequestSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -19,6 +24,7 @@ import { createUserAuthPreHandler } from "../plugins/user-auth.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import type { FeishuSetupService } from "../services/im-bindings/feishu/index.js";
 import type { ImBindingService } from "../services/im-bindings/index.js";
+import type { SlackSetupService } from "../services/im-bindings/slack/index.js";
 import { parseRequest } from "./request-validation.js";
 
 const AgentParamsSchema = z.object({ agentId: z.string().uuid() }).strict();
@@ -36,6 +42,7 @@ export function registerImBindingRoutes(
   authService: UserAuthService,
   imBindings: ImBindingService,
   feishu: FeishuSetupService | undefined,
+  slack: SlackSetupService | undefined,
   publicOrigin?: string,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
@@ -78,6 +85,39 @@ export function registerImBindingRoutes(
       return reply
         .code(200)
         .send(FeishuSetupAttemptSchema.parse(await feishu.cancel(authenticatedUserId(request), attemptId)));
+    });
+  }
+
+  if (slack) {
+    app.post(AGENT_SLACK_SETUP_ATTEMPTS_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { agentId } = parseRequest(AgentParamsSchema, request.params);
+      const input = parseRequest(CreateSlackSetupAttemptRequestSchema, request.body ?? {});
+      const attempt = await slack.createOrReuse(authenticatedUserId(request), agentId, input.intent);
+      return reply.code(201).send(SlackSetupAttemptSchema.parse(attempt));
+    });
+
+    app.get(SLACK_SETUP_ATTEMPT_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { attemptId } = parseRequest(AttemptParamsSchema, request.params);
+      return reply
+        .code(200)
+        .send(SlackSetupAttemptSchema.parse(await slack.get(authenticatedUserId(request), attemptId)));
+    });
+
+    app.post(`${SLACK_SETUP_ATTEMPT_TEMPLATE}/credentials`, { preHandler }, async (request, reply) => {
+      const { attemptId } = parseRequest(AttemptParamsSchema, request.params);
+      const input = parseRequest(SubmitSlackSetupCredentialsRequestSchema, request.body);
+      return reply
+        .code(200)
+        .send(
+          SlackSetupAttemptSchema.parse(await slack.submitCredentials(authenticatedUserId(request), attemptId, input)),
+        );
+    });
+
+    app.post(`${SLACK_SETUP_ATTEMPT_TEMPLATE}/cancel`, { preHandler }, async (request, reply) => {
+      const { attemptId } = parseRequest(AttemptParamsSchema, request.params);
+      return reply
+        .code(200)
+        .send(SlackSetupAttemptSchema.parse(await slack.cancel(authenticatedUserId(request), attemptId)));
     });
   }
 

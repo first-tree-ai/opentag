@@ -1,0 +1,1 @@
+ALTER TABLE "im_bindings" ADD COLUMN "pending_receive_mode" "agent_receive_mode";

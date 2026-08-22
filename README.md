@@ -109,6 +109,7 @@ and broader collaboration workflows remain under development.
 - [Development guide](./DEVELOPMENT.md)
 - [Server observability](./docs/observability.md)
 - [Direct provider CLI messaging](./docs/direct-provider-cli.md)
+- [Slack App setup](./docs/slack-app-setup.md)
 - [IM Channel and Thread Sessions](./docs/thread-sessions.md)
 - [Contributing guide](./CONTRIBUTING.md)
 - [Release guide](./docs/releasing.md)

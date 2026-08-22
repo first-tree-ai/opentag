@@ -90,6 +90,7 @@ interface ImBindingReadinessInput {
   observedConnectedAt: Date | null;
   observedAt: Date | null;
   grantedCapabilities: string[];
+  pendingReceiveMode: "all_message" | "mention_only" | null;
 }
 
 interface ImBindingReadiness {
@@ -114,6 +115,7 @@ export async function disableImBindingInTransaction(
       setupOwnerInstanceId: null,
       setupOwnerHeartbeatAt: null,
       setupExpiresAt: null,
+      pendingReceiveMode: null,
       connectionOwnerInstanceId: null,
       connectionLeaseExpiresAt: null,
       disabledAt: now,
@@ -283,25 +285,32 @@ export class ImBindingService {
     }
   }
 
-  async activateSlack(input: SlackBindingActivation, verifiedBotId: string): Promise<string> {
+  async activateSlack(
+    input: SlackBindingActivation,
+    verifiedBotId: string,
+    transaction?: DatabaseTransaction,
+  ): Promise<string> {
     const credential = SlackCredentialSchema.parse({
       botId: verifiedBotId,
       botAccessToken: input.botAccessToken,
       signingSecret: input.signingSecret,
       grantedScopes: [...new Set(input.grantedBotScopes)].sort(),
     });
-    return this.#activate({
-      agentId: input.agentId,
-      provider: "slack",
-      identity: {
-        appId: input.appId,
-        teamId: input.teamId,
-        enterpriseId: input.enterpriseId ?? null,
-        botId: input.botUserId,
-        teamBrand: null,
+    return this.#activate(
+      {
+        agentId: input.agentId,
+        provider: "slack",
+        identity: {
+          appId: input.appId,
+          teamId: input.teamId,
+          enterpriseId: input.enterpriseId ?? null,
+          botId: input.botUserId,
+          teamBrand: null,
+        },
+        credential,
       },
-      credential,
-    });
+      transaction,
+    );
   }
 
   async activateFeishu(input: VerifiedFeishuBinding, transaction?: DatabaseTransaction): Promise<string> {
@@ -361,6 +370,42 @@ export class ImBindingService {
       generation: imBinding.credentialGeneration,
       appId,
       teamId,
+      botUserId: imBinding.externalBotId,
+      botId: credential.botId,
+      botAccessToken: credential.botAccessToken,
+      signingSecret: credential.signingSecret,
+    };
+  }
+
+  async findSlackIngressBindingForAgent(agentId: string): Promise<SlackIngressBinding | undefined> {
+    const [row] = await this.#database
+      .select({ imBinding: imBindings })
+      .from(imBindings)
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .where(
+        and(
+          eq(imBindings.agentId, agentId),
+          eq(imBindings.provider, "slack"),
+          eq(imBindings.status, "active"),
+          ne(agents.status, "deleted"),
+        ),
+      )
+      .limit(1);
+    const imBinding = row?.imBinding;
+    if (
+      !imBinding?.encryptedCredential ||
+      !imBinding.externalAppId ||
+      !imBinding.externalTeamId ||
+      !imBinding.externalBotId
+    ) {
+      return undefined;
+    }
+    const credential = SlackCredentialSchema.parse(JSON.parse(this.#cipher.decrypt(imBinding.encryptedCredential)));
+    return {
+      imBindingId: imBinding.id,
+      generation: imBinding.credentialGeneration,
+      appId: imBinding.externalAppId,
+      teamId: imBinding.externalTeamId,
       botUserId: imBinding.externalBotId,
       botId: credential.botId,
       botAccessToken: credential.botAccessToken,
@@ -453,6 +498,7 @@ export class ImBindingService {
         activatedAt: imBindings.activatedAt,
         receiveMode: agents.receiveMode,
         grantedCapabilities: imBindings.grantedCapabilities,
+        pendingReceiveMode: imBindings.pendingReceiveMode,
       })
       .from(imBindings)
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
@@ -461,6 +507,7 @@ export class ImBindingService {
     if (!row) return undefined;
     const activity = await this.#activity(row.id);
     const reauthorizationRequired =
+      row.pendingReceiveMode !== null ||
       row.bindingState === "reauthorization_required" ||
       needsFeishuScopeUpdate(row.bindingState, row.provider, row.grantedCapabilities);
     return {
@@ -486,6 +533,7 @@ export class ImBindingService {
         observedConnectedAt: imBindings.observedConnectedAt,
         observedAt: imBindings.observedAt,
         grantedCapabilities: imBindings.grantedCapabilities,
+        pendingReceiveMode: imBindings.pendingReceiveMode,
       })
       .from(imBindings)
       .where(and(eq(imBindings.agentId, agentId), ne(imBindings.status, "disabled")))
@@ -507,6 +555,7 @@ export class ImBindingService {
     if (!binding.externalAppId || !binding.externalBotId || binding.credentialGeneration < 1) return undefined;
     const activity = await this.#activity(binding.id);
     const reauthorizationRequired =
+      binding.pendingReceiveMode !== null ||
       binding.status === "reauthorization_required" ||
       needsFeishuScopeUpdate(binding.status, binding.provider, binding.grantedCapabilities);
     const summary: ImBindingSummary = {
@@ -541,7 +590,11 @@ export class ImBindingService {
       grantedCapabilities: binding.grantedCapabilities,
       reauthorizationRequired,
       lastErrorCode:
-        reauthorizationRequired && binding.status === "active" ? "FEISHU_SCOPE_REAUTH_REQUIRED" : binding.lastErrorCode,
+        binding.pendingReceiveMode !== null
+          ? "IM_BINDING_SCOPE_REAUTH_REQUIRED"
+          : reauthorizationRequired && binding.status === "active"
+            ? "FEISHU_SCOPE_REAUTH_REQUIRED"
+            : binding.lastErrorCode,
     };
   }
 
@@ -580,6 +633,7 @@ export class ImBindingService {
         observedAt: imBindings.observedAt,
         lastErrorCode: imBindings.lastErrorCode,
         grantedCapabilities: imBindings.grantedCapabilities,
+        pendingReceiveMode: imBindings.pendingReceiveMode,
       })
       .from(imBindings)
       .where(eq(imBindings.id, imBindingId))
@@ -599,9 +653,11 @@ export class ImBindingService {
       connection: readiness.connection,
       ...activity,
       lastErrorCode:
-        readiness.reauthorizationRequired && imBinding.status === "active"
-          ? "FEISHU_SCOPE_REAUTH_REQUIRED"
-          : imBinding.lastErrorCode,
+        imBinding.pendingReceiveMode !== null
+          ? "IM_BINDING_SCOPE_REAUTH_REQUIRED"
+          : readiness.reauthorizationRequired && imBinding.status === "active"
+            ? "FEISHU_SCOPE_REAUTH_REQUIRED"
+            : imBinding.lastErrorCode,
     };
   }
 
@@ -702,6 +758,7 @@ export class ImBindingService {
       this.#imCliReadiness(imBinding.agentId, imBinding.provider),
     ]);
     const reauthorizationRequired =
+      imBinding.pendingReceiveMode !== null ||
       imBinding.status === "reauthorization_required" ||
       needsFeishuScopeUpdate(imBinding.status, imBinding.provider, imBinding.grantedCapabilities);
     const bindingState = reauthorizationRequired ? "reauthorization_required" : imBinding.status;
@@ -791,10 +848,32 @@ export class ImBindingService {
           );
         }
       }
+      if (input.provider === "slack" && input.identity.teamId) {
+        const [conflicting] = await transaction
+          .select({ id: imBindings.id })
+          .from(imBindings)
+          .where(
+            and(
+              eq(imBindings.provider, "slack"),
+              eq(imBindings.externalAppId, input.identity.appId),
+              eq(imBindings.externalTeamId, input.identity.teamId),
+              ne(imBindings.agentId, input.agentId),
+              ne(imBindings.status, "disabled"),
+            ),
+          )
+          .limit(1);
+        if (conflicting) {
+          throw new ImBindingServiceError(
+            "SLACK_APP_TEAM_ALREADY_BOUND",
+            409,
+            "This Slack App installation is already bound to another Agent",
+          );
+        }
+      }
       const requiredCapabilities =
         input.provider === "feishu"
           ? [...FEISHU_REQUIRED_TENANT_SCOPES]
-          : ["chat:write", "app_mentions:read", "im:history"];
+          : ["chat:write", "app_mentions:read", "files:read", "im:history"];
       if (input.provider === "slack" && agent.receiveMode === "all_message") {
         requiredCapabilities.push("channels:history", "groups:history", "mpim:history");
       }

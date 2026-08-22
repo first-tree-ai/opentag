@@ -167,6 +167,53 @@ export const CreateFeishuSetupAttemptRequestSchema = z
   .object({ intent: FeishuSetupIntentSchema.default("create") })
   .strict();
 
+export const SlackSetupIntentSchema = z.enum(["create", "reauthorize", "replace"]);
+export const SlackSetupStateSchema = z.enum([
+  "awaiting_credentials",
+  "awaiting_verification",
+  "succeeded",
+  "failed",
+  "expired",
+  "canceled",
+]);
+
+export const SlackSetupIdentitySchema = z
+  .object({
+    appId: z.string().min(1).max(255),
+    teamId: z.string().min(1).max(255),
+    enterpriseId: z.string().min(1).max(255).nullable(),
+    botUserId: z.string().min(1).max(255),
+  })
+  .strict();
+
+export const SlackSetupAttemptSchema = z
+  .object({
+    id: z.string().uuid(),
+    agentId: z.string().uuid(),
+    intent: SlackSetupIntentSchema,
+    state: SlackSetupStateSchema,
+    manifestUrl: z.string().url(),
+    eventsUrl: z.string().url(),
+    requiredBotScopes: z.array(z.string().min(1).max(160)).max(32),
+    identity: SlackSetupIdentitySchema.nullable(),
+    expiresAt: z.string().datetime(),
+    errorCode: z.string().min(1).max(120).nullable(),
+    completedAt: z.string().datetime().nullable(),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+
+export const CreateSlackSetupAttemptRequestSchema = z
+  .object({ intent: SlackSetupIntentSchema.default("create") })
+  .strict();
+
+export const SubmitSlackSetupCredentialsRequestSchema = z
+  .object({
+    botAccessToken: z.string().min(1).max(4096),
+    signingSecret: z.string().min(1).max(512),
+  })
+  .strict();
+
 export const ImBindingDiagnosticsSchema = z
   .object({
     imBindingId: z.string().uuid(),
@@ -210,5 +257,10 @@ export type ImBindingAdminDetail = z.infer<typeof ImBindingAdminDetailSchema>;
 export type FeishuSetupIntent = z.infer<typeof FeishuSetupIntentSchema>;
 export type FeishuSetupState = z.infer<typeof FeishuSetupStateSchema>;
 export type FeishuSetupAttempt = z.infer<typeof FeishuSetupAttemptSchema>;
+export type SlackSetupIntent = z.infer<typeof SlackSetupIntentSchema>;
+export type SlackSetupState = z.infer<typeof SlackSetupStateSchema>;
+export type SlackSetupIdentity = z.infer<typeof SlackSetupIdentitySchema>;
+export type SlackSetupAttempt = z.infer<typeof SlackSetupAttemptSchema>;
+export type SubmitSlackSetupCredentialsRequest = z.infer<typeof SubmitSlackSetupCredentialsRequestSchema>;
 export type ImBindingDiagnostics = z.infer<typeof ImBindingDiagnosticsSchema>;
 export type SlackBindingActivation = z.infer<typeof SlackBindingActivationSchema>;

@@ -465,6 +465,26 @@ function installApi(
         201,
       );
     }
+    if (path === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as { intent: "create" | "reauthorize" | "replace" };
+      return json(
+        {
+          id: "f645f26d-9184-4f2f-98a1-4ee83ae6a604",
+          agentId,
+          intent: body.intent,
+          state: "awaiting_credentials",
+          manifestUrl: "https://api.slack.com/apps?new_app=1&manifest_json=example",
+          eventsUrl: `https://opentag.example.com/api/v1/agents/${agentId}/im-binding/slack/events`,
+          requiredBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
+          identity: null,
+          expiresAt: "2026-08-20T00:30:00.000Z",
+          errorCode: null,
+          completedAt: null,
+          createdAt: "2026-08-20T00:00:00.000Z",
+        },
+        201,
+      );
+    }
     if (path === "/api/v1/auth/browser/logout" && init?.method === "POST") return new Response(null, { status: 204 });
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
   });
@@ -1741,7 +1761,7 @@ describe("OpenTag Web App Shell", () => {
 
   it.each([
     ["feishu", "Reauthorize Feishu"],
-    ["slack", "Slack reauthorization is not available in this release."],
+    ["slack", "Reauthorize Slack"],
   ] as const)("offers provider-correct recovery when %s needs additional scopes", async (provider, recovery) => {
     installApi("admin", { bound: true, provider, scopeReauth: true });
     window.history.replaceState({}, "", `/agents/${agentId}/im`);
@@ -1752,6 +1772,25 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByText(recovery)).toBeTruthy();
     if (provider === "slack") expect(screen.queryByRole("button", { name: "Reauthorize Feishu" })).toBeNull();
     confirm.mockRestore();
+  });
+
+  it("starts a dedicated customer-owned Slack App setup from the Agent IM tab", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Slack App" }));
+
+    expect(await screen.findByRole("link", { name: /Create a dedicated Slack App/ })).toBeTruthy();
+    expect(screen.getByLabelText("Bot User OAuth Token")).toBeTruthy();
+    expect(screen.getByLabelText("Signing Secret")).toBeTruthy();
+    expect(screen.getByText(/files:read/)).toBeTruthy();
+    const request = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([input, init]) => String(input).endsWith("/im-binding/slack/setup-attempts") && init?.method === "POST",
+      );
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "create" });
   });
 
   it("creates a Computer connection command only after an explicit admin click", async () => {

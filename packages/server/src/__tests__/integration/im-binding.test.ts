@@ -5449,6 +5449,11 @@ describe("IM binding persistence", () => {
       });
       expect(created.manifestUrl).toContain("https://api.slack.com/apps?");
       const manifest = JSON.parse(new URL(created.manifestUrl).searchParams.get("manifest_json") ?? "null");
+      expect(manifest.features.app_home).toEqual({
+        home_tab_enabled: false,
+        messages_tab_enabled: true,
+        messages_tab_read_only_enabled: false,
+      });
       expect(manifest.oauth_config.scopes.bot).toEqual(["app_mentions:read", "chat:write", "files:read", "im:history"]);
       expect(manifest.settings.event_subscriptions.bot_events).toEqual([
         "app_mention",
@@ -5678,6 +5683,11 @@ describe("IM binding persistence", () => {
         "mpim:history",
       ]);
       const manifest = JSON.parse(new URL(attempt.manifestUrl).searchParams.get("manifest_json") ?? "null");
+      expect(manifest.features.app_home).toEqual({
+        home_tab_enabled: false,
+        messages_tab_enabled: true,
+        messages_tab_read_only_enabled: false,
+      });
       expect(manifest.oauth_config.scopes.bot).toEqual(attempt.requiredBotScopes);
       expect(manifest.settings.event_subscriptions.bot_events).toEqual([
         "app_mention",

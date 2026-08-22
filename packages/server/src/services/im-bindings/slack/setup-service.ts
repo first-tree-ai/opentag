@@ -630,7 +630,14 @@ export class SlackSetupService {
     const manifest = {
       _metadata: { major_version: 1 },
       display_information: { name },
-      features: { bot_user: { display_name: name, always_online: false } },
+      features: {
+        app_home: {
+          home_tab_enabled: false,
+          messages_tab_enabled: true,
+          messages_tab_read_only_enabled: false,
+        },
+        bot_user: { display_name: name, always_online: false },
+      },
       oauth_config: { scopes: { bot: requiredSlackBotScopes(targetReceiveMode) } },
       settings: {
         event_subscriptions: {

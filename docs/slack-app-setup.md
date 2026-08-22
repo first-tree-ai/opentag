@@ -16,7 +16,8 @@ An Agent can have at most one current IM binding. A Slack setup attempt has one 
 - `replace` switches to a different Slack App installation. Activation ends sessions owned by the previous binding.
 
 OpenTag generates an Agent-specific Slack App manifest and Events API Request URL. The manifest requests only the bot
-scopes and events required by the Agent's current receive mode or a server-recorded pending receive-mode target.
+scopes and events required by the Agent's current receive mode or a server-recorded pending receive-mode target. It also
+enables a writable App Home Messages tab so a user can start a direct-message conversation with the Agent.
 
 ## Admin flow
 
@@ -24,12 +25,15 @@ scopes and events required by the Agent's current receive mode or a server-recor
 2. Open the generated manifest link, create a dedicated Slack App, and install it to the intended workspace.
 3. Copy the **Bot User OAuth Token** from **OAuth & Permissions** and the **Signing Secret** from **Basic Information**
    into OpenTag.
-4. OpenTag calls Slack's `auth.test` endpoint and derives the App ID, Team ID, Enterprise ID when present, Bot User ID,
-   Bot ID, and the token's actual `x-oauth-scopes`. Browser-supplied identity or scope lists are never authoritative.
+4. OpenTag calls Slack's `auth.test` endpoint and derives the Team ID, Enterprise ID when present, Bot User ID, Bot ID,
+   and the token's actual `x-oauth-scopes`. Slack may omit `app_id` for a valid Bot Token, so a browser-supplied App ID
+   or scope list is never authoritative.
 5. Return to **Event Subscriptions** and retry the generated Request URL. OpenTag verifies Slack's timestamped HMAC
    signature before returning the URL-verification challenge.
-6. Invite the bot to a test channel and mention it. OpenTag activates only when the first signed event carries the same
-   App ID and Team ID as the token inspection. That event is then admitted through the active binding.
+6. Invite the bot to a test channel and mention it. OpenTag reparses the signature-verified raw event and establishes the
+   App ID from its `api_app_id` only when the envelope App and Team match the routed App and token-derived Team, and a bot
+   authorization matches the token-derived Team and Bot User. If `auth.test` did return an App ID, it must also match.
+   That event is then admitted through the active binding.
 
 Slack can attempt URL verification as soon as the manifest is created, before OpenTag has the Signing Secret. A failed
 initial attempt is expected; retry it after submitting the credentials.
@@ -64,14 +68,18 @@ conversation membership.
   Token's scopes and Slack membership allow. Such results stay in runtime context and do not automatically become
   OpenTag `ImMessage` history or deliveries for another Session.
 - Slack request signatures use the raw request body, a five-minute replay window, and constant-time comparison.
-- A URL-verification challenge proves the Signing Secret but does not carry installation identity. Activation therefore
-  waits for a subsequent signed event containing matching App and Team IDs.
+- A URL-verification challenge proves the Signing Secret but does not carry App, Team, or Bot authorization identity.
+  Activation therefore waits for a subsequent signed event whose raw envelope establishes the App and correlates its
+  Team and bot authorization with the token-derived Team and Bot User. Browser identity is never part of this proof.
+- Runtime credential validation preserves that signed-event App ID when a later `auth.test` omits `app_id`, while still
+  rejecting a returned App ID mismatch or any Team, Bot User, or Bot ID drift.
 - A Slack App installation can be current for only one Agent. Conflicts fail without changing either binding.
 - Reauthorization preserves the current binding until the new credential generation is ready. Replacement creates a
   new binding identity and disables the previous one only at activation.
-- Event activation locks and rechecks the exact current setup attempt, active state, and expiry before atomically
-  advancing credentials, applying a pending receive-mode target, and completing the setup slot. Expired, canceled, or
-  replaced attempts cannot activate from a stale event.
+- Event activation locks and rechecks the exact current setup attempt, active state, expiry, signature, reparsed raw
+  envelope, and token/event identity correlation before atomically advancing credentials, applying a pending
+  receive-mode target, and completing the setup slot. Expired, canceled, or replaced attempts cannot activate from a
+  stale event.
 - `tokens_revoked` moves the binding to reauthorization-required when the current bot token is affected.
 - `app_uninstalled` disables the binding. Admins can retry an expired or failed setup, reauthorize, replace, or explicitly
   disable the binding.
@@ -86,8 +94,9 @@ The supported flow must cover:
 
 - invalid Bot Tokens and unavailable Slack API responses;
 - missing scopes for both receive modes;
+- generated manifests keep the App Home Messages tab enabled and writable for direct messages;
 - invalid, stale, or replayed Slack signatures;
-- token identity versus signed-event identity mismatch;
+- token-derived Team/Bot identity versus signed-event App/Team/bot-authorization correlation mismatch;
 - duplicate App/Team installation conflicts;
 - create, same-identity reauthorization, explicit replacement, disable, uninstall, and token-revocation recovery;
 - concurrent setup/activation attempts without partial cutover;

@@ -14,7 +14,8 @@ Agent 加入同一个 Slack 工作区或频道，每个 Agent 仍保持独立的
 - `replace` 切换到另一个 Slack App 安装。激活时结束由旧绑定持有的会话。
 
 OpenTag 为 Agent 生成专属的 Slack App manifest 和 Events API Request URL。manifest 只请求 Agent 当前接收模式或
-Server 已记录的待生效接收模式所需的 bot scopes 和事件。
+Server 已记录的待生效接收模式所需的 bot scopes 和事件；同时启用可写的 App Home Messages 标签页，让用户可以发起
+与 Agent 的私聊。
 
 ## 管理员流程
 
@@ -22,12 +23,15 @@ Server 已记录的待生效接收模式所需的 bot scopes 和事件。
 2. 打开生成的 manifest 链接，创建专属 Slack App，并安装到目标工作区。
 3. 从 **OAuth & Permissions** 复制 **Bot User OAuth Token**，从 **Basic Information** 复制 **Signing Secret**，
    提交给 OpenTag。
-4. OpenTag 调用 Slack `auth.test`，推导 App ID、Team ID、存在时的 Enterprise ID、Bot User ID、Bot ID，以及 token
-   实际返回的 `x-oauth-scopes`。浏览器提交的身份或 scopes 列表从不作为权威事实。
+4. OpenTag 调用 Slack `auth.test`，推导 Team ID、存在时的 Enterprise ID、Bot User ID、Bot ID，以及 token 实际返回的
+   `x-oauth-scopes`。Slack 对有效 Bot Token 也可能不返回 `app_id`，因此浏览器提交的 App ID 或 scopes 列表从不作为
+   权威事实。
 5. 回到 **Event Subscriptions**，重试生成的 Request URL。OpenTag 先验证 Slack 带时间戳的 HMAC 签名，再返回
    URL verification challenge。
-6. 将机器人邀请到测试频道并 @mention。只有首个签名有效的事件所带 App ID、Team ID 与 token 检查结果一致时，
-   OpenTag 才会激活绑定；该事件随后通过已激活绑定进入系统。
+6. 将机器人邀请到测试频道并 @mention。OpenTag 会重新解析已通过签名验证的原始事件；只有 envelope 的 App、Team
+   分别匹配路由 App 与 token 推导的 Team，且其中一项 bot authorization 匹配 token 推导的 Team 与 Bot User 时，
+   才从 `api_app_id` 建立 App ID 并激活绑定。如果 `auth.test` 确实返回了 App ID，它也必须一致。该事件随后通过
+   已激活绑定进入系统。
 
 Slack 可能在 manifest 创建后立即尝试 URL 验证，此时 OpenTag 尚未拿到 Signing Secret，首次失败属于预期行为；提交凭证后
 重新验证即可。
@@ -59,12 +63,16 @@ Slack CLI 主动查询；实际范围受已安装 Bot Token 的 scopes 和 conve
   在有效且 Agent 可见的 IM Turn 中，Agent 可以在 Bot Token scopes 与 Slack membership 允许的范围内使用官方 CLI。
   查询结果只进入 runtime context，不会自动成为 OpenTag `ImMessage` 历史，也不会自动投递给另一个 Session。
 - Slack 签名验证使用原始请求体、五分钟重放窗口和常量时间比较。
-- URL verification challenge 能证明 Signing Secret，但不携带安装身份。因此激活必须等待后续带有匹配 App、Team ID 的
-  签名事件。
+- URL verification challenge 能证明 Signing Secret，但不携带 App、Team 或 bot authorization 身份。因此激活必须
+  等待后续签名事件，由其原始 envelope 建立 App，并将 Team 与 bot authorization 关联到 token 推导的 Team 和
+  Bot User；浏览器身份从不参与该证明。
+- 运行期凭证校验在后续 `auth.test` 省略 `app_id` 时保留由签名事件建立的 App ID；如果 Slack 返回了不一致的 App ID，
+  或 Team、Bot User、Bot ID 发生漂移，仍会拒绝绑定。
 - 一个 Slack App 安装最多只能当前绑定一个 Agent；冲突失败且不改变任一绑定。
 - 重新授权在新凭证代际就绪前保留当前绑定；替换只在激活时创建新绑定身份并禁用旧绑定。
-- 事件激活会锁定并重新核验当前 setup attempt 的精确 ID、活动状态和过期时间，再在同一事务中推进 credential、应用
-  待生效接收模式并完成 setup slot。已过期、已取消或已替换 attempt 的旧事件不能激活。
+- 事件激活会锁定并重新核验当前 setup attempt 的精确 ID、活动状态、过期时间、签名、重新解析的原始 envelope，以及
+  token/event 身份关联，再在同一事务中推进 credential、应用待生效接收模式并完成 setup slot。已过期、已取消或
+  已替换 attempt 的旧事件不能激活。
 - 当前 bot token 出现在 `tokens_revoked` 时，绑定进入需要重新授权状态。
 - `app_uninstalled` 会禁用绑定。管理员可以重试过期或失败的 setup、重新授权、替换或显式禁用绑定。
 
@@ -77,8 +85,9 @@ Slack CLI 能力都 ready 时才可 handoff。Slack 出站发送保持 provider-
 
 - 无效 Bot Token 与 Slack API 不可用；
 - 两种接收模式下的 scopes 缺失；
+- 生成的 manifest 始终为私聊启用可写的 App Home Messages 标签页；
 - 无效、过期或重放的 Slack 签名；
-- token 身份与签名事件身份不一致；
+- token 推导的 Team/Bot 身份与签名事件的 App/Team/bot authorization 关联不一致；
 - App/Team 安装重复绑定冲突；
 - 创建、同身份重新授权、显式替换、禁用、卸载与 token 撤销恢复；
 - 并发 setup/激活不产生部分切换；

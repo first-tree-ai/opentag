@@ -2110,7 +2110,11 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Workspace profile" })).toBeTruthy();
     expect(window.location.pathname).toBe("/workspace");
     expect(window.location.hash).toBe("");
-    expect(screen.getByRole("link", { name: "Create Workspace" })).toBeTruthy();
+    const createWorkspaceLink = screen.getByRole("link", { name: "Create Workspace" });
+    expect(screen.getByRole("heading", { name: "Workspace" }).closest("header")?.contains(createWorkspaceLink)).toBe(
+      true,
+    );
+    expect(screen.queryByText("Additional Workspace")).toBeNull();
   });
 
   it("switches Teams when Team preference storage is unavailable", async () => {

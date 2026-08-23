@@ -614,6 +614,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
 
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
     const trigger = within(dialog).getByRole("button", { name: "Connect another Computer" });
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
 
@@ -671,6 +672,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.change(within(dialog).getByLabelText("Agent name"), {
       target: { value: "research-assistant" },
     });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Connect another Computer" }));
 
     vi.useFakeTimers();
@@ -693,11 +695,12 @@ describe("OpenTag Web App Shell", () => {
         await Promise.resolve();
       });
 
-      expect(within(dialog).getByText("Codex · Ada's Linux Computer")).toBeTruthy();
+      expect(within(dialog).getByText("Ada's Linux Computer")).toBeTruthy();
+      expect(within(dialog).getByText("Codex")).toBeTruthy();
       expect((within(dialog).getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Assistant");
       expect((within(dialog).getByLabelText("Agent name") as HTMLInputElement).value).toBe("research-assistant");
       expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
-      expect(within(dialog).getByRole("button", { name: "Connect another Computer" })).toBe(document.activeElement);
+      expect(within(dialog).getByRole("button", { name: "Change Computer" })).toBe(document.activeElement);
     } finally {
       vi.useRealTimers();
     }
@@ -787,6 +790,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.change(within(dialog).getByLabelText("Agent name"), {
       target: { value: "research-assistant" },
     });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Connect another Computer" }));
 
     vi.useFakeTimers();
@@ -801,11 +805,12 @@ describe("OpenTag Web App Shell", () => {
         await vi.advanceTimersByTimeAsync(1_500);
       });
 
-      expect(within(dialog).getByText("Codex · Ada's Mac")).toBeTruthy();
+      expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
+      expect(within(dialog).getByText("Codex")).toBeTruthy();
       expect((within(dialog).getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Assistant");
       expect((within(dialog).getByLabelText("Agent name") as HTMLInputElement).value).toBe("research-assistant");
       expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
-      expect(within(dialog).getByRole("button", { name: "Connect another Computer" })).toBe(document.activeElement);
+      expect(within(dialog).getByRole("button", { name: "Change Computer" })).toBe(document.activeElement);
     } finally {
       vi.useRealTimers();
     }
@@ -866,8 +871,9 @@ describe("OpenTag Web App Shell", () => {
         await Promise.resolve();
       });
 
-      expect(within(dialog).getByText("Codex · Ada's Mac")).toBeTruthy();
-      expect(within(dialog).getByRole("button", { name: "Connect another Computer" })).toBe(document.activeElement);
+      expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
+      expect(within(dialog).getByText("Codex")).toBeTruthy();
+      expect(within(dialog).getByRole("button", { name: "Change Computer" })).toBe(document.activeElement);
     } finally {
       vi.useRealTimers();
     }
@@ -1911,9 +1917,11 @@ describe("OpenTag Web App Shell", () => {
     });
     window.history.replaceState({}, "", "/agents/new");
     render(<App />);
-    expect(await screen.findByText("Codex · Ada's Mac")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
-    expect(screen.queryByText(/Claude Code/)).toBeNull();
+    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
+    expect(screen.getByText("Codex")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Change Runtime" }));
+    const claudeCode = screen.getByRole("button", { name: /Claude Code Sign-in required/ });
+    expect(claudeCode.hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(false);
     fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Codex Reviewer" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
@@ -1966,19 +1974,23 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
-    await within(dialog).findByText("Codex · Ada's Mac");
-    expect(within(dialog).queryByRole("button", { name: "Change" })).toBeNull();
+    await within(dialog).findByText("Ada's Mac");
+    expect(within(dialog).getByText("Codex")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change Runtime" }));
+    expect(
+      within(dialog)
+        .getByRole("button", { name: /Claude Code Unavailable/ })
+        .hasAttribute("disabled"),
+    ).toBe(true);
 
     claudeReadiness.status = "ready";
     window.dispatchEvent(new Event("focus"));
-    const change = await within(dialog).findByRole("button", { name: "Change" });
-    fireEvent.click(change);
-    fireEvent.click(within(dialog).getByRole("button", { name: /Claude Code/ }));
-    expect(await within(dialog).findByText("Claude Code · Ada's Mac")).toBeTruthy();
+    fireEvent.click(await within(dialog).findByRole("button", { name: /Claude Code Ready/ }));
+    expect(await within(dialog).findByText("Claude Code")).toBeTruthy();
 
     claudeReadiness.status = "unavailable";
     window.dispatchEvent(new Event("focus"));
-    expect(await within(dialog).findByText("Codex · Ada's Mac")).toBeTruthy();
+    expect(await within(dialog).findByText("Codex")).toBeTruthy();
 
     ownComputerReadStatus = 503;
     window.dispatchEvent(new Event("focus"));

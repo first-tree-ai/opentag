@@ -9,7 +9,7 @@ import type {
   TeamMemberSummary,
   UserProfile,
 } from "@opentag/shared/browser";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentCreationFlow } from "../agent-creation/agent-creation-flow.js";
 import { browserApi } from "../api.js";
@@ -182,8 +182,10 @@ describe("OnboardingPage", () => {
         { computerId: computerBId, provider: "codex", runtimeReady: true },
       ]),
     });
-    expect(await screen.findByText("Codex · Ada's Mac")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    const runtime = await screen.findByRole("region", { name: "Where it runs" });
+    expect(within(runtime).getByText("Ada's Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Codex")).toBeTruthy();
+    fireEvent.click(within(runtime).getByRole("button", { name: "Change Computer" }));
     expect(screen.getByRole("button", { name: /Ada's Mac/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Studio Mac/ })).toBeTruthy();
     expect(vi.spyOn(browserApi, "createAgent")).not.toHaveBeenCalled();
@@ -198,16 +200,49 @@ describe("OnboardingPage", () => {
       ]),
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Change" }));
+    const runtime = await screen.findByRole("region", { name: "Where it runs" });
+    fireEvent.click(within(runtime).getByRole("button", { name: "Change Computer" }));
     fireEvent.click(screen.getByRole("button", { name: /Studio Mac/ }));
-    expect(await screen.findByText("Codex · Studio Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Studio Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Codex")).toBeTruthy();
   });
 
-  it("does not offer an unconfirmed Computer route before runtime facts arrive", async () => {
+  it("shows unavailable Runtime states after selecting a Computer without a ready route", async () => {
+    installFacts({ computers: [computerA, computerB] });
+    renderPage({
+      runtime: runtimeFacts([
+        { computerId: computerAId, provider: "codex", runtimeReady: true, status: "ready" },
+        { computerId: computerBId, provider: "claude-code", runtimeReady: false, status: "sign-in" },
+      ]),
+    });
+
+    const runtime = await screen.findByRole("region", { name: "Where it runs" });
+    expect(within(runtime).getByText("Ada's Mac")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toHaveProperty("disabled", false);
+
+    fireEvent.click(within(runtime).getByRole("button", { name: "Change Computer" }));
+    const unavailableComputer = within(runtime).getByRole("button", { name: /Studio Mac/ });
+    expect(unavailableComputer).toHaveProperty("disabled", false);
+    fireEvent.click(unavailableComputer);
+
+    expect(within(runtime).getByText("Studio Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Claude Code")).toBeTruthy();
+    expect(within(runtime).getByText("Sign-in required")).toBeTruthy();
+    expect(within(runtime).getByText("Finish sign-in on Studio Mac.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toHaveProperty("disabled", true);
+  });
+
+  it("allows inspecting an unconfirmed Computer before runtime facts arrive", async () => {
     installFacts({ computers: [computerA, computerB] });
     renderPage();
-    expect(await screen.findByText("Readiness unconfirmed")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+    const runtime = await screen.findByRole("region", { name: "Where it runs" });
+    expect(within(runtime).getByText("Readiness unconfirmed")).toBeTruthy();
+    fireEvent.click(within(runtime).getByRole("button", { name: "Change Computer" }));
+    const studioMac = within(runtime).getByRole("button", { name: /Studio Mac/ });
+    expect(studioMac).toHaveProperty("disabled", false);
+    fireEvent.click(studioMac);
+    expect(within(runtime).getByText("Studio Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Readiness unconfirmed")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Create Agent" })).toHaveProperty("disabled", true);
   });
 
@@ -579,11 +614,12 @@ describe("OnboardingPage", () => {
       ]),
     });
 
-    expect(await screen.findByText("Codex · Ada's Mac")).toBeTruthy();
+    const runtime = await screen.findByRole("region", { name: "Where it runs" });
+    expect(within(runtime).getByText("Codex")).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Change" }));
-    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
-    expect(await screen.findByText("Claude Code · Ada's Mac")).toBeTruthy();
+    fireEvent.click(within(runtime).getByRole("button", { name: "Change Runtime" }));
+    fireEvent.click(within(runtime).getByRole("button", { name: /Claude Code/ }));
+    expect(within(runtime).getByText("Claude Code")).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
@@ -608,10 +644,11 @@ describe("OnboardingPage", () => {
     const runtime: RuntimeFactsAdapter = { load: vi.fn().mockResolvedValue(available) };
     renderPage({ runtime });
 
-    await screen.findByText("Codex · Ada's Mac");
-    fireEvent.click(screen.getByRole("button", { name: "Change" }));
-    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
-    expect(await screen.findByText("Claude Code · Ada's Mac")).toBeTruthy();
+    const runtimeRegion = await screen.findByRole("region", { name: "Where it runs" });
+    expect(within(runtimeRegion).getByText("Codex")).toBeTruthy();
+    fireEvent.click(within(runtimeRegion).getByRole("button", { name: "Change Runtime" }));
+    fireEvent.click(within(runtimeRegion).getByRole("button", { name: /Claude Code/ }));
+    expect(within(runtimeRegion).getByText("Claude Code")).toBeTruthy();
     expect(runtime.load).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
     await waitFor(() =>
@@ -859,10 +896,12 @@ describe("OnboardingPage", () => {
         { computerId: computerBId, provider: "codex", runtimeReady: true },
       ]),
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Change" }));
+    const runtime = await screen.findByRole("region", { name: "Where it runs" });
+    fireEvent.click(within(runtime).getByRole("button", { name: "Change Computer" }));
     fireEvent.click(screen.getByRole("button", { name: /Studio Mac/ }));
 
-    expect(await screen.findByText("Codex · Studio Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Studio Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Codex")).toBeTruthy();
   });
 
   it("keeps an explicit Agent choice in memory when localStorage throws", async () => {

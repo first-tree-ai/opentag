@@ -2734,10 +2734,6 @@ textarea:focus {
 .agent-create-runtime {
   display: grid;
   gap: 16px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-soft);
-  padding: 18px;
 }
 
 .agent-create-runtime-header {
@@ -2758,15 +2754,94 @@ textarea:focus {
   font-size: var(--text-meta);
 }
 
-.agent-create-grid {
+.agent-create-route-summary {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.agent-create-route-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 76px;
+  padding: 14px 16px;
+}
+
+.agent-create-route-row + .agent-create-route-row {
+  border-top: 1px solid var(--border);
+}
+
+.agent-create-route-copy {
   display: grid;
-  gap: 14px;
-  grid-template-columns: minmax(0, 0.82fr) minmax(0, 1.18fr);
+  min-width: 0;
+  gap: 4px;
+}
+
+.agent-create-route-copy > span,
+.agent-create-route-picker-title {
+  color: var(--muted);
+  font-size: var(--text-meta);
+  font-weight: var(--fw-medium);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+}
+
+.agent-create-route-copy strong {
+  overflow: hidden;
+  font-size: var(--text-ui);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-create-route-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.agent-create-route-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: var(--text-meta);
+  white-space: nowrap;
+}
+
+.agent-create-route-state > span {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--muted);
+}
+
+.agent-create-route-state[data-tone="success"] > span {
+  background: var(--success);
+}
+
+.agent-create-route-state[data-tone="warning"] > span {
+  background: var(--warning);
+}
+
+.agent-create-route-picker {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 10px;
+}
+
+.agent-create-route-picker-title {
+  padding: 4px 6px 2px;
 }
 
 .agent-create-runtime-status {
-  border-top: 1px solid var(--border);
-  padding-top: 14px;
+  padding: 0 2px;
 }
 
 .agent-create-runtime-status .ds-status {
@@ -2783,15 +2858,12 @@ textarea:focus {
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  border-top: 1px solid var(--border);
-  padding-top: 14px;
+  padding: 0 2px;
 }
 
 .agent-create-route-list {
   display: grid;
-  gap: 8px;
-  border-top: 1px solid var(--border);
-  padding-top: 14px;
+  gap: 4px;
 }
 
 .agent-create-route-option {
@@ -2811,7 +2883,12 @@ textarea:focus {
 .agent-create-route-option:hover,
 .agent-create-route-option[data-selected="true"] {
   border-color: var(--border);
-  background: var(--surface);
+  background: var(--surface-soft);
+}
+
+.agent-create-route-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
 }
 
 .agent-create-route-option:focus-visible {
@@ -2824,10 +2901,29 @@ textarea:focus {
   font-size: var(--text-meta);
 }
 
+.agent-create-route-option-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.agent-create-route-option-copy strong {
+  overflow: hidden;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-create-route-option-copy small {
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
 .agent-create-computer-action {
   display: flex;
-  justify-content: flex-end;
-  margin-top: -8px;
+  justify-content: flex-start;
+  border-top: 1px solid var(--border);
+  padding: 8px 6px 0;
 }
 
 .field-hint {
@@ -3795,8 +3891,14 @@ textarea:focus {
     padding: 20px;
   }
 
-  .agent-create-grid {
-    grid-template-columns: 1fr;
+  .agent-create-route-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .agent-create-route-controls {
+    justify-content: space-between;
   }
 
   .page-header,

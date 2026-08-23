@@ -99,14 +99,16 @@ export function AgentCreationFlow({
   const [nameError, setNameError] = useState<string>();
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
-  const [changingRoute, setChangingRoute] = useState(false);
+  const [changingComputer, setChangingComputer] = useState(false);
+  const [changingRuntime, setChangingRuntime] = useState(false);
   const [connectingComputer, setConnectingComputer] = useState(false);
-  const [selectedRouteKey, setSelectedRouteKey] = useState(() =>
-    pendingIntent ? routeKey(pendingIntent.request.computerId, pendingIntent.request.runtimeProvider) : undefined,
+  const [selectedComputerId, setSelectedComputerId] = useState(() => pendingIntent?.request.computerId);
+  const [selectedProvider, setSelectedProvider] = useState<AgentRuntimeProvider | undefined>(
+    () => pendingIntent?.request.runtimeProvider,
   );
   const firstFieldRef = useRef<HTMLInputElement>(null);
   const nameFieldRef = useRef<HTMLInputElement>(null);
-  const computerSetupToggleRef = useRef<HTMLButtonElement>(null);
+  const computerChangeButtonRef = useRef<HTMLButtonElement>(null);
   const inFlightRef = useRef(false);
   const resumeAttemptedRef = useRef(false);
   const connectedComputerIdRef = useRef<string | undefined>(undefined);
@@ -114,9 +116,34 @@ export function AgentCreationFlow({
   const computerRefreshStartedRef = useRef(false);
 
   const readyRoutes = useMemo(() => resolveReadyRoutes(facts), [facts]);
-  const selectedRoute =
-    readyRoutes.find((route) => routeKey(route.computer.id, route.provider) === selectedRouteKey) ?? readyRoutes[0];
-  const alternatives = readyRoutes.filter((route) => route !== selectedRoute);
+  const defaultReadyRoute = readyRoutes[0];
+  const displayedComputer =
+    facts.computers.find((computer) => computer.id === selectedComputerId) ??
+    defaultReadyRoute?.computer ??
+    facts.computers.find((computer) => computer.connectionStatus === "online") ??
+    facts.computers[0];
+  const displayedProvider =
+    facts.providers.find(
+      (provider) => provider.computerId === displayedComputer?.id && provider.provider === selectedProvider,
+    ) ??
+    facts.providers.find(
+      (provider) =>
+        provider.computerId === displayedComputer?.id &&
+        displayedComputer.id === defaultReadyRoute?.computer.id &&
+        provider.provider === defaultReadyRoute.provider,
+    ) ??
+    [...facts.providers]
+      .filter((provider) => provider.computerId === displayedComputer?.id)
+      .sort((left, right) => providerRank(left.provider) - providerRank(right.provider))[0];
+  const selectedRoute = readyRoutes.find(
+    (route) => route.computer.id === displayedComputer?.id && route.provider === displayedProvider?.provider,
+  );
+
+  useEffect(() => {
+    if (!displayedComputer || !displayedProvider || selectedRoute) return;
+    const fallbackRoute = readyRoutes.find((route) => route.computer.id === displayedComputer.id);
+    if (fallbackRoute) setSelectedProvider(fallbackRoute.provider);
+  }, [displayedComputer, displayedProvider, readyRoutes, selectedRoute]);
 
   useEffect(() => {
     firstFieldRef.current?.focus();
@@ -133,11 +160,18 @@ export function AgentCreationFlow({
   useEffect(() => {
     const connectedComputerId = connectedComputerIdRef.current;
     if (!connectedComputerId) return;
+    const connectedComputer = facts.computers.find((computer) => computer.id === connectedComputerId);
+    if (!connectedComputer) return;
     const connectedRoute = readyRoutes.find((route) => route.computer.id === connectedComputerId);
-    if (!connectedRoute) return;
-    setSelectedRouteKey(routeKey(connectedRoute.computer.id, connectedRoute.provider));
+    const connectedProvider =
+      connectedRoute?.provider ??
+      [...facts.providers]
+        .filter((provider) => provider.computerId === connectedComputerId)
+        .sort((left, right) => providerRank(left.provider) - providerRank(right.provider))[0]?.provider;
+    setSelectedComputerId(connectedComputer.id);
+    setSelectedProvider(connectedProvider);
     connectedComputerIdRef.current = undefined;
-  }, [readyRoutes]);
+  }, [facts.computers, facts.providers, readyRoutes]);
 
   useEffect(() => {
     if (!restoreComputerSetupFocusRef.current) return;
@@ -148,7 +182,7 @@ export function AgentCreationFlow({
     if (!computerRefreshStartedRef.current) return;
     restoreComputerSetupFocusRef.current = false;
     computerRefreshStartedRef.current = false;
-    (computerSetupToggleRef.current ?? firstFieldRef.current)?.focus();
+    (computerChangeButtonRef.current ?? firstFieldRef.current)?.focus();
   }, [refreshing]);
 
   const create = useCallback(
@@ -292,18 +326,36 @@ export function AgentCreationFlow({
       </div>
 
       <RuntimeRouteSection
-        alternatives={alternatives}
-        changingRoute={changingRoute}
+        changingComputer={changingComputer}
+        changingRuntime={changingRuntime}
         connectingComputer={connectingComputer}
-        computerSetupToggleRef={computerSetupToggleRef}
+        computerChangeButtonRef={computerChangeButtonRef}
+        displayedComputer={displayedComputer}
+        displayedProvider={displayedProvider}
         facts={facts}
+        readyRoutes={readyRoutes}
         refreshing={refreshing}
         selectedRoute={selectedRoute}
         submitting={submitting}
         teamId={teamId}
-        onChangeRoute={(route) => {
-          setSelectedRouteKey(routeKey(route.computer.id, route.provider));
-          setChangingRoute(false);
+        onChangeComputer={(computer) => {
+          const providers = [...facts.providers]
+            .filter((provider) => provider.computerId === computer.id)
+            .sort((left, right) => providerRank(left.provider) - providerRank(right.provider));
+          const nextProvider =
+            providers.find((provider) => provider.provider === displayedProvider?.provider)?.provider ??
+            readyRoutes.find((route) => route.computer.id === computer.id)?.provider ??
+            providers[0]?.provider;
+          setSelectedComputerId(computer.id);
+          setSelectedProvider(nextProvider);
+          setChangingComputer(false);
+          setChangingRuntime(false);
+        }}
+        onChangeRuntime={(provider) => {
+          if (displayedComputer) setSelectedComputerId(displayedComputer.id);
+          setSelectedProvider(provider.provider);
+          setChangingComputer(false);
+          setChangingRuntime(false);
         }}
         onConnected={(computer) => {
           connectedComputerIdRef.current = computer.id;
@@ -311,6 +363,7 @@ export function AgentCreationFlow({
           computerRefreshStartedRef.current = false;
           if (onCancel) onComputerRefreshFocus?.();
           setConnectingComputer(false);
+          setChangingComputer(false);
           onRefresh();
         }}
         onRefresh={onRefresh}
@@ -319,7 +372,16 @@ export function AgentCreationFlow({
           computerRefreshStartedRef.current = false;
           setConnectingComputer((current) => !current);
         }}
-        onToggleRoutes={() => setChangingRoute((value) => !value)}
+        onToggleComputer={() => {
+          setChangingRuntime(false);
+          setConnectingComputer(false);
+          setChangingComputer((current) => !current);
+        }}
+        onToggleRuntime={() => {
+          setChangingComputer(false);
+          setConnectingComputer(false);
+          setChangingRuntime((current) => !current);
+        }}
       />
 
       {error ? (
@@ -342,130 +404,250 @@ export function AgentCreationFlow({
 }
 
 function RuntimeRouteSection({
-  alternatives,
-  changingRoute,
+  changingComputer,
+  changingRuntime,
   connectingComputer,
-  computerSetupToggleRef,
+  computerChangeButtonRef,
+  displayedComputer,
+  displayedProvider,
   facts,
-  onChangeRoute,
+  onChangeComputer,
+  onChangeRuntime,
   onConnected,
   onRefresh,
   onToggleComputerSetup,
-  onToggleRoutes,
+  onToggleComputer,
+  onToggleRuntime,
+  readyRoutes,
   refreshing,
   selectedRoute,
   submitting,
   teamId,
 }: {
-  alternatives: readonly ReadyRoute[];
-  changingRoute: boolean;
+  changingComputer: boolean;
+  changingRuntime: boolean;
   connectingComputer: boolean;
-  computerSetupToggleRef: { current: HTMLButtonElement | null };
+  computerChangeButtonRef: { current: HTMLButtonElement | null };
+  displayedComputer: AgentCreationComputer | undefined;
+  displayedProvider: AgentCreationProvider | undefined;
   facts: AgentCreationFacts;
-  onChangeRoute: (route: ReadyRoute) => void;
+  onChangeComputer: (computer: AgentCreationComputer) => void;
+  onChangeRuntime: (provider: AgentCreationProvider) => void;
   onConnected: (computer: AgentCreationComputer) => void;
   onRefresh: () => void;
   onToggleComputerSetup: () => void;
-  onToggleRoutes: () => void;
+  onToggleComputer: () => void;
+  onToggleRuntime: () => void;
+  readyRoutes: readonly ReadyRoute[];
   refreshing: boolean;
   selectedRoute: ReadyRoute | undefined;
   submitting: boolean;
   teamId: string;
 }) {
   const onlineComputers = facts.computers.filter((computer) => computer.connectionStatus === "online");
-  const attention = providerAttention(facts, onlineComputers[0]);
+  const attention = providerAttention(facts, displayedComputer, displayedProvider);
+  const providerOptions = [...facts.providers]
+    .filter((provider) => provider.computerId === displayedComputer?.id)
+    .sort((left, right) => providerRank(left.provider) - providerRank(right.provider));
+  const computerOptions = [...facts.computers].sort((left, right) => left.displayName.localeCompare(right.displayName));
   return (
     <section aria-labelledby="agent-runtime-heading" className="agent-create-runtime">
       <header className="agent-create-runtime-header">
         <div>
           <h3 id="agent-runtime-heading">Where it runs</h3>
-          {selectedRoute ? (
-            <p>
-              {providerLabel(selectedRoute.provider)} · {selectedRoute.computer.displayName}
-            </p>
-          ) : null}
+          <p>Choose the Computer and Runtime for this Agent.</p>
         </div>
-        {selectedRoute && alternatives.length > 0 ? (
-          <Button
-            aria-expanded={changingRoute}
-            disabled={submitting || refreshing}
-            size="compact"
-            variant="ghost"
-            onClick={onToggleRoutes}
-          >
-            Change
-          </Button>
-        ) : null}
       </header>
 
       {facts.computers.length === 0 ? (
         <div className="agent-create-runtime-setup">
           <ComputerSetup teamId={teamId} onConnected={onConnected} />
         </div>
-      ) : selectedRoute ? (
+      ) : displayedComputer ? (
         <>
-          <div aria-live="polite" className="agent-create-runtime-status" role="status">
-            <StatusIndicator label="Ready to run" tone="success" />
-          </div>
-          {changingRoute ? (
-            <div className="agent-create-route-list">
-              {[selectedRoute, ...alternatives].map((route) => (
-                <button
-                  className="agent-create-route-option"
-                  data-selected={route === selectedRoute ? "true" : undefined}
+          <div className="agent-create-route-summary">
+            <div className="agent-create-route-row">
+              <div className="agent-create-route-copy">
+                <span>Computer</span>
+                <strong>{displayedComputer.displayName}</strong>
+              </div>
+              <div className="agent-create-route-controls">
+                <RouteState
+                  label={displayedComputer.connectionStatus === "online" ? "Online" : "Offline"}
+                  tone={displayedComputer.connectionStatus === "online" ? "success" : "warning"}
+                />
+                <Button
+                  aria-controls="new-agent-computer-picker"
+                  aria-expanded={changingComputer}
+                  aria-label="Change Computer"
                   disabled={submitting || refreshing}
-                  key={routeKey(route.computer.id, route.provider)}
-                  type="button"
-                  onClick={() => onChangeRoute(route)}
+                  ref={computerChangeButtonRef}
+                  size="compact"
+                  variant="inline"
+                  onClick={onToggleComputer}
                 >
-                  <strong>{providerLabel(route.provider)}</strong>
-                  <span>{route.computer.displayName}</span>
-                </button>
-              ))}
+                  Change
+                </Button>
+              </div>
             </div>
-          ) : null}
-        </>
-      ) : onlineComputers.length === 0 ? (
-        <RuntimeAttention
-          detail="Reconnect one of your Computers to continue."
-          label="Computer offline"
-          refreshing={refreshing}
-          tone="warning"
-          onRefresh={onRefresh}
-        />
-      ) : (
-        <RuntimeAttention
-          detail={attention.detail}
-          label={attention.label}
-          refreshing={refreshing}
-          tone={attention.tone}
-          onRefresh={onRefresh}
-        />
-      )}
-      {facts.computers.length > 0 ? (
-        <>
-          <div className="agent-create-computer-action">
-            <Button
-              aria-controls="new-agent-computer-setup"
-              aria-expanded={connectingComputer}
-              disabled={submitting}
-              ref={computerSetupToggleRef}
-              size="compact"
-              variant="inline"
-              onClick={onToggleComputerSetup}
-            >
-              {connectingComputer ? "Cancel Computer connection" : "Connect another Computer"}
-            </Button>
+            <div className="agent-create-route-row">
+              <div className="agent-create-route-copy">
+                <span>Runtime</span>
+                <strong>{displayedProvider ? providerLabel(displayedProvider.provider) : "No Runtime detected"}</strong>
+              </div>
+              <div className="agent-create-route-controls">
+                <RouteState
+                  label={selectedRoute ? "Ready" : providerStatusLabel(displayedProvider)}
+                  tone={selectedRoute ? "success" : providerStatusTone(displayedProvider)}
+                />
+                {providerOptions.length > 0 ? (
+                  <Button
+                    aria-controls="new-agent-runtime-picker"
+                    aria-expanded={changingRuntime}
+                    aria-label="Change Runtime"
+                    disabled={submitting || refreshing}
+                    size="compact"
+                    variant="inline"
+                    onClick={onToggleRuntime}
+                  >
+                    Change
+                  </Button>
+                ) : null}
+              </div>
+            </div>
           </div>
-          {connectingComputer ? (
-            <div className="agent-create-runtime-setup" id="new-agent-computer-setup">
-              <ComputerSetup teamId={teamId} onConnected={onConnected} />
+
+          {changingComputer ? (
+            <div className="agent-create-route-picker" id="new-agent-computer-picker">
+              <strong className="agent-create-route-picker-title">Choose Computer</strong>
+              <div className="agent-create-route-list">
+                {computerOptions.map((computer) => {
+                  const routes = readyRoutes.filter((route) => route.computer.id === computer.id);
+                  return (
+                    <button
+                      aria-pressed={computer.id === displayedComputer.id}
+                      className="agent-create-route-option"
+                      data-selected={computer.id === displayedComputer.id ? "true" : undefined}
+                      disabled={submitting || refreshing}
+                      key={computer.id}
+                      type="button"
+                      onClick={() => onChangeComputer(computer)}
+                    >
+                      <span className="agent-create-route-option-copy">
+                        <strong>{computer.displayName}</strong>
+                        <small>{computerRouteSummary(computer, routes.length)}</small>
+                      </span>
+                      <span>{computer.connectionStatus === "online" ? "Online" : "Offline"}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="agent-create-computer-action">
+                <Button
+                  aria-controls="new-agent-computer-setup"
+                  aria-expanded={connectingComputer}
+                  disabled={submitting}
+                  size="compact"
+                  variant="inline"
+                  onClick={onToggleComputerSetup}
+                >
+                  {connectingComputer ? "Cancel Computer connection" : "Connect another Computer"}
+                </Button>
+              </div>
+              {connectingComputer ? (
+                <div className="agent-create-runtime-setup" id="new-agent-computer-setup">
+                  <ComputerSetup teamId={teamId} onConnected={onConnected} />
+                </div>
+              ) : null}
             </div>
           ) : null}
+
+          {changingRuntime ? (
+            <div className="agent-create-route-picker" id="new-agent-runtime-picker">
+              <strong className="agent-create-route-picker-title">Choose Runtime</strong>
+              <div className="agent-create-route-list">
+                {providerOptions.map((provider) => {
+                  const route = readyRoutes.find(
+                    (candidate) =>
+                      candidate.computer.id === provider.computerId && candidate.provider === provider.provider,
+                  );
+                  return (
+                    <button
+                      aria-pressed={provider.provider === displayedProvider?.provider}
+                      className="agent-create-route-option"
+                      data-selected={provider.provider === displayedProvider?.provider ? "true" : undefined}
+                      disabled={submitting || refreshing || route === undefined}
+                      key={provider.provider}
+                      type="button"
+                      onClick={() => onChangeRuntime(provider)}
+                    >
+                      <strong>{providerLabel(provider.provider)}</strong>
+                      <span>{providerStatusLabel(provider)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {selectedRoute ? (
+            <div aria-live="polite" className="agent-create-runtime-status" role="status">
+              <StatusIndicator label="Ready to run" tone="success" />
+            </div>
+          ) : displayedComputer.connectionStatus === "offline" ? (
+            <RuntimeAttention
+              detail={
+                onlineComputers.length === 0
+                  ? "Reconnect one of your Computers to continue."
+                  : `Reconnect ${displayedComputer.displayName} or choose another Computer to continue.`
+              }
+              label="Computer offline"
+              refreshing={refreshing}
+              tone="warning"
+              onRefresh={onRefresh}
+            />
+          ) : (
+            <RuntimeAttention
+              detail={attention.detail}
+              label={attention.label}
+              refreshing={refreshing}
+              tone={attention.tone}
+              onRefresh={onRefresh}
+            />
+          )}
         </>
       ) : null}
     </section>
   );
+}
+
+function RouteState({ label, tone }: { label: string; tone: "success" | "warning" | "neutral" }) {
+  return (
+    <span className="agent-create-route-state" data-tone={tone}>
+      <span aria-hidden="true" />
+      {label}
+    </span>
+  );
+}
+
+function computerRouteSummary(computer: AgentCreationComputer, readyRuntimeCount: number): string {
+  if (computer.connectionStatus === "offline") return "Computer offline";
+  if (readyRuntimeCount === 0) return "No Runtime ready";
+  return `${readyRuntimeCount} ${readyRuntimeCount === 1 ? "Runtime" : "Runtimes"} ready`;
+}
+
+function providerStatusLabel(provider: AgentCreationProvider | undefined): string {
+  if (provider?.runtimeReady || provider?.status === "ready") return "Ready";
+  if (provider?.status === "checking") return "Checking";
+  if (provider?.status === "install") return "Not installed";
+  if (provider?.status === "sign-in") return "Sign-in required";
+  if (provider?.status === "unavailable") return "Unavailable";
+  return "Unconfirmed";
+}
+
+function providerStatusTone(provider: AgentCreationProvider | undefined): "success" | "warning" | "neutral" {
+  if (provider?.runtimeReady || provider?.status === "ready") return "success";
+  return provider?.status === "checking" || provider === undefined ? "neutral" : "warning";
 }
 
 function RuntimeAttention({
@@ -494,6 +676,7 @@ function RuntimeAttention({
 function providerAttention(
   facts: AgentCreationFacts,
   computer: AgentCreationComputer | undefined,
+  selectedProvider: AgentCreationProvider | undefined,
 ): { detail: string; label: string; tone: StatusTone } {
   if (!facts.runtimeEvidenceAvailable) {
     return {
@@ -502,7 +685,7 @@ function providerAttention(
       tone: "neutral",
     };
   }
-  const provider = facts.providers.find((candidate) => candidate.computerId === computer?.id);
+  const provider = selectedProvider;
   const providerName = providerLabel(provider?.provider ?? "codex");
   if (provider?.status === "install") {
     return {
@@ -550,10 +733,6 @@ function providerRank(provider: AgentRuntimeProvider): number {
 
 function providerLabel(provider: AgentRuntimeProvider): string {
   return provider === "claude-code" ? "Claude Code" : "Codex";
-}
-
-function routeKey(computerId: string, provider: AgentRuntimeProvider): string {
-  return `${computerId}:${provider}`;
 }
 
 function createAgentOnce(record: CreationIntentRecord): Promise<AgentAdminConfig> {

@@ -61,6 +61,17 @@ describe("Slack installed-binding adapter", () => {
     });
   });
 
+  it("bounds auth.test with a timeout and reports upstream unavailability without credential detail", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new DOMException("The operation was aborted", "TimeoutError"));
+    const api = new DefaultSlackApiClient(undefined, fetchImpl);
+
+    await expect(api.inspectInstallation("xoxb-secret")).rejects.toThrow("SLACK_AUTH_UPSTREAM_UNAVAILABLE");
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://slack.com/api/auth.test",
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
+  });
+
   it("preserves the signed-event App identity when runtime auth.test omits app_id", async () => {
     const adapter = new SlackAdapter({
       api: {

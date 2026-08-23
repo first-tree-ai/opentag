@@ -37,6 +37,7 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import { type AgentCreationFacts, AgentCreationFlow } from "./agent-creation/agent-creation-flow.js";
+import { AgentIntegrationsTab, AgentSkillsTab } from "./agent-detail-capabilities.js";
 import { ApiError, browserApi } from "./api.js";
 // Google-provided, pre-approved button asset: https://developers.google.com/identity/branding-guidelines
 import googleSignInButton from "./assets/google-sign-in-light@2x.png";
@@ -380,6 +381,7 @@ export function AppRouter() {
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/agents/new" element={<NewAgentPage />} />
             <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
+            <Route path="/agents/:agentId/access" element={<LegacyAgentAccessRedirect />} />
             <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
             <Route path="/tasks" element={<TasksPage />} />
             <Route path="/integrations" element={<IntegrationsPage />} />
@@ -1375,8 +1377,29 @@ const agentSections = [
   { key: "general", label: "Overview" },
   { key: "runtime", label: "Runtime" },
   { key: "im", label: "Messaging" },
-  { key: "access", label: "Access" },
+  { key: "integrations", label: "Integrations" },
+  { key: "skills", label: "Skills" },
 ] as const;
+
+// Integrations and Skills deliberately have independent routes. Their components
+// own the preview/no-contract boundary until authoritative Agent assignments land.
+
+function LegacyAgentAccessRedirect() {
+  const { agentId = "" } = useParams();
+  return <Navigate replace to={`/agents/${agentId}/general#permissions`} />;
+}
+
+function AgentDetailAnchor() {
+  const { hash } = useLocation();
+  useEffect(() => {
+    if (!hash) return;
+    const target = document.getElementById(hash.slice(1));
+    if (!target) return;
+    target.scrollIntoView?.({ block: "start" });
+    target.focus({ preventScroll: true });
+  }, [hash]);
+  return null;
+}
 
 function AgentDetailPage() {
   const { agentId = "", tab = "general" } = useParams();
@@ -1438,6 +1461,7 @@ function AgentDetailPage() {
                 <p>{agentSectionDescription(currentSection.key)}</p>
               </header>
               <AgentTab agent={agent} tab={tab} onAgentChanged={() => setRefreshVersion((value) => value + 1)} />
+              <AgentDetailAnchor />
             </div>
           </div>
         </section>
@@ -1497,64 +1521,50 @@ function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetailView; tab:
   if (tab === "general") return <GeneralTab agent={agent} onAgentChanged={onAgentChanged} />;
   if (tab === "runtime") return <RuntimeTab agent={agent} onAgentChanged={onAgentChanged} />;
   if (tab === "im") return <ImTab agent={agent} onAgentChanged={onAgentChanged} />;
-  if (tab === "access") return <AccessTab agent={agent} />;
+  if (tab === "integrations") return <AgentIntegrationsTab />;
+  if (tab === "skills") return <AgentSkillsTab />;
   return <NotFoundPage />;
 }
 
 function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
-  const channel = agent.availability.dependencies.channel;
-  const channelLabel = channel.provider ? titleCase(channel.provider) : undefined;
-  const botDisplayName = channel.botDisplayName ?? agent.displayName;
   return (
     <div className="overview-stack">
-      <section className="overview-section" aria-labelledby="use-agent-heading">
+      <section className="overview-section" aria-labelledby="agent-profile-heading">
         <div className="overview-section-heading">
-          <h3 id="use-agent-heading">Use this Agent</h3>
-          <Link to={`/agents/${agent.id}/im`}>
-            {agent.viewerCapabilities.canManage ? "Manage messaging" : "View messaging"}
-          </Link>
-        </div>
-        {channel.state === "connected" && channelLabel ? (
-          <div className="agent-use-panel">
-            <div className="agent-use-copy">
-              <span className="agent-use-channel">{channelLabel}</span>
-              <h4>Message @{agent.name}</h4>
-              <p>{agentUseInstruction(agent, channelLabel)}</p>
-            </div>
-            <div className="agent-use-identity">
-              <span>{botDisplayName}</span>
-              <small>{receiveModeLabel(agent.receiveMode)}</small>
-            </div>
+          <div>
+            <h3 id="agent-profile-heading">Agent profile</h3>
+            <p>The stable identity teammates see when they work with this Agent.</p>
           </div>
-        ) : channel.state === "not_connected" ? (
-          <div className="agent-use-panel empty">
-            <div className="agent-use-copy">
-              <span className="agent-use-channel">Messaging</span>
-              <h4>Connect Feishu or Slack</h4>
-              <p>This Agent needs a messaging identity before teammates can send it work.</p>
-            </div>
-          </div>
-        ) : (
-          <div className="agent-use-panel empty">
-            <div className="agent-use-copy">
-              <span className="agent-use-channel">Messaging</span>
-              <h4>Messaging status unavailable</h4>
-              <p>The messaging identity could not be confirmed. Try again in a moment.</p>
-            </div>
-          </div>
-        )}
-      </section>
-      <section className="overview-section" aria-labelledby="identity-access-heading">
-        <div className="overview-section-heading">
-          <h3 id="identity-access-heading">Identity &amp; access</h3>
-          <Link to={`/agents/${agent.id}/access`}>Manage access</Link>
         </div>
         <DefinitionList
           rows={[
+            ["Agent name", `@${agent.name}`],
             ["Manager", agent.manager.displayName],
-            ["Who can use", "Members"],
+            ["Lifecycle", agent.status === "active" ? "Active" : "Suspended"],
+            ["Created", formatDate(agent.createdAt)],
           ]}
         />
+      </section>
+      <section
+        className="overview-section"
+        id="permissions"
+        aria-labelledby="workspace-permissions-heading"
+        tabIndex={-1}
+      >
+        <div className="overview-section-heading">
+          <div>
+            <h3 id="workspace-permissions-heading">Workspace permissions</h3>
+            <p>Agent permissions currently follow Workspace membership and role.</p>
+          </div>
+        </div>
+        <SettingsList className="agent-permissions-list">
+          <SettingsRow description="Send messages to this Agent and view its safe details." label="Use">
+            <strong>All active Workspace members</strong>
+          </SettingsRow>
+          <SettingsRow description="Change settings, connections, and lifecycle." label="Manage">
+            <strong>Workspace admins</strong>
+          </SettingsRow>
+        </SettingsList>
       </section>
       {agent.viewerCapabilities.canManage ? <AdminControls agent={agent} onAgentChanged={onAgentChanged} /> : null}
     </div>
@@ -1586,7 +1596,7 @@ function AdminControls({ agent, onAgentChanged }: { agent: AgentDetailView; onAg
         type="button"
         onClick={() => setOpen((value) => !value)}
       >
-        {open ? "Close Agent settings" : "Edit Agent settings"}
+        {open ? "Close Agent administration" : "Open Agent administration"}
       </button>
       {open ? <GeneralAdminForm agent={agent} onAgentChanged={onAgentChanged} /> : null}
     </div>
@@ -1811,21 +1821,19 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
               <div className="im-stack">
                 {binding ? (
                   <>
-                    <section className="im-section" aria-labelledby="bot-connection-heading">
+                    <section className="im-section" aria-labelledby="contact-channel-heading">
                       <div className="im-section-heading">
-                        <h3 id="bot-connection-heading">Bot connection</h3>
-                        <p>{agent.displayName} receives messages through this dedicated identity.</p>
+                        <h3 id="contact-channel-heading">Contact channel</h3>
+                        <p>Where teammates can reach this Agent and whether the connection is available.</p>
                       </div>
                       <div className="binding-status">
                         <StatusIndicator
-                          detail={
-                            <>
-                              <span>{titleCase(binding.provider)} · </span>
-                              <span>{imBindingStateLabel(binding)}</span>
-                            </>
-                          }
+                          detail={`${titleCase(binding.provider)} · ${messagingConnectionLabel(
+                            binding,
+                            agent.availability.dependencies.handoff.state,
+                          )}`}
                           label={binding.bot.displayName}
-                          tone={imBindingTone(binding)}
+                          tone={messagingConnectionTone(binding, agent.availability.dependencies.handoff.state)}
                         />
                         <small>
                           {binding.lastConfirmedAt
@@ -1833,6 +1841,16 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                             : "Unable to confirm"}
                         </small>
                       </div>
+                      <dl className="messaging-contact-facts">
+                        <div>
+                          <dt>Contact</dt>
+                          <dd>@{agent.name}</dd>
+                        </div>
+                        <div>
+                          <dt>How to use</dt>
+                          <dd>{agentUseInstruction(agent, titleCase(binding.provider))}</dd>
+                        </div>
+                      </dl>
                       {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
                       binding.provider === "feishu" &&
                       agent.viewerCapabilities.canManage ? (
@@ -1844,53 +1862,15 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                       binding.provider === "slack" ? (
                         <span className="notice">Slack reauthorization is not available in this release.</span>
                       ) : null}
-                    </section>
-                    <section className="im-section" aria-labelledby="message-policy-heading">
-                      <div className="im-section-heading">
-                        <h3 id="message-policy-heading">Message policy</h3>
-                        <p>Choose which channel messages can start Agent work.</p>
-                      </div>
-                      <div className="message-policy">
-                        <div className="message-policy-copy">
-                          <strong>Receive mode</strong>
-                          <p>Mentions only is the safer default and reduces unnecessary context.</p>
-                        </div>
-                        {agent.viewerCapabilities.canManage ? (
-                          <div className="segmented-control">
-                            {binding.receiveMode === "mention_only" ? (
-                              <>
-                                <span className="active">Mentions only</span>
-                                <button type="button" onClick={() => void changeReceiveMode("all_message")}>
-                                  Enable all messages
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
-                                  Use mentions only
-                                </button>
-                                <span className="active">All messages</span>
-                              </>
-                            )}
-                          </div>
-                        ) : (
-                          <strong>{receiveModeLabel(binding.receiveMode)}</strong>
-                        )}
-                      </div>
-                    </section>
-                    {agent.viewerCapabilities.canManage ? (
-                      <section className="im-section" aria-labelledby="connection-actions-heading">
-                        <div className="im-section-heading">
-                          <h3 id="connection-actions-heading">Connection actions</h3>
-                          <p>Changes here can temporarily stop new IM work.</p>
-                        </div>
-                        <div className="im-actions">
+                      {agent.viewerCapabilities.canManage ? (
+                        <div className="im-actions messaging-connection-actions">
                           {binding.provider === "feishu" ? (
-                            <Button variant="secondary" onClick={() => void connect("replace")}>
-                              Replace with existing or new Feishu Bot
+                            <Button size="compact" variant="outline" onClick={() => void connect("replace")}>
+                              Replace Feishu Bot
                             </Button>
                           ) : null}
                           <Button
+                            size="compact"
                             variant="danger"
                             onClick={() => {
                               if (
@@ -1912,26 +1892,67 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                             Disable IM binding
                           </Button>
                         </div>
-                      </section>
-                    ) : (
-                      <p className="muted">IM setup is managed by Admins.</p>
-                    )}
+                      ) : (
+                        <p className="muted">Workspace admins manage this contact channel.</p>
+                      )}
+                    </section>
+                    <section className="im-section" aria-labelledby="trigger-rules-heading">
+                      <div className="im-section-heading">
+                        <h3 id="trigger-rules-heading">Trigger rules</h3>
+                        <p>Which incoming messages can start Agent work.</p>
+                      </div>
+                      <SettingsList className="agent-message-rules">
+                        <SettingsRow description="A direct message can always start work." label="Direct messages">
+                          <strong>Always</strong>
+                        </SettingsRow>
+                        <SettingsRow
+                          description={
+                            binding.receiveMode === "mention_only"
+                              ? `Teammates must mention @${agent.name}.`
+                              : "Every new conversation message can start work."
+                          }
+                          label={`${titleCase(binding.provider)} conversations`}
+                        >
+                          {agent.viewerCapabilities.canManage ? (
+                            <fieldset aria-label="Conversation trigger rule" className="segmented-control">
+                              {binding.receiveMode === "mention_only" ? (
+                                <>
+                                  <span className="active">Mentions only</span>
+                                  <button type="button" onClick={() => void changeReceiveMode("all_message")}>
+                                    All messages
+                                  </button>
+                                </>
+                              ) : (
+                                <>
+                                  <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
+                                    Mentions only
+                                  </button>
+                                  <span className="active">All messages</span>
+                                </>
+                              )}
+                            </fieldset>
+                          ) : (
+                            <strong>{receiveModeLabel(binding.receiveMode)}</strong>
+                          )}
+                        </SettingsRow>
+                      </SettingsList>
+                    </section>
                   </>
                 ) : (
-                  <section className="im-section" aria-labelledby="bot-connection-heading">
+                  <section className="im-section" aria-labelledby="contact-channel-heading">
                     <div className="im-section-heading">
-                      <h3 id="bot-connection-heading">Bot connection</h3>
-                      <p>Connect a supported IM bot when the Agent is ready.</p>
+                      <h3 id="contact-channel-heading">Contact channel</h3>
+                      <p>Where teammates can reach this Agent.</p>
                     </div>
-                    <EmptyState title="No IM binding">
-                      This Agent does not have a Feishu or Slack identity yet.
+                    <EmptyState title="No messaging channel">
+                      Teammates cannot contact this Agent until a supported bot is connected.
                     </EmptyState>
                     {agent.viewerCapabilities.canManage ? (
                       <div className="im-actions">
-                        <Button onClick={() => void connect()}>Connect existing or new Feishu Bot</Button>
+                        <Button onClick={() => void connect()}>Connect a Feishu Bot</Button>
                       </div>
                     ) : (
-                      <p className="muted">IM setup is managed by Admins.</p>
+                      <p className="muted">Workspace admins manage messaging setup.</p>
                     )}
                   </section>
                 )}
@@ -1974,16 +1995,26 @@ function imBindingTone(binding: ImBindingSummary): StatusTone {
   return tones[binding.bindingState];
 }
 
-function AccessTab({ agent }: { agent: AgentDetailView }) {
-  return (
-    <DefinitionList
-      rows={[
-        ["Safe read", "All active members"],
-        ["Use", "All active members (fixed v0.1 policy)"],
-        ["Manage", agent.viewerCapabilities.canManage ? "Admins (you can manage)" : "Admins"],
-      ]}
-    />
-  );
+function messagingConnectionLabel(
+  binding: ImBindingSummary,
+  handoffState: AgentAvailability["dependencies"]["handoff"]["state"],
+): string {
+  if (binding.bindingState !== "active") return imBindingStateLabel(binding);
+  if (handoffState === "ready") return "Available";
+  if (handoffState === "setting_up") return "Setting up";
+  if (handoffState === "unconfirmed") return "Unable to confirm";
+  return "Needs attention";
+}
+
+function messagingConnectionTone(
+  binding: ImBindingSummary,
+  handoffState: AgentAvailability["dependencies"]["handoff"]["state"],
+): StatusTone {
+  if (binding.bindingState !== "active") return imBindingTone(binding);
+  if (handoffState === "ready") return "success";
+  if (handoffState === "setting_up") return "info";
+  if (handoffState === "unconfirmed") return "neutral";
+  return "warning";
 }
 
 function MembersPage() {
@@ -2663,10 +2694,11 @@ function initials(value: string): string {
 
 function agentSectionDescription(section: (typeof agentSections)[number]["key"]): string {
   const descriptions = {
-    general: "See how teammates use this Agent and who can access it.",
+    general: "Review this Agent's identity, ownership, and Workspace permissions.",
     runtime: "Review this Agent's Computer, runtime, and instructions.",
-    im: "Manage the Agent's Feishu or Slack bot and message policy.",
-    access: "Understand who can use, inspect, and manage this Agent.",
+    im: "See where teammates can contact this Agent and which messages trigger work.",
+    integrations: "Review the external services and data available to this Agent.",
+    skills: "Review the reusable skills assigned to this Agent.",
   } satisfies Record<(typeof agentSections)[number]["key"], string>;
   return descriptions[section];
 }

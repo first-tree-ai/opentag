@@ -2482,20 +2482,24 @@ code {
   gap: 12px;
   border-left: 0;
   border-radius: 9px;
-  background: var(--brand-light);
-  color: var(--brand-ink);
+  background: var(--color-status-neutral-surface);
+  color: var(--color-status-neutral);
   padding: 10px 13px;
 }
 
-.availability-action.action-required {
-  background: var(--warning-surface);
-  color: var(--warning);
+.availability-action.success {
+  background: var(--color-status-success-surface);
+  color: var(--color-status-success);
 }
 
-.availability-action.not-connected,
-.availability-action.suspended {
-  background: var(--surface-soft);
-  color: var(--secondary-foreground);
+.availability-action.info {
+  background: var(--color-status-info-surface);
+  color: var(--color-status-info);
+}
+
+.availability-action.warning {
+  background: var(--color-status-warning-surface);
+  color: var(--color-status-warning);
 }
 
 .availability-action a {
@@ -2530,66 +2534,9 @@ code {
   gap: 32px;
 }
 
-.agent-use-panel {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 32px;
-  border: 1px solid #d7dfc6;
-  border-radius: var(--radius);
-  background: var(--brand-light);
-  padding: 24px;
-}
-
-.agent-use-panel.empty {
-  border-color: var(--border);
-  background: var(--surface-soft);
-}
-
-.agent-use-copy {
-  min-width: 0;
-}
-
-.agent-use-channel {
-  display: block;
-  margin-bottom: 9px;
-  color: var(--brand-ink);
-  font-size: var(--text-micro);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--track-label);
-  text-transform: uppercase;
-}
-
-.agent-use-copy h4 {
-  margin-bottom: 7px;
-  color: var(--foreground);
-  font-size: var(--text-subsection);
-}
-
-.agent-use-copy p {
-  max-width: 510px;
-  margin: 0;
-  color: var(--secondary-foreground);
-  font-size: var(--text-body);
-  line-height: var(--lh-prose);
-}
-
-.agent-use-identity {
-  display: grid;
-  flex: 0 0 auto;
-  justify-items: end;
-  gap: 5px;
-  padding-top: 3px;
-  text-align: right;
-}
-
-.agent-use-identity > span {
-  color: var(--foreground);
-  font-size: var(--text-ui);
-  font-weight: var(--fw-semibold);
-}
-
-.agent-use-identity small {
+.overview-section-heading p {
+  max-width: 620px;
+  margin: 5px 0 0;
   color: var(--muted);
   font-size: var(--text-meta);
 }
@@ -2597,11 +2544,11 @@ code {
 .overview-section .definition-list {
   display: grid;
   margin-bottom: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface-soft);
+  border-width: 1px 0;
+  border-radius: 0;
+  background: transparent;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  padding: 24px;
+  padding: 18px 0;
 }
 
 .overview-section .definition-list div {
@@ -2623,6 +2570,13 @@ code {
 .admin-controls {
   border-top: 0;
   padding-top: 0;
+}
+
+.agent-permissions-list .ds-settings-row__control > strong,
+.agent-message-rules .ds-settings-row__control > strong {
+  color: var(--foreground);
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
 }
 
 .settings-title {
@@ -3154,10 +3108,9 @@ textarea:focus {
   align-items: center;
   justify-content: space-between;
   gap: 20px;
-  border: 1px solid #d7dfc6;
-  border-radius: var(--radius);
-  background: var(--brand-light);
-  padding: 24px;
+  border-block: 1px solid var(--border);
+  background: transparent;
+  padding: 18px 0;
 }
 
 .binding-status > small {
@@ -3166,30 +3119,34 @@ textarea:focus {
   font-size: var(--text-meta);
 }
 
-.message-policy {
+.messaging-contact-facts {
   display: grid;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  grid-template-columns: 210px minmax(0, 1fr);
-  gap: 32px;
-  padding: 24px;
+  grid-template-columns: minmax(130px, 0.35fr) minmax(0, 1fr);
+  gap: 24px;
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 4px 0 18px;
 }
 
-.message-policy-copy strong {
-  display: block;
+.messaging-contact-facts div {
+  min-width: 0;
+}
+
+.messaging-contact-facts dt {
   margin-bottom: 5px;
-  font-size: var(--text-ui);
+  font-size: var(--text-meta);
 }
 
-.message-policy-copy p {
-  margin-bottom: 0;
-  color: var(--muted);
-  font-size: var(--text-meta);
+.messaging-contact-facts dd {
+  color: var(--foreground);
+  line-height: var(--lh-prose);
 }
 
 .segmented-control {
   display: grid;
+  min-width: 0;
+  margin: 0;
+  border: 0;
   border-radius: 10px;
   background: #e2e4d9;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3213,6 +3170,11 @@ textarea:focus {
   text-align: center;
 }
 
+.segmented-control button:focus-visible {
+  outline: 2px solid var(--brand-ink);
+  outline-offset: 1px;
+}
+
 .segmented-control .active {
   background: var(--surface);
   color: var(--foreground);
@@ -3224,6 +3186,143 @@ textarea:focus {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+}
+
+.messaging-connection-actions {
+  margin-top: 4px;
+}
+
+.agent-capability-preview {
+  display: grid;
+  gap: 24px;
+}
+
+.agent-capability-preview-note {
+  border-left: 2px solid var(--strong-border);
+  background: var(--surface-soft);
+  padding: 14px 16px;
+}
+
+.agent-capability-preview-note strong {
+  color: var(--secondary-foreground);
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
+}
+
+.agent-capability-preview-note p {
+  max-width: 680px;
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: var(--text-meta);
+  line-height: var(--lh-prose);
+}
+
+.agent-integration-list,
+.agent-skill-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-integration-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 32px;
+}
+
+.agent-integration-list > li,
+.agent-skill-list > li {
+  min-width: 0;
+  border-top: 1px solid var(--border);
+  padding: 20px 0 22px;
+}
+
+.agent-capability-item-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.agent-capability-item-heading > div:first-child {
+  min-width: 0;
+}
+
+.agent-capability-item-heading strong,
+.agent-capability-item-heading small {
+  display: block;
+}
+
+.agent-capability-item-heading strong {
+  color: var(--foreground);
+  font-size: var(--text-subsection);
+  font-weight: var(--fw-semibold);
+}
+
+.agent-capability-item-heading small {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+.agent-integration-list > li > p,
+.agent-skill-list > li > p {
+  max-width: 58ch;
+  margin: 14px 0 0;
+  color: var(--secondary-foreground);
+  font-size: var(--text-ui);
+  line-height: var(--lh-prose);
+}
+
+.agent-capability-facts {
+  margin: 16px 0 0;
+}
+
+.agent-capability-facts dt {
+  margin-bottom: 4px;
+  font-size: var(--text-meta);
+}
+
+.agent-capability-facts dd {
+  color: var(--secondary-foreground);
+  font-size: var(--text-meta);
+}
+
+.agent-capability-list-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.agent-capability-list-heading p {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--text-subsection);
+  font-weight: var(--fw-semibold);
+}
+
+.agent-capability-list-heading a {
+  color: var(--brand-ink);
+  font-size: var(--text-meta);
+  font-weight: var(--fw-semibold);
+}
+
+.agent-capability-unavailable {
+  border-top: 1px solid var(--border);
+  padding: 24px 0;
+}
+
+.agent-capability-unavailable h3 {
+  font-size: var(--text-subsection);
+}
+
+.agent-capability-unavailable p {
+  max-width: 640px;
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: var(--text-ui);
+  line-height: var(--lh-prose);
 }
 
 .team-profile-form {
@@ -4020,35 +4119,30 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
-  .agent-use-panel {
-    flex-direction: column;
-    gap: 18px;
-    padding: 20px;
-  }
-
-  .agent-use-identity {
-    justify-items: start;
-    text-align: left;
-  }
-
   .overview-section .definition-list {
     gap: 18px;
     grid-template-columns: 1fr;
   }
 
-  .message-policy,
+  .messaging-contact-facts,
   .team-profile-row {
     grid-template-columns: 1fr;
     gap: 12px;
   }
 
   .binding-status,
+  .agent-capability-item-heading,
+  .agent-capability-list-heading,
   .settings-policy-banner,
   .settings-readonly-heading,
   .settings-subheader,
   .dirty-bar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .agent-integration-list {
+    grid-template-columns: 1fr;
   }
 
   .settings-invitation-panel,

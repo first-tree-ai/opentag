@@ -82,6 +82,7 @@ describe("RuntimeConfigurationForm", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Edit settings" }));
     expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe("claude-opus-4-1");
+    expect(screen.getAllByText("Leave blank to use the provider default.")).toHaveLength(2);
     const effort = screen.getByLabelText("Reasoning level") as HTMLInputElement;
     const suggestions = document.getElementById(effort.getAttribute("list") ?? "");
     expect(Array.from(suggestions?.querySelectorAll("option") ?? []).map((option) => option.value)).toEqual([

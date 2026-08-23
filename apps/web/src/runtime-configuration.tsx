@@ -93,7 +93,7 @@ function RuntimeConfigurationEditor({ initialConfig, save }: RuntimeConfiguratio
           <form className="agent-runtime-edit-form" key={config.revision} onSubmit={saveRuntime}>
             <div className="agent-runtime-field-grid">
               <Field
-                hint="Leave blank to let Codex choose."
+                hint="Leave blank to use the provider default."
                 hintId={fieldId("model-help")}
                 htmlFor={fieldId("model")}
                 label="Model"

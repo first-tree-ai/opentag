@@ -4,6 +4,8 @@ import { z } from "zod";
 import type { ProviderResourceInput, ReadableResource } from "../provider-adapter.js";
 import type { SlackApiClient, SlackInstallationInspection } from "./adapter.js";
 
+const SLACK_AUTH_TEST_TIMEOUT_MS = 10_000;
+
 export const SLACK_WEB_CLIENT_OPTIONS = {
   retryConfig: { retries: 0 },
   rejectRateLimitedCalls: true,
@@ -35,15 +37,22 @@ export class DefaultSlackApiClient implements SlackApiClient {
   }
 
   async inspectInstallation(token: string): Promise<SlackInstallationInspection> {
-    const response = await this.#fetch("https://slack.com/api/auth.test", {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${token}`,
-        "content-type": "application/x-www-form-urlencoded",
-      },
-      body: "",
-      redirect: "error",
-    });
+    let response: Response;
+    try {
+      response = await this.#fetch("https://slack.com/api/auth.test", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: "",
+        redirect: "error",
+        signal: AbortSignal.timeout(SLACK_AUTH_TEST_TIMEOUT_MS),
+      });
+    } catch {
+      // Network failures and timeouts carry no credential detail worth surfacing.
+      throw new Error("SLACK_AUTH_UPSTREAM_UNAVAILABLE");
+    }
     if (!response.ok) throw new Error("SLACK_AUTH_UPSTREAM_UNAVAILABLE");
     const result = z
       .object({

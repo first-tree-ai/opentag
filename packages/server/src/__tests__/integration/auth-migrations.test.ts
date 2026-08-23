@@ -230,11 +230,16 @@ describe("database migrations", () => {
 
         const userId = crypto.randomUUID();
         const teamId = crypto.randomUUID();
+        const controlTeamId = crypto.randomUUID();
         const computerId = crypto.randomUUID();
-        const activeAgentId = crypto.randomUUID();
+        const activeAgentId = "6eb89d85-0f12-4962-8465-518071f1d3e9";
         const deletedAgentId = crypto.randomUUID();
         await sql`insert into users (id, email, display_name) values (${userId}, 'migration@example.com', 'Migration')`;
         await sql`insert into teams (id, name, display_name) values (${teamId}, 'migration', 'Migration')`;
+        await sql`
+          insert into teams (id, name, display_name)
+          values (${controlTeamId}, 'migration-control', 'Migration Control')
+        `;
         await sql`insert into memberships (team_id, user_id, role) values (${teamId}, ${userId}, 'admin')`;
         await sql`
           insert into computers (id, owner_user_id, display_name, platform, arch, client_version)
@@ -285,13 +290,22 @@ describe("database migrations", () => {
             array(select status::text from agents order by name) as statuses
         `;
         expect(lifecycle).toEqual({
-          count: 11,
+          count: 12,
           creation_intents_null: true,
           deleted_at_exists: false,
           setup_completed_at_exists: true,
           status_default: "'active'::agent_status",
           statuses: ["active", "deleted"],
         });
+        const repairedTeams = await sql<{ completed: boolean; name: string }[]>`
+          select name, setup_completed_at is not null as completed
+          from teams
+          order by name
+        `;
+        expect(repairedTeams).toEqual([
+          { completed: true, name: "migration" },
+          { completed: false, name: "migration-control" },
+        ]);
         const [agentStatusEnum] = await sql<{ values: string[] }[]>`
           select array_agg(enumlabel order by enumsortorder)::text[] as values
           from pg_enum join pg_type on pg_type.oid = pg_enum.enumtypid
@@ -311,7 +325,7 @@ describe("database migrations", () => {
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(11);
+        expect(rerun?.count).toBe(12);
       } finally {
         await sql.end();
       }

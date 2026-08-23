@@ -21,15 +21,26 @@ enables a writable App Home Messages tab so a user can start a direct-message co
 
 ## Admin flow
 
-1. In the Agent's **IM** page, choose **Connect Slack App**, **Reauthorize Slack**, or **Replace Slack App**.
-2. Open the generated manifest link, create a dedicated Slack App, and install it to the intended workspace.
+1. In the Agent's **IM** page, choose **Connect Slack App**, **Reauthorize Slack**, or **Replace Slack App**. A
+   provisioning binding (a setup that was started earlier, for example before a page refresh) shows **Resume Slack
+   setup** instead; resuming returns the in-flight attempt rather than starting a new one.
+2. Prepare the App for the chosen intent. OpenTag shows the generated manifest both as a create-new-App link and as
+   copyable JSON:
+   - **Connect** and **Replace** create a dedicated new App from the manifest and install it to the intended workspace.
+   - **Reauthorize** keeps the same App, workspace, and bot user: open the existing App's **App Manifest** page, replace
+     the manifest with the generated JSON, save, then choose **Reinstall to Workspace** under **OAuth & Permissions** so
+     Slack grants any added scopes. The Bot User OAuth Token may change after reinstalling; the Signing Secret normally
+     does not. The live binding keeps receiving throughout.
 3. Copy the **Bot User OAuth Token** from **OAuth & Permissions** and the **Signing Secret** from **Basic Information**
    into OpenTag.
 4. OpenTag calls Slack's `auth.test` endpoint and derives the Team ID, Enterprise ID when present, Bot User ID, Bot ID,
    and the token's actual `x-oauth-scopes`. Slack may omit `app_id` for a valid Bot Token, so a browser-supplied App ID
-   or scope list is never authoritative.
+   or scope list is never authoritative. The call is bounded by a timeout and reported as `SLACK_UPSTREAM_UNAVAILABLE`
+   when Slack does not answer.
 5. Return to **Event Subscriptions** and retry the generated Request URL. OpenTag verifies Slack's timestamped HMAC
-   signature before returning the URL-verification challenge.
+   signature before returning the URL-verification challenge. The IM page distinguishes the two proofs: the Bot Token
+   is validated as soon as `auth.test` succeeds (the derived App, workspace, and bot user are shown), while the Signing
+   Secret stays unverified until Slack's URL verification succeeds.
 6. Invite the bot to a test channel and mention it. OpenTag reparses the signature-verified raw event and establishes the
    App ID from its `api_app_id` only when the envelope App and Team match the routed App and token-derived Team, and a bot
    authorization matches the token-derived Team and Bot User. If `auth.test` did return an App ID, it must also match.
@@ -37,6 +48,20 @@ enables a writable App Home Messages tab so a user can start a direct-message co
 
 Slack can attempt URL verification as soon as the manifest is created, before OpenTag has the Signing Secret. A failed
 initial attempt is expected; retry it after submitting the credentials.
+
+### Recovering a pending attempt
+
+- A wrong Signing Secret does not fail the attempt. The failed URL verification is recorded on the attempt as a
+  non-secret diagnostic (`SLACK_SIGNING_SECRET_INVALID` plus its time) and the IM page shows it. Choose **Edit
+  credentials** to submit a corrected token and secret to the same attempt: OpenTag re-runs `auth.test`, replaces both
+  secrets atomically, and restarts URL verification. Submitted secrets are never echoed back.
+- **Cancel setup** ends an attempt at any time. A different intent cannot start while an attempt is active
+  (`SLACK_SETUP_INTENT_CONFLICT`); cancel the current one first. Starting the same intent again returns the in-flight
+  attempt, also after a page refresh.
+- An attempt expires 30 minutes after it starts. Credentials submitted or URL verifications received after the deadline
+  are rejected with `SLACK_SETUP_EXPIRED` instead of being persisted into a dead attempt.
+- The IM page polls the attempt with exponential backoff on transient failures and stops on a definitive answer, for
+  example when the attempt no longer exists; **Refresh status** restarts polling.
 
 ## Required bot scopes and events
 
@@ -53,7 +78,10 @@ They subscribe to `app_mention`, `message.im`, `app_uninstalled`, and `tokens_re
 matching `message.channels`, `message.groups`, and `message.mpim` events. Changing from mentions-only to all-message
 records the target on the Server and fails closed with a reauthorization requirement until Slack reports all additional
 scopes. The current mentions-only policy remains effective while the generated reauthorization manifest requests the
-target scopes; successful activation applies the target atomically.
+target scopes; successful activation applies the target atomically. The pending target is projected as
+`pendingReceiveMode` on the binding summary, admin detail, and diagnostics, and a real stored error code such as
+`SLACK_TOKEN_REVOKED` is never masked by the scope-upgrade hint. Saving the receive mode unchanged does not cancel an
+in-flight setup attempt; changing the effective target does, and records `SLACK_SETUP_CANCELED`.
 
 `mention_only` does not promise automatic intervening channel messages around a mention. When a task needs more native
 context, the Agent may query Slack directly through the official CLI, subject to the installed Bot Token's scopes and
@@ -73,9 +101,14 @@ conversation membership.
   Team and bot authorization with the token-derived Team and Bot User. Browser identity is never part of this proof.
 - Runtime credential validation preserves that signed-event App ID when a later `auth.test` omits `app_id`, while still
   rejecting a returned App ID mismatch or any Team, Bot User, or Bot ID drift.
-- A Slack App installation can be current for only one Agent. Conflicts fail without changing either binding.
-- Reauthorization preserves the current binding until the new credential generation is ready. Replacement creates a
-  new binding identity and disables the previous one only at activation.
+- A Slack App installation can be current for only one Agent. Conflicts fail without changing either binding; both the
+  in-transaction check and a concurrent unique-index race report `SLACK_APP_TEAM_ALREADY_BOUND`.
+- Reauthorization preserves the current binding until the new credential generation is ready. Because the Signing
+  Secret normally stays the same, live events also match the pending attempt; OpenTag never rejects them for a missing
+  URL verification. An attempt that has not proven the Request URL yet is reported as awaiting its challenge, ingress
+  falls through to the active binding, and an event for a first-time setup without any active binding is acknowledged
+  with a no-op `200` (nothing is ingested) so Slack keeps the subscription alive. Replacement creates a new binding
+  identity and disables the previous one only at activation.
 - Event activation locks and rechecks the exact current setup attempt, active state, expiry, signature, reparsed raw
   envelope, and token/event identity correlation before atomically advancing credentials, applying a pending
   receive-mode target, and completing the setup slot. Expired, canceled, or replaced attempts cannot activate from a
@@ -99,6 +132,8 @@ The supported flow must cover:
 - token-derived Team/Bot identity versus signed-event App/Team/bot-authorization correlation mismatch;
 - duplicate App/Team installation conflicts;
 - create, same-identity reauthorization, explicit replacement, disable, uninstall, and token-revocation recovery;
+- wrong-secret recovery through credential re-submission, cancel, intent conflicts, and resume after a page refresh;
+- live ingress during a same-secret reauthorization that still awaits URL verification;
 - concurrent setup/activation attempts without partial cutover;
 - secret redaction in API responses, diagnostics, logs, and traces.
 

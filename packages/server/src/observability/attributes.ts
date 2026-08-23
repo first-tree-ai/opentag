@@ -12,6 +12,8 @@ export const OPENTAG_ATTR = {
   IM_MESSAGE_ID: "opentag.im.message.id",
   IM_PROVIDER: "opentag.im.provider",
   IM_PROVIDER_EVENT_ID: "opentag.im.provider_event.id",
+  IM_RETRY_NUM: "opentag.im.retry.num",
+  IM_RETRY_REASON: "opentag.im.retry.reason",
   OPERATION_OUTCOME: "opentag.operation.outcome",
   REQUEST_ID: "opentag.request.id",
   RUNTIME_FRAME_TYPE: "opentag.runtime.frame.type",
@@ -33,6 +35,8 @@ export function imAttrs(input: {
   deliveryId?: string;
   deliveryCount?: number;
   duplicate?: boolean;
+  retryNum?: number;
+  retryReason?: string;
 }): Record<string, unknown> {
   return {
     [OPENTAG_ATTR.IM_PROVIDER]: input.provider,
@@ -43,6 +47,8 @@ export function imAttrs(input: {
     [OPENTAG_ATTR.IM_DELIVERY_ID]: input.deliveryId,
     [OPENTAG_ATTR.IM_DELIVERY_COUNT]: input.deliveryCount,
     [OPENTAG_ATTR.IM_DUPLICATE]: input.duplicate,
+    [OPENTAG_ATTR.IM_RETRY_NUM]: input.retryNum,
+    [OPENTAG_ATTR.IM_RETRY_REASON]: input.retryReason,
   };
 }
 

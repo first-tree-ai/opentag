@@ -22,6 +22,7 @@ import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
+import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
 import {
@@ -53,7 +54,7 @@ import {
   FeishuSetupService,
 } from "../../services/im-bindings/feishu/index.js";
 import { createImProviderAdapterResolver, ImBindingService } from "../../services/im-bindings/index.js";
-import { SlackSetupService } from "../../services/im-bindings/slack/index.js";
+import { SlackAdapter, SlackSetupService } from "../../services/im-bindings/slack/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../services/runtime-config/index.js";
 import { SessionService } from "../../services/sessions/index.js";
 import { TeamMembershipService, TeamSetupService } from "../../services/teams/index.js";
@@ -1221,6 +1222,78 @@ describe("IM binding persistence", () => {
         ]),
       );
     } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("short-circuits a Slack retry of the same event_id to 200 without a second message row", async () => {
+    const value = await fixture();
+    const now = new Date("2026-08-19T00:00:02.000Z");
+    const app = createApp({
+      slackEvents: {
+        now: () => now,
+        imBindings: value.imBindingService,
+        inbox: new ImMessageInbox(value.database, { now: () => now }),
+        createAdapter: (binding) =>
+          new SlackAdapter({
+            api: {} as never,
+            token: binding.botAccessToken,
+            appId: binding.appId,
+            teamId: binding.teamId,
+            botUserId: binding.botUserId,
+            botId: binding.botId,
+          }),
+      },
+    });
+    try {
+      const body = Buffer.from(
+        JSON.stringify({
+          type: "event_callback",
+          api_app_id: "A1",
+          team_id: "T1",
+          event_id: "Ev-retried",
+          event_time: 1_755_561_601,
+          event: {
+            type: "app_mention",
+            channel: "C1",
+            channel_type: "channel",
+            user: "U_HUMAN",
+            text: "<@U_BOT> are you there?",
+            ts: "1755561601.000100",
+            event_ts: "1755561601.000100",
+          },
+        }),
+      );
+      const timestamp = String(Math.floor(now.getTime() / 1000));
+      const request = {
+        method: "POST" as const,
+        url: `/api/v1/agents/${value.agent.id}/im-binding/slack/events`,
+        payload: body,
+        headers: {
+          "content-type": "application/json",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": slackSignature("signing-secret", timestamp, body),
+        },
+      };
+
+      const first = await app.inject(request);
+      expect(first.statusCode).toBe(200);
+      expect(first.json()).toEqual({ ok: true });
+
+      const retry = await app.inject({
+        ...request,
+        headers: { ...request.headers, "x-slack-retry-num": "1", "x-slack-retry-reason": "http_timeout" },
+      });
+      expect(retry.statusCode).toBe(200);
+      expect(retry.json()).toEqual({ ok: true });
+      expect(retry.headers["x-slack-no-retry"]).toBeUndefined();
+
+      const messages = await value.database.select().from(imMessages);
+      expect(messages).toHaveLength(1);
+      expect(messages[0]).toMatchObject({ providerEventId: "Ev-retried", externalMessageId: "1755561601.000100" });
+      expect(await value.database.select().from(imMessageDeliveries)).toHaveLength(1);
+    } finally {
+      await app.close();
       await value.sql.end();
     }
   });

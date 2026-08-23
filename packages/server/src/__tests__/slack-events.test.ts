@@ -22,7 +22,11 @@ function binding() {
   };
 }
 
-function signedRequest(envelope: Record<string, unknown>, signingSecret = binding().signingSecret) {
+function signedRequest(
+  envelope: Record<string, unknown>,
+  signingSecret = binding().signingSecret,
+  extraHeaders: Record<string, string> = {},
+) {
   const payload = JSON.stringify(envelope);
   const signature = `v0=${createHmac("sha256", signingSecret).update(`v0:${timestamp}:${payload}`).digest("hex")}`;
   return {
@@ -33,8 +37,20 @@ function signedRequest(envelope: Record<string, unknown>, signingSecret = bindin
       "content-type": "application/json",
       "x-slack-request-timestamp": timestamp,
       "x-slack-signature": signature,
+      ...extraHeaders,
     },
   };
+}
+
+function captureLogs() {
+  let logs = "";
+  const stream = new Writable({
+    write(chunk, _encoding, callback) {
+      logs += chunk.toString();
+      callback();
+    },
+  });
+  return { stream, logs: () => logs };
 }
 
 function createServices(overrides: Record<string, unknown> = {}, loggerStream?: Writable) {
@@ -46,7 +62,10 @@ function createServices(overrides: Record<string, unknown> = {}, loggerStream?: 
     requireReauthorization: vi.fn().mockResolvedValue(undefined),
   };
   const inbox = { ingest: vi.fn().mockResolvedValue(undefined) };
-  const adapter = { normalizeInbound: vi.fn().mockReturnValue([]) };
+  const adapter = {
+    classifyInbound: vi.fn().mockReturnValue({ accepted: true, eventType: "app_mention", subtype: undefined }),
+    normalizeInbound: vi.fn().mockReturnValue([]),
+  };
   const createAdapter = vi.fn(() => adapter);
   const app = createApp({
     loggerStream,
@@ -206,11 +225,148 @@ describe("Slack Events API ingress", () => {
     expect(invalidChallenge.statusCode).toBe(400);
     expect(invalidChallenge.json()).toEqual({ error: "invalid_challenge" });
 
-    const unsupported = await app.inject(
+    const malformed = await app.inject(
       signedRequest({ type: "event_callback", api_app_id: "A1", team_id: "T1", event_id: "Ev1" }),
     );
-    expect(unsupported.statusCode).toBe(400);
-    expect(unsupported.json()).toEqual({ error: "unsupported_envelope" });
+    expect(malformed.statusCode).toBe(200);
+    expect(malformed.json()).toEqual({ ok: true, ignored: "malformed_envelope" });
+    expect(malformed.headers["x-slack-no-retry"]).toBeUndefined();
+  });
+
+  it("answers 4xx with x-slack-no-retry only for signature and routing rejections", async () => {
+    const unroutable = createServices();
+    unroutable.imBindings.findSlackIngressBinding.mockResolvedValue(undefined);
+    const envelope = {
+      type: "event_callback",
+      api_app_id: "A1",
+      team_id: "T1",
+      event_id: "Ev1",
+      event: { type: "app_mention" },
+    };
+    const missing = await unroutable.app.inject(signedRequest(envelope));
+    expect(missing.statusCode).toBe(404);
+    expect(missing.headers["x-slack-no-retry"]).toBe("1");
+
+    const invalid = createServices();
+    const badSignature = await invalid.app.inject(signedRequest(envelope, "wrong-secret"));
+    expect(badSignature.statusCode).toBe(401);
+    expect(badSignature.headers["x-slack-no-retry"]).toBe("1");
+    expect(invalid.inbox.ingest).not.toHaveBeenCalled();
+
+    const mismatched = createServices();
+    mismatched.imBindings.findSlackIngressBinding.mockResolvedValue({ ...binding(), teamId: "T2" });
+    const mismatch = await mismatched.app.inject(signedRequest(envelope));
+    expect(mismatch.statusCode).toBe(401);
+    expect(mismatch.json()).toEqual({ error: "binding_mismatch" });
+    expect(mismatch.headers["x-slack-no-retry"]).toBe("1");
+
+    const agentRoute = createServices({ setup: { verifyChallenge: vi.fn(), tryActivateFromEvent: vi.fn() } });
+    const invalidRoute = await agentRoute.app.inject({
+      ...signedRequest({ type: "event_callback", event_id: "Ev1", event: { type: "app_mention" } }),
+      url: "/api/v1/agents/1a63a21e-f6c7-4474-91ea-4dabf0566a24/im-binding/slack/events",
+    });
+    expect(invalidRoute.statusCode).toBe(400);
+    expect(invalidRoute.json()).toEqual({ error: "invalid_route" });
+    expect(invalidRoute.headers["x-slack-no-retry"]).toBe("1");
+  });
+
+  it("acknowledges envelopes and events OpenTag does not process with 200 instead of burning Slack's failure budget", async () => {
+    const { app, adapter, inbox, createAdapter } = createServices();
+    const base = { api_app_id: "A1", team_id: "T1" };
+
+    const unknownEnvelope = await app.inject(signedRequest({ ...base, type: "some_future_envelope" }));
+    expect(unknownEnvelope.statusCode).toBe(200);
+    expect(unknownEnvelope.json()).toEqual({ ok: true, ignored: "unsupported_envelope" });
+    expect(unknownEnvelope.headers["x-slack-no-retry"]).toBeUndefined();
+    expect(createAdapter).not.toHaveBeenCalled();
+
+    adapter.classifyInbound.mockReturnValueOnce({
+      accepted: false,
+      reason: "unsupported_event",
+      eventType: "app_home_opened",
+      subtype: undefined,
+    });
+    const unsupportedEvent = await app.inject(
+      signedRequest({
+        ...base,
+        type: "event_callback",
+        event_id: "Ev-home",
+        event: { type: "app_home_opened", user: "U2", tab: "messages" },
+      }),
+    );
+    expect(unsupportedEvent.statusCode).toBe(200);
+    expect(unsupportedEvent.json()).toEqual({ ok: true, ignored: "unsupported_event" });
+
+    adapter.classifyInbound.mockReturnValueOnce({
+      accepted: false,
+      reason: "ignored_subtype",
+      eventType: "message",
+      subtype: "channel_join",
+    });
+    const ignoredSubtype = await app.inject(
+      signedRequest({
+        ...base,
+        type: "event_callback",
+        event_id: "Ev-join",
+        event: { type: "message", subtype: "channel_join", channel: "C1", ts: "1.0" },
+      }),
+    );
+    expect(ignoredSubtype.statusCode).toBe(200);
+    expect(ignoredSubtype.json()).toEqual({ ok: true, ignored: "ignored_subtype" });
+    expect(adapter.normalizeInbound).not.toHaveBeenCalled();
+    expect(inbox.ingest).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges app_rate_limited without ingesting and records it for operators", async () => {
+    const capture = captureLogs();
+    const { app, inbox, createAdapter, current } = createServices({}, capture.stream);
+    const response = await app.inject(
+      signedRequest({
+        type: "app_rate_limited",
+        token: "verification-token",
+        team_id: "T1",
+        minute_rate_limited: 1_724_025_600,
+        api_app_id: "A1",
+      }),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true, ignored: "app_rate_limited" });
+    expect(response.headers["x-slack-no-retry"]).toBeUndefined();
+    expect(createAdapter).not.toHaveBeenCalled();
+    expect(inbox.ingest).not.toHaveBeenCalled();
+    expect(capture.logs()).toContain("SLACK_APP_RATE_LIMITED");
+    expect(capture.logs()).toContain(current.imBindingId);
+    expect(capture.logs()).not.toContain("verification-token");
+  });
+
+  it("passes Slack retry metadata into ingest and keeps retries eligible on transient failures", async () => {
+    const { app, adapter, inbox, current } = createServices();
+    adapter.normalizeInbound.mockReturnValue([{ providerEventId: "Ev-retry" }]);
+    const envelope = {
+      type: "event_callback",
+      api_app_id: "A1",
+      team_id: "T1",
+      event_id: "Ev-retry",
+      event: { type: "app_mention", channel: "C1", text: "hi", ts: "1.0" },
+    };
+    const retried = await app.inject(
+      signedRequest(envelope, undefined, { "x-slack-retry-num": "2", "x-slack-retry-reason": "http_timeout" }),
+    );
+    expect(retried.statusCode).toBe(200);
+    expect(inbox.ingest).toHaveBeenLastCalledWith(
+      current.imBindingId,
+      current.generation,
+      { providerEventId: "Ev-retry" },
+      undefined,
+      { provider: "slack", retry: { num: 2, reason: "http_timeout" } },
+    );
+
+    inbox.ingest.mockRejectedValueOnce(new Error("database unavailable"));
+    const failed = await app.inject(
+      signedRequest(envelope, undefined, { "x-slack-retry-num": "3", "x-slack-retry-reason": "http_error" }),
+    );
+    expect(failed.statusCode).toBe(500);
+    expect(failed.headers["x-slack-no-retry"]).toBeUndefined();
   });
 
   it("disables an uninstalled binding and fences Slack token revocation", async () => {

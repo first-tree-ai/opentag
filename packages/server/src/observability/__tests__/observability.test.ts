@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 import {
   agentFeishuSetupAttemptsPath,
@@ -34,6 +34,14 @@ import {
   withRootSpan,
   withSpan,
 } from "../otel-helpers.js";
+import {
+  parseSlackRetryHeaders,
+  SLACK_ATTR,
+  SLACK_RATE_LIMITED_EVENT,
+  safeSlackLabel,
+  slackInboundAttrs,
+  traceSlackInbound,
+} from "../slack-tracing.js";
 import { endRuntimeConnectionSpan, startRuntimeConnectionSpan, withRuntimeFrameSpan } from "../ws-tracing.js";
 
 const exporter = new InMemorySpanExporter();
@@ -868,6 +876,198 @@ describe("background and WebSocket tracing", () => {
     expect(capture).not.toContain("plain Runtime send payload with private prompt");
     expect(capture).not.toContain("PRIVATE_REPLACED_RUNTIME_BODY");
     expect(capture).not.toContain("PRIVATE_FRAME_RUNTIME_BODY");
+  });
+});
+
+describe("Slack ingress tracing", () => {
+  it("parses documented retry headers and bounds Slack-controlled labels", () => {
+    expect(parseSlackRetryHeaders({})).toBeUndefined();
+    expect(parseSlackRetryHeaders({ "x-slack-retry-num": "abc" })).toBeUndefined();
+    expect(parseSlackRetryHeaders({ "x-slack-retry-num": "0" })).toBeUndefined();
+    expect(parseSlackRetryHeaders({ "x-slack-retry-num": "1" })).toEqual({ num: 1, reason: undefined });
+    expect(parseSlackRetryHeaders({ "x-slack-retry-num": ["2"], "x-slack-retry-reason": "HTTP_TIMEOUT" })).toEqual({
+      num: 2,
+      reason: "http_timeout",
+    });
+    expect(parseSlackRetryHeaders({ "x-slack-retry-num": "3", "x-slack-retry-reason": "xoxb-secret" })).toEqual({
+      num: 3,
+      reason: "other",
+    });
+    expect(safeSlackLabel(undefined)).toBeUndefined();
+    expect(safeSlackLabel("message.channels")).toBe("message.channels");
+    expect(safeSlackLabel("<@U1> hello there")).toBe("other");
+    expect(
+      slackInboundAttrs({ eventType: "message", subtype: "file_share", retry: { num: 1, reason: "ssl_error" } }),
+    ).toMatchObject({
+      [OPENTAG_ATTR.IM_PROVIDER]: "slack",
+      [SLACK_ATTR.EVENT_TYPE]: "message",
+      [SLACK_ATTR.SUBTYPE]: "file_share",
+      [SLACK_ATTR.RETRY_NUM]: 1,
+      [SLACK_ATTR.RETRY_REASON]: "ssl_error",
+    });
+  });
+
+  it("records succeeded, ignored, rejected, and failed Slack inbound outcomes with typed codes", async () => {
+    await traceSlackInbound(slackInboundAttrs({ eventType: "app_mention" }), async (inbound) => {
+      await inbound.measureIngest(async () => undefined);
+    });
+    await traceSlackInbound({}, async (inbound) => {
+      inbound.recordRateLimited(1_724_025_600);
+      inbound.ignore("app_rate_limited");
+    });
+    await traceSlackInbound({}, async (inbound) => {
+      inbound.ignore("unsupported_event", "SLACK_INBOUND_UNSUPPORTED_EVENT");
+    });
+    await traceSlackInbound({}, async (inbound) => {
+      inbound.reject("SLACK_INBOUND_SIGNATURE_INVALID");
+    });
+    const failure = new Error("PRIVATE_DATABASE_DETAIL xoxb-private-token");
+    await expect(
+      traceSlackInbound({}, async (inbound) => {
+        inbound.setFailureCode("SLACK_INBOUND_DATABASE_FAILED");
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+
+    const spans = exporter.getFinishedSpans();
+    expect(spans.map((span) => span.name)).toEqual(Array(5).fill("im.inbound.process"));
+    const [succeeded, rateLimited, unsupported, rejected, failed] = spans;
+    expect(succeeded?.attributes[OPENTAG_ATTR.OPERATION_OUTCOME]).toBe("succeeded");
+    expect(succeeded?.attributes[SLACK_ATTR.EVENT_TYPE]).toBe("app_mention");
+    expect(typeof succeeded?.attributes[SLACK_ATTR.INGEST_DURATION_MS]).toBe("number");
+    expect(rateLimited?.attributes).toMatchObject({
+      [OPENTAG_ATTR.OPERATION_OUTCOME]: "ignored",
+      [SLACK_ATTR.IGNORED_REASON]: "app_rate_limited",
+    });
+    expect(rateLimited?.events.map((event) => event.name)).toEqual([SLACK_RATE_LIMITED_EVENT]);
+    expect(rateLimited?.events[0]?.attributes).toEqual({ [SLACK_ATTR.MINUTE_RATE_LIMITED]: 1_724_025_600 });
+    expect(unsupported?.attributes).toMatchObject({
+      [OPENTAG_ATTR.OPERATION_OUTCOME]: "ignored",
+      [OPENTAG_ATTR.ERROR_CODE]: "SLACK_INBOUND_UNSUPPORTED_EVENT",
+      [SLACK_ATTR.IGNORED_REASON]: "unsupported_event",
+    });
+    expect(rejected?.attributes).toMatchObject({
+      [OPENTAG_ATTR.OPERATION_OUTCOME]: "rejected",
+      [OPENTAG_ATTR.ERROR_CODE]: "SLACK_INBOUND_SIGNATURE_INVALID",
+    });
+    expect(failed?.attributes).toMatchObject({
+      [OPENTAG_ATTR.OPERATION_OUTCOME]: "failed",
+      [OPENTAG_ATTR.ERROR_CODE]: "SLACK_INBOUND_DATABASE_FAILED",
+    });
+    const capture = JSON.stringify(
+      spans.map((span) => ({ attributes: span.attributes, events: span.events, status: span.status })),
+    );
+    expect(capture).not.toContain("PRIVATE_DATABASE_DETAIL");
+    expect(capture).not.toContain("xoxb-");
+  });
+
+  it("nests one im.inbound.process span under each signed Slack delivery with retry and subtype attributes", async () => {
+    const now = new Date("2026-08-20T00:00:00.000Z");
+    const timestamp = String(Math.floor(now.getTime() / 1000));
+    const binding = {
+      imBindingId: randomUUID(),
+      generation: 1,
+      appId: "A1",
+      teamId: "T1",
+      botUserId: "U_BOT",
+      botId: "B_BOT",
+      botAccessToken: "xoxb-binding-token",
+      signingSecret: "signing-secret-value",
+    };
+    const transaction = vi.fn().mockResolvedValue({ duplicate: false, deliveryIds: [] });
+    const inbox = new ImMessageInbox({ transaction } as never);
+    const app = createApp({
+      loggerStream: { write: () => undefined },
+      slackEvents: {
+        now: () => now,
+        imBindings: { findSlackIngressBinding: vi.fn().mockResolvedValue(binding) } as never,
+        inbox,
+        createAdapter: () =>
+          ({
+            classifyInbound: (event: { subtype?: string }) =>
+              event.subtype === "channel_join"
+                ? { accepted: false, reason: "ignored_subtype", eventType: "message", subtype: "channel_join" }
+                : { accepted: true, eventType: "message", subtype: event.subtype },
+            normalizeInbound: () => [normalizedInboundEvent()],
+          }) as never,
+      },
+    });
+    const signed = (envelope: Record<string, unknown>, secret: string, extra: Record<string, string> = {}) => {
+      const payload = JSON.stringify(envelope);
+      return {
+        method: "POST" as const,
+        url: "/api/v1/im-bindings/slack/events",
+        payload,
+        headers: {
+          "content-type": "application/json",
+          "x-slack-request-timestamp": timestamp,
+          "x-slack-signature": `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${payload}`).digest("hex")}`,
+          ...extra,
+        },
+      };
+    };
+    const base = { type: "event_callback", api_app_id: "A1", team_id: "T1" };
+    const fileShare = {
+      ...base,
+      event_id: "Ev-file",
+      event: { type: "message", subtype: "file_share", channel: "C1", ts: "1.0" },
+    };
+    try {
+      const accepted = await app.inject(
+        signed(fileShare, binding.signingSecret, { "x-slack-retry-num": "1", "x-slack-retry-reason": "http_timeout" }),
+      );
+      expect(accepted.statusCode).toBe(200);
+      const ignored = await app.inject(
+        signed(
+          {
+            ...base,
+            event_id: "Ev-join",
+            event: { type: "message", subtype: "channel_join", channel: "C1", ts: "2.0" },
+          },
+          binding.signingSecret,
+        ),
+      );
+      expect(ignored.statusCode).toBe(200);
+      const rejected = await app.inject(signed(fileShare, "wrong-secret"));
+      expect(rejected.statusCode).toBe(401);
+    } finally {
+      await app.close();
+    }
+
+    const spans = exporter.getFinishedSpans().filter((span) => span.name === "im.inbound.process");
+    expect(spans).toHaveLength(3);
+    const [acceptedSpan, ignoredSpan, rejectedSpan] = spans;
+    expect(acceptedSpan?.parentSpanContext?.spanId).toBeDefined();
+    expect(acceptedSpan?.attributes).toMatchObject({
+      [OPENTAG_ATTR.IM_PROVIDER]: "slack",
+      [OPENTAG_ATTR.IM_BINDING_ID]: binding.imBindingId,
+      [OPENTAG_ATTR.IM_PROVIDER_EVENT_ID]: "Ev-file",
+      [OPENTAG_ATTR.OPERATION_OUTCOME]: "succeeded",
+      [SLACK_ATTR.ENVELOPE_TYPE]: "event_callback",
+      [SLACK_ATTR.EVENT_TYPE]: "message",
+      [SLACK_ATTR.SUBTYPE]: "file_share",
+      [SLACK_ATTR.RETRY_NUM]: 1,
+      [SLACK_ATTR.RETRY_REASON]: "http_timeout",
+    });
+    expect(typeof acceptedSpan?.attributes[SLACK_ATTR.INGEST_DURATION_MS]).toBe("number");
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(ignoredSpan?.attributes).toMatchObject({
+      [OPENTAG_ATTR.OPERATION_OUTCOME]: "ignored",
+      [SLACK_ATTR.IGNORED_REASON]: "ignored_subtype",
+      [SLACK_ATTR.SUBTYPE]: "channel_join",
+    });
+    expect(rejectedSpan?.attributes).toMatchObject({
+      [OPENTAG_ATTR.OPERATION_OUTCOME]: "rejected",
+      [OPENTAG_ATTR.ERROR_CODE]: "SLACK_INBOUND_SIGNATURE_INVALID",
+    });
+    const persist = exporter.getFinishedSpans().find((span) => span.name === "im.inbound.persist");
+    expect(persist?.attributes).toMatchObject({
+      [OPENTAG_ATTR.IM_RETRY_NUM]: 1,
+      [OPENTAG_ATTR.IM_RETRY_REASON]: "http_timeout",
+    });
+    const capture = JSON.stringify(exporter.getFinishedSpans().map((span) => span.attributes));
+    expect(capture).not.toContain("xoxb-binding-token");
+    expect(capture).not.toContain("signing-secret-value");
   });
 });
 

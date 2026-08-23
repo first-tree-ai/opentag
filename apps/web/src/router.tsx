@@ -1451,7 +1451,7 @@ function WorkspaceSettings({ membership, refreshMe }: { membership: MeMembership
 
 function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetailView; tab: string; onAgentChanged: () => void }) {
   if (tab === "general") return <GeneralTab agent={agent} onAgentChanged={onAgentChanged} />;
-  if (tab === "runtime") return <RuntimeTab agent={agent} />;
+  if (tab === "runtime") return <RuntimeTab agent={agent} onAgentChanged={onAgentChanged} />;
   if (tab === "im") return <ImTab agent={agent} onAgentChanged={onAgentChanged} />;
   if (tab === "access") return <AccessTab agent={agent} />;
   return <NotFoundPage />;
@@ -1637,39 +1637,87 @@ function GeneralConfigForm({
   );
 }
 
-function RuntimeTab({ agent }: { agent: AgentDetailView }) {
+function RuntimeTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   const state = useResource(
     () => (agent.viewerCapabilities.canManage ? browserApi.agentConfig(agent.id) : Promise.resolve(undefined)),
     `${agent.id}:${agent.viewerCapabilities.canManage}`,
   );
+  const computerState = agent.availability.dependencies.computer;
+  const computerStatus =
+    computerState.state === "ready"
+      ? "Online"
+      : computerState.state === "action_required"
+        ? "Offline"
+        : "Unable to confirm";
+  const computerTone: StatusTone =
+    computerState.state === "ready" ? "success" : computerState.state === "action_required" ? "warning" : "neutral";
   return (
     <AsyncState state={state}>
       {(config) => (
-        <>
-          <DefinitionList
-            rows={[
-              ["Provider", providerLabel(agent.runtimeProvider)],
-              ["Computer", agent.computer.displayName],
-              ["System", platformLabel(agent.computer.platform)],
-              [
-                "Connection",
-                agent.availability.dependencies.computer.state === "ready"
-                  ? "Online"
-                  : agent.availability.dependencies.computer.state === "action_required"
-                    ? "Offline"
-                    : "Unable to confirm",
-              ],
-            ]}
-          />
+        <div className="agent-runtime-stack">
+          <section aria-labelledby="computer-heading" className="agent-runtime-section agent-runtime-computer">
+            <header className="agent-runtime-section__header">
+              <div>
+                <h3 id="computer-heading">Computer</h3>
+                <p>The Computer assigned to run this Agent.</p>
+              </div>
+              <StatusIndicator label={computerStatus} tone={computerTone} />
+            </header>
+            <div className="agent-runtime-computer__body">
+              <div>
+                <strong>
+                  {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
+                </strong>
+              </div>
+              {computerState.state !== "ready" ? (
+                <div className="agent-runtime-recovery">
+                  {computerState.lastConfirmedAt ? <p>Last seen {formatDate(computerState.lastConfirmedAt)}</p> : null}
+                  <p>
+                    {computerState.state === "action_required"
+                      ? "New Turns can start after this Computer reconnects."
+                      : "OpenTag could not confirm this Computer's current connection."}
+                  </p>
+                  <Button size="compact" variant="outline" onClick={onAgentChanged}>
+                    Check again
+                  </Button>
+                </div>
+              ) : null}
+            </div>
+          </section>
           {config ? (
             <RuntimeConfigurationForm
               initialConfig={config}
               save={(input) => browserApi.updateAgent(config.id, input)}
             />
           ) : (
-            <p className="muted">Runtime instructions and tuning are visible only to Admins.</p>
+            <div className="agent-runtime-settings">
+              <section aria-labelledby="runtime-heading" className="agent-runtime-section">
+                <header className="agent-runtime-section__header">
+                  <div>
+                    <h3 id="runtime-heading">Runtime</h3>
+                    <p>Choose how this Agent runs.</p>
+                  </div>
+                </header>
+                <dl className="agent-runtime-facts">
+                  <div>
+                    <dt>Provider</dt>
+                    <dd>{providerLabel(agent.runtimeProvider)}</dd>
+                  </div>
+                </dl>
+                <p className="agent-runtime-note">Model and reasoning settings are visible only to Admins.</p>
+              </section>
+              <section aria-labelledby="agent-instructions-heading" className="agent-runtime-section">
+                <header className="agent-runtime-section__header">
+                  <div>
+                    <h3 id="agent-instructions-heading">Agent instructions</h3>
+                    <p>Set the guidance applied to every Turn this Agent runs.</p>
+                  </div>
+                </header>
+                <p className="agent-runtime-note">Agent instructions are visible only to Admins.</p>
+              </section>
+            </div>
           )}
-        </>
+        </div>
       )}
     </AsyncState>
   );
@@ -2572,7 +2620,7 @@ function initials(value: string): string {
 function agentSectionDescription(section: (typeof agentSections)[number]["key"]): string {
   const descriptions = {
     general: "See how teammates use this Agent and who can access it.",
-    runtime: "Inspect the bound Computer, provider, model, instructions, and execution limits.",
+    runtime: "Review this Agent's Computer, runtime, and instructions.",
     im: "Manage the Agent's Feishu or Slack bot and message policy.",
     access: "Understand who can use, inspect, and manage this Agent.",
   } satisfies Record<(typeof agentSections)[number]["key"], string>;

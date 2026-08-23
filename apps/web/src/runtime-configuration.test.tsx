@@ -21,19 +21,31 @@ const config: AgentAdminConfig = {
     model: null,
     reasoningEffort: null,
     instructions: "Review carefully.",
-    maxDurationMs: null,
+    maxDurationMs: 45_500,
   },
   createdAt: "2026-08-20T00:00:00.000Z",
   updatedAt: "2026-08-20T00:00:00.000Z",
 };
 
 describe("RuntimeConfigurationForm", () => {
-  it("presents provider-managed choices and the shared Turn-duration default", () => {
+  it("presents a concise Runtime summary without exposing the Turn timeout", () => {
     render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} />);
 
-    expect((screen.getByLabelText("Model") as HTMLInputElement).placeholder).toBe("Managed by provider");
-    const effort = screen.getByLabelText("Reasoning effort") as HTMLInputElement;
-    expect(effort.placeholder).toBe("Managed by provider");
+    expect(screen.getByRole("heading", { name: "Runtime" })).toBeTruthy();
+    expect(screen.getByText("Codex")).toBeTruthy();
+    expect(screen.getAllByText("Provider default")).toHaveLength(2);
+    expect(screen.getByRole("heading", { name: "Agent instructions" })).toBeTruthy();
+    expect(screen.queryByText(/timeout/i)).toBeNull();
+    expect(screen.queryByText("Execution choices")).toBeNull();
+  });
+
+  it("edits only the understandable Runtime choices", () => {
+    render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit settings" }));
+    expect((screen.getByLabelText("Model") as HTMLInputElement).placeholder).toBe("Provider default");
+    const effort = screen.getByLabelText("Reasoning level") as HTMLInputElement;
+    expect(effort.placeholder).toBe("Provider default");
     const suggestions = document.getElementById(effort.getAttribute("list") ?? "");
     expect(Array.from(suggestions?.querySelectorAll("option") ?? []).map((option) => option.value)).toEqual([
       "minimal",
@@ -42,39 +54,72 @@ describe("RuntimeConfigurationForm", () => {
       "high",
       "xhigh",
     ]);
-    expect((screen.getByLabelText("Maximum Turn duration") as HTMLInputElement).placeholder).toBe("1800");
-    expect(screen.getByText(/OpenTag's 30-minute default/)).toBeTruthy();
+    expect(screen.queryByLabelText(/duration/i)).toBeNull();
   });
 
-  it("does not advertise configuration for unsupported Claude Code snapshots", () => {
-    render(<RuntimeConfigurationForm initialConfig={{ ...config, runtimeProvider: "claude-code" }} save={vi.fn()} />);
+  it("shows and edits stored Claude Code configuration", async () => {
+    const claudeConfig: AgentAdminConfig = {
+      ...config,
+      runtimeProvider: "claude-code",
+      runtimeConfig: {
+        ...config.runtimeConfig,
+        model: "claude-opus-4-1",
+        reasoningEffort: "max",
+        instructions: "Use the repository guidelines.",
+      },
+    };
+    const save = vi.fn(async () => ({
+      ...claudeConfig,
+      revision: 5,
+      runtimeConfig: { ...claudeConfig.runtimeConfig, revision: 8, instructions: "Updated Claude instructions." },
+    }));
+    render(<RuntimeConfigurationForm initialConfig={claudeConfig} save={save} />);
 
-    expect(screen.getByText(/Effective Runtime Snapshots currently support Codex only/)).toBeTruthy();
-    expect(screen.queryByLabelText("Model")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Save Runtime settings" })).toBeNull();
+    expect(screen.getByText("Claude Code")).toBeTruthy();
+    expect(screen.getByText("claude-opus-4-1")).toBeTruthy();
+    expect(screen.getByText("max")).toBeTruthy();
+    expect((screen.getByLabelText("Instructions") as HTMLTextAreaElement).value).toBe("Use the repository guidelines.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit settings" }));
+    expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe("claude-opus-4-1");
+    expect(screen.getAllByText("Leave blank to use the provider default.")).toHaveLength(2);
+    const effort = screen.getByLabelText("Reasoning level") as HTMLInputElement;
+    const suggestions = document.getElementById(effort.getAttribute("list") ?? "");
+    expect(Array.from(suggestions?.querySelectorAll("option") ?? []).map((option) => option.value)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultracode",
+    ]);
+
+    fireEvent.change(screen.getByLabelText("Instructions"), { target: { value: "Updated Claude instructions." } });
+    fireEvent.click(screen.getByRole("button", { name: "Save instructions" }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: { instructions: "Updated Claude instructions." },
+    });
   });
 
-  it("saves exact Provider values and converts seconds to API milliseconds", async () => {
+  it("saves Runtime choices without rewriting hidden configuration", async () => {
     const save = vi.fn(async () => ({
       ...config,
       revision: 5,
       runtimeConfig: {
         ...config.runtimeConfig,
+        revision: 8,
         model: "gpt-5.6-codex",
         reasoningEffort: "high",
-        maxDurationMs: 45_500,
       },
     }));
     render(<RuntimeConfigurationForm initialConfig={config} save={save} />);
 
+    fireEvent.click(screen.getByRole("button", { name: "Edit settings" }));
     fireEvent.change(screen.getByLabelText("Model"), { target: { value: "  gpt-5.6-codex  " } });
-    fireEvent.change(screen.getByLabelText("Reasoning effort"), { target: { value: "high" } });
-    fireEvent.change(screen.getByLabelText("Maximum Turn duration"), { target: { value: "45.5" } });
-    fireEvent.change(screen.getByLabelText("Instructions"), { target: { value: "Updated instructions." } });
-    const saveButton = screen.getByRole("button", { name: "Save Runtime settings" });
-    expect(saveButton.className).toContain("ds-button--primary");
-    expect(screen.getByLabelText("Model").closest(".ds-field")).toBeTruthy();
-    fireEvent.click(saveButton);
+    fireEvent.change(screen.getByLabelText("Reasoning level"), { target: { value: "high" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
 
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
     expect(save).toHaveBeenCalledWith({
@@ -82,41 +127,52 @@ describe("RuntimeConfigurationForm", () => {
       runtimeConfig: {
         model: "gpt-5.6-codex",
         reasoningEffort: "high",
-        instructions: "Updated instructions.",
-        maxDurationMs: 45_500,
       },
     });
-    expect((await screen.findByRole("status")).textContent).toBe("Runtime configuration saved.");
+    expect((await screen.findByRole("status")).textContent).toBe("Runtime settings saved.");
+    expect(screen.getByText("gpt-5.6-codex")).toBeTruthy();
   });
 
-  it("restores provider-managed choices and the OpenTag duration default with blank values", () => {
+  it("saves Agent instructions independently", async () => {
+    const save = vi.fn(async () => ({
+      ...config,
+      revision: 5,
+      runtimeConfig: { ...config.runtimeConfig, revision: 8, instructions: "Updated instructions." },
+    }));
+    render(<RuntimeConfigurationForm initialConfig={config} save={save} />);
+
+    fireEvent.change(screen.getByLabelText("Instructions"), { target: { value: "Updated instructions." } });
+    fireEvent.click(screen.getByRole("button", { name: "Save instructions" }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: { instructions: "Updated instructions." },
+    });
+    expect((await screen.findByRole("status")).textContent).toBe("Agent instructions saved.");
+  });
+
+  it("restores provider defaults with blank Runtime values", () => {
     const data = new FormData();
     data.set("model", " ");
     data.set("reasoningEffort", "");
-    data.set("instructions", "Keep this.");
-    data.set("maxDurationSeconds", "");
 
     expect(runtimeConfigurationFromForm(data)).toEqual({
       model: null,
       reasoningEffort: null,
-      instructions: "Keep this.",
-      maxDurationMs: null,
     });
   });
 
-  it.each(["0", "-1", "0.0001", "86400.001"])("rejects an invalid duration of %s before saving", async (duration) => {
-    const save = vi.fn();
+  it("reports save failures without closing the editor", async () => {
+    const save = vi.fn(async () => {
+      throw new Error("Revision changed");
+    });
     render(<RuntimeConfigurationForm initialConfig={config} save={save} />);
-    fireEvent.change(screen.getByLabelText("Maximum Turn duration"), { target: { value: duration } });
-    fireEvent.submit(screen.getByRole("button", { name: "Save Runtime settings" }).closest("form") as HTMLFormElement);
 
-    expect((await screen.findByRole("alert")).textContent).toContain("between 0.001 and 86400 seconds");
-    expect(save).not.toHaveBeenCalled();
-  });
+    fireEvent.click(screen.getByRole("button", { name: "Edit settings" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save settings" }));
 
-  it("rejects non-numeric duration input at the form-contract boundary", () => {
-    const data = new FormData();
-    data.set("maxDurationSeconds", "not-a-number");
-    expect(() => runtimeConfigurationFromForm(data)).toThrow("between 0.001 and 86400 seconds");
+    expect((await screen.findByRole("alert")).textContent).toBe("Revision changed");
+    expect(screen.getByLabelText("Model")).toBeTruthy();
   });
 });

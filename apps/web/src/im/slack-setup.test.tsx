@@ -34,9 +34,10 @@ function attempt(
   };
 }
 
+// Real Slack omits app_id from auth.test for bot tokens, so the validated identity normally has no App ID.
 const validated = {
   state: "awaiting_verification" as const,
-  identity: { appId: "A1", teamId: "T1", enterpriseId: null, botUserId: "U1" },
+  identity: { appId: null, teamId: "T1", enterpriseId: null, botUserId: "U1" },
 };
 
 function Harness({ onSuccess = () => undefined }: { onSuccess?: () => void }) {
@@ -175,7 +176,8 @@ describe("SlackSetup", () => {
       botAccessToken: "xoxb-token",
       signingSecret: "signing-secret",
     });
-    expect(screen.getByText(/for App A1 in workspace T1 \(bot user U1\)/)).toBeTruthy();
+    expect(screen.getByText(/for workspace T1 \(bot user U1\)/)).toBeTruthy();
+    expect(screen.getByText(/does not report the App ID/)).toBeTruthy();
     expect(screen.getByText(/Signing Secret not yet verified/)).toBeTruthy();
     expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
     expect(screen.queryByLabelText("Signing Secret")).toBeNull();
@@ -218,15 +220,23 @@ describe("SlackSetup", () => {
     expect(screen.queryByLabelText("Signing Secret")).toBeNull();
   });
 
-  it("reports a verified Request URL and the remaining activation step", async () => {
+  it("reports a verified Request URL and the remaining activation step, naming the App when known", async () => {
     vi.spyOn(browserApi, "createSlackSetupAttempt").mockResolvedValue(
-      attempt({ id: firstAttemptId, intent: "create", ...validated, challengeVerified: true }),
+      attempt({
+        id: firstAttemptId,
+        intent: "create",
+        ...validated,
+        identity: { ...validated.identity, appId: "A1", enterpriseId: "E1" },
+        challengeVerified: true,
+      }),
     );
     render(<Harness />);
 
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
-    expect(await screen.findByText(/Signing Secret verified/)).toBeTruthy();
+    expect(await screen.findByText(/for workspace T1 \(bot user U1\), enterprise E1, App A1\./)).toBeTruthy();
+    expect(screen.queryByText(/does not report the App ID/)).toBeNull();
+    expect(screen.getByText(/Signing Secret verified/)).toBeTruthy();
     expect(screen.getByText(/first matching event completes activation/)).toBeTruthy();
   });
 

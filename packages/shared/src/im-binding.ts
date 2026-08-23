@@ -181,7 +181,8 @@ export const SlackSetupStateSchema = z.enum([
 
 export const SlackSetupIdentitySchema = z
   .object({
-    appId: z.string().min(1).max(255),
+    // Slack's auth.test normally omits app_id for a bot token; the signed activation event establishes it.
+    appId: z.string().min(1).max(255).nullable(),
     teamId: z.string().min(1).max(255),
     enterpriseId: z.string().min(1).max(255).nullable(),
     botUserId: z.string().min(1).max(255),

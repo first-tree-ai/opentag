@@ -5514,9 +5514,10 @@ describe("IM binding persistence", () => {
         botAccessToken: "xoxb-setup-secret",
         signingSecret,
       });
+      // Real Slack omits app_id from auth.test for bot tokens; the projection still names the installation.
       expect(submitted).toMatchObject({
         state: "awaiting_verification",
-        identity: null,
+        identity: { appId: null, teamId: "T_SETUP", enterpriseId: null, botUserId: "U_SETUP" },
       });
       expect(JSON.stringify(submitted)).not.toMatch(/xoxb-setup-secret|signing-secret/);
       expect(await value.imBindingService.findSlackIngressBindingForAgent(value.agent.id)).toBeUndefined();

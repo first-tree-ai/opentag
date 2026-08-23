@@ -110,11 +110,13 @@ describe("Agent CLI core", () => {
       providerCliReadiness: "install",
       credentialGeneration: 1,
       reauthorizationRequired: false,
+      pendingReceiveMode: "all_message",
       connection: null,
       lastInboundAt: null,
       lastErrorCode: null,
     };
     expect(formatImBindingDiagnostics(diagnostics)).toContain("providerCliReadiness\tinstall");
+    expect(formatImBindingDiagnostics(diagnostics)).toContain("pendingReceiveMode\tall_message");
     expect(formatImBindingDiagnostics(diagnostics)).toContain("agentRuntimeReadiness\tready");
   });
 

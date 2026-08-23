@@ -139,7 +139,8 @@ export class ImBindingServiceError extends Error {
   }
 }
 
-function isFeishuAppBindingConflict(error: unknown): boolean {
+/** Whether a thrown error (or any error in its cause chain) is a PostgreSQL unique violation on one constraint. */
+export function isImBindingUniqueViolation(error: unknown, constraintName: string): boolean {
   let current = error;
   const visited = new Set<unknown>();
   while (typeof current === "object" && current !== null && !visited.has(current)) {
@@ -148,13 +149,29 @@ function isFeishuAppBindingConflict(error: unknown): boolean {
       "code" in current &&
       current.code === "23505" &&
       "constraint_name" in current &&
-      current.constraint_name === "im_bindings_feishu_app_current_unique"
+      current.constraint_name === constraintName
     ) {
       return true;
     }
     current = "cause" in current ? current.cause : undefined;
   }
   return false;
+}
+
+/**
+ * The projected error code prefers a real stored failure (for example a revoked token) over the
+ * derived scope-upgrade hint, so a pending receive-mode target never masks binding health.
+ */
+function projectedErrorCode(input: {
+  lastErrorCode: string | null;
+  pendingReceiveMode: "all_message" | "mention_only" | null;
+  reauthorizationRequired: boolean;
+  status: ImBindingState;
+}): string | null {
+  if (input.lastErrorCode) return input.lastErrorCode;
+  if (input.pendingReceiveMode !== null) return "IM_BINDING_SCOPE_REAUTH_REQUIRED";
+  if (input.reauthorizationRequired && input.status === "active") return "FEISHU_SCOPE_REAUTH_REQUIRED";
+  return null;
 }
 
 function needsFeishuScopeUpdate(
@@ -296,21 +313,34 @@ export class ImBindingService {
       signingSecret: input.signingSecret,
       grantedScopes: [...new Set(input.grantedBotScopes)].sort(),
     });
-    return this.#activate(
-      {
-        agentId: input.agentId,
-        provider: "slack",
-        identity: {
-          appId: input.appId,
-          teamId: input.teamId,
-          enterpriseId: input.enterpriseId ?? null,
-          botId: input.botUserId,
-          teamBrand: null,
+    try {
+      return await this.#activate(
+        {
+          agentId: input.agentId,
+          provider: "slack",
+          identity: {
+            appId: input.appId,
+            teamId: input.teamId,
+            enterpriseId: input.enterpriseId ?? null,
+            botId: input.botUserId,
+            teamBrand: null,
+          },
+          credential,
         },
-        credential,
-      },
-      transaction,
-    );
+        transaction,
+      );
+    } catch (error) {
+      // The partial unique index decides concurrent activations of one App/Team; report the loser
+      // with the same typed conflict the in-transaction precheck uses.
+      if (isImBindingUniqueViolation(error, "im_bindings_slack_app_team_current_unique")) {
+        throw new ImBindingServiceError(
+          "SLACK_APP_TEAM_ALREADY_BOUND",
+          409,
+          "This Slack App installation is already bound to another Agent",
+        );
+      }
+      throw error;
+    }
   }
 
   async activateFeishu(input: VerifiedFeishuBinding, transaction?: DatabaseTransaction): Promise<string> {
@@ -336,7 +366,7 @@ export class ImBindingService {
         transaction,
       );
     } catch (error) {
-      if (isFeishuAppBindingConflict(error)) {
+      if (isImBindingUniqueViolation(error, "im_bindings_feishu_app_current_unique")) {
         throw new ImBindingServiceError(
           "FEISHU_APP_ALREADY_BOUND",
           409,
@@ -517,6 +547,7 @@ export class ImBindingService {
       bindingState: reauthorizationRequired ? "reauthorization_required" : row.bindingState,
       bot: { displayName: row.botDisplayName, avatarUrl: row.botAvatarUrl },
       receiveMode: row.receiveMode,
+      pendingReceiveMode: row.pendingReceiveMode,
       ...activity,
       lastConfirmedAt: (row.observedAt ?? row.activatedAt)?.toISOString() ?? null,
     };
@@ -565,6 +596,7 @@ export class ImBindingService {
       bindingState: reauthorizationRequired ? "reauthorization_required" : binding.status,
       bot: { displayName: binding.botDisplayName, avatarUrl: binding.botAvatarUrl },
       receiveMode: row.receiveMode,
+      pendingReceiveMode: binding.pendingReceiveMode,
       ...activity,
       lastConfirmedAt: (binding.observedAt ?? binding.activatedAt)?.toISOString() ?? null,
     };
@@ -589,12 +621,12 @@ export class ImBindingService {
       credentialGeneration: binding.credentialGeneration,
       grantedCapabilities: binding.grantedCapabilities,
       reauthorizationRequired,
-      lastErrorCode:
-        binding.pendingReceiveMode !== null
-          ? "IM_BINDING_SCOPE_REAUTH_REQUIRED"
-          : reauthorizationRequired && binding.status === "active"
-            ? "FEISHU_SCOPE_REAUTH_REQUIRED"
-            : binding.lastErrorCode,
+      lastErrorCode: projectedErrorCode({
+        lastErrorCode: binding.lastErrorCode,
+        pendingReceiveMode: binding.pendingReceiveMode,
+        reauthorizationRequired,
+        status: binding.status,
+      }),
     };
   }
 
@@ -650,14 +682,15 @@ export class ImBindingService {
       providerCliReadiness: readiness.providerCliReadiness,
       credentialGeneration: Math.max(1, imBinding.credentialGeneration),
       reauthorizationRequired: readiness.reauthorizationRequired,
+      pendingReceiveMode: imBinding.pendingReceiveMode,
       connection: readiness.connection,
       ...activity,
-      lastErrorCode:
-        imBinding.pendingReceiveMode !== null
-          ? "IM_BINDING_SCOPE_REAUTH_REQUIRED"
-          : readiness.reauthorizationRequired && imBinding.status === "active"
-            ? "FEISHU_SCOPE_REAUTH_REQUIRED"
-            : imBinding.lastErrorCode,
+      lastErrorCode: projectedErrorCode({
+        lastErrorCode: imBinding.lastErrorCode,
+        pendingReceiveMode: imBinding.pendingReceiveMode,
+        reauthorizationRequired: readiness.reauthorizationRequired,
+        status: imBinding.status,
+      }),
     };
   }
 

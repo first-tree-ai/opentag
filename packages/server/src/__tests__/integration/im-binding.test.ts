@@ -496,6 +496,50 @@ function slackThreadEvent(input: {
   return event;
 }
 
+type UnboundFixture = Awaited<ReturnType<typeof unboundFixture>>;
+const SLACK_BASE_SCOPES = ["app_mentions:read", "chat:write", "files:read", "im:history"];
+
+function slackSignature(secret: string, timestamp: string, body: Buffer): string {
+  return `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:`).update(body).digest("hex")}`;
+}
+
+function slackSetupService(
+  value: UnboundFixture,
+  inspection: { appId?: string | null; teamId: string; botUserId: string; botId: string; grantedBotScopes?: string[] },
+  options: {
+    now?: () => Date;
+    inspectInstallation?: (token: string) => Promise<unknown>;
+    beforeActivationTransaction?: () => Promise<void>;
+    beforeSetupTransaction?: () => Promise<void>;
+  } = {},
+): SlackSetupService {
+  const installation = { appId: null, enterpriseId: null, grantedBotScopes: SLACK_BASE_SCOPES, ...inspection };
+  return new SlackSetupService({
+    api: { inspectInstallation: options.inspectInstallation ?? vi.fn().mockResolvedValue(installation) } as never,
+    cipher: value.cipher,
+    database: value.database,
+    imBindings: value.imBindingService,
+    instanceId: crypto.randomUUID(),
+    publicOrigin: "https://opentag.example.com",
+    now: options.now,
+    beforeActivationTransaction: options.beforeActivationTransaction,
+    beforeSetupTransaction: options.beforeSetupTransaction,
+  });
+}
+
+function slackEventBody(input: { appId: string; teamId: string; botUserId: string; eventId: string }): Buffer {
+  return Buffer.from(
+    JSON.stringify({
+      type: "event_callback",
+      api_app_id: input.appId,
+      team_id: input.teamId,
+      authorizations: [{ team_id: input.teamId, user_id: input.botUserId, is_bot: true }],
+      event_id: input.eventId,
+      event: { type: "app_mention" },
+    }),
+  );
+}
+
 describe("IM binding persistence", () => {
   it("filters the bound Bot's own ingress before message persistence and delivery", async () => {
     const value = await fixture();
@@ -5516,7 +5560,10 @@ describe("IM binding persistence", () => {
           timestamp,
           signature: eventSignature,
         }),
-      ).resolves.toMatchObject({ appId: "A_SETUP", teamId: "T_SETUP", botUserId: "U_SETUP" });
+      ).resolves.toMatchObject({
+        status: "activated",
+        binding: { appId: "A_SETUP", teamId: "T_SETUP", botUserId: "U_SETUP" },
+      });
       await expect(setup.get(value.bootstrap.userId, created.id)).resolves.toMatchObject({ state: "succeeded" });
       const [stored] = await value.database.select().from(imBindings).where(eq(imBindings.agentId, value.agent.id));
       expect(stored).toMatchObject({ status: "active", externalAppId: "A_SETUP", externalTeamId: "T_SETUP" });
@@ -5595,6 +5642,90 @@ describe("IM binding persistence", () => {
         errorCode: "SLACK_BINDING_IDENTITY_MISMATCH",
       });
       expect(await value.imBindingService.findSlackIngressBindingForAgent(value.agent.id)).toBeUndefined();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("keeps the live Slack binding serving while a same-secret reauthorization awaits URL re-verification", async () => {
+    const value = await unboundFixture();
+    const now = new Date("2026-08-21T00:00:00.000Z");
+    const signingSecret = "same-signing-secret-across-reauthorize";
+    const setup = new SlackSetupService({
+      api: {
+        inspectInstallation: vi.fn().mockResolvedValue({
+          appId: "A_LIVE",
+          teamId: "T_LIVE",
+          enterpriseId: null,
+          botUserId: "U_LIVE",
+          botId: "B_LIVE",
+          grantedBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
+        }),
+      } as never,
+      cipher: value.cipher,
+      database: value.database,
+      imBindings: value.imBindingService,
+      instanceId: crypto.randomUUID(),
+      publicOrigin: "https://opentag.example.com",
+      now: () => now,
+    });
+    try {
+      await value.imBindingService.activateSlack(
+        {
+          agentId: value.agent.id,
+          appId: "A_LIVE",
+          teamId: "T_LIVE",
+          botUserId: "U_LIVE",
+          grantedBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
+          botAccessToken: "xoxb-old",
+          signingSecret,
+          installedAt: now,
+        },
+        "B_LIVE",
+      );
+      const attempt = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "reauthorize");
+      await setup.submitCredentials(value.bootstrap.userId, attempt.id, {
+        botAccessToken: "xoxb-new",
+        signingSecret,
+      });
+      expect(await value.imBindingService.findSlackIngressBindingForAgent(value.agent.id)).toMatchObject({
+        appId: "A_LIVE",
+      });
+
+      const timestamp = String(Math.floor(now.getTime() / 1000));
+      const eventBody = Buffer.from(
+        JSON.stringify({
+          type: "event_callback",
+          api_app_id: "A_LIVE",
+          team_id: "T_LIVE",
+          authorizations: [{ team_id: "T_LIVE", user_id: "U_LIVE", is_bot: true }],
+          event_id: "Ev-ordinary-traffic",
+          event: { type: "app_mention", text: "<@U_LIVE> hello" },
+        }),
+      );
+      // An ordinary live event signed by the unchanged secret must not be rejected: the Server reports
+      // the pending attempt as awaiting its challenge so ingress falls through to the active binding.
+      await expect(
+        setup.tryActivateFromEvent({
+          agentId: value.agent.id,
+          appId: "A_LIVE",
+          teamId: "T_LIVE",
+          rawBody: eventBody,
+          timestamp,
+          signature: `v0=${createHmac("sha256", signingSecret)
+            .update(`v0:${timestamp}:`)
+            .update(eventBody)
+            .digest("hex")}`,
+        }),
+      ).resolves.toEqual({ status: "awaiting_challenge" });
+      await expect(setup.get(value.bootstrap.userId, attempt.id)).resolves.toMatchObject({
+        state: "awaiting_verification",
+        lastVerificationErrorCode: null,
+      });
+      expect(await value.imBindingService.findSlackIngressBindingForAgent(value.agent.id)).toMatchObject({
+        appId: "A_LIVE",
+        botAccessToken: "xoxb-old",
+      });
     } finally {
       await value.sql.end();
     }
@@ -5736,7 +5867,10 @@ describe("IM binding persistence", () => {
             .update(eventBody)
             .digest("hex")}`,
         }),
-      ).resolves.toMatchObject({ appId: "A_REAUTH_TARGET", teamId: "T_REAUTH_TARGET" });
+      ).resolves.toMatchObject({
+        status: "activated",
+        binding: { appId: "A_REAUTH_TARGET", teamId: "T_REAUTH_TARGET" },
+      });
       await expect(
         new AgentService(value.database).getConfigById(value.bootstrap.userId, value.agent.id),
       ).resolves.toMatchObject({ receiveMode: "all_message", revision: value.agent.revision + 1 });
@@ -5831,7 +5965,7 @@ describe("IM binding persistence", () => {
           expect(replacement.id).not.toBe(attempt.id);
         }
         releaseActivation.resolve();
-        await expect(activation).resolves.toBeUndefined();
+        await expect(activation).resolves.toEqual({ status: "unmatched" });
         expect(await value.imBindingService.findSlackIngressBindingForAgent(value.agent.id)).toBeUndefined();
         const [stored] = await value.database.select().from(imBindings).where(eq(imBindings.agentId, value.agent.id));
         expect(stored?.status).toBe("provisioning");
@@ -5843,6 +5977,520 @@ describe("IM binding persistence", () => {
       }
     },
   );
+
+  it("lets an admin replace pending Slack credentials and reports a wrong Signing Secret", async () => {
+    const value = await unboundFixture();
+    const now = new Date("2026-08-21T00:00:00.000Z");
+    const timestamp = String(Math.floor(now.getTime() / 1000));
+    const inspectInstallation = vi.fn().mockResolvedValue({
+      appId: null,
+      teamId: "T_RECOVER",
+      enterpriseId: null,
+      botUserId: "U_RECOVER",
+      botId: "B_RECOVER",
+      grantedBotScopes: SLACK_BASE_SCOPES,
+    });
+    const setup = slackSetupService(
+      value,
+      { teamId: "T_RECOVER", botUserId: "U_RECOVER", botId: "B_RECOVER" },
+      { now: () => now, inspectInstallation },
+    );
+    try {
+      const attempt = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      await setup.submitCredentials(value.bootstrap.userId, attempt.id, {
+        botAccessToken: "xoxb-first",
+        signingSecret: "wrong-secret",
+      });
+      const challengeBody = Buffer.from(JSON.stringify({ type: "url_verification", challenge: "challenge-ok" }));
+      await expect(
+        setup.verifyChallenge({
+          agentId: value.agent.id,
+          rawBody: challengeBody,
+          timestamp,
+          signature: slackSignature("right-secret", timestamp, challengeBody),
+        }),
+      ).rejects.toMatchObject({ code: "SLACK_SIGNING_SECRET_INVALID" });
+      await expect(setup.get(value.bootstrap.userId, attempt.id)).resolves.toMatchObject({
+        state: "awaiting_verification",
+        challengeVerified: false,
+        lastVerificationErrorCode: "SLACK_SIGNING_SECRET_INVALID",
+        lastVerificationAt: now.toISOString(),
+      });
+
+      const resubmitted = await setup.submitCredentials(value.bootstrap.userId, attempt.id, {
+        botAccessToken: "xoxb-second",
+        signingSecret: "right-secret",
+      });
+      expect(resubmitted).toMatchObject({
+        id: attempt.id,
+        state: "awaiting_verification",
+        challengeVerified: false,
+        lastVerificationErrorCode: null,
+      });
+      expect(JSON.stringify(resubmitted)).not.toMatch(/xoxb-|right-secret|wrong-secret/);
+      expect(inspectInstallation).toHaveBeenCalledTimes(2);
+      expect(inspectInstallation).toHaveBeenLastCalledWith("xoxb-second");
+      const [stored] = await value.database.select().from(imBindings).where(eq(imBindings.setupAttemptId, attempt.id));
+      expect(JSON.parse(value.cipher.decrypt(stored?.encryptedSetupContext ?? ""))).toMatchObject({
+        botAccessToken: "xoxb-second",
+        signingSecret: "right-secret",
+        challengeVerified: false,
+      });
+
+      await expect(
+        setup.verifyChallenge({
+          agentId: value.agent.id,
+          rawBody: challengeBody,
+          timestamp,
+          signature: slackSignature("right-secret", timestamp, challengeBody),
+        }),
+      ).resolves.toBe("challenge-ok");
+      await expect(setup.get(value.bootstrap.userId, attempt.id)).resolves.toMatchObject({
+        challengeVerified: true,
+        lastVerificationErrorCode: null,
+      });
+
+      const eventBody = slackEventBody({
+        appId: "A_RECOVER",
+        teamId: "T_RECOVER",
+        botUserId: "U_RECOVER",
+        eventId: "Ev-recover",
+      });
+      await expect(
+        setup.tryActivateFromEvent({
+          agentId: value.agent.id,
+          appId: "A_RECOVER",
+          teamId: "T_RECOVER",
+          rawBody: eventBody,
+          timestamp,
+          signature: slackSignature("right-secret", timestamp, eventBody),
+        }),
+      ).resolves.toMatchObject({ status: "activated", binding: { appId: "A_RECOVER", botAccessToken: "xoxb-second" } });
+      await expect(
+        setup.submitCredentials(value.bootstrap.userId, attempt.id, {
+          botAccessToken: "xoxb-late",
+          signingSecret: "late",
+        }),
+      ).rejects.toMatchObject({ code: "SLACK_SETUP_NOT_ACTIVE" });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("does not persist Slack credentials into an attempt that expired during token inspection", async () => {
+    const value = await unboundFixture();
+    const start = new Date("2026-08-21T00:00:00.000Z");
+    let current = start;
+    const setup = slackSetupService(
+      value,
+      { teamId: "T_TTL", botUserId: "U_TTL", botId: "B_TTL" },
+      {
+        now: () => current,
+        inspectInstallation: async () => {
+          // Slack answers only after the attempt deadline has passed.
+          current = new Date(start.getTime() + 31 * 60 * 1000);
+          return {
+            appId: null,
+            teamId: "T_TTL",
+            enterpriseId: null,
+            botUserId: "U_TTL",
+            botId: "B_TTL",
+            grantedBotScopes: SLACK_BASE_SCOPES,
+          };
+        },
+      },
+    );
+    try {
+      const attempt = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      await expect(
+        setup.submitCredentials(value.bootstrap.userId, attempt.id, {
+          botAccessToken: "xoxb-ttl",
+          signingSecret: "ttl-secret",
+        }),
+      ).rejects.toMatchObject({ code: "SLACK_SETUP_EXPIRED" });
+      const [stored] = await value.database.select().from(imBindings).where(eq(imBindings.setupAttemptId, attempt.id));
+      expect(stored).toMatchObject({
+        setupState: "expired",
+        encryptedSetupContext: null,
+        lastErrorCode: "SLACK_SETUP_EXPIRED",
+      });
+      await expect(setup.get(value.bootstrap.userId, attempt.id)).resolves.toMatchObject({ state: "expired" });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("does not answer a Slack URL challenge for an attempt that expired during verification", async () => {
+    const value = await unboundFixture();
+    const start = new Date("2026-08-21T00:00:00.000Z");
+    const timestamp = String(Math.floor(start.getTime() / 1000));
+    let clock: () => Date = () => start;
+    const setup = slackSetupService(
+      value,
+      { teamId: "T_TTL", botUserId: "U_TTL", botId: "B_TTL" },
+      { now: () => clock() },
+    );
+    try {
+      const attempt = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      await setup.submitCredentials(value.bootstrap.userId, attempt.id, {
+        botAccessToken: "xoxb-ttl",
+        signingSecret: "ttl-secret",
+      });
+      await value.database
+        .update(imBindings)
+        .set({ setupExpiresAt: new Date(start.getTime() + 1_000) })
+        .where(eq(imBindings.setupAttemptId, attempt.id));
+      // The attempt is live when the challenge is routed and expired by the time its proof is recorded.
+      let reads = 0;
+      clock = () => (reads++ === 0 ? start : new Date(start.getTime() + 2_000));
+      const challengeBody = Buffer.from(JSON.stringify({ type: "url_verification", challenge: "challenge-late" }));
+      await expect(
+        setup.verifyChallenge({
+          agentId: value.agent.id,
+          rawBody: challengeBody,
+          timestamp,
+          signature: slackSignature("ttl-secret", timestamp, challengeBody),
+        }),
+      ).rejects.toMatchObject({ code: "SLACK_SETUP_EXPIRED" });
+      const [stored] = await value.database.select().from(imBindings).where(eq(imBindings.setupAttemptId, attempt.id));
+      expect(stored).toMatchObject({ setupState: "expired", encryptedSetupContext: null });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("converges concurrent first Slack setups on one attempt", async () => {
+    const value = await unboundFixture();
+    let arrived = 0;
+    const release = deferred<void>();
+    const setup = slackSetupService(
+      value,
+      { teamId: "T_FIRST", botUserId: "U_FIRST", botId: "B_FIRST" },
+      {
+        beforeSetupTransaction: async () => {
+          arrived += 1;
+          if (arrived === 2) release.resolve();
+          await release.promise;
+        },
+      },
+    );
+    try {
+      const [first, second] = await Promise.all([
+        setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create"),
+        setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create"),
+      ]);
+      expect(first.id).toBe(second.id);
+      expect(await value.database.select().from(imBindings).where(eq(imBindings.agentId, value.agent.id))).toHaveLength(
+        1,
+      );
+      await expect(setup.get(value.bootstrap.userId, first.id)).resolves.toMatchObject({
+        state: "awaiting_credentials",
+      });
+    } finally {
+      release.resolve();
+      await value.sql.end();
+    }
+  });
+
+  it("converges concurrent same-intent Slack reauthorizations on one attempt", async () => {
+    const value = await unboundFixture();
+    let arrived = 0;
+    const release = deferred<void>();
+    const setup = slackSetupService(
+      value,
+      { appId: "A_SAME", teamId: "T_SAME", botUserId: "U_SAME", botId: "B_SAME" },
+      {
+        beforeSetupTransaction: async () => {
+          arrived += 1;
+          if (arrived === 2) release.resolve();
+          await release.promise;
+        },
+      },
+    );
+    try {
+      await value.imBindingService.activateSlack(
+        {
+          agentId: value.agent.id,
+          appId: "A_SAME",
+          teamId: "T_SAME",
+          botUserId: "U_SAME",
+          grantedBotScopes: SLACK_BASE_SCOPES,
+          botAccessToken: "xoxb-same",
+          signingSecret: "same-secret",
+          installedAt: new Date(),
+        },
+        "B_SAME",
+      );
+      const [first, second] = await Promise.all([
+        setup.createOrReuse(value.bootstrap.userId, value.agent.id, "reauthorize"),
+        setup.createOrReuse(value.bootstrap.userId, value.agent.id, "reauthorize"),
+      ]);
+      expect(first.id).toBe(second.id);
+      await expect(setup.get(value.bootstrap.userId, first.id)).resolves.toMatchObject({
+        intent: "reauthorize",
+        state: "awaiting_credentials",
+        currentAppId: "A_SAME",
+      });
+    } finally {
+      release.resolve();
+      await value.sql.end();
+    }
+  });
+
+  it("rejects a different Slack setup intent while an attempt is active until it is canceled", async () => {
+    const value = await unboundFixture();
+    let arrived = 0;
+    const release = deferred<void>();
+    const setup = slackSetupService(
+      value,
+      { appId: "A_INTENT", teamId: "T_INTENT", botUserId: "U_INTENT", botId: "B_INTENT" },
+      {
+        beforeSetupTransaction: async () => {
+          arrived += 1;
+          if (arrived === 2) release.resolve();
+          await release.promise;
+        },
+      },
+    );
+    try {
+      await value.imBindingService.activateSlack(
+        {
+          agentId: value.agent.id,
+          appId: "A_INTENT",
+          teamId: "T_INTENT",
+          botUserId: "U_INTENT",
+          grantedBotScopes: SLACK_BASE_SCOPES,
+          botAccessToken: "xoxb-intent",
+          signingSecret: "intent-secret",
+          installedAt: new Date(),
+        },
+        "B_INTENT",
+      );
+      // Concurrent different intents: exactly one wins, the other fails with the typed conflict.
+      const settled = await Promise.allSettled([
+        setup.createOrReuse(value.bootstrap.userId, value.agent.id, "reauthorize"),
+        setup.createOrReuse(value.bootstrap.userId, value.agent.id, "replace"),
+      ]);
+      const fulfilled = settled.filter((entry) => entry.status === "fulfilled");
+      const rejected = settled.filter((entry) => entry.status === "rejected");
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]?.reason).toMatchObject({ code: "SLACK_SETUP_INTENT_CONFLICT", statusCode: 409 });
+      const first = fulfilled[0]?.value;
+      if (!first) throw new Error("No Slack setup attempt was admitted");
+      const other = first.intent === "reauthorize" ? "replace" : "reauthorize";
+
+      await expect(setup.createOrReuse(value.bootstrap.userId, value.agent.id, other)).rejects.toMatchObject({
+        code: "SLACK_SETUP_INTENT_CONFLICT",
+        statusCode: 409,
+      });
+      await expect(setup.createOrReuse(value.bootstrap.userId, value.agent.id, first.intent)).resolves.toMatchObject({
+        id: first.id,
+      });
+      await expect(setup.cancel(value.bootstrap.userId, first.id)).resolves.toMatchObject({ state: "canceled" });
+      const switched = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, other);
+      expect(switched.intent).toBe(other);
+      expect(switched.id).not.toBe(first.id);
+      expect(await value.imBindingService.findSlackIngressBindingForAgent(value.agent.id)).toMatchObject({
+        appId: "A_INTENT",
+      });
+    } finally {
+      release.resolve();
+      await value.sql.end();
+    }
+  });
+
+  it("maps a concurrent Slack App/Team activation race to the documented conflict", async () => {
+    const value = await unboundFixture();
+    const now = new Date("2026-08-21T00:00:00.000Z");
+    const timestamp = String(Math.floor(now.getTime() / 1000));
+    const other = await new AgentService(value.database).createForTeam(value.bootstrap.userId, value.bootstrap.teamId, {
+      name: "other",
+      displayName: "Other",
+      runtimeProvider: "codex",
+      computerId: value.computer.id,
+    });
+    const winnerInserted = deferred<void>();
+    const releaseWinner = deferred<void>();
+    const setup = slackSetupService(
+      value,
+      { teamId: "T_RACE", botUserId: "U_LOSER", botId: "B_LOSER" },
+      {
+        now: () => now,
+        beforeActivationTransaction: async () => {
+          await winnerInserted.promise;
+        },
+      },
+    );
+    try {
+      const attempt = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      await setup.submitCredentials(value.bootstrap.userId, attempt.id, {
+        botAccessToken: "xoxb-loser",
+        signingSecret: "race-secret",
+      });
+      const challengeBody = Buffer.from(JSON.stringify({ type: "url_verification", challenge: "challenge-ok" }));
+      await setup.verifyChallenge({
+        agentId: value.agent.id,
+        rawBody: challengeBody,
+        timestamp,
+        signature: slackSignature("race-secret", timestamp, challengeBody),
+      });
+      // Another Agent claims the same App/Team installation and commits only once the loser is committed
+      // to its activation, so the partial unique index rather than the precheck decides the conflict.
+      const winner = value.database.transaction(async (transaction) => {
+        await transaction.insert(imBindings).values({
+          agentId: other.id,
+          provider: "slack",
+          status: "active",
+          externalAppId: "A_RACE",
+          externalTeamId: "T_RACE",
+          externalBotId: "U_WINNER",
+          credentialSchemaVersion: 1,
+          credentialGeneration: 1,
+          encryptedCredential: value.cipher.encrypt(
+            JSON.stringify({
+              botId: "B_WINNER",
+              botAccessToken: "xoxb-winner",
+              signingSecret: "winner-secret",
+              grantedScopes: SLACK_BASE_SCOPES,
+            }),
+          ),
+          grantedCapabilities: SLACK_BASE_SCOPES,
+          activatedAt: now,
+          createdAt: now,
+          updatedAt: now,
+        });
+        winnerInserted.resolve();
+        await releaseWinner.promise;
+      });
+      const eventBody = slackEventBody({ appId: "A_RACE", teamId: "T_RACE", botUserId: "U_LOSER", eventId: "Ev-race" });
+      const activation = setup.tryActivateFromEvent({
+        agentId: value.agent.id,
+        appId: "A_RACE",
+        teamId: "T_RACE",
+        rawBody: eventBody,
+        timestamp,
+        signature: slackSignature("race-secret", timestamp, eventBody),
+      });
+      await winnerInserted.promise;
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline) {
+        const [row] = await value.sql<{ waiting: number }[]>`
+          select count(*)::int as waiting from pg_stat_activity where wait_event_type = 'Lock'
+        `;
+        if ((row?.waiting ?? 0) > 0) break;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      releaseWinner.resolve();
+      await winner;
+
+      await expect(activation).rejects.toMatchObject({ code: "SLACK_APP_TEAM_ALREADY_BOUND", statusCode: 409 });
+      await expect(setup.get(value.bootstrap.userId, attempt.id)).resolves.toMatchObject({
+        state: "failed",
+        errorCode: "SLACK_APP_TEAM_ALREADY_BOUND",
+      });
+      const [loser] = await value.database.select().from(imBindings).where(eq(imBindings.agentId, value.agent.id));
+      expect(loser?.status).toBe("provisioning");
+      expect(await value.imBindingService.findSlackIngressBindingForAgent(other.id)).toMatchObject({ appId: "A_RACE" });
+    } finally {
+      winnerInserted.resolve();
+      releaseWinner.resolve();
+      await value.sql.end();
+    }
+  });
+
+  it("keeps a real Slack binding error visible beside a pending scope upgrade", async () => {
+    const value = await unboundFixture();
+    try {
+      await value.imBindingService.activateSlack(
+        {
+          agentId: value.agent.id,
+          appId: "A_MASK",
+          teamId: "T_MASK",
+          botUserId: "U_MASK",
+          grantedBotScopes: SLACK_BASE_SCOPES,
+          botAccessToken: "xoxb-mask",
+          signingSecret: "mask-secret",
+          installedAt: new Date(),
+        },
+        "B_MASK",
+      );
+      await expect(
+        new AgentService(value.database).updateById(value.bootstrap.userId, value.agent.id, {
+          expectedRevision: value.agent.revision,
+          receiveMode: "all_message",
+        }),
+      ).rejects.toMatchObject({ code: "IM_BINDING_SCOPE_REAUTH_REQUIRED" });
+      await expect(
+        value.imBindingService.getConfigForAgent(value.bootstrap.userId, value.agent.id),
+      ).resolves.toMatchObject({
+        bindingState: "reauthorization_required",
+        reauthorizationRequired: true,
+        pendingReceiveMode: "all_message",
+        lastErrorCode: "IM_BINDING_SCOPE_REAUTH_REQUIRED",
+      });
+      const [binding] = await value.database.select().from(imBindings).where(eq(imBindings.agentId, value.agent.id));
+      if (!binding) throw new Error("Slack binding fixture was not created");
+
+      await value.imBindingService.requireReauthorization(binding.id, "SLACK_TOKEN_REVOKED");
+
+      await expect(
+        value.imBindingService.getConfigForAgent(value.bootstrap.userId, value.agent.id),
+      ).resolves.toMatchObject({
+        bindingState: "reauthorization_required",
+        pendingReceiveMode: "all_message",
+        lastErrorCode: "SLACK_TOKEN_REVOKED",
+      });
+      await expect(value.imBindingService.getForAgent(value.bootstrap.userId, value.agent.id)).resolves.toMatchObject({
+        bindingState: "reauthorization_required",
+        pendingReceiveMode: "all_message",
+      });
+      await expect(value.imBindingService.diagnostics(value.bootstrap.userId, binding.id)).resolves.toMatchObject({
+        reauthorizationRequired: true,
+        pendingReceiveMode: "all_message",
+        lastErrorCode: "SLACK_TOKEN_REVOKED",
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("keeps an in-flight Slack setup when the receive mode is saved unchanged", async () => {
+    const value = await unboundFixture();
+    const setup = slackSetupService(value, { teamId: "T_NOOP", botUserId: "U_NOOP", botId: "B_NOOP" });
+    const agentService = new AgentService(value.database);
+    try {
+      const attempt = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      const unchanged = await agentService.updateById(value.bootstrap.userId, value.agent.id, {
+        expectedRevision: value.agent.revision,
+        receiveMode: "mention_only",
+      });
+      const [untouched] = await value.database.select().from(imBindings).where(eq(imBindings.agentId, value.agent.id));
+      expect(untouched).toMatchObject({ setupAttemptId: attempt.id, setupState: "awaiting_user", lastErrorCode: null });
+      await expect(setup.get(value.bootstrap.userId, attempt.id)).resolves.toMatchObject({
+        state: "awaiting_credentials",
+      });
+
+      // A real target change still cancels the attempt, and says so.
+      await agentService.updateById(value.bootstrap.userId, value.agent.id, {
+        expectedRevision: unchanged.revision,
+        receiveMode: "all_message",
+      });
+      const [canceled] = await value.database.select().from(imBindings).where(eq(imBindings.agentId, value.agent.id));
+      expect(canceled).toMatchObject({
+        setupAttemptId: attempt.id,
+        setupState: "canceled",
+        lastErrorCode: "SLACK_SETUP_CANCELED",
+        encryptedSetupContext: null,
+      });
+      await expect(setup.get(value.bootstrap.userId, attempt.id)).resolves.toMatchObject({
+        state: "canceled",
+        errorCode: "SLACK_SETUP_CANCELED",
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
 
   it("checks the Feishu lease holder and epoch inside the admission transaction", async () => {
     const value = await unboundFixture();

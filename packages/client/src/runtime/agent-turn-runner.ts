@@ -234,6 +234,7 @@ export function buildAgentInput(request: DirectImMessageDeliveryRequest, supplem
     "Attention does not change provider CLI or credential availability for this Turn.",
     `Current provider reference: ${JSON.stringify(request.content.providerRef)}`,
     `For version-specific commands and native formats, run ${provider === "feishu" ? "lark-cli im --help" : "slack api --help"}.`,
+    ...(request.content.providerRef.provider === "slack" ? slackCliRules(request.content.providerRef) : []),
     "Session instructions:",
     sessionInstructions,
     "</opentag-im-context>",
@@ -255,6 +256,24 @@ export function buildAgentInput(request: DirectImMessageDeliveryRequest, supplem
       ...(supplementalContext ? [{ type: "text" as const, text: supplementalContext }] : []),
     ],
   };
+}
+
+/** Fixed, byte-bounded Slack CLI rules; provider-native identifiers come from the inbound reference. */
+function slackCliRules(
+  providerRef: Extract<DirectImMessageDeliveryRequest["content"]["providerRef"], { provider: "slack" }>,
+): readonly string[] {
+  const threadTs = providerRef.threadTs ?? providerRef.messageTs;
+  return [
+    "Slack CLI rules:",
+    `- Reply in the thread: set thread_ts to ${threadTs} (the inbound threadTs when present, otherwise the inbound messageTs).`,
+    `- Send with \`slack api chat.postMessage --json '{"channel":"${providerRef.channelId}","thread_ts":"${threadTs}","markdown_text":"..."}' --skip-update\`. Always pass the body with --json; never use key=value arguments.`,
+    "- Never pass --token, --app, -w, or --team. The sourced SLACK_BOT_TOKEN is the only credential and already takes precedence over any logged-in Slack CLI session.",
+    "- Use markdown_text (at most 12,000 characters; never together with text or blocks) for Markdown; otherwise use text (at most 4,000 characters per message). Split longer replies across several messages.",
+    "- Send at most 1 message per second per channel.",
+    "- Mention users as <@U...> with their Slack user ID.",
+    "- conversations.replies and conversations.history may be rate-limited (1 request per minute, 15 items for non-Marketplace apps); prefer the bounded history already supplied in this input.",
+    "- Never print the token. Message text passed to slack api is visible in the process command line on this machine.",
+  ];
 }
 
 export function turnTimeoutMs(request: DirectImMessageDeliveryRequest, now: number): number {

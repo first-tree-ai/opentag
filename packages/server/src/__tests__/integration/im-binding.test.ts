@@ -511,6 +511,7 @@ function slackSetupService(
     inspectInstallation?: (token: string) => Promise<unknown>;
     beforeActivationTransaction?: () => Promise<void>;
     beforeSetupTransaction?: () => Promise<void>;
+    beforeVerificationWrite?: () => Promise<void>;
   } = {},
 ): SlackSetupService {
   const installation = { appId: null, enterpriseId: null, grantedBotScopes: SLACK_BASE_SCOPES, ...inspection };
@@ -524,6 +525,7 @@ function slackSetupService(
     now: options.now,
     beforeActivationTransaction: options.beforeActivationTransaction,
     beforeSetupTransaction: options.beforeSetupTransaction,
+    beforeVerificationWrite: options.beforeVerificationWrite,
   });
 }
 
@@ -6074,6 +6076,71 @@ describe("IM binding persistence", () => {
         }),
       ).rejects.toMatchObject({ code: "SLACK_SETUP_NOT_ACTIVE" });
     } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("does not let a stale Slack challenge restore credentials replaced on the same attempt", async () => {
+    const value = await unboundFixture();
+    const now = new Date("2026-08-21T00:00:00.000Z");
+    const timestamp = String(Math.floor(now.getTime() / 1000));
+    let releaseVerificationWrite!: () => void;
+    let verificationWriteStarted!: () => void;
+    const verificationWriteGate = new Promise<void>((resolve) => {
+      releaseVerificationWrite = resolve;
+    });
+    const verificationWriteObserved = new Promise<void>((resolve) => {
+      verificationWriteStarted = resolve;
+    });
+    const setup = slackSetupService(
+      value,
+      { teamId: "T_CAS", botUserId: "U_CAS", botId: "B_CAS" },
+      {
+        now: () => now,
+        beforeVerificationWrite: async () => {
+          verificationWriteStarted();
+          await verificationWriteGate;
+        },
+      },
+    );
+    try {
+      const attempt = await setup.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
+      await setup.submitCredentials(value.bootstrap.userId, attempt.id, {
+        botAccessToken: "xoxb-old",
+        signingSecret: "old-secret",
+      });
+      const challengeBody = Buffer.from(JSON.stringify({ type: "url_verification", challenge: "challenge-cas" }));
+      const staleChallenge = setup.verifyChallenge({
+        agentId: value.agent.id,
+        rawBody: challengeBody,
+        timestamp,
+        signature: slackSignature("old-secret", timestamp, challengeBody),
+      });
+      await verificationWriteObserved;
+
+      await setup.submitCredentials(value.bootstrap.userId, attempt.id, {
+        botAccessToken: "xoxb-new",
+        signingSecret: "new-secret",
+      });
+      releaseVerificationWrite();
+
+      await expect(staleChallenge).rejects.toMatchObject({ code: "SLACK_SETUP_CONFLICT" });
+      const [stored] = await value.database.select().from(imBindings).where(eq(imBindings.setupAttemptId, attempt.id));
+      expect(JSON.parse(value.cipher.decrypt(stored?.encryptedSetupContext ?? ""))).toMatchObject({
+        botAccessToken: "xoxb-new",
+        signingSecret: "new-secret",
+        challengeVerified: false,
+      });
+      await expect(
+        setup.verifyChallenge({
+          agentId: value.agent.id,
+          rawBody: challengeBody,
+          timestamp,
+          signature: slackSignature("new-secret", timestamp, challengeBody),
+        }),
+      ).resolves.toBe("challenge-cas");
+    } finally {
+      releaseVerificationWrite();
       await value.sql.end();
     }
   });

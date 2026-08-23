@@ -177,7 +177,7 @@ describe("SlackSetup", () => {
       signingSecret: "signing-secret",
     });
     expect(screen.getByText(/for workspace T1 \(bot user U1\)/)).toBeTruthy();
-    expect(screen.getByText(/does not report the App ID/)).toBeTruthy();
+    expect(screen.getByText(/did not report the App ID/)).toBeTruthy();
     expect(screen.getByText(/Signing Secret not yet verified/)).toBeTruthy();
     expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
     expect(screen.queryByLabelText("Signing Secret")).toBeNull();
@@ -235,7 +235,7 @@ describe("SlackSetup", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
     expect(await screen.findByText(/for workspace T1 \(bot user U1\), enterprise E1, App A1\./)).toBeTruthy();
-    expect(screen.queryByText(/does not report the App ID/)).toBeNull();
+    expect(screen.queryByText(/did not report the App ID/)).toBeNull();
     expect(screen.getByText(/Signing Secret verified/)).toBeTruthy();
     expect(screen.getByText(/first matching event completes activation/)).toBeTruthy();
   });

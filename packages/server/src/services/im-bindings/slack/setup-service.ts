@@ -122,6 +122,7 @@ export class SlackSetupService {
   readonly #publicOrigin: string;
   readonly #beforeActivationTransaction?: () => Promise<void>;
   readonly #beforeSetupTransaction?: () => Promise<void>;
+  readonly #beforeVerificationWrite?: () => Promise<void>;
 
   constructor(input: {
     api: SlackApiClient;
@@ -133,6 +134,7 @@ export class SlackSetupService {
     now?: () => Date;
     beforeActivationTransaction?: () => Promise<void>;
     beforeSetupTransaction?: () => Promise<void>;
+    beforeVerificationWrite?: () => Promise<void>;
   }) {
     this.#api = input.api;
     this.#cipher = input.cipher;
@@ -143,6 +145,7 @@ export class SlackSetupService {
     this.#now = input.now ?? (() => new Date());
     this.#beforeActivationTransaction = input.beforeActivationTransaction;
     this.#beforeSetupTransaction = input.beforeSetupTransaction;
+    this.#beforeVerificationWrite = input.beforeVerificationWrite;
   }
 
   async createOrReuse(callerUserId: string, agentId: string, intent: SlackSetupIntent): Promise<SlackSetupAttempt> {
@@ -621,12 +624,15 @@ export class SlackSetupService {
     context: SlackVerificationContext,
     errorCode: string | null,
   ): Promise<boolean> {
+    if (!row.encryptedSetupContext) return false;
+    const expectedEncryptedContext = row.encryptedSetupContext;
     const now = this.#now();
     const next: SlackSetupContext = {
       ...context,
       lastVerificationErrorCode: errorCode,
       lastVerificationAt: now.toISOString(),
     };
+    await this.#beforeVerificationWrite?.();
     const [updated] = await this.#database
       .update(imBindings)
       .set({ encryptedSetupContext: this.#encrypt(next), updatedAt: now })
@@ -635,6 +641,7 @@ export class SlackSetupService {
           eq(imBindings.id, row.id),
           eq(imBindings.setupAttemptId, row.setupAttemptId),
           eq(imBindings.setupState, "validating"),
+          eq(imBindings.encryptedSetupContext, expectedEncryptedContext),
           gt(imBindings.setupExpiresAt, now),
           ne(imBindings.status, "disabled"),
         ),
@@ -663,6 +670,7 @@ export class SlackSetupService {
         await this.#expire(attemptId);
         return new SlackSetupServiceError("SLACK_SETUP_EXPIRED", 409, "The Slack setup attempt expired");
       }
+      return new SlackSetupServiceError("SLACK_SETUP_CONFLICT", 409, "Slack setup changed concurrently");
     }
     return new SlackSetupServiceError(
       "SLACK_SETUP_NOT_READY",
@@ -798,7 +806,7 @@ export class SlackSetupService {
       eventsUrl: this.#eventsUrl(row.agentId),
       requiredBotScopes: requiredSlackBotScopes(targetReceiveMode),
       currentAppId: row.externalAppId,
-      // auth.test normally omits app_id for a bot token, so the panel must work from Team and bot user.
+      // auth.test may omit app_id for a bot token, so the panel must work from Team and bot user.
       identity: verification
         ? {
             appId: verification.installation.appId,

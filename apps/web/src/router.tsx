@@ -1418,7 +1418,15 @@ function AccountPage() {
 function WorkspacePage() {
   const { membership, refreshMe } = useTeam();
   return (
-    <Page title="Workspace" description="Manage the current Workspace and create additional Workspaces.">
+    <Page
+      action={
+        <Link className={buttonClassName({ variant: "secondary" })} to="/workspaces/new">
+          Create Workspace
+        </Link>
+      }
+      title="Workspace"
+      description="Manage the current Workspace and create additional Workspaces."
+    >
       <WorkspaceSettings membership={membership} refreshMe={refreshMe} />
     </Page>
   );
@@ -1426,29 +1434,18 @@ function WorkspacePage() {
 
 function WorkspaceSettings({ membership, refreshMe }: { membership: MeMembership; refreshMe: () => void }) {
   return (
-    <div className="account-workspace-stack">
-      <section aria-labelledby="workspace-profile-heading" className="account-workspace-profile">
-        <header className="settings-subheader">
-          <div>
-            <h2 id="workspace-profile-heading">Workspace profile</h2>
-            <p>Manage the name and CLI identity of the current Workspace.</p>
-          </div>
-          {membership.role !== "admin" ? (
-            <span className="settings-role-badge">Your role: {titleCase(membership.role)}</span>
-          ) : null}
-        </header>
-        <TeamProfileSettings membership={membership} refreshMe={refreshMe} />
-      </section>
-      <section aria-labelledby="additional-workspace-heading" className="account-workspace-create">
+    <section aria-labelledby="workspace-profile-heading" className="account-workspace-profile">
+      <header className="settings-subheader">
         <div>
-          <h2 id="additional-workspace-heading">Additional Workspace</h2>
-          <p>Create an isolated Workspace for another client or team.</p>
+          <h2 id="workspace-profile-heading">Workspace profile</h2>
+          <p>Manage the name and CLI identity of the current Workspace.</p>
         </div>
-        <Link className={buttonClassName({ variant: "secondary" })} to="/workspaces/new">
-          Create Workspace
-        </Link>
-      </section>
-    </div>
+        {membership.role !== "admin" ? (
+          <span className="settings-role-badge">Your role: {titleCase(membership.role)}</span>
+        ) : null}
+      </header>
+      <TeamProfileSettings membership={membership} refreshMe={refreshMe} />
+    </section>
   );
 }
 

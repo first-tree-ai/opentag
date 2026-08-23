@@ -734,37 +734,9 @@ pre {
 }
 
 .account-workspace-profile {
-  width: 100%;
-}
-
-.account-workspace-stack,
-.account-workspace-profile {
   display: grid;
+  width: 100%;
   gap: 24px;
-}
-
-.account-workspace-stack {
-  gap: 32px;
-}
-
-.account-workspace-create {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  border-top: 1px solid var(--border);
-  padding-top: 20px;
-}
-
-.account-workspace-create h2 {
-  margin: 0;
-  font-size: var(--text-subsection);
-  font-weight: var(--fw-semibold);
-}
-
-.account-workspace-create p {
-  margin: 5px 0 0;
-  color: var(--muted);
 }
 
 .sidebar-backdrop,
@@ -3671,16 +3643,6 @@ textarea:focus {
 }
 
 @media (max-width: 720px) {
-  .account-workspace-create {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .account-workspace-create .ds-button {
-    justify-content: center;
-    width: 100%;
-  }
-
   .onboarding-header {
     min-height: 60px;
     padding: 10px 18px;

@@ -265,8 +265,8 @@ function slackCliRules(
   const threadTs = providerRef.threadTs ?? providerRef.messageTs;
   return [
     "Slack CLI rules:",
-    `- Reply in the thread: set thread_ts to ${threadTs} (the inbound threadTs when present, otherwise the inbound messageTs).`,
-    `- Send with \`slack api chat.postMessage --json '{"channel":"${providerRef.channelId}","thread_ts":"${threadTs}","markdown_text":"..."}' --skip-update\`. Always pass the body with --json; never use key=value arguments.`,
+    `- To reply in the thread, set thread_ts to ${threadTs} (the inbound threadTs when present, otherwise the inbound messageTs). Whether to reply in the thread, at the top level, react, or stay silent is your Session policy, not a rule; when a thread already exists, prefer it.`,
+    `- Send with \`slack api chat.postMessage --json '{"channel":"${providerRef.channelId}","thread_ts":"${threadTs}","markdown_text":"..."}' --skip-update\` (omit thread_ts for a top-level message). Always pass the body with --json; never use key=value arguments.`,
     "- Never pass --token, --app, -w, or --team. The sourced SLACK_BOT_TOKEN is the only credential and already takes precedence over any logged-in Slack CLI session.",
     "- Use markdown_text (at most 12,000 characters; never together with text or blocks) for Markdown; otherwise use text (at most 4,000 characters per message). Split longer replies across several messages.",
     "- Send at most 1 message per second per channel.",

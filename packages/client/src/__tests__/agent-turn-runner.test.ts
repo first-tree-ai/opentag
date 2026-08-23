@@ -83,7 +83,7 @@ describe("AgentTurnRunner", () => {
     expect(context).toContain("Attention does not change provider CLI or credential availability");
   });
 
-  it("adds fixed Slack CLI rules that thread replies on the inbound reference", () => {
+  it("adds fixed Slack CLI mechanics without mandating a reply policy", () => {
     const topLevel = delivery();
     const topLevelContext = buildAgentInput(topLevel).items[0]?.text ?? "";
     expect(topLevelContext).toContain(JSON.stringify(topLevel.content.providerRef));
@@ -92,6 +92,9 @@ describe("AgentTurnRunner", () => {
     expect(topLevelContext).toContain(
       `slack api chat.postMessage --json '{"channel":"channel-1","thread_ts":"1710000000.000001","markdown_text":"..."}' --skip-update`,
     );
+    expect(topLevelContext).toContain("is your Session policy, not a rule");
+    expect(topLevelContext).toContain("omit thread_ts for a top-level message");
+    expect(topLevelContext).not.toMatch(/\bReply in the thread:/);
     expect(topLevelContext).toContain("Always pass the body with --json; never use key=value arguments.");
     expect(topLevelContext).toContain("Never pass --token, --app, -w, or --team.");
     expect(topLevelContext).toContain("markdown_text (at most 12,000 characters; never together with text or blocks)");

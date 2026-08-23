@@ -14,9 +14,9 @@ OpenTag 负责 IM 入站路由、Integration 凭证、Client 临时凭证投影�
 
 ## Slack CLI 要求
 
-OpenTag 要求官方 Slack CLI 4.2.0 或更高版本。`slack api <method>` 自 4.1.0 起提供，4.2.0 移除了会干扰非交互式 `slack api` 调用的后台更新检查。Client 通过 `slack version --skip-update` 与 `slack api --help --skip-update` 探测；版本过旧时报告为 `unavailable` 并附带 `reason: "version_incompatible"` 和检测到的版本，以便升级而非重装。
+OpenTag 要求官方 Slack CLI 4.2.0 或更高版本。`slack api <method>` 自 4.1.0 起提供，4.2.0 移除了会干扰非交互式 `slack api` 调用的后台更新检查。Client 通过 `slack version --skip-update` 与 `slack api --help --skip-update` 探测。只接受稳定的 `X.Y.Z` 版本；`v4.2.0-rc.1` 这类预发布版本和 `v4.2.0-3-gabcdef` 这类开发构建会被拒绝。版本过旧或无法识别的 CLI 在 wire 上与其他探测失败一样报告为 `unavailable`；诊断路径是 Client daemon 日志，其中会记录带有检测到的版本与最低版本的结构化 warning（`Slack CLI version is below the supported minimum`）。
 
-托管 Turn prompt 要求 Agent 在入站 thread 内回复（`thread_ts` = 入站 `threadTs`，若无则为入站 `messageTs`），并使用 `slack api chat.postMessage --json '{...}' --skip-update`。请求体必须始终通过 `--json` 传递：`key=value` 参数会被 form-encode 并把 Bot token 放进请求体，而 `--json` 则通过 Bearer header 发送。Agent 不得传 `--token`、`--app`、`-w` 或 `--team`；投影的 `SLACK_BOT_TOKEN` 是唯一凭证，且优先于本机已登录的任何 Slack CLI session。
+托管 Turn prompt 只向 Agent 提供 Slack thread 的机制，不提供放置偏好：若 Agent 的 Session policy 选择在 thread 内回复，`thread_ts` 为入站 `threadTs`，若无则为入站 `messageTs`；顶层消息省略 `thread_ts`。消息通过 `slack api chat.postMessage --json <body> --skip-update` 发送。请求体必须用 JSON 库序列化并作为单个 `--json` 参数传递，不得通过字符串拼接或 shell 替换手工拼装，也不得使用 `key=value` 参数：`key=value` 参数会被 form-encode 并把 Bot token 放进请求体，而 `--json` 则通过 Bearer header 发送。Agent 不得传 `--token`、`--app`、`-w` 或 `--team`；投影的 `SLACK_BOT_TOKEN` 是唯一凭证，且优先于本机已登录的任何 Slack CLI session。
 
 Slack CLI 没有 stdin 或文件形式的请求体，因此出站消息文本始终出现在 `slack api` 的命令行中，本机任何能列出进程参数的进程都能看到。不要在出站消息中放置机密，并把 Client 机器视为与 Bot token 同等信任级别。
 

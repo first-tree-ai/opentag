@@ -216,6 +216,7 @@ describe("OpenTagApi Agent methods", () => {
           providerCliReadiness: "install",
           credentialGeneration: 1,
           reauthorizationRequired: false,
+          pendingReceiveMode: null,
           connection: null,
           lastInboundAt: null,
           lastErrorCode: null,

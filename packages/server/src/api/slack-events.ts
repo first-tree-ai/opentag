@@ -112,15 +112,23 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
       return reply.code(200).send({ challenge });
     }
     if (!envelope.api_app_id || !envelope.team_id) return reply.code(400).send({ error: "invalid_route" });
-    const activated = await options.setup?.tryActivateFromEvent({
+    const outcome = (await options.setup?.tryActivateFromEvent({
       agentId,
       appId: envelope.api_app_id,
       teamId: envelope.team_id,
       rawBody: request.body,
       ...requestHeaders,
-    });
+    })) ?? { status: "unmatched" };
+    const activated = outcome.status === "activated" ? outcome.binding : undefined;
     const binding = activated ?? (await options.imBindings.findSlackIngressBindingForAgent(agentId));
-    if (!binding) return reply.code(404).send({ error: "binding_not_found" });
+    if (!binding) {
+      // A signed event for an attempt that still awaits URL verification is not a delivery failure:
+      // acknowledge it so Slack keeps the subscription alive, but ingest nothing before activation.
+      if (outcome.status === "awaiting_challenge") {
+        return reply.code(200).send({ ok: true, pending: "url_verification" });
+      }
+      return reply.code(404).send({ error: "binding_not_found" });
+    }
     if (
       !activated &&
       !verifySlackSignature({

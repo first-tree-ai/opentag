@@ -433,7 +433,8 @@ export class AgentService {
             input.receiveMode === "all_message" &&
             missingHistoryCapabilities &&
             imBinding.credentialGeneration >= 1;
-          const targetChanged = imBinding.pendingReceiveMode !== input.receiveMode;
+          // Compare against the effective target so a no-op receive-mode save never cancels setup.
+          const targetChanged = (imBinding.pendingReceiveMode ?? scope.agent.receiveMode) !== input.receiveMode;
           const cancelActiveSetup =
             targetChanged && (imBinding.setupState === "awaiting_user" || imBinding.setupState === "validating");
           await transaction
@@ -444,9 +445,11 @@ export class AgentService {
                 ? imBinding.status === "active"
                   ? "IM_BINDING_SCOPE_REAUTH_REQUIRED"
                   : imBinding.lastErrorCode
-                : imBinding.lastErrorCode === "IM_BINDING_SCOPE_REAUTH_REQUIRED"
-                  ? null
-                  : imBinding.lastErrorCode,
+                : cancelActiveSetup
+                  ? "SLACK_SETUP_CANCELED"
+                  : imBinding.lastErrorCode === "IM_BINDING_SCOPE_REAUTH_REQUIRED"
+                    ? null
+                    : imBinding.lastErrorCode,
               ...(cancelActiveSetup
                 ? {
                     setupState: "canceled" as const,

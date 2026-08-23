@@ -26,6 +26,17 @@ export {
   withSpan,
 } from "./otel-helpers.js";
 export {
+  parseSlackRetryHeaders,
+  SLACK_ATTR,
+  SLACK_RATE_LIMITED_EVENT,
+  type SlackInboundFailureCode,
+  type SlackInboundTrace,
+  type SlackRetryMetadata,
+  safeSlackLabel,
+  slackInboundAttrs,
+  traceSlackInbound,
+} from "./slack-tracing.js";
+export {
   endRuntimeConnectionSpan,
   endRuntimeFrameSpan,
   type RuntimeFrameTrace,

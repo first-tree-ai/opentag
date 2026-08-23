@@ -246,6 +246,10 @@ export class SlackAdapter implements ImProviderAdapter<VerifiedSlackEnvelope> {
     return { externalAppId: this.#appId, externalTeamId: identity.teamId, externalBotId: identity.botUserId };
   }
 
+  classifyInbound(event: unknown): SlackInboundClassification {
+    return classifySlackInboundEvent(event);
+  }
+
   normalizeInbound(input: VerifiedSlackEnvelope): NormalizedInboundImEvent[] {
     return normalizeSlackEnvelope(input);
   }

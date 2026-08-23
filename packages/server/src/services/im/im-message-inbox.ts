@@ -72,7 +72,7 @@ export class ImMessageInbox {
     credentialGeneration: number,
     rawEvent: NormalizedInboundImEvent,
     admissionFence?: { provider: "feishu"; holderInstanceId: string; fencingEpoch: number },
-    telemetry?: { provider: "feishu" | "slack" },
+    telemetry?: { provider: "feishu" | "slack"; retry?: { num: number; reason?: string } },
   ): Promise<IngestResult> {
     const event = NormalizedInboundImEventSchema.parse(rawEvent);
     const provider = telemetry?.provider ?? admissionFence?.provider;
@@ -83,6 +83,8 @@ export class ImMessageInbox {
         bindingId: imBindingId,
         providerEventId: event.providerEventId,
         externalMessageId: event.message.externalId,
+        retryNum: telemetry?.retry?.num,
+        retryReason: telemetry?.retry?.reason,
       }),
       async () => {
         try {

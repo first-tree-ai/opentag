@@ -29,8 +29,8 @@ Server 已记录的待生效接收模式所需的 bot scopes 和事件；同时�
 3. 从 **OAuth & Permissions** 复制 **Bot User OAuth Token**，从 **Basic Information** 复制 **Signing Secret**，
    提交给 OpenTag。
 4. OpenTag 调用 Slack `auth.test`，推导 Team ID、存在时的 Enterprise ID、Bot User ID、Bot ID，以及 token 实际返回的
-   `x-oauth-scopes`。Slack 对有效 Bot Token 也可能不返回 `app_id`，因此浏览器提交的 App ID 或 scopes 列表从不作为
-   权威事实。该调用带超时限制，Slack 无响应时报告为 `SLACK_UPSTREAM_UNAVAILABLE`。
+   `x-oauth-scopes`。Slack 对 bot token 的 `auth.test` 不返回 `app_id`（这是正常的生产情况），因此「已验证安装」面板以
+   工作区和 bot user 标识安装，只有在 App ID 已知后才显示它；浏览器提交的 App ID 或 scopes 列表从不作为权威事实。该调用带超时限制，Slack 无响应时报告为 `SLACK_UPSTREAM_UNAVAILABLE`。
 5. 回到 **Event Subscriptions**，重试生成的 Request URL。OpenTag 先验证 Slack 带时间戳的 HMAC 签名，再返回
    URL verification challenge。IM 页面区分两种证明：`auth.test` 成功后 Bot Token 即视为已验证（显示推导出的 App、工作区
    和 bot user），而 Signing Secret 在 Slack 的 URL 验证成功之前保持未验证状态。
@@ -41,6 +41,11 @@ Server 已记录的待生效接收模式所需的 bot scopes 和事件；同时�
 
 Slack 可能在 manifest 创建后立即尝试 URL 验证，此时 OpenTag 尚未拿到 Signing Secret，首次失败属于预期行为；提交凭证后
 重新验证即可。
+
+Slack 只在 Request URL 被设置或修改、或管理员在 **Event Subscriptions** 中点击 **Retry** 时才发送 `url_verification`。
+通过 `apps.manifest.update` 更新事件订阅不会触发它，OpenTag 也无法代替管理员触发：点击 **Retry** 是受支持的步骤。在此之前，
+attempt 会一直显示「Signing Secret not yet verified」，首次 @mention 机器人的事件会被确认（`200`，pending），既不会激活绑定，
+也不会被当作 Slack 投递失败丢弃。
 
 ### 恢复进行中的 attempt
 

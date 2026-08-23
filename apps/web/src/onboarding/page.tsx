@@ -45,6 +45,11 @@ type PageLoadState =
   | { readonly kind: "error"; readonly error: Error }
   | { readonly kind: "ready"; readonly snapshot: OnboardingSnapshot };
 
+type CompletionState =
+  | { readonly kind: "idle" }
+  | { readonly kind: "pending" }
+  | { readonly kind: "error"; readonly error: Error };
+
 interface OnboardingSnapshot {
   readonly agents: readonly AgentSummary[];
   readonly computers: readonly TeamComputerSummary[];
@@ -78,6 +83,9 @@ interface OnboardingJourneyState {
 
 export interface OnboardingPageProps {
   readonly membership: MeMembership;
+  readonly onSetupReady?: (agentId: string) => Promise<void>;
+  readonly onTargetAgentChange?: (agentId: string) => void;
+  readonly targetAgentId?: string;
   readonly user: UserProfile;
   readonly runtimeFacts?: RuntimeFactsAdapter;
 }
@@ -89,6 +97,9 @@ export interface OnboardingPageProps {
  */
 export function OnboardingPage({
   membership,
+  onSetupReady,
+  onTargetAgentChange,
+  targetAgentId,
   user,
   runtimeFacts = productionRuntimeFactsAdapter,
 }: OnboardingPageProps) {
@@ -96,7 +107,16 @@ export function OnboardingPage({
   const [loadState, setLoadState] = useState<PageLoadState>({ kind: "loading" });
   const [refreshPending, setRefreshPending] = useState(false);
   const [attendedWindow, setAttendedWindow] = useState(0);
+  const [selectedTargetAgentId, setSelectedTargetAgentId] = useState(targetAgentId);
+  const [completionState, setCompletionState] = useState<CompletionState>({ kind: "idle" });
   const refreshInFlight = useRef(false);
+  const completionInFlight = useRef<string | undefined>(undefined);
+  const effectiveTargetAgentId = targetAgentId ?? selectedTargetAgentId;
+
+  useEffect(() => {
+    setSelectedTargetAgentId(targetAgentId);
+  }, [targetAgentId]);
+
   const reload = useCallback(() => {
     if (refreshInFlight.current) return;
     refreshInFlight.current = true;
@@ -116,7 +136,7 @@ export function OnboardingPage({
   useEffect(() => {
     let active = true;
     setLoadState((current) => (current.kind === "ready" ? current : { kind: "loading" }));
-    void loadSnapshot(membership.teamId, runtimeFacts, membership.role !== "admin").then(
+    void loadSnapshot(membership.teamId, runtimeFacts, membership.role !== "admin", effectiveTargetAgentId).then(
       (snapshot) => {
         if (!active) return;
         refreshInFlight.current = false;
@@ -136,7 +156,7 @@ export function OnboardingPage({
     return () => {
       active = false;
     };
-  }, [membership.teamId, revision, runtimeFacts]);
+  }, [effectiveTargetAgentId, membership.teamId, revision, runtimeFacts]);
 
   useEffect(() => {
     const refresh = () => attendedReload();
@@ -155,6 +175,35 @@ export function OnboardingPage({
     if (loadState.kind !== "ready") return undefined;
     return resolveSnapshot(membership, loadState.snapshot);
   }, [loadState, membership]);
+
+  useEffect(() => {
+    if (loadState.kind !== "ready" || !loadState.snapshot.targetAgent) return;
+    const resolvedAgentId = loadState.snapshot.targetAgent.id;
+    if (effectiveTargetAgentId === resolvedAgentId) return;
+    setSelectedTargetAgentId(resolvedAgentId);
+    onTargetAgentChange?.(resolvedAgentId);
+  }, [effectiveTargetAgentId, loadState, onTargetAgentChange]);
+
+  const completeSetup = useCallback(
+    (agentId: string) => {
+      if (!onSetupReady || completionInFlight.current === agentId) return;
+      completionInFlight.current = agentId;
+      setCompletionState({ kind: "pending" });
+      void onSetupReady(agentId).catch((cause: unknown) => {
+        completionInFlight.current = undefined;
+        setCompletionState({
+          kind: "error",
+          error: cause instanceof Error ? cause : new Error("Unable to finish Team setup"),
+        });
+      });
+    },
+    [onSetupReady],
+  );
+
+  useEffect(() => {
+    if (resolved?.state.currentState.kind !== "ready" || !resolved.state.canManage) return;
+    completeSetup(resolved.state.currentState.agent.id);
+  }, [completeSetup, resolved]);
   const journey = onboardingJourney(
     resolved?.state.currentState,
     loadState.kind === "ready" ? loadState.snapshot : undefined,
@@ -197,15 +246,17 @@ export function OnboardingPage({
               {loadState.kind === "ready" && resolved ? (
                 <OnboardingContent
                   canManage={resolved.state.canManage}
+                  completionState={completionState}
                   ownerUserId={user.id}
                   onChooseAgent={(agentId) => {
-                    rememberTargetAgent(membership.teamId, agentId);
-                    reload();
+                    setSelectedTargetAgentId(agentId);
+                    onTargetAgentChange?.(agentId);
                   }}
                   onAgentCreated={(agentId) => {
-                    rememberTargetAgent(membership.teamId, agentId);
-                    reload();
+                    setSelectedTargetAgentId(agentId);
+                    onTargetAgentChange?.(agentId);
                   }}
+                  onCompleteSetup={completeSetup}
                   onReload={attendedReload}
                   refreshPending={refreshPending}
                   snapshot={loadState.snapshot}
@@ -551,8 +602,10 @@ function OnboardingLoading() {
 
 function OnboardingContent({
   canManage,
+  completionState,
   onAgentCreated,
   onChooseAgent,
+  onCompleteSetup,
   onReload,
   ownerUserId,
   refreshPending,
@@ -561,8 +614,10 @@ function OnboardingContent({
   teamId,
 }: {
   canManage: boolean;
+  completionState: CompletionState;
   onAgentCreated: (agentId: string) => void;
   onChooseAgent: (agentId: string) => void;
+  onCompleteSetup: (agentId: string) => void;
   onReload: () => void;
   ownerUserId: string;
   refreshPending: boolean;
@@ -570,7 +625,7 @@ function OnboardingContent({
   state: OnboardingState;
   teamId: string;
 }) {
-  if (snapshot.targetCandidates.length > 1 && !snapshot.targetAgent) {
+  if (snapshot.targetCandidates.length > 0 && !snapshot.targetAgent) {
     return (
       <ActionSection
         readonly={!canManage}
@@ -735,6 +790,16 @@ function OnboardingContent({
       </ActionSection>
     );
   }
+  if (completionState.kind === "pending") {
+    return <ActionSection title="Finishing Team setup" description="Saving the verified Agent handoff." pending />;
+  }
+  if (completionState.kind === "error") {
+    return (
+      <ActionSection title="We couldn’t finish setup" description={completionState.error.message}>
+        <Button onClick={() => onCompleteSetup(current.agent.id)}>Try again</Button>
+      </ActionSection>
+    );
+  }
   return (
     <ActionSection
       title="OpenTag is ready"
@@ -854,6 +919,7 @@ async function loadSnapshot(
   teamId: string,
   runtimeFacts: RuntimeFactsAdapter,
   withAdmins: boolean,
+  targetAgentId?: string,
 ): Promise<OnboardingSnapshot> {
   const [{ computers }, { agents }, admins] = await Promise.all([
     browserApi.computers(teamId),
@@ -861,11 +927,9 @@ async function loadSnapshot(
     withAdmins ? loadTeamAdmins(teamId) : Promise.resolve<readonly string[]>([]),
   ]);
   const targetCandidates = agents.filter((agent) => agent.status === "active");
-  const remembered = readTargetAgent(teamId);
   const targetAgent =
-    targetCandidates.find((agent) => agent.id === remembered) ??
-    (targetCandidates.length === 1 ? targetCandidates[0] : undefined);
-  if (targetAgent) rememberTargetAgent(teamId, targetAgent.id);
+    targetCandidates.find((agent) => agent.id === targetAgentId) ??
+    (targetAgentId === undefined && targetCandidates.length === 1 ? targetCandidates[0] : undefined);
   const [runtime, handoff] = await Promise.all([
     runtimeFacts.load({ teamId, agents, computers }),
     targetAgent ? browserApi.imBindingHandoff(targetAgent.id) : Promise.resolve(undefined),
@@ -922,35 +986,6 @@ function onboardingAgentCreationFacts(snapshot: OnboardingSnapshot, ownerUserId:
         : [],
     runtimeEvidenceAvailable: snapshot.runtime.kind === "available",
   };
-}
-
-const memoryTargetAgents = new Map<string, string>();
-const memoryTargetFallbackTeams = new Set<string>();
-
-function targetAgentKey(teamId: string): string {
-  return `opentag.onboarding.agent:${teamId}`;
-}
-
-function readTargetAgent(teamId: string): string | undefined {
-  try {
-    const agentId =
-      window.localStorage.getItem(targetAgentKey(teamId)) ??
-      (memoryTargetFallbackTeams.has(teamId) ? memoryTargetAgents.get(teamId) : undefined);
-    if (agentId) memoryTargetAgents.set(teamId, agentId);
-    return agentId;
-  } catch {
-    return memoryTargetAgents.get(teamId);
-  }
-}
-
-function rememberTargetAgent(teamId: string, agentId: string): void {
-  memoryTargetAgents.set(teamId, agentId);
-  try {
-    window.localStorage.setItem(targetAgentKey(teamId), agentId);
-    memoryTargetFallbackTeams.delete(teamId);
-  } catch {
-    memoryTargetFallbackTeams.add(teamId);
-  }
 }
 
 function runtimeAttention(

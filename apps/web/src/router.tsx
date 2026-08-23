@@ -24,7 +24,18 @@ import {
   useRef,
   useState,
 } from "react";
-import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  Link,
+  Navigate,
+  NavLink,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { type AgentCreationFacts, AgentCreationFlow } from "./agent-creation/agent-creation-flow.js";
 import { ApiError, browserApi } from "./api.js";
 // Google-provided, pre-approved button asset: https://developers.google.com/identity/branding-guidelines
@@ -362,33 +373,35 @@ export function AppRouter() {
       <Route path="/teams/new" element={<Navigate replace to="/workspaces/new" />} />
       <Route path="/workspaces/new" element={<NewTeamPage />} />
       <Route element={<AuthenticatedTeamGate />}>
-        <Route path="/onboarding" element={<OnboardingRoute />} />
-        <Route element={<AppShell />}>
-          <Route index element={<Navigate replace to="/agents" />} />
-          <Route path="/agents" element={<AgentsPage />} />
-          <Route path="/agents/new" element={<NewAgentPage />} />
-          <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
-          <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
-          <Route path="/tasks" element={<TasksPage />} />
-          <Route path="/integrations" element={<IntegrationsPage />} />
-          <Route path="/skills" element={<SkillsPage />} />
-          <Route path="/resources" element={<Navigate replace to="/skills" />} />
-          <Route path="/usage" element={<UsagePage />} />
-          <Route path="/members" element={<MembersPage />} />
-          <Route path="/account" element={<AccountPage />} />
-          <Route path="/workspace" element={<WorkspacePage />} />
-          <Route path="/account/workspace" element={<Navigate replace to="/workspace" />} />
-          <Route path="/settings" element={<Navigate replace to="/members" />} />
-          <Route path="/settings/account" element={<Navigate replace to="/account" />} />
-          <Route path="/settings/team" element={<Navigate replace to="/workspace" />} />
-          <Route path="/settings/members" element={<Navigate replace to="/members" />} />
-          <Route path="/settings/access" element={<Navigate replace to="/members" />} />
-          <Route path="/settings/security" element={<Navigate replace to="/members" />} />
-          <Route path="/settings/computers" element={<Navigate replace to="/agents/new" />} />
-          <Route path="/settings/resources" element={<Navigate replace to="/skills" />} />
-          <Route path="/settings/integrations" element={<Navigate replace to="/integrations" />} />
-          <Route path="/settings/usage" element={<Navigate replace to="/usage" />} />
-          <Route path="/settings/:section" element={<Navigate replace to="/members" />} />
+        <Route element={<TeamSetupGate />}>
+          <Route path="/onboarding" element={<OnboardingRoute />} />
+          <Route element={<AppShell />}>
+            <Route index element={<Navigate replace to="/agents" />} />
+            <Route path="/agents" element={<AgentsPage />} />
+            <Route path="/agents/new" element={<NewAgentPage />} />
+            <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
+            <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
+            <Route path="/tasks" element={<TasksPage />} />
+            <Route path="/integrations" element={<IntegrationsPage />} />
+            <Route path="/skills" element={<SkillsPage />} />
+            <Route path="/resources" element={<Navigate replace to="/skills" />} />
+            <Route path="/usage" element={<UsagePage />} />
+            <Route path="/members" element={<MembersPage />} />
+            <Route path="/account" element={<AccountPage />} />
+            <Route path="/workspace" element={<WorkspacePage />} />
+            <Route path="/account/workspace" element={<Navigate replace to="/workspace" />} />
+            <Route path="/settings" element={<Navigate replace to="/members" />} />
+            <Route path="/settings/account" element={<Navigate replace to="/account" />} />
+            <Route path="/settings/team" element={<Navigate replace to="/workspace" />} />
+            <Route path="/settings/members" element={<Navigate replace to="/members" />} />
+            <Route path="/settings/access" element={<Navigate replace to="/members" />} />
+            <Route path="/settings/security" element={<Navigate replace to="/members" />} />
+            <Route path="/settings/computers" element={<Navigate replace to="/agents/new" />} />
+            <Route path="/settings/resources" element={<Navigate replace to="/skills" />} />
+            <Route path="/settings/integrations" element={<Navigate replace to="/integrations" />} />
+            <Route path="/settings/usage" element={<Navigate replace to="/usage" />} />
+            <Route path="/settings/:section" element={<Navigate replace to="/members" />} />
+          </Route>
         </Route>
       </Route>
       <Route path="*" element={<StandaloneNotFoundPage />} />
@@ -656,8 +669,34 @@ function WorkspaceSetupIncomplete({ onRetry }: { onRetry: () => void }) {
 }
 
 function OnboardingRoute() {
-  const { me, membership } = useTeam();
-  return <OnboardingPage membership={membership} user={me.user} />;
+  const { me, membership, refreshMe } = useTeam();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const targetAgentId = searchParams.get("agentId") ?? undefined;
+  return (
+    <OnboardingPage
+      membership={membership}
+      targetAgentId={targetAgentId}
+      user={me.user}
+      onSetupReady={async (agentId) => {
+        await browserApi.completeTeamSetup(membership.teamId, agentId);
+        refreshMe();
+      }}
+      onTargetAgentChange={(agentId) => {
+        const next = new URLSearchParams(searchParams);
+        next.set("agentId", agentId);
+        setSearchParams(next, { replace: true });
+      }}
+    />
+  );
+}
+
+function TeamSetupGate() {
+  const { membership } = useTeam();
+  const location = useLocation();
+  const onboarding = location.pathname === "/onboarding";
+  if (membership.setupCompletedAt) return onboarding ? <Navigate replace to="/agents" /> : <Outlet />;
+  if (membership.role === "admin") return onboarding ? <Outlet /> : <Navigate replace to="/onboarding" />;
+  return onboarding ? <Navigate replace to="/agents" /> : <Outlet />;
 }
 
 function readTeamPreference(): string | undefined {
@@ -991,6 +1030,11 @@ function AgentsPage() {
   return (
     <>
       <Page title="Agents" description="Shared AI teammates configured for your team.">
+        {!membership.setupCompletedAt && membership.role !== "admin" ? (
+          <div className="notice" role="status">
+            Team setup is not complete. An administrator needs to prepare the first Agent.
+          </div>
+        ) : null}
         <AsyncState state={state}>
           {(value) => (
             <AgentsContent

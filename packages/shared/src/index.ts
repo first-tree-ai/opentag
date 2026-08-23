@@ -152,6 +152,7 @@ export {
   TEAM_MEMBER_TEMPLATE,
   TEAM_MEMBERS_CONFIG_TEMPLATE,
   TEAM_MEMBERS_TEMPLATE,
+  TEAM_SETUP_COMPLETE_TEMPLATE,
   TEAMS_TEMPLATE,
   teamAgentsPath,
   teamByIdPath,
@@ -165,6 +166,7 @@ export {
   teamMemberRestorePath,
   teamMembersConfigPath,
   teamMembersPath,
+  teamSetupCompletePath,
 } from "./http-paths.js";
 export * from "./im-binding.js";
 export * from "./im-message.js";
@@ -331,6 +333,8 @@ export {
 } from "./runtime-protocol.js";
 export * from "./session.js";
 export {
+  type CompleteTeamSetupRequest,
+  CompleteTeamSetupRequestSchema,
   type CreateTeamRequest,
   CreateTeamRequestSchema,
   type CreateTeamResponse,
@@ -355,6 +359,8 @@ export {
   TeamMemberSummarySchema,
   type TeamProfile,
   TeamProfileSchema,
+  type TeamSetupCompletion,
+  TeamSetupCompletionSchema,
   type UpdateTeamMemberRequest,
   UpdateTeamMemberRequestSchema,
   type UpdateTeamProfileRequest,

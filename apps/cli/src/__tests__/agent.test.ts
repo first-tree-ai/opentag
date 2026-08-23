@@ -21,7 +21,13 @@ const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
-const membership = { teamId, teamName: "example", teamDisplayName: "Example", role: "admin" as const };
+const membership = {
+  teamId,
+  teamName: "example",
+  teamDisplayName: "Example",
+  role: "admin" as const,
+  setupCompletedAt: null,
+};
 const me = {
   user: { id: userId, email: "admin@example.com", displayName: "Admin" },
   memberships: [membership],

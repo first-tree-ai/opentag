@@ -23,6 +23,7 @@ export const teams = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     name: text("name").notNull(),
     displayName: text("display_name").notNull(),
+    setupCompletedAt: timestamp("setup_completed_at", { withTimezone: true }),
     ...timestamps,
   },
   (table) => [uniqueIndex("teams_name_unique").on(sql`lower(${table.name})`)],

@@ -1,7 +1,7 @@
 # OpenTag 开发指南
 
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-08-20
+> Last synced with: 2026-08-23
 
 ## 前置要求
 
@@ -279,7 +279,8 @@ fail-closed 原则拒绝读取。
 
 `scripts/e2e/onboarding-e2e.mjs` 会在真实 Server、真实 PostgreSQL、真实 Web 构建产物和真实 Computer daemon 上
 跑完整个 `/onboarding` 流程：浏览器登录、从页面读取连接命令、用 CLI 兑换、运行 `daemon service-run`、等待协商出的
-Provider readiness 投影、在表单里创建 Agent，然后检查 handoff、ready、成员只读和运行时中断这几种状态。
+Provider readiness 投影、在表单里创建 Agent，然后检查 handoff、仅限管理员的 setup gate、持久化完成状态，以及后续
+运行时中断仍停留在正常 Agents 产品流程中的行为。
 
 ```bash
 pnpm build
@@ -304,8 +305,8 @@ Server。daemon 拿到的是显式构造的 Provider 环境，而不是调用者
 | `CLAUDE_CONFIG_DIR` | `$HOME/.claude` | stub 关闭时守护进程读取的 Claude Code 配置目录 |
 | `OPENTAG_E2E_KEEP_DATABASE` | `off` | 设为 `on` 时运行结束后保留 E2E 数据库，便于排查 |
 
-流程中有两部分无法离线执行。Provider readiness 使用一个 stub 可执行文件，它满足与 Claude Code CLI 相同的 probe
-契约，因为 CI 中没有已登录的 Codex 或 Claude Code 安装。Feishu 授权需要访问 `open.feishu.cn`，因此该检查会真实发起一次
+流程中有两部分无法离线执行。Agent Runtime 和 Feishu CLI readiness 使用 stub 可执行文件，它们满足与 Claude Code 和
+`lark-cli` 相同的 probe 契约，因为 CI 中没有已登录的本地 CLI。Feishu 授权需要访问 `open.feishu.cn`，因此该检查会真实发起一次
 setup attempt 并记录结果，然后把一条已授权的 binding 写入数据库，用于确认 Server 会投影 handoff readiness、页面会据此
 推导出 ready 状态。
 

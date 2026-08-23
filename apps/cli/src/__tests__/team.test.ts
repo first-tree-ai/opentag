@@ -18,7 +18,7 @@ function api() {
   return {
     me: vi.fn().mockResolvedValue({
       user: { id: userId, email: member.email, displayName: member.displayName },
-      memberships: [{ teamId, teamName: "example", teamDisplayName: "Example", role: "admin" }],
+      memberships: [{ teamId, teamName: "example", teamDisplayName: "Example", role: "admin", setupCompletedAt: null }],
     }),
     listTeamMembersConfig: vi.fn().mockResolvedValue({ members: [member] }),
     updateTeamMember: vi.fn().mockResolvedValue(member),
@@ -53,7 +53,15 @@ describe("Team CLI core", () => {
   it("hard-switches the CLI selector to the renamed Team handle while preserving UUID selection", () => {
     const me = {
       user: { id: userId, email: member.email, displayName: member.displayName },
-      memberships: [{ teamId, teamName: "renamed-team", teamDisplayName: "Renamed Team", role: "admin" as const }],
+      memberships: [
+        {
+          teamId,
+          teamName: "renamed-team",
+          teamDisplayName: "Renamed Team",
+          role: "admin" as const,
+          setupCompletedAt: null,
+        },
+      ],
     };
     expect(selectTeam(me, "renamed-team").teamId).toBe(teamId);
     expect(selectTeam(me, teamId).teamName).toBe("renamed-team");

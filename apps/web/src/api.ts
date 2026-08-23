@@ -57,6 +57,8 @@ import {
   TeamMemberAdminConfigSchema,
   type TeamProfile,
   TeamProfileSchema,
+  type TeamSetupCompletion,
+  TeamSetupCompletionSchema,
   teamAgentsPath,
   teamByIdPath,
   teamComputersPath,
@@ -64,6 +66,7 @@ import {
   teamInvitationRotatePath,
   teamMemberPath,
   teamMembersPath,
+  teamSetupCompletePath,
   type UpdateAgentRequest,
   type UpdateTeamMemberRequest,
   type UpdateTeamProfileRequest,
@@ -133,6 +136,14 @@ export class BrowserApi {
     return this.request(teamByIdPath(teamId), TeamProfileSchema, {
       method: "PATCH",
       body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  completeTeamSetup(teamId: string, agentId: string): Promise<TeamSetupCompletion> {
+    return this.request(teamSetupCompletePath(teamId), TeamSetupCompletionSchema, {
+      method: "POST",
+      body: JSON.stringify({ agentId }),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }

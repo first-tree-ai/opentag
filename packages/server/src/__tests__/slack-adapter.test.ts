@@ -1,7 +1,11 @@
 import { createHmac } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
-import { normalizeSlackEnvelope, SlackAdapter } from "../services/im-bindings/slack/adapter.js";
+import {
+  classifySlackInboundEvent,
+  normalizeSlackEnvelope,
+  SlackAdapter,
+} from "../services/im-bindings/slack/adapter.js";
 import { SlackBindingActivator } from "../services/im-bindings/slack/binding-activator.js";
 import { DefaultSlackApiClient } from "../services/im-bindings/slack/default-api-client.js";
 import { preparseSlackRoute, verifySlackSignature } from "../services/im-bindings/slack/signature.js";
@@ -352,5 +356,175 @@ describe("Slack installed-binding adapter", () => {
       },
       "B1",
     );
+  });
+});
+
+describe("Slack message subtype policy", () => {
+  const identity = { eventId: "Ev-subtype", appId: "A1", teamId: "T1", botUserId: "U_BOT", botId: "B_BOT" };
+  const base = { channel: "C1", channel_type: "channel", user: "U2", ts: "1724025600.100", event_ts: "1724025600.100" };
+
+  it("treats file_share as a user message and keeps its shared files as resources", () => {
+    const event = {
+      type: "message",
+      subtype: "file_share",
+      ...base,
+      text: "<@U_BOT> look at this",
+      files: [{ id: "F1", name: "report.pdf", mimetype: "application/pdf", size: 1024 }],
+    };
+    expect(classifySlackInboundEvent(event)).toEqual({ accepted: true, eventType: "message", subtype: "file_share" });
+    const [normalized] = normalizeSlackEnvelope({ ...identity, event });
+    expect(normalized).toMatchObject({
+      message: {
+        operation: "created",
+        externalId: "1724025600.100",
+        author: { externalId: "U2", kind: "human", isSelf: false },
+        resources: [{ providerResourceKey: "F1", kind: "file", filename: "report.pdf", mediaType: "application/pdf" }],
+      },
+      mentions: [{ externalId: "U_BOT" }],
+    });
+  });
+
+  it("treats thread_broadcast as a thread reply keyed by the payload thread_ts", () => {
+    const event = {
+      type: "message",
+      subtype: "thread_broadcast",
+      ...base,
+      text: "broadcast to channel",
+      thread_ts: "1724025500.000",
+      root: { ts: "1724025500.000", user: "U3", text: "root" },
+    };
+    expect(classifySlackInboundEvent(event)).toMatchObject({ accepted: true, subtype: "thread_broadcast" });
+    const [normalized] = normalizeSlackEnvelope({ ...identity, event });
+    expect(normalized).toMatchObject({
+      providerContext: { provider: "slack", threadTs: "1724025500.000" },
+      message: { operation: "created", externalId: "1724025600.100", threadKey: "1724025500.000" },
+    });
+  });
+
+  it("keeps message_changed as an edit whose nested message files become resources", () => {
+    const event = {
+      type: "message",
+      subtype: "message_changed",
+      hidden: true,
+      channel: "C1",
+      ts: "1724025601.000",
+      event_ts: "1724025601.000",
+      message: {
+        ts: "1724025600.100",
+        user: "U2",
+        text: "edited text",
+        files: [{ id: "F9", name: "diagram.png", mimetype: "image/png", size: 7 }],
+      },
+      previous_message: { ts: "1724025600.100", user: "U2", text: "original" },
+    };
+    expect(classifySlackInboundEvent(event)).toMatchObject({ accepted: true, subtype: "message_changed" });
+    const [normalized] = normalizeSlackEnvelope({ ...identity, event });
+    expect(normalized).toMatchObject({
+      message: {
+        operation: "edited",
+        externalId: "1724025600.100",
+        author: { externalId: "U2", kind: "human" },
+        resources: [{ providerResourceKey: "F9", kind: "image" }],
+      },
+    });
+  });
+
+  it("keeps message_deleted as a deletion even though Slack marks it hidden", () => {
+    const event = {
+      type: "message",
+      subtype: "message_deleted",
+      hidden: true,
+      channel: "C1",
+      ts: "1724025602.000",
+      deleted_ts: "1724025600.100",
+      event_ts: "1724025602.000",
+      previous_message: { ts: "1724025600.100", user: "U2", text: "gone" },
+    };
+    expect(classifySlackInboundEvent(event)).toMatchObject({ accepted: true, subtype: "message_deleted" });
+    expect(normalizeSlackEnvelope({ ...identity, event })[0]).toMatchObject({
+      message: { operation: "deleted", externalId: "1724025600.100" },
+    });
+  });
+
+  it("applies the self filter to bot_message and keeps foreign integrations as bot authors", () => {
+    const own = { type: "message", subtype: "bot_message", ...base, user: undefined, bot_id: "B_BOT", text: "mine" };
+    expect(normalizeSlackEnvelope({ ...identity, event: own })[0]?.message.author).toMatchObject({
+      kind: "bot",
+      isSelf: true,
+    });
+    const foreign = { ...own, bot_id: "B_OTHER" };
+    expect(normalizeSlackEnvelope({ ...identity, event: foreign })[0]?.message.author).toMatchObject({
+      externalId: "B_OTHER",
+      kind: "bot",
+      isSelf: false,
+    });
+  });
+
+  it.each([
+    "channel_join",
+    "channel_leave",
+    "channel_topic",
+    "channel_purpose",
+    "channel_name",
+    "pinned_item",
+    "unknown_future_subtype",
+  ])("drops the %s subtype without normalizing anything", (subtype) => {
+    const event = { type: "message", subtype, ...base, text: "system notice" };
+    expect(classifySlackInboundEvent(event)).toEqual({
+      accepted: false,
+      reason: "ignored_subtype",
+      eventType: "message",
+      subtype,
+    });
+    expect(normalizeSlackEnvelope({ ...identity, event })).toEqual([]);
+  });
+
+  it("drops hidden messages that are not edit or delete revisions", () => {
+    const event = { type: "message", ...base, hidden: true, text: "should not be displayed" };
+    expect(classifySlackInboundEvent(event)).toEqual({
+      accepted: false,
+      reason: "hidden_message",
+      eventType: "message",
+      subtype: undefined,
+    });
+    expect(normalizeSlackEnvelope({ ...identity, event })).toEqual([]);
+    const hiddenFileShare = { ...event, subtype: "file_share", files: [{ id: "F1" }] };
+    expect(classifySlackInboundEvent(hiddenFileShare)).toMatchObject({ accepted: false, reason: "hidden_message" });
+  });
+
+  it("reports unsupported event types and malformed message events without throwing", () => {
+    expect(classifySlackInboundEvent({ type: "app_home_opened", user: "U2", tab: "messages" })).toEqual({
+      accepted: false,
+      reason: "unsupported_event",
+      eventType: "app_home_opened",
+      subtype: undefined,
+    });
+    expect(classifySlackInboundEvent({ type: "message", text: "no channel or ts" })).toMatchObject({
+      accepted: false,
+      reason: "unsupported_event",
+      eventType: "message",
+    });
+    expect(classifySlackInboundEvent(null)).toMatchObject({ accepted: false, reason: "unsupported_event" });
+    expect(classifySlackInboundEvent({ type: 42 })).toMatchObject({ accepted: false, eventType: undefined });
+  });
+
+  it("normalizes app_mention and message.channels deliveries of one mention to the same revision identity", () => {
+    const mention = normalizeSlackEnvelope({
+      ...identity,
+      eventId: "Ev-mention",
+      event: { type: "app_mention", ...base, text: "<@U_BOT> hi" },
+    })[0];
+    const channelMessage = normalizeSlackEnvelope({
+      ...identity,
+      eventId: "Ev-channel",
+      event: { type: "message", ...base, text: "<@U_BOT> hi" },
+    })[0];
+    expect(mention?.providerEventId).not.toBe(channelMessage?.providerEventId);
+    expect(channelMessage?.conversation).toEqual(mention?.conversation);
+    expect(channelMessage?.message).toMatchObject({
+      externalId: mention?.message.externalId,
+      revisionKey: mention?.message.revisionKey,
+      operation: "created",
+    });
   });
 });

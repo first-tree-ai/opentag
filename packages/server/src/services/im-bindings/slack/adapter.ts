@@ -32,6 +32,7 @@ const SlackMessageEventSchema = z
   .object({
     type: z.enum(["message", "app_mention"]),
     subtype: z.string().optional(),
+    hidden: z.boolean().optional(),
     channel: z.string().min(1),
     channel_type: z.string().optional(),
     user: z.string().optional(),
@@ -47,6 +48,54 @@ const SlackMessageEventSchema = z
     files: z.array(SlackFileSchema).optional(),
   })
   .passthrough();
+
+/**
+ * Message subtypes OpenTag ingests. Everything else (channel_join/leave/topic/purpose/name, pinned_item,
+ * future subtypes) is a system notice that must be acknowledged to Slack but never reaches the Agent.
+ * - `file_share` is an ordinary user message carrying `files[]`.
+ * - `thread_broadcast` is a thread reply that was also posted to the channel; `thread_ts` is in the payload.
+ * - `message_changed` / `message_deleted` are revisions of an earlier message (Slack marks them `hidden`).
+ * - `bot_message` comes from classic integrations; the self filter decides whether it is our own.
+ */
+const ACCEPTED_SUBTYPES = new Set([
+  "file_share",
+  "thread_broadcast",
+  "message_changed",
+  "message_deleted",
+  "bot_message",
+]);
+const REVISION_SUBTYPES = new Set(["message_changed", "message_deleted"]);
+
+export type SlackInboundIgnoreReason = "unsupported_event" | "ignored_subtype" | "hidden_message";
+
+export type SlackInboundClassification =
+  | { accepted: true; eventType: string; subtype: string | undefined }
+  | { accepted: false; reason: SlackInboundIgnoreReason; eventType: string | undefined; subtype: string | undefined };
+
+function optionalLabel(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+/**
+ * Decides whether a verified Slack event is one OpenTag normalizes. Ingress uses the result to answer
+ * Slack with a 200 for ignored traffic while still recording why in telemetry.
+ */
+export function classifySlackInboundEvent(event: unknown): SlackInboundClassification {
+  const shape = typeof event === "object" && event !== null ? (event as Record<string, unknown>) : {};
+  const eventType = optionalLabel(shape.type);
+  const subtype = optionalLabel(shape.subtype);
+  const parsed = SlackMessageEventSchema.safeParse(event);
+  if (!parsed.success) return { accepted: false, reason: "unsupported_event", eventType, subtype };
+  const message = parsed.data;
+  if (message.subtype !== undefined && !ACCEPTED_SUBTYPES.has(message.subtype)) {
+    return { accepted: false, reason: "ignored_subtype", eventType: message.type, subtype: message.subtype };
+  }
+  // Slack flags edit and delete revisions as hidden by design; any other hidden message is display-only noise.
+  if (message.hidden === true && !(message.subtype !== undefined && REVISION_SUBTYPES.has(message.subtype))) {
+    return { accepted: false, reason: "hidden_message", eventType: message.type, subtype: message.subtype };
+  }
+  return { accepted: true, eventType: message.type, subtype: message.subtype };
+}
 
 export interface VerifiedSlackEnvelope {
   eventId: string;
@@ -98,10 +147,8 @@ function boundedText(value: string): { text: string; truncated: boolean } {
 }
 
 export function normalizeSlackEnvelope(envelope: VerifiedSlackEnvelope): NormalizedInboundImEvent[] {
-  const parsed = SlackMessageEventSchema.safeParse(envelope.event);
-  if (!parsed.success) return [];
-  const event = parsed.data;
-  if (event.subtype && !["message_changed", "message_deleted", "bot_message"].includes(event.subtype)) return [];
+  if (!classifySlackInboundEvent(envelope.event).accepted) return [];
+  const event = SlackMessageEventSchema.parse(envelope.event);
   const operation =
     event.subtype === "message_deleted" ? "deleted" : event.subtype === "message_changed" ? "edited" : "created";
   const nested = operation === "edited" ? event.message : operation === "deleted" ? event.previous_message : undefined;

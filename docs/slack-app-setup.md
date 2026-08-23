@@ -34,8 +34,9 @@ enables a writable App Home Messages tab so a user can start a direct-message co
 3. Copy the **Bot User OAuth Token** from **OAuth & Permissions** and the **Signing Secret** from **Basic Information**
    into OpenTag.
 4. OpenTag calls Slack's `auth.test` endpoint and derives the Team ID, Enterprise ID when present, Bot User ID, Bot ID,
-   and the token's actual `x-oauth-scopes`. Slack may omit `app_id` for a valid Bot Token, so a browser-supplied App ID
-   or scope list is never authoritative. The call is bounded by a timeout and reported as `SLACK_UPSTREAM_UNAVAILABLE`
+   and the token's actual `x-oauth-scopes`. Slack omits `app_id` from `auth.test` for a bot token (the normal production case), so the
+   validated-installation panel identifies the workspace and bot user and names the App only once it is known; a
+   browser-supplied App ID or scope list is never authoritative. The call is bounded by a timeout and reported as `SLACK_UPSTREAM_UNAVAILABLE`
    when Slack does not answer.
 5. Return to **Event Subscriptions** and retry the generated Request URL. OpenTag verifies Slack's timestamped HMAC
    signature before returning the URL-verification challenge. The IM page distinguishes the two proofs: the Bot Token
@@ -48,6 +49,12 @@ enables a writable App Home Messages tab so a user can start a direct-message co
 
 Slack can attempt URL verification as soon as the manifest is created, before OpenTag has the Signing Secret. A failed
 initial attempt is expected; retry it after submitting the credentials.
+
+Slack sends `url_verification` only when the Request URL is set or changed, or when the admin clicks **Retry** in
+**Event Subscriptions**. Updating event subscriptions through `apps.manifest.update` does not trigger it, and OpenTag
+cannot trigger it on the admin's behalf: the **Retry** click is the supported step. Until it happens, the attempt stays
+at "Signing Secret not yet verified" and a first mention of the bot is acknowledged (`200`, pending) without activating
+the binding or being dropped as a Slack delivery failure.
 
 ### Recovering a pending attempt
 

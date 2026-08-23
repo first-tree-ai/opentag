@@ -3,6 +3,7 @@ import { type FormEvent, useState } from "react";
 import { Button, Field } from "./ui/design-system.js";
 
 const CODEX_REASONING_EFFORT_SUGGESTIONS = ["minimal", "low", "medium", "high", "xhigh"] as const;
+const CLAUDE_CODE_REASONING_EFFORT_SUGGESTIONS = ["low", "medium", "high", "xhigh", "max", "ultracode"] as const;
 
 export interface RuntimeConfigurationFormProps {
   readonly initialConfig: AgentAdminConfig;
@@ -10,41 +11,10 @@ export interface RuntimeConfigurationFormProps {
 }
 
 export function RuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigurationFormProps) {
-  if (initialConfig.runtimeProvider !== "codex") {
-    return (
-      <div className="agent-runtime-settings">
-        <section aria-labelledby="runtime-heading" className="agent-runtime-section">
-          <header className="agent-runtime-section__header">
-            <div>
-              <h3 id="runtime-heading">Runtime</h3>
-              <p>Choose how this Agent runs.</p>
-            </div>
-          </header>
-          <RuntimeFacts
-            rows={[
-              ["Provider", "Claude Code"],
-              ["Model", "Provider default"],
-              ["Reasoning level", "Provider default"],
-            ]}
-          />
-          <p className="agent-runtime-note">Runtime settings are managed by Claude Code.</p>
-        </section>
-        <section aria-labelledby="agent-instructions-heading" className="agent-runtime-section">
-          <header className="agent-runtime-section__header">
-            <div>
-              <h3 id="agent-instructions-heading">Agent instructions</h3>
-              <p>Set the guidance applied to every Turn this Agent runs.</p>
-            </div>
-          </header>
-          <p className="agent-runtime-note">Agent instructions are not editable for this provider.</p>
-        </section>
-      </div>
-    );
-  }
-  return <CodexRuntimeConfigurationForm initialConfig={initialConfig} save={save} />;
+  return <RuntimeConfigurationEditor initialConfig={initialConfig} save={save} />;
 }
 
-function CodexRuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigurationFormProps) {
+function RuntimeConfigurationEditor({ initialConfig, save }: RuntimeConfigurationFormProps) {
   const [config, setConfig] = useState(initialConfig);
   const [editingRuntime, setEditingRuntime] = useState(false);
   const [message, setMessage] = useState<{
@@ -55,6 +25,9 @@ function CodexRuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigura
   const [saving, setSaving] = useState<"runtime" | "instructions">();
   const fieldId = (name: string) => `runtime-${name}-${config.id}`;
   const reasoningListId = `reasoning-effort-${config.id}`;
+  const providerName = config.runtimeProvider === "codex" ? "Codex" : "Claude Code";
+  const reasoningSuggestions =
+    config.runtimeProvider === "codex" ? CODEX_REASONING_EFFORT_SUGGESTIONS : CLAUDE_CODE_REASONING_EFFORT_SUGGESTIONS;
 
   async function saveRuntime(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -150,7 +123,7 @@ function CodexRuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigura
                   placeholder="Provider default"
                 />
                 <datalist id={reasoningListId}>
-                  {CODEX_REASONING_EFFORT_SUGGESTIONS.map((effort) => (
+                  {reasoningSuggestions.map((effort) => (
                     <option value={effort} key={effort} />
                   ))}
                 </datalist>
@@ -168,7 +141,7 @@ function CodexRuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigura
         ) : (
           <RuntimeFacts
             rows={[
-              ["Provider", "Codex"],
+              ["Provider", providerName],
               ["Model", config.runtimeConfig.model ?? "Provider default"],
               ["Reasoning level", config.runtimeConfig.reasoningEffort ?? "Provider default"],
             ]}

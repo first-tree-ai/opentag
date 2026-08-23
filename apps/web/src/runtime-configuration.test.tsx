@@ -57,13 +57,49 @@ describe("RuntimeConfigurationForm", () => {
     expect(screen.queryByLabelText(/duration/i)).toBeNull();
   });
 
-  it("uses plain provider-managed copy for Claude Code", () => {
-    render(<RuntimeConfigurationForm initialConfig={{ ...config, runtimeProvider: "claude-code" }} save={vi.fn()} />);
+  it("shows and edits stored Claude Code configuration", async () => {
+    const claudeConfig: AgentAdminConfig = {
+      ...config,
+      runtimeProvider: "claude-code",
+      runtimeConfig: {
+        ...config.runtimeConfig,
+        model: "claude-opus-4-1",
+        reasoningEffort: "max",
+        instructions: "Use the repository guidelines.",
+      },
+    };
+    const save = vi.fn(async () => ({
+      ...claudeConfig,
+      revision: 5,
+      runtimeConfig: { ...claudeConfig.runtimeConfig, revision: 8, instructions: "Updated Claude instructions." },
+    }));
+    render(<RuntimeConfigurationForm initialConfig={claudeConfig} save={save} />);
 
-    expect(screen.getByText("Runtime settings are managed by Claude Code.")).toBeTruthy();
-    expect(screen.getByText("Agent instructions are not editable for this provider.")).toBeTruthy();
-    expect(screen.queryByText(/Effective Runtime Snapshot/)).toBeNull();
-    expect(screen.queryByRole("button", { name: "Edit settings" })).toBeNull();
+    expect(screen.getByText("Claude Code")).toBeTruthy();
+    expect(screen.getByText("claude-opus-4-1")).toBeTruthy();
+    expect(screen.getByText("max")).toBeTruthy();
+    expect((screen.getByLabelText("Instructions") as HTMLTextAreaElement).value).toBe("Use the repository guidelines.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit settings" }));
+    expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe("claude-opus-4-1");
+    const effort = screen.getByLabelText("Reasoning level") as HTMLInputElement;
+    const suggestions = document.getElementById(effort.getAttribute("list") ?? "");
+    expect(Array.from(suggestions?.querySelectorAll("option") ?? []).map((option) => option.value)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultracode",
+    ]);
+
+    fireEvent.change(screen.getByLabelText("Instructions"), { target: { value: "Updated Claude instructions." } });
+    fireEvent.click(screen.getByRole("button", { name: "Save instructions" }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: { instructions: "Updated Claude instructions." },
+    });
   });
 
   it("saves Runtime choices without rewriting hidden configuration", async () => {

@@ -377,6 +377,28 @@ export function providerReadiness(
   return { provider, status: "unavailable" };
 }
 
+/**
+ * `slack api <method>` exists since Slack CLI v4.1.0; v4.2.0 removed the background update check that
+ * otherwise interferes with non-interactive `slack api` invocations, so 4.2.0 is the supported floor.
+ */
+export const SLACK_CLI_MINIMUM_VERSION = "4.2.0";
+/** `slack version --skip-update` prints a leading blank line followed by `Using slack v4.6.0`, not bare semver. */
+const SLACK_CLI_VERSION_OUTPUT = /^\s*Using slack v(\d+\.\d+\.\d+)(?:[-+][0-9A-Za-z.-]+)?\s*$/;
+
+export function parseSlackCliVersion(output: string): string | undefined {
+  return SLACK_CLI_VERSION_OUTPUT.exec(output)?.[1];
+}
+
+export function satisfiesMinimumVersion(detected: string, minimum: string): boolean {
+  const left = detected.split(".").map(Number);
+  const right = minimum.split(".").map(Number);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) return difference > 0;
+  }
+  return true;
+}
+
 export async function refreshImCliReadiness(
   connection: Pick<RuntimeConnection, "setImCliReadiness">,
   provider: RuntimeImCliReadinessObservation["provider"],
@@ -397,8 +419,22 @@ export async function refreshImCliReadiness(
       await execFileAsync(command, ["--version"], execution);
       await execFileAsync(command, ["im", "--help"], execution);
     } else {
-      await execFileAsync(command, ["version"], execution);
-      await execFileAsync(command, ["api", "--help"], execution);
+      const { stdout } = await execFileAsync(command, ["version", "--skip-update"], execution);
+      const detectedVersion = parseSlackCliVersion(stdout);
+      if (!detectedVersion) {
+        connection.setImCliReadiness({ provider, status: "unavailable" });
+        return;
+      }
+      if (!satisfiesMinimumVersion(detectedVersion, SLACK_CLI_MINIMUM_VERSION)) {
+        connection.setImCliReadiness({
+          provider,
+          status: "unavailable",
+          reason: "version_incompatible",
+          detectedVersion,
+        });
+        return;
+      }
+      await execFileAsync(command, ["api", "--help", "--skip-update"], execution);
     }
     connection.setImCliReadiness({ provider, status: "ready" });
   } catch {

@@ -22,11 +22,14 @@ import {
   createClientRuntime,
   createClientRuntimeHandlers,
   createClientRuntimePreflight,
+  parseSlackCliVersion,
   refreshImCliReadiness,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
   resolveExecutable,
+  SLACK_CLI_MINIMUM_VERSION,
+  satisfiesMinimumVersion,
 } from "../runtime/client-runtime-composition.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
@@ -45,23 +48,33 @@ describe("createClientRuntime production composition", () => {
     const home = await temporaryDirectory("opentag-im-cli-readiness-");
     const lark = resolve(home, "lark-cli");
     const slack = resolve(home, "slack");
+    const oldSlack = resolve(home, "old-slack");
+    const unparsableSlack = resolve(home, "unparsable-slack");
     const brokenSlack = resolve(home, "broken-slack");
+    const brokenSlackApi = resolve(home, "broken-slack-api");
+    // Pinned from the official Slack CLI v4.6.0: a leading blank line, then `Using slack v4.6.0`, not bare semver.
+    const slackFixture = (versionLine: string, apiHelpExit: number) =>
+      `#!/bin/sh\nif [ "$1" = "version" ] && [ "$2" = "--skip-update" ]; then printf '\\n%s\\n' '${versionLine}'; exit 0; fi\nif [ "$1" = "api" ] && [ "$2" = "--help" ] && [ "$3" = "--skip-update" ]; then exit ${apiHelpExit}; fi\nexit 1\n`;
     await writeFile(
       lark,
       '#!/bin/sh\nif [ "$1" = "--version" ] || { [ "$1" = "im" ] && [ "$2" = "--help" ]; }; then exit 0; fi\nexit 1\n',
       "utf8",
     );
-    await writeFile(
-      slack,
-      '#!/bin/sh\nif [ "$1" = "version" ] || { [ "$1" = "api" ] && [ "$2" = "--help" ]; }; then exit 0; fi\nexit 1\n',
-      "utf8",
-    );
+    await writeFile(slack, slackFixture("Using slack v4.6.0", 0), "utf8");
+    await writeFile(oldSlack, slackFixture("Using slack v4.1.0", 0), "utf8");
+    await writeFile(unparsableSlack, slackFixture("slack 4.6.0", 0), "utf8");
+    await writeFile(brokenSlackApi, slackFixture("Using slack v4.6.0", 1), "utf8");
     await writeFile(brokenSlack, "#!/bin/sh\nexit 1\n", "utf8");
-    await Promise.all([chmod(lark, 0o700), chmod(slack, 0o700), chmod(brokenSlack, 0o700)]);
+    await Promise.all(
+      [lark, slack, oldSlack, unparsableSlack, brokenSlack, brokenSlackApi].map((file) => chmod(file, 0o700)),
+    );
     const setImCliReadiness = vi.fn();
 
     await refreshImCliReadiness({ setImCliReadiness } as never, "feishu", lark, {});
     await refreshImCliReadiness({ setImCliReadiness } as never, "slack", slack, {});
+    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", oldSlack, {});
+    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", unparsableSlack, {});
+    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", brokenSlackApi, {});
     await refreshImCliReadiness({ setImCliReadiness } as never, "slack", brokenSlack, {});
     await refreshImCliReadiness({ setImCliReadiness } as never, "slack", resolve(home, "missing"), {});
 
@@ -71,10 +84,33 @@ describe("createClientRuntime production composition", () => {
       { provider: "slack", status: "checking" },
       { provider: "slack", status: "ready" },
       { provider: "slack", status: "checking" },
+      { provider: "slack", status: "unavailable", reason: "version_incompatible", detectedVersion: "4.1.0" },
+      { provider: "slack", status: "checking" },
+      { provider: "slack", status: "unavailable" },
+      { provider: "slack", status: "checking" },
+      { provider: "slack", status: "unavailable" },
+      { provider: "slack", status: "checking" },
       { provider: "slack", status: "unavailable" },
       { provider: "slack", status: "checking" },
       { provider: "slack", status: "install" },
     ]);
+  });
+
+  it("parses the Slack CLI version banner and enforces the 4.2.0 floor", () => {
+    expect(parseSlackCliVersion("\nUsing slack v4.6.0\n")).toBe("4.6.0");
+    expect(parseSlackCliVersion("Using slack v4.2.0-rc.1\n")).toBe("4.2.0");
+    expect(parseSlackCliVersion("4.6.0")).toBeUndefined();
+    expect(parseSlackCliVersion("Using slack v4.6\n")).toBeUndefined();
+    expect(parseSlackCliVersion("Using slack v4.6.0\nextra line\n")).toBeUndefined();
+    expect(SLACK_CLI_MINIMUM_VERSION).toBe("4.2.0");
+    expect(satisfiesMinimumVersion("4.2.0", SLACK_CLI_MINIMUM_VERSION)).toBe(true);
+    expect(satisfiesMinimumVersion("4.6.0", SLACK_CLI_MINIMUM_VERSION)).toBe(true);
+    expect(satisfiesMinimumVersion("5.0.0", SLACK_CLI_MINIMUM_VERSION)).toBe(true);
+    expect(satisfiesMinimumVersion("4.1.9", SLACK_CLI_MINIMUM_VERSION)).toBe(false);
+    expect(satisfiesMinimumVersion("3.9.9", SLACK_CLI_MINIMUM_VERSION)).toBe(false);
+    expect(satisfiesMinimumVersion("4.2", "4.2.0")).toBe(true);
+    expect(satisfiesMinimumVersion("4.2.0", "4.2")).toBe(true);
+    expect(satisfiesMinimumVersion("4.2.0", "4.2.1")).toBe(false);
   });
 
   it("projects Codex probe outcomes without exposing provider diagnostics", () => {

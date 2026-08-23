@@ -285,7 +285,7 @@ describe("database migrations", () => {
             array(select status::text from agents order by name) as statuses
         `;
         expect(lifecycle).toEqual({
-          count: 11,
+          count: 12,
           creation_intents_null: true,
           deleted_at_exists: false,
           setup_completed_at_exists: true,
@@ -311,7 +311,7 @@ describe("database migrations", () => {
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(11);
+        expect(rerun?.count).toBe(12);
       } finally {
         await sql.end();
       }

@@ -104,6 +104,7 @@ describe("IM binding contracts", () => {
       bindingState: "active",
       bot: { displayName: "Reviewer", avatarUrl: null },
       receiveMode: "mention_only",
+      pendingReceiveMode: null,
       lastInboundAt: null,
       lastConfirmedAt: "2026-08-19T00:00:00.000Z",
     };

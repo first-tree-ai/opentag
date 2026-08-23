@@ -3002,6 +3002,111 @@ textarea:focus {
   padding: 12px 0;
 }
 
+.agent-runtime-stack,
+.agent-runtime-settings {
+  display: grid;
+}
+
+.agent-runtime-section {
+  display: grid;
+  gap: 20px;
+  border-top: 1px solid var(--border);
+  padding: 28px 0 32px;
+}
+
+.agent-runtime-section__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.agent-runtime-section__header h3 {
+  margin: 0;
+  color: var(--foreground);
+  font-size: var(--text-section);
+  font-weight: var(--fw-semibold);
+}
+
+.agent-runtime-section__header p,
+.agent-runtime-note,
+.agent-runtime-recovery p,
+.agent-runtime-save-message {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: var(--text-ui);
+}
+
+.agent-runtime-computer__body {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 32px;
+}
+
+.agent-runtime-facts dt {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: var(--text-micro);
+  font-weight: var(--fw-semibold);
+}
+
+.agent-runtime-computer__body strong,
+.agent-runtime-facts dd {
+  color: var(--foreground);
+  font-size: var(--text-body);
+  font-weight: var(--fw-medium);
+}
+
+.agent-runtime-recovery {
+  display: grid;
+  max-width: 360px;
+  justify-items: start;
+  gap: 8px;
+}
+
+.agent-runtime-recovery p {
+  margin: 0;
+}
+
+.agent-runtime-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 24px;
+  margin: 0;
+}
+
+.agent-runtime-facts dd {
+  margin: 0;
+}
+
+.agent-runtime-edit-form,
+.agent-instructions-form {
+  display: grid;
+  gap: 20px;
+}
+
+.agent-runtime-field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.agent-runtime-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.agent-instructions-form textarea {
+  min-height: 160px;
+  resize: vertical;
+}
+
+.agent-instructions-form > .ds-button {
+  justify-self: start;
+}
+
 .list {
   overflow: hidden;
   gap: 0;
@@ -3996,6 +4101,17 @@ textarea:focus {
   .definition-list div {
     grid-template-columns: 1fr;
     gap: 5px;
+  }
+
+  .agent-runtime-section__header,
+  .agent-runtime-computer__body {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .agent-runtime-facts,
+  .agent-runtime-field-grid {
+    grid-template-columns: 1fr;
   }
 
   .row {

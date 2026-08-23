@@ -1111,10 +1111,26 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
-    expect(screen.getByText("macOS")).toBeTruthy();
+    expect(await screen.findByText("Ada's Mac · macOS")).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Execution choices" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Computer" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 3, name: "Runtime" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Agent instructions" })).toBeTruthy();
+    expect(screen.queryByText("Execution choices")).toBeNull();
+    expect(screen.queryByText(/Turn timeout/i)).toBeNull();
+    expect(screen.queryByText(/Last seen/i)).toBeNull();
+  });
+
+  it("shows Computer recovery details only when the assigned Computer is offline", async () => {
+    installApi("admin", { bound: true, computerStatus: () => "offline" });
+    window.history.replaceState({}, "", `/agents/${agentId}/runtime`);
+    render(<App />);
+
+    expect(await screen.findByText("Ada's Mac · macOS")).toBeTruthy();
+    expect(screen.getByText("Offline")).toBeTruthy();
+    expect(screen.getByText(/Last seen/)).toBeTruthy();
+    expect(screen.getByText("New Turns can start after this Computer reconnects.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
 
   it("refreshes Agent availability when the page regains focus", async () => {

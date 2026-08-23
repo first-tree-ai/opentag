@@ -244,6 +244,13 @@ export class BrowserApi {
     return this.request(slackSetupAttemptPath(attemptId), SlackSetupAttemptSchema);
   }
 
+  cancelSlackSetupAttempt(attemptId: string): Promise<SlackSetupAttempt> {
+    return this.request(`${slackSetupAttemptPath(attemptId)}/cancel`, SlackSetupAttemptSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
   imBindingDiagnostics(imBindingId: string): Promise<ImBindingDiagnostics> {
     return this.request(imBindingDiagnosticsPath(imBindingId), ImBindingDiagnosticsSchema);
   }

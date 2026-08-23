@@ -1771,6 +1771,14 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                               <Button onClick={() => void connectSlack("reauthorize")}>Reauthorize Slack</Button>
                             </div>
                           ) : null}
+                          {binding.bindingState === "provisioning" &&
+                          binding.provider === "slack" &&
+                          agent.viewerCapabilities.canManage ? (
+                            <SlackProvisioningActions
+                              hydrate={slackSetup.start}
+                              onResume={() => void connectSlack("create")}
+                            />
+                          ) : null}
                         </section>
                         <section className="im-section" aria-labelledby="message-policy-heading">
                           <div className="im-section-heading">
@@ -1781,6 +1789,13 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                             <div className="message-policy-copy">
                               <strong>Receive mode</strong>
                               <p>Mentions only is the safer default and reduces unnecessary context.</p>
+                              {binding.pendingReceiveMode ? (
+                                <p className="muted">
+                                  Scope upgrade pending: {receiveModeLabel(binding.pendingReceiveMode)} takes effect
+                                  once {titleCase(binding.provider)} grants the additional permissions through
+                                  reauthorization.
+                                </p>
+                              ) : null}
                             </div>
                             {agent.viewerCapabilities.canManage ? (
                               <div className="segmented-control">
@@ -1817,7 +1832,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                   Replace with existing or new Feishu Bot
                                 </Button>
                               ) : null}
-                              {binding.provider === "slack" ? (
+                              {binding.provider === "slack" && binding.bindingState !== "provisioning" ? (
                                 <Button variant="secondary" onClick={() => void connectSlack("replace")}>
                                   Replace Slack App
                                 </Button>
@@ -1885,6 +1900,27 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
         </SlackSetup>
       )}
     </FeishuSetup>
+  );
+}
+
+/**
+ * A provisioning Slack binding means a setup attempt was started earlier (possibly before a page
+ * refresh). Hydrating through the create intent returns the in-flight attempt instead of a new one.
+ */
+function SlackProvisioningActions({
+  hydrate,
+  onResume,
+}: {
+  hydrate: (intent: "create") => Promise<boolean>;
+  onResume: () => void;
+}) {
+  useEffect(() => {
+    void hydrate("create");
+  }, [hydrate]);
+  return (
+    <div className="im-actions">
+      <Button onClick={onResume}>Resume Slack setup</Button>
+    </div>
   );
 }
 

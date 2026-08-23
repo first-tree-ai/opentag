@@ -5,9 +5,6 @@ export const ComputerPlatformSchema = z.enum(["darwin", "linux", "win32"]);
 export const ComputerConnectionStatusSchema = z.enum(["online", "offline"]);
 export const ProviderReadinessStatusSchema = z.enum(["checking", "install", "sign-in", "ready", "unavailable"]);
 export const ImCliReadinessStatusSchema = z.enum(["checking", "install", "ready", "unavailable"]);
-export const ImCliReadinessReasonSchema = z.enum(["version_incompatible"]);
-export const IM_CLI_DETECTED_VERSION_MAX_LENGTH = 64;
-export const ImCliDetectedVersionSchema = z.string().min(1).max(IM_CLI_DETECTED_VERSION_MAX_LENGTH);
 export const IM_CLI_PROVIDERS = ["feishu", "slack"] as const;
 export const ImCliProviderSchema = z.enum(IM_CLI_PROVIDERS);
 export const PROVIDER_READINESS_V1_HEADER = "x-opentag-provider-readiness";
@@ -48,8 +45,6 @@ export const ComputerImCliReadinessSchema = z
   .object({
     provider: ImCliProviderSchema,
     status: ImCliReadinessStatusSchema,
-    reason: ImCliReadinessReasonSchema.optional(),
-    detectedVersion: ImCliDetectedVersionSchema.optional(),
     observedAt: z.string().datetime().nullable(),
   })
   .strict();
@@ -104,7 +99,6 @@ export type ComputerPlatform = z.infer<typeof ComputerPlatformSchema>;
 export type ComputerConnectionStatus = z.infer<typeof ComputerConnectionStatusSchema>;
 export type ProviderReadinessStatus = z.infer<typeof ProviderReadinessStatusSchema>;
 export type ImCliReadinessStatus = z.infer<typeof ImCliReadinessStatusSchema>;
-export type ImCliReadinessReason = z.infer<typeof ImCliReadinessReasonSchema>;
 export type ImCliProvider = z.infer<typeof ImCliProviderSchema>;
 export type ComputerProviderReadiness = z.infer<typeof ComputerProviderReadinessSchema>;
 export type ComputerProviderReadinessCollection = z.infer<typeof ComputerProviderReadinessCollectionSchema>;

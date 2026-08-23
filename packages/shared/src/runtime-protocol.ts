@@ -3,9 +3,7 @@ import { AGENT_RUNTIME_PROVIDERS, AgentRuntimeProviderSchema } from "./agent.js"
 import {
   ComputerPlatformSchema,
   IM_CLI_PROVIDERS,
-  ImCliDetectedVersionSchema,
   ImCliProviderSchema,
-  ImCliReadinessReasonSchema,
   ImCliReadinessStatusSchema,
   ProviderReadinessStatusSchema,
 } from "./computer.js";
@@ -151,8 +149,6 @@ export const RuntimeImCliReadinessObservationSchema = z
   .object({
     provider: ImCliProviderSchema,
     status: ImCliReadinessStatusSchema,
-    reason: ImCliReadinessReasonSchema.optional(),
-    detectedVersion: ImCliDetectedVersionSchema.optional(),
   })
   .strict();
 

@@ -250,8 +250,20 @@ export async function createClientRuntime(
   const refreshCapability = async (): Promise<void> => {
     await Promise.all([
       ...providers.providerIds().map((providerId) => refreshProviderReadiness(providerId)),
-      refreshImCliReadiness(connection, "feishu", options.larkCliCommand ?? "lark-cli", sourceEnvironment),
-      refreshImCliReadiness(connection, "slack", options.slackCliCommand ?? "slack", sourceEnvironment),
+      refreshImCliReadiness(
+        connection,
+        "feishu",
+        options.larkCliCommand ?? "lark-cli",
+        sourceEnvironment,
+        moduleLogger("im-cli-readiness"),
+      ),
+      refreshImCliReadiness(
+        connection,
+        "slack",
+        options.slackCliCommand ?? "slack",
+        sourceEnvironment,
+        moduleLogger("im-cli-readiness"),
+      ),
     ]);
     connection.setVerifiedCapabilities({ imCredentialGrant: 1 });
   };
@@ -382,11 +394,16 @@ export function providerReadiness(
  * otherwise interferes with non-interactive `slack api` invocations, so 4.2.0 is the supported floor.
  */
 export const SLACK_CLI_MINIMUM_VERSION = "4.2.0";
-/** `slack version --skip-update` prints a leading blank line followed by `Using slack v4.6.0`, not bare semver. */
-const SLACK_CLI_VERSION_OUTPUT = /^\s*Using slack v(\d+\.\d+\.\d+)(?:[-+][0-9A-Za-z.-]+)?\s*$/;
+/**
+ * `slack version --skip-update` prints a leading blank line followed by `Using slack v4.6.0`, not bare semver.
+ * Only stable `X.Y.Z` releases are accepted: prerelease (`v4.2.0-rc.1`) and development builds
+ * (`v4.2.0-3-gabcdef`) carry a suffix and are rejected as unrecognized.
+ */
+const SLACK_CLI_VERSION_OUTPUT = /^\s*Using slack v(\d{1,6})\.(\d{1,6})\.(\d{1,6})\s*$/;
 
 export function parseSlackCliVersion(output: string): string | undefined {
-  return SLACK_CLI_VERSION_OUTPUT.exec(output)?.[1];
+  const match = SLACK_CLI_VERSION_OUTPUT.exec(output);
+  return match ? `${match[1]}.${match[2]}.${match[3]}` : undefined;
 }
 
 export function satisfiesMinimumVersion(detected: string, minimum: string): boolean {
@@ -404,6 +421,7 @@ export async function refreshImCliReadiness(
   provider: RuntimeImCliReadinessObservation["provider"],
   configuredCommand: string,
   environment: NodeJS.ProcessEnv,
+  logger?: Pick<ClientLogger, "warn">,
 ): Promise<void> {
   connection.setImCliReadiness({ provider, status: "checking" });
   let command: string;
@@ -422,16 +440,20 @@ export async function refreshImCliReadiness(
       const { stdout } = await execFileAsync(command, ["version", "--skip-update"], execution);
       const detectedVersion = parseSlackCliVersion(stdout);
       if (!detectedVersion) {
+        // The wire observation stays `unavailable`; the daemon log is the local diagnosis path.
+        logger?.warn(
+          { provider, command, minimumVersion: SLACK_CLI_MINIMUM_VERSION },
+          "Slack CLI version output was not recognized; only stable X.Y.Z releases are supported",
+        );
         connection.setImCliReadiness({ provider, status: "unavailable" });
         return;
       }
       if (!satisfiesMinimumVersion(detectedVersion, SLACK_CLI_MINIMUM_VERSION)) {
-        connection.setImCliReadiness({
-          provider,
-          status: "unavailable",
-          reason: "version_incompatible",
-          detectedVersion,
-        });
+        logger?.warn(
+          { provider, command, detectedVersion, minimumVersion: SLACK_CLI_MINIMUM_VERSION },
+          "Slack CLI version is below the supported minimum",
+        );
+        connection.setImCliReadiness({ provider, status: "unavailable" });
         return;
       }
       await execFileAsync(command, ["api", "--help", "--skip-update"], execution);

@@ -36,8 +36,6 @@ export function projectComputerImCliReadiness(
       ? {
           provider,
           status: snapshot.observation.status,
-          ...(snapshot.observation.reason ? { reason: snapshot.observation.reason } : {}),
-          ...(snapshot.observation.detectedVersion ? { detectedVersion: snapshot.observation.detectedVersion } : {}),
           observedAt: new Date(snapshot.observedAt).toISOString(),
         }
       : { provider, status: "checking", observedAt: null };

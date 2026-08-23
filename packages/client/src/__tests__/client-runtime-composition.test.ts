@@ -69,11 +69,12 @@ describe("createClientRuntime production composition", () => {
       [lark, slack, oldSlack, unparsableSlack, brokenSlack, brokenSlackApi].map((file) => chmod(file, 0o700)),
     );
     const setImCliReadiness = vi.fn();
+    const warn = vi.fn();
 
     await refreshImCliReadiness({ setImCliReadiness } as never, "feishu", lark, {});
-    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", slack, {});
-    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", oldSlack, {});
-    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", unparsableSlack, {});
+    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", slack, {}, { warn });
+    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", oldSlack, {}, { warn });
+    await refreshImCliReadiness({ setImCliReadiness } as never, "slack", unparsableSlack, {}, { warn });
     await refreshImCliReadiness({ setImCliReadiness } as never, "slack", brokenSlackApi, {});
     await refreshImCliReadiness({ setImCliReadiness } as never, "slack", brokenSlack, {});
     await refreshImCliReadiness({ setImCliReadiness } as never, "slack", resolve(home, "missing"), {});
@@ -84,7 +85,7 @@ describe("createClientRuntime production composition", () => {
       { provider: "slack", status: "checking" },
       { provider: "slack", status: "ready" },
       { provider: "slack", status: "checking" },
-      { provider: "slack", status: "unavailable", reason: "version_incompatible", detectedVersion: "4.1.0" },
+      { provider: "slack", status: "unavailable" },
       { provider: "slack", status: "checking" },
       { provider: "slack", status: "unavailable" },
       { provider: "slack", status: "checking" },
@@ -94,11 +95,26 @@ describe("createClientRuntime production composition", () => {
       { provider: "slack", status: "checking" },
       { provider: "slack", status: "install" },
     ]);
+    // The wire observation never carries the version; the structured daemon log is the diagnosis path.
+    expect(warn.mock.calls).toEqual([
+      [
+        { provider: "slack", command: await realpath(oldSlack), detectedVersion: "4.1.0", minimumVersion: "4.2.0" },
+        "Slack CLI version is below the supported minimum",
+      ],
+      [
+        { provider: "slack", command: await realpath(unparsableSlack), minimumVersion: "4.2.0" },
+        "Slack CLI version output was not recognized; only stable X.Y.Z releases are supported",
+      ],
+    ]);
   });
 
   it("parses the Slack CLI version banner and enforces the 4.2.0 floor", () => {
     expect(parseSlackCliVersion("\nUsing slack v4.6.0\n")).toBe("4.6.0");
-    expect(parseSlackCliVersion("Using slack v4.2.0-rc.1\n")).toBe("4.2.0");
+    expect(parseSlackCliVersion("  Using slack v4.2.0  ")).toBe("4.2.0");
+    expect(parseSlackCliVersion("Using slack v4.2.0-rc.1\n")).toBeUndefined();
+    expect(parseSlackCliVersion("Using slack v4.2.0-3-gabcdef\n")).toBeUndefined();
+    expect(parseSlackCliVersion("Using slack v4.2.0+build.7\n")).toBeUndefined();
+    expect(parseSlackCliVersion("Using slack v1234567.0.0\n")).toBeUndefined();
     expect(parseSlackCliVersion("4.6.0")).toBeUndefined();
     expect(parseSlackCliVersion("Using slack v4.6\n")).toBeUndefined();
     expect(parseSlackCliVersion("Using slack v4.6.0\nextra line\n")).toBeUndefined();

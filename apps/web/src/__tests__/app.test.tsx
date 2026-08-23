@@ -480,7 +480,7 @@ function installApi(
       requiredBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
       currentAppId: null,
       identity:
-        state === "awaiting_verification" ? { appId: "A1", teamId: "T1", enterpriseId: null, botUserId: "U1" } : null,
+        state === "awaiting_verification" ? { appId: null, teamId: "T1", enterpriseId: null, botUserId: "U1" } : null,
       challengeVerified: false,
       lastVerificationErrorCode: null,
       lastVerificationAt: null,
@@ -1330,7 +1330,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByText(/Bot Token validated/)).toBeTruthy();
-    expect(screen.getByText(/workspace T1/)).toBeTruthy();
+    expect(screen.getByText(/for workspace T1 \(bot user U1\)/)).toBeTruthy();
     expect(screen.getByText(/Signing Secret not yet verified/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Edit credentials" })).toBeTruthy();
     expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();

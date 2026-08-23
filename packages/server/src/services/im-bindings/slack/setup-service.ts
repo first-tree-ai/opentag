@@ -798,15 +798,15 @@ export class SlackSetupService {
       eventsUrl: this.#eventsUrl(row.agentId),
       requiredBotScopes: requiredSlackBotScopes(targetReceiveMode),
       currentAppId: row.externalAppId,
-      identity:
-        verification && verification.installation.appId !== null
-          ? {
-              appId: verification.installation.appId,
-              teamId: verification.installation.teamId,
-              enterpriseId: verification.installation.enterpriseId,
-              botUserId: verification.installation.botUserId,
-            }
-          : null,
+      // auth.test normally omits app_id for a bot token, so the panel must work from Team and bot user.
+      identity: verification
+        ? {
+            appId: verification.installation.appId,
+            teamId: verification.installation.teamId,
+            enterpriseId: verification.installation.enterpriseId,
+            botUserId: verification.installation.botUserId,
+          }
+        : null,
       challengeVerified: verification?.challengeVerified ?? false,
       lastVerificationErrorCode: verification?.lastVerificationErrorCode ?? null,
       lastVerificationAt: verification?.lastVerificationAt ?? null,

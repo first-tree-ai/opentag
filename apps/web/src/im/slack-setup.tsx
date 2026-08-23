@@ -281,9 +281,12 @@ function SlackVerificationStatus({ attempt, onEdit }: { attempt: SlackSetupAttem
     <div className="form-stack">
       <p>
         <strong>Bot Token validated</strong>
-        {identity
-          ? ` for App ${identity.appId} in workspace ${identity.teamId} (bot user ${identity.botUserId}).`
-          : ". Slack did not report an App ID for this token; the first signed event establishes it."}
+        {identity ? ` for workspace ${identity.teamId} (bot user ${identity.botUserId})` : null}
+        {identity?.enterpriseId ? `, enterprise ${identity.enterpriseId}` : null}
+        {identity?.appId
+          ? `, App ${identity.appId}.`
+          : ". Slack does not report the App ID for a bot token; the first signed event establishes it."}
+        {identity ? " Check that this is the intended workspace before continuing." : null}
       </p>
       <p>
         {attempt.challengeVerified ? (

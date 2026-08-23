@@ -83,35 +83,40 @@ describe("AgentTurnRunner", () => {
     expect(context).toContain("Attention does not change provider CLI or credential availability");
   });
 
-  it("adds fixed Slack CLI mechanics without mandating a reply policy", () => {
+  it("adds fixed Slack CLI mechanics without any reply placement preference", () => {
     const topLevel = delivery();
     const topLevelContext = buildAgentInput(topLevel).items[0]?.text ?? "";
+    const slackBlock = slackRulesBlock(topLevelContext);
     expect(topLevelContext).toContain(JSON.stringify(topLevel.content.providerRef));
-    expect(topLevelContext).toContain("Slack CLI rules:");
-    expect(topLevelContext).toContain("set thread_ts to 1710000000.000001 ");
-    expect(topLevelContext).toContain(
-      `slack api chat.postMessage --json '{"channel":"channel-1","thread_ts":"1710000000.000001","markdown_text":"..."}' --skip-update`,
+    expect(slackBlock).toContain(
+      "If your Session policy chooses a thread reply, set thread_ts to 1710000000.000001 (the inbound threadTs when present, otherwise the inbound messageTs); omit thread_ts for a top-level message.",
     );
-    expect(topLevelContext).toContain("is your Session policy, not a rule");
-    expect(topLevelContext).toContain("omit thread_ts for a top-level message");
-    expect(topLevelContext).not.toMatch(/\bReply in the thread:/);
-    expect(topLevelContext).toContain("Always pass the body with --json; never use key=value arguments.");
-    expect(topLevelContext).toContain("Never pass --token, --app, -w, or --team.");
-    expect(topLevelContext).toContain("markdown_text (at most 12,000 characters; never together with text or blocks)");
-    expect(topLevelContext).toContain("text (at most 4,000 characters per message)");
-    expect(topLevelContext).toContain("at most 1 message per second per channel");
-    expect(topLevelContext).toContain("Mention users as <@U...>");
-    expect(topLevelContext).toContain("conversations.replies and conversations.history may be rate-limited");
-    expect(topLevelContext).toContain("Never print the token.");
-    expect(topLevelContext).toContain("visible in the process command line on this machine");
-    expect(topLevelContext).not.toContain("SLACK_BOT_TOKEN=");
+    expect(slackBlock).not.toMatch(/\b(?:prefer|should|default|always)\b/i);
+    expect(slackBlock).not.toMatch(/Reply in the thread/i);
+    expect(slackBlock).toContain("slack api chat.postMessage --json <body> --skip-update");
+    expect(slackBlock).toContain('{"channel":"channel-1","thread_ts":"1710000000.000001","markdown_text":"..."}');
+    expect(slackBlock).toContain("Serialize <body> with a JSON library and pass it as a single argv value");
+    expect(slackBlock).toContain("never hand-assemble it from string concatenation or shell substitution");
+    expect(slackBlock).toContain("Pass the body only through --json; never use key=value arguments.");
+    expect(slackBlock).toContain("Never pass --token, --app, -w, or --team.");
+    expect(slackBlock).toContain("markdown_text (at most 12,000 characters; never together with text or blocks)");
+    expect(slackBlock).toContain("text (at most 4,000 characters per message)");
+    expect(slackBlock).toContain("at most 1 message per second per channel");
+    expect(slackBlock).toContain("Mention users as <@U...>");
+    expect(slackBlock).toContain(
+      "conversations.replies and conversations.history may be rate-limited depending on app distribution; obey method limits and Retry-After",
+    );
+    expect(slackBlock).not.toContain("Marketplace");
+    expect(slackBlock).toContain("Never print the token.");
+    expect(slackBlock).toContain("visible in the process command line on this machine");
+    expect(slackBlock).not.toContain("SLACK_BOT_TOKEN=");
 
     const threaded = delivery();
     threaded.content.providerRef = { ...providerRef("1710000000.000002"), threadTs: "1710000000.000001" };
-    const threadedContext = buildAgentInput(threaded).items[0]?.text ?? "";
-    expect(threadedContext).toContain("set thread_ts to 1710000000.000001 ");
-    expect(threadedContext).toContain('"thread_ts":"1710000000.000001"');
-    expect(threadedContext).not.toContain('"thread_ts":"1710000000.000002"');
+    const threadedBlock = slackRulesBlock(buildAgentInput(threaded).items[0]?.text ?? "");
+    expect(threadedBlock).toContain("set thread_ts to 1710000000.000001 ");
+    expect(threadedBlock).toContain('"thread_ts":"1710000000.000001"');
+    expect(threadedBlock).not.toContain('"thread_ts":"1710000000.000002"');
   });
 
   it("keeps Feishu free of Slack rules and of any provider reply policy", () => {
@@ -439,6 +444,14 @@ function delivery(): DirectImMessageDeliveryRequest {
       workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
     },
   };
+}
+
+function slackRulesBlock(context: string): string {
+  const start = context.indexOf("Slack CLI rules:");
+  const end = context.indexOf("Session instructions:");
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return context.slice(start, end);
 }
 
 function providerRef(messageTs: string) {

@@ -265,13 +265,14 @@ function slackCliRules(
   const threadTs = providerRef.threadTs ?? providerRef.messageTs;
   return [
     "Slack CLI rules:",
-    `- To reply in the thread, set thread_ts to ${threadTs} (the inbound threadTs when present, otherwise the inbound messageTs). Whether to reply in the thread, at the top level, react, or stay silent is your Session policy, not a rule; when a thread already exists, prefer it.`,
-    `- Send with \`slack api chat.postMessage --json '{"channel":"${providerRef.channelId}","thread_ts":"${threadTs}","markdown_text":"..."}' --skip-update\` (omit thread_ts for a top-level message). Always pass the body with --json; never use key=value arguments.`,
-    "- Never pass --token, --app, -w, or --team. The sourced SLACK_BOT_TOKEN is the only credential and already takes precedence over any logged-in Slack CLI session.",
+    `- If your Session policy chooses a thread reply, set thread_ts to ${threadTs} (the inbound threadTs when present, otherwise the inbound messageTs); omit thread_ts for a top-level message.`,
+    `- Send with \`slack api chat.postMessage --json <body> --skip-update\`, where <body> is one JSON object such as {"channel":"${providerRef.channelId}","thread_ts":"${threadTs}","markdown_text":"..."}.`,
+    "- Serialize <body> with a JSON library and pass it as a single argv value; never hand-assemble it from string concatenation or shell substitution. Pass the body only through --json; never use key=value arguments.",
+    "- Never pass --token, --app, -w, or --team. The sourced SLACK_BOT_TOKEN is the only credential and takes precedence over any logged-in Slack CLI session.",
     "- Use markdown_text (at most 12,000 characters; never together with text or blocks) for Markdown; otherwise use text (at most 4,000 characters per message). Split longer replies across several messages.",
     "- Send at most 1 message per second per channel.",
     "- Mention users as <@U...> with their Slack user ID.",
-    "- conversations.replies and conversations.history may be rate-limited (1 request per minute, 15 items for non-Marketplace apps); prefer the bounded history already supplied in this input.",
+    "- conversations.replies and conversations.history may be rate-limited depending on app distribution; obey method limits and Retry-After, and use the bounded history already supplied in this input before calling them.",
     "- Never print the token. Message text passed to slack api is visible in the process command line on this machine.",
   ];
 }

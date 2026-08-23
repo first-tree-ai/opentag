@@ -64,6 +64,7 @@ function installApi(
     roleUpdate?: (targetUserId: string, role: "admin" | "member") => Promise<Response> | Response;
     roleUpdateFails?: boolean;
     setupFailureCode?: string;
+    setupCompletedAt?: string | null;
     scopeReauth?: boolean;
     unauthenticated?: boolean;
     teamless?: boolean;
@@ -95,7 +96,14 @@ function installApi(
       maxDurationMs: null,
     },
   });
-  const createdMemberships: { teamId: string; teamName: string; teamDisplayName: string; role: "admin" }[] = [];
+  const createdMemberships: {
+    teamId: string;
+    teamName: string;
+    teamDisplayName: string;
+    role: "admin";
+    setupCompletedAt: string | null;
+  }[] = [];
+  let setupCompletedAt = options.setupCompletedAt === undefined ? "2026-08-20T00:00:00.000Z" : options.setupCompletedAt;
   let currentRole = role;
   let currentDisplayName = "Ada";
   let memberRole: "admin" | "member" = "member";
@@ -140,7 +148,15 @@ function installApi(
       if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
       const existing = options.teamless
         ? []
-        : [{ teamId, teamName: teamProfile.name, teamDisplayName: teamProfile.displayName, role: currentRole }];
+        : [
+            {
+              teamId,
+              teamName: teamProfile.name,
+              teamDisplayName: teamProfile.displayName,
+              role: currentRole,
+              setupCompletedAt,
+            },
+          ];
       return json({
         user: { id: userId, email: "ada@example.com", displayName: currentDisplayName },
         memberships: [
@@ -152,6 +168,7 @@ function installApi(
                   teamName: "invited-team",
                   teamDisplayName: "Invited Team",
                   role: "member" as const,
+                  setupCompletedAt: "2026-08-20T00:00:00.000Z",
                 },
               ]
             : []),
@@ -179,6 +196,7 @@ function installApi(
         teamName: body.name,
         teamDisplayName: body.displayName,
         role: "admin",
+        setupCompletedAt: null,
       });
       return json(
         {
@@ -191,6 +209,10 @@ function installApi(
         },
         201,
       );
+    }
+    if (path === `/api/v1/teams/${teamId}/setup/complete` && init?.method === "POST") {
+      setupCompletedAt = "2026-08-20T00:10:00.000Z";
+      return json({ setupCompletedAt });
     }
     if (path === `/api/v1/teams/${teamId}` && init?.method === "PATCH") {
       const body = JSON.parse(String(init.body)) as { displayName?: string; name?: string };
@@ -487,6 +509,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents");
     expect(screen.queryByText("Infrastructure")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Agent runtime" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Computers" })).toBeNull();
@@ -2059,8 +2082,34 @@ describe("OpenTag Web App Shell", () => {
     ).toBe(false);
   });
 
-  it("loads standalone onboarding when selected Team preference storage is unavailable", async () => {
+  it("routes an admin with incomplete Team setup into onboarding", async () => {
+    installApi("admin", { setupCompletedAt: null });
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Set up OpenTag" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
+  });
+
+  it("keeps completed Teams out of onboarding even when it is requested directly", async () => {
     installApi("admin");
+    window.history.replaceState({}, "", "/onboarding");
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents");
+  });
+
+  it("keeps a member out of incomplete onboarding and names the admin dependency", async () => {
+    installApi("member", { setupCompletedAt: null });
+    window.history.replaceState({}, "", "/onboarding");
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents");
+    expect(
+      screen.getByText("Team setup is not complete. An administrator needs to prepare the first Agent."),
+    ).toBeTruthy();
+  });
+
+  it("loads standalone onboarding when selected Team preference storage is unavailable", async () => {
+    installApi("admin", { setupCompletedAt: null });
     window.history.replaceState({}, "", "/onboarding");
     const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("Storage unavailable");
@@ -2085,7 +2134,8 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     fireEvent.change(await screen.findByLabelText("Workspace name"), { target: { value: "Example" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Workspace" }));
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Set up OpenTag" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
     const createRequests = vi
       .mocked(fetch)
       .mock.calls.filter(([path, init]) => path === "/api/v1/teams" && init?.method === "POST");
@@ -2103,7 +2153,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     fireEvent.change(await screen.findByLabelText("Workspace name"), { target: { value: "示例团队" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Workspace" }));
-    await screen.findByRole("heading", { name: "Agents" });
+    await screen.findByRole("heading", { name: "Set up OpenTag" });
     const requests = vi
       .mocked(fetch)
       .mock.calls.filter(([path, init]) => path === "/api/v1/teams" && init?.method === "POST");
@@ -2116,7 +2166,7 @@ describe("OpenTag Web App Shell", () => {
     expect(new Set(bodies.map((body) => body.name))).toHaveProperty("size", 3);
   });
 
-  it("creates an additional Workspace from the top-level Workspace page and offers both in the account menu", async () => {
+  it("creates an additional Workspace and enters its first-time setup", async () => {
     installApi("admin");
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
@@ -2125,24 +2175,9 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(screen.getByRole("link", { name: "Create Workspace" }));
     fireEvent.change(await screen.findByLabelText("Workspace name"), { target: { value: "Second Team" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Workspace" }));
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
-    const menu = screen.getByRole("group", { name: "Workspaces" });
-    expect(within(menu).getByRole("menuitem", { name: /Example Admin/ })).toBeTruthy();
-    expect(
-      within(menu)
-        .getByRole("menuitem", { name: /Second Team Admin/ })
-        .getAttribute("aria-current"),
-    ).toBe("true");
-    fireEvent.click(screen.getByRole("menuitem", { name: "Workspace settings" }));
-    expect(await screen.findByRole("heading", { name: "Workspace profile" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/workspace");
-    expect(window.location.hash).toBe("");
-    const createWorkspaceLink = screen.getByRole("link", { name: "Create Workspace" });
-    expect(screen.getByRole("heading", { name: "Workspace" }).closest("header")?.contains(createWorkspaceLink)).toBe(
-      true,
-    );
-    expect(screen.queryByText("Additional Workspace")).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Set up OpenTag" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
+    expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(createdTeamId);
   });
 
   it("switches Teams when Team preference storage is unavailable", async () => {

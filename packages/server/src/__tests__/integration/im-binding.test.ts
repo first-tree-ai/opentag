@@ -54,7 +54,7 @@ import {
 import { createImProviderAdapterResolver, ImBindingService } from "../../services/im-bindings/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../services/runtime-config/index.js";
 import { SessionService } from "../../services/sessions/index.js";
-import { TeamMembershipService } from "../../services/teams/index.js";
+import { TeamMembershipService, TeamSetupService } from "../../services/teams/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 
@@ -494,6 +494,54 @@ function slackThreadEvent(input: {
 }
 
 describe("IM binding persistence", () => {
+  it("completes Team setup only from a ready handoff and never reopens it", async () => {
+    const value = await fixture();
+    try {
+      const completedAt = new Date("2026-08-20T12:00:00.000Z");
+      const membershipsService = new TeamMembershipService(value.database);
+      const runtimeUnavailable = new ImBindingService(value.database, new ApplicationCipher(Buffer.alloc(32, 7)), {
+        imCliReadiness: () => "unavailable",
+      });
+      const unavailableSetup = new TeamSetupService(value.database, membershipsService, runtimeUnavailable, {
+        now: () => completedAt,
+      });
+
+      await expect(
+        unavailableSetup.complete(value.bootstrap.userId, value.bootstrap.teamId, value.agent.id),
+      ).rejects.toMatchObject({ code: "TEAM_SETUP_NOT_READY", statusCode: 409 });
+      await expect(
+        value.database.select({ setupCompletedAt: teams.setupCompletedAt }).from(teams).limit(1),
+      ).resolves.toEqual([{ setupCompletedAt: null }]);
+
+      const setup = new TeamSetupService(value.database, membershipsService, value.imBindingService, {
+        now: () => completedAt,
+      });
+      await expect(setup.complete(value.bootstrap.userId, value.bootstrap.teamId, value.agent.id)).resolves.toEqual({
+        setupCompletedAt: completedAt.toISOString(),
+      });
+
+      await value.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, value.agent.id));
+      await expect(
+        unavailableSetup.complete(value.bootstrap.userId, value.bootstrap.teamId, crypto.randomUUID()),
+      ).resolves.toEqual({ setupCompletedAt: completedAt.toISOString() });
+
+      const [member] = await value.database
+        .insert(users)
+        .values({ email: "setup-member@example.com", displayName: "Setup Member" })
+        .returning();
+      if (!member) throw new Error("Setup member fixture was not created");
+      await value.database
+        .insert(memberships)
+        .values({ teamId: value.bootstrap.teamId, userId: member.id, role: "member", status: "active" });
+      await expect(setup.complete(member.id, value.bootstrap.teamId, value.agent.id)).rejects.toMatchObject({
+        code: "MEMBERSHIP_FORBIDDEN",
+        statusCode: 403,
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("filters the bound Bot's own ingress before message persistence and delivery", async () => {
     const value = await fixture();
     try {

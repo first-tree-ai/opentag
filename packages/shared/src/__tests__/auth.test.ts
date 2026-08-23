@@ -68,6 +68,7 @@ describe("auth contracts", () => {
           teamName: "example",
           teamDisplayName: "Example",
           role: "admin",
+          setupCompletedAt: null,
         },
       ],
     };

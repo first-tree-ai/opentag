@@ -259,6 +259,7 @@ describe("database migrations", () => {
             count: number;
             creation_intents_null: boolean;
             deleted_at_exists: boolean;
+            setup_completed_at_exists: boolean;
             status_default: string | null;
             statuses: string[];
           }[]
@@ -273,6 +274,10 @@ describe("database migrations", () => {
               select 1 from information_schema.columns
               where table_schema = 'public' and table_name = 'agents' and column_name = 'deleted_at'
             ) as deleted_at_exists,
+            exists(
+              select 1 from information_schema.columns
+              where table_schema = 'public' and table_name = 'teams' and column_name = 'setup_completed_at'
+            ) as setup_completed_at_exists,
             (
               select column_default from information_schema.columns
               where table_schema = 'public' and table_name = 'agents' and column_name = 'status'
@@ -280,9 +285,10 @@ describe("database migrations", () => {
             array(select status::text from agents order by name) as statuses
         `;
         expect(lifecycle).toEqual({
-          count: 10,
+          count: 11,
           creation_intents_null: true,
           deleted_at_exists: false,
+          setup_completed_at_exists: true,
           status_default: "'active'::agent_status",
           statuses: ["active", "deleted"],
         });
@@ -305,7 +311,7 @@ describe("database migrations", () => {
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(10);
+        expect(rerun?.count).toBe(11);
       } finally {
         await sql.end();
       }

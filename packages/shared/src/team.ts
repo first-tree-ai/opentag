@@ -77,6 +77,9 @@ export const ListTeamMembersConfigResponseSchema = z.object({ members: z.array(T
 export const UpdateTeamMemberRequestSchema = z.object({ role: MembershipRoleSchema }).strict();
 export const RestoreTeamMemberRequestSchema = z.object({ role: MembershipRoleSchema }).strict();
 
+export const CompleteTeamSetupRequestSchema = z.object({ agentId: z.string().uuid() }).strict();
+export const TeamSetupCompletionSchema = z.object({ setupCompletedAt: z.string().datetime() }).strict();
+
 export const TeamComputerSummarySchema = z
   .object({
     id: z.string().uuid(),
@@ -128,6 +131,8 @@ export type ListTeamMembersResponse = z.infer<typeof ListTeamMembersResponseSche
 export type ListTeamMembersConfigResponse = z.infer<typeof ListTeamMembersConfigResponseSchema>;
 export type UpdateTeamMemberRequest = z.infer<typeof UpdateTeamMemberRequestSchema>;
 export type RestoreTeamMemberRequest = z.infer<typeof RestoreTeamMemberRequestSchema>;
+export type CompleteTeamSetupRequest = z.infer<typeof CompleteTeamSetupRequestSchema>;
+export type TeamSetupCompletion = z.infer<typeof TeamSetupCompletionSchema>;
 export type TeamComputerSummary = z.infer<typeof TeamComputerSummarySchema>;
 export type TeamComputerAdminConfig = z.infer<typeof TeamComputerAdminConfigSchema>;
 export type ListTeamComputersResponse = z.infer<typeof ListTeamComputersResponseSchema>;

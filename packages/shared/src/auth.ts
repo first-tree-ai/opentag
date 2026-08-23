@@ -56,6 +56,7 @@ export const MeMembershipSchema = z
     teamName: TeamNameSchema,
     teamDisplayName: z.string().min(1),
     role: MembershipRoleSchema,
+    setupCompletedAt: z.string().datetime().nullable().default(null),
   })
   .strict();
 

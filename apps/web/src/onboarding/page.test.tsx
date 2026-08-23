@@ -207,14 +207,42 @@ describe("OnboardingPage", () => {
     expect(within(runtime).getByText("Codex")).toBeTruthy();
   });
 
-  it("does not offer an unconfirmed Computer route before runtime facts arrive", async () => {
+  it("shows unavailable Runtime states after selecting a Computer without a ready route", async () => {
+    installFacts({ computers: [computerA, computerB] });
+    renderPage({
+      runtime: runtimeFacts([
+        { computerId: computerAId, provider: "codex", runtimeReady: true, status: "ready" },
+        { computerId: computerBId, provider: "claude-code", runtimeReady: false, status: "sign-in" },
+      ]),
+    });
+
+    const runtime = await screen.findByRole("region", { name: "Where it runs" });
+    expect(within(runtime).getByText("Ada's Mac")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toHaveProperty("disabled", false);
+
+    fireEvent.click(within(runtime).getByRole("button", { name: "Change Computer" }));
+    const unavailableComputer = within(runtime).getByRole("button", { name: /Studio Mac/ });
+    expect(unavailableComputer).toHaveProperty("disabled", false);
+    fireEvent.click(unavailableComputer);
+
+    expect(within(runtime).getByText("Studio Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Claude Code")).toBeTruthy();
+    expect(within(runtime).getByText("Sign-in required")).toBeTruthy();
+    expect(within(runtime).getByText("Finish sign-in on Studio Mac.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toHaveProperty("disabled", true);
+  });
+
+  it("allows inspecting an unconfirmed Computer before runtime facts arrive", async () => {
     installFacts({ computers: [computerA, computerB] });
     renderPage();
     const runtime = await screen.findByRole("region", { name: "Where it runs" });
     expect(within(runtime).getByText("Readiness unconfirmed")).toBeTruthy();
     fireEvent.click(within(runtime).getByRole("button", { name: "Change Computer" }));
-    expect(within(runtime).getByRole("button", { name: /Ada's Mac/ })).toHaveProperty("disabled", true);
-    expect(within(runtime).getByRole("button", { name: /Studio Mac/ })).toHaveProperty("disabled", true);
+    const studioMac = within(runtime).getByRole("button", { name: /Studio Mac/ });
+    expect(studioMac).toHaveProperty("disabled", false);
+    fireEvent.click(studioMac);
+    expect(within(runtime).getByText("Studio Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Readiness unconfirmed")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Create Agent" })).toHaveProperty("disabled", true);
   });
 

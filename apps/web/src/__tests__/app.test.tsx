@@ -1419,7 +1419,8 @@ describe("OpenTag Web App Shell", () => {
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Pause Agent" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Pause Reviewer?" })).toBeNull());
-    expect(await screen.findByRole("button", { name: "Reactivate" })).toBeTruthy();
+    const reactivateButton = await screen.findByRole("button", { name: "Reactivate" });
+    await waitFor(() => expect(document.activeElement).toBe(reactivateButton));
   });
 
   it("keeps delete failures visible inside the confirmation dialog and clears them after retry", async () => {
@@ -1757,6 +1758,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Allow all messages" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Allow all conversation messages?" })).toBeNull());
     expect(screen.queryByText("Unable to update message access")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Trigger rules" })));
   });
 
   it("keeps disconnect failures inside the active dialog and allows retry", async () => {
@@ -1794,6 +1796,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Disconnect messaging?" })).toBeNull());
     expect(screen.queryByText("Unable to disconnect messaging")).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Messaging" })));
   });
 
   it("resumes a provisioning Slack setup after a refresh before credentials were submitted", async () => {

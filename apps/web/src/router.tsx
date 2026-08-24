@@ -301,6 +301,7 @@ function useResource<T>(
   loader: () => Promise<T>,
   key: string,
   options: {
+    keepPreviousData?: boolean;
     onBackgroundError?: (value: T, error: Error) => T;
     revalidateMs?: number;
     refreshOnFocus?: boolean;
@@ -351,7 +352,7 @@ function useResource<T>(
         });
     };
     const revalidate = () => load(false);
-    load(true);
+    load(!options.keepPreviousData);
     const interval = options.revalidateMs ? window.setInterval(revalidate, options.revalidateMs) : undefined;
     const refreshVisible = () => {
       if (document.visibilityState === "visible") revalidate();
@@ -366,7 +367,7 @@ function useResource<T>(
       window.removeEventListener("focus", revalidate);
       document.removeEventListener("visibilitychange", refreshVisible);
     };
-  }, [key, options.refreshOnFocus, options.revalidateMs]);
+  }, [key, options.keepPreviousData, options.refreshOnFocus, options.revalidateMs]);
   return state;
 }
 
@@ -1735,6 +1736,7 @@ function AgentSettingsPage() {
   const location = useLocation();
   const [refreshVersion, setRefreshVersion] = useState(0);
   const state = useResource(() => loadAgentDetail(agentId), `${agentId}:${refreshVersion}`, {
+    keepPreviousData: true,
     onBackgroundError: markAgentDetailUnconfirmed,
   });
   const selected = section as AgentSettingsSection | undefined;
@@ -2127,8 +2129,14 @@ function AgentManageSettings({
   const [confirmationError, setConfirmationError] = useState<string>();
   const [confirmationText, setConfirmationText] = useState("");
   const [busy, setBusy] = useState(false);
+  const [restorePauseFocus, setRestorePauseFocus] = useState(false);
   const pauseButtonRef = useRef<HTMLButtonElement>(null);
   const deleteButtonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (confirmation || !restorePauseFocus) return;
+    pauseButtonRef.current?.focus();
+    setRestorePauseFocus(false);
+  }, [confirmation, restorePauseFocus]);
   async function changeLifecycle(action: "suspend" | "reactivate") {
     try {
       setBusy(true);
@@ -2138,6 +2146,7 @@ function AgentManageSettings({
         action === "suspend" ? await browserApi.suspendAgent(config.id) : await browserApi.reactivateAgent(config.id),
       );
       setMessage(action === "suspend" ? "Agent paused." : "Agent reactivated.");
+      setRestorePauseFocus(confirmation === "pause");
       setConfirmation(undefined);
       onAgentChanged();
     } catch (cause) {
@@ -2295,9 +2304,20 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
   >();
   const [confirmationError, setConfirmationError] = useState<string>();
   const [confirmationBusy, setConfirmationBusy] = useState(false);
+  const [restoreFocusTarget, setRestoreFocusTarget] = useState<"messaging" | "trigger_rules">();
   const allMessagesButtonRef = useRef<HTMLButtonElement>(null);
   const disableBindingButtonRef = useRef<HTMLButtonElement>(null);
-  const state = useResource(() => browserApi.imBinding(agent.id), `${agent.id}:${reload}`);
+  const messagingHeadingRef = useRef<HTMLHeadingElement>(null);
+  const triggerRulesHeadingRef = useRef<HTMLHeadingElement>(null);
+  const state = useResource(() => browserApi.imBinding(agent.id), `${agent.id}:${reload}`, {
+    keepPreviousData: true,
+  });
+  useEffect(() => {
+    if (confirmation || !restoreFocusTarget) return;
+    const target = restoreFocusTarget === "messaging" ? messagingHeadingRef.current : triggerRulesHeadingRef.current;
+    target?.focus();
+    setRestoreFocusTarget(undefined);
+  }, [confirmation, restoreFocusTarget]);
   async function changeReceiveMode(receiveMode: "mention_only" | "all_message") {
     try {
       setConfirmationBusy(true);
@@ -2306,6 +2326,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
       const config = await browserApi.agentConfig(agent.id);
       await browserApi.updateAgent(agent.id, { expectedRevision: config.revision, receiveMode });
       setReload((value) => value + 1);
+      if (receiveMode === "all_message") setRestoreFocusTarget("trigger_rules");
       setConfirmation(undefined);
       onAgentChanged();
     } catch (cause) {
@@ -2326,6 +2347,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
       setConfirmationError(undefined);
       await browserApi.disableImBinding(bindingId);
       setReload((value) => value + 1);
+      setRestoreFocusTarget("messaging");
       setConfirmation(undefined);
       onAgentChanged();
     } catch (cause) {
@@ -2341,7 +2363,9 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
   return (
     <div className="agent-settings-section-page">
       <header className="agent-settings-page-title">
-        <h1>Messaging</h1>
+        <h1 ref={messagingHeadingRef} tabIndex={-1}>
+          Messaging
+        </h1>
         <p>Choose where teammates send work to {agent.displayName}.</p>
       </header>
       <FeishuSetup
@@ -2457,7 +2481,9 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                           </section>
                           <section className="im-section" aria-labelledby="trigger-rules-heading">
                             <div className="im-section-heading">
-                              <h3 id="trigger-rules-heading">Trigger rules</h3>
+                              <h3 id="trigger-rules-heading" ref={triggerRulesHeadingRef} tabIndex={-1}>
+                                Trigger rules
+                              </h3>
                               <p>Which incoming messages can start Agent work.</p>
                             </div>
                             <SettingsList className="agent-message-rules">

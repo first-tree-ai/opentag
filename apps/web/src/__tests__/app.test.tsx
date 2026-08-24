@@ -550,9 +550,9 @@ describe("OpenTag Web App Shell", () => {
       within(workspaceNavigation)
         .getAllByRole("link")
         .map((item) => item.textContent),
-    ).toEqual(["Agents", "Tasks", "Integrations", "Skills", "Usage", "Members"]);
+    ).toEqual(["Agents", "Tasks", "Integrations", "Skills", "Usage"]);
     const navigationIcons = workspaceNavigation.querySelectorAll(".primary-nav-icon");
-    expect(navigationIcons).toHaveLength(6);
+    expect(navigationIcons).toHaveLength(5);
     expect(Array.from(navigationIcons).every((icon) => icon.getAttribute("aria-hidden") === "true")).toBe(true);
   });
 
@@ -1087,12 +1087,12 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Ada")).toBeTruthy();
   });
 
-  it("keeps account and advanced Workspace editing out of Members", async () => {
+  it("keeps account editing separate from Workspace settings", async () => {
     installApi("admin");
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
-    expect(screen.queryByLabelText("Workspace name")).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Workspace" })).toBeTruthy();
+    expect(screen.getByLabelText("Workspace name")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Save account profile" })).toBeNull();
   });
 
@@ -1438,13 +1438,13 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Demo data")).toBeTruthy();
   });
 
-  it("groups invitations with Members", async () => {
+  it("groups members and invitations with Workspace settings", async () => {
     installApi("admin");
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
-    expect(screen.getAllByRole("heading", { name: "Members" })).toHaveLength(1);
+    expect(await screen.findByRole("heading", { name: "Workspace" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Members & access" })).toBeTruthy();
     const membersSection = document.querySelector<HTMLElement>("#members");
     if (!membersSection) throw new Error("Members section was not rendered");
     const memberRows = await within(membersSection).findAllByRole("rowheader");
@@ -1455,25 +1455,27 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("button", { name: "Invite members" })).toBeNull();
   });
 
-  it.each(["/settings", "/settings/members", "/settings/access", "/settings/security"])(
+  it.each(["/settings/members", "/settings/access", "/settings/security"])(
     "redirects legacy member administration URL %s",
     async (path) => {
       installApi("member");
       window.history.replaceState({}, "", path);
       render(<App />);
 
-      expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
-      expect(window.location.pathname).toBe("/members");
+      expect(await screen.findByRole("heading", { name: "Members & access" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/workspace");
+      expect(window.location.hash).toBe("#members");
     },
   );
 
-  it("redirects the legacy Members URL to the first-class Members page", async () => {
+  it("redirects the former Members page to Workspace member access", async () => {
     installApi("member");
-    window.history.replaceState({}, "", "/settings/members");
+    window.history.replaceState({}, "", "/members");
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/members");
+    expect(await screen.findByRole("heading", { name: "Members & access" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/workspace");
+    expect(window.location.hash).toBe("#members");
   });
 
   it("redirects the legacy Settings account URL to the editable Account page", async () => {
@@ -1494,17 +1496,20 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("button", { name: "Save account profile" })).toBeTruthy();
   });
 
-  it("redirects the legacy Team profile URL to the first-class Workspace page", async () => {
-    installApi("admin");
-    window.history.replaceState({}, "", "/settings/team");
-    render(<App />);
+  it.each(["/settings", "/settings/team"])(
+    "redirects legacy Workspace settings URL %s to the first-class Workspace page",
+    async (path) => {
+      installApi("admin");
+      window.history.replaceState({}, "", path);
+      render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Workspace profile" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Workspace", level: 1 })).toBeTruthy();
-    expect(window.location.pathname).toBe("/workspace");
-    expect(window.location.hash).toBe("");
-    expect(screen.getByLabelText("Workspace name")).toBeTruthy();
-  });
+      expect(await screen.findByRole("heading", { name: "Workspace profile" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Workspace", level: 1 })).toBeTruthy();
+      expect(window.location.pathname).toBe("/workspace");
+      expect(window.location.hash).toBe("");
+      expect(screen.getByLabelText("Workspace name")).toBeTruthy();
+    },
+  );
 
   it("keeps the legacy Workspace management hash compatible with the Workspace page", async () => {
     installApi("admin");
@@ -1669,7 +1674,7 @@ describe("OpenTag Web App Shell", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText } });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
     expect(await screen.findByText("This link lets anyone join as a member until it expires.")).toBeTruthy();
     const createInviteLink = await screen.findByRole("button", { name: "Create invite link" });
@@ -1689,7 +1694,7 @@ describe("OpenTag Web App Shell", () => {
   it("replaces a locally rotated invitation with a newer successful server read", async () => {
     const api = installApi("admin", { invitationExists: true });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
 
     expect(((await screen.findByLabelText("Invite link")) as HTMLInputElement).value).toContain("/invites/AAA");
@@ -1701,8 +1706,9 @@ describe("OpenTag Web App Shell", () => {
     api.setInvitationVersion("C");
     fireEvent.click(screen.getByRole("link", { name: "Agents" }));
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("link", { name: "Members" }));
-    expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Workspace settings" }));
+    expect(await screen.findByRole("heading", { name: "Members & access" })).toBeTruthy();
 
     await waitFor(() =>
       expect((screen.getByLabelText("Invite link") as HTMLInputElement).value).toContain("/invites/CCC"),
@@ -1723,9 +1729,9 @@ describe("OpenTag Web App Shell", () => {
 
   it("keeps invitation-link management hidden from regular members", async () => {
     installApi("member");
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Members & access" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Invite people" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Invite members" })).toBeNull();
     expect(screen.queryByLabelText("Role for Ada")).toBeNull();
@@ -1734,7 +1740,7 @@ describe("OpenTag Web App Shell", () => {
 
   it("lets Team admins update another member role from the member list", async () => {
     installApi("admin");
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
     const role = (await screen.findByLabelText("Role for Grace")) as HTMLSelectElement;
     expect(within(role).getByRole("option", { name: "Admin" })).toBeTruthy();
@@ -1759,7 +1765,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin", {
       roleUpdate: (targetUserId) => (targetUserId === memberUserId ? graceUpdate : linUpdate),
     });
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
     const graceRole = (await screen.findByLabelText("Role for Grace")) as HTMLSelectElement;
     const linRole = screen.getByLabelText("Role for Lin") as HTMLSelectElement;
@@ -1814,7 +1820,7 @@ describe("OpenTag Web App Shell", () => {
 
   it("refreshes current membership authority after an admin demotes themself", async () => {
     installApi("admin");
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
     fireEvent.change(await screen.findByLabelText("Role for Ada"), { target: { value: "member" } });
     await waitFor(() =>
@@ -1826,7 +1832,7 @@ describe("OpenTag Web App Shell", () => {
 
   it("keeps the confirmed role and displays the server error when an update is rejected", async () => {
     installApi("admin", { roleUpdateFails: true });
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
     const role = (await screen.findByLabelText("Role for Ada")) as HTMLSelectElement;
     fireEvent.change(role, { target: { value: "member" } });

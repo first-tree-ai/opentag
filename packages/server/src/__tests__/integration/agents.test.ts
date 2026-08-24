@@ -365,6 +365,10 @@ describe("Agent persistence and authorization", () => {
       });
       expect(projectedAgents.agents[0]?.activity).not.toHaveProperty("summary");
       expect(JSON.stringify(projectedAgents)).not.toContain("Review PR #127");
+      await expect(service.getById(value.bootstrap.userId, created.id)).resolves.toMatchObject({
+        id: created.id,
+        activity: { state: "working", startedAt: workingAcceptedAt.toISOString() },
+      });
       const usage = await service.getUsageById(value.bootstrap.userId, created.id, 30);
       expect(usage).toMatchObject({
         windowDays: 30,

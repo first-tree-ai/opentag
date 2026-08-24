@@ -43,7 +43,7 @@ const agentListItem = {
   activity: { state: "idle" },
   usage: { windowDays: 30, tasks: 12, failed: 1, tokens: 42_000 },
 };
-const agentDetail = { ...agentSummary, viewerCapabilities: { canManage: true } };
+const agentDetail = { ...agentSummary, activity: { state: "idle" }, viewerCapabilities: { canManage: true } };
 const agentUsage = {
   windowDays: 30,
   startedAt: "2026-07-25T12:00:00.000Z",

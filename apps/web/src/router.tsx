@@ -37,12 +37,11 @@ import {
   useSearchParams,
 } from "react-router-dom";
 import { type AgentCreationFacts, AgentCreationFlow } from "./agent-creation/agent-creation-flow.js";
-import { AgentIntegrationsTab, AgentSkillsTab } from "./agent-detail-capabilities.js";
 import { ApiError, browserApi } from "./api.js";
 // Google-provided, pre-approved button asset: https://developers.google.com/identity/branding-guidelines
 import googleSignInButton from "./assets/google-sign-in-light@2x.png";
 import { CreateTeamForm } from "./create-team-form.js";
-import { AgentUsageOverview, AgentUsageTab } from "./features/agent-usage.js";
+import { AgentUsageTab } from "./features/agent-usage.js";
 import { IntegrationsPage } from "./features/integrations-page.js";
 import { SkillsPage } from "./features/skills-page.js";
 import { TaskDetailPage, TasksPage } from "./features/tasks-page.js";
@@ -60,7 +59,6 @@ import {
   SettingsRow,
   StatusIndicator,
   type StatusTone,
-  Tabs,
 } from "./ui/design-system.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
@@ -101,7 +99,11 @@ type AgentListItem = AgentListApiItem & {
   availability: AgentAvailability;
   evidenceConfirmed: boolean;
 };
-type AgentDetailView = AgentDetail & { availability: AgentAvailability };
+type DetailEvidence<T> = { kind: "ready"; value: T | undefined } | { kind: "unconfirmed" };
+type AgentDetailView = AgentDetail & {
+  availability: AgentAvailability;
+  messaging: DetailEvidence<ImBindingSummary>;
+};
 
 function projectAgentAvailability(
   agent: AgentSummary,
@@ -247,6 +249,8 @@ async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
   const handoff = handoffResult.status === "fulfilled" ? handoffResult.value : undefined;
   return {
     ...agent,
+    messaging:
+      bindingResult.status === "fulfilled" ? { kind: "ready", value: bindingResult.value } : { kind: "unconfirmed" },
     availability: projectAgentAvailability(
       agent,
       computers.find((computer) => computer.id === agent.computer.id),
@@ -276,6 +280,7 @@ function markAgentListUnconfirmed(value: { agents: AgentListItem[] }): { agents:
 function markAgentDetailUnconfirmed(agent: AgentDetailView): AgentDetailView {
   return {
     ...agent,
+    messaging: { kind: "unconfirmed" },
     availability: {
       ...agent.availability,
       state: "unconfirmed",
@@ -416,9 +421,12 @@ export function AppRouter() {
             <Route index element={<Navigate replace to="/agents" />} />
             <Route path="/agents" element={<AgentsPage />} />
             <Route path="/agents/new" element={<NewAgentPage />} />
-            <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
+            <Route path="/agents/:agentId" element={<AgentDetailPage />} />
             <Route path="/agents/:agentId/access" element={<LegacyAgentAccessRedirect />} />
-            <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
+            <Route path="/agents/:agentId/usage" element={<AgentUsagePage />} />
+            <Route path="/agents/:agentId/settings" element={<AgentSettingsPage />} />
+            <Route path="/agents/:agentId/settings/:section" element={<AgentSettingsPage />} />
+            <Route path="/agents/:agentId/:legacySection" element={<LegacyAgentSectionRedirect />} />
             <Route path="/tasks" element={<TasksPage />} />
             <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
             <Route path="/integrations" element={<IntegrationsPage />} />
@@ -1109,7 +1117,7 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           </span>
           <Link
             className={buttonClassName({ className: "agent-reconnect", variant: "inline" })}
-            to={`/agents/${agent.id}/runtime`}
+            to={`/agents/${agent.id}/settings/computer`}
           >
             Reconnect
           </Link>
@@ -1142,7 +1150,7 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           <dd>{formatUsageNumber(agent.usage.tokens)}</dd>
         </div>
       </dl>
-      <Link aria-label={`Open ${agent.displayName}`} className="agent-card-action" to={`/agents/${agent.id}/general`}>
+      <Link aria-label={`Open ${agent.displayName}`} className="agent-card-action" to={`/agents/${agent.id}`}>
         <Icon name="chevron-right" />
       </Link>
     </article>
@@ -1178,7 +1186,7 @@ function agentCardStatus(agent: AgentListItem): {
       agent.availability.reason === "computer_offline"
         ? "Computer offline"
         : agent.availability.reason === "runtime_unavailable"
-          ? "Runtime unavailable"
+          ? "Computer not ready"
           : "Messaging unavailable";
     return {
       detail,
@@ -1244,7 +1252,7 @@ function NewAgentPage() {
       }
     >
       {created ? (
-        <NewAgentMessagingStep agent={created} onFinish={() => navigate(`/agents/${created.id}/general`)} />
+        <NewAgentMessagingStep agent={created} onFinish={() => navigate(`/agents/${created.id}`)} />
       ) : (
         <AgentCreationContent
           computers={computers}
@@ -1271,7 +1279,7 @@ function NewAgentDialog({
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<AgentAdminConfig>();
   const finish = () => {
-    if (created) navigate(`/agents/${created.id}/general`);
+    if (created) navigate(`/agents/${created.id}`);
   };
   const close = () => {
     if (created) finish();
@@ -1426,100 +1434,274 @@ function markOwnComputersUnconfirmed(value: { computers: Computer[] }): { comput
   };
 }
 
-const agentSections = [
-  { key: "general", label: "Overview" },
-  { key: "usage", label: "Usage" },
-  { key: "runtime", label: "Runtime" },
-  { key: "im", label: "Messaging" },
-  { key: "integrations", label: "Integrations" },
-  { key: "skills", label: "Skills" },
+const agentSettingsSections = [
+  { key: "identity", label: "Identity", description: "Name and handle" },
+  { key: "instructions", label: "Instructions", description: "Guidance for every request" },
+  { key: "execution", label: "Execution", description: "Provider, model, and reasoning" },
+  { key: "messaging", label: "Messaging", description: "Contact channel and trigger rules" },
+  { key: "computer", label: "Computer", description: "Assigned device and connection" },
+  { key: "manage", label: "Manage", description: "Pause or delete this Agent" },
 ] as const;
-
-// Integrations and Skills deliberately have independent routes. Their components
-// own the preview/no-contract boundary until authoritative Agent assignments land.
+type AgentSettingsSection = (typeof agentSettingsSections)[number]["key"];
 
 function LegacyAgentAccessRedirect() {
+  return <Navigate replace to="/workspace#members" />;
+}
+
+function LegacyAgentSectionRedirect() {
+  const { agentId = "", legacySection = "" } = useParams();
+  const destinations: Record<string, string> = {
+    general: `/agents/${agentId}`,
+    runtime: `/agents/${agentId}/settings/execution`,
+    im: `/agents/${agentId}/settings/messaging`,
+  };
+  const destination = destinations[legacySection];
+  if (destination) return <Navigate replace to={destination} />;
+  if (legacySection === "integrations" || legacySection === "skills") {
+    return <LegacyAgentCapabilityPage capability={legacySection} />;
+  }
+  return <NotFoundPage />;
+}
+
+function LegacyAgentCapabilityPage({ capability }: { capability: "integrations" | "skills" }) {
   const { agentId = "" } = useParams();
-  return <Navigate replace to={`/agents/${agentId}/general#permissions`} />;
-}
-
-function AgentDetailAnchor() {
-  const { hash } = useLocation();
-  useEffect(() => {
-    if (!hash) return;
-    const target = document.getElementById(hash.slice(1));
-    if (!target) return;
-    target.scrollIntoView?.({ block: "start" });
-    target.focus({ preventScroll: true });
-  }, [hash]);
-  return null;
-}
-
-function AgentDetailPage() {
-  const { agentId = "", tab = "general" } = useParams();
-  const [refreshVersion, setRefreshVersion] = useState(0);
-  const navigate = useNavigate();
-  const state = useResource(() => loadAgentDetail(agentId), `${agentId}:${refreshVersion}`, {
+  const state = useResource(() => loadAgentDetail(agentId), agentId, {
     onBackgroundError: markAgentDetailUnconfirmed,
-    revalidateMs: 30_000,
-    refreshOnFocus: true,
   });
-  const currentSection = agentSections.find((section) => section.key === tab);
-  if (!currentSection) return <NotFoundPage />;
+  const label = capability === "integrations" ? "integrations" : "skills";
   return (
     <AsyncState state={state}>
       {(agent) => (
         <section className="object-page">
-          <header className="object-header">
-            <Link className="breadcrumb" to="/agents">
-              <Icon name="arrow-left" />
-              Agents
-            </Link>
-            <div className="object-title-row">
-              <div className="object-identity">
-                <span className="agent-avatar large" aria-hidden="true">
-                  {initials(agent.displayName)}
-                </span>
-                <div>
-                  <h1>{agent.displayName}</h1>
-                  <p>
-                    <span>@{agent.name}</span>
-                    <span>Managed by {agent.manager.displayName}</span>
-                  </p>
-                </div>
-              </div>
-              <AgentAvailabilityAction agent={agent} />
-            </div>
-          </header>
-          <label className="local-nav-select">
-            <span>Agent section</span>
-            <select value={tab} onChange={(event) => navigate(`/agents/${agentId}/${event.currentTarget.value}`)}>
-              {agentSections.map((section) => (
-                <option value={section.key} key={section.key}>
-                  {section.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="object-layout">
-            <Tabs collapseOnMobile label="Agent sections">
-              {agentSections.map((section) => (
-                <NavLink to={`/agents/${agentId}/${section.key}`} key={section.key}>
-                  {section.label}
-                </NavLink>
-              ))}
-            </Tabs>
-            <div className="object-content">
-              <header className="section-header">
-                <h2>{currentSection.label}</h2>
-                <p>{agentSectionDescription(currentSection.key)}</p>
-              </header>
-              <AgentTab agent={agent} tab={tab} onAgentChanged={() => setRefreshVersion((value) => value + 1)} />
-              <AgentDetailAnchor />
+          <AgentObjectHeader agent={agent} />
+          <div className="agent-secondary-page">
+            <header className="section-header">
+              <h2>Agent {label} are not available here</h2>
+              <p>
+                OpenTag does not currently show {label} assigned to {agent.displayName}. The Workspace catalog is
+                separate from this Agent.
+              </p>
+            </header>
+            <div className="actions">
+              <Link className={buttonClassName()} to={`/agents/${agent.id}`}>
+                Back to {agent.displayName}
+              </Link>
+              <Link className={buttonClassName({ variant: "secondary" })} to={`/${capability}`}>
+                Browse Workspace {label}
+              </Link>
             </div>
           </div>
         </section>
       )}
+    </AsyncState>
+  );
+}
+
+function AgentDetailPage() {
+  const { agentId = "" } = useParams();
+  const state = useResource(() => loadAgentDetail(agentId), agentId, {
+    onBackgroundError: markAgentDetailUnconfirmed,
+    revalidateMs: 30_000,
+    refreshOnFocus: true,
+  });
+  return (
+    <AsyncState state={state}>
+      {(agent) => (
+        <section className="object-page">
+          <AgentObjectHeader agent={agent} />
+          <div className="agent-home">
+            {agent.availability.state !== "ready" ? <AgentRecoveryBanner agent={agent} /> : null}
+            <AgentCurrentActivity agent={agent} />
+            <AgentContact agent={agent} />
+            <p className="agent-home-footnote">
+              OpenTag shows confirmed status and contact information. Detailed work remains in the original messaging
+              thread.
+            </p>
+          </div>
+        </section>
+      )}
+    </AsyncState>
+  );
+}
+
+function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; backToSettings?: boolean }) {
+  return (
+    <header className="object-header">
+      <Link className="breadcrumb" to={backToSettings ? `/agents/${agent.id}` : "/agents"}>
+        <Icon name="arrow-left" />
+        {backToSettings ? agent.displayName : "Agents"}
+      </Link>
+      <div className="object-title-row">
+        <div className="object-identity">
+          <span className="agent-avatar large" aria-hidden="true">
+            {initials(agent.displayName)}
+          </span>
+          <div>
+            <h1>{agent.displayName}</h1>
+            <p>
+              <span>@{agent.name}</span>
+              <span>Managed by {agent.manager.displayName}</span>
+            </p>
+          </div>
+        </div>
+        <div className="agent-header-actions">
+          <AgentAvailabilityAction agent={agent} />
+          {agent.viewerCapabilities.canManage && !backToSettings ? (
+            <Link className={buttonClassName({ variant: "secondary" })} to={`/agents/${agent.id}/settings`}>
+              Settings
+            </Link>
+          ) : null}
+          {!backToSettings ? (
+            <details className="agent-more-menu">
+              <summary aria-label="More Agent actions">More</summary>
+              <Link to={`/agents/${agent.id}/usage`}>Usage</Link>
+            </details>
+          ) : null}
+        </div>
+      </div>
+    </header>
+  );
+}
+
+function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
+  const recovery = agentAvailabilityRecovery(agent);
+  return (
+    <section className="agent-recovery-banner" aria-label="Agent needs attention">
+      <div>
+        <strong>{availabilityStateLabel(agent.availability.state)}</strong>
+        <p>{agentRecoveryMessage(agent)}</p>
+      </div>
+      {recovery ? (
+        <Link className={buttonClassName({ size: "compact", variant: "secondary" })} to={recovery.to}>
+          {recovery.label}
+        </Link>
+      ) : null}
+    </section>
+  );
+}
+
+function AgentCurrentActivity({ agent }: { agent: AgentDetailView }) {
+  return (
+    <section className="agent-home-section" aria-labelledby="current-activity-heading">
+      <header>
+        <h2 id="current-activity-heading">Current activity</h2>
+      </header>
+      {agent.activity.state === "working" ? (
+        <div className="agent-current-work">
+          <span className="agent-activity-pulse" aria-hidden="true" />
+          <div>
+            <strong>Handling a request</strong>
+            <p>Started {formatRelativeTime(agent.activity.startedAt)}</p>
+          </div>
+          <span className="agent-state-label">Working</span>
+        </div>
+      ) : (
+        <p className="agent-empty-line">
+          <strong>No active work</strong>
+          <span>{agent.availability.state === "ready" ? "Ready for a new request" : "No request is running"}</span>
+        </p>
+      )}
+    </section>
+  );
+}
+
+function AgentContact({ agent }: { agent: AgentDetailView }) {
+  const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
+  return (
+    <section className="agent-home-section" aria-labelledby="agent-contact-heading">
+      <header className="agent-home-section-heading">
+        <div>
+          <h2 id="agent-contact-heading">Contact</h2>
+          <p>Where teammates can send this Agent work.</p>
+        </div>
+        {agent.viewerCapabilities.canManage ? (
+          <Link to={`/agents/${agent.id}/settings/messaging`}>Manage messaging</Link>
+        ) : null}
+      </header>
+      {agent.messaging.kind === "unconfirmed" ? (
+        <p className="agent-empty-line">
+          <strong>Unable to confirm messaging</strong>
+          <span>Try again shortly</span>
+        </p>
+      ) : binding ? (
+        <div className="agent-contact-body">
+          <StatusIndicator
+            detail={titleCase(binding.provider)}
+            label={binding.bot.displayName}
+            tone={messagingConnectionTone(binding, agent.availability.dependencies.handoff.state)}
+          />
+          <p>{agentUseInstruction(agent, titleCase(binding.provider))}</p>
+        </div>
+      ) : (
+        <p className="agent-empty-line">
+          <strong>No messaging connected</strong>
+          <span>Connect Feishu or Slack to start sending work</span>
+        </p>
+      )}
+    </section>
+  );
+}
+
+function AgentUsagePage() {
+  const { agentId = "" } = useParams();
+  const state = useResource(() => loadAgentDetail(agentId), agentId, {
+    onBackgroundError: markAgentDetailUnconfirmed,
+  });
+  return (
+    <AsyncState state={state}>
+      {(agent) => (
+        <section className="object-page">
+          <AgentObjectHeader agent={agent} backToSettings />
+          <div className="agent-secondary-page">
+            <header className="section-header">
+              <h2>Usage</h2>
+              <p>Review token use over time.</p>
+            </header>
+            <AgentUsageTab agentId={agent.id} />
+          </div>
+        </section>
+      )}
+    </AsyncState>
+  );
+}
+
+function AgentSettingsPage() {
+  const { agentId = "", section } = useParams();
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const state = useResource(() => loadAgentDetail(agentId), `${agentId}:${refreshVersion}`, {
+    onBackgroundError: markAgentDetailUnconfirmed,
+  });
+  const selected = section as AgentSettingsSection | undefined;
+  if (selected && !agentSettingsSections.some((item) => item.key === selected)) return <NotFoundPage />;
+  return (
+    <AsyncState state={state}>
+      {(agent) => {
+        if (!agent.viewerCapabilities.canManage) return <Navigate replace to={`/agents/${agent.id}`} />;
+        return (
+          <section className="object-page">
+            <AgentObjectHeader agent={agent} backToSettings />
+            <div className="agent-settings-layout">
+              <nav aria-label="Agent settings" className="agent-settings-nav">
+                <Link className={!selected ? "active" : undefined} to={`/agents/${agent.id}/settings`}>
+                  Settings
+                </Link>
+                {agentSettingsSections.map((item) => (
+                  <NavLink key={item.key} to={`/agents/${agent.id}/settings/${item.key}`}>
+                    {item.label}
+                  </NavLink>
+                ))}
+              </nav>
+              <div className="agent-settings-content">
+                <AgentSettingsContent
+                  agent={agent}
+                  section={selected}
+                  onAgentChanged={() => setRefreshVersion((value) => value + 1)}
+                />
+              </div>
+            </div>
+          </section>
+        );
+      }}
     </AsyncState>
   );
 }
@@ -1594,100 +1776,85 @@ function WorkspaceSettings({
   );
 }
 
-function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetailView; tab: string; onAgentChanged: () => void }) {
-  if (tab === "general") return <GeneralTab agent={agent} onAgentChanged={onAgentChanged} />;
-  if (tab === "usage") return <AgentUsageTab agentId={agent.id} />;
-  if (tab === "runtime") return <RuntimeTab agent={agent} onAgentChanged={onAgentChanged} />;
-  if (tab === "im") return <ImTab agent={agent} onAgentChanged={onAgentChanged} />;
-  if (tab === "integrations") return <AgentIntegrationsTab />;
-  if (tab === "skills") return <AgentSkillsTab />;
-  return <NotFoundPage />;
-}
-
-function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
-  return (
-    <div className="overview-stack">
-      <section className="overview-section" aria-labelledby="agent-profile-heading">
-        <div className="overview-section-heading">
-          <div>
-            <h3 id="agent-profile-heading">Agent profile</h3>
-            <p>The stable identity teammates see when they work with this Agent.</p>
-          </div>
-        </div>
-        <DefinitionList
-          rows={[
-            ["Agent name", `@${agent.name}`],
-            ["Manager", agent.manager.displayName],
-            ["Lifecycle", agent.status === "active" ? "Active" : "Suspended"],
-            ["Created", formatDate(agent.createdAt)],
-          ]}
-        />
-      </section>
-      <AgentUsageOverview agentId={agent.id} />
-      <section
-        className="overview-section"
-        id="permissions"
-        aria-labelledby="workspace-permissions-heading"
-        tabIndex={-1}
-      >
-        <div className="overview-section-heading">
-          <div>
-            <h3 id="workspace-permissions-heading">Workspace permissions</h3>
-            <p>Agent permissions currently follow Workspace membership and role.</p>
-          </div>
-        </div>
-        <SettingsList className="agent-permissions-list">
-          <SettingsRow description="Send messages to this Agent and view its safe details." label="Use">
-            <strong>All active Workspace members</strong>
-          </SettingsRow>
-          <SettingsRow description="Change settings, connections, and lifecycle." label="Manage">
-            <strong>Workspace admins</strong>
-          </SettingsRow>
-        </SettingsList>
-      </section>
-      {agent.viewerCapabilities.canManage ? <AdminControls agent={agent} onAgentChanged={onAgentChanged} /> : null}
-    </div>
-  );
-}
-
 function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
-  const recovery = agentAvailabilityRecovery(agent);
   const tone = availabilityTone(agent.availability.state);
+  const working = agent.availability.state === "ready" && agent.activity.state === "working";
   return (
     <div className={`availability-action ${tone}`}>
       <StatusIndicator
-        detail={agentAvailabilitySummary(agent)}
-        label={availabilityStateLabel(agent.availability.state)}
-        tone={tone}
+        detail={working ? "Handling a request" : agentAvailabilitySummary(agent)}
+        label={working ? "Working" : availabilityStateLabel(agent.availability.state)}
+        tone={working ? "info" : tone}
       />
-      {recovery ? <Link to={recovery.to}>{recovery.label}</Link> : null}
     </div>
   );
 }
 
-function AdminControls({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="admin-controls" id="admin-controls">
-      <button
-        aria-expanded={open}
-        className="admin-controls-trigger"
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-      >
-        {open ? "Close Agent administration" : "Open Agent administration"}
-      </button>
-      {open ? <GeneralAdminForm agent={agent} onAgentChanged={onAgentChanged} /> : null}
-    </div>
-  );
+function AgentSettingsContent({
+  agent,
+  section,
+  onAgentChanged,
+}: {
+  agent: AgentDetailView;
+  section: AgentSettingsSection | undefined;
+  onAgentChanged: () => void;
+}) {
+  if (!section) return <AgentSettingsOverview agent={agent} />;
+  if (section === "messaging") return <ImTab agent={agent} onAgentChanged={onAgentChanged} />;
+  if (section === "computer") return <AgentComputerSettings agent={agent} onAgentChanged={onAgentChanged} />;
+  return <AgentConfigSettingsContent agent={agent} section={section} onAgentChanged={onAgentChanged} />;
 }
 
-function GeneralAdminForm({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
-  const configState = useResource(() => browserApi.agentConfig(agent.id), agent.id);
+function AgentConfigSettingsContent({
+  agent,
+  section,
+  onAgentChanged,
+}: {
+  agent: AgentDetailView;
+  section: Exclude<AgentSettingsSection, "computer" | "messaging">;
+  onAgentChanged: () => void;
+}) {
+  const configState = useResource(() => browserApi.agentConfig(agent.id), `${agent.id}:${section}`);
   return (
     <AsyncState state={configState}>
-      {(config) => <GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />}
+      {(config) => {
+        if (section === "identity") {
+          return <GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />;
+        }
+        if (section === "instructions" || section === "execution") {
+          return (
+            <RuntimeConfigurationForm
+              initialConfig={config}
+              save={(input) => browserApi.updateAgent(config.id, input)}
+              section={section}
+            />
+          );
+        }
+        return <AgentManageSettings initialConfig={config} onAgentChanged={onAgentChanged} />;
+      }}
     </AsyncState>
+  );
+}
+
+function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
+  return (
+    <div>
+      <header className="section-header">
+        <h2>Settings</h2>
+        <p>Change how {agent.displayName} appears, works, and receives requests.</p>
+      </header>
+      <div className="agent-settings-grid">
+        {agentSettingsSections.map((item) => (
+          <Link key={item.key} to={`/agents/${agent.id}/settings/${item.key}`}>
+            <span>
+              <strong>{item.label}</strong>
+              <small>{item.description}</small>
+            </span>
+            <Icon name="chevron-right" />
+          </Link>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1698,7 +1865,6 @@ function GeneralConfigForm({
   initialConfig: AgentAdminConfig;
   onAgentChanged: () => void;
 }) {
-  const navigate = useNavigate();
   const [config, setConfig] = useState(initialConfig);
   const [message, setMessage] = useState<string>();
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -1706,27 +1872,107 @@ function GeneralConfigForm({
     const displayName = String(new FormData(event.currentTarget).get("displayName") ?? "");
     try {
       setConfig(await browserApi.updateAgent(config.id, { expectedRevision: config.revision, displayName }));
-      setMessage("General settings saved.");
+      setMessage("Identity saved.");
       onAgentChanged();
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to save General settings");
+      setMessage(cause instanceof Error ? cause.message : "Unable to save identity");
     }
   }
+  return (
+    <form className="form-card" onSubmit={submit}>
+      <header className="section-header">
+        <h2>Identity</h2>
+        <p>Choose the name teammates see. The handle cannot be changed.</p>
+      </header>
+      <Field htmlFor="agent-display-name" label="Display name">
+        <input
+          className="ds-control"
+          defaultValue={config.displayName}
+          id="agent-display-name"
+          key={config.revision}
+          name="displayName"
+          required
+        />
+      </Field>
+      <Field htmlFor="agent-handle" label="Handle">
+        <input className="ds-control" disabled id="agent-handle" value={`@${config.name}`} />
+      </Field>
+      <Button type="submit">Save identity</Button>
+      {message ? <p role="status">{message}</p> : null}
+    </form>
+  );
+}
+
+function AgentComputerSettings({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
+  const computerState = agent.availability.dependencies.computer;
+  const computerStatus =
+    computerState.state === "ready"
+      ? "Online"
+      : computerState.state === "action_required"
+        ? "Offline"
+        : "Unable to confirm";
+  const computerTone: StatusTone =
+    computerState.state === "ready" ? "success" : computerState.state === "action_required" ? "warning" : "neutral";
+  return (
+    <div className="agent-runtime-stack">
+      <section aria-labelledby="computer-heading" className="agent-runtime-section agent-runtime-computer">
+        <header className="agent-runtime-section__header">
+          <div>
+            <h2 id="computer-heading">Computer</h2>
+            <p>The device assigned to run this Agent.</p>
+          </div>
+          <StatusIndicator label={computerStatus} tone={computerTone} />
+        </header>
+        <div className="agent-runtime-computer__body">
+          <div>
+            <strong>
+              {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
+            </strong>
+          </div>
+          {computerState.state !== "ready" ? (
+            <div className="agent-runtime-recovery">
+              {computerState.lastConfirmedAt ? <p>Last seen {formatDate(computerState.lastConfirmedAt)}</p> : null}
+              <p>
+                {computerState.state === "action_required"
+                  ? "New requests can start after this Computer reconnects."
+                  : "OpenTag could not confirm this Computer's current connection."}
+              </p>
+              <Button size="compact" variant="outline" onClick={onAgentChanged}>
+                Check again
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AgentManageSettings({
+  initialConfig,
+  onAgentChanged,
+}: {
+  initialConfig: AgentAdminConfig;
+  onAgentChanged: () => void;
+}) {
+  const navigate = useNavigate();
+  const [config, setConfig] = useState(initialConfig);
+  const [message, setMessage] = useState<string>();
   async function changeLifecycle(action: "suspend" | "reactivate") {
     try {
       setConfig(
         action === "suspend" ? await browserApi.suspendAgent(config.id) : await browserApi.reactivateAgent(config.id),
       );
-      setMessage(action === "suspend" ? "Agent suspended." : "Agent reactivated.");
+      setMessage(action === "suspend" ? "Agent paused." : "Agent reactivated.");
       onAgentChanged();
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to change Agent lifecycle");
+      setMessage(cause instanceof Error ? cause.message : "Unable to change Agent status");
     }
   }
   async function deleteAgent() {
     if (
       !window.confirm(
-        `Permanently delete ${config.displayName}? This will end its active Sessions and clear its IM credential and runtime configuration. Session and message history will be retained, but the Agent cannot be restored.`,
+        `Permanently delete ${config.displayName}? This will end active Sessions, remove messaging credentials and execution settings, and retain Session and message history. This Agent cannot be restored.`,
       )
     )
       return;
@@ -1738,121 +1984,40 @@ function GeneralConfigForm({
     }
   }
   return (
-    <form className="form-card" onSubmit={submit}>
-      <h2>Admin configuration</h2>
-      <Field htmlFor="agent-display-name" label="Display name">
-        <input
-          className="ds-control"
-          defaultValue={config.displayName}
-          id="agent-display-name"
-          key={config.revision}
-          name="displayName"
-          required
-        />
-      </Field>
-      <Button type="submit">Save General settings</Button>
-      <div className="actions">
-        {config.status === "active" ? (
-          <Button variant="secondary" onClick={() => void changeLifecycle("suspend")}>
-            Suspend Agent
+    <section className="agent-manage-settings">
+      <header className="section-header">
+        <h2>Manage</h2>
+        <p>Pause this Agent temporarily or remove it permanently.</p>
+      </header>
+      <SettingsList>
+        <SettingsRow
+          description={
+            config.status === "active" ? "Stop accepting new requests until reactivated." : "Allow new requests again."
+          }
+          label={config.status === "active" ? "Pause Agent" : "Reactivate Agent"}
+        >
+          <Button
+            variant="secondary"
+            onClick={() => void changeLifecycle(config.status === "active" ? "suspend" : "reactivate")}
+          >
+            {config.status === "active" ? "Pause" : "Reactivate"}
           </Button>
-        ) : (
-          <>
-            <Button onClick={() => void changeLifecycle("reactivate")}>Reactivate Agent</Button>
-            <Button variant="danger" onClick={() => void deleteAgent()}>
-              Delete Agent permanently
-            </Button>
-          </>
-        )}
-      </div>
+        </SettingsRow>
+        <SettingsRow
+          description={
+            config.status === "active"
+              ? "Pause this Agent before deleting it permanently."
+              : "Permanently remove this Agent. This cannot be undone."
+          }
+          label="Delete Agent"
+        >
+          <Button disabled={config.status === "active"} variant="danger" onClick={() => void deleteAgent()}>
+            Delete permanently
+          </Button>
+        </SettingsRow>
+      </SettingsList>
       {message ? <p role="status">{message}</p> : null}
-    </form>
-  );
-}
-
-function RuntimeTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
-  const state = useResource(
-    () => (agent.viewerCapabilities.canManage ? browserApi.agentConfig(agent.id) : Promise.resolve(undefined)),
-    `${agent.id}:${agent.viewerCapabilities.canManage}`,
-  );
-  const computerState = agent.availability.dependencies.computer;
-  const computerStatus =
-    computerState.state === "ready"
-      ? "Online"
-      : computerState.state === "action_required"
-        ? "Offline"
-        : "Unable to confirm";
-  const computerTone: StatusTone =
-    computerState.state === "ready" ? "success" : computerState.state === "action_required" ? "warning" : "neutral";
-  return (
-    <AsyncState state={state}>
-      {(config) => (
-        <div className="agent-runtime-stack">
-          <section aria-labelledby="computer-heading" className="agent-runtime-section agent-runtime-computer">
-            <header className="agent-runtime-section__header">
-              <div>
-                <h3 id="computer-heading">Computer</h3>
-                <p>The Computer assigned to run this Agent.</p>
-              </div>
-              <StatusIndicator label={computerStatus} tone={computerTone} />
-            </header>
-            <div className="agent-runtime-computer__body">
-              <div>
-                <strong>
-                  {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
-                </strong>
-              </div>
-              {computerState.state !== "ready" ? (
-                <div className="agent-runtime-recovery">
-                  {computerState.lastConfirmedAt ? <p>Last seen {formatDate(computerState.lastConfirmedAt)}</p> : null}
-                  <p>
-                    {computerState.state === "action_required"
-                      ? "New Turns can start after this Computer reconnects."
-                      : "OpenTag could not confirm this Computer's current connection."}
-                  </p>
-                  <Button size="compact" variant="outline" onClick={onAgentChanged}>
-                    Check again
-                  </Button>
-                </div>
-              ) : null}
-            </div>
-          </section>
-          {config ? (
-            <RuntimeConfigurationForm
-              initialConfig={config}
-              save={(input) => browserApi.updateAgent(config.id, input)}
-            />
-          ) : (
-            <div className="agent-runtime-settings">
-              <section aria-labelledby="runtime-heading" className="agent-runtime-section">
-                <header className="agent-runtime-section__header">
-                  <div>
-                    <h3 id="runtime-heading">Runtime</h3>
-                    <p>Choose how this Agent runs.</p>
-                  </div>
-                </header>
-                <dl className="agent-runtime-facts">
-                  <div>
-                    <dt>Provider</dt>
-                    <dd>{providerLabel(agent.runtimeProvider)}</dd>
-                  </div>
-                </dl>
-                <p className="agent-runtime-note">Model and reasoning settings are visible only to Admins.</p>
-              </section>
-              <section aria-labelledby="agent-instructions-heading" className="agent-runtime-section">
-                <header className="agent-runtime-section__header">
-                  <div>
-                    <h3 id="agent-instructions-heading">Agent instructions</h3>
-                    <p>Set the guidance applied to every Turn this Agent runs.</p>
-                  </div>
-                </header>
-                <p className="agent-runtime-note">Agent instructions are visible only to Admins.</p>
-              </section>
-            </div>
-          )}
-        </div>
-      )}
-    </AsyncState>
+    </section>
   );
 }
 
@@ -2682,10 +2847,6 @@ function titleCase(value: string) {
     .join(" ");
 }
 
-function providerLabel(provider: AgentSummary["runtimeProvider"]): string {
-  return provider === "claude-code" ? "Claude Code" : "Codex";
-}
-
 function platformLabel(platform: AgentSummary["computer"]["platform"]): string {
   if (platform === "darwin") return "macOS";
   if (platform === "win32") return "Windows";
@@ -2739,7 +2900,7 @@ function agentAvailabilitySummary(agent: AgentDetailView): string {
 function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to: string } | undefined {
   if (!agent.viewerCapabilities.canManage || agent.availability.state === "ready") return undefined;
   if (agent.availability.reason === "agent_suspended") {
-    return { label: "Manage", to: `/agents/${agent.id}/general#admin-controls` };
+    return { label: "Manage Agent", to: `/agents/${agent.id}/settings/manage` };
   }
   if (
     agent.availability.reason === "im_not_connected" ||
@@ -2747,11 +2908,31 @@ function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to:
     agent.availability.reason === "im_reauthorization_required" ||
     agent.availability.reason === "im_error"
   ) {
-    return { label: "Review messaging", to: `/agents/${agent.id}/im` };
+    return { label: "Review messaging", to: `/agents/${agent.id}/settings/messaging` };
   }
-  if (agent.availability.reason === "handoff_unavailable") return undefined;
+  if (agent.availability.reason === "handoff_unavailable") {
+    return { label: "Review messaging", to: `/agents/${agent.id}/settings/messaging` };
+  }
   if (agent.availability.state === "unconfirmed") return undefined;
-  return { label: "Review runtime", to: `/agents/${agent.id}/runtime` };
+  return { label: "Review Computer", to: `/agents/${agent.id}/settings/computer` };
+}
+
+function agentRecoveryMessage(agent: AgentDetailView): string {
+  const messages: Record<NonNullable<AgentAvailability["reason"]>, string> = {
+    agent_suspended: "This Agent is paused and cannot accept new requests.",
+    agent_unconfirmed: "OpenTag could not confirm this Agent's current status.",
+    computer_offline: "The assigned Computer is offline, so new requests cannot start.",
+    runtime_unavailable: "The assigned Computer is not ready to run this Agent.",
+    runtime_unconfirmed: "OpenTag could not confirm whether the assigned Computer is ready.",
+    im_not_connected: "Connect Feishu or Slack so teammates can send this Agent work.",
+    im_provisioning: "The messaging connection is still being set up.",
+    im_reauthorization_required: "The messaging connection needs permission to continue receiving requests.",
+    im_error: "The messaging connection needs attention before it can receive requests.",
+    handoff_unavailable: "Messages cannot currently be handed off to this Agent.",
+    computer_unconfirmed: "OpenTag could not confirm the assigned Computer's connection.",
+    handoff_unconfirmed: "OpenTag could not confirm whether messaging is available.",
+  };
+  return agent.availability.reason ? messages[agent.availability.reason] : agentAvailabilitySummary(agent);
 }
 
 function initials(value: string): string {
@@ -2763,20 +2944,17 @@ function initials(value: string): string {
     .join("");
 }
 
-function agentSectionDescription(section: (typeof agentSections)[number]["key"]): string {
-  const descriptions = {
-    general: "Review this Agent's identity, ownership, and Workspace permissions.",
-    usage: "Review this Agent's Token use over time.",
-    runtime: "Review this Agent's Computer, runtime, and instructions.",
-    im: "See where teammates can contact this Agent and which messages trigger work.",
-    integrations: "Review the external services and data available to this Agent.",
-    skills: "Review the reusable skills assigned to this Agent.",
-  } satisfies Record<(typeof agentSections)[number]["key"], string>;
-  return descriptions[section];
-}
-
 function formatDate(value: string) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+}
+
+function formatRelativeTime(value: string): string {
+  const elapsedSeconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1_000));
+  if (elapsedSeconds < 60) return "just now";
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) return `${elapsedMinutes} ${elapsedMinutes === 1 ? "minute" : "minutes"} ago`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  return `${elapsedHours} ${elapsedHours === 1 ? "hour" : "hours"} ago`;
 }
 
 function formatInviteExpiry(value: string) {

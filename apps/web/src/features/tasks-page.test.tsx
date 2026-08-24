@@ -99,14 +99,14 @@ describe("Tasks demo", () => {
     expect(within(conversation).queryByText(/Turn \d/u)).toBeNull();
     expect(within(conversation).queryByText(/Chain of Thought/i)).toBeNull();
 
-    const process = within(conversation).getByText("Worked for 8m 12s").closest("details");
+    const process = within(conversation).getByText("Activity details · 8m 12s").closest("details");
     const finalAnswer = within(conversation).getByText(
       "Eight items were checked. Five are ready, two still need owners, and one has no confirmed date.",
     );
     expect(process).toBeTruthy();
     if (!process) throw new Error("Expected the Agent process details");
     expect(process.hasAttribute("open")).toBe(false);
-    expect(process.compareDocumentPosition(finalAnswer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(finalAnswer.compareDocumentPosition(process) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(process).getByText("3 tool calls · 0 retries · 14.2K tokens")).toBeTruthy();
     const sourceGroup = within(process).getByText("Read 2 sources").closest("details");
     expect(sourceGroup?.hasAttribute("open")).toBe(true);
@@ -132,8 +132,17 @@ describe("Tasks demo", () => {
       </MemoryRouter>,
     );
 
-    const process = screen.getByText("Working").closest("details");
-    expect(process?.hasAttribute("open")).toBe(true);
+    const progress = screen.getByText(
+      "I’m collecting the three visit summaries first, then I’ll group repeated issues without merging account-specific context.",
+    );
+    expect(progress.className).toBe("task-progress-summary");
+    const process = screen.getByText("Activity details · In progress").closest("details");
+    expect(process?.hasAttribute("open")).toBe(false);
+    expect(
+      within(process as HTMLElement).queryByText(
+        "I’m collecting the three visit summaries first, then I’ll group repeated issues without merging account-specific context.",
+      ),
+    ).toBeNull();
     expect(within(process as HTMLElement).getByText("2 tool calls · 0 retries · 6.4K input")).toBeTruthy();
     expect(within(process as HTMLElement).getAllByText("In progress")).toHaveLength(1);
     expect(screen.queryByText(/0 output/)).toBeNull();
@@ -149,7 +158,8 @@ describe("Tasks demo", () => {
       </MemoryRouter>,
     );
 
-    const process = screen.getByText("Worked for 11m 03s").closest("details");
+    const process = screen.getByText("Activity details · 11m 03s").closest("details");
+    expect(process?.hasAttribute("open")).toBe(false);
     expect(within(process as HTMLElement).getAllByText("Needs attention")).toHaveLength(1);
     expect(within(process as HTMLElement).getByText("2 tool calls · 1 retry · 18.6K tokens")).toBeTruthy();
     expect(

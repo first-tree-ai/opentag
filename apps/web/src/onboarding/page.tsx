@@ -37,7 +37,7 @@ const RUNTIME_WAIT_STATES: readonly OnboardingCurrentState["kind"][] = ["provide
 const AGENTS_ROUTE = "/agents";
 
 function agentGeneralRoute(agentId: string): string {
-  return `${AGENTS_ROUTE}/${agentId}/general`;
+  return `${AGENTS_ROUTE}/${agentId}`;
 }
 
 type PageLoadState =

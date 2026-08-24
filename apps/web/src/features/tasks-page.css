@@ -399,6 +399,20 @@
   margin-left: 44px;
 }
 
+.task-progress-summary,
+.task-attention-summary {
+  max-width: 760px;
+  margin: var(--space-3) 0 var(--space-3) 44px;
+  color: var(--secondary-foreground);
+  font-size: var(--text-body);
+  line-height: var(--lh-prose);
+}
+
+.task-attention-summary {
+  border-left: 2px solid var(--color-status-warning);
+  padding-left: var(--space-4);
+}
+
 .task-agent-process {
   max-width: 760px;
   border-bottom: 1px solid var(--border);

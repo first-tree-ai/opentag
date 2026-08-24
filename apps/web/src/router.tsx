@@ -1,6 +1,7 @@
 import type {
   AgentAdminConfig,
   AgentDetail,
+  AgentListItem as AgentListApiItem,
   AgentSummary,
   AuthProvidersResponse,
   Computer,
@@ -17,7 +18,6 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
-  type RefObject,
   useCallback,
   useContext,
   useEffect,
@@ -95,7 +95,7 @@ type AgentAvailability = {
   };
 };
 
-type AgentListItem = AgentSummary & {
+type AgentListItem = AgentListApiItem & {
   evidenceConfirmed: boolean;
   computerConnectionStatus: TeamComputerSummary["connectionStatus"] | null;
   computerEvidenceConfirmed: boolean;
@@ -1033,21 +1033,24 @@ function AgentsPage() {
   });
   return (
     <>
-      <Page title="Agents" description="Shared AI teammates configured for your team.">
+      <Page
+        title="Agents"
+        description="Monitor availability, output, and usage across your AI teammates."
+        action={
+          membership.role === "admin" ? (
+            <Button ref={createTriggerRef} size="compact" variant="outline" onClick={() => setCreateOpen(true)}>
+              New Agent <Icon name="plus" />
+            </Button>
+          ) : undefined
+        }
+      >
         {!membership.setupCompletedAt && membership.role !== "admin" ? (
           <div className="notice" role="status">
             Team setup is not complete. An administrator needs to prepare the first Agent.
           </div>
         ) : null}
         <AsyncState state={state}>
-          {(value) => (
-            <AgentsContent
-              agents={value.agents}
-              canCreate={membership.role === "admin"}
-              createTriggerRef={createTriggerRef}
-              onCreate={() => setCreateOpen(true)}
-            />
-          )}
+          {(value) => <AgentsContent agents={value.agents} canCreate={membership.role === "admin"} />}
         </AsyncState>
       </Page>
       {createOpen ? <NewAgentDialog returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} /> : null}
@@ -1055,40 +1058,26 @@ function AgentsPage() {
   );
 }
 
-function AgentsContent({
-  agents,
-  canCreate,
-  createTriggerRef,
-  onCreate,
-}: {
-  agents: AgentListItem[];
-  canCreate: boolean;
-  createTriggerRef: RefObject<HTMLButtonElement | null>;
-  onCreate: () => void;
-}) {
-  return agents.length === 0 && !canCreate ? (
-    <EmptyState title="No Agents yet">An Admin can create the first Agent.</EmptyState>
-  ) : (
-    <AgentList agents={agents} canCreate={canCreate} createTriggerRef={createTriggerRef} onCreate={onCreate} />
+function AgentsContent({ agents, canCreate }: { agents: AgentListItem[]; canCreate: boolean }) {
+  if (agents.length > 0) return <AgentList agents={agents} />;
+  return (
+    <EmptyState title="No Agents yet">
+      {canCreate ? "Create the first shared AI teammate with New Agent." : "An Admin can create the first Agent."}
+    </EmptyState>
   );
 }
 
-function AgentList({
-  agents,
-  canCreate,
-  createTriggerRef,
-  onCreate,
-}: {
-  agents: AgentListItem[];
-  canCreate: boolean;
-  createTriggerRef: RefObject<HTMLButtonElement | null>;
-  onCreate: () => void;
-}) {
+function AgentList({ agents }: { agents: AgentListItem[] }) {
+  const sortedAgents = [...agents].sort(
+    (left, right) => agentCardStatus(left).priority - agentCardStatus(right).priority,
+  );
   return (
     <section className="agent-list-section" aria-label="Agents">
+      <div className="agent-usage-caption">
+        <span>Usage · Last 30 days</span>
+      </div>
       <div className="agent-card-grid">
-        {canCreate ? <NewAgentCard onClick={onCreate} triggerRef={createTriggerRef} /> : null}
-        {agents.map((agent) => (
+        {sortedAgents.map((agent) => (
           <AgentCard agent={agent} key={agent.id} />
         ))}
       </div>
@@ -1096,76 +1085,95 @@ function AgentList({
   );
 }
 
-function NewAgentCard({
-  onClick,
-  triggerRef,
-}: {
-  onClick: () => void;
-  triggerRef: RefObject<HTMLButtonElement | null>;
-}) {
+function AgentCard({ agent }: { agent: AgentListItem }) {
+  const status = agentCardStatus(agent);
+  const tokenAverage = agent.usage.tasks > 0 ? agent.usage.tokens / agent.usage.tasks : 0;
   return (
-    <button aria-label="New Agent" className="agent-create-card" onClick={onClick} ref={triggerRef} type="button">
-      <span className="agent-create-card-icon" aria-hidden="true">
-        <Icon name="plus" />
-      </span>
-      <strong>New Agent</strong>
-      <small>Create a shared AI teammate.</small>
-    </button>
+    <article className="agent-card" data-tone={status.tone}>
+      <div className="agent-card-identity">
+        <span className="agent-avatar" aria-hidden="true">
+          {initials(agent.displayName)}
+        </span>
+        <div className="agent-card-identity-copy">
+          <strong>{agent.displayName}</strong>
+          <small>@{agent.name}</small>
+          <StatusIndicator detail={status.detail} label={status.label} tone={status.tone} />
+          {status.reconnect ? (
+            <Link
+              className={buttonClassName({ className: "agent-reconnect", size: "compact", variant: "outline" })}
+              to={`/agents/${agent.id}/runtime`}
+            >
+              Reconnect
+            </Link>
+          ) : null}
+        </div>
+      </div>
+      <dl className="agent-card-usage">
+        <div>
+          <dt>Tasks</dt>
+          <dd>{formatUsageNumber(agent.usage.tasks)}</dd>
+          {agent.usage.failed > 0 ? <small className="agent-usage-failed">{agent.usage.failed} failed</small> : null}
+        </div>
+        <div>
+          <dt>Tokens</dt>
+          <dd>{formatUsageNumber(agent.usage.tokens)}</dd>
+          {tokenAverage > 0 ? <small>{formatUsageNumber(tokenAverage)} / task</small> : null}
+        </div>
+      </dl>
+      <Link aria-label={`Open ${agent.displayName}`} className="agent-card-action" to={`/agents/${agent.id}/general`}>
+        View details <Icon name="chevron-right" />
+      </Link>
+    </article>
   );
 }
 
-function AgentCard({ agent }: { agent: AgentListItem }) {
-  const status =
-    agent.status === "suspended"
-      ? { label: "Suspended", reason: "Not receiving new work", tone: "neutral" as const }
-      : !agent.evidenceConfirmed
-        ? { label: "Unconfirmed", reason: "Unable to refresh Agent", tone: "neutral" as const }
-        : !agent.computerEvidenceConfirmed || agent.computerConnectionStatus === null
-          ? { label: "Unconfirmed", reason: "Unable to confirm runtime", tone: "neutral" as const }
-          : agent.computerConnectionStatus === "online"
-            ? { label: "Active", reason: "Computer online", tone: "success" as const }
-            : { label: "Action required", reason: "Computer offline", tone: "warning" as const };
-  return (
-    <Link aria-label={`Open ${agent.displayName}`} className="agent-card" to={`/agents/${agent.id}/general`}>
-      <article>
-        <header className="agent-card-header">
-          <span className="agent-identity">
-            <span className="agent-avatar" aria-hidden="true">
-              {initials(agent.displayName)}
-            </span>
-            <span>
-              <strong>{agent.displayName}</strong>
-              <small>@{agent.name}</small>
-            </span>
-          </span>
-          <StatusIndicator detail={status.reason} label={status.label} tone={status.tone} />
-        </header>
-        <dl className="agent-card-facts">
-          <div>
-            <dt>Runtime</dt>
-            <dd>{providerLabel(agent.runtimeProvider)}</dd>
-          </div>
-          <div>
-            <dt>Computer</dt>
-            <dd>
-              {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
-            </dd>
-          </div>
-          <div>
-            <dt>Manager</dt>
-            <dd>{agent.manager.displayName}</dd>
-          </div>
-          <div>
-            <dt>Messaging</dt>
-            <dd>{receiveModeLabel(agent.receiveMode)}</dd>
-          </div>
-        </dl>
-        <span className="agent-card-action" aria-hidden="true">
-          View Agent <Icon name="chevron-right" />
-        </span>
-      </article>
-    </Link>
-  );
+function agentCardStatus(agent: AgentListItem): {
+  detail?: string;
+  label: string;
+  priority: number;
+  reconnect?: boolean;
+  tone: StatusTone;
+} {
+  if (agent.status === "suspended") return { label: "Paused", priority: 4, tone: "neutral" };
+  if (!agent.evidenceConfirmed) {
+    return { detail: "Unable to refresh", label: "Unconfirmed", priority: 1, tone: "neutral" };
+  }
+  if (!agent.computerEvidenceConfirmed || agent.computerConnectionStatus === null) {
+    return { detail: "Runtime unavailable", label: "Unconfirmed", priority: 1, tone: "neutral" };
+  }
+  if (agent.computerConnectionStatus === "offline") {
+    return {
+      detail: "Computer offline",
+      label: "Needs attention",
+      priority: 0,
+      reconnect: true,
+      tone: "warning",
+    };
+  }
+  if (agent.activity.state === "working") {
+    return {
+      detail: `Started ${formatElapsedCompact(agent.activity.startedAt)} ago`,
+      label: "Working",
+      priority: 2,
+      tone: "info",
+    };
+  }
+  return { label: "Ready", priority: 3, tone: "success" };
+}
+
+function formatElapsedCompact(value: string): string {
+  const elapsedMinutes = Math.max(1, Math.floor((Date.now() - new Date(value).getTime()) / 60_000));
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}h`;
+  return `${Math.floor(elapsedHours / 24)}d`;
+}
+
+function formatUsageNumber(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: value >= 1_000 ? 1 : 0,
+    notation: value >= 1_000 ? "compact" : "standard",
+  }).format(value);
 }
 
 function useOwnComputersResource(teamId: string, refreshVersion = 0) {

@@ -101,6 +101,27 @@ export const AgentDetailSchema = AgentSummarySchema.extend({
   viewerCapabilities: z.object({ canManage: z.boolean() }).strict(),
 }).strict();
 
+export const AGENT_USAGE_WINDOW_DAYS = 30;
+
+export const AgentListActivitySchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("idle") }).strict(),
+  z.object({ state: z.literal("working"), startedAt: z.string().datetime() }).strict(),
+]);
+
+export const AgentUsageSummarySchema = z
+  .object({
+    windowDays: z.literal(AGENT_USAGE_WINDOW_DAYS),
+    tasks: z.number().int().safe().nonnegative(),
+    failed: z.number().int().safe().nonnegative(),
+    tokens: z.number().int().safe().nonnegative(),
+  })
+  .strict();
+
+export const AgentListItemSchema = AgentSummarySchema.extend({
+  activity: AgentListActivitySchema,
+  usage: AgentUsageSummarySchema,
+}).strict();
+
 export const AgentAdminConfigSchema = AgentIdentitySchema.extend({
   managerUserId: z.string().uuid(),
   computerId: z.string().uuid(),
@@ -134,7 +155,7 @@ export const UpdateAgentRequestSchema = z
 
 export const ListAgentsResponseSchema = z
   .object({
-    agents: z.array(AgentSummarySchema),
+    agents: z.array(AgentListItemSchema),
   })
   .strict();
 
@@ -148,6 +169,9 @@ export type CreateAgentRuntimeConfig = z.infer<typeof CreateAgentRuntimeConfigSc
 export type UpdateAgentRuntimeConfig = z.infer<typeof UpdateAgentRuntimeConfigSchema>;
 export type AgentSummary = z.infer<typeof AgentSummarySchema>;
 export type AgentDetail = z.infer<typeof AgentDetailSchema>;
+export type AgentListActivity = z.infer<typeof AgentListActivitySchema>;
+export type AgentUsageSummary = z.infer<typeof AgentUsageSummarySchema>;
+export type AgentListItem = z.infer<typeof AgentListItemSchema>;
 export type AgentAdminConfig = z.infer<typeof AgentAdminConfigSchema>;
 export type CreateAgentRequest = z.infer<typeof CreateAgentRequestSchema>;
 export type UpdateAgentRequest = z.infer<typeof UpdateAgentRequestSchema>;

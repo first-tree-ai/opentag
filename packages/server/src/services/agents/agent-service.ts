@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import {
+  AGENT_USAGE_WINDOW_DAYS,
   type AgentAdminConfig,
   type AgentDetail,
+  type AgentListItem,
   type AgentRuntimeConfig,
   AgentRuntimeConfigSchema,
   type AgentSummary,
@@ -13,7 +15,7 @@ import {
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
-import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -21,6 +23,7 @@ import {
   agents,
   computers,
   imBindings,
+  imMessageDeliveries,
   memberships,
   sessionPlacements,
   sessions,
@@ -113,6 +116,20 @@ function toAgentSummary(row: AgentSafeRow): AgentSummary {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+function deliveryTokenCount(...values: Array<string | null>): number {
+  let total = 0;
+  for (const value of values) {
+    if (value === null) continue;
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) || parsed < 0) {
+      throw new Error("Agent usage contains an invalid token count");
+    }
+    total += parsed;
+    if (!Number.isSafeInteger(total)) throw new Error("Agent usage token total exceeds the safe integer range");
+  }
+  return total;
 }
 
 function runtimeConfigsEqual(
@@ -333,13 +350,70 @@ export class AgentService {
       )
       .orderBy(asc(agents.name), asc(agents.id));
     if (rows.length === 0) throw resourceNotFound();
+    const summaries = rows.flatMap((row) => {
+      if (!row.id) return [];
+      if (!row.managerDisplayName || !row.computerId || !row.computerDisplayName || !row.computerPlatform) {
+        throw new Error("Active Agent is missing its manager or Computer");
+      }
+      return [toAgentSummary(row as AgentSafeRow)];
+    });
+    if (summaries.length === 0) return { agents: [] };
+
+    const now = this.#now();
+    const usageStartedAt = new Date(now.getTime() - AGENT_USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1_000);
+    const activityRows = await this.#database
+      .select({
+        acceptedAt: imMessageDeliveries.acceptedAt,
+        agentId: imBindings.agentId,
+        cachedInputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}'`,
+        inputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}'`,
+        outcome: sql<string | null>`${imMessageDeliveries.turnReport} ->> 'outcome'`,
+        outputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,outputTokens}'`,
+        reportedAt: imMessageDeliveries.reportedAt,
+        state: imMessageDeliveries.state,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          inArray(
+            imBindings.agentId,
+            summaries.map((agent) => agent.id),
+          ),
+          or(
+            and(eq(imMessageDeliveries.state, "accepted"), isNull(imMessageDeliveries.reportedAt)),
+            gte(imMessageDeliveries.acceptedAt, usageStartedAt),
+          ),
+        ),
+      );
+
+    const usageByAgent = new Map<string, { failed: number; tasks: number; tokens: number }>();
+    const workingByAgent = new Map<string, Date>();
+    for (const row of activityRows) {
+      if (row.state === "accepted" && row.reportedAt === null && row.acceptedAt) {
+        const current = workingByAgent.get(row.agentId);
+        if (!current || row.acceptedAt > current) workingByAgent.set(row.agentId, row.acceptedAt);
+      }
+      if (!row.acceptedAt || row.acceptedAt < usageStartedAt) continue;
+      const usage = usageByAgent.get(row.agentId) ?? { failed: 0, tasks: 0, tokens: 0 };
+      usage.tasks += 1;
+      if (row.outcome === "failed") usage.failed += 1;
+      usage.tokens += deliveryTokenCount(row.inputTokens, row.cachedInputTokens, row.outputTokens);
+      if (!Number.isSafeInteger(usage.tokens))
+        throw new Error("Agent usage token total exceeds the safe integer range");
+      usageByAgent.set(row.agentId, usage);
+    }
+
     return {
-      agents: rows.flatMap((row) => {
-        if (!row.id) return [];
-        if (!row.managerDisplayName || !row.computerId || !row.computerDisplayName || !row.computerPlatform) {
-          throw new Error("Active Agent is missing its manager or Computer");
-        }
-        return [toAgentSummary(row as AgentSafeRow)];
+      agents: summaries.map((agent): AgentListItem => {
+        const usage = usageByAgent.get(agent.id) ?? { failed: 0, tasks: 0, tokens: 0 };
+        const startedAt = workingByAgent.get(agent.id);
+        return {
+          ...agent,
+          activity: startedAt ? { state: "working", startedAt: startedAt.toISOString() } : { state: "idle" },
+          usage: { windowDays: AGENT_USAGE_WINDOW_DAYS, ...usage },
+        };
       }),
     };
   }

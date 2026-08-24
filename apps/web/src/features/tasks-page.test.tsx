@@ -11,13 +11,14 @@ describe("Tasks demo", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
-      "Work",
-      "Source",
-      "Activity",
-    ]);
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual(["Task", "Status"]);
     expect(screen.getAllByRole("row")).toHaveLength(4);
-    expect(screen.getAllByText(/^Feishu ·/)).toHaveLength(3);
+    expect(container.querySelectorAll(".task-feishu-icon")).toHaveLength(3);
+    expect(container.querySelector(".task-list-metadata")?.textContent).toBe(
+      "Atlas·Product Launch·Q3 launch readiness",
+    );
+    expect(within(screen.getByRole("table")).getByText("Completed")).toBeTruthy();
+    expect(screen.queryByText("Recently completed")).toBeNull();
     expect(screen.queryByLabelText("Filter by source")).toBeNull();
     expect(container.textContent).not.toMatch(/[\u3400-\u9fff]/u);
   });

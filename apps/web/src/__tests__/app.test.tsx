@@ -1447,7 +1447,7 @@ describe("OpenTag Web App Shell", () => {
     );
   });
 
-  it("requires the selected runtime Provider to be ready before an Agent card is Ready", async () => {
+  it("requires the selected runtime Provider to be ready before an Agent card is Available", async () => {
     installApi("admin", {
       bound: true,
       runtimeProvider: "claude-code",
@@ -1461,7 +1461,7 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByText("Needs attention")).toBeTruthy();
     expect(screen.getByText("Computer not ready")).toBeTruthy();
-    expect(screen.queryByText("Ready")).toBeNull();
+    expect(screen.queryByText("Available")).toBeNull();
   });
 
   it("shows a user-facing recovery without readiness implementation details", async () => {
@@ -1584,7 +1584,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin", { agentListStatus: () => agentListStatus, bound: true });
     window.history.replaceState({}, "", "/agents");
     render(<App />);
-    expect(await screen.findByText("Ready")).toBeTruthy();
+    expect(await screen.findByText("Available")).toBeTruthy();
 
     agentListStatus = 503;
     fireEvent(window, new Event("focus"));

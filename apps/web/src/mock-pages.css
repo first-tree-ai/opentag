@@ -76,6 +76,19 @@
   gap: 24px;
 }
 
+.capability-integration-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 1.7fr) minmax(140px, 0.7fr) minmax(80px, 0.4fr);
+  gap: 24px;
+}
+
+.capability-integration-cell {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
 .capability-table-header {
   min-height: 38px;
   align-items: center;
@@ -638,6 +651,11 @@
     gap: 14px;
   }
 
+  .capability-integration-grid {
+    grid-template-columns: minmax(0, 1fr) 112px 72px;
+    gap: 14px;
+  }
+
   .capability-integration-list li {
     grid-template-columns: minmax(0, 1fr) auto;
     gap: 9px 16px;
@@ -778,6 +796,12 @@
   }
 
   .capability-table-row.capability-skill-grid {
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding: 15px 0;
+  }
+
+  .capability-table-row.capability-integration-grid {
     grid-template-columns: 1fr 1fr;
     gap: 12px;
     padding: 15px 0;

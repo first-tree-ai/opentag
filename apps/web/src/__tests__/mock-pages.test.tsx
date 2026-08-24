@@ -24,6 +24,11 @@ describe("capability entry pages", () => {
     expect(screen.queryByText("Repositories")).toBeNull();
     expect(screen.queryByText("Tools")).toBeNull();
     expect(screen.queryByText("Prompts")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Skill file"), {
+      target: { files: [new File(["# Skill"], "release-notes.md", { type: "text/markdown" })] },
+    });
+    expect(screen.getByRole("status").textContent).toBe("release-notes.md selected · Demo only, not uploaded");
   });
 
   it("renders an explicitly labeled Integrations mock", () => {

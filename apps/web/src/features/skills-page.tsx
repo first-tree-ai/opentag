@@ -1,9 +1,10 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { skillPreviews } from "../mock/capability-data.js";
 import "../mock-pages.css";
 
 export function SkillsPage() {
   const uploadInputRef = useRef<HTMLInputElement>(null);
+  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
 
   return (
     <section className="capability-page skills-page" aria-labelledby="skills-page-title">
@@ -14,14 +15,28 @@ export function SkillsPage() {
         </div>
         <div className="skills-header-actions">
           <span className="skills-demo-note">Demo data</span>
-          <button
-            className="ds-button ds-button--secondary ds-button--compact"
-            type="button"
-            onClick={() => uploadInputRef.current?.click()}
-          >
-            Upload skill
-          </button>
-          <input ref={uploadInputRef} hidden accept=".md,.zip" aria-label="Skill file" type="file" />
+          <div className="skills-upload-entry">
+            <button
+              className="ds-button ds-button--secondary ds-button--compact"
+              type="button"
+              onClick={() => uploadInputRef.current?.click()}
+            >
+              Upload skill
+            </button>
+            <input
+              ref={uploadInputRef}
+              hidden
+              accept=".md,.zip"
+              aria-label="Skill file"
+              type="file"
+              onChange={(event) => setSelectedFileName(event.currentTarget.files?.[0]?.name ?? null)}
+            />
+            {selectedFileName ? (
+              <span className="skills-upload-status" role="status">
+                {selectedFileName} selected · Demo only, not uploaded
+              </span>
+            ) : null}
+          </div>
         </div>
       </header>
 

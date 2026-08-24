@@ -163,8 +163,22 @@
 .skills-header-actions {
   display: flex;
   flex: 0 0 auto;
-  align-items: center;
+  align-items: flex-start;
   gap: 16px;
+}
+
+.skills-upload-entry {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+}
+
+.skills-upload-status {
+  max-width: 240px;
+  color: var(--muted, #616b62);
+  font-size: var(--text-micro, 0.75rem);
+  line-height: var(--lh-ui, 1.4);
+  text-align: right;
 }
 
 .skills-catalog-heading {

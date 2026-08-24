@@ -95,6 +95,19 @@ export function createApp(options: CreateAppOptions = {}) {
   const app = Fastify({
     logger: {
       ...(options.loggerStream ? { stream: options.loggerStream } : {}),
+      // Defense in depth for G16: even when a log call receives a credential-bearing object, the
+      // known key shapes never reach the sink. Pattern-level scrubbing for trace attributes lives in
+      // observability/otel-helpers.ts.
+      redact: {
+        paths: [
+          "req.headers.authorization",
+          'req.headers["x-slack-signature"]',
+          ...["botAccessToken", "signingSecret", "token", "accessToken", "refreshToken", "appSecret"].flatMap(
+            (key) => [key, `*.${key}`, `*.*.${key}`, `*[*].${key}`],
+          ),
+        ],
+        censor: "[REDACTED]",
+      },
       serializers: {
         req: (request) => ({
           method: request.method,

@@ -54,6 +54,7 @@ export const RuntimeRevisionSchema = z
 
 export const RuntimeUsageSchema = z
   .object({
+    // Provider-normalized uncached input. Cached input is reported separately so totals count each token once.
     inputTokens: RuntimeSequenceSchema.optional(),
     cachedInputTokens: RuntimeSequenceSchema.optional(),
     outputTokens: RuntimeSequenceSchema.optional(),

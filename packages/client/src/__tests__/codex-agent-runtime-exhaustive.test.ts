@@ -309,7 +309,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     expect(runResult, JSON.stringify(runResult)).toMatchObject({
       status: "completed",
       output: [{ text: "terminal answer" }],
-      usage: { inputTokens: 8, cachedInputTokens: 2, outputTokens: 4 },
+      usage: { inputTokens: 6, cachedInputTokens: 2, outputTokens: 4 },
     });
     expect(events.map((event) => event.type)).toEqual(
       expect.arrayContaining([

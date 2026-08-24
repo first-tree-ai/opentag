@@ -269,6 +269,7 @@ function slackCliRules(
     `- Send with \`slack api chat.postMessage --json <body> --skip-update\`, where <body> is one JSON object such as {"channel":"${providerRef.channelId}","thread_ts":"${threadTs}","markdown_text":"..."}.`,
     "- Serialize <body> with a JSON library and pass it as a single argv value; never hand-assemble it from string concatenation or shell substitution. Pass the body only through --json; never use key=value arguments.",
     "- Never pass --token, --app, -w, or --team. The sourced SLACK_BOT_TOKEN is the only credential and takes precedence over any logged-in Slack CLI session.",
+    '- The CLI writes config and a debug log into a writable config directory on every invocation, and this Turn provides one: add --config-dir "$OPENTAG_SLACK_CONFIG_DIR" to every slack invocation. Without it the CLI writes under $HOME and exits before any API call.',
     "- Use markdown_text (at most 12,000 characters; never together with text or blocks) for Markdown; otherwise use text (at most 4,000 characters per message). Split longer replies across several messages.",
     "- Send at most 1 message per second per channel.",
     "- Mention users as <@U...> with their Slack user ID.",

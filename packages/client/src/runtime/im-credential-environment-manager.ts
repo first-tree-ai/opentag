@@ -9,7 +9,8 @@ import type { RuntimeBusinessFrame, RuntimeConnection } from "./runtime-connecti
 
 const GRANT_TIMEOUT_MS = 10_000;
 const MANAGED_CREDENTIAL_ARTIFACT =
-  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:\.sh|\.ps1|-lark-config)|\.[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp)$/i;
+  /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?:\.sh|\.ps1|-lark-config|-slack-config)|\.[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.tmp)$/i;
+const MANAGED_CONFIG_PROJECTION = /-(?:lark|slack)-config$/;
 
 export class ImCredentialEnvironmentError extends Error {
   constructor(readonly code: string) {
@@ -89,11 +90,7 @@ export class ImCredentialEnvironmentManager {
       const environment =
         result.grant.provider === "feishu"
           ? await this.#feishuEnvironment(request.sessionId, result.grant, signal)
-          : {
-              SLACK_BOT_TOKEN: result.grant.botAccessToken,
-              SLACK_USER_TOKEN: undefined,
-              SLACK_APP_TOKEN: undefined,
-            };
+          : await this.#slackEnvironment(request.sessionId, result.grant);
       await this.#writeEnvironmentFile(path, serializeEnvironment(environment, this.#platform), 0o600);
       return path;
     } catch (error) {
@@ -106,6 +103,7 @@ export class ImCredentialEnvironmentManager {
     const results = await Promise.allSettled([
       this.#removePath(this.pathForSession(sessionId), { force: true }),
       this.#removePath(join(this.#root, `${sessionId}-lark-config`), { recursive: true, force: true }),
+      this.#removePath(join(this.#root, `${sessionId}-slack-config`), { recursive: true, force: true }),
     ]);
     if (results.some((result) => result.status === "rejected")) {
       this.#activeSessions.add(sessionId);
@@ -143,7 +141,7 @@ export class ImCredentialEnvironmentManager {
         .map((name) =>
           this.#removePath(join(this.#root, name), {
             force: true,
-            ...(name.endsWith("-lark-config") ? { recursive: true as const } : {}),
+            ...(MANAGED_CONFIG_PROJECTION.test(name) ? { recursive: true as const } : {}),
           }),
         ),
     );
@@ -172,6 +170,26 @@ export class ImCredentialEnvironmentManager {
       LARKSUITE_CLI_BRAND: grant.teamBrand,
       LARKSUITE_CLI_TENANT_ACCESS_TOKEN: tenantAccessToken,
       LARKSUITE_CLI_USER_ACCESS_TOKEN: undefined,
+    };
+  }
+
+  /**
+   * The official Slack CLI writes config, credentials, and a debug log into its system config
+   * directory on every invocation, so the Turn projects a private writable one instead of letting
+   * the CLI fall back to `$HOME/.slack`. Slack documents only the `--config-dir` flag for this, so
+   * the path travels under an OpenTag-owned name that the Turn prompt passes to that flag.
+   */
+  async #slackEnvironment(
+    sessionId: string,
+    grant: Extract<RuntimeImCredentialGrantResult, { status: "succeeded" }>["grant"] & { provider: "slack" },
+  ): Promise<Record<string, string | undefined>> {
+    const configDir = join(this.#root, `${sessionId}-slack-config`);
+    await ensurePrivateDirectory(this.#root, configDir);
+    return {
+      SLACK_BOT_TOKEN: grant.botAccessToken,
+      SLACK_USER_TOKEN: undefined,
+      SLACK_APP_TOKEN: undefined,
+      OPENTAG_SLACK_CONFIG_DIR: configDir,
     };
   }
 

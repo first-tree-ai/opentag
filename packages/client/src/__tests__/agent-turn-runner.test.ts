@@ -99,6 +99,8 @@ describe("AgentTurnRunner", () => {
     expect(slackBlock).toContain("never hand-assemble it from string concatenation or shell substitution");
     expect(slackBlock).toContain("Pass the body only through --json; never use key=value arguments.");
     expect(slackBlock).toContain("Never pass --token, --app, -w, or --team.");
+    expect(slackBlock).toContain('add --config-dir "$OPENTAG_SLACK_CONFIG_DIR" to every slack invocation');
+    expect(slackBlock).toContain("Without it the CLI writes under $HOME and exits before any API call.");
     expect(slackBlock).toContain("markdown_text (at most 12,000 characters; never together with text or blocks)");
     expect(slackBlock).toContain("text (at most 4,000 characters per message)");
     expect(slackBlock).toContain("at most 1 message per second per channel");

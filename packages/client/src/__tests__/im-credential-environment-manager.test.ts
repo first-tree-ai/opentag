@@ -33,10 +33,13 @@ describe("ImCredentialEnvironmentManager", () => {
       const request = delivery(attention);
 
       const path = await manager.prepare(request);
+      const configDir = join(home, "data", "runtime", "provider-credentials", `${request.sessionId}-slack-config`);
       expect(await readFile(path, "utf8")).toBe(
-        `export SLACK_BOT_TOKEN='xoxb-${attention}'\nunset SLACK_USER_TOKEN\nunset SLACK_APP_TOKEN\n`,
+        `export SLACK_BOT_TOKEN='xoxb-${attention}'\nunset SLACK_USER_TOKEN\nunset SLACK_APP_TOKEN\nexport OPENTAG_SLACK_CONFIG_DIR='${configDir}'\n`,
       );
       expect((await stat(path)).mode & 0o777).toBe(0o600);
+      expect((await stat(configDir)).isDirectory()).toBe(true);
+      expect((await stat(configDir)).mode & 0o777).toBe(0o700);
       expect(connection.requests).toEqual([
         expect.objectContaining({
           sessionId: request.sessionId,
@@ -49,6 +52,7 @@ describe("ImCredentialEnvironmentManager", () => {
 
       await manager.cleanup(request.sessionId);
       await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(stat(configDir)).rejects.toMatchObject({ code: "ENOENT" });
       await manager.close();
     },
   );
@@ -109,7 +113,10 @@ describe("ImCredentialEnvironmentManager", () => {
 
     const result = await execFileAsync(
       "/bin/sh",
-      ["-c", '. "$OPENTAG_PROVIDER_ENV_FILE"; "$FAKE_SLACK" api chat.postMessage --data @blocks.json'],
+      [
+        "-c",
+        '. "$OPENTAG_PROVIDER_ENV_FILE"; printf "%s\\n" "$SLACK_BOT_TOKEN|$OPENTAG_SLACK_CONFIG_DIR"; : > "$OPENTAG_SLACK_CONFIG_DIR/slack-debug.log"; "$FAKE_SLACK" api chat.postMessage --json "{}" --config-dir "$OPENTAG_SLACK_CONFIG_DIR"',
+      ],
       {
         env: {
           OPENTAG_PROVIDER_ENV_FILE: environmentPath,
@@ -117,8 +124,14 @@ describe("ImCredentialEnvironmentManager", () => {
         },
       },
     );
-    expect(result.stdout.trim()).toBe("xoxb-ambient-cli|api chat.postMessage --data @blocks.json");
+    const configDir = join(home, "data", "runtime", "provider-credentials", "session-1-slack-config");
+    expect(result.stdout.trim().split("\n")).toEqual([
+      `xoxb-ambient-cli|${configDir}`,
+      `xoxb-ambient-cli|api chat.postMessage --json {} --config-dir ${configDir}`,
+    ]);
+    expect((await stat(join(configDir, "slack-debug.log"))).isFile()).toBe(true);
     await manager.close();
+    await expect(stat(configDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("lets a direct Turn pass native Feishu message operations to a fake official CLI", async () => {
@@ -227,11 +240,13 @@ describe("ImCredentialEnvironmentManager", () => {
       },
     });
     const path = await manager.prepare(delivery("direct"));
+    const configDir = join(home, "data", "runtime", "provider-credentials", "session-1-slack-config");
 
     await expect(manager.cleanup("session-1")).rejects.toMatchObject({ code: "cleanup_failed" });
     await expect(stat(path)).resolves.toBeDefined();
     await manager.close();
     await expect(stat(path)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(configDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("removes only strictly named stale credential artifacts before preparing a new Turn", async () => {
@@ -240,6 +255,8 @@ describe("ImCredentialEnvironmentManager", () => {
     const staleSession = "123e4567-e89b-42d3-a456-426614174000";
     const staleTemporary = ".123e4567-e89b-42d3-a456-426614174001.tmp";
     await mkdir(join(root, `${staleSession}-lark-config`), { recursive: true });
+    await mkdir(join(root, `${staleSession}-slack-config`, "logs"), { recursive: true });
+    await writeFile(join(root, `${staleSession}-slack-config`, "credentials.json"), "secret", "utf8");
     await writeFile(join(root, `${staleSession}.sh`), "secret", "utf8");
     await writeFile(join(root, staleTemporary), "temporary secret", "utf8");
     await writeFile(join(root, "keep-me.txt"), "not managed", "utf8");
@@ -259,6 +276,7 @@ describe("ImCredentialEnvironmentManager", () => {
     await manager.prepare(delivery("direct"));
     await expect(stat(join(root, `${staleSession}.sh`))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(join(root, `${staleSession}-lark-config`))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(root, `${staleSession}-slack-config`))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(join(root, staleTemporary))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(readFile(join(root, "keep-me.txt"), "utf8")).resolves.toBe("not managed");
     await expect(readFile(join(root, "keep-me.tmp"), "utf8")).resolves.toBe("not managed");
@@ -323,6 +341,9 @@ describe("ImCredentialEnvironmentManager", () => {
       executionEffects: "not_started",
       errorReason: "credential_unavailable",
     });
+    await expect(
+      stat(join(home, "data", "runtime", "provider-credentials", "session-1-slack-config")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
     await manager.close();
   });
 

@@ -2,6 +2,7 @@ import { type ChangeEventHandler, type ReactNode, useMemo, useState } from "reac
 import { Link, useParams } from "react-router-dom";
 import {
   findTaskPreview,
+  type TaskAgentEvent,
   type TaskExchange,
   type TaskPreview,
   type TaskStatus,
@@ -21,16 +22,20 @@ const statusPresentation: Record<TaskStatus, { readonly label: string; readonly 
   recently_completed: { label: "Recently completed", tone: "success" },
 };
 
-const toolPresentation: Record<TaskToolCall["tool"], { readonly abbreviation: string; readonly label: string }> = {
-  feishu: { abbreviation: "FS", label: "Feishu" },
-  google_drive: { abbreviation: "GD", label: "Google Drive" },
+const toolStatusPresentation: Record<TaskToolStatus, { readonly label: string }> = {
+  completed: { label: "Completed" },
+  in_progress: { label: "In progress" },
+  requires_attention: { label: "Needs attention" },
 };
 
-const toolStatusPresentation: Record<TaskToolStatus, { readonly label: string; readonly tone: StatusTone }> = {
-  completed: { label: "Completed", tone: "success" },
-  in_progress: { label: "In progress", tone: "info" },
-  requires_attention: { label: "Needs attention", tone: "warning" },
+type TaskToolCallGroup = {
+  readonly calls: readonly TaskToolCall[];
+  readonly id: string;
+  readonly kind: "tool_call_group";
+  readonly label: string;
 };
+
+type TaskProcessItem = Exclude<TaskAgentEvent, TaskToolCall> | TaskToolCallGroup;
 
 export function TasksPage() {
   const [query, setQuery] = useState("");
@@ -237,11 +242,14 @@ function TaskConversationExchange({ task, exchange }: { task: TaskPreview; excha
 
 function TaskAgentProcess({ exchange, id }: { exchange: TaskExchange; id: string }) {
   const toolCalls = exchange.events.filter((event): event is TaskToolCall => event.kind === "tool_call");
-  const usage = [
-    exchange.usage.input ? `${exchange.usage.input} input` : null,
-    exchange.usage.output ? `${exchange.usage.output} output` : null,
-    exchange.usage.total ? `${exchange.usage.total} total` : null,
-  ].filter(Boolean);
+  const processItems = groupTaskProcessItems(exchange.events);
+  const firstToolGroup = processItems.find((item): item is TaskToolCallGroup => item.kind === "tool_call_group");
+  const usage = exchange.usage.total
+    ? [`${exchange.usage.total} tokens`]
+    : [
+        exchange.usage.input ? `${exchange.usage.input} input` : null,
+        exchange.usage.output ? `${exchange.usage.output} output` : null,
+      ].filter(Boolean);
   const processSummary = exchange.status === "processing" ? "Working" : `Worked for ${exchange.duration}`;
   const processMetadata = [
     `${toolCalls.length} ${toolCalls.length === 1 ? "tool call" : "tool calls"}`,
@@ -256,15 +264,21 @@ function TaskAgentProcess({ exchange, id }: { exchange: TaskExchange; id: string
         <Icon name="chevron-right" />
       </summary>
       <section className="task-agent-events" aria-labelledby={id}>
-        {exchange.events.map((event) => {
-          if (event.kind === "reasoning_summary") {
+        {processItems.map((item) => {
+          if (item.kind === "reasoning_summary") {
             return (
-              <p className="task-reasoning-summary" key={event.id}>
-                {event.text}
+              <p className="task-reasoning-summary" key={item.id}>
+                {item.text}
               </p>
             );
           }
-          return <TaskToolCallRow call={event} key={event.id} />;
+          return (
+            <TaskToolCallGroupView
+              group={item}
+              initiallyOpen={item.id === firstToolGroup?.id || hasActiveToolCall(item.calls)}
+              key={item.id}
+            />
+          );
         })}
       </section>
       <p className="task-process-metadata">{processMetadata.join(" · ")}</p>
@@ -272,22 +286,75 @@ function TaskAgentProcess({ exchange, id }: { exchange: TaskExchange; id: string
   );
 }
 
-function TaskToolCallRow({ call }: { call: TaskToolCall }) {
-  const tool = toolPresentation[call.tool];
-  const status = toolStatusPresentation[call.status];
+function TaskToolCallGroupView({ group, initiallyOpen }: { group: TaskToolCallGroup; initiallyOpen: boolean }) {
+  const attentionCall = group.calls.find((call) => call.status !== "completed");
+
   return (
-    <article className="task-tool-call">
-      <span className="task-action-mark" aria-hidden="true">
-        {tool.abbreviation}
-      </span>
-      <span className="task-tool-action">
-        <strong>{call.action}</strong>
-        <small>{tool.label}</small>
-      </span>
-      <span className="task-tool-target">{call.target}</span>
-      <StatusIndicator label={status.label} tone={status.tone} />
-    </article>
+    <details className="task-tool-group" open={initiallyOpen}>
+      <summary>
+        <span>{group.label}</span>
+        <span className="task-tool-group-summary-end">
+          {attentionCall ? (
+            <span className={`task-tool-group-state task-tool-group-state--${attentionCall.status}`}>
+              {toolStatusPresentation[attentionCall.status].label}
+            </span>
+          ) : null}
+          <Icon name="chevron-right" />
+        </span>
+      </summary>
+      <section className="task-tool-list" aria-label={group.label}>
+        {group.calls.map((call) => (
+          <TaskToolCallRow call={call} key={call.id} />
+        ))}
+      </section>
+    </details>
   );
+}
+
+function TaskToolCallRow({ call }: { call: TaskToolCall }) {
+  return (
+    <details className="task-tool-call">
+      <summary>
+        <span>{call.action}</span>
+        <Icon name="chevron-right" />
+      </summary>
+      <section className="task-tool-call-detail" aria-label={`${call.action} details`}>
+        <p>
+          <span>Source</span>
+          {call.detail}
+        </p>
+        <p>
+          <span>Result</span>
+          {call.result}
+        </p>
+      </section>
+    </details>
+  );
+}
+
+function groupTaskProcessItems(events: readonly TaskAgentEvent[]): readonly TaskProcessItem[] {
+  const items: TaskProcessItem[] = [];
+
+  for (const event of events) {
+    if (event.kind === "reasoning_summary") {
+      items.push(event);
+      continue;
+    }
+
+    const previous = items.at(-1);
+    if (previous?.kind === "tool_call_group" && previous.id === event.groupId) {
+      items[items.length - 1] = { ...previous, calls: [...previous.calls, event] };
+      continue;
+    }
+
+    items.push({ calls: [event], id: event.groupId, kind: "tool_call_group", label: event.groupLabel });
+  }
+
+  return items;
+}
+
+function hasActiveToolCall(calls: readonly TaskToolCall[]): boolean {
+  return calls.some((call) => call.status !== "completed");
 }
 
 function TaskSelect({

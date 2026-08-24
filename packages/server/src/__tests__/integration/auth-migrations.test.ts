@@ -74,6 +74,18 @@ async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z"), aut
 }
 
 describe("database migrations", () => {
+  it("orders the Team setup repair before the Slack pending receive-mode migration", async () => {
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+
+    expect(journal.entries.slice(-3).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+      { idx: 10, tag: "0010_optimal_jazinda" },
+      { idx: 11, tag: "0011_staging_team_setup_repair" },
+      { idx: 12, tag: "0012_supreme_maddog" },
+    ]);
+  });
+
   it("migrates an empty database and reruns idempotently", async () => {
     await migrateDatabase(databaseUrl, migrationsFolder);
     await migrateDatabase(databaseUrl, migrationsFolder);
@@ -290,7 +302,7 @@ describe("database migrations", () => {
             array(select status::text from agents order by name) as statuses
         `;
         expect(lifecycle).toEqual({
-          count: 12,
+          count: 13,
           creation_intents_null: true,
           deleted_at_exists: false,
           setup_completed_at_exists: true,
@@ -325,7 +337,7 @@ describe("database migrations", () => {
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(12);
+        expect(rerun?.count).toBe(13);
       } finally {
         await sql.end();
       }

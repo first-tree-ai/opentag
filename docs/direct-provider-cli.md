@@ -12,4 +12,9 @@ Both `direct` and `ambient` Turns receive the same credential lifecycle. `direct
 
 Direct provider CLI execution requires Runtime network access and grants the Agent every permission in the bound Bot token's scope, so the configured scopes must be treated as the deliberate Agent authority boundary. Feishu and Slack CLI installation readiness is reported independently from Codex or Claude Code readiness; handoff requires both the selected Agent Runtime and provider CLI to be ready, plus a ready ingress connection when the provider requires one.
 
+Session conversation scope limits OpenTag's automatic persistence, history bootstrap, and routing; it does not restrict
+provider API targets available to the projected Bot token. The Agent may query additional native history when the task
+requires it, including another conversation the Bot can access. Provider query results remain Runtime context and do not
+automatically create `ImMessage` records or cross-Session deliveries.
+
 Existing Slack bindings require one reauthorization after this upgrade so OpenTag can verify and retain Slack's Bot ID separately from its Bot User ID. That verified identity is used only to discard the bound Bot's own ingress before persistence and prevent message loops.

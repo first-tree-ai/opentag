@@ -475,7 +475,7 @@ export class AgentService {
 
   async updateById(callerUserId: string, agentId: string, rawInput: UpdateAgentRequest): Promise<AgentAdminConfig> {
     const input = UpdateAgentRequestSchema.parse(rawInput);
-    return this.#database.transaction(async (transaction) => {
+    const result = await this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
       if (scope.agent.revision !== input.expectedRevision) {
@@ -486,27 +486,77 @@ export class AgentService {
           409,
         );
       }
-      if (input.receiveMode === "all_message") {
+      const now = this.#now();
+      if (input.receiveMode !== undefined) {
         const [imBinding] = await transaction
-          .select({ provider: imBindings.provider, capabilities: imBindings.grantedCapabilities })
+          .select({
+            id: imBindings.id,
+            provider: imBindings.provider,
+            status: imBindings.status,
+            lastErrorCode: imBindings.lastErrorCode,
+            setupState: imBindings.setupState,
+            pendingReceiveMode: imBindings.pendingReceiveMode,
+            credentialGeneration: imBindings.credentialGeneration,
+            capabilities: imBindings.grantedCapabilities,
+          })
           .from(imBindings)
           .where(and(eq(imBindings.agentId, agentId), isNull(imBindings.disabledAt)))
-          .limit(1);
-        const missingRequiredCapabilities =
+          .limit(1)
+          .for("update");
+        if (
+          input.receiveMode !== scope.agent.receiveMode &&
+          input.receiveMode === "all_message" &&
           imBinding?.provider === "feishu"
-            ? !hasRequiredFeishuTenantScopes(imBinding.capabilities)
-            : imBinding?.provider === "slack"
-              ? ["channels:history", "groups:history", "mpim:history"].some(
-                  (capability) => !imBinding.capabilities.includes(capability),
-                )
-              : false;
-        if (imBinding && missingRequiredCapabilities) {
-          throw new AgentServiceError(
-            "IM_BINDING_SCOPE_REAUTH_REQUIRED",
-            "deterministic",
-            "The IM binding must be reauthorized before enabling all-message receive mode",
-            409,
+        ) {
+          const missingRequiredCapabilities = !hasRequiredFeishuTenantScopes(imBinding.capabilities);
+          if (missingRequiredCapabilities) {
+            throw new AgentServiceError(
+              "IM_BINDING_SCOPE_REAUTH_REQUIRED",
+              "deterministic",
+              "The IM binding must be reauthorized before enabling all-message receive mode",
+              409,
+            );
+          }
+        }
+        if (imBinding?.provider === "slack") {
+          const missingHistoryCapabilities = ["channels:history", "groups:history", "mpim:history"].some(
+            (capability) => !imBinding.capabilities.includes(capability),
           );
+          const scopeUpgradeRequired =
+            input.receiveMode !== scope.agent.receiveMode &&
+            input.receiveMode === "all_message" &&
+            missingHistoryCapabilities &&
+            imBinding.credentialGeneration >= 1;
+          // Compare against the effective target so a no-op receive-mode save never cancels setup.
+          const targetChanged = (imBinding.pendingReceiveMode ?? scope.agent.receiveMode) !== input.receiveMode;
+          const cancelActiveSetup =
+            targetChanged && (imBinding.setupState === "awaiting_user" || imBinding.setupState === "validating");
+          await transaction
+            .update(imBindings)
+            .set({
+              pendingReceiveMode: scopeUpgradeRequired ? input.receiveMode : null,
+              lastErrorCode: scopeUpgradeRequired
+                ? imBinding.status === "active"
+                  ? "IM_BINDING_SCOPE_REAUTH_REQUIRED"
+                  : imBinding.lastErrorCode
+                : cancelActiveSetup
+                  ? "SLACK_SETUP_CANCELED"
+                  : imBinding.lastErrorCode === "IM_BINDING_SCOPE_REAUTH_REQUIRED"
+                    ? null
+                    : imBinding.lastErrorCode,
+              ...(cancelActiveSetup
+                ? {
+                    setupState: "canceled" as const,
+                    setupOwnerInstanceId: null,
+                    setupOwnerHeartbeatAt: null,
+                    encryptedSetupContext: null,
+                    setupExpiresAt: null,
+                  }
+                : {}),
+              updatedAt: now,
+            })
+            .where(eq(imBindings.id, imBinding.id));
+          if (scopeUpgradeRequired) return { scopeReauthorizationRequired: true as const };
         }
       }
       const currentRuntimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
@@ -524,7 +574,6 @@ export class AgentService {
             : currentRuntimeProjection.maxDurationMs,
       });
       const runtimeConfigChanged = !runtimeConfigsEqual(currentRuntimeConfig, nextRuntimeConfig);
-      const now = this.#now();
       const [updated] = await transaction
         .update(agents)
         .set({
@@ -546,7 +595,7 @@ export class AgentService {
           if (!updatedRuntimeConfig) throw new Error("Agent runtime config update did not return a row");
           runtimeConfig = updatedRuntimeConfig;
         }
-        return toAgentAdminConfig(updated, runtimeConfig);
+        return { config: toAgentAdminConfig(updated, runtimeConfig) };
       }
 
       const current = await this.#resolveAgentScope(transaction, callerUserId, agentId);
@@ -558,6 +607,15 @@ export class AgentService {
         409,
       );
     });
+    if ("scopeReauthorizationRequired" in result) {
+      throw new AgentServiceError(
+        "IM_BINDING_SCOPE_REAUTH_REQUIRED",
+        "deterministic",
+        "The IM binding must be reauthorized before enabling all-message receive mode",
+        409,
+      );
+    }
+    return result.config;
   }
 
   async suspendById(callerUserId: string, agentId: string): Promise<AgentAdminConfig> {

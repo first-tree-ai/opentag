@@ -47,6 +47,7 @@ import { SkillsPage } from "./features/skills-page.js";
 import { TaskDetailPage, TasksPage } from "./features/tasks-page.js";
 import { UsagePage } from "./features/usage-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
+import { SlackSetup } from "./im/slack-setup.js";
 import { OnboardingPage } from "./onboarding/page.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import {
@@ -1877,164 +1878,213 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
         onAgentChanged();
       }}
     >
-      {(setup) => {
-        const connect = async (intent: "create" | "reauthorize" | "replace" = "create") => {
-          setError(undefined);
-          if (await setup.start(intent)) setReauthorizationNeeded(false);
-        };
-        return (
-          <AsyncState state={state}>
-            {(binding) => (
-              <div className="im-stack">
-                {binding ? (
-                  <>
-                    <section className="im-section" aria-labelledby="contact-channel-heading">
-                      <div className="im-section-heading">
-                        <h3 id="contact-channel-heading">Contact channel</h3>
-                        <p>Where teammates can reach this Agent and whether the connection is available.</p>
-                      </div>
-                      <div className="binding-status">
-                        <StatusIndicator
-                          detail={`${titleCase(binding.provider)} · ${messagingConnectionLabel(
-                            binding,
-                            agent.availability.dependencies.handoff.state,
-                          )}`}
-                          label={binding.bot.displayName}
-                          tone={messagingConnectionTone(binding, agent.availability.dependencies.handoff.state)}
-                        />
-                        <small>
-                          {binding.lastConfirmedAt
-                            ? `Confirmed ${formatDate(binding.lastConfirmedAt)}`
-                            : "Unable to confirm"}
-                        </small>
-                      </div>
-                      <dl className="messaging-contact-facts">
-                        <div>
-                          <dt>Contact</dt>
-                          <dd>@{agent.name}</dd>
-                        </div>
-                        <div>
-                          <dt>How to use</dt>
-                          <dd>{agentUseInstruction(agent, titleCase(binding.provider))}</dd>
-                        </div>
-                      </dl>
-                      {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
-                      binding.provider === "feishu" &&
-                      agent.viewerCapabilities.canManage ? (
-                        <div className="im-actions">
-                          <Button onClick={() => void connect("reauthorize")}>Reauthorize Feishu</Button>
-                        </div>
-                      ) : null}
-                      {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
-                      binding.provider === "slack" ? (
-                        <span className="notice">Slack reauthorization is not available in this release.</span>
-                      ) : null}
-                      {agent.viewerCapabilities.canManage ? (
-                        <div className="im-actions messaging-connection-actions">
-                          {binding.provider === "feishu" ? (
-                            <Button size="compact" variant="outline" onClick={() => void connect("replace")}>
-                              Replace Feishu Bot
-                            </Button>
+      {(feishuSetup) => (
+        <SlackSetup
+          agentId={agent.id}
+          onSuccess={() => {
+            setReload((value) => value + 1);
+            onAgentChanged();
+          }}
+        >
+          {(slackSetup) => {
+            const connectFeishu = async (intent: "create" | "reauthorize" | "replace" = "create") => {
+              setError(undefined);
+              if (await feishuSetup.start(intent)) setReauthorizationNeeded(false);
+            };
+            const connectSlack = async (intent: "create" | "reauthorize" | "replace" = "create") => {
+              setError(undefined);
+              if (await slackSetup.start(intent)) setReauthorizationNeeded(false);
+            };
+            return (
+              <AsyncState state={state}>
+                {(binding) => (
+                  <div className="im-stack">
+                    {binding ? (
+                      <>
+                        <section className="im-section" aria-labelledby="contact-channel-heading">
+                          <div className="im-section-heading">
+                            <h3 id="contact-channel-heading">Contact channel</h3>
+                            <p>Where teammates can reach this Agent and whether the connection is available.</p>
+                          </div>
+                          <div className="binding-status">
+                            <StatusIndicator
+                              detail={`${titleCase(binding.provider)} · ${messagingConnectionLabel(
+                                binding,
+                                agent.availability.dependencies.handoff.state,
+                              )}`}
+                              label={binding.bot.displayName}
+                              tone={messagingConnectionTone(binding, agent.availability.dependencies.handoff.state)}
+                            />
+                            <small>
+                              {binding.lastConfirmedAt
+                                ? `Confirmed ${formatDate(binding.lastConfirmedAt)}`
+                                : "Unable to confirm"}
+                            </small>
+                          </div>
+                          <dl className="messaging-contact-facts">
+                            <div>
+                              <dt>Contact</dt>
+                              <dd>@{agent.name}</dd>
+                            </div>
+                            <div>
+                              <dt>How to use</dt>
+                              <dd>{agentUseInstruction(agent, titleCase(binding.provider))}</dd>
+                            </div>
+                          </dl>
+                          {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                          binding.provider === "feishu" &&
+                          agent.viewerCapabilities.canManage ? (
+                            <div className="im-actions">
+                              <Button onClick={() => void connectFeishu("reauthorize")}>Reauthorize Feishu</Button>
+                            </div>
                           ) : null}
-                          <Button
-                            size="compact"
-                            variant="danger"
-                            onClick={() => {
-                              if (
-                                !window.confirm(
-                                  "Disable this IM binding? New IM work will stop until another binding is connected.",
-                                )
-                              )
-                                return;
-                              void browserApi.disableImBinding(binding.id).then(
-                                () => {
-                                  setReload((value) => value + 1);
-                                  onAgentChanged();
-                                },
-                                (cause: unknown) =>
-                                  setError(cause instanceof Error ? cause.message : "Unable to disable IM binding"),
-                              );
-                            }}
-                          >
-                            Disable IM binding
-                          </Button>
-                        </div>
-                      ) : (
-                        <p className="muted">Workspace admins manage this contact channel.</p>
-                      )}
-                    </section>
-                    <section className="im-section" aria-labelledby="trigger-rules-heading">
-                      <div className="im-section-heading">
-                        <h3 id="trigger-rules-heading">Trigger rules</h3>
-                        <p>Which incoming messages can start Agent work.</p>
-                      </div>
-                      <SettingsList className="agent-message-rules">
-                        <SettingsRow description="A direct message can always start work." label="Direct messages">
-                          <strong>Always</strong>
-                        </SettingsRow>
-                        <SettingsRow
-                          description={
-                            binding.receiveMode === "mention_only"
-                              ? `Teammates must mention @${agent.name}.`
-                              : "Every new conversation message can start work."
-                          }
-                          label={`${titleCase(binding.provider)} conversations`}
-                        >
+                          {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                          binding.provider === "slack" &&
+                          agent.viewerCapabilities.canManage ? (
+                            <div className="im-actions">
+                              <Button onClick={() => void connectSlack("reauthorize")}>Reauthorize Slack</Button>
+                            </div>
+                          ) : null}
+                          {binding.bindingState === "provisioning" &&
+                          binding.provider === "slack" &&
+                          agent.viewerCapabilities.canManage ? (
+                            <SlackProvisioningActions onResume={() => void connectSlack("create")} />
+                          ) : null}
                           {agent.viewerCapabilities.canManage ? (
-                            <fieldset aria-label="Conversation trigger rule" className="segmented-control">
-                              {binding.receiveMode === "mention_only" ? (
-                                <>
-                                  <span className="active">Mentions only</span>
-                                  <button type="button" onClick={() => void changeReceiveMode("all_message")}>
-                                    All messages
-                                  </button>
-                                </>
-                              ) : (
-                                <>
-                                  <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
-                                    Mentions only
-                                  </button>
-                                  <span className="active">All messages</span>
-                                </>
-                              )}
-                            </fieldset>
+                            <div className="im-actions messaging-connection-actions">
+                              {binding.provider === "feishu" ? (
+                                <Button size="compact" variant="outline" onClick={() => void connectFeishu("replace")}>
+                                  Replace Feishu Bot
+                                </Button>
+                              ) : null}
+                              {binding.provider === "slack" && binding.bindingState !== "provisioning" ? (
+                                <Button size="compact" variant="outline" onClick={() => void connectSlack("replace")}>
+                                  Replace Slack App
+                                </Button>
+                              ) : null}
+                              <Button
+                                size="compact"
+                                variant="danger"
+                                onClick={() => {
+                                  if (
+                                    !window.confirm(
+                                      "Disable this IM binding? New IM work will stop until another binding is connected.",
+                                    )
+                                  )
+                                    return;
+                                  void browserApi.disableImBinding(binding.id).then(
+                                    () => {
+                                      setReload((value) => value + 1);
+                                      onAgentChanged();
+                                    },
+                                    (cause: unknown) =>
+                                      setError(cause instanceof Error ? cause.message : "Unable to disable IM binding"),
+                                  );
+                                }}
+                              >
+                                Disable IM binding
+                              </Button>
+                            </div>
                           ) : (
-                            <strong>{receiveModeLabel(binding.receiveMode)}</strong>
+                            <p className="muted">Workspace admins manage this contact channel.</p>
                           )}
-                        </SettingsRow>
-                      </SettingsList>
-                    </section>
-                  </>
-                ) : (
-                  <section className="im-section" aria-labelledby="contact-channel-heading">
-                    <div className="im-section-heading">
-                      <h3 id="contact-channel-heading">Contact channel</h3>
-                      <p>Where teammates can reach this Agent.</p>
-                    </div>
-                    <EmptyState title="No messaging channel">
-                      Teammates cannot contact this Agent until a supported bot is connected.
-                    </EmptyState>
-                    {agent.viewerCapabilities.canManage ? (
-                      <div className="im-actions">
-                        <Button onClick={() => void connect()}>Connect a Feishu Bot</Button>
-                      </div>
+                        </section>
+                        <section className="im-section" aria-labelledby="trigger-rules-heading">
+                          <div className="im-section-heading">
+                            <h3 id="trigger-rules-heading">Trigger rules</h3>
+                            <p>Which incoming messages can start Agent work.</p>
+                          </div>
+                          <SettingsList className="agent-message-rules">
+                            <SettingsRow description="A direct message can always start work." label="Direct messages">
+                              <strong>Always</strong>
+                            </SettingsRow>
+                            <SettingsRow
+                              description={
+                                binding.receiveMode === "mention_only"
+                                  ? `Teammates must mention @${agent.name}.`
+                                  : "Every new conversation message can start work."
+                              }
+                              label={`${titleCase(binding.provider)} conversations`}
+                            >
+                              {agent.viewerCapabilities.canManage ? (
+                                <fieldset aria-label="Conversation trigger rule" className="segmented-control">
+                                  {binding.receiveMode === "mention_only" ? (
+                                    <>
+                                      <span className="active">Mentions only</span>
+                                      <button type="button" onClick={() => void changeReceiveMode("all_message")}>
+                                        All messages
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
+                                        Mentions only
+                                      </button>
+                                      <span className="active">All messages</span>
+                                    </>
+                                  )}
+                                </fieldset>
+                              ) : (
+                                <strong>{receiveModeLabel(binding.receiveMode)}</strong>
+                              )}
+                            </SettingsRow>
+                          </SettingsList>
+                          {binding.pendingReceiveMode ? (
+                            <p className="muted">
+                              Scope upgrade pending: {receiveModeLabel(binding.pendingReceiveMode)} takes effect once{" "}
+                              {titleCase(binding.provider)} grants the additional permissions through reauthorization.
+                            </p>
+                          ) : null}
+                        </section>
+                      </>
                     ) : (
-                      <p className="muted">Workspace admins manage messaging setup.</p>
+                      <section className="im-section" aria-labelledby="contact-channel-heading">
+                        <div className="im-section-heading">
+                          <h3 id="contact-channel-heading">Contact channel</h3>
+                          <p>Where teammates can reach this Agent.</p>
+                        </div>
+                        <EmptyState title="No messaging channel">
+                          Teammates cannot contact this Agent until a supported bot is connected.
+                        </EmptyState>
+                        {agent.viewerCapabilities.canManage ? (
+                          <div className="im-actions">
+                            <Button onClick={() => void connectFeishu()}>Connect a Feishu Bot</Button>
+                            <Button variant="secondary" onClick={() => void connectSlack()}>
+                              Connect Slack App
+                            </Button>
+                          </div>
+                        ) : (
+                          <p className="muted">Workspace admins manage messaging setup.</p>
+                        )}
+                      </section>
                     )}
-                  </section>
-                )}
-                {setup.feedback}
-                {error ? (
-                  <div className="notice error" role="alert">
-                    {error}
+                    {feishuSetup.feedback}
+                    {slackSetup.feedback}
+                    {error ? (
+                      <div className="notice error" role="alert">
+                        {error}
+                      </div>
+                    ) : null}
                   </div>
-                ) : null}
-              </div>
-            )}
-          </AsyncState>
-        );
-      }}
+                )}
+              </AsyncState>
+            );
+          }}
+        </SlackSetup>
+      )}
     </FeishuSetup>
+  );
+}
+
+/**
+ * A provisioning Slack binding may represent an active or terminal setup attempt. Only an explicit
+ * Admin action may reuse the active attempt or create a successor after cancellation.
+ */
+function SlackProvisioningActions({ onResume }: { onResume: () => void }) {
+  return (
+    <div className="im-actions">
+      <Button onClick={onResume}>Resume Slack setup</Button>
+    </div>
   );
 }
 

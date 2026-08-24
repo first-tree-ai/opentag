@@ -755,7 +755,8 @@ pre {
   padding: 24px;
 }
 
-.dialog-backdrop {
+.dialog-backdrop,
+.dialog-backdrop:hover {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -764,6 +765,10 @@ pre {
   border-radius: 0;
   background: rgb(22 33 27 / 42%);
   padding: 0;
+}
+
+.dialog-backdrop:disabled {
+  opacity: 1;
 }
 
 .dialog-backdrop:active {

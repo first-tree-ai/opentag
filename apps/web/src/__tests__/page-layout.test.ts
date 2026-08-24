@@ -80,6 +80,13 @@ describe("workspace page layout", () => {
     expect(declarationValue(designSystemStyles, "select.ds-control--compact", "min-height")).toBe("36px");
   });
 
+  it("keeps the dialog backdrop stable across inherited button states", () => {
+    const backdrop = "rgb(22 33 27 / 42%)";
+    expect(topLevelDeclarationValue(appStyles, ".dialog-backdrop", "background")).toBe(backdrop);
+    expect(topLevelDeclarationValue(appStyles, ".dialog-backdrop:hover", "background")).toBe(backdrop);
+    expect(topLevelDeclarationValue(appStyles, ".dialog-backdrop:disabled", "opacity")).toBe("1");
+  });
+
   it("keeps Task provenance and grouped execution readable in the compact layout", () => {
     expect(declarationValue(taskStyles, ".task-breadcrumb-actions .tasks-demo-note", "display")).toBe("inline");
     expect(topLevelDeclarationValue(taskStyles, ".task-tool-list", "border")).toBe("1px solid var(--border)");

@@ -74,6 +74,11 @@ export class AgentRuntimeProviderRegistry {
     return this.#ready.has(providerId);
   }
 
+  invalidate(providerId: string, result?: AgentRuntimeProbeResult): void {
+    this.#ready.delete(providerId);
+    if (result) this.#probeResults.set(providerId, result);
+  }
+
   probeResult(providerId: string): AgentRuntimeProbeResult | undefined {
     return this.#probeResults.get(providerId);
   }

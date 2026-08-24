@@ -54,11 +54,13 @@ import { TurnCustodyOwner } from "./turn-custody-owner.js";
 import { TurnReportOwner } from "./turn-report-owner.js";
 
 const DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS = Math.floor(RUNTIME_CLIENT_CAPABILITY_TTL_MS / 2);
+const DEFAULT_PROVIDER_PROBE_DEADLINE_MS = 10_000;
 const execFileAsync = promisify(execFile);
 
 export interface CreateClientRuntimeOptions {
   readonly api?: Pick<OpenTagApi, "openImResource">;
   readonly capabilityRefreshIntervalMs?: number;
+  readonly providerProbeDeadlineMs?: number;
   readonly clientVersion: string;
   readonly codexCommand?: string;
   readonly codexHome?: string;
@@ -231,28 +233,80 @@ export async function createClientRuntime(
   const readinessSignal = options.signal
     ? AbortSignal.any([options.signal, capabilityAbort.signal])
     : capabilityAbort.signal;
+  const providerProbeDeadlineMs = options.providerProbeDeadlineMs ?? DEFAULT_PROVIDER_PROBE_DEADLINE_MS;
+  if (!Number.isSafeInteger(providerProbeDeadlineMs) || providerProbeDeadlineMs < 1) {
+    throw new Error("Agent Runtime provider probe deadline must be a positive safe integer");
+  }
+  const providerRefreshGenerations = new Map<string, number>();
+  const beginProviderRefresh = (providerId: string): number => {
+    const generation = (providerRefreshGenerations.get(providerId) ?? 0) + 1;
+    providerRefreshGenerations.set(providerId, generation);
+    return generation;
+  };
+  const publishProviderReadiness = (observation: RuntimeProviderReadinessObservation): void => {
+    if (readinessSignal.aborted) return;
+    connection.setProviderReadiness(observation);
+  };
   const refreshProviderReadiness = async (providerId: string, signal?: AbortSignal): Promise<boolean> => {
-    const refreshSignal = signal ? AbortSignal.any([readinessSignal, signal]) : readinessSignal;
+    const generation = beginProviderRefresh(providerId);
+    const deadline = new AbortController();
+    const deadlineTimer = setTimeout(() => {
+      deadline.abort(new Error(`Agent Runtime provider probe exceeded its deadline: ${providerId}`));
+    }, providerProbeDeadlineMs);
+    deadlineTimer.unref();
+    const refreshSignals = [readinessSignal, deadline.signal];
+    if (signal) refreshSignals.push(signal);
+    const refreshSignal = AbortSignal.any(refreshSignals);
     const provider = providerId as AgentRuntimeProvider;
     const releaseReadiness = providers.isReady(providerId)
       ? connection.leaseProviderReadiness({ provider, status: "ready" })
       : undefined;
-    if (!releaseReadiness) connection.setProviderReadiness({ provider, status: "checking" });
+    if (!releaseReadiness) publishProviderReadiness({ provider, status: "checking" });
+    let settled: { available: boolean } | { error: unknown };
     try {
-      const available = await providers.refresh(providerId, refreshSignal);
-      refreshSignal.throwIfAborted();
-      connection.setProviderReadiness(providerReadiness(provider, available, providers.probeResult(providerId)));
-      return available;
+      settled = { available: await providers.refresh(providerId, refreshSignal) };
+    } catch (error) {
+      settled = { error };
     } finally {
+      clearTimeout(deadlineTimer);
       releaseReadiness?.();
     }
+    if ("error" in settled) {
+      if (readinessSignal.aborted || signal?.aborted) throw settled.error;
+      if (providerRefreshGenerations.get(providerId) !== generation) return providers.isReady(providerId);
+      const result: AgentRuntimeProbeResult = {
+        ready: false,
+        issues: [{ code: "temporarily_unavailable", message: "Provider readiness probe exceeded its deadline" }],
+      };
+      providers.invalidate(providerId, result);
+      publishProviderReadiness(providerReadiness(provider, false, result));
+      return false;
+    }
+    if (providerRefreshGenerations.get(providerId) !== generation) return providers.isReady(providerId);
+    publishProviderReadiness(providerReadiness(provider, settled.available, providers.probeResult(providerId)));
+    return settled.available;
   };
   const refreshCapability = async (): Promise<void> => {
-    await Promise.all([
+    const results = await Promise.allSettled([
       ...providers.providerIds().map((providerId) => refreshProviderReadiness(providerId)),
-      refreshImCliReadiness(connection, "feishu", options.larkCliCommand ?? "lark-cli", sourceEnvironment),
-      refreshImCliReadiness(connection, "slack", options.slackCliCommand ?? "slack", sourceEnvironment),
+      refreshImCliReadiness(
+        connection,
+        "feishu",
+        options.larkCliCommand ?? "lark-cli",
+        sourceEnvironment,
+        readinessSignal,
+      ),
+      refreshImCliReadiness(
+        connection,
+        "slack",
+        options.slackCliCommand ?? "slack",
+        sourceEnvironment,
+        readinessSignal,
+      ),
     ]);
+    readinessSignal.throwIfAborted();
+    const failures = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (failures.length > 0) throw new AggregateError(failures, "Client capability refresh failed");
     connection.setVerifiedCapabilities({ imCredentialGrant: 1 });
   };
   const ensureProviderReady = async (providerId: string, signal?: AbortSignal): Promise<void> => {
@@ -382,28 +436,49 @@ export async function refreshImCliReadiness(
   provider: RuntimeImCliReadinessObservation["provider"],
   configuredCommand: string,
   environment: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
 ): Promise<void> {
+  if (signal?.aborted) return;
   connection.setImCliReadiness({ provider, status: "checking" });
-  let command: string;
-  try {
-    command = await resolveExecutable(configuredCommand, environment);
-  } catch {
-    connection.setImCliReadiness({ provider, status: "install" });
-    return;
-  }
-  const execution = { env: environment, timeout: 10_000, windowsHide: true } as const;
-  try {
-    if (provider === "feishu") {
-      await execFileAsync(command, ["--version"], execution);
-      await execFileAsync(command, ["im", "--help"], execution);
-    } else {
-      await execFileAsync(command, ["version"], execution);
-      await execFileAsync(command, ["api", "--help"], execution);
+  const probe = (async () => {
+    let command: string;
+    try {
+      command = await resolveExecutable(configuredCommand, environment);
+    } catch {
+      return "install" as const;
     }
-    connection.setImCliReadiness({ provider, status: "ready" });
-  } catch {
-    connection.setImCliReadiness({ provider, status: "unavailable" });
-  }
+    const execution = { env: environment, signal, timeout: 10_000, windowsHide: true } as const;
+    try {
+      if (provider === "feishu") {
+        await execFileAsync(command, ["--version"], execution);
+        await execFileAsync(command, ["im", "--help"], execution);
+      } else {
+        await execFileAsync(command, ["version"], execution);
+        await execFileAsync(command, ["api", "--help"], execution);
+      }
+      return "ready" as const;
+    } catch {
+      return "unavailable" as const;
+    }
+  })();
+  let onAbort: (() => void) | undefined;
+  const status = await (signal
+    ? Promise.race([
+        probe,
+        new Promise<"aborted">((resolve) => {
+          if (signal.aborted) {
+            resolve("aborted");
+            return;
+          }
+          onAbort = () => resolve("aborted");
+          signal.addEventListener("abort", onAbort, { once: true });
+        }),
+      ]).finally(() => {
+        if (onAbort) signal.removeEventListener("abort", onAbort);
+      })
+    : probe);
+  if (status === "aborted" || signal?.aborted) return;
+  connection.setImCliReadiness({ provider, status });
 }
 
 export interface ResolvedCodexFactoryOptions {

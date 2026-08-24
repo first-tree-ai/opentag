@@ -44,6 +44,7 @@ import googleSignInButton from "./assets/google-sign-in-light@2x.png";
 import { CreateTeamForm } from "./create-team-form.js";
 import { IntegrationsPage } from "./features/integrations-page.js";
 import { SkillsPage } from "./features/skills-page.js";
+import { TaskDetailPage, TasksPage } from "./features/tasks-page.js";
 import { UsagePage } from "./features/usage-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
 import { OnboardingPage } from "./onboarding/page.js";
@@ -384,6 +385,7 @@ export function AppRouter() {
             <Route path="/agents/:agentId/access" element={<LegacyAgentAccessRedirect />} />
             <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
             <Route path="/tasks" element={<TasksPage />} />
+            <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
             <Route path="/integrations" element={<IntegrationsPage />} />
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/resources" element={<Navigate replace to="/skills" />} />
@@ -2028,55 +2030,6 @@ function MembersPage() {
         teamId={membership.teamId}
       />
     </Page>
-  );
-}
-
-function TasksPage() {
-  return (
-    <Page title="Tasks" description="Track work assigned to Agents.">
-      <CapabilityUnavailable
-        details={[
-          "The current server does not expose a Tasks API.",
-          "No sample, inferred, or locally generated Task records are shown.",
-        ]}
-        status="Coming later"
-        title="Tasks are not available yet"
-      >
-        Tasks will appear here after OpenTag can load authoritative Task records from the server.
-      </CapabilityUnavailable>
-    </Page>
-  );
-}
-
-function CapabilityUnavailable({
-  action,
-  children,
-  details,
-  status = "Not enabled",
-  title,
-}: {
-  action?: { label: string; to: string };
-  children: ReactNode;
-  details: readonly string[];
-  status?: string;
-  title: string;
-}) {
-  return (
-    <section className="settings-unavailable">
-      <span className="settings-state-label">{status}</span>
-      <h2>{title}</h2>
-      <p>{children}</p>
-      <ul>
-        {details.map((detail) => (
-          <li key={detail}>{detail}</li>
-        ))}
-      </ul>
-      {action ? (
-        <Link className="settings-state-action" to={action.to}>
-          {action.label} <Icon name="arrow-right" />
-        </Link>
-      ) : null}
-    </section>
   );
 }
 

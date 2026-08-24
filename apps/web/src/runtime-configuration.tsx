@@ -17,7 +17,9 @@ export function RuntimeConfigurationForm({ initialConfig, save, section = "all" 
 
 function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: RuntimeConfigurationFormProps) {
   const [config, setConfig] = useState(initialConfig);
-  const [editingRuntime, setEditingRuntime] = useState(false);
+  const [modelDraft, setModelDraft] = useState(initialConfig.runtimeConfig.model ?? "");
+  const [reasoningDraft, setReasoningDraft] = useState(initialConfig.runtimeConfig.reasoningEffort ?? "");
+  const [instructionsDraft, setInstructionsDraft] = useState(initialConfig.runtimeConfig.instructions);
   const [message, setMessage] = useState<{
     kind: "error" | "success";
     section: "runtime" | "instructions";
@@ -27,8 +29,14 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
   const fieldId = (name: string) => `runtime-${name}-${config.id}`;
   const reasoningListId = `reasoning-effort-${config.id}`;
   const providerName = config.runtimeProvider === "codex" ? "Codex" : "Claude Code";
+  const ExecutionHeading = section === "execution" ? "h1" : "h3";
+  const InstructionsHeading = section === "instructions" ? "h1" : "h3";
   const reasoningSuggestions =
     config.runtimeProvider === "codex" ? CODEX_REASONING_EFFORT_SUGGESTIONS : CLAUDE_CODE_REASONING_EFFORT_SUGGESTIONS;
+  const runtimeDirty =
+    modelDraft !== (config.runtimeConfig.model ?? "") ||
+    reasoningDraft !== (config.runtimeConfig.reasoningEffort ?? "");
+  const instructionsDirty = instructionsDraft !== config.runtimeConfig.instructions;
 
   async function saveRuntime(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -39,7 +47,8 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
       const runtimeConfig = runtimeConfigurationFromForm(new FormData(event.currentTarget));
       const updated = await save({ expectedRevision: config.revision, runtimeConfig });
       setConfig(updated);
-      setEditingRuntime(false);
+      setModelDraft(updated.runtimeConfig.model ?? "");
+      setReasoningDraft(updated.runtimeConfig.reasoningEffort ?? "");
       setMessage({ kind: "success", section: "runtime", text: "Execution settings saved." });
     } catch (cause) {
       setMessage({
@@ -58,12 +67,12 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
     setSaving("instructions");
     setMessage(undefined);
     try {
-      const instructions = String(new FormData(event.currentTarget).get("instructions") ?? "");
       const updated = await save({
         expectedRevision: config.revision,
-        runtimeConfig: { instructions },
+        runtimeConfig: { instructions: instructionsDraft },
       });
       setConfig(updated);
+      setInstructionsDraft(updated.runtimeConfig.instructions);
       setMessage({ kind: "success", section: "instructions", text: "Agent instructions saved." });
     } catch (cause) {
       setMessage({
@@ -77,78 +86,91 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
   }
 
   return (
-    <div className="agent-runtime-settings">
+    <div className={`agent-runtime-settings${section === "all" ? "" : " agent-settings-section-page"}`}>
       {section !== "instructions" ? (
         <section aria-labelledby="execution-heading" className="agent-runtime-section">
           <header className="agent-runtime-section__header">
             <div>
-              <h3 id="execution-heading">Execution</h3>
-              <p>Choose the provider, model, and reasoning level used for new work.</p>
+              <ExecutionHeading id="execution-heading">
+                {section === "execution" ? "Model & reasoning" : "Execution"}
+              </ExecutionHeading>
+              <p>
+                {section === "execution"
+                  ? "Choose how this Agent handles new work."
+                  : "Choose the provider, model, and reasoning level used for new work."}
+              </p>
             </div>
-            {!editingRuntime ? (
-              <Button size="compact" variant="inline" onClick={() => setEditingRuntime(true)}>
-                Edit settings
-              </Button>
-            ) : null}
           </header>
-          {editingRuntime ? (
-            <form className="agent-runtime-edit-form" key={config.revision} onSubmit={saveRuntime}>
-              <div className="agent-runtime-field-grid">
-                <Field
-                  hint="Leave blank to use the provider default."
-                  hintId={fieldId("model-help")}
-                  htmlFor={fieldId("model")}
-                  label="Model"
-                >
-                  <input
-                    aria-describedby={fieldId("model-help")}
-                    autoComplete="off"
-                    defaultValue={config.runtimeConfig.model ?? ""}
-                    id={fieldId("model")}
-                    name="model"
-                    placeholder="Provider default"
-                  />
-                </Field>
-                <Field
-                  hint="Leave blank to use the provider default."
-                  hintId={fieldId("reasoning-help")}
-                  htmlFor={fieldId("reasoning-effort")}
-                  label="Reasoning level"
-                >
-                  <input
-                    aria-describedby={fieldId("reasoning-help")}
-                    autoComplete="off"
-                    defaultValue={config.runtimeConfig.reasoningEffort ?? ""}
-                    id={fieldId("reasoning-effort")}
-                    list={reasoningListId}
-                    name="reasoningEffort"
-                    placeholder="Provider default"
-                  />
-                  <datalist id={reasoningListId}>
-                    {reasoningSuggestions.map((effort) => (
-                      <option value={effort} key={effort} />
-                    ))}
-                  </datalist>
-                </Field>
+          {section !== "execution" ? <p className="agent-runtime-provider">Provider: {providerName}</p> : null}
+          <form className="agent-runtime-edit-form" onSubmit={saveRuntime}>
+            <div className="agent-runtime-field-grid">
+              <Field
+                hint="Leave blank to use the provider default."
+                hintId={fieldId("model-help")}
+                htmlFor={fieldId("model")}
+                label="Model"
+              >
+                <input
+                  aria-describedby={fieldId("model-help")}
+                  autoComplete="off"
+                  id={fieldId("model")}
+                  name="model"
+                  placeholder={`${providerName} default`}
+                  value={modelDraft}
+                  onChange={(event) => {
+                    setModelDraft(event.currentTarget.value);
+                    setMessage(undefined);
+                  }}
+                />
+              </Field>
+              <Field
+                hint="Leave blank to use the provider default."
+                hintId={fieldId("reasoning-help")}
+                htmlFor={fieldId("reasoning-effort")}
+                label="Reasoning level"
+              >
+                <input
+                  aria-describedby={fieldId("reasoning-help")}
+                  autoComplete="off"
+                  id={fieldId("reasoning-effort")}
+                  list={reasoningListId}
+                  name="reasoningEffort"
+                  placeholder="Provider default"
+                  value={reasoningDraft}
+                  onChange={(event) => {
+                    setReasoningDraft(event.currentTarget.value);
+                    setMessage(undefined);
+                  }}
+                />
+                <datalist id={reasoningListId}>
+                  {reasoningSuggestions.map((effort) => (
+                    <option value={effort} key={effort} />
+                  ))}
+                </datalist>
+              </Field>
+            </div>
+            {runtimeDirty ? (
+              <div className="dirty-bar">
+                <span>Unsaved changes</span>
+                <div className="dirty-actions">
+                  <Button
+                    disabled={Boolean(saving)}
+                    variant="ghost"
+                    onClick={() => {
+                      setModelDraft(config.runtimeConfig.model ?? "");
+                      setReasoningDraft(config.runtimeConfig.reasoningEffort ?? "");
+                      setMessage(undefined);
+                    }}
+                  >
+                    Discard
+                  </Button>
+                  <Button disabled={Boolean(saving)} type="submit">
+                    {saving === "runtime" ? "Saving…" : "Save changes"}
+                  </Button>
+                </div>
               </div>
-              <div className="agent-runtime-actions">
-                <Button disabled={Boolean(saving)} type="submit">
-                  {saving === "runtime" ? "Saving…" : "Save settings"}
-                </Button>
-                <Button disabled={Boolean(saving)} variant="ghost" onClick={() => setEditingRuntime(false)}>
-                  Cancel
-                </Button>
-              </div>
-            </form>
-          ) : (
-            <RuntimeFacts
-              rows={[
-                ["Provider", providerName],
-                ["Model", config.runtimeConfig.model ?? "Provider default"],
-                ["Reasoning level", config.runtimeConfig.reasoningEffort ?? "Provider default"],
-              ]}
-            />
-          )}
+            ) : null}
+          </form>
           {message?.section === "runtime" ? <SaveMessage message={message} /> : null}
         </section>
       ) : null}
@@ -157,11 +179,17 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
         <section aria-labelledby="agent-instructions-heading" className="agent-runtime-section">
           <header className="agent-runtime-section__header">
             <div>
-              <h3 id="agent-instructions-heading">Agent instructions</h3>
-              <p>Set the guidance applied to every request this Agent handles.</p>
+              <InstructionsHeading id="agent-instructions-heading">
+                {section === "instructions" ? "Instructions & behavior" : "Agent instructions"}
+              </InstructionsHeading>
+              <p>
+                {section === "instructions"
+                  ? "Tell this Agent how it should work in plain language."
+                  : "Set the guidance applied to every request this Agent handles."}
+              </p>
             </div>
           </header>
-          <form className="agent-instructions-form" key={config.runtimeConfig.revision} onSubmit={saveInstructions}>
+          <form className="agent-instructions-form" onSubmit={saveInstructions}>
             <Field
               hint="Be concise and specific. These instructions apply in addition to OpenTag's platform guidance."
               hintId={fieldId("instructions-help")}
@@ -170,33 +198,41 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
             >
               <textarea
                 aria-describedby={fieldId("instructions-help")}
-                defaultValue={config.runtimeConfig.instructions}
                 id={fieldId("instructions")}
                 name="instructions"
                 rows={8}
+                value={instructionsDraft}
+                onChange={(event) => {
+                  setInstructionsDraft(event.currentTarget.value);
+                  setMessage(undefined);
+                }}
               />
             </Field>
-            <Button disabled={Boolean(saving)} type="submit">
-              {saving === "instructions" ? "Saving…" : "Save instructions"}
-            </Button>
+            {instructionsDirty ? (
+              <div className="dirty-bar">
+                <span>Unsaved changes</span>
+                <div className="dirty-actions">
+                  <Button
+                    disabled={Boolean(saving)}
+                    variant="ghost"
+                    onClick={() => {
+                      setInstructionsDraft(config.runtimeConfig.instructions);
+                      setMessage(undefined);
+                    }}
+                  >
+                    Discard
+                  </Button>
+                  <Button disabled={Boolean(saving)} type="submit">
+                    {saving === "instructions" ? "Saving…" : "Save changes"}
+                  </Button>
+                </div>
+              </div>
+            ) : null}
           </form>
           {message?.section === "instructions" ? <SaveMessage message={message} /> : null}
         </section>
       ) : null}
     </div>
-  );
-}
-
-function RuntimeFacts({ rows }: { rows: ReadonlyArray<readonly [string, string]> }) {
-  return (
-    <dl className="agent-runtime-facts">
-      {rows.map(([label, value]) => (
-        <div key={label}>
-          <dt>{label}</dt>
-          <dd>{value}</dd>
-        </div>
-      ))}
-    </dl>
   );
 }
 

@@ -55,6 +55,7 @@ import {
   Dialog,
   Field,
   Icon,
+  type IconName,
   SettingsList,
   SettingsRow,
   StatusIndicator,
@@ -300,6 +301,7 @@ function useResource<T>(
   loader: () => Promise<T>,
   key: string,
   options: {
+    keepPreviousData?: boolean;
     onBackgroundError?: (value: T, error: Error) => T;
     revalidateMs?: number;
     refreshOnFocus?: boolean;
@@ -350,7 +352,7 @@ function useResource<T>(
         });
     };
     const revalidate = () => load(false);
-    load(true);
+    load(!options.keepPreviousData);
     const interval = options.revalidateMs ? window.setInterval(revalidate, options.revalidateMs) : undefined;
     const refreshVisible = () => {
       if (document.visibilityState === "visible") revalidate();
@@ -365,7 +367,7 @@ function useResource<T>(
       window.removeEventListener("focus", revalidate);
       document.removeEventListener("visibilitychange", refreshVisible);
     };
-  }, [key, options.refreshOnFocus, options.revalidateMs]);
+  }, [key, options.keepPreviousData, options.refreshOnFocus, options.revalidateMs]);
   return state;
 }
 
@@ -1434,15 +1436,57 @@ function markOwnComputersUnconfirmed(value: { computers: Computer[] }): { comput
   };
 }
 
-const agentSettingsSections = [
-  { key: "identity", label: "Identity", description: "Name and handle" },
-  { key: "instructions", label: "Instructions", description: "Guidance for every request" },
-  { key: "execution", label: "Execution", description: "Provider, model, and reasoning" },
-  { key: "messaging", label: "Messaging", description: "Contact channel and trigger rules" },
-  { key: "computer", label: "Computer", description: "Assigned device and connection" },
-  { key: "manage", label: "Manage", description: "Pause or delete this Agent" },
+type AgentSettingsSection = "instructions" | "execution" | "messaging" | "identity" | "computer" | "manage";
+type AgentSettingsGroup = "work" | "contact" | "details";
+
+const agentSettingsSections: ReadonlyArray<{
+  key: AgentSettingsSection;
+  label: string;
+  group: AgentSettingsGroup;
+  icon: IconName;
+}> = [
+  {
+    key: "instructions",
+    label: "Instructions & behavior",
+    group: "work",
+    icon: "instructions",
+  },
+  {
+    key: "execution",
+    label: "Model & reasoning",
+    group: "work",
+    icon: "model",
+  },
+  {
+    key: "messaging",
+    label: "Messaging",
+    group: "contact",
+    icon: "message",
+  },
+  {
+    key: "identity",
+    label: "Name & identity",
+    group: "details",
+    icon: "user",
+  },
+  {
+    key: "computer",
+    label: "Connected computer",
+    group: "details",
+    icon: "laptop",
+  },
+  {
+    key: "manage",
+    label: "Manage Agent",
+    group: "details",
+    icon: "shield",
+  },
+];
+const agentSettingsGroups = [
+  { key: "work", label: "How it works" },
+  { key: "contact", label: "Where it receives work" },
+  { key: "details", label: "Agent details" },
 ] as const;
-type AgentSettingsSection = (typeof agentSettingsSections)[number]["key"];
 
 function LegacyAgentAccessRedirect() {
   return <Navigate replace to="/workspace#members" />;
@@ -1472,7 +1516,7 @@ function LegacyAgentCapabilityPage({ capability }: { capability: "integrations" 
   return (
     <AsyncState state={state}>
       {(agent) => (
-        <section className="object-page">
+        <section className="object-page agent-profile-page">
           <AgentObjectHeader agent={agent} />
           <div className="agent-secondary-page">
             <header className="section-header">
@@ -1507,16 +1551,12 @@ function AgentDetailPage() {
   return (
     <AsyncState state={state}>
       {(agent) => (
-        <section className="object-page">
+        <section className="object-page agent-profile-page">
           <AgentObjectHeader agent={agent} />
           <div className="agent-home">
             {agent.availability.state !== "ready" ? <AgentRecoveryBanner agent={agent} /> : null}
             <AgentCurrentActivity agent={agent} />
             <AgentContact agent={agent} />
-            <p className="agent-home-footnote">
-              OpenTag shows confirmed status and contact information. Detailed work remains in the original messaging
-              thread.
-            </p>
           </div>
         </section>
       )}
@@ -1525,6 +1565,8 @@ function AgentDetailPage() {
 }
 
 function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; backToSettings?: boolean }) {
+  const { me } = useTeam();
+  const showManager = agent.manager.userId !== me.user.id;
   return (
     <header className="object-header">
       <Link className="breadcrumb" to={backToSettings ? `/agents/${agent.id}` : "/agents"}>
@@ -1536,26 +1578,27 @@ function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; 
           <span className="agent-avatar large" aria-hidden="true">
             {initials(agent.displayName)}
           </span>
-          <div>
-            <h1>{agent.displayName}</h1>
+          <div className="object-identity-copy">
+            <div className="agent-name-line">
+              <h1>{agent.displayName}</h1>
+              <AgentAvailabilityAction agent={agent} />
+            </div>
             <p>
               <span>@{agent.name}</span>
-              <span>Managed by {agent.manager.displayName}</span>
+              {showManager ? <span>Managed by {agent.manager.displayName}</span> : null}
             </p>
           </div>
         </div>
         <div className="agent-header-actions">
-          <AgentAvailabilityAction agent={agent} />
-          {agent.viewerCapabilities.canManage && !backToSettings ? (
-            <Link className={buttonClassName({ variant: "secondary" })} to={`/agents/${agent.id}/settings`}>
-              Settings
+          {!backToSettings ? (
+            <Link className="agent-usage-link" to={`/agents/${agent.id}/usage`}>
+              Usage
             </Link>
           ) : null}
-          {!backToSettings ? (
-            <details className="agent-more-menu">
-              <summary aria-label="More Agent actions">More</summary>
-              <Link to={`/agents/${agent.id}/usage`}>Usage</Link>
-            </details>
+          {agent.viewerCapabilities.canManage && !backToSettings ? (
+            <Link className={buttonClassName({ variant: "secondary" })} to={`/agents/${agent.id}/settings`}>
+              <Icon name="settings" /> Settings
+            </Link>
           ) : null}
         </div>
       </div>
@@ -1583,8 +1626,8 @@ function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
 function AgentCurrentActivity({ agent }: { agent: AgentDetailView }) {
   return (
     <section className="agent-home-section" aria-labelledby="current-activity-heading">
-      <header>
-        <h2 id="current-activity-heading">Current activity</h2>
+      <header className="agent-home-section-heading">
+        <h2 id="current-activity-heading">Current work</h2>
       </header>
       {agent.activity.state === "working" ? (
         <div className="agent-current-work">
@@ -1593,12 +1636,10 @@ function AgentCurrentActivity({ agent }: { agent: AgentDetailView }) {
             <strong>Handling a request</strong>
             <p>Started {formatRelativeTime(agent.activity.startedAt)}</p>
           </div>
-          <span className="agent-state-label">Working</span>
         </div>
       ) : (
-        <p className="agent-empty-line">
+        <p className="agent-activity-empty">
           <strong>No active work</strong>
-          <span>{agent.availability.state === "ready" ? "Ready for a new request" : "No request is running"}</span>
         </p>
       )}
     </section>
@@ -1610,33 +1651,58 @@ function AgentContact({ agent }: { agent: AgentDetailView }) {
   return (
     <section className="agent-home-section" aria-labelledby="agent-contact-heading">
       <header className="agent-home-section-heading">
-        <div>
-          <h2 id="agent-contact-heading">Contact</h2>
-          <p>Where teammates can send this Agent work.</p>
-        </div>
-        {agent.viewerCapabilities.canManage ? (
-          <Link to={`/agents/${agent.id}/settings/messaging`}>Manage messaging</Link>
-        ) : null}
+        <h2 id="agent-contact-heading">Where to use this Agent</h2>
       </header>
       {agent.messaging.kind === "unconfirmed" ? (
-        <p className="agent-empty-line">
-          <strong>Unable to confirm messaging</strong>
-          <span>Try again shortly</span>
-        </p>
+        <div className="agent-contact-row is-unconfirmed">
+          <span className="agent-contact-mark" aria-hidden="true">
+            ?
+          </span>
+          <span className="agent-contact-copy">
+            <strong>Unable to confirm messaging</strong>
+            <small>Try again shortly</small>
+          </span>
+        </div>
       ) : binding ? (
-        <div className="agent-contact-body">
-          <StatusIndicator
-            detail={titleCase(binding.provider)}
-            label={binding.bot.displayName}
-            tone={messagingConnectionTone(binding, agent.availability.dependencies.handoff.state)}
-          />
-          <p>{agentUseInstruction(agent, titleCase(binding.provider))}</p>
+        <div className="agent-contact-row">
+          <span className="agent-contact-mark" aria-hidden="true">
+            {titleCase(binding.provider).charAt(0)}
+          </span>
+          <span className="agent-contact-copy">
+            <strong>
+              {titleCase(binding.provider)} · @{agent.name}
+            </strong>
+            <small>{agentUseInstruction(agent, titleCase(binding.provider))}</small>
+          </span>
+          {agent.viewerCapabilities.canManage ? (
+            <Link
+              className={buttonClassName({ size: "compact", variant: "outline" })}
+              state={{ returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
+              to={`/agents/${agent.id}/settings/messaging`}
+            >
+              Manage
+            </Link>
+          ) : null}
         </div>
       ) : (
-        <p className="agent-empty-line">
-          <strong>No messaging connected</strong>
-          <span>Connect Feishu or Slack to start sending work</span>
-        </p>
+        <div className="agent-contact-row is-empty">
+          <span className="agent-contact-mark" aria-hidden="true">
+            +
+          </span>
+          <span className="agent-contact-copy">
+            <strong>No messaging connected</strong>
+            <small>Connect Feishu or Slack to start sending work</small>
+          </span>
+          {agent.viewerCapabilities.canManage ? (
+            <Link
+              className={buttonClassName({ size: "compact", variant: "outline" })}
+              state={{ returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
+              to={`/agents/${agent.id}/settings/messaging`}
+            >
+              Connect
+            </Link>
+          ) : null}
+        </div>
       )}
     </section>
   );
@@ -1650,7 +1716,7 @@ function AgentUsagePage() {
   return (
     <AsyncState state={state}>
       {(agent) => (
-        <section className="object-page">
+        <section className="object-page agent-profile-page">
           <AgentObjectHeader agent={agent} backToSettings />
           <div className="agent-secondary-page">
             <header className="section-header">
@@ -1667,8 +1733,10 @@ function AgentUsagePage() {
 
 function AgentSettingsPage() {
   const { agentId = "", section } = useParams();
+  const location = useLocation();
   const [refreshVersion, setRefreshVersion] = useState(0);
   const state = useResource(() => loadAgentDetail(agentId), `${agentId}:${refreshVersion}`, {
+    keepPreviousData: true,
     onBackgroundError: markAgentDetailUnconfirmed,
   });
   const selected = section as AgentSettingsSection | undefined;
@@ -1677,20 +1745,16 @@ function AgentSettingsPage() {
     <AsyncState state={state}>
       {(agent) => {
         if (!agent.viewerCapabilities.canManage) return <Navigate replace to={`/agents/${agent.id}`} />;
+        const returnState = location.state as { returnLabel?: string; returnTo?: string } | null;
+        const backTo = selected ? (returnState?.returnTo ?? `/agents/${agent.id}/settings`) : `/agents/${agent.id}`;
+        const backLabel = selected ? (returnState?.returnLabel ?? "Agent settings") : agent.displayName;
         return (
-          <section className="object-page">
-            <AgentObjectHeader agent={agent} backToSettings />
-            <div className="agent-settings-layout">
-              <nav aria-label="Agent settings" className="agent-settings-nav">
-                <Link className={!selected ? "active" : undefined} to={`/agents/${agent.id}/settings`}>
-                  Settings
-                </Link>
-                {agentSettingsSections.map((item) => (
-                  <NavLink key={item.key} to={`/agents/${agent.id}/settings/${item.key}`}>
-                    {item.label}
-                  </NavLink>
-                ))}
-              </nav>
+          <section className="object-page agent-profile-page">
+            <div className="agent-settings-page">
+              <Link className="agent-page-back" to={backTo}>
+                <Icon name="arrow-left" />
+                Back to {backLabel}
+              </Link>
               <div className="agent-settings-content">
                 <AgentSettingsContent
                   agent={agent}
@@ -1780,9 +1844,8 @@ function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
   const tone = availabilityTone(agent.availability.state);
   const working = agent.availability.state === "ready" && agent.activity.state === "working";
   return (
-    <div className={`availability-action ${tone}`}>
+    <div className="agent-availability-line">
       <StatusIndicator
-        detail={working ? "Handling a request" : agentAvailabilitySummary(agent)}
         label={working ? "Working" : availabilityStateLabel(agent.availability.state)}
         tone={working ? "info" : tone}
       />
@@ -1830,32 +1893,103 @@ function AgentConfigSettingsContent({
             />
           );
         }
-        return <AgentManageSettings initialConfig={config} onAgentChanged={onAgentChanged} />;
+        return <AgentManageSettings agent={agent} initialConfig={config} onAgentChanged={onAgentChanged} />;
       }}
     </AsyncState>
   );
 }
 
 function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
+  const configState = useResource(() => browserApi.agentConfig(agent.id), `${agent.id}:settings-overview`);
   return (
-    <div>
-      <header className="section-header">
-        <h2>Settings</h2>
-        <p>Change how {agent.displayName} appears, works, and receives requests.</p>
+    <div className="agent-settings-overview">
+      <header className="agent-settings-page-title">
+        <h1>Agent settings</h1>
+        <p>Change how {agent.displayName} works and receives requests.</p>
       </header>
-      <div className="agent-settings-grid">
-        {agentSettingsSections.map((item) => (
-          <Link key={item.key} to={`/agents/${agent.id}/settings/${item.key}`}>
-            <span>
-              <strong>{item.label}</strong>
-              <small>{item.description}</small>
-            </span>
-            <Icon name="chevron-right" />
-          </Link>
-        ))}
-      </div>
+      <AsyncState state={configState}>
+        {(config) => (
+          <div className="agent-settings-groups">
+            {agentSettingsGroups.map((group) => (
+              <section className="agent-settings-group" key={group.key} aria-labelledby={`agent-settings-${group.key}`}>
+                <h2 id={`agent-settings-${group.key}`}>{group.label}</h2>
+                <div className="agent-settings-grid">
+                  {agentSettingsSections
+                    .filter((item) => item.group === group.key)
+                    .map((item) => {
+                      const content = (
+                        <>
+                          <span className="agent-settings-icon" aria-hidden="true">
+                            <Icon name={item.icon} />
+                          </span>
+                          <span className="agent-settings-row-copy">
+                            <strong>{item.label}</strong>
+                            <small>{agentSettingsSummary(agent, config, item.key)}</small>
+                          </span>
+                        </>
+                      );
+                      const computerReady =
+                        item.key === "computer" && agent.availability.dependencies.computer.state === "ready";
+                      if (computerReady) {
+                        return (
+                          <div className="agent-settings-entry is-static" key={item.key}>
+                            {content}
+                          </div>
+                        );
+                      }
+                      return (
+                        <Link
+                          className="agent-settings-entry"
+                          key={item.key}
+                          to={`/agents/${agent.id}/settings/${item.key}`}
+                        >
+                          {content}
+                          <span className="agent-settings-row-value" aria-hidden="true">
+                            {item.key === "computer" ? <small>Review</small> : null}
+                            <Icon name="chevron-right" />
+                          </span>
+                        </Link>
+                      );
+                    })}
+                </div>
+              </section>
+            ))}
+          </div>
+        )}
+      </AsyncState>
     </div>
   );
+}
+
+function agentSettingsSummary(agent: AgentDetailView, config: AgentAdminConfig, section: AgentSettingsSection): string {
+  if (section === "instructions") {
+    return config.runtimeConfig.instructions.trim() ? "Custom instructions" : "Not configured";
+  }
+  if (section === "execution") {
+    const provider = config.runtimeProvider === "codex" ? "Codex" : "Claude Code";
+    const model = config.runtimeConfig.model ?? "Default model";
+    const reasoning = config.runtimeConfig.reasoningEffort
+      ? titleCase(config.runtimeConfig.reasoningEffort)
+      : "Default reasoning";
+    return `${provider} · ${model} · ${reasoning}`;
+  }
+  if (section === "messaging") {
+    if (agent.messaging.kind === "unconfirmed") return "Messaging status is temporarily unavailable";
+    const binding = agent.messaging.value;
+    if (!binding) return "No messaging channel connected";
+    const status =
+      binding.bindingState === "active" && agent.availability.dependencies.handoff.state === "ready"
+        ? "Connected"
+        : messagingConnectionLabel(binding, agent.availability.dependencies.handoff.state);
+    return `${titleCase(binding.provider)} · @${agent.name} · ${status}`;
+  }
+  if (section === "identity") return `${config.displayName} · @${config.name}`;
+  if (section === "computer") {
+    const state = agent.availability.dependencies.computer.state;
+    const status = state === "ready" ? "Online" : state === "action_required" ? "Offline" : "Unconfirmed";
+    return `${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${status}`;
+  }
+  return config.status === "active" ? "Active" : "Paused";
 }
 
 function GeneralConfigForm({
@@ -1866,38 +2000,69 @@ function GeneralConfigForm({
   onAgentChanged: () => void;
 }) {
   const [config, setConfig] = useState(initialConfig);
+  const [displayName, setDisplayName] = useState(initialConfig.displayName);
   const [message, setMessage] = useState<string>();
+  const [saving, setSaving] = useState(false);
+  const dirty = displayName !== config.displayName;
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const displayName = String(new FormData(event.currentTarget).get("displayName") ?? "");
+    if (!dirty || saving) return;
+    setSaving(true);
+    setMessage(undefined);
     try {
-      setConfig(await browserApi.updateAgent(config.id, { expectedRevision: config.revision, displayName }));
+      const updated = await browserApi.updateAgent(config.id, { expectedRevision: config.revision, displayName });
+      setConfig(updated);
+      setDisplayName(updated.displayName);
       setMessage("Identity saved.");
       onAgentChanged();
     } catch (cause) {
       setMessage(cause instanceof Error ? cause.message : "Unable to save identity");
+    } finally {
+      setSaving(false);
     }
   }
   return (
-    <form className="form-card" onSubmit={submit}>
-      <header className="section-header">
-        <h2>Identity</h2>
+    <form className="form-card agent-settings-form" onSubmit={submit}>
+      <header className="agent-settings-page-title">
+        <h1>Name &amp; identity</h1>
         <p>Choose the name teammates see. The handle cannot be changed.</p>
       </header>
       <Field htmlFor="agent-display-name" label="Display name">
         <input
           className="ds-control"
-          defaultValue={config.displayName}
           id="agent-display-name"
-          key={config.revision}
           name="displayName"
           required
+          value={displayName}
+          onChange={(event) => {
+            setDisplayName(event.currentTarget.value);
+            setMessage(undefined);
+          }}
         />
       </Field>
-      <Field htmlFor="agent-handle" label="Handle">
-        <input className="ds-control" disabled id="agent-handle" value={`@${config.name}`} />
+      <Field hint="The handle cannot be changed." htmlFor="agent-handle" label="Handle">
+        <input className="ds-control" id="agent-handle" readOnly value={`@${config.name}`} />
       </Field>
-      <Button type="submit">Save identity</Button>
+      {dirty ? (
+        <div className="dirty-bar">
+          <span>Unsaved changes</span>
+          <div className="dirty-actions">
+            <Button
+              disabled={saving}
+              variant="ghost"
+              onClick={() => {
+                setDisplayName(config.displayName);
+                setMessage(undefined);
+              }}
+            >
+              Discard
+            </Button>
+            <Button disabled={saving} type="submit">
+              {saving ? "Saving…" : "Save changes"}
+            </Button>
+          </div>
+        </div>
+      ) : null}
       {message ? <p role="status">{message}</p> : null}
     </form>
   );
@@ -1914,12 +2079,12 @@ function AgentComputerSettings({ agent, onAgentChanged }: { agent: AgentDetailVi
   const computerTone: StatusTone =
     computerState.state === "ready" ? "success" : computerState.state === "action_required" ? "warning" : "neutral";
   return (
-    <div className="agent-runtime-stack">
+    <div className="agent-runtime-stack agent-settings-section-page">
       <section aria-labelledby="computer-heading" className="agent-runtime-section agent-runtime-computer">
         <header className="agent-runtime-section__header">
           <div>
-            <h2 id="computer-heading">Computer</h2>
-            <p>The device assigned to run this Agent.</p>
+            <h1 id="computer-heading">Connected computer</h1>
+            <p>The computer assigned to run {agent.displayName}.</p>
           </div>
           <StatusIndicator label={computerStatus} tone={computerTone} />
         </header>
@@ -1949,44 +2114,69 @@ function AgentComputerSettings({ agent, onAgentChanged }: { agent: AgentDetailVi
 }
 
 function AgentManageSettings({
+  agent,
   initialConfig,
   onAgentChanged,
 }: {
+  agent: AgentDetailView;
   initialConfig: AgentAdminConfig;
   onAgentChanged: () => void;
 }) {
   const navigate = useNavigate();
   const [config, setConfig] = useState(initialConfig);
   const [message, setMessage] = useState<string>();
+  const [confirmation, setConfirmation] = useState<"delete" | "pause">();
+  const [confirmationError, setConfirmationError] = useState<string>();
+  const [confirmationText, setConfirmationText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [restorePauseFocus, setRestorePauseFocus] = useState(false);
+  const pauseButtonRef = useRef<HTMLButtonElement>(null);
+  const deleteButtonRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (confirmation || !restorePauseFocus) return;
+    pauseButtonRef.current?.focus();
+    setRestorePauseFocus(false);
+  }, [confirmation, restorePauseFocus]);
   async function changeLifecycle(action: "suspend" | "reactivate") {
     try {
+      setBusy(true);
+      setMessage(undefined);
+      setConfirmationError(undefined);
       setConfig(
         action === "suspend" ? await browserApi.suspendAgent(config.id) : await browserApi.reactivateAgent(config.id),
       );
       setMessage(action === "suspend" ? "Agent paused." : "Agent reactivated.");
+      setRestorePauseFocus(confirmation === "pause");
+      setConfirmation(undefined);
       onAgentChanged();
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to change Agent status");
+      const error = cause instanceof Error ? cause.message : "Unable to change Agent status";
+      if (confirmation === "pause") setConfirmationError(error);
+      else setMessage(error);
+    } finally {
+      setBusy(false);
     }
   }
   async function deleteAgent() {
-    if (
-      !window.confirm(
-        `Permanently delete ${config.displayName}? This will end active Sessions, remove messaging credentials and execution settings, and retain Session and message history. This Agent cannot be restored.`,
-      )
-    )
-      return;
     try {
+      setBusy(true);
+      setMessage(undefined);
+      setConfirmationError(undefined);
       await browserApi.deleteAgent(config.id);
       navigate("/agents");
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to delete Agent");
+      setConfirmationError(cause instanceof Error ? cause.message : "Unable to delete Agent");
+      setBusy(false);
     }
   }
+  function closeConfirmation() {
+    setConfirmation(undefined);
+    setConfirmationError(undefined);
+  }
   return (
-    <section className="agent-manage-settings">
-      <header className="section-header">
-        <h2>Manage</h2>
+    <section className="agent-manage-settings agent-settings-section-page">
+      <header className="agent-settings-page-title">
+        <h1>Manage Agent</h1>
         <p>Pause this Agent temporarily or remove it permanently.</p>
       </header>
       <SettingsList>
@@ -1997,8 +2187,16 @@ function AgentManageSettings({
           label={config.status === "active" ? "Pause Agent" : "Reactivate Agent"}
         >
           <Button
+            ref={pauseButtonRef}
             variant="secondary"
-            onClick={() => void changeLifecycle(config.status === "active" ? "suspend" : "reactivate")}
+            onClick={() => {
+              if (config.status === "active" && agent.activity.state === "working") {
+                setConfirmationError(undefined);
+                setConfirmation("pause");
+                return;
+              }
+              void changeLifecycle(config.status === "active" ? "suspend" : "reactivate");
+            }}
           >
             {config.status === "active" ? "Pause" : "Reactivate"}
           </Button>
@@ -2011,12 +2209,88 @@ function AgentManageSettings({
           }
           label="Delete Agent"
         >
-          <Button disabled={config.status === "active"} variant="danger" onClick={() => void deleteAgent()}>
+          <Button
+            disabled={config.status === "active"}
+            ref={deleteButtonRef}
+            variant="danger"
+            onClick={() => {
+              setConfirmationText("");
+              setConfirmationError(undefined);
+              setConfirmation("delete");
+            }}
+          >
             Delete permanently
           </Button>
         </SettingsRow>
       </SettingsList>
       {message ? <p role="status">{message}</p> : null}
+      {confirmation === "pause" ? (
+        <Dialog
+          busy={busy}
+          description="This Agent is handling a request. Pausing it stops new requests, but the current request may continue until it reaches a safe stopping point."
+          returnFocusRef={pauseButtonRef}
+          title={`Pause ${config.displayName}?`}
+          onClose={closeConfirmation}
+        >
+          {confirmationError ? (
+            <div className="notice error" role="alert">
+              {confirmationError}
+            </div>
+          ) : null}
+          <div className="dialog-actions actions">
+            <Button disabled={busy} variant="ghost" onClick={closeConfirmation}>
+              Keep active
+            </Button>
+            <Button disabled={busy} variant="primary" onClick={() => void changeLifecycle("suspend")}>
+              {busy ? "Pausing…" : "Pause Agent"}
+            </Button>
+          </div>
+        </Dialog>
+      ) : null}
+      {confirmation === "delete" ? (
+        <Dialog
+          busy={busy}
+          description="This permanently removes the Agent and its messaging connection. The Agent cannot be restored."
+          returnFocusRef={deleteButtonRef}
+          title={`Delete ${config.displayName}?`}
+          onClose={closeConfirmation}
+        >
+          <div className="agent-delete-confirmation">
+            <Field
+              htmlFor="agent-delete-confirmation"
+              label={
+                <>
+                  Type <strong>{config.displayName}</strong> to confirm
+                </>
+              }
+            >
+              <input
+                autoComplete="off"
+                id="agent-delete-confirmation"
+                value={confirmationText}
+                onChange={(event) => setConfirmationText(event.currentTarget.value)}
+              />
+            </Field>
+            {confirmationError ? (
+              <div className="notice error" role="alert">
+                {confirmationError}
+              </div>
+            ) : null}
+            <div className="dialog-actions actions">
+              <Button disabled={busy} variant="ghost" onClick={closeConfirmation}>
+                Cancel
+              </Button>
+              <Button
+                disabled={busy || confirmationText !== config.displayName}
+                variant="danger"
+                onClick={() => void deleteAgent()}
+              >
+                {busy ? "Deleting…" : "Delete permanently"}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+      ) : null}
     </section>
   );
 }
@@ -2025,230 +2299,333 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
   const [reload, setReload] = useState(0);
   const [error, setError] = useState<string>();
   const [reauthorizationNeeded, setReauthorizationNeeded] = useState(false);
-  const state = useResource(() => browserApi.imBinding(agent.id), `${agent.id}:${reload}`);
+  const [confirmation, setConfirmation] = useState<
+    { kind: "all_messages" } | { bindingId: string; kind: "disable_binding" }
+  >();
+  const [confirmationError, setConfirmationError] = useState<string>();
+  const [confirmationBusy, setConfirmationBusy] = useState(false);
+  const [restoreFocusTarget, setRestoreFocusTarget] = useState<"messaging" | "trigger_rules">();
+  const allMessagesButtonRef = useRef<HTMLButtonElement>(null);
+  const disableBindingButtonRef = useRef<HTMLButtonElement>(null);
+  const messagingHeadingRef = useRef<HTMLHeadingElement>(null);
+  const triggerRulesHeadingRef = useRef<HTMLHeadingElement>(null);
+  const state = useResource(() => browserApi.imBinding(agent.id), `${agent.id}:${reload}`, {
+    keepPreviousData: true,
+  });
+  useEffect(() => {
+    if (confirmation || !restoreFocusTarget) return;
+    const target = restoreFocusTarget === "messaging" ? messagingHeadingRef.current : triggerRulesHeadingRef.current;
+    target?.focus();
+    setRestoreFocusTarget(undefined);
+  }, [confirmation, restoreFocusTarget]);
   async function changeReceiveMode(receiveMode: "mention_only" | "all_message") {
-    if (
-      receiveMode === "all_message" &&
-      !window.confirm(
-        "All-message mode may expose more conversation content and increase token usage and cost. Continue?",
-      )
-    )
-      return;
     try {
+      setConfirmationBusy(true);
+      setError(undefined);
+      setConfirmationError(undefined);
       const config = await browserApi.agentConfig(agent.id);
       await browserApi.updateAgent(agent.id, { expectedRevision: config.revision, receiveMode });
       setReload((value) => value + 1);
+      if (receiveMode === "all_message") setRestoreFocusTarget("trigger_rules");
+      setConfirmation(undefined);
       onAgentChanged();
     } catch (cause) {
       if (cause instanceof ApiError && cause.code === "IM_BINDING_SCOPE_REAUTH_REQUIRED") {
         setReauthorizationNeeded(true);
       }
-      setError(cause instanceof Error ? cause.message : "Unable to change receive mode");
+      const nextError = cause instanceof Error ? cause.message : "Unable to change receive mode";
+      if (confirmation?.kind === "all_messages") setConfirmationError(nextError);
+      else setError(nextError);
+    } finally {
+      setConfirmationBusy(false);
     }
   }
+  async function disableBinding(bindingId: string) {
+    try {
+      setConfirmationBusy(true);
+      setError(undefined);
+      setConfirmationError(undefined);
+      await browserApi.disableImBinding(bindingId);
+      setReload((value) => value + 1);
+      setRestoreFocusTarget("messaging");
+      setConfirmation(undefined);
+      onAgentChanged();
+    } catch (cause) {
+      setConfirmationError(cause instanceof Error ? cause.message : "Unable to disable IM binding");
+    } finally {
+      setConfirmationBusy(false);
+    }
+  }
+  function closeMessagingConfirmation() {
+    setConfirmation(undefined);
+    setConfirmationError(undefined);
+  }
   return (
-    <FeishuSetup
-      agentId={agent.id}
-      onSuccess={() => {
-        setReload((value) => value + 1);
-        onAgentChanged();
-      }}
-    >
-      {(feishuSetup) => (
-        <SlackSetup
-          agentId={agent.id}
-          onSuccess={() => {
-            setReload((value) => value + 1);
-            onAgentChanged();
-          }}
-        >
-          {(slackSetup) => {
-            const connectFeishu = async (intent: "create" | "reauthorize" | "replace" = "create") => {
-              setError(undefined);
-              if (await feishuSetup.start(intent)) setReauthorizationNeeded(false);
-            };
-            const connectSlack = async (intent: "create" | "reauthorize" | "replace" = "create") => {
-              setError(undefined);
-              if (await slackSetup.start(intent)) setReauthorizationNeeded(false);
-            };
-            return (
-              <AsyncState state={state}>
-                {(binding) => (
-                  <div className="im-stack">
-                    {binding ? (
-                      <>
+    <div className="agent-settings-section-page">
+      <header className="agent-settings-page-title">
+        <h1 ref={messagingHeadingRef} tabIndex={-1}>
+          Messaging
+        </h1>
+        <p>Choose where teammates send work to {agent.displayName}.</p>
+      </header>
+      <FeishuSetup
+        agentId={agent.id}
+        onSuccess={() => {
+          setReload((value) => value + 1);
+          onAgentChanged();
+        }}
+      >
+        {(feishuSetup) => (
+          <SlackSetup
+            agentId={agent.id}
+            onSuccess={() => {
+              setReload((value) => value + 1);
+              onAgentChanged();
+            }}
+          >
+            {(slackSetup) => {
+              const connectFeishu = async (intent: "create" | "reauthorize" | "replace" = "create") => {
+                setError(undefined);
+                if (await feishuSetup.start(intent)) setReauthorizationNeeded(false);
+              };
+              const connectSlack = async (intent: "create" | "reauthorize" | "replace" = "create") => {
+                setError(undefined);
+                if (await slackSetup.start(intent)) setReauthorizationNeeded(false);
+              };
+              return (
+                <AsyncState state={state}>
+                  {(binding) => (
+                    <div className="im-stack">
+                      {binding ? (
+                        <>
+                          <section className="im-section" aria-labelledby="contact-channel-heading">
+                            <div className="im-section-heading">
+                              <h3 id="contact-channel-heading">Contact channel</h3>
+                              <p>Where teammates can reach this Agent and whether the connection is available.</p>
+                            </div>
+                            <div className="binding-status">
+                              <StatusIndicator
+                                detail={`${titleCase(binding.provider)} · ${messagingConnectionLabel(
+                                  binding,
+                                  agent.availability.dependencies.handoff.state,
+                                )}`}
+                                label={binding.bot.displayName}
+                                tone={messagingConnectionTone(binding, agent.availability.dependencies.handoff.state)}
+                              />
+                              <small>
+                                {binding.lastConfirmedAt
+                                  ? `Confirmed ${formatDate(binding.lastConfirmedAt)}`
+                                  : "Unable to confirm"}
+                              </small>
+                            </div>
+                            <dl className="messaging-contact-facts">
+                              <div>
+                                <dt>Contact</dt>
+                                <dd>@{agent.name}</dd>
+                              </div>
+                              <div>
+                                <dt>How to use</dt>
+                                <dd>{agentUseInstruction(agent, titleCase(binding.provider))}</dd>
+                              </div>
+                            </dl>
+                            {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                            binding.provider === "feishu" &&
+                            agent.viewerCapabilities.canManage ? (
+                              <div className="im-actions">
+                                <Button onClick={() => void connectFeishu("reauthorize")}>Reauthorize Feishu</Button>
+                              </div>
+                            ) : null}
+                            {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                            binding.provider === "slack" &&
+                            agent.viewerCapabilities.canManage ? (
+                              <div className="im-actions">
+                                <Button onClick={() => void connectSlack("reauthorize")}>Reauthorize Slack</Button>
+                              </div>
+                            ) : null}
+                            {binding.bindingState === "provisioning" &&
+                            binding.provider === "slack" &&
+                            agent.viewerCapabilities.canManage ? (
+                              <SlackProvisioningActions onResume={() => void connectSlack("create")} />
+                            ) : null}
+                            {agent.viewerCapabilities.canManage ? (
+                              <div className="im-actions messaging-connection-actions">
+                                {binding.provider === "feishu" ? (
+                                  <Button
+                                    size="compact"
+                                    variant="outline"
+                                    onClick={() => void connectFeishu("replace")}
+                                  >
+                                    Replace Feishu Bot
+                                  </Button>
+                                ) : null}
+                                {binding.provider === "slack" && binding.bindingState !== "provisioning" ? (
+                                  <Button size="compact" variant="outline" onClick={() => void connectSlack("replace")}>
+                                    Replace Slack App
+                                  </Button>
+                                ) : null}
+                                <Button
+                                  ref={disableBindingButtonRef}
+                                  size="compact"
+                                  variant="danger"
+                                  onClick={() => {
+                                    setConfirmationError(undefined);
+                                    setConfirmation({ bindingId: binding.id, kind: "disable_binding" });
+                                  }}
+                                >
+                                  Disable IM binding
+                                </Button>
+                              </div>
+                            ) : (
+                              <p className="muted">Workspace admins manage this contact channel.</p>
+                            )}
+                          </section>
+                          <section className="im-section" aria-labelledby="trigger-rules-heading">
+                            <div className="im-section-heading">
+                              <h3 id="trigger-rules-heading" ref={triggerRulesHeadingRef} tabIndex={-1}>
+                                Trigger rules
+                              </h3>
+                              <p>Which incoming messages can start Agent work.</p>
+                            </div>
+                            <SettingsList className="agent-message-rules">
+                              <SettingsRow
+                                description="A direct message can always start work."
+                                label="Direct messages"
+                              >
+                                <strong>Always</strong>
+                              </SettingsRow>
+                              <SettingsRow
+                                description={
+                                  binding.receiveMode === "mention_only"
+                                    ? `Teammates must mention @${agent.name}.`
+                                    : "Every new conversation message can start work."
+                                }
+                                label={`${titleCase(binding.provider)} conversations`}
+                              >
+                                {agent.viewerCapabilities.canManage ? (
+                                  <fieldset aria-label="Conversation trigger rule" className="segmented-control">
+                                    {binding.receiveMode === "mention_only" ? (
+                                      <>
+                                        <span className="active">Mentions only</span>
+                                        <button
+                                          ref={allMessagesButtonRef}
+                                          type="button"
+                                          onClick={() => {
+                                            setConfirmationError(undefined);
+                                            setConfirmation({ kind: "all_messages" });
+                                          }}
+                                        >
+                                          All messages
+                                        </button>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
+                                          Mentions only
+                                        </button>
+                                        <span className="active">All messages</span>
+                                      </>
+                                    )}
+                                  </fieldset>
+                                ) : (
+                                  <strong>{receiveModeLabel(binding.receiveMode)}</strong>
+                                )}
+                              </SettingsRow>
+                            </SettingsList>
+                            {binding.pendingReceiveMode ? (
+                              <p className="muted">
+                                Scope upgrade pending: {receiveModeLabel(binding.pendingReceiveMode)} takes effect once{" "}
+                                {titleCase(binding.provider)} grants the additional permissions through reauthorization.
+                              </p>
+                            ) : null}
+                          </section>
+                        </>
+                      ) : (
                         <section className="im-section" aria-labelledby="contact-channel-heading">
                           <div className="im-section-heading">
                             <h3 id="contact-channel-heading">Contact channel</h3>
-                            <p>Where teammates can reach this Agent and whether the connection is available.</p>
+                            <p>Where teammates can reach this Agent.</p>
                           </div>
-                          <div className="binding-status">
-                            <StatusIndicator
-                              detail={`${titleCase(binding.provider)} · ${messagingConnectionLabel(
-                                binding,
-                                agent.availability.dependencies.handoff.state,
-                              )}`}
-                              label={binding.bot.displayName}
-                              tone={messagingConnectionTone(binding, agent.availability.dependencies.handoff.state)}
-                            />
-                            <small>
-                              {binding.lastConfirmedAt
-                                ? `Confirmed ${formatDate(binding.lastConfirmedAt)}`
-                                : "Unable to confirm"}
-                            </small>
-                          </div>
-                          <dl className="messaging-contact-facts">
-                            <div>
-                              <dt>Contact</dt>
-                              <dd>@{agent.name}</dd>
-                            </div>
-                            <div>
-                              <dt>How to use</dt>
-                              <dd>{agentUseInstruction(agent, titleCase(binding.provider))}</dd>
-                            </div>
-                          </dl>
-                          {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
-                          binding.provider === "feishu" &&
-                          agent.viewerCapabilities.canManage ? (
-                            <div className="im-actions">
-                              <Button onClick={() => void connectFeishu("reauthorize")}>Reauthorize Feishu</Button>
-                            </div>
-                          ) : null}
-                          {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
-                          binding.provider === "slack" &&
-                          agent.viewerCapabilities.canManage ? (
-                            <div className="im-actions">
-                              <Button onClick={() => void connectSlack("reauthorize")}>Reauthorize Slack</Button>
-                            </div>
-                          ) : null}
-                          {binding.bindingState === "provisioning" &&
-                          binding.provider === "slack" &&
-                          agent.viewerCapabilities.canManage ? (
-                            <SlackProvisioningActions onResume={() => void connectSlack("create")} />
-                          ) : null}
+                          <EmptyState title="No messaging channel">
+                            Teammates cannot contact this Agent until a supported bot is connected.
+                          </EmptyState>
                           {agent.viewerCapabilities.canManage ? (
-                            <div className="im-actions messaging-connection-actions">
-                              {binding.provider === "feishu" ? (
-                                <Button size="compact" variant="outline" onClick={() => void connectFeishu("replace")}>
-                                  Replace Feishu Bot
-                                </Button>
-                              ) : null}
-                              {binding.provider === "slack" && binding.bindingState !== "provisioning" ? (
-                                <Button size="compact" variant="outline" onClick={() => void connectSlack("replace")}>
-                                  Replace Slack App
-                                </Button>
-                              ) : null}
-                              <Button
-                                size="compact"
-                                variant="danger"
-                                onClick={() => {
-                                  if (
-                                    !window.confirm(
-                                      "Disable this IM binding? New IM work will stop until another binding is connected.",
-                                    )
-                                  )
-                                    return;
-                                  void browserApi.disableImBinding(binding.id).then(
-                                    () => {
-                                      setReload((value) => value + 1);
-                                      onAgentChanged();
-                                    },
-                                    (cause: unknown) =>
-                                      setError(cause instanceof Error ? cause.message : "Unable to disable IM binding"),
-                                  );
-                                }}
-                              >
-                                Disable IM binding
+                            <div className="im-actions">
+                              <Button onClick={() => void connectFeishu()}>Connect a Feishu Bot</Button>
+                              <Button variant="secondary" onClick={() => void connectSlack()}>
+                                Connect Slack App
                               </Button>
                             </div>
                           ) : (
-                            <p className="muted">Workspace admins manage this contact channel.</p>
+                            <p className="muted">Workspace admins manage messaging setup.</p>
                           )}
                         </section>
-                        <section className="im-section" aria-labelledby="trigger-rules-heading">
-                          <div className="im-section-heading">
-                            <h3 id="trigger-rules-heading">Trigger rules</h3>
-                            <p>Which incoming messages can start Agent work.</p>
-                          </div>
-                          <SettingsList className="agent-message-rules">
-                            <SettingsRow description="A direct message can always start work." label="Direct messages">
-                              <strong>Always</strong>
-                            </SettingsRow>
-                            <SettingsRow
-                              description={
-                                binding.receiveMode === "mention_only"
-                                  ? `Teammates must mention @${agent.name}.`
-                                  : "Every new conversation message can start work."
-                              }
-                              label={`${titleCase(binding.provider)} conversations`}
-                            >
-                              {agent.viewerCapabilities.canManage ? (
-                                <fieldset aria-label="Conversation trigger rule" className="segmented-control">
-                                  {binding.receiveMode === "mention_only" ? (
-                                    <>
-                                      <span className="active">Mentions only</span>
-                                      <button type="button" onClick={() => void changeReceiveMode("all_message")}>
-                                        All messages
-                                      </button>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
-                                        Mentions only
-                                      </button>
-                                      <span className="active">All messages</span>
-                                    </>
-                                  )}
-                                </fieldset>
-                              ) : (
-                                <strong>{receiveModeLabel(binding.receiveMode)}</strong>
-                              )}
-                            </SettingsRow>
-                          </SettingsList>
-                          {binding.pendingReceiveMode ? (
-                            <p className="muted">
-                              Scope upgrade pending: {receiveModeLabel(binding.pendingReceiveMode)} takes effect once{" "}
-                              {titleCase(binding.provider)} grants the additional permissions through reauthorization.
-                            </p>
-                          ) : null}
-                        </section>
-                      </>
-                    ) : (
-                      <section className="im-section" aria-labelledby="contact-channel-heading">
-                        <div className="im-section-heading">
-                          <h3 id="contact-channel-heading">Contact channel</h3>
-                          <p>Where teammates can reach this Agent.</p>
+                      )}
+                      {feishuSetup.feedback}
+                      {slackSetup.feedback}
+                      {error ? (
+                        <div className="notice error" role="alert">
+                          {error}
                         </div>
-                        <EmptyState title="No messaging channel">
-                          Teammates cannot contact this Agent until a supported bot is connected.
-                        </EmptyState>
-                        {agent.viewerCapabilities.canManage ? (
-                          <div className="im-actions">
-                            <Button onClick={() => void connectFeishu()}>Connect a Feishu Bot</Button>
-                            <Button variant="secondary" onClick={() => void connectSlack()}>
-                              Connect Slack App
-                            </Button>
-                          </div>
-                        ) : (
-                          <p className="muted">Workspace admins manage messaging setup.</p>
-                        )}
-                      </section>
-                    )}
-                    {feishuSetup.feedback}
-                    {slackSetup.feedback}
-                    {error ? (
-                      <div className="notice error" role="alert">
-                        {error}
-                      </div>
-                    ) : null}
-                  </div>
-                )}
-              </AsyncState>
-            );
-          }}
-        </SlackSetup>
-      )}
-    </FeishuSetup>
+                      ) : null}
+                    </div>
+                  )}
+                </AsyncState>
+              );
+            }}
+          </SlackSetup>
+        )}
+      </FeishuSetup>
+      {confirmation?.kind === "all_messages" ? (
+        <Dialog
+          busy={confirmationBusy}
+          description="Every new conversation message could start Agent work. This can share more conversation content and increase token usage."
+          returnFocusRef={allMessagesButtonRef}
+          title="Allow all conversation messages?"
+          onClose={closeMessagingConfirmation}
+        >
+          {confirmationError ? (
+            <div className="notice error" role="alert">
+              {confirmationError}
+            </div>
+          ) : null}
+          <div className="dialog-actions actions">
+            <Button disabled={confirmationBusy} variant="ghost" onClick={closeMessagingConfirmation}>
+              Keep mentions only
+            </Button>
+            <Button disabled={confirmationBusy} onClick={() => void changeReceiveMode("all_message")}>
+              {confirmationBusy ? "Updating…" : "Allow all messages"}
+            </Button>
+          </div>
+        </Dialog>
+      ) : null}
+      {confirmation?.kind === "disable_binding" ? (
+        <Dialog
+          busy={confirmationBusy}
+          description="Teammates will no longer be able to send new work to this Agent until another messaging connection is added."
+          returnFocusRef={disableBindingButtonRef}
+          title="Disconnect messaging?"
+          onClose={closeMessagingConfirmation}
+        >
+          {confirmationError ? (
+            <div className="notice error" role="alert">
+              {confirmationError}
+            </div>
+          ) : null}
+          <div className="dialog-actions actions">
+            <Button disabled={confirmationBusy} variant="ghost" onClick={closeMessagingConfirmation}>
+              Keep connected
+            </Button>
+            <Button
+              disabled={confirmationBusy}
+              variant="danger"
+              onClick={() => void disableBinding(confirmation.bindingId)}
+            >
+              {confirmationBusy ? "Disconnecting…" : "Disconnect"}
+            </Button>
+          </div>
+        </Dialog>
+      ) : null}
+    </div>
   );
 }
 

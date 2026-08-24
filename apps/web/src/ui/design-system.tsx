@@ -145,7 +145,21 @@ export function StatusIndicator({
   );
 }
 
-export type IconName = "arrow-left" | "arrow-right" | "check" | "chevron-right" | "close" | "more-vertical" | "plus";
+export type IconName =
+  | "arrow-left"
+  | "arrow-right"
+  | "check"
+  | "chevron-right"
+  | "close"
+  | "instructions"
+  | "laptop"
+  | "message"
+  | "model"
+  | "more-vertical"
+  | "plus"
+  | "settings"
+  | "shield"
+  | "user";
 
 export function Icon({ className, name, ...props }: SVGAttributes<SVGSVGElement> & { name: IconName }) {
   return (
@@ -164,6 +178,28 @@ export function Icon({ className, name, ...props }: SVGAttributes<SVGSVGElement>
       {name === "plus" ? <path d="M10 4v12M4 10h12" /> : null}
       {name === "arrow-right" ? <path d="M3.5 10h13m-5-5 5 5-5 5" /> : null}
       {name === "arrow-left" ? <path d="M16.5 10h-13m5-5-5 5 5 5" /> : null}
+      {name === "settings" ? (
+        <>
+          <circle cx="10" cy="10" r="2.5" />
+          <path d="M10 2.8v2M10 15.2v2M2.8 10h2M15.2 10h2M4.9 4.9l1.4 1.4M13.7 13.7l1.4 1.4M15.1 4.9l-1.4 1.4M6.3 13.7l-1.4 1.4" />
+        </>
+      ) : null}
+      {name === "instructions" ? <path d="M4 5h12M4 10h9M4 15h12" /> : null}
+      {name === "model" ? (
+        <>
+          <rect x="4" y="4" width="12" height="12" rx="3" />
+          <path d="M8 2v3M12 2v3M8 15v3M12 15v3M2 8h3M15 8h3M2 12h3M15 12h3M8 8h4v4H8z" />
+        </>
+      ) : null}
+      {name === "message" ? <path d="M4 4.5h12v9H8l-4 3v-12Z" /> : null}
+      {name === "user" ? (
+        <>
+          <circle cx="10" cy="7" r="3" />
+          <path d="M4.5 17c.5-3.2 2.3-5 5.5-5s5 1.8 5.5 5" />
+        </>
+      ) : null}
+      {name === "laptop" ? <path d="M4.5 4.5h11v8h-11zM3 15.5h14M5.5 12.5l-1 3M14.5 12.5l1 3" /> : null}
+      {name === "shield" ? <path d="M10 2.8 16 5v4.8c0 3.5-2.1 6-6 7.4-3.9-1.4-6-3.9-6-7.4V5l6-2.2Z" /> : null}
     </svg>
   );
 }

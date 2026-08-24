@@ -1203,35 +1203,26 @@ describe("createClientRuntime production composition", () => {
     runtime.stop();
   });
 
-  it("does not let a stale periodic deadline overwrite a newer shared Provider probe", async () => {
-    const home = await temporaryDirectory("opentag-client-stale-deadline-");
+  it("publishes a shared probe success after a newer waiter cancels", async () => {
+    const home = await temporaryDirectory("opentag-client-shared-cancel-");
     const server = await runtimeServer();
     cleanup.push(server.close);
     const connection = runtimeConnection(server.url);
     const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
-    let probeStarted!: () => void;
-    const started = new Promise<void>((resolveStarted) => {
-      probeStarted = resolveStarted;
+    const heartbeats: Array<Record<string, unknown>> = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate;
     });
-    let releaseProbe!: () => void;
-    const gate = new Promise<void>((resolveProbe) => {
-      releaseProbe = resolveProbe;
-    });
-    cleanup.push(async () => releaseProbe());
-    let probeCount = 0;
-    const factory = readyFactory("codex", async () => {
-      probeCount += 1;
-      if (probeCount === 1) {
+    const probe = vi.fn(async () => {
+      if (probe.mock.calls.length === 1) {
         return {
-          ready: false,
+          ready: false as const,
           issues: [{ code: "temporarily_unavailable" as const, message: "cold" }],
         };
       }
-      if (probeCount === 2) {
-        probeStarted();
-        await gate;
-      }
-      return { ready: true, issues: [] };
+      await gate;
+      return { ready: true as const, issues: [] };
     });
     server.wss.on("connection", (socket) => {
       socket.on("message", (data) => {
@@ -1245,6 +1236,7 @@ describe("createClientRuntime production composition", () => {
           return;
         }
         if (frame.type === "heartbeat") {
+          heartbeats.push(frame);
           socket.send(
             JSON.stringify({
               type: "heartbeat:result",
@@ -1257,36 +1249,198 @@ describe("createClientRuntime production composition", () => {
       });
     });
     const runtime = await createClientRuntime(connection, {
-      capabilityRefreshIntervalMs: 20,
+      capabilityRefreshIntervalMs: 60_000,
+      providerProbeDeadlineMs: 5_000,
       clientVersion: "0.0.1",
       environment: { HOME: home, PATH: process.env.PATH },
-      factory,
+      factory: readyFactory("codex", probe),
       home,
-      providerProbeDeadlineMs: 100,
+    });
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "unavailable" });
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+      status: "ready",
+    });
+    expect(
+      await runtime.reconciler.reconcile({
+        ...reconcileRequest(connection.computerId, snapshot()),
+        requestId: randomUUID(),
+        sessionId: "session-2",
+      }),
+    ).toMatchObject({ status: "ready" });
+    const running = runtime.run();
+    await vi.waitFor(() => expect(heartbeats.length).toBeGreaterThan(0));
+    const ownerSignal = new AbortController();
+    const owner = runtime.runtimeManager.ensureRuntime("session-1", ownerSignal.signal).then(
+      () => "created",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
+    const joinedSignal = new AbortController();
+    const joined = runtime.runtimeManager.ensureRuntime("session-2", joinedSignal.signal);
+    const joinedResult = joined.then(
+      () => "created",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    joinedSignal.abort(new Error("cancel joined waiter"));
+    await expect(joinedResult).resolves.toBe("cancel joined waiter");
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "checking" });
+    expect(probe).toHaveBeenCalledTimes(2);
+    const heartbeatsBeforeReady = heartbeats.length;
+    release();
+    await vi.waitFor(() => expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" }));
+    await expect(owner).resolves.toContain("not used");
+    await vi.waitFor(() => {
+      const afterReady = heartbeats.slice(heartbeatsBeforeReady);
+      expect(
+        afterReady.some((heartbeat) =>
+          ((heartbeat.providerReadiness as Array<{ provider: string; status: string }> | undefined) ?? []).some(
+            (observation) => observation.provider === "codex" && observation.status === "ready",
+          ),
+        ),
+      ).toBe(true);
+    });
+    const onDemand = runtime.runtimeManager.ensureRuntime("session-2", new AbortController().signal).then(
+      () => "created",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    await expect(onDemand).resolves.toContain("not used");
+    expect(probe).toHaveBeenCalledTimes(2);
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" });
+    runtime.stop();
+    await expect(running).resolves.toBeUndefined();
+  });
+
+  it("keeps a completed shared ready publication if a waiter cancels afterwards", async () => {
+    const home = await temporaryDirectory("opentag-client-complete-before-cancel-");
+    const connection = runtimeConnection();
+    const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
+    let release!: () => void;
+    const gate = new Promise<void>((resolveGate) => {
+      release = resolveGate;
+    });
+    const probe = vi.fn(async () => {
+      if (probe.mock.calls.length === 1) {
+        return {
+          ready: false as const,
+          issues: [{ code: "temporarily_unavailable" as const, message: "cold" }],
+        };
+      }
+      await gate;
+      return { ready: true as const, issues: [] };
+    });
+    const runtime = await createClientRuntime(connection, {
+      capabilityRefreshIntervalMs: 60_000,
+      providerProbeDeadlineMs: 5_000,
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory("codex", probe),
+      home,
     });
     expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
       status: "ready",
     });
-    readinessUpdates.mockClear();
-    const running = runtime.run();
-    await started;
-    await new Promise((resolveWait) => setTimeout(resolveWait, 60));
-    const ensuring = runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal).then(
+    expect(
+      await runtime.reconciler.reconcile({
+        ...reconcileRequest(connection.computerId, snapshot()),
+        requestId: randomUUID(),
+        sessionId: "session-2",
+      }),
+    ).toMatchObject({ status: "ready" });
+    const owner = runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal).then(
       () => "created",
       (error: unknown) => (error instanceof Error ? error.message : String(error)),
     );
-    await new Promise((resolveWait) => setTimeout(resolveWait, 60));
-
-    expect(readinessUpdates.mock.calls.map(([observation]) => observation)).not.toContainEqual({
-      provider: "codex",
-      status: "unavailable",
-    });
-    releaseProbe();
-    await expect(ensuring).resolves.toContain("not used");
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
+    const joinedSignal = new AbortController();
+    const joined = runtime.runtimeManager.ensureRuntime("session-2", joinedSignal.signal).then(
+      () => "created",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    release();
     await vi.waitFor(() => expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" }));
-
+    await expect(Promise.all([owner, joined])).resolves.toEqual([
+      expect.stringContaining("not used"),
+      expect.stringContaining("not used"),
+    ]);
+    const published = readinessUpdates.mock.calls.length;
+    joinedSignal.abort(new Error("cancel after completion"));
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    expect(readinessUpdates).toHaveBeenCalledTimes(published);
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" });
     runtime.stop();
-    await expect(running).resolves.toBeUndefined();
+  });
+
+  it("does not let a joined waiter extend the shared owner deadline or a late probe overwrite a newer result", async () => {
+    const home = await temporaryDirectory("opentag-client-stale-deadline-");
+    const connection = runtimeConnection();
+    const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
+    let releaseHung!: () => void;
+    const hung = new Promise<void>((resolveHung) => {
+      releaseHung = resolveHung;
+    });
+    cleanup.push(async () => releaseHung());
+    const probe = vi.fn(async () => {
+      if (probe.mock.calls.length === 1) {
+        return {
+          ready: false as const,
+          issues: [{ code: "temporarily_unavailable" as const, message: "cold" }],
+        };
+      }
+      if (probe.mock.calls.length === 2) {
+        await hung;
+        return { ready: true as const, issues: [] };
+      }
+      return { ready: true as const, issues: [] };
+    });
+    const runtime = await createClientRuntime(connection, {
+      capabilityRefreshIntervalMs: 60_000,
+      providerProbeDeadlineMs: 40,
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory("codex", probe),
+      home,
+    });
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+      status: "ready",
+    });
+    expect(
+      await runtime.reconciler.reconcile({
+        ...reconcileRequest(connection.computerId, snapshot()),
+        requestId: randomUUID(),
+        sessionId: "session-2",
+      }),
+    ).toMatchObject({ status: "ready" });
+    const first = runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal).then(
+      () => "created",
+      (error: unknown) => error,
+    );
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
+    const second = runtime.runtimeManager.ensureRuntime("session-2", new AbortController().signal).then(
+      () => "created",
+      (error: unknown) => error,
+    );
+    await vi.waitFor(() =>
+      expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "unavailable" }),
+    );
+    expect(probe).toHaveBeenCalledTimes(2);
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ name: "AgentRuntimeProviderUnavailableError" }),
+      expect.objectContaining({ name: "AgentRuntimeProviderUnavailableError" }),
+    ]);
+
+    const fresh = runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal).then(
+      () => "created",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    await vi.waitFor(() => expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" }));
+    await expect(fresh).resolves.toContain("not used");
+    expect(probe).toHaveBeenCalledTimes(3);
+    const published = readinessUpdates.mock.calls.length;
+    releaseHung();
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    expect(readinessUpdates).toHaveBeenCalledTimes(published);
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" });
+    runtime.stop();
   });
 
   it("does not publish Provider readiness after the caller aborts the Client Runtime", async () => {

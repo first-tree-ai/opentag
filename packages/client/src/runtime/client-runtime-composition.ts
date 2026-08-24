@@ -57,6 +57,31 @@ const DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS = Math.floor(RUNTIME_CLIENT_CAPABIL
 const DEFAULT_PROVIDER_PROBE_DEADLINE_MS = 10_000;
 const execFileAsync = promisify(execFile);
 
+interface SharedProviderRefresh {
+  readonly controller: AbortController;
+  readonly promise: Promise<boolean>;
+  settled: boolean;
+  waiters: number;
+}
+
+async function waitForSharedRefresh(refresh: Promise<boolean>, signal?: AbortSignal): Promise<boolean> {
+  if (!signal) return refresh;
+  signal.throwIfAborted();
+  let rejectAborted!: (reason: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    rejectAborted = reject;
+  });
+  const onAbort = () => rejectAborted(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    const available = await Promise.race([refresh, aborted]);
+    signal.throwIfAborted();
+    return available;
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 export interface CreateClientRuntimeOptions {
   readonly api?: Pick<OpenTagApi, "openImResource">;
   readonly capabilityRefreshIntervalMs?: number;
@@ -237,54 +262,81 @@ export async function createClientRuntime(
   if (!Number.isSafeInteger(providerProbeDeadlineMs) || providerProbeDeadlineMs < 1) {
     throw new Error("Agent Runtime provider probe deadline must be a positive safe integer");
   }
-  const providerRefreshGenerations = new Map<string, number>();
-  const beginProviderRefresh = (providerId: string): number => {
-    const generation = (providerRefreshGenerations.get(providerId) ?? 0) + 1;
-    providerRefreshGenerations.set(providerId, generation);
-    return generation;
-  };
-  const publishProviderReadiness = (observation: RuntimeProviderReadinessObservation): void => {
-    if (readinessSignal.aborted) return;
-    connection.setProviderReadiness(observation);
-  };
-  const refreshProviderReadiness = async (providerId: string, signal?: AbortSignal): Promise<boolean> => {
-    const generation = beginProviderRefresh(providerId);
-    const deadline = new AbortController();
+  const sharedProviderRefreshes = new Map<string, SharedProviderRefresh>();
+  const startSharedProviderRefresh = (providerId: string): SharedProviderRefresh => {
+    const controller = new AbortController();
+    let resolveOwner!: (available: boolean) => void;
+    let rejectOwner!: (reason: unknown) => void;
+    const promise = new Promise<boolean>((resolvePromise, rejectPromise) => {
+      resolveOwner = resolvePromise;
+      rejectOwner = rejectPromise;
+    });
+    const owner: SharedProviderRefresh = {
+      controller,
+      promise,
+      settled: false,
+      waiters: 0,
+    };
+    sharedProviderRefreshes.set(providerId, owner);
+    const deadlineError = new Error(`Agent Runtime provider probe exceeded its deadline: ${providerId}`);
     const deadlineTimer = setTimeout(() => {
-      deadline.abort(new Error(`Agent Runtime provider probe exceeded its deadline: ${providerId}`));
+      controller.abort(deadlineError);
     }, providerProbeDeadlineMs);
     deadlineTimer.unref();
-    const refreshSignals = [readinessSignal, deadline.signal];
-    if (signal) refreshSignals.push(signal);
-    const refreshSignal = AbortSignal.any(refreshSignals);
     const provider = providerId as AgentRuntimeProvider;
-    const releaseReadiness = providers.isReady(providerId)
-      ? connection.leaseProviderReadiness({ provider, status: "ready" })
-      : undefined;
-    if (!releaseReadiness) publishProviderReadiness({ provider, status: "checking" });
-    let settled: { available: boolean } | { error: unknown };
+    const operation = (async () => {
+      let releaseReadiness: (() => void) | undefined;
+      try {
+        releaseReadiness = providers.isReady(providerId)
+          ? connection.leaseProviderReadiness({ provider, status: "ready" })
+          : undefined;
+        if (!releaseReadiness) connection.setProviderReadiness({ provider, status: "checking" });
+        const ownerSignal = AbortSignal.any([readinessSignal, controller.signal]);
+        let settled: { available: boolean } | { error: unknown };
+        try {
+          settled = { available: await providers.refresh(providerId, ownerSignal) };
+        } catch (error) {
+          settled = { error };
+        }
+        if ("error" in settled) {
+          if (readinessSignal.aborted) throw settled.error;
+          if (controller.signal.reason !== deadlineError) throw settled.error;
+          const result: AgentRuntimeProbeResult = {
+            ready: false,
+            issues: [{ code: "temporarily_unavailable", message: "Provider readiness probe exceeded its deadline" }],
+          };
+          providers.invalidate(providerId, result);
+          connection.setProviderReadiness(providerReadiness(provider, false, result));
+          return false;
+        }
+        connection.setProviderReadiness(
+          providerReadiness(provider, settled.available, providers.probeResult(providerId)),
+        );
+        return settled.available;
+      } finally {
+        owner.settled = true;
+        clearTimeout(deadlineTimer);
+        releaseReadiness?.();
+        if (sharedProviderRefreshes.get(providerId) === owner) sharedProviderRefreshes.delete(providerId);
+      }
+    })();
+    void operation.then(resolveOwner, rejectOwner);
+    void owner.promise.catch(() => undefined);
+    return owner;
+  };
+  const refreshProviderReadiness = async (providerId: string, signal?: AbortSignal): Promise<boolean> => {
+    signal?.throwIfAborted();
+    readinessSignal.throwIfAborted();
+    const owner = sharedProviderRefreshes.get(providerId) ?? startSharedProviderRefresh(providerId);
+    owner.waiters += 1;
     try {
-      settled = { available: await providers.refresh(providerId, refreshSignal) };
-    } catch (error) {
-      settled = { error };
+      return await waitForSharedRefresh(owner.promise, signal);
     } finally {
-      clearTimeout(deadlineTimer);
-      releaseReadiness?.();
+      owner.waiters -= 1;
+      if (owner.waiters === 0 && !owner.settled) {
+        owner.controller.abort(new Error(`Agent Runtime provider probe has no waiters: ${providerId}`));
+      }
     }
-    if ("error" in settled) {
-      if (readinessSignal.aborted || signal?.aborted) throw settled.error;
-      if (providerRefreshGenerations.get(providerId) !== generation) return providers.isReady(providerId);
-      const result: AgentRuntimeProbeResult = {
-        ready: false,
-        issues: [{ code: "temporarily_unavailable", message: "Provider readiness probe exceeded its deadline" }],
-      };
-      providers.invalidate(providerId, result);
-      publishProviderReadiness(providerReadiness(provider, false, result));
-      return false;
-    }
-    if (providerRefreshGenerations.get(providerId) !== generation) return providers.isReady(providerId);
-    publishProviderReadiness(providerReadiness(provider, settled.available, providers.probeResult(providerId)));
-    return settled.available;
   };
   const refreshCapability = async (): Promise<void> => {
     const results = await Promise.allSettled([

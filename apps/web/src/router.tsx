@@ -2124,6 +2124,7 @@ function AgentManageSettings({
   const [config, setConfig] = useState(initialConfig);
   const [message, setMessage] = useState<string>();
   const [confirmation, setConfirmation] = useState<"delete" | "pause">();
+  const [confirmationError, setConfirmationError] = useState<string>();
   const [confirmationText, setConfirmationText] = useState("");
   const [busy, setBusy] = useState(false);
   const pauseButtonRef = useRef<HTMLButtonElement>(null);
@@ -2131,6 +2132,8 @@ function AgentManageSettings({
   async function changeLifecycle(action: "suspend" | "reactivate") {
     try {
       setBusy(true);
+      setMessage(undefined);
+      setConfirmationError(undefined);
       setConfig(
         action === "suspend" ? await browserApi.suspendAgent(config.id) : await browserApi.reactivateAgent(config.id),
       );
@@ -2138,7 +2141,9 @@ function AgentManageSettings({
       setConfirmation(undefined);
       onAgentChanged();
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to change Agent status");
+      const error = cause instanceof Error ? cause.message : "Unable to change Agent status";
+      if (confirmation === "pause") setConfirmationError(error);
+      else setMessage(error);
     } finally {
       setBusy(false);
     }
@@ -2146,12 +2151,18 @@ function AgentManageSettings({
   async function deleteAgent() {
     try {
       setBusy(true);
+      setMessage(undefined);
+      setConfirmationError(undefined);
       await browserApi.deleteAgent(config.id);
       navigate("/agents");
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to delete Agent");
+      setConfirmationError(cause instanceof Error ? cause.message : "Unable to delete Agent");
       setBusy(false);
     }
+  }
+  function closeConfirmation() {
+    setConfirmation(undefined);
+    setConfirmationError(undefined);
   }
   return (
     <section className="agent-manage-settings agent-settings-section-page">
@@ -2171,6 +2182,7 @@ function AgentManageSettings({
             variant="secondary"
             onClick={() => {
               if (config.status === "active" && agent.activity.state === "working") {
+                setConfirmationError(undefined);
                 setConfirmation("pause");
                 return;
               }
@@ -2194,6 +2206,7 @@ function AgentManageSettings({
             variant="danger"
             onClick={() => {
               setConfirmationText("");
+              setConfirmationError(undefined);
               setConfirmation("delete");
             }}
           >
@@ -2208,10 +2221,15 @@ function AgentManageSettings({
           description="This Agent is handling a request. Pausing it stops new requests, but the current request may continue until it reaches a safe stopping point."
           returnFocusRef={pauseButtonRef}
           title={`Pause ${config.displayName}?`}
-          onClose={() => setConfirmation(undefined)}
+          onClose={closeConfirmation}
         >
+          {confirmationError ? (
+            <div className="notice error" role="alert">
+              {confirmationError}
+            </div>
+          ) : null}
           <div className="dialog-actions actions">
-            <Button disabled={busy} variant="ghost" onClick={() => setConfirmation(undefined)}>
+            <Button disabled={busy} variant="ghost" onClick={closeConfirmation}>
               Keep active
             </Button>
             <Button disabled={busy} variant="primary" onClick={() => void changeLifecycle("suspend")}>
@@ -2226,7 +2244,7 @@ function AgentManageSettings({
           description="This permanently removes the Agent and its messaging connection. The Agent cannot be restored."
           returnFocusRef={deleteButtonRef}
           title={`Delete ${config.displayName}?`}
-          onClose={() => setConfirmation(undefined)}
+          onClose={closeConfirmation}
         >
           <div className="agent-delete-confirmation">
             <Field
@@ -2244,8 +2262,13 @@ function AgentManageSettings({
                 onChange={(event) => setConfirmationText(event.currentTarget.value)}
               />
             </Field>
+            {confirmationError ? (
+              <div className="notice error" role="alert">
+                {confirmationError}
+              </div>
+            ) : null}
             <div className="dialog-actions actions">
-              <Button disabled={busy} variant="ghost" onClick={() => setConfirmation(undefined)}>
+              <Button disabled={busy} variant="ghost" onClick={closeConfirmation}>
                 Cancel
               </Button>
               <Button
@@ -2270,6 +2293,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
   const [confirmation, setConfirmation] = useState<
     { kind: "all_messages" } | { bindingId: string; kind: "disable_binding" }
   >();
+  const [confirmationError, setConfirmationError] = useState<string>();
   const [confirmationBusy, setConfirmationBusy] = useState(false);
   const allMessagesButtonRef = useRef<HTMLButtonElement>(null);
   const disableBindingButtonRef = useRef<HTMLButtonElement>(null);
@@ -2277,6 +2301,8 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
   async function changeReceiveMode(receiveMode: "mention_only" | "all_message") {
     try {
       setConfirmationBusy(true);
+      setError(undefined);
+      setConfirmationError(undefined);
       const config = await browserApi.agentConfig(agent.id);
       await browserApi.updateAgent(agent.id, { expectedRevision: config.revision, receiveMode });
       setReload((value) => value + 1);
@@ -2286,7 +2312,9 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
       if (cause instanceof ApiError && cause.code === "IM_BINDING_SCOPE_REAUTH_REQUIRED") {
         setReauthorizationNeeded(true);
       }
-      setError(cause instanceof Error ? cause.message : "Unable to change receive mode");
+      const nextError = cause instanceof Error ? cause.message : "Unable to change receive mode";
+      if (confirmation?.kind === "all_messages") setConfirmationError(nextError);
+      else setError(nextError);
     } finally {
       setConfirmationBusy(false);
     }
@@ -2294,15 +2322,21 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
   async function disableBinding(bindingId: string) {
     try {
       setConfirmationBusy(true);
+      setError(undefined);
+      setConfirmationError(undefined);
       await browserApi.disableImBinding(bindingId);
       setReload((value) => value + 1);
       setConfirmation(undefined);
       onAgentChanged();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to disable IM binding");
+      setConfirmationError(cause instanceof Error ? cause.message : "Unable to disable IM binding");
     } finally {
       setConfirmationBusy(false);
     }
+  }
+  function closeMessagingConfirmation() {
+    setConfirmation(undefined);
+    setConfirmationError(undefined);
   }
   return (
     <div className="agent-settings-section-page">
@@ -2409,7 +2443,10 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                   ref={disableBindingButtonRef}
                                   size="compact"
                                   variant="danger"
-                                  onClick={() => setConfirmation({ bindingId: binding.id, kind: "disable_binding" })}
+                                  onClick={() => {
+                                    setConfirmationError(undefined);
+                                    setConfirmation({ bindingId: binding.id, kind: "disable_binding" });
+                                  }}
                                 >
                                   Disable IM binding
                                 </Button>
@@ -2446,7 +2483,10 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                         <button
                                           ref={allMessagesButtonRef}
                                           type="button"
-                                          onClick={() => setConfirmation({ kind: "all_messages" })}
+                                          onClick={() => {
+                                            setConfirmationError(undefined);
+                                            setConfirmation({ kind: "all_messages" });
+                                          }}
                                         >
                                           All messages
                                         </button>
@@ -2515,10 +2555,15 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
           description="Every new conversation message could start Agent work. This can share more conversation content and increase token usage."
           returnFocusRef={allMessagesButtonRef}
           title="Allow all conversation messages?"
-          onClose={() => setConfirmation(undefined)}
+          onClose={closeMessagingConfirmation}
         >
+          {confirmationError ? (
+            <div className="notice error" role="alert">
+              {confirmationError}
+            </div>
+          ) : null}
           <div className="dialog-actions actions">
-            <Button disabled={confirmationBusy} variant="ghost" onClick={() => setConfirmation(undefined)}>
+            <Button disabled={confirmationBusy} variant="ghost" onClick={closeMessagingConfirmation}>
               Keep mentions only
             </Button>
             <Button disabled={confirmationBusy} onClick={() => void changeReceiveMode("all_message")}>
@@ -2533,10 +2578,15 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
           description="Teammates will no longer be able to send new work to this Agent until another messaging connection is added."
           returnFocusRef={disableBindingButtonRef}
           title="Disconnect messaging?"
-          onClose={() => setConfirmation(undefined)}
+          onClose={closeMessagingConfirmation}
         >
+          {confirmationError ? (
+            <div className="notice error" role="alert">
+              {confirmationError}
+            </div>
+          ) : null}
           <div className="dialog-actions actions">
-            <Button disabled={confirmationBusy} variant="ghost" onClick={() => setConfirmation(undefined)}>
+            <Button disabled={confirmationBusy} variant="ghost" onClick={closeMessagingConfirmation}>
               Keep connected
             </Button>
             <Button

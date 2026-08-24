@@ -1392,6 +1392,65 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/agents"));
   });
 
+  it("keeps lifecycle failures visible inside the confirmation dialog and allows retry", async () => {
+    installApi("admin", {
+      agentActivity: { state: "working", startedAt: "2026-08-24T12:00:00.000Z" },
+    });
+    const baseFetch = vi.mocked(fetch).getMockImplementation();
+    if (!baseFetch) throw new Error("Expected the test API to be installed");
+    let failSuspend = true;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === `/api/v1/agents/${agentId}/suspend` && init?.method === "POST" && failSuspend) {
+        failSuspend = false;
+        return json(
+          { error: { code: "SERVICE_UNAVAILABLE", category: "transient", message: "Unable to pause right now" } },
+          503,
+        );
+      }
+      return baseFetch(input, init);
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/manage`);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    const dialog = await screen.findByRole("dialog", { name: "Pause Reviewer?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Pause Agent" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Unable to pause right now");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Pause Agent" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Pause Reviewer?" })).toBeNull());
+    expect(await screen.findByRole("button", { name: "Reactivate" })).toBeTruthy();
+  });
+
+  it("keeps delete failures visible inside the confirmation dialog and clears them after retry", async () => {
+    installApi("admin", { initialStatus: "suspended" });
+    const baseFetch = vi.mocked(fetch).getMockImplementation();
+    if (!baseFetch) throw new Error("Expected the test API to be installed");
+    let failDelete = true;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === `/api/v1/agents/${agentId}` && init?.method === "DELETE" && failDelete) {
+        failDelete = false;
+        return json(
+          { error: { code: "SERVICE_UNAVAILABLE", category: "transient", message: "Unable to delete right now" } },
+          503,
+        );
+      }
+      return baseFetch(input, init);
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/manage`);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Delete permanently" }));
+    const dialog = await screen.findByRole("dialog", { name: "Delete Reviewer?" });
+    fireEvent.change(within(dialog).getByLabelText(/Type Reviewer to confirm/), { target: { value: "Reviewer" } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Unable to delete right now");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Delete permanently" }));
+    await waitFor(() => expect(window.location.pathname).toBe("/agents"));
+    expect(screen.queryByText("Unable to delete right now")).toBeNull();
+  });
+
   it("shows detailed Agent Token usage and changes the selected period", async () => {
     installApi("admin");
     window.history.replaceState({}, "", `/agents/${agentId}/usage`);
@@ -1664,6 +1723,77 @@ describe("OpenTag Web App Shell", () => {
           ),
       ).toHaveLength(2),
     );
+  });
+
+  it("keeps receive-mode failures inside the active dialog and clears them before retry", async () => {
+    installApi("admin", { bound: true });
+    const baseFetch = vi.mocked(fetch).getMockImplementation();
+    if (!baseFetch) throw new Error("Expected the test API to be installed");
+    let failReceiveMode = true;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input) === `/api/v1/agents/${agentId}` && init?.method === "PATCH" && failReceiveMode) {
+        failReceiveMode = false;
+        return json(
+          {
+            error: {
+              code: "SERVICE_UNAVAILABLE",
+              category: "transient",
+              message: "Unable to update message access",
+            },
+          },
+          503,
+        );
+      }
+      return baseFetch(input, init);
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "All messages" }));
+    const dialog = await screen.findByRole("dialog", { name: "Allow all conversation messages?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Allow all messages" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Unable to update message access");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Allow all messages" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Allow all conversation messages?" })).toBeNull());
+    expect(screen.queryByText("Unable to update message access")).toBeNull();
+  });
+
+  it("keeps disconnect failures inside the active dialog and allows retry", async () => {
+    installApi("admin", { bound: true });
+    const baseFetch = vi.mocked(fetch).getMockImplementation();
+    if (!baseFetch) throw new Error("Expected the test API to be installed");
+    let failDisconnect = true;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/disable") && init?.method === "POST") {
+        if (failDisconnect) {
+          failDisconnect = false;
+          return json(
+            {
+              error: {
+                code: "SERVICE_UNAVAILABLE",
+                category: "transient",
+                message: "Unable to disconnect messaging",
+              },
+            },
+            503,
+          );
+        }
+        return new Response(null, { status: 204 });
+      }
+      return baseFetch(input, init);
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Disable IM binding" }));
+    const dialog = await screen.findByRole("dialog", { name: "Disconnect messaging?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+    expect((await within(dialog).findByRole("alert")).textContent).toContain("Unable to disconnect messaging");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Disconnect messaging?" })).toBeNull());
+    expect(screen.queryByText("Unable to disconnect messaging")).toBeNull();
   });
 
   it("resumes a provisioning Slack setup after a refresh before credentials were submitted", async () => {

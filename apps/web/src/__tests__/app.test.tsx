@@ -1,3 +1,4 @@
+import type { AgentUsageDetail } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -41,6 +42,7 @@ function installApi(
   options: {
     agentRead?: () => Promise<void> | void;
     agentReadStatus?: () => number | undefined;
+    agentUsage?: Omit<AgentUsageDetail, "endedAt" | "startedAt" | "windowDays">;
     agentListStatus?: () => number | undefined;
     agentActivity?: { state: "idle" } | { state: "working"; startedAt: string };
     emptyAgents?: boolean;
@@ -442,42 +444,44 @@ function installApi(
         windowDays: days,
         startedAt: "2026-07-25T12:00:00.000Z",
         endedAt: "2026-08-24T12:00:00.000Z",
-        tasks: 32,
-        measuredTasks: 31,
-        failed: 0,
-        inputTokens: 360_000,
-        cachedInputTokens: 120_000,
-        outputTokens: 68_000,
-        tokens: 428_000,
-        daily: [
-          {
-            date: "2026-08-20",
-            tasks: 15,
-            measuredTasks: 15,
-            inputTokens: 160_000,
-            cachedInputTokens: 50_000,
-            outputTokens: 30_000,
-            tokens: 190_000,
-          },
-          {
-            date: "2026-08-22",
-            tasks: 0,
-            measuredTasks: 0,
-            inputTokens: 0,
-            cachedInputTokens: 0,
-            outputTokens: 0,
-            tokens: 0,
-          },
-          {
-            date: "2026-08-24",
-            tasks: 17,
-            measuredTasks: 16,
-            inputTokens: 200_000,
-            cachedInputTokens: 70_000,
-            outputTokens: 38_000,
-            tokens: 238_000,
-          },
-        ],
+        ...(options.agentUsage ?? {
+          tasks: 32,
+          measuredTasks: 31,
+          failed: 0,
+          inputTokens: 360_000,
+          cachedInputTokens: 120_000,
+          outputTokens: 68_000,
+          tokens: 428_000,
+          daily: [
+            {
+              date: "2026-08-20",
+              tasks: 15,
+              measuredTasks: 15,
+              inputTokens: 160_000,
+              cachedInputTokens: 50_000,
+              outputTokens: 30_000,
+              tokens: 190_000,
+            },
+            {
+              date: "2026-08-22",
+              tasks: 0,
+              measuredTasks: 0,
+              inputTokens: 0,
+              cachedInputTokens: 0,
+              outputTokens: 0,
+              tokens: 0,
+            },
+            {
+              date: "2026-08-24",
+              tasks: 17,
+              measuredTasks: 16,
+              inputTokens: 200_000,
+              cachedInputTokens: 70_000,
+              outputTokens: 38_000,
+              tokens: 238_000,
+            },
+          ],
+        }),
       });
     }
     if (path === `/api/v1/agents/${agentId}`) {
@@ -1293,10 +1297,45 @@ describe("OpenTag Web App Shell", () => {
     if (!section) throw new Error("Recent usage section was not rendered");
     expect(await within(section).findByText("428K")).toBeTruthy();
     expect(within(section).getByText("32")).toBeTruthy();
-    expect(within(section).getByText("13.4K")).toBeTruthy();
+    expect(within(section).getByText("Average per measured Task")).toBeTruthy();
+    expect(within(section).getByText("13.8K")).toBeTruthy();
+    expect(within(section).getByText("Token totals are available for 31 of 32 Tasks.")).toBeTruthy();
     expect(within(section).getByRole("link", { name: "View usage details" }).getAttribute("href")).toBe(
       `/agents/${agentId}/usage`,
     );
+  });
+
+  it("marks the average unavailable when no Tasks have measured Token usage", async () => {
+    installApi("admin", {
+      agentUsage: {
+        tasks: 3,
+        measuredTasks: 0,
+        failed: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        tokens: 0,
+        daily: [
+          {
+            date: "2026-08-24",
+            tasks: 3,
+            measuredTasks: 0,
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            tokens: 0,
+          },
+        ],
+      },
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+
+    const heading = await screen.findByRole("heading", { name: "Recent usage" });
+    const section = heading.closest("section");
+    if (!section) throw new Error("Recent usage section was not rendered");
+    expect(await within(section).findByText("—")).toBeTruthy();
+    expect(within(section).getByText("Token totals are unavailable for 3 Tasks.")).toBeTruthy();
   });
 
   it("shows detailed Agent Token usage and changes the selected period", async () => {

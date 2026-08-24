@@ -90,17 +90,35 @@ function UsageSummaryState({ state, compact = false }: { state: UsageState; comp
       </p>
     );
   }
-  return compact ? <UsageMetrics usage={state.value} /> : <AgentUsageDetailContent usage={state.value} />;
+  return compact ? (
+    <>
+      <UsageMetrics usage={state.value} />
+      <UsageCoverage usage={state.value} />
+    </>
+  ) : (
+    <AgentUsageDetailContent usage={state.value} />
+  );
 }
 
 function UsageMetrics({ usage }: { usage: AgentUsageDetail }) {
-  const average = usage.tasks > 0 ? usage.tokens / usage.tasks : 0;
+  const average = usage.measuredTasks > 0 ? formatUsageNumber(usage.tokens / usage.measuredTasks) : "—";
   return (
     <dl className="agent-usage-metrics" aria-label={`Agent usage for the last ${usage.windowDays} days`}>
       <Metric label="Tokens" value={formatUsageNumber(usage.tokens)} primary />
       <Metric label="Tasks" value={formatUsageNumber(usage.tasks)} />
-      <Metric label="Average per Task" value={formatUsageNumber(average)} />
+      <Metric label="Average per measured Task" value={average} />
     </dl>
+  );
+}
+
+function UsageCoverage({ usage }: { usage: AgentUsageDetail }) {
+  if (usage.tasks === usage.measuredTasks) return null;
+  return (
+    <p className="agent-usage-coverage" role="status">
+      {usage.measuredTasks === 0
+        ? `Token totals are unavailable for ${usage.tasks.toLocaleString()} Tasks.`
+        : `Token totals are available for ${usage.measuredTasks.toLocaleString()} of ${usage.tasks.toLocaleString()} Tasks.`}
+    </p>
   );
 }
 
@@ -117,11 +135,7 @@ function AgentUsageDetailContent({ usage }: { usage: AgentUsageDetail }) {
   return (
     <>
       <UsageMetrics usage={usage} />
-      {usage.tasks > usage.measuredTasks ? (
-        <p className="agent-usage-coverage" role="status">
-          Token totals are available for {usage.measuredTasks.toLocaleString()} of {usage.tasks.toLocaleString()} Tasks.
-        </p>
-      ) : null}
+      <UsageCoverage usage={usage} />
       <div className="agent-usage-analysis">
         <section aria-labelledby="agent-usage-trend-heading">
           <header className="agent-usage-subheading">

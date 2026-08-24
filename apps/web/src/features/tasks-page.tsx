@@ -2,79 +2,59 @@ import { type ChangeEventHandler, type ReactNode, useMemo, useState } from "reac
 import { Link, useParams } from "react-router-dom";
 import {
   findTaskPreview,
-  type TaskActivity,
+  type TaskExchange,
   type TaskPreview,
-  type TaskResult,
-  type TaskSourceKind,
   type TaskStatus,
+  type TaskToolCall,
+  type TaskToolStatus,
   taskPreviews,
 } from "../mock/task-data.js";
 import { Icon, StatusIndicator, type StatusTone } from "../ui/design-system.js";
 import "./tasks-page.css";
 
 type TaskFilter = "all" | TaskStatus;
-type SourceFilter = "all" | TaskSourceKind;
 type AgentFilter = "all" | TaskPreview["agent"];
-
-type ConversationTurn = {
-  readonly actions: readonly TaskActivity[];
-  readonly assistantUpdate?: string;
-  readonly duration: string;
-  readonly id: string;
-  readonly request: string;
-  readonly requestTime: string;
-  readonly result: TaskResult;
-  readonly resultObservedAt?: string;
-};
 
 const statusPresentation: Record<TaskStatus, { readonly label: string; readonly tone: StatusTone }> = {
   needs_attention: { label: "Needs attention", tone: "warning" },
   processing: { label: "In progress", tone: "info" },
   recently_completed: { label: "Recently completed", tone: "success" },
-  unable_to_confirm: { label: "Unable to confirm", tone: "neutral" },
 };
 
-const sourcePresentation: Record<TaskSourceKind, { readonly abbreviation: string; readonly label: string }> = {
-  email: { abbreviation: "@", label: "Email" },
+const toolPresentation: Record<TaskToolCall["tool"], { readonly abbreviation: string; readonly label: string }> = {
   feishu: { abbreviation: "FS", label: "Feishu" },
-  github: { abbreviation: "GH", label: "GitHub" },
-  jira: { abbreviation: "J", label: "Jira" },
+  google_drive: { abbreviation: "GD", label: "Google Drive" },
 };
 
-const toolPresentation: Readonly<Record<string, string>> = {
-  FS: "Feishu",
-  GD: "Google Drive",
+const toolStatusPresentation: Record<TaskToolStatus, { readonly label: string; readonly tone: StatusTone }> = {
+  completed: { label: "Completed", tone: "success" },
+  in_progress: { label: "In progress", tone: "info" },
+  requires_attention: { label: "Needs attention", tone: "warning" },
 };
 
 export function TasksPage() {
   const [query, setQuery] = useState("");
   const [agent, setAgent] = useState<AgentFilter>("all");
-  const [source, setSource] = useState<SourceFilter>("all");
   const [status, setStatus] = useState<TaskFilter>("all");
   const tasks = useMemo(() => {
     const normalizedQuery = query.trim().toLocaleLowerCase();
     return taskPreviews.filter((task) => {
       const matchesQuery =
         normalizedQuery.length === 0 ||
-        [task.title, task.agent, task.source.context, task.source.detail, sourcePresentation[task.source.kind].label]
+        [task.title, task.agent, task.source.context, task.source.detail, "Feishu"]
           .join(" ")
           .toLocaleLowerCase()
           .includes(normalizedQuery);
-      return (
-        matchesQuery &&
-        (agent === "all" || task.agent === agent) &&
-        (source === "all" || task.source.kind === source) &&
-        (status === "all" || task.status === status)
-      );
+      return matchesQuery && (agent === "all" || task.agent === agent) && (status === "all" || task.status === status);
     });
-  }, [agent, query, source, status]);
+  }, [agent, query, status]);
 
   return (
     <section className="tasks-page" aria-labelledby="tasks-page-title">
       <header className="tasks-page-header">
         <div>
           <h1 id="tasks-page-title">Tasks</h1>
-          <p>Track work Agents handle across connected sources.</p>
+          <p>Track work Agents handle in Feishu threads.</p>
         </div>
         <span className="tasks-demo-note">Demo data</span>
       </header>
@@ -99,17 +79,6 @@ export function TasksPage() {
           <option value="Scout">Scout</option>
         </TaskSelect>
         <TaskSelect
-          label="Filter by source"
-          value={source}
-          onChange={(event) => setSource(event.target.value as SourceFilter)}
-        >
-          <option value="all">All sources</option>
-          <option value="feishu">Feishu</option>
-          <option value="email">Email</option>
-          <option value="github">GitHub</option>
-          <option value="jira">Jira</option>
-        </TaskSelect>
-        <TaskSelect
           label="Filter by status"
           value={status}
           onChange={(event) => setStatus(event.target.value as TaskFilter)}
@@ -118,7 +87,6 @@ export function TasksPage() {
           <option value="processing">In progress</option>
           <option value="recently_completed">Recently completed</option>
           <option value="needs_attention">Needs attention</option>
-          <option value="unable_to_confirm">Unable to confirm</option>
         </TaskSelect>
       </form>
 
@@ -161,39 +129,12 @@ export function TaskDetailPage() {
   }
 
   const status = statusPresentation[task.status];
-  const source = sourcePresentation[task.source.kind];
-  const request = task.activity.find((item) => item.quote);
-  const progress = task.activity.filter((item) => !item.quote);
-  const turns: readonly ConversationTurn[] = [
-    {
-      id: "initial",
-      request: request?.quote ?? task.title,
-      requestTime: request?.time ?? task.startedAt,
-      assistantUpdate: task.assistantUpdate,
-      duration: task.duration,
-      actions: progress.filter((item) => item.tool),
-      result: task.result,
-      resultObservedAt: task.resultObservedAt,
-    },
-    ...(task.followUps ?? []).map((followUp, index) => ({
-      id: `follow-up-${index + 1}`,
-      request: followUp.request,
-      requestTime: followUp.requestTime,
-      assistantUpdate: followUp.assistantUpdate,
-      duration: followUp.duration,
-      actions: followUp.activity,
-      result: followUp.result,
-      resultObservedAt: followUp.resultObservedAt,
-    })),
-  ];
   const details = [
-    ["Source", source.label],
+    ["Source", "Feishu"],
     [task.source.locationLabel, task.source.context],
     ["Initiated by", task.initiatedBy],
     ["Agent", task.agent],
     ["Started", task.startedAt],
-    ["Duration", task.duration],
-    ["Tokens", task.tokens ?? "Unavailable"],
   ] as const;
 
   return (
@@ -203,7 +144,12 @@ export function TaskDetailPage() {
           <Icon name="arrow-left" />
           Tasks
         </Link>
-        <span className="tasks-demo-note">Demo data</span>
+        <span className="task-breadcrumb-actions">
+          <span className="tasks-demo-note">Demo data</span>
+          <a className="task-thread-link" href={task.source.threadUrl} target="_blank" rel="noreferrer">
+            Open in Feishu
+          </a>
+        </span>
       </nav>
 
       <header className="task-conversation-header">
@@ -212,7 +158,7 @@ export function TaskDetailPage() {
           <SourceIdentity task={task} />
           <StatusIndicator
             aria-label={`${status.label}, updated ${task.relativeUpdatedAt}`}
-            detail={task.relativeUpdatedAt}
+            detail={`Updated ${task.relativeUpdatedAt}`}
             label={status.label}
             tone={status.tone}
           />
@@ -220,8 +166,8 @@ export function TaskDetailPage() {
       </header>
 
       <section className="task-thread" aria-label="Task conversation">
-        {turns.map((turn) => (
-          <TaskConversationTurn key={turn.id} task={task} turn={turn} />
+        {task.exchanges.map((exchange) => (
+          <TaskConversationExchange key={exchange.id} task={task} exchange={exchange} />
         ))}
       </section>
 
@@ -253,96 +199,122 @@ export function TaskDetailPage() {
   );
 }
 
-function TaskConversationTurn({ task, turn }: { task: TaskPreview; turn: ConversationTurn }) {
-  const resultId = `${task.id}-${turn.id}-result`;
-  const toolLabels = [
-    ...new Set(turn.actions.flatMap((action) => (action.tool ? [toolPresentation[action.tool] ?? action.tool] : []))),
-  ];
-  const actionCount = `${turn.actions.length} ${turn.actions.length === 1 ? "action" : "actions"}`;
-  const duration = turn.duration === "In progress" ? "In progress" : turn.duration;
-  const workLabel = [actionCount, ...toolLabels, duration].join(" · ");
-  const responseTime = turn.resultObservedAt ?? "Time unavailable";
+function TaskConversationExchange({ task, exchange }: { task: TaskPreview; exchange: TaskExchange }) {
+  const resultId = `${task.id}-${exchange.id}-result`;
+  const processId = `${task.id}-${exchange.id}-process`;
 
   return (
-    <section className="task-turn" aria-label={`Conversation turn at ${turn.requestTime}`}>
+    <section className="task-exchange" aria-label={`Message sent at ${exchange.requestTime}`}>
       <article className="task-message task-message--request">
         <header className="task-message-author">
           <span className="task-person-mark" aria-hidden="true">
-            {task.initiatedBy.charAt(0)}
+            {getInitials(task.initiatedBy)}
           </span>
           <span>
             <strong>{task.initiatedBy}</strong>
             <small>
-              {task.source.context} · {turn.requestTime}
+              {task.source.context} · {exchange.requestTime}
             </small>
           </span>
         </header>
         <div className="task-request-bubble">
-          <p>{turn.request}</p>
+          <p>{exchange.request}</p>
         </div>
       </article>
 
       <article className="task-message task-message--agent">
-        <header className="task-message-author">
+        <header className="task-message-author task-message-author--agent">
           <span className="task-agent-mark" aria-hidden="true">
             {task.agent.charAt(0)}
           </span>
           <span>
             <strong>{task.agent}</strong>
-            <small>{responseTime}</small>
+            <small>
+              {exchange.resultObservedAt ?? (exchange.status === "processing" ? "In progress" : "Time unavailable")}
+            </small>
           </span>
         </header>
 
-        {task.status === "processing" && turn.assistantUpdate ? (
-          <p className="task-agent-update">{turn.assistantUpdate}</p>
-        ) : null}
+        <TaskAgentProcess exchange={exchange} id={processId} />
 
-        <section className="task-agent-response" aria-labelledby={resultId}>
-          <h2 id={resultId}>{turn.result.title}</h2>
-          <p>{turn.result.summary}</p>
-          {turn.result.items ? (
-            <ul>
-              {turn.result.items.map((item) => (
-                <li key={`${item.label}-${item.value}`}>
-                  <span>{item.value}</span>
-                  <small>— {item.label}</small>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </section>
-
-        {turn.actions.length > 0 ? (
-          <details className="task-work-summary" open={task.status === "processing"}>
-            <summary>
-              <span>{workLabel}</span>
-              <Icon name="chevron-right" />
-            </summary>
-            <ol>
-              {turn.actions.map((item) => (
-                <li key={`${item.time}-${item.label}`}>
-                  <span className="task-action-mark" aria-hidden="true">
-                    {item.tool}
-                  </span>
-                  <span className="task-action-copy">
-                    <strong>{item.label}</strong>
-                    {item.detail ? <small>{item.detail}</small> : null}
-                  </span>
-                  <time>{item.time}</time>
-                </li>
-              ))}
-            </ol>
-          </details>
-        ) : null}
-
-        {turn.resultObservedAt ? (
-          <p className="task-result-observation">
-            <span>Agent result recorded locally · Outbound delivery unconfirmed</span>
-            <time>{turn.resultObservedAt}</time>
-          </p>
+        {exchange.result ? (
+          <section className="task-agent-response" aria-labelledby={resultId}>
+            <h2 id={resultId}>{exchange.result.title}</h2>
+            <p>{exchange.result.summary}</p>
+            {exchange.result.items ? (
+              <ul>
+                {exchange.result.items.map((item) => (
+                  <li key={`${item.label}-${item.value}`}>
+                    <span>{item.value}</span>
+                    <small>{item.label}</small>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {exchange.resultObservedAt ? (
+              <p className="task-result-observation">
+                Recorded locally at {exchange.resultObservedAt} · Open Feishu for the authoritative thread
+              </p>
+            ) : null}
+          </section>
         ) : null}
       </article>
     </section>
+  );
+}
+
+function TaskAgentProcess({ exchange, id }: { exchange: TaskExchange; id: string }) {
+  const toolCalls = exchange.events.filter((event): event is TaskToolCall => event.kind === "tool_call");
+  const usage = [
+    exchange.usage.input ? `${exchange.usage.input} input` : null,
+    exchange.usage.output ? `${exchange.usage.output} output` : null,
+    exchange.usage.total ? `${exchange.usage.total} total` : null,
+  ].filter(Boolean);
+  const processSummary = exchange.status === "processing" ? "Working" : `Worked for ${exchange.duration}`;
+  const processMetadata = [
+    `${toolCalls.length} ${toolCalls.length === 1 ? "tool call" : "tool calls"}`,
+    `${exchange.retries} ${exchange.retries === 1 ? "retry" : "retries"}`,
+    ...usage,
+  ];
+
+  return (
+    <details className="task-agent-process" open>
+      <summary id={id}>
+        <span>{processSummary}</span>
+        <Icon name="chevron-right" />
+      </summary>
+      <section className="task-agent-events" aria-labelledby={id}>
+        {exchange.events.map((event) => {
+          if (event.kind === "reasoning_summary") {
+            return (
+              <p className="task-reasoning-summary" key={event.id}>
+                {event.text}
+              </p>
+            );
+          }
+          return <TaskToolCallRow call={event} key={event.id} />;
+        })}
+      </section>
+      <p className="task-process-metadata">{processMetadata.join(" · ")}</p>
+    </details>
+  );
+}
+
+function TaskToolCallRow({ call }: { call: TaskToolCall }) {
+  const tool = toolPresentation[call.tool];
+  const status = toolStatusPresentation[call.status];
+  return (
+    <article className="task-tool-call">
+      <span className="task-action-mark" aria-hidden="true">
+        {tool.abbreviation}
+      </span>
+      <span className="task-tool-action">
+        <strong>{call.action}</strong>
+        <small>{tool.label}</small>
+      </span>
+      <span className="task-tool-target">{call.target}</span>
+      <StatusIndicator label={status.label} tone={status.tone} />
+    </article>
   );
 }
 
@@ -391,18 +363,23 @@ function TaskRow({ task }: { task: TaskPreview }) {
 }
 
 function SourceIdentity({ task }: { task: TaskPreview }) {
-  const source = sourcePresentation[task.source.kind];
   return (
     <span className="task-source-identity">
-      <span className={`task-source-mark task-source-mark--${task.source.kind}`} aria-hidden="true">
-        {source.abbreviation}
+      <span className="task-source-mark task-source-mark--feishu" aria-hidden="true">
+        FS
       </span>
       <span>
         <strong>{task.source.context}</strong>
-        <small>
-          {source.label} · {task.source.detail}
-        </small>
+        <small>Feishu · {task.source.detail}</small>
       </span>
     </span>
   );
+}
+
+function getInitials(name: string): string {
+  return name
+    .split(/\s+/u)
+    .slice(0, 2)
+    .map((part) => part.charAt(0))
+    .join("");
 }

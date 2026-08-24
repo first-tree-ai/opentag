@@ -19,10 +19,12 @@ export type TaskToolCall = {
 
 export type TaskAgentEvent = TaskReasoningSummary | TaskToolCall;
 
-export type TaskResult = {
-  readonly items?: readonly { readonly label: string; readonly value: string }[];
-  readonly summary: string;
-  readonly title: string;
+export type TaskFinalAnswerBlock =
+  | { readonly kind: "paragraph"; readonly text: string }
+  | { readonly items: readonly string[]; readonly kind: "unordered_list" };
+
+export type TaskFinalAnswer = {
+  readonly blocks: readonly TaskFinalAnswerBlock[];
 };
 
 export type TaskUsage = {
@@ -37,8 +39,8 @@ export type TaskExchange = {
   readonly id: string;
   readonly request: string;
   readonly requestTime: string;
-  readonly result: TaskResult | null;
-  readonly resultObservedAt?: string;
+  readonly finalAnswer: TaskFinalAnswer | null;
+  readonly finalAnswerObservedAt?: string;
   readonly retries: number;
   readonly status: "completed" | "needs_attention" | "processing";
   readonly usage: TaskUsage;
@@ -46,7 +48,6 @@ export type TaskExchange = {
 
 export type TaskPreview = {
   readonly agent: "Atlas" | "Scout";
-  readonly execution: readonly { readonly label: string; readonly value: string }[];
   readonly exchanges: readonly TaskExchange[];
   readonly id: string;
   readonly initiatedBy: string;
@@ -55,10 +56,8 @@ export type TaskPreview = {
     readonly context: string;
     readonly detail: string;
     readonly kind: "feishu";
-    readonly locationLabel: "Channel";
     readonly threadUrl: string;
   };
-  readonly startedAt: string;
   readonly status: TaskStatus;
   readonly title: string;
 };
@@ -72,13 +71,11 @@ export const taskPreviews: readonly TaskPreview[] = [
       kind: "feishu",
       context: "Product Launch",
       detail: "Q3 launch readiness",
-      locationLabel: "Channel",
       threadUrl: "https://www.feishu.cn/",
     },
     status: "recently_completed",
     relativeUpdatedAt: "12 min ago",
     initiatedBy: "Mia Zhang",
-    startedAt: "Aug 24, 11:04 AM",
     exchanges: [
       {
         id: "review-plan",
@@ -125,14 +122,21 @@ export const taskPreviews: readonly TaskPreview[] = [
             status: "completed",
           },
         ],
-        resultObservedAt: "11:12 AM",
-        result: {
-          title: "Launch plan reviewed",
-          summary: "Eight items were checked. Five are ready, two still need owners, and one has no confirmed date.",
-          items: [
-            { label: "Needs owner", value: "Partner announcement copy" },
-            { label: "Needs owner", value: "Customer migration email" },
-            { label: "Date unconfirmed", value: "Security review sign-off" },
+        finalAnswerObservedAt: "11:12 AM",
+        finalAnswer: {
+          blocks: [
+            {
+              kind: "paragraph",
+              text: "Eight items were checked. Five are ready, two still need owners, and one has no confirmed date.",
+            },
+            {
+              kind: "unordered_list",
+              items: [
+                "Partner announcement copy — Needs owner",
+                "Customer migration email — Needs owner",
+                "Security review sign-off — Date unconfirmed",
+              ],
+            },
           ],
         },
       },
@@ -159,23 +163,24 @@ export const taskPreviews: readonly TaskPreview[] = [
             status: "completed",
           },
         ],
-        resultObservedAt: "11:18 AM",
-        result: {
-          title: "Follow-ups drafted",
-          summary:
-            "Three follow-up messages were prepared with suggested owners. No ownership was recorded as confirmed.",
-          items: [
-            { label: "Suggested: Jordan Lee", value: "Partner announcement" },
-            { label: "Suggested: Priya Nair", value: "Migration email" },
-            { label: "Date confirmation requested", value: "Security sign-off" },
+        finalAnswerObservedAt: "11:18 AM",
+        finalAnswer: {
+          blocks: [
+            {
+              kind: "paragraph",
+              text: "Three follow-up messages were prepared with suggested owners. No ownership was recorded as confirmed.",
+            },
+            {
+              kind: "unordered_list",
+              items: [
+                "Partner announcement — Suggested owner: Jordan Lee",
+                "Migration email — Suggested owner: Priya Nair",
+                "Security sign-off — Date confirmation requested",
+              ],
+            },
           ],
         },
       },
-    ],
-    execution: [
-      { label: "Provider", value: "OpenAI" },
-      { label: "Session", value: "Q3 launch readiness" },
-      { label: "Event record", value: "Reasoning summaries and tool calls captured" },
     ],
   },
   {
@@ -186,13 +191,11 @@ export const taskPreviews: readonly TaskPreview[] = [
       kind: "feishu",
       context: "Customer Feedback",
       detail: "Enterprise visit notes",
-      locationLabel: "Channel",
       threadUrl: "https://www.feishu.cn/",
     },
     status: "processing",
     relativeUpdatedAt: "2 min ago",
     initiatedBy: "Noah Liu",
-    startedAt: "Aug 24, 10:42 AM",
     exchanges: [
       {
         id: "group-feedback",
@@ -225,13 +228,8 @@ export const taskPreviews: readonly TaskPreview[] = [
             status: "in_progress",
           },
         ],
-        result: null,
+        finalAnswer: null,
       },
-    ],
-    execution: [
-      { label: "Provider", value: "Anthropic" },
-      { label: "Session", value: "Enterprise visit notes" },
-      { label: "Event record", value: "Live provider events" },
     ],
   },
   {
@@ -242,13 +240,11 @@ export const taskPreviews: readonly TaskPreview[] = [
       kind: "feishu",
       context: "Engineering Collaboration",
       detail: "Onboarding process review",
-      locationLabel: "Channel",
       threadUrl: "https://www.feishu.cn/",
     },
     status: "needs_attention",
     relativeUpdatedAt: "25 min ago",
     initiatedBy: "Olivia Sun",
-    startedAt: "Aug 24, 10:18 AM",
     exchanges: [
       {
         id: "review-onboarding",
@@ -282,22 +278,20 @@ export const taskPreviews: readonly TaskPreview[] = [
             status: "requires_attention",
           },
         ],
-        resultObservedAt: "10:29 AM",
-        result: {
-          title: "Two source documents are missing",
-          summary:
-            "The review is paused because the access checklist and security orientation steps are not available.",
-          items: [
-            { label: "Missing input", value: "Access provisioning checklist" },
-            { label: "Missing input", value: "Security orientation guide" },
+        finalAnswerObservedAt: "10:29 AM",
+        finalAnswer: {
+          blocks: [
+            {
+              kind: "paragraph",
+              text: "The review is paused because the access checklist and security orientation steps are not available.",
+            },
+            {
+              kind: "unordered_list",
+              items: ["Access provisioning checklist — Missing input", "Security orientation guide — Missing input"],
+            },
           ],
         },
       },
-    ],
-    execution: [
-      { label: "Provider", value: "OpenAI" },
-      { label: "Session", value: "Onboarding process review" },
-      { label: "Event record", value: "Provider events captured; source access incomplete" },
     ],
   },
 ];

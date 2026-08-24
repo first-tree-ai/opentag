@@ -129,13 +129,6 @@ export function TaskDetailPage() {
   }
 
   const status = statusPresentation[task.status];
-  const details = [
-    ["Source", "Feishu"],
-    [task.source.locationLabel, task.source.context],
-    ["Initiated by", task.initiatedBy],
-    ["Agent", task.agent],
-    ["Started", task.startedAt],
-  ] as const;
 
   return (
     <article className="task-conversation-page">
@@ -170,37 +163,11 @@ export function TaskDetailPage() {
           <TaskConversationExchange key={exchange.id} task={task} exchange={exchange} />
         ))}
       </section>
-
-      <details className="task-record-details">
-        <summary>
-          <span>Task details</span>
-          <Icon name="chevron-right" />
-        </summary>
-        <div className="task-record-grid">
-          <dl>
-            {details.map(([label, value]) => (
-              <div key={label}>
-                <dt>{label}</dt>
-                <dd>{value}</dd>
-              </div>
-            ))}
-          </dl>
-          <dl>
-            {task.execution.map((item) => (
-              <div key={item.label}>
-                <dt>{item.label}</dt>
-                <dd>{item.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </div>
-      </details>
     </article>
   );
 }
 
 function TaskConversationExchange({ task, exchange }: { task: TaskPreview; exchange: TaskExchange }) {
-  const resultId = `${task.id}-${exchange.id}-result`;
   const processId = `${task.id}-${exchange.id}-process`;
 
   return (
@@ -230,30 +197,35 @@ function TaskConversationExchange({ task, exchange }: { task: TaskPreview; excha
           <span>
             <strong>{task.agent}</strong>
             <small>
-              {exchange.resultObservedAt ?? (exchange.status === "processing" ? "In progress" : "Time unavailable")}
+              {exchange.finalAnswerObservedAt ??
+                (exchange.status === "processing" ? "In progress" : "Time unavailable")}
             </small>
           </span>
         </header>
 
         <TaskAgentProcess exchange={exchange} id={processId} />
 
-        {exchange.result ? (
-          <section className="task-agent-response" aria-labelledby={resultId}>
-            <h2 id={resultId}>{exchange.result.title}</h2>
-            <p>{exchange.result.summary}</p>
-            {exchange.result.items ? (
-              <ul>
-                {exchange.result.items.map((item) => (
-                  <li key={`${item.label}-${item.value}`}>
-                    <span>{item.value}</span>
-                    <small>{item.label}</small>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-            {exchange.resultObservedAt ? (
+        {exchange.finalAnswer ? (
+          <section className="task-agent-response" aria-label="Agent final answer">
+            {exchange.finalAnswer.blocks.map((block) => {
+              if (block.kind === "paragraph") {
+                return (
+                  <p className="task-answer-paragraph" key={block.text}>
+                    {block.text}
+                  </p>
+                );
+              }
+              return (
+                <ul key={block.items.join("\n")}>
+                  {block.items.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              );
+            })}
+            {exchange.finalAnswerObservedAt ? (
               <p className="task-result-observation">
-                Recorded locally at {exchange.resultObservedAt} · Open Feishu for the authoritative thread
+                Recorded locally at {exchange.finalAnswerObservedAt} · Open Feishu for the authoritative thread
               </p>
             ) : null}
           </section>
@@ -278,7 +250,7 @@ function TaskAgentProcess({ exchange, id }: { exchange: TaskExchange; id: string
   ];
 
   return (
-    <details className="task-agent-process" open>
+    <details className="task-agent-process" open={exchange.status !== "completed"}>
       <summary id={id}>
         <span>{processSummary}</span>
         <Icon name="chevron-right" />

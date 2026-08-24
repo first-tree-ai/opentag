@@ -231,8 +231,10 @@ describe("Agent persistence and authorization", () => {
 
   it.each([
     ["codex", 14],
-    ["claude-code", 16],
+    ["claude-code", 116],
   ] as const)("projects current work and Provider-correct historical usage for %s", async (runtimeProvider, tokens) => {
+    // The Claude adapter folds 100 cache-creation tokens into inputTokens and keeps 2 cache-read tokens separate.
+    const inputTokens = runtimeProvider === "claude-code" ? 110 : 10;
     const value = await fixture();
     try {
       const now = new Date("2026-08-24T12:00:00.000Z");
@@ -309,7 +311,7 @@ describe("Agent persistence and authorization", () => {
         outcome: "failed",
         executionEffects: "may_have_occurred",
         errorReason: "workspace_failed",
-        usage: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 4 },
+        usage: { inputTokens, cachedInputTokens: 2, outputTokens: 4 },
         traceSummary: { lastSequence: 1, droppedEvents: 0 },
         resultHash: "0".repeat(64),
       };

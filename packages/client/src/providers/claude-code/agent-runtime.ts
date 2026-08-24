@@ -979,7 +979,17 @@ function parseUsage(
   const source = record(value);
   if (!source) return undefined;
   const usage: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } = {};
-  if (isNonNegativeNumber(source.input_tokens)) usage.inputTokens = source.input_tokens;
+  const inputTokens = isNonNegativeNumber(source.input_tokens) ? source.input_tokens : undefined;
+  const cacheCreationInputTokens = isNonNegativeNumber(source.cache_creation_input_tokens)
+    ? source.cache_creation_input_tokens
+    : undefined;
+  if (inputTokens !== undefined || cacheCreationInputTokens !== undefined) {
+    const total = (inputTokens ?? 0) + (cacheCreationInputTokens ?? 0);
+    if (!Number.isSafeInteger(total)) throw protocolError("Claude Code input token usage overflowed");
+    // Preserve cache writes without changing the shared report shape. Older reports that omitted this Provider field
+    // remain readable and necessarily retain their historical undercount.
+    usage.inputTokens = total;
+  }
   if (isNonNegativeNumber(source.cache_read_input_tokens)) usage.cachedInputTokens = source.cache_read_input_tokens;
   if (isNonNegativeNumber(source.output_tokens)) usage.outputTokens = source.output_tokens;
   return Object.keys(usage).length > 0 ? usage : undefined;

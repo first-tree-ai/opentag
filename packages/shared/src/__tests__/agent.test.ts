@@ -150,12 +150,23 @@ describe("Agent contracts", () => {
         agents: [
           {
             ...summary,
-            activity: { state: "working", startedAt: agent.updatedAt, summary: "Review PR #127" },
+            activity: { state: "working", startedAt: agent.updatedAt },
             usage: { windowDays: 30, tasks: 1, failed: 0, tokens: 0 },
           },
         ],
       }),
-    ).toMatchObject({ agents: [{ activity: { state: "working", summary: "Review PR #127" } }] });
+    ).toMatchObject({ agents: [{ activity: { state: "working", startedAt: agent.updatedAt } }] });
+    expect(() =>
+      ListAgentsResponseSchema.parse({
+        agents: [
+          {
+            ...summary,
+            activity: { state: "working", startedAt: agent.updatedAt, summary: "Private conversation content" },
+            usage: { windowDays: 30, tasks: 1, failed: 0, tokens: 0 },
+          },
+        ],
+      }),
+    ).toThrow();
     expect(AgentDetailSchema.parse({ ...summary, viewerCapabilities: { canManage: false } })).toMatchObject({
       viewerCapabilities: { canManage: false },
     });

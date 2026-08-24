@@ -1122,8 +1122,7 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
         <StatusIndicator label={status.label} tone={status.tone} />
         {agent.activity.state === "working" && status.label === "Working" ? (
           <div className="agent-current-work">
-            <span>{agent.activity.summary}</span>
-            <small>Started {formatElapsedCompact(agent.activity.startedAt)} ago</small>
+            <span>Started {formatElapsedCompact(agent.activity.startedAt)} ago</span>
           </div>
         ) : status.detail ? (
           <small className="agent-state-detail">{status.detail}</small>

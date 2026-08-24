@@ -26,7 +26,6 @@ import {
   computers,
   imBindings,
   imMessageDeliveries,
-  imMessages,
   memberships,
   sessionPlacements,
   sessions,
@@ -62,13 +61,6 @@ interface AgentSafeRow {
   status: AgentRow["status"];
   createdAt: Date;
   updatedAt: Date;
-}
-
-function summarizeCurrentWork(value: string): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  if (!normalized) return "Task in progress";
-  const characters = Array.from(normalized);
-  return characters.length <= 160 ? normalized : `${characters.slice(0, 159).join("")}…`;
 }
 
 export interface AgentSessionStopTarget {
@@ -384,7 +376,6 @@ export class AgentService {
         agentId: imBindings.agentId,
         cachedInputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}'`,
         inputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}'`,
-        messageContent: imMessages.content,
         outcome: sql<string | null>`${imMessageDeliveries.turnReport} ->> 'outcome'`,
         outputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,outputTokens}'`,
         reportedAt: imMessageDeliveries.reportedAt,
@@ -393,7 +384,6 @@ export class AgentService {
         state: imMessageDeliveries.state,
       })
       .from(imMessageDeliveries)
-      .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .where(
@@ -410,7 +400,7 @@ export class AgentService {
       );
 
     const usageByAgent = new Map<string, { failed: number; tasks: number; tokens: number }>();
-    const workingByAgent = new Map<string, { startedAt: Date; summary: string }>();
+    const workingByAgent = new Map<string, Date>();
     const runtimeProviderByAgent = new Map(summaries.map((agent) => [agent.id, agent.runtimeProvider]));
     for (const row of activityRows) {
       if (
@@ -420,13 +410,8 @@ export class AgentService {
         row.bindingStatus === "active" &&
         row.sessionEndedAt === null
       ) {
-        const current = workingByAgent.get(row.agentId);
-        if (!current || row.acceptedAt > current.startedAt) {
-          workingByAgent.set(row.agentId, {
-            startedAt: row.acceptedAt,
-            summary: summarizeCurrentWork(row.messageContent.fallbackText),
-          });
-        }
+        const currentStartedAt = workingByAgent.get(row.agentId);
+        if (!currentStartedAt || row.acceptedAt > currentStartedAt) workingByAgent.set(row.agentId, row.acceptedAt);
       }
       if (!row.acceptedAt || row.acceptedAt < usageStartedAt) continue;
       const usage = usageByAgent.get(row.agentId) ?? { failed: 0, tasks: 0, tokens: 0 };
@@ -443,14 +428,13 @@ export class AgentService {
     return {
       agents: summaries.map((agent): AgentListItem => {
         const usage = usageByAgent.get(agent.id) ?? { failed: 0, tasks: 0, tokens: 0 };
-        const currentWork = workingByAgent.get(agent.id);
+        const currentWorkStartedAt = workingByAgent.get(agent.id);
         return {
           ...agent,
-          activity: currentWork
+          activity: currentWorkStartedAt
             ? {
                 state: "working",
-                startedAt: currentWork.startedAt.toISOString(),
-                summary: currentWork.summary,
+                startedAt: currentWorkStartedAt.toISOString(),
               }
             : { state: "idle" },
           usage: { windowDays: AGENT_USAGE_WINDOW_DAYS, ...usage },

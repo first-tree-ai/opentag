@@ -109,7 +109,6 @@ export const AgentListActivitySchema = z.discriminatedUnion("state", [
     .object({
       state: z.literal("working"),
       startedAt: z.string().datetime(),
-      summary: z.string().min(1).max(160),
     })
     .strict(),
 ]);

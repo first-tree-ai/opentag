@@ -3874,6 +3874,35 @@ textarea:focus {
   }
 }
 
+@media (max-width: 1180px) {
+  .agent-card {
+    min-height: 140px;
+    gap: 10px 24px;
+    grid-template-columns: minmax(0, 1fr) minmax(190px, 0.6fr) 24px;
+    grid-template-rows: auto auto;
+  }
+
+  .agent-card-identity {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .agent-card-state {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .agent-card-usage {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+
+  .agent-card-action {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+}
+
 @media (max-width: 900px) {
   .shell {
     grid-template-columns: minmax(0, 1fr);
@@ -4153,23 +4182,28 @@ textarea:focus {
   .agent-card {
     align-items: end;
     grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto;
   }
 
   .agent-card-identity {
     grid-column: 1;
+    grid-row: auto;
   }
 
   .agent-card-state {
     grid-column: 1;
+    grid-row: auto;
   }
 
   .agent-card-usage {
     width: 100%;
     grid-column: 1;
+    grid-row: auto;
   }
 
   .agent-card-action {
     grid-column: 1;
+    grid-row: auto;
   }
 
   .overview-section .definition-list {

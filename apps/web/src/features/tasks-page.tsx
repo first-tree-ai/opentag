@@ -203,6 +203,7 @@ export function TaskDetailPage() {
           <Icon name="arrow-left" />
           Tasks
         </Link>
+        <span className="tasks-demo-note">Demo data</span>
       </nav>
 
       <header className="task-conversation-header">

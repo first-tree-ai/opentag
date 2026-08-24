@@ -230,10 +230,15 @@
 .task-breadcrumb {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
   margin-bottom: var(--space-6);
   color: var(--muted);
   font-size: var(--text-ui);
+}
+
+.task-breadcrumb .tasks-demo-note {
+  line-height: inherit;
 }
 
 .task-breadcrumb a {

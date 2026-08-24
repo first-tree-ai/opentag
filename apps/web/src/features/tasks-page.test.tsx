@@ -64,6 +64,7 @@ describe("Tasks demo", () => {
     );
 
     expect(screen.getByRole("heading", { name: "Launch plan reviewed" })).toBeTruthy();
+    expect(screen.getByText("Demo data")).toBeTruthy();
     expect(screen.getByLabelText("Task source").textContent).toContain("Product Launch");
     const conversation = screen.getByLabelText("Task conversation");
     expect(within(conversation).getAllByText("Mia Zhang")).toHaveLength(2);

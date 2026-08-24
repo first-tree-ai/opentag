@@ -1429,6 +1429,15 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.pathname).toBe("/tasks/q3-launch-readiness");
   });
 
+  it("labels a directly opened Task detail as demo data", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/tasks/q3-launch-readiness");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Launch plan reviewed" })).toBeTruthy();
+    expect(screen.getByText("Demo data")).toBeTruthy();
+  });
+
   it("groups invitations with Members", async () => {
     installApi("admin");
     window.history.replaceState({}, "", "/members");

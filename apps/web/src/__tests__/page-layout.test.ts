@@ -80,11 +80,11 @@ describe("workspace page layout", () => {
     expect(declarationValue(designSystemStyles, "select.ds-control--compact", "min-height")).toBe("36px");
   });
 
-  it("keeps Task provenance and execution targets visible in the compact layout", () => {
+  it("keeps Task provenance and grouped execution readable in the compact layout", () => {
     expect(declarationValue(taskStyles, ".task-breadcrumb-actions .tasks-demo-note", "display")).toBe("inline");
-    expect(declarationValue(taskStyles, ".task-tool-target", "display")).toBe("block");
-    expect(declarationValue(taskStyles, ".task-tool-target", "grid-row")).toBe("2");
-    expect(declarationValue(taskStyles, ".task-tool-target", "white-space")).toBe("normal");
+    expect(topLevelDeclarationValue(taskStyles, ".task-tool-list", "border")).toBe("1px solid var(--border)");
+    expect(topLevelDeclarationValue(taskStyles, ".task-tool-call > summary", "display")).toBe("flex");
+    expect(declarationValue(taskStyles, ".task-tool-call-detail", "grid-template-columns")).toBe("1fr");
   });
 
   it("keeps Task final answers in a single reading column", () => {

@@ -77,9 +77,10 @@ describe("Tasks demo", () => {
         "Please review the Q3 launch plan and call out anything that is still unowned or missing a confirmed date.",
       ),
     ).toBeTruthy();
-    expect(within(conversation).getByText("Read thread")).toBeTruthy();
-    expect(within(conversation).getByText("Open document")).toBeTruthy();
-    expect(within(conversation).getByText("Search messages")).toBeTruthy();
+    expect(within(conversation).getByText("Read 2 sources")).toBeTruthy();
+    expect(within(conversation).getByText("Read the Product Launch thread")).toBeTruthy();
+    expect(within(conversation).getByText("Opened the Q3 launch brief")).toBeTruthy();
+    expect(within(conversation).getByText("Searched 12 Feishu messages")).toBeTruthy();
     expect(
       within(conversation).getByText(
         "The checklist and brief disagree on three items. I’m checking the recent thread before treating any owner or date as confirmed.",
@@ -105,7 +106,14 @@ describe("Tasks demo", () => {
     if (!process) throw new Error("Expected the Agent process details");
     expect(process.hasAttribute("open")).toBe(false);
     expect(process.compareDocumentPosition(finalAnswer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(process).getByText("3 tool calls · 0 retries · 8.1K input · 6.1K output · 14.2K total")).toBeTruthy();
+    expect(within(process).getByText("3 tool calls · 0 retries · 14.2K tokens")).toBeTruthy();
+    const sourceGroup = within(process).getByText("Read 2 sources").closest("details");
+    expect(sourceGroup?.hasAttribute("open")).toBe(true);
+    const threadCall = within(process).getByText("Read the Product Launch thread").closest("details");
+    expect(threadCall?.hasAttribute("open")).toBe(false);
+    fireEvent.click(within(threadCall as HTMLElement).getByText("Read the Product Launch thread"));
+    expect(threadCall?.hasAttribute("open")).toBe(true);
+    expect(within(threadCall as HTMLElement).getByText("18 messages read")).toBeTruthy();
     expect(within(conversation).getByText("Partner announcement copy — Needs owner")).toBeTruthy();
     expect(within(conversation).getByText("Security review sign-off — Date unconfirmed")).toBeTruthy();
     expect(within(conversation).queryByText("Launch plan reviewed")).toBeNull();
@@ -126,7 +134,7 @@ describe("Tasks demo", () => {
     const process = screen.getByText("Working").closest("details");
     expect(process?.hasAttribute("open")).toBe(true);
     expect(within(process as HTMLElement).getByText("2 tool calls · 0 retries · 6.4K input")).toBeTruthy();
-    expect(within(process as HTMLElement).getByText("In progress")).toBeTruthy();
+    expect(within(process as HTMLElement).getAllByText("In progress")).toHaveLength(1);
     expect(screen.queryByText(/0 output/)).toBeNull();
     expect(screen.queryByRole("heading", { level: 2 })).toBeNull();
   });
@@ -141,10 +149,8 @@ describe("Tasks demo", () => {
     );
 
     const process = screen.getByText("Worked for 11m 03s").closest("details");
-    expect(within(process as HTMLElement).getByText("Needs attention")).toBeTruthy();
-    expect(
-      within(process as HTMLElement).getByText("2 tool calls · 1 retry · 11.8K input · 6.8K output · 18.6K total"),
-    ).toBeTruthy();
+    expect(within(process as HTMLElement).getAllByText("Needs attention")).toHaveLength(1);
+    expect(within(process as HTMLElement).getByText("2 tool calls · 1 retry · 18.6K tokens")).toBeTruthy();
     expect(
       screen.getByText(
         "The review is paused because the access checklist and security orientation steps are not available.",

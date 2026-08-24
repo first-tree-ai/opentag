@@ -30,7 +30,7 @@ describe("CodexAgentRuntime", () => {
       runId: "run-1",
       status: "completed",
       output: [{ type: "text", text: "final answer" }],
-      usage: { inputTokens: 8, cachedInputTokens: 2, outputTokens: 3 },
+      usage: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3 },
       providerDiagnostics: { providerThreadId: "thread-1", providerTurnId: "turn-1" },
     });
     expect(events.map((event) => event.type)).toEqual([

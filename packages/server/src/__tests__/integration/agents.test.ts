@@ -229,16 +229,18 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
-  it("projects current work without dropping historical 30-day usage", async () => {
+  it.each([
+    ["codex", 14],
+    ["claude-code", 16],
+  ] as const)("projects current work and Provider-correct historical usage for %s", async (runtimeProvider, tokens) => {
     const value = await fixture();
     try {
       const now = new Date("2026-08-24T12:00:00.000Z");
       const computer = await createComputer(value.database, value.bootstrap.userId);
-      const created = await value.service.createForTeam(
-        value.bootstrap.userId,
-        value.bootstrap.teamId,
-        createInput(computer.id),
-      );
+      const created = await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, {
+        ...createInput(computer.id),
+        runtimeProvider,
+      });
       const [binding] = await value.database
         .insert(imBindings)
         .values({
@@ -350,7 +352,7 @@ describe("Agent persistence and authorization", () => {
           {
             id: created.id,
             activity: { state: "working", startedAt: workingAcceptedAt.toISOString() },
-            usage: { windowDays: 30, tasks: 2, failed: 1, tokens: 16 },
+            usage: { windowDays: 30, tasks: 2, failed: 1, tokens },
           },
         ],
       });
@@ -361,7 +363,7 @@ describe("Agent persistence and authorization", () => {
           {
             id: created.id,
             activity: { state: "idle" },
-            usage: { windowDays: 30, tasks: 2, failed: 1, tokens: 16 },
+            usage: { windowDays: 30, tasks: 2, failed: 1, tokens },
           },
         ],
       });
@@ -376,7 +378,7 @@ describe("Agent persistence and authorization", () => {
           {
             id: created.id,
             activity: { state: "idle" },
-            usage: { windowDays: 30, tasks: 2, failed: 1, tokens: 16 },
+            usage: { windowDays: 30, tasks: 2, failed: 1, tokens },
           },
         ],
       });

@@ -243,6 +243,7 @@ export {
   type RuntimeSnapshotHashes,
   type RuntimeUsage,
   RuntimeUsageSchema,
+  runtimeUsageTotalTokens,
   type ServerRuntimeBusinessFrame,
   ServerRuntimeBusinessFrameSchema,
   type SessionReconcileRequest,

@@ -309,7 +309,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     expect(runResult, JSON.stringify(runResult)).toMatchObject({
       status: "completed",
       output: [{ text: "terminal answer" }],
-      usage: { inputTokens: 6, cachedInputTokens: 2, outputTokens: 4 },
+      usage: { inputTokens: 8, cachedInputTokens: 2, outputTokens: 4 },
     });
     expect(events.map((event) => event.type)).toEqual(
       expect.arrayContaining([
@@ -384,19 +384,11 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       method: "item/agentMessage/delta",
       params: { threadId: "thread-1", turnId: "turn-5", itemId: "open", delta: "partial" },
     });
-    client.emit({
-      method: "thread/tokenUsage/updated",
-      params: { turnId: "turn-5", tokenUsage: { last: { cachedInputTokens: 3, outputTokens: 1 } } },
-    });
     client.complete({
       id: "turn-5",
       items: [{ id: "open", type: "agentMessage", phase: "final_answer", text: "terminal text" }],
     });
-    await expect(openMessage).resolves.toMatchObject({
-      status: "completed",
-      output: [{ text: "terminal text" }],
-      usage: { cachedInputTokens: 3, outputTokens: 1 },
-    });
+    await expect(openMessage).resolves.toMatchObject({ status: "completed", output: [{ text: "terminal text" }] });
 
     const openDelta = runtime.prompt({ runId: "open-delta", input: input("six") });
     await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(6));

@@ -6,12 +6,14 @@ import {
   type AgentListItem,
   type AgentRuntimeConfig,
   AgentRuntimeConfigSchema,
+  type AgentRuntimeProvider,
   type AgentSummary,
   type CreateAgentRequest,
   CreateAgentRequestSchema,
   type CreateAgentRuntimeConfig,
   hasRequiredFeishuTenantScopes,
   type ListAgentsResponse,
+  runtimeUsageTotalTokens,
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
@@ -118,18 +120,25 @@ function toAgentSummary(row: AgentSafeRow): AgentSummary {
   };
 }
 
-function deliveryTokenCount(...values: Array<string | null>): number {
-  let total = 0;
-  for (const value of values) {
-    if (value === null) continue;
-    const parsed = Number(value);
-    if (!Number.isSafeInteger(parsed) || parsed < 0) {
+function deliveryTokenCount(
+  provider: AgentRuntimeProvider,
+  inputTokens: string | null,
+  cachedInputTokens: string | null,
+  outputTokens: string | null,
+): number {
+  const parse = (value: string | null): number | undefined => {
+    if (value === null) return undefined;
+    const result = Number(value);
+    if (!Number.isSafeInteger(result) || result < 0) {
       throw new Error("Agent usage contains an invalid token count");
     }
-    total += parsed;
-    if (!Number.isSafeInteger(total)) throw new Error("Agent usage token total exceeds the safe integer range");
-  }
-  return total;
+    return result;
+  };
+  return runtimeUsageTotalTokens(provider, {
+    inputTokens: parse(inputTokens),
+    cachedInputTokens: parse(cachedInputTokens),
+    outputTokens: parse(outputTokens),
+  });
 }
 
 function runtimeConfigsEqual(
@@ -392,6 +401,7 @@ export class AgentService {
 
     const usageByAgent = new Map<string, { failed: number; tasks: number; tokens: number }>();
     const workingByAgent = new Map<string, Date>();
+    const runtimeProviderByAgent = new Map(summaries.map((agent) => [agent.id, agent.runtimeProvider]));
     for (const row of activityRows) {
       if (
         row.state === "accepted" &&
@@ -407,7 +417,9 @@ export class AgentService {
       const usage = usageByAgent.get(row.agentId) ?? { failed: 0, tasks: 0, tokens: 0 };
       usage.tasks += 1;
       if (row.outcome === "failed") usage.failed += 1;
-      usage.tokens += deliveryTokenCount(row.inputTokens, row.cachedInputTokens, row.outputTokens);
+      const runtimeProvider = runtimeProviderByAgent.get(row.agentId);
+      if (!runtimeProvider) throw new Error("Agent usage is missing its runtime Provider");
+      usage.tokens += deliveryTokenCount(runtimeProvider, row.inputTokens, row.cachedInputTokens, row.outputTokens);
       if (!Number.isSafeInteger(usage.tokens))
         throw new Error("Agent usage token total exceeds the safe integer range");
       usageByAgent.set(row.agentId, usage);

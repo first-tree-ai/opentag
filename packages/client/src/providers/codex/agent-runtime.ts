@@ -1245,12 +1245,8 @@ function parseUsage(value: unknown): {
   const tokenUsage = requireRecord(value, "token usage is invalid");
   const source = record(tokenUsage.last) ?? record(tokenUsage.total) ?? tokenUsage;
   const usage: { inputTokens?: number; cachedInputTokens?: number; outputTokens?: number } = {};
-  const inputTokens = isNonNegativeNumber(source.inputTokens) ? source.inputTokens : undefined;
-  const cachedInputTokens = isNonNegativeNumber(source.cachedInputTokens) ? source.cachedInputTokens : undefined;
-  if (inputTokens !== undefined) {
-    usage.inputTokens = Math.max(0, inputTokens - (cachedInputTokens ?? 0));
-  }
-  if (cachedInputTokens !== undefined) usage.cachedInputTokens = cachedInputTokens;
+  if (isNonNegativeNumber(source.inputTokens)) usage.inputTokens = source.inputTokens;
+  if (isNonNegativeNumber(source.cachedInputTokens)) usage.cachedInputTokens = source.cachedInputTokens;
   if (isNonNegativeNumber(source.outputTokens)) usage.outputTokens = source.outputTokens;
   return usage;
 }

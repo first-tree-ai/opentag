@@ -72,6 +72,7 @@ type AgentAvailability = {
     | "agent_unconfirmed"
     | "computer_offline"
     | "runtime_unavailable"
+    | "runtime_unconfirmed"
     | "im_not_connected"
     | "im_provisioning"
     | "im_reauthorization_required"
@@ -96,9 +97,8 @@ type AgentAvailability = {
 };
 
 type AgentListItem = AgentListApiItem & {
+  availability: AgentAvailability;
   evidenceConfirmed: boolean;
-  computerConnectionStatus: TeamComputerSummary["connectionStatus"] | null;
-  computerEvidenceConfirmed: boolean;
 };
 type AgentDetailView = AgentDetail & { availability: AgentAvailability };
 
@@ -147,7 +147,13 @@ function projectAgentAvailability(
       dependencies,
     };
   }
-  if (agent.runtimeProvider !== "codex") {
+  const runtimeReadiness = computer.providerReadiness?.find(
+    (observation) => observation.provider === agent.runtimeProvider,
+  );
+  if (!runtimeReadiness) {
+    return { state: "unconfirmed", reason: "runtime_unconfirmed", lastConfirmedAt: null, dependencies };
+  }
+  if (runtimeReadiness.status !== "ready") {
     return { state: "action_required", reason: "runtime_unavailable", lastConfirmedAt: null, dependencies };
   }
   if (!bindingEvidenceConfirmed || !handoffEvidenceConfirmed) {
@@ -193,13 +199,37 @@ async function loadAgentList(teamId: string): Promise<{ agents: AgentListItem[] 
     ),
   ]);
   const computers = computersResult.kind === "ready" ? computersResult.value.computers : [];
+  if (computersResult.kind === "unconfirmed") {
+    return {
+      agents: agents.map((agent) => ({
+        ...agent,
+        availability: projectAgentAvailability(agent, undefined, undefined, undefined, false, false),
+        evidenceConfirmed: true,
+      })),
+    };
+  }
+  const availability = await Promise.all(
+    agents.map(async (agent) => {
+      const [bindingResult, handoffResult] = await Promise.allSettled([
+        browserApi.imBinding(agent.id),
+        browserApi.imBindingHandoff(agent.id),
+      ]);
+      return projectAgentAvailability(
+        agent,
+        computers.find((computer) => computer.id === agent.computer.id),
+        bindingResult.status === "fulfilled" ? bindingResult.value : undefined,
+        handoffResult.status === "fulfilled" ? handoffResult.value : undefined,
+        bindingResult.status === "fulfilled",
+        handoffResult.status === "fulfilled",
+      );
+    }),
+  );
   return {
-    agents: agents.map((agent) => ({
+    agents: agents.map((agent, index) => ({
       ...agent,
+      availability:
+        availability[index] ?? projectAgentAvailability(agent, undefined, undefined, undefined, false, false),
       evidenceConfirmed: true,
-      computerConnectionStatus:
-        computers.find((computer) => computer.id === agent.computer.id)?.connectionStatus ?? null,
-      computerEvidenceConfirmed: computersResult.kind === "ready",
     })),
   };
 }
@@ -231,9 +261,13 @@ function markAgentListUnconfirmed(value: { agents: AgentListItem[] }): { agents:
   return {
     agents: value.agents.map((agent) => ({
       ...agent,
+      availability: {
+        ...agent.availability,
+        state: "unconfirmed",
+        reason: "agent_unconfirmed",
+        lastConfirmedAt: null,
+      },
       evidenceConfirmed: false,
-      computerConnectionStatus: null,
-      computerEvidenceConfirmed: false,
     })),
   };
 }
@@ -1138,17 +1172,29 @@ function agentCardStatus(agent: AgentListItem): {
   if (!agent.evidenceConfirmed) {
     return { detail: "Unable to refresh", label: "Unconfirmed", priority: 1, tone: "neutral" };
   }
-  if (!agent.computerEvidenceConfirmed || agent.computerConnectionStatus === null) {
-    return { detail: "Runtime unavailable", label: "Unconfirmed", priority: 1, tone: "neutral" };
+  if (agent.availability.state === "unconfirmed") {
+    return { detail: "Unable to confirm readiness", label: "Unconfirmed", priority: 1, tone: "neutral" };
   }
-  if (agent.computerConnectionStatus === "offline") {
+  if (agent.availability.state === "action_required") {
+    const detail =
+      agent.availability.reason === "computer_offline"
+        ? "Computer offline"
+        : agent.availability.reason === "runtime_unavailable"
+          ? "Runtime unavailable"
+          : "Messaging unavailable";
     return {
-      detail: "Computer offline",
+      detail,
       label: "Needs attention",
       priority: 0,
-      reconnect: true,
+      reconnect: agent.availability.reason === "computer_offline",
       tone: "warning",
     };
+  }
+  if (agent.availability.state === "setting_up") {
+    return { detail: "Messaging setup in progress", label: "Setting up", priority: 2, tone: "info" };
+  }
+  if (agent.availability.state === "not_connected") {
+    return { detail: "Messaging not connected", label: "Not connected", priority: 2, tone: "neutral" };
   }
   if (agent.activity.state === "working") {
     return {

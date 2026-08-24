@@ -229,7 +229,7 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
-  it("projects active work and 30-day task usage from accepted deliveries", async () => {
+  it("projects current work without dropping historical 30-day usage", async () => {
     const value = await fixture();
     try {
       const now = new Date("2026-08-24T12:00:00.000Z");
@@ -241,7 +241,18 @@ describe("Agent persistence and authorization", () => {
       );
       const [binding] = await value.database
         .insert(imBindings)
-        .values({ agentId: created.id, provider: "slack" })
+        .values({
+          agentId: created.id,
+          provider: "slack",
+          status: "active",
+          externalAppId: "A1",
+          externalTeamId: "T1",
+          externalBotId: "B1",
+          credentialSchemaVersion: 1,
+          credentialGeneration: 1,
+          encryptedCredential: "fixture",
+          activatedAt: now,
+        })
         .returning();
       if (!binding) throw new Error("IM binding fixture was not created");
       const [session] = await value.database
@@ -339,6 +350,32 @@ describe("Agent persistence and authorization", () => {
           {
             id: created.id,
             activity: { state: "working", startedAt: workingAcceptedAt.toISOString() },
+            usage: { windowDays: 30, tasks: 2, failed: 1, tokens: 16 },
+          },
+        ],
+      });
+
+      await value.database.update(sessions).set({ endedAt: now }).where(eq(sessions.id, session.id));
+      await expect(service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).resolves.toMatchObject({
+        agents: [
+          {
+            id: created.id,
+            activity: { state: "idle" },
+            usage: { windowDays: 30, tasks: 2, failed: 1, tokens: 16 },
+          },
+        ],
+      });
+
+      await value.database.update(sessions).set({ endedAt: null }).where(eq(sessions.id, session.id));
+      await value.database
+        .update(imBindings)
+        .set({ status: "reauthorization_required" })
+        .where(eq(imBindings.id, binding.id));
+      await expect(service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).resolves.toMatchObject({
+        agents: [
+          {
+            id: created.id,
+            activity: { state: "idle" },
             usage: { windowDays: 30, tasks: 2, failed: 1, tokens: 16 },
           },
         ],

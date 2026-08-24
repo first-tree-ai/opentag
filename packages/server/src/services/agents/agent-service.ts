@@ -370,6 +370,8 @@ export class AgentService {
         outcome: sql<string | null>`${imMessageDeliveries.turnReport} ->> 'outcome'`,
         outputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,outputTokens}'`,
         reportedAt: imMessageDeliveries.reportedAt,
+        bindingStatus: imBindings.status,
+        sessionEndedAt: sessions.endedAt,
         state: imMessageDeliveries.state,
       })
       .from(imMessageDeliveries)
@@ -391,7 +393,13 @@ export class AgentService {
     const usageByAgent = new Map<string, { failed: number; tasks: number; tokens: number }>();
     const workingByAgent = new Map<string, Date>();
     for (const row of activityRows) {
-      if (row.state === "accepted" && row.reportedAt === null && row.acceptedAt) {
+      if (
+        row.state === "accepted" &&
+        row.reportedAt === null &&
+        row.acceptedAt &&
+        row.bindingStatus === "active" &&
+        row.sessionEndedAt === null
+      ) {
         const current = workingByAgent.get(row.agentId);
         if (!current || row.acceptedAt > current) workingByAgent.set(row.agentId, row.acceptedAt);
       }

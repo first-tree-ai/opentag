@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { IntegrationsPage } from "../features/integrations-page.js";
 import { SkillsPage } from "../features/skills-page.js";
@@ -26,16 +26,30 @@ describe("capability entry pages", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("keeps Integrations truthful until a Workspace Integration contract exists", () => {
+  it("renders an explicitly labeled Integrations mock", () => {
     render(<IntegrationsPage />);
 
     expect(screen.getByRole("heading", { name: "Integrations" })).toBeTruthy();
-    expect(screen.getByText("Coming later")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Workspace Integrations are not available yet" })).toBeTruthy();
-    expect(screen.getByText(/Provider Bot connections remain managed/)).toBeTruthy();
+    expect(screen.getByText("Demo data")).toBeTruthy();
+    expect(screen.getByText("GitHub")).toBeTruthy();
+    expect(screen.getByText("Google Drive")).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "Connected" })).getAllByText("Connected")).toHaveLength(3);
+    expect(screen.getAllByRole("button", { name: "Manage" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Connect" })).toHaveLength(4);
+  });
+
+  it("filters the Integrations mock and exposes preview-only connection details", () => {
+    render(<IntegrationsPage />);
+
+    fireEvent.change(screen.getByLabelText("Search integrations"), { target: { value: "errors" } });
+    expect(screen.getByText("Sentry")).toBeTruthy();
     expect(screen.queryByText("GitHub")).toBeNull();
-    expect(screen.queryByText("Connected")).toBeNull();
-    expect(screen.queryByRole("button")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Connect Sentry" })).toBeTruthy();
+    expect(screen.getByText("Preview only")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
   });
 
   it("renders the fixed 30-day Usage overview without a range control", () => {

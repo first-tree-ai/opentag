@@ -30,6 +30,84 @@ export const skillPreviews: readonly SkillPreview[] = [
   },
 ];
 
+export type IntegrationCategory = "Developer tools" | "Knowledge" | "Productivity";
+
+export type IntegrationPreview = {
+  id: string;
+  name: string;
+  abbreviation: string;
+  category: IntegrationCategory;
+  description: string;
+  connection:
+    | {
+        state: "connected";
+        identity: string;
+        agentCount: number;
+      }
+    | {
+        state: "available";
+      };
+};
+
+export const integrationPreviews: readonly IntegrationPreview[] = [
+  {
+    id: "github",
+    name: "GitHub",
+    abbreviation: "GH",
+    category: "Developer tools",
+    description: "Read repositories, issues, pull requests, and checks.",
+    connection: {
+      state: "connected",
+      identity: "opentag-labs",
+      agentCount: 6,
+    },
+  },
+  {
+    id: "google-drive",
+    name: "Google Drive",
+    abbreviation: "GD",
+    category: "Knowledge",
+    description: "Find and reference workspace documents and folders.",
+    connection: {
+      state: "connected",
+      identity: "Product workspace",
+      agentCount: 3,
+    },
+  },
+  {
+    id: "linear",
+    name: "Linear",
+    abbreviation: "LI",
+    category: "Productivity",
+    description: "Search issues, update status, and create project work.",
+    connection: { state: "available" },
+  },
+  {
+    id: "notion",
+    name: "Notion",
+    abbreviation: "NO",
+    category: "Knowledge",
+    description: "Use selected pages and databases as Agent context.",
+    connection: { state: "available" },
+  },
+  {
+    id: "sentry",
+    name: "Sentry",
+    abbreviation: "SE",
+    category: "Developer tools",
+    description: "Inspect errors, releases, and application health signals.",
+    connection: { state: "available" },
+  },
+  {
+    id: "figma",
+    name: "Figma",
+    abbreviation: "FI",
+    category: "Productivity",
+    description: "Reference files, components, and design comments.",
+    connection: { state: "available" },
+  },
+];
+
 export const usageRanges = ["7 days", "30 days", "90 days"] as const;
 
 export type UsageRange = (typeof usageRanges)[number];

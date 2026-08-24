@@ -44,15 +44,6 @@ export type IntegrationPreview = {
   abbreviation: string;
   category: IntegrationCategory;
   description: string;
-  connection:
-    | {
-        state: "connected";
-        identity: string;
-        agentCount: number;
-      }
-    | {
-        state: "available";
-      };
 };
 
 export const integrationPreviews: readonly IntegrationPreview[] = [
@@ -62,11 +53,6 @@ export const integrationPreviews: readonly IntegrationPreview[] = [
     abbreviation: "GH",
     category: "Developer tools",
     description: "Read repositories, issues, pull requests, and checks.",
-    connection: {
-      state: "connected",
-      identity: "opentag-labs",
-      agentCount: 6,
-    },
   },
   {
     id: "google-drive",
@@ -74,11 +60,6 @@ export const integrationPreviews: readonly IntegrationPreview[] = [
     abbreviation: "GD",
     category: "Knowledge",
     description: "Find and reference workspace documents and folders.",
-    connection: {
-      state: "connected",
-      identity: "Product workspace",
-      agentCount: 3,
-    },
   },
   {
     id: "linear",
@@ -86,7 +67,6 @@ export const integrationPreviews: readonly IntegrationPreview[] = [
     abbreviation: "LI",
     category: "Productivity",
     description: "Search issues, update status, and create project work.",
-    connection: { state: "available" },
   },
   {
     id: "notion",
@@ -94,7 +74,6 @@ export const integrationPreviews: readonly IntegrationPreview[] = [
     abbreviation: "NO",
     category: "Knowledge",
     description: "Use selected pages and databases as Agent context.",
-    connection: { state: "available" },
   },
   {
     id: "sentry",
@@ -102,7 +81,6 @@ export const integrationPreviews: readonly IntegrationPreview[] = [
     abbreviation: "SE",
     category: "Developer tools",
     description: "Inspect errors, releases, and application health signals.",
-    connection: { state: "available" },
   },
   {
     id: "figma",
@@ -110,7 +88,6 @@ export const integrationPreviews: readonly IntegrationPreview[] = [
     abbreviation: "FI",
     category: "Productivity",
     description: "Reference files, components, and design comments.",
-    connection: { state: "available" },
   },
 ];
 

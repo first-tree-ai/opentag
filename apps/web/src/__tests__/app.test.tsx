@@ -1721,7 +1721,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Skills" })).toBeTruthy();
     fireEvent.click(screen.getByRole("link", { name: "Integrations" }));
     expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Workspace integrations" })).toBeTruthy();
+    expect(screen.getByRole("table", { name: "Demo Integrations" })).toBeTruthy();
     expect(screen.getByText("Demo data")).toBeTruthy();
     expect(screen.getByText("GitHub")).toBeTruthy();
     fireEvent.click(screen.getByRole("link", { name: "Usage" }));

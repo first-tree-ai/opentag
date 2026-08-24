@@ -31,47 +31,22 @@ describe("capability entry pages", () => {
     expect(screen.getByRole("status").textContent).toBe("release-notes.md selected · Demo only, not uploaded");
   });
 
-  it("renders an explicitly labeled Integrations mock", () => {
-    vi.stubEnv("DEV", true);
+  it("renders an explicitly labeled Integrations mock in production mode", () => {
+    vi.stubEnv("DEV", false);
     render(<IntegrationsPage />);
 
     expect(screen.getByRole("heading", { name: "Integrations" })).toBeTruthy();
     expect(screen.getByText("Demo data")).toBeTruthy();
     expect(screen.getByText("GitHub")).toBeTruthy();
     expect(screen.getByText("Google Drive")).toBeTruthy();
-    expect(within(screen.getByRole("region", { name: "Connected" })).getAllByText("Connected")).toHaveLength(3);
-    expect(screen.getAllByRole("button", { name: "Manage" })).toHaveLength(2);
-    expect(screen.getAllByRole("button", { name: "Connect" })).toHaveLength(4);
-  });
-
-  it("filters the Integrations mock and exposes preview-only connection details", () => {
-    vi.stubEnv("DEV", true);
-    render(<IntegrationsPage />);
-
-    fireEvent.change(screen.getByLabelText("Search integrations"), { target: { value: "errors" } });
-    expect(screen.getByText("Sentry")).toBeTruthy();
-    expect(screen.queryByText("GitHub")).toBeNull();
-
-    const trigger = screen.getByRole("button", { name: "Connect" });
-    trigger.focus();
-    fireEvent.click(trigger);
-    expect(screen.getByRole("dialog")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Connect Sentry" })).toBeTruthy();
-    expect(screen.getByText("Preview only")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
-
-    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(document.activeElement).toBe(trigger);
-  });
-
-  it("keeps the Integrations proposal behind the development preview gate", () => {
-    vi.stubEnv("DEV", false);
-    render(<IntegrationsPage />);
-
-    expect(screen.getByRole("heading", { name: "Workspace Integrations are not available yet" })).toBeTruthy();
-    expect(screen.getByText("No preview records are shown in production.")).toBeTruthy();
-    expect(screen.queryByText("GitHub")).toBeNull();
+    expect(screen.getAllByText("Demo")).toHaveLength(6);
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
+      "Name",
+      "Category",
+      "Status",
+    ]);
+    expect(screen.queryByText("Connected")).toBeNull();
+    expect(screen.queryByText("Agents with access")).toBeNull();
     expect(screen.queryByRole("button")).toBeNull();
   });
 

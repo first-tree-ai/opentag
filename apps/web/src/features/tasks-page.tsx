@@ -1,5 +1,6 @@
 import { type ChangeEventHandler, type ReactNode, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import feishuIconUrl from "../assets/feishu.svg";
 import {
   findTaskPreview,
   type TaskAgentEvent,
@@ -19,7 +20,7 @@ type AgentFilter = "all" | TaskPreview["agent"];
 const statusPresentation: Record<TaskStatus, { readonly label: string; readonly tone: StatusTone }> = {
   needs_attention: { label: "Needs attention", tone: "warning" },
   processing: { label: "In progress", tone: "info" },
-  recently_completed: { label: "Recently completed", tone: "success" },
+  recently_completed: { label: "Completed", tone: "success" },
 };
 
 const toolStatusPresentation: Record<TaskToolStatus, { readonly label: string }> = {
@@ -90,7 +91,7 @@ export function TasksPage() {
         >
           <option value="all">All statuses</option>
           <option value="processing">In progress</option>
-          <option value="recently_completed">Recently completed</option>
+          <option value="recently_completed">Completed</option>
           <option value="needs_attention">Needs attention</option>
         </TaskSelect>
       </form>
@@ -99,9 +100,8 @@ export function TasksPage() {
         <table className="task-table" aria-label="Demo Tasks">
           <thead>
             <tr className="task-table-grid task-table-header">
-              <th scope="col">Work</th>
-              <th scope="col">Source</th>
-              <th scope="col">Activity</th>
+              <th scope="col">Task</th>
+              <th scope="col">Status</th>
             </tr>
           </thead>
           <tbody>
@@ -382,14 +382,18 @@ function TaskRow({ task }: { task: TaskPreview }) {
   const status = statusPresentation[task.status];
   return (
     <tr className="task-table-grid task-table-row">
-      <td className="task-work-cell" data-label="Work">
+      <td className="task-work-cell" data-label="Task">
         <Link to={`/tasks/${task.id}`}>{task.title}</Link>
-        <small>{task.agent}</small>
+        <span className="task-list-metadata">
+          <span>{task.agent}</span>
+          <span aria-hidden="true">·</span>
+          <FeishuIcon compact />
+          <span>{task.source.context}</span>
+          <span aria-hidden="true">·</span>
+          <span>{task.source.detail}</span>
+        </span>
       </td>
-      <td data-label="Source">
-        <SourceIdentity task={task} />
-      </td>
-      <td data-label="Activity">
+      <td className="task-status-cell" data-label="Status">
         <StatusIndicator
           aria-label={`${status.label}, updated ${task.relativeUpdatedAt}`}
           detail={task.relativeUpdatedAt}
@@ -404,14 +408,23 @@ function TaskRow({ task }: { task: TaskPreview }) {
 function SourceIdentity({ task }: { task: TaskPreview }) {
   return (
     <span className="task-source-identity">
-      <span className="task-source-mark task-source-mark--feishu" aria-hidden="true">
-        FS
-      </span>
+      <FeishuIcon />
       <span>
         <strong>{task.source.context}</strong>
         <small>Feishu · {task.source.detail}</small>
       </span>
     </span>
+  );
+}
+
+function FeishuIcon({ compact = false }: { compact?: boolean }) {
+  return (
+    <img
+      alt=""
+      aria-hidden="true"
+      className={compact ? "task-feishu-icon task-feishu-icon--compact" : "task-feishu-icon"}
+      src={feishuIconUrl}
+    />
   );
 }
 

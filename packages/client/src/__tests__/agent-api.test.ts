@@ -38,6 +38,11 @@ const agentSummary = {
   manager: { userId: managerUserId, displayName: "Manager" },
   computer: { id: safeComputerId, displayName: "Laptop", platform: "linux" },
 };
+const agentListItem = {
+  ...agentSummary,
+  activity: { state: "idle" },
+  usage: { windowDays: 30, tasks: 12, failed: 1, tokens: 42_000 },
+};
 const agentDetail = { ...agentSummary, viewerCapabilities: { canManage: true } };
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -49,7 +54,7 @@ describe("OpenTagApi Agent methods", () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(jsonResponse(agent, 201))
-      .mockResolvedValueOnce(jsonResponse({ agents: [agentSummary] }))
+      .mockResolvedValueOnce(jsonResponse({ agents: [agentListItem] }))
       .mockResolvedValueOnce(jsonResponse(agentDetail))
       .mockResolvedValueOnce(jsonResponse(agent))
       .mockResolvedValueOnce(jsonResponse({ ...agent, displayName: "Reviewer", revision: 2 }))

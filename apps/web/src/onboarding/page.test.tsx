@@ -1,6 +1,6 @@
 import type {
   AgentAdminConfig,
-  AgentSummary,
+  AgentListItem,
   Computer,
   CreateAgentRequest,
   ImBindingHandoffStatus,
@@ -48,7 +48,7 @@ const computerB: TeamComputerSummary = {
   id: computerBId,
   displayName: "Studio Mac",
 };
-const agent: AgentSummary = {
+const agent: AgentListItem = {
   id: agentId,
   teamId,
   name: "opentag",
@@ -58,6 +58,8 @@ const agent: AgentSummary = {
   runtimeProvider: "codex",
   receiveMode: "mention_only",
   status: "active",
+  activity: { state: "idle" },
+  usage: { windowDays: 30, tasks: 0, failed: 0, tokens: 0 },
   createdAt: "2026-08-20T00:00:00.000Z",
   updatedAt: "2026-08-20T00:00:00.000Z",
 };
@@ -107,7 +109,7 @@ function installFacts({
   handoff,
   members = [],
 }: {
-  agents?: AgentSummary[];
+  agents?: AgentListItem[];
   computers?: TeamComputerSummary[];
   handoff?: ImBindingHandoffStatus;
   members?: TeamMemberSummary[];
@@ -684,7 +686,7 @@ describe("OnboardingPage", () => {
   });
 
   it("replays a lost create response with the same creationIntentId", async () => {
-    let serverAgents: AgentSummary[] = [];
+    let serverAgents: AgentListItem[] = [];
     const agentReads = vi.spyOn(browserApi, "agents").mockImplementation(async () => ({ agents: serverAgents }));
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computerA] });
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
@@ -707,7 +709,7 @@ describe("OnboardingPage", () => {
   });
 
   it("recovers the durable create intent after the page remounts", async () => {
-    let serverAgents: AgentSummary[] = [];
+    let serverAgents: AgentListItem[] = [];
     vi.spyOn(browserApi, "agents").mockImplementation(async () => ({ agents: serverAgents }));
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computerA] });
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
@@ -734,7 +736,7 @@ describe("OnboardingPage", () => {
   });
 
   it("uses one logical create across parallel page controllers", async () => {
-    let serverAgents: AgentSummary[] = [];
+    let serverAgents: AgentListItem[] = [];
     vi.spyOn(browserApi, "agents").mockImplementation(async () => ({ agents: serverAgents }));
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computerA] });
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
@@ -931,7 +933,7 @@ describe("OnboardingPage", () => {
   it("publishes an explicit Agent choice for the route URL anchor", async () => {
     const storageTeamId = "b3fda800-7ce2-4338-aae8-3d2120401ed6";
     const storageAdmin = { ...admin, teamId: storageTeamId };
-    const researchAgent: AgentSummary = {
+    const researchAgent: AgentListItem = {
       ...agent,
       id: "2a63a21e-f6c7-4474-91ea-4dabf0566a24",
       teamId: storageTeamId,

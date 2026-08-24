@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import type { TurnReportRequest } from "@opentag/shared";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { and, eq } from "drizzle-orm";
 import postgres from "postgres";
@@ -6,7 +7,17 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
-import { agents, computers, memberships, teams, users } from "../../db/schema/index.js";
+import {
+  agents,
+  computers,
+  imBindings,
+  imMessageDeliveries,
+  imMessages,
+  memberships,
+  sessions,
+  teams,
+  users,
+} from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../services/runtime-config/index.js";
 import { TeamMembershipService } from "../../services/teams/index.js";
@@ -202,6 +213,8 @@ describe("Agent persistence and authorization", () => {
       expect((await value.service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).agents).toEqual([
         expect.objectContaining({
           id: created.id,
+          activity: { state: "idle" },
+          usage: { windowDays: 30, tasks: 0, failed: 0, tokens: 0 },
           manager: expect.objectContaining({ userId: value.bootstrap.userId }),
           computer: expect.objectContaining({ id: computer.id }),
         }),
@@ -211,6 +224,166 @@ describe("Agent persistence and authorization", () => {
         viewerCapabilities: { canManage: true },
       });
       await expect(value.service.getConfigById(value.bootstrap.userId, created.id)).resolves.toEqual(created);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it.each([
+    ["codex", 14],
+    ["claude-code", 116],
+  ] as const)("projects current work and Provider-correct historical usage for %s", async (runtimeProvider, tokens) => {
+    // The Claude adapter folds 100 cache-creation tokens into inputTokens and keeps 2 cache-read tokens separate.
+    const inputTokens = runtimeProvider === "claude-code" ? 110 : 10;
+    const value = await fixture();
+    try {
+      const now = new Date("2026-08-24T12:00:00.000Z");
+      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const created = await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, {
+        ...createInput(computer.id),
+        runtimeProvider,
+      });
+      const [binding] = await value.database
+        .insert(imBindings)
+        .values({
+          agentId: created.id,
+          provider: "slack",
+          status: "active",
+          externalAppId: "A1",
+          externalTeamId: "T1",
+          externalBotId: "B1",
+          credentialSchemaVersion: 1,
+          credentialGeneration: 1,
+          encryptedCredential: "fixture",
+          activatedAt: now,
+        })
+        .returning();
+      if (!binding) throw new Error("IM binding fixture was not created");
+      const [session] = await value.database
+        .insert(sessions)
+        .values({
+          imBindingId: binding.id,
+          channelId: "C1",
+          conversationKind: "channel",
+          kind: "channel",
+        })
+        .returning();
+      if (!session) throw new Error("Session fixture was not created");
+
+      const messageRows = await value.database
+        .insert(imMessages)
+        .values(
+          ["reported", "working"].map((suffix, index) => ({
+            imBindingId: binding.id,
+            providerEventId: `event-${suffix}`,
+            channelId: "C1",
+            externalMessageId: `message-${suffix}`,
+            providerRevisionKey: "1",
+            operation: "created" as const,
+            direction: "inbound" as const,
+            providerContext: { provider: "slack" as const, channelType: "channel" },
+            authorKind: "human" as const,
+            authorExternalId: "U_HUMAN",
+            content: {
+              version: 1 as const,
+              fallbackText: suffix,
+              blocks: [{ type: "text" as const, text: suffix }],
+              truncated: false,
+            },
+            occurredAt: new Date(now.getTime() - (index + 1) * 60_000),
+          })),
+        )
+        .returning({ id: imMessages.id });
+      const reportedMessage = messageRows[0];
+      const workingMessage = messageRows[1];
+      if (!reportedMessage || !workingMessage) throw new Error("Message fixtures were not created");
+
+      const reportedDeliveryId = crypto.randomUUID();
+      const workingDeliveryId = crypto.randomUUID();
+      const report: TurnReportRequest = {
+        type: "turn:report",
+        requestId: crypto.randomUUID(),
+        deliveryId: reportedDeliveryId,
+        turnId: "turn-reported",
+        sessionId: session.id,
+        agentId: created.id,
+        placementGeneration: 1,
+        outcome: "failed",
+        executionEffects: "may_have_occurred",
+        errorReason: "workspace_failed",
+        usage: { inputTokens, cachedInputTokens: 2, outputTokens: 4 },
+        traceSummary: { lastSequence: 1, droppedEvents: 0 },
+        resultHash: "0".repeat(64),
+      };
+      const workingAcceptedAt = new Date(now.getTime() - 4 * 60_000);
+      await value.database.insert(imMessageDeliveries).values([
+        {
+          id: reportedDeliveryId,
+          messageId: reportedMessage.id,
+          sessionId: session.id,
+          attention: "direct",
+          state: "accepted",
+          placementGeneration: 1,
+          inputHash: "reported-input",
+          turnId: report.turnId,
+          reportOwnerInstanceId: crypto.randomUUID(),
+          resultHash: report.resultHash,
+          turnReport: report,
+          reportedAt: new Date(now.getTime() - 8 * 60_000),
+          acceptedAt: new Date(now.getTime() - 10 * 60_000),
+          expiresAt: new Date(now.getTime() + 60_000),
+        },
+        {
+          id: workingDeliveryId,
+          messageId: workingMessage.id,
+          sessionId: session.id,
+          attention: "direct",
+          state: "accepted",
+          placementGeneration: 1,
+          inputHash: "working-input",
+          turnId: "turn-working",
+          reportOwnerInstanceId: crypto.randomUUID(),
+          acceptedAt: workingAcceptedAt,
+          expiresAt: new Date(now.getTime() + 60_000),
+        },
+      ]);
+
+      const service = new AgentService(value.database, { now: () => now });
+      await expect(service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).resolves.toMatchObject({
+        agents: [
+          {
+            id: created.id,
+            activity: { state: "working", startedAt: workingAcceptedAt.toISOString() },
+            usage: { windowDays: 30, tasks: 2, failed: 1, tokens },
+          },
+        ],
+      });
+
+      await value.database.update(sessions).set({ endedAt: now }).where(eq(sessions.id, session.id));
+      await expect(service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).resolves.toMatchObject({
+        agents: [
+          {
+            id: created.id,
+            activity: { state: "idle" },
+            usage: { windowDays: 30, tasks: 2, failed: 1, tokens },
+          },
+        ],
+      });
+
+      await value.database.update(sessions).set({ endedAt: null }).where(eq(sessions.id, session.id));
+      await value.database
+        .update(imBindings)
+        .set({ status: "reauthorization_required" })
+        .where(eq(imBindings.id, binding.id));
+      await expect(service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).resolves.toMatchObject({
+        agents: [
+          {
+            id: created.id,
+            activity: { state: "idle" },
+            usage: { windowDays: 30, tasks: 2, failed: 1, tokens },
+          },
+        ],
+      });
     } finally {
       await value.sql.end();
     }

@@ -26,6 +26,11 @@ const agentSummary = {
   createdAt: "2026-08-20T00:00:00.000Z",
   updatedAt: "2026-08-20T00:00:00.000Z",
 };
+const agentListItem = {
+  ...agentSummary,
+  activity: { state: "idle" as const },
+  usage: { windowDays: 30 as const, tasks: 32, failed: 0, tokens: 428_000 },
+};
 
 function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
@@ -49,6 +54,11 @@ function installApi(
       | readonly Record<string, unknown>[]
       | (() => Promise<readonly Record<string, unknown>[]> | readonly Record<string, unknown>[]);
     computerEvidenceFails?: boolean;
+    computerProviderReadiness?: readonly {
+      observedAt: string | null;
+      provider: "codex" | "claude-code";
+      status: "checking" | "install" | "sign-in" | "ready" | "unavailable";
+    }[];
     computerStatus?: () => "online" | "offline";
     ownComputerReadStatus?: () => number | undefined;
     handoffReady?: boolean;
@@ -58,6 +68,7 @@ function installApi(
     invitationRotate?: () => Promise<Response> | Response;
     ownComputer?: boolean;
     provider?: "feishu" | "slack";
+    runtimeProvider?: "codex" | "claude-code";
     profileUpdate?: (displayName: string) => Promise<Response> | Response;
     profileUpdateFails?: boolean;
     redeemFails?: boolean;
@@ -80,7 +91,7 @@ function installApi(
     teamId,
     name: agentSummary.name,
     displayName: agentSummary.displayName,
-    runtimeProvider: agentSummary.runtimeProvider,
+    runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,
     receiveMode: agentSummary.receiveMode,
     status: lifecycleStatus,
     createdAt: agentSummary.createdAt,
@@ -266,8 +277,17 @@ function installApi(
           ? []
           : [
               path.includes(invitedTeamId)
-                ? { ...agentSummary, teamId: invitedTeamId, status: lifecycleStatus }
-                : { ...agentSummary, status: lifecycleStatus },
+                ? {
+                    ...agentListItem,
+                    teamId: invitedTeamId,
+                    status: lifecycleStatus,
+                    runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
+                  }
+                : {
+                    ...agentListItem,
+                    status: lifecycleStatus,
+                    runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
+                  },
             ],
       });
     }
@@ -365,6 +385,9 @@ function installApi(
             displayName: "Ada's Mac",
             platform: "darwin",
             connectionStatus: options.computerStatus?.() ?? "online",
+            providerReadiness: options.computerProviderReadiness ?? [
+              { provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" },
+            ],
             connectedAt: "2026-08-20T00:00:00.000Z",
             lastSeenAt: "2026-08-20T00:00:00.000Z",
             observedAt: "2026-08-20T00:00:00.000Z",
@@ -433,6 +456,7 @@ function installApi(
       }
       return json({
         ...agentSummary,
+        runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,
         status: lifecycleStatus,
         viewerCapabilities: { canManage: currentRole === "admin" },
       });
@@ -541,10 +565,16 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText("Example")).toBeNull();
     const agentLink = await screen.findByRole("link", { name: "Open Reviewer" });
     const createAgent = screen.getByRole("button", { name: "New Agent" });
-    expect(createAgent.closest(".agent-card-grid")?.firstElementChild).toBe(createAgent);
-    expect(agentLink.closest(".agent-card-grid")).toBe(createAgent.closest(".agent-card-grid"));
-    expect(screen.getByText("Ada's Mac · macOS")).toBeTruthy();
-    expect(screen.getByText("Mentions only")).toBeTruthy();
+    expect(createAgent.closest(".page-header")).toBeTruthy();
+    const agentCard = agentLink.closest(".agent-card");
+    expect(agentCard).toBeTruthy();
+    expect(screen.getByText("Usage · Last 30 days")).toBeTruthy();
+    expect(within(agentCard as HTMLElement).getByText("Tasks")).toBeTruthy();
+    expect(within(agentCard as HTMLElement).getByText("Tokens")).toBeTruthy();
+    expect(within(agentCard as HTMLElement).getByText("428K")).toBeTruthy();
+    expect(within(agentCard as HTMLElement).getByText("Not connected")).toBeTruthy();
+    expect(screen.queryByText("Ada's Mac · macOS")).toBeNull();
+    expect(screen.queryByText("Mentions only")).toBeNull();
     const workspaceNavigation = screen.getByRole("navigation", { name: "Product" });
     expect(
       within(workspaceNavigation)
@@ -611,14 +641,13 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("button", { name: "New Agent" })).toBeNull();
   });
 
-  it("uses the New Agent card as the sole empty-state action for admins", async () => {
+  it("uses the page header as the sole empty-state action for admins", async () => {
     installApi("admin", { emptyAgents: true });
     render(<App />);
 
-    const agents = await screen.findByRole("region", { name: "Agents" });
-    expect(within(agents).getByRole("button", { name: "New Agent" })).toBeTruthy();
-    expect(within(agents).queryByRole("link")).toBeNull();
-    expect(screen.queryByText("No Agents yet")).toBeNull();
+    expect(await screen.findByRole("heading", { name: "No Agents yet" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New Agent" }).closest(".page-header")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Agents" })).toBeNull();
   });
 
   it("opens the complete New Agent form in a dialog and returns focus when cancelled", async () => {
@@ -1199,8 +1228,10 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Workspace permissions" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/general`);
     expect(window.location.hash).toBe("#permissions");
-    expect(document.activeElement).toBe(
-      screen.getByRole("heading", { name: "Workspace permissions" }).closest("section"),
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("heading", { name: "Workspace permissions" }).closest("section"),
+      ),
     );
     expect(screen.queryByRole("link", { name: "Access" })).toBeNull();
   });
@@ -1253,13 +1284,30 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByText("Reviewer")).toBeTruthy();
     expect(screen.getByText("Unconfirmed")).toBeTruthy();
-    expect(screen.getByText("Unable to confirm runtime")).toBeTruthy();
-    expect(screen.getByText("Ada's Mac · macOS")).toBeTruthy();
+    expect(screen.getByText("Unable to confirm readiness")).toBeTruthy();
+    expect(screen.queryByText("Ada's Mac · macOS")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/computers"))).toBe(true);
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes(`/agents/${agentId}/im-binding`))).toBe(
       false,
     );
+  });
+
+  it("requires the selected runtime Provider to be ready before an Agent card is Ready", async () => {
+    installApi("admin", {
+      bound: true,
+      runtimeProvider: "claude-code",
+      computerProviderReadiness: [
+        { provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" },
+        { provider: "claude-code", status: "sign-in", observedAt: "2026-08-20T00:00:00.000Z" },
+      ],
+    });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+
+    expect(await screen.findByText("Needs attention")).toBeTruthy();
+    expect(screen.getByText("Runtime unavailable")).toBeTruthy();
+    expect(screen.queryByText("Ready")).toBeNull();
   });
 
   it("keeps readiness implementation details out of the Agent overview", async () => {
@@ -1384,10 +1432,10 @@ describe("OpenTag Web App Shell", () => {
 
   it("marks retained Agent rows unconfirmed after a transient primary refresh failure", async () => {
     let agentListStatus: number | undefined;
-    installApi("admin", { agentListStatus: () => agentListStatus });
+    installApi("admin", { agentListStatus: () => agentListStatus, bound: true });
     window.history.replaceState({}, "", "/agents");
     render(<App />);
-    expect(await screen.findByText("Active")).toBeTruthy();
+    expect(await screen.findByText("Ready")).toBeTruthy();
 
     agentListStatus = 503;
     fireEvent(window, new Event("focus"));
@@ -2243,7 +2291,7 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it("loads standalone onboarding when selected Team preference storage is unavailable", async () => {
-    installApi("admin", { setupCompletedAt: null });
+    installApi("admin", { computerProviderReadiness: [], setupCompletedAt: null });
     window.history.replaceState({}, "", "/onboarding");
     const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("Storage unavailable");

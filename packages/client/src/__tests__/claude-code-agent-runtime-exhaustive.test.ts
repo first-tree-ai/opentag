@@ -293,6 +293,20 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
       error: { message: "result failure" },
     });
 
+    await expect(runTerminal(successResult({ usage: { cache_creation_input_tokens: 100 } }))).resolves.toMatchObject({
+      usage: { inputTokens: 100 },
+    });
+    await expect(
+      runTerminal(
+        successResult({
+          usage: { input_tokens: Number.MAX_SAFE_INTEGER, cache_creation_input_tokens: 1 },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      status: "failed",
+      error: { code: "provider_protocol_error", message: "Claude Code input token usage overflowed" },
+    });
+
     const subtypeFallback = await runTerminal({
       type: "result",
       session_id: SESSION_ID,

@@ -938,7 +938,7 @@ pre {
   min-height: 112px;
   align-items: center;
   gap: 24px;
-  grid-template-columns: minmax(260px, 1fr) 230px 206px 36px;
+  grid-template-columns: minmax(240px, 0.8fr) minmax(210px, 0.7fr) 206px 36px;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--surface);

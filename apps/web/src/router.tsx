@@ -1211,7 +1211,7 @@ function agentCardStatus(agent: AgentListItem): {
       tone: "success",
     };
   }
-  return { label: "Ready", priority: 3, tone: "success" };
+  return { label: "Available", priority: 3, tone: "success" };
 }
 
 function formatElapsedCompact(value: string): string {

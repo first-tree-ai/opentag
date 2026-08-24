@@ -158,9 +158,14 @@ describe("AgentRuntimeProviderRegistry", () => {
     expect(probe).toHaveBeenCalledTimes(2);
     expect(providers.isReady("codex")).toBe(true);
 
+    providers.invalidate("codex");
+    expect(providers.isReady("codex")).toBe(false);
+    providers.invalidate("codex");
+    expect(providers.isReady("codex")).toBe(false);
+
     releaseFirst();
     await vi.waitFor(() => expect(firstSettled).toBe(true));
-    expect(providers.isReady("codex")).toBe(true);
+    expect(providers.isReady("codex")).toBe(false);
   });
 
   it("fails closed for missing registrations, artifact verification errors, and caller abort", async () => {

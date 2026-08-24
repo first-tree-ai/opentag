@@ -1,147 +1,213 @@
-import {
-  type AgentAdminConfig,
-  RUNTIME_DEFAULT_MAX_DURATION_MS,
-  RUNTIME_MAX_DURATION_MS,
-  type UpdateAgentRequest,
-  type UpdateAgentRuntimeConfig,
-} from "@opentag/shared/browser";
+import type { AgentAdminConfig, UpdateAgentRequest, UpdateAgentRuntimeConfig } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
 import { Button, Field } from "./ui/design-system.js";
 
 const CODEX_REASONING_EFFORT_SUGGESTIONS = ["minimal", "low", "medium", "high", "xhigh"] as const;
-
-const DEFAULT_DURATION_SECONDS = RUNTIME_DEFAULT_MAX_DURATION_MS / 1_000;
-const MAX_DURATION_SECONDS = RUNTIME_MAX_DURATION_MS / 1_000;
+const CLAUDE_CODE_REASONING_EFFORT_SUGGESTIONS = ["low", "medium", "high", "xhigh", "max", "ultracode"] as const;
 
 export interface RuntimeConfigurationFormProps {
   readonly initialConfig: AgentAdminConfig;
   readonly save: (input: UpdateAgentRequest) => Promise<AgentAdminConfig>;
+  readonly section?: "all" | "execution" | "instructions";
 }
 
-export function RuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigurationFormProps) {
-  if (initialConfig.runtimeProvider !== "codex") {
-    return (
-      <section className="form-card">
-        <h2>Execution choices</h2>
-        <p className="muted">
-          Runtime Configuration is not available for Claude Code Agents. Effective Runtime Snapshots currently support
-          Codex only.
-        </p>
-      </section>
-    );
-  }
-  return <CodexRuntimeConfigurationForm initialConfig={initialConfig} save={save} />;
+export function RuntimeConfigurationForm({ initialConfig, save, section = "all" }: RuntimeConfigurationFormProps) {
+  return <RuntimeConfigurationEditor initialConfig={initialConfig} save={save} section={section} />;
 }
 
-function CodexRuntimeConfigurationForm({ initialConfig, save }: RuntimeConfigurationFormProps) {
+function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: RuntimeConfigurationFormProps) {
   const [config, setConfig] = useState(initialConfig);
-  const [message, setMessage] = useState<{ kind: "error" | "success"; text: string }>();
-  const [saving, setSaving] = useState(false);
+  const [editingRuntime, setEditingRuntime] = useState(false);
+  const [message, setMessage] = useState<{
+    kind: "error" | "success";
+    section: "runtime" | "instructions";
+    text: string;
+  }>();
+  const [saving, setSaving] = useState<"runtime" | "instructions">();
   const fieldId = (name: string) => `runtime-${name}-${config.id}`;
   const reasoningListId = `reasoning-effort-${config.id}`;
+  const providerName = config.runtimeProvider === "codex" ? "Codex" : "Claude Code";
+  const reasoningSuggestions =
+    config.runtimeProvider === "codex" ? CODEX_REASONING_EFFORT_SUGGESTIONS : CLAUDE_CODE_REASONING_EFFORT_SUGGESTIONS;
 
-  async function submit(event: FormEvent<HTMLFormElement>) {
+  async function saveRuntime(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (saving) return;
-    setSaving(true);
+    setSaving("runtime");
     setMessage(undefined);
     try {
       const runtimeConfig = runtimeConfigurationFromForm(new FormData(event.currentTarget));
       const updated = await save({ expectedRevision: config.revision, runtimeConfig });
       setConfig(updated);
-      setMessage({ kind: "success", text: "Runtime configuration saved." });
+      setEditingRuntime(false);
+      setMessage({ kind: "success", section: "runtime", text: "Execution settings saved." });
     } catch (cause) {
       setMessage({
         kind: "error",
-        text: cause instanceof Error ? cause.message : "Unable to save Runtime configuration",
+        section: "runtime",
+        text: cause instanceof Error ? cause.message : "Unable to save Execution settings",
       });
     } finally {
-      setSaving(false);
+      setSaving(undefined);
+    }
+  }
+
+  async function saveInstructions(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (saving) return;
+    setSaving("instructions");
+    setMessage(undefined);
+    try {
+      const instructions = String(new FormData(event.currentTarget).get("instructions") ?? "");
+      const updated = await save({
+        expectedRevision: config.revision,
+        runtimeConfig: { instructions },
+      });
+      setConfig(updated);
+      setMessage({ kind: "success", section: "instructions", text: "Agent instructions saved." });
+    } catch (cause) {
+      setMessage({
+        kind: "error",
+        section: "instructions",
+        text: cause instanceof Error ? cause.message : "Unable to save Agent instructions",
+      });
+    } finally {
+      setSaving(undefined);
     }
   }
 
   return (
-    <form className="form-card" key={config.revision} onSubmit={submit}>
-      <h2>Execution choices</h2>
-      <Field
-        hint="Enter an exact Codex model ID. Leave blank to let Codex manage the selection."
-        hintId={fieldId("model-help")}
-        htmlFor={fieldId("model")}
-        label="Model"
-      >
-        <input
-          aria-describedby={fieldId("model-help")}
-          autoComplete="off"
-          defaultValue={config.runtimeConfig.model ?? ""}
-          id={fieldId("model")}
-          name="model"
-          placeholder="Managed by provider"
-        />
-      </Field>
-      <Field
-        hint="These are common Codex values, not a compatibility guarantee. The bound Computer performs the authoritative runtime check."
-        hintId={fieldId("reasoning-help")}
-        htmlFor={fieldId("reasoning-effort")}
-        label="Reasoning effort"
-      >
-        <input
-          aria-describedby={fieldId("reasoning-help")}
-          autoComplete="off"
-          defaultValue={config.runtimeConfig.reasoningEffort ?? ""}
-          id={fieldId("reasoning-effort")}
-          list={reasoningListId}
-          name="reasoningEffort"
-          placeholder="Managed by provider"
-        />
-        <datalist id={reasoningListId}>
-          {CODEX_REASONING_EFFORT_SUGGESTIONS.map((effort) => (
-            <option value={effort} key={effort} />
-          ))}
-        </datalist>
-      </Field>
-      <Field
-        hint={
-          <>
-            Seconds. Leave blank to use OpenTag's {formatMinutes(RUNTIME_DEFAULT_MAX_DURATION_MS)} default. A timeout
-            stops the Turn, but external effects may already have occurred.
-          </>
-        }
-        hintId={fieldId("duration-help")}
-        htmlFor={fieldId("max-duration")}
-        label="Maximum Turn duration"
-      >
-        <input
-          aria-describedby={fieldId("duration-help")}
-          defaultValue={millisecondsToSeconds(config.runtimeConfig.maxDurationMs)}
-          id={fieldId("max-duration")}
-          max={MAX_DURATION_SECONDS}
-          min="0.001"
-          name="maxDurationSeconds"
-          placeholder={String(DEFAULT_DURATION_SECONDS)}
-          step="0.001"
-          type="number"
-        />
-      </Field>
-      <Field htmlFor={fieldId("instructions")} label="Instructions">
-        <textarea
-          defaultValue={config.runtimeConfig.instructions}
-          id={fieldId("instructions")}
-          name="instructions"
-          rows={10}
-        />
-      </Field>
-      <Button disabled={saving} type="submit">
-        {saving ? "Saving…" : "Save Runtime settings"}
-      </Button>
-      {message ? (
-        <p
-          className={message.kind === "error" ? "error" : undefined}
-          role={message.kind === "error" ? "alert" : "status"}
-        >
-          {message.text}
-        </p>
+    <div className="agent-runtime-settings">
+      {section !== "instructions" ? (
+        <section aria-labelledby="execution-heading" className="agent-runtime-section">
+          <header className="agent-runtime-section__header">
+            <div>
+              <h3 id="execution-heading">Execution</h3>
+              <p>Choose the provider, model, and reasoning level used for new work.</p>
+            </div>
+            {!editingRuntime ? (
+              <Button size="compact" variant="inline" onClick={() => setEditingRuntime(true)}>
+                Edit settings
+              </Button>
+            ) : null}
+          </header>
+          {editingRuntime ? (
+            <form className="agent-runtime-edit-form" key={config.revision} onSubmit={saveRuntime}>
+              <div className="agent-runtime-field-grid">
+                <Field
+                  hint="Leave blank to use the provider default."
+                  hintId={fieldId("model-help")}
+                  htmlFor={fieldId("model")}
+                  label="Model"
+                >
+                  <input
+                    aria-describedby={fieldId("model-help")}
+                    autoComplete="off"
+                    defaultValue={config.runtimeConfig.model ?? ""}
+                    id={fieldId("model")}
+                    name="model"
+                    placeholder="Provider default"
+                  />
+                </Field>
+                <Field
+                  hint="Leave blank to use the provider default."
+                  hintId={fieldId("reasoning-help")}
+                  htmlFor={fieldId("reasoning-effort")}
+                  label="Reasoning level"
+                >
+                  <input
+                    aria-describedby={fieldId("reasoning-help")}
+                    autoComplete="off"
+                    defaultValue={config.runtimeConfig.reasoningEffort ?? ""}
+                    id={fieldId("reasoning-effort")}
+                    list={reasoningListId}
+                    name="reasoningEffort"
+                    placeholder="Provider default"
+                  />
+                  <datalist id={reasoningListId}>
+                    {reasoningSuggestions.map((effort) => (
+                      <option value={effort} key={effort} />
+                    ))}
+                  </datalist>
+                </Field>
+              </div>
+              <div className="agent-runtime-actions">
+                <Button disabled={Boolean(saving)} type="submit">
+                  {saving === "runtime" ? "Saving…" : "Save settings"}
+                </Button>
+                <Button disabled={Boolean(saving)} variant="ghost" onClick={() => setEditingRuntime(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          ) : (
+            <RuntimeFacts
+              rows={[
+                ["Provider", providerName],
+                ["Model", config.runtimeConfig.model ?? "Provider default"],
+                ["Reasoning level", config.runtimeConfig.reasoningEffort ?? "Provider default"],
+              ]}
+            />
+          )}
+          {message?.section === "runtime" ? <SaveMessage message={message} /> : null}
+        </section>
       ) : null}
-    </form>
+
+      {section !== "execution" ? (
+        <section aria-labelledby="agent-instructions-heading" className="agent-runtime-section">
+          <header className="agent-runtime-section__header">
+            <div>
+              <h3 id="agent-instructions-heading">Agent instructions</h3>
+              <p>Set the guidance applied to every request this Agent handles.</p>
+            </div>
+          </header>
+          <form className="agent-instructions-form" key={config.runtimeConfig.revision} onSubmit={saveInstructions}>
+            <Field
+              hint="Be concise and specific. These instructions apply in addition to OpenTag's platform guidance."
+              hintId={fieldId("instructions-help")}
+              htmlFor={fieldId("instructions")}
+              label="Instructions"
+            >
+              <textarea
+                aria-describedby={fieldId("instructions-help")}
+                defaultValue={config.runtimeConfig.instructions}
+                id={fieldId("instructions")}
+                name="instructions"
+                rows={8}
+              />
+            </Field>
+            <Button disabled={Boolean(saving)} type="submit">
+              {saving === "instructions" ? "Saving…" : "Save instructions"}
+            </Button>
+          </form>
+          {message?.section === "instructions" ? <SaveMessage message={message} /> : null}
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function RuntimeFacts({ rows }: { rows: ReadonlyArray<readonly [string, string]> }) {
+  return (
+    <dl className="agent-runtime-facts">
+      {rows.map(([label, value]) => (
+        <div key={label}>
+          <dt>{label}</dt>
+          <dd>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function SaveMessage({ message }: { message: { kind: "error" | "success"; text: string } }) {
+  return (
+    <p
+      className={message.kind === "error" ? "error" : "agent-runtime-save-message"}
+      role={message.kind === "error" ? "alert" : "status"}
+    >
+      {message.text}
+    </p>
   );
 }
 
@@ -149,30 +215,10 @@ export function runtimeConfigurationFromForm(data: FormData): UpdateAgentRuntime
   return {
     model: nullableText(data.get("model")),
     reasoningEffort: nullableText(data.get("reasoningEffort")),
-    instructions: String(data.get("instructions") ?? ""),
-    maxDurationMs: durationMilliseconds(data.get("maxDurationSeconds")),
   };
-}
-
-function durationMilliseconds(value: FormDataEntryValue | null): number | null {
-  const text = String(value ?? "").trim();
-  if (!text) return null;
-  const milliseconds = Number(text) * 1_000;
-  if (!Number.isSafeInteger(milliseconds) || milliseconds < 1 || milliseconds > RUNTIME_MAX_DURATION_MS) {
-    throw new Error("Maximum Turn duration must be between 0.001 and 86400 seconds, in millisecond increments.");
-  }
-  return milliseconds;
-}
-
-function millisecondsToSeconds(value: number | null): string {
-  return value === null ? "" : String(value / 1_000);
 }
 
 function nullableText(value: FormDataEntryValue | null): string | null {
   const text = String(value ?? "").trim();
   return text || null;
-}
-
-function formatMinutes(milliseconds: number): string {
-  return `${milliseconds / 60_000}-minute`;
 }

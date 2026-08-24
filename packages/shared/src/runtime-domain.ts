@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { AgentRuntimeProviderSchema } from "./agent.js";
+import { type AgentRuntimeProvider, AgentRuntimeProviderSchema } from "./agent.js";
 import {
   runtimeByteString as byteString,
   RUNTIME_ID_MAX_BYTES,
@@ -54,6 +54,7 @@ export const RuntimeRevisionSchema = z
 
 export const RuntimeUsageSchema = z
   .object({
+    // Provider-native input count. Use runtimeUsageTotalTokens when combining cache fields across Providers.
     inputTokens: RuntimeSequenceSchema.optional(),
     cachedInputTokens: RuntimeSequenceSchema.optional(),
     outputTokens: RuntimeSequenceSchema.optional(),
@@ -532,6 +533,16 @@ export type TurnReportRequest = z.infer<typeof TurnReportRequestSchema>;
 export type TurnReportResult = z.infer<typeof TurnReportResultSchema>;
 export type ServerRuntimeBusinessFrame = z.infer<typeof ServerRuntimeBusinessFrameSchema>;
 export type ClientRuntimeBusinessFrame = z.infer<typeof ClientRuntimeBusinessFrameSchema>;
+
+export function runtimeUsageTotalTokens(provider: AgentRuntimeProvider, usage: RuntimeUsage): number {
+  const cachedInputTokens = {
+    codex: 0,
+    "claude-code": usage.cachedInputTokens ?? 0,
+  } satisfies Record<AgentRuntimeProvider, number>;
+  const total = (usage.inputTokens ?? 0) + cachedInputTokens[provider] + (usage.outputTokens ?? 0);
+  if (!Number.isSafeInteger(total)) throw new Error("Runtime usage token total exceeds the safe integer range");
+  return total;
+}
 
 export interface RuntimeSnapshotHashes {
   agentConfigHash: string;

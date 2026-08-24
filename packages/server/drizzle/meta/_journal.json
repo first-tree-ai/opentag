@@ -71,6 +71,27 @@
       "when": 1787282924723,
       "tag": "0009_numerous_morlocks",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1787472158796,
+      "tag": "0010_optimal_jazinda",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1787502703000,
+      "tag": "0011_staging_team_setup_repair",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1787541115837,
+      "tag": "0012_supreme_maddog",
+      "breakpoints": true
     }
   ]
 }

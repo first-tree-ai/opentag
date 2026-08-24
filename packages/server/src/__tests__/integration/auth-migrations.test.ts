@@ -74,6 +74,18 @@ async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z"), aut
 }
 
 describe("database migrations", () => {
+  it("orders the Team setup repair before the Slack pending receive-mode migration", async () => {
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+
+    expect(journal.entries.slice(-3).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+      { idx: 10, tag: "0010_optimal_jazinda" },
+      { idx: 11, tag: "0011_staging_team_setup_repair" },
+      { idx: 12, tag: "0012_supreme_maddog" },
+    ]);
+  });
+
   it("migrates an empty database and reruns idempotently", async () => {
     await migrateDatabase(databaseUrl, migrationsFolder);
     await migrateDatabase(databaseUrl, migrationsFolder);
@@ -230,11 +242,16 @@ describe("database migrations", () => {
 
         const userId = crypto.randomUUID();
         const teamId = crypto.randomUUID();
+        const controlTeamId = crypto.randomUUID();
         const computerId = crypto.randomUUID();
-        const activeAgentId = crypto.randomUUID();
+        const activeAgentId = "6eb89d85-0f12-4962-8465-518071f1d3e9";
         const deletedAgentId = crypto.randomUUID();
         await sql`insert into users (id, email, display_name) values (${userId}, 'migration@example.com', 'Migration')`;
         await sql`insert into teams (id, name, display_name) values (${teamId}, 'migration', 'Migration')`;
+        await sql`
+          insert into teams (id, name, display_name)
+          values (${controlTeamId}, 'migration-control', 'Migration Control')
+        `;
         await sql`insert into memberships (team_id, user_id, role) values (${teamId}, ${userId}, 'admin')`;
         await sql`
           insert into computers (id, owner_user_id, display_name, platform, arch, client_version)
@@ -259,6 +276,7 @@ describe("database migrations", () => {
             count: number;
             creation_intents_null: boolean;
             deleted_at_exists: boolean;
+            setup_completed_at_exists: boolean;
             status_default: string | null;
             statuses: string[];
           }[]
@@ -273,6 +291,10 @@ describe("database migrations", () => {
               select 1 from information_schema.columns
               where table_schema = 'public' and table_name = 'agents' and column_name = 'deleted_at'
             ) as deleted_at_exists,
+            exists(
+              select 1 from information_schema.columns
+              where table_schema = 'public' and table_name = 'teams' and column_name = 'setup_completed_at'
+            ) as setup_completed_at_exists,
             (
               select column_default from information_schema.columns
               where table_schema = 'public' and table_name = 'agents' and column_name = 'status'
@@ -280,12 +302,22 @@ describe("database migrations", () => {
             array(select status::text from agents order by name) as statuses
         `;
         expect(lifecycle).toEqual({
-          count: 10,
+          count: 13,
           creation_intents_null: true,
           deleted_at_exists: false,
+          setup_completed_at_exists: true,
           status_default: "'active'::agent_status",
           statuses: ["active", "deleted"],
         });
+        const repairedTeams = await sql<{ completed: boolean; name: string }[]>`
+          select name, setup_completed_at is not null as completed
+          from teams
+          order by name
+        `;
+        expect(repairedTeams).toEqual([
+          { completed: true, name: "migration" },
+          { completed: false, name: "migration-control" },
+        ]);
         const [agentStatusEnum] = await sql<{ values: string[] }[]>`
           select array_agg(enumlabel order by enumsortorder)::text[] as values
           from pg_enum join pg_type on pg_type.oid = pg_enum.enumtypid
@@ -305,7 +337,7 @@ describe("database migrations", () => {
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(10);
+        expect(rerun?.count).toBe(13);
       } finally {
         await sql.end();
       }

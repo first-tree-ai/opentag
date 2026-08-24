@@ -5,6 +5,8 @@ import {
   AgentNameSchema,
   AgentRuntimeConfigSchema,
   AgentSummarySchema,
+  AgentUsageDetailSchema,
+  AgentUsageWindowDaysSchema,
   CreateAgentRequestSchema,
   ListAgentsResponseSchema,
   UpdateAgentRequestSchema,
@@ -13,9 +15,11 @@ import {
   AGENT_BY_ID_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
+  AGENT_USAGE_TEMPLATE,
   agentByIdPath,
   agentReactivatePath,
   agentSuspendPath,
+  agentUsagePath,
   TEAM_AGENTS_TEMPLATE,
   teamAgentsPath,
 } from "../http-paths.js";
@@ -139,12 +143,86 @@ describe("Agent contracts", () => {
       computer: { id: computerId, displayName: "Laptop", platform: "darwin" },
     };
     expect(AgentSummarySchema.parse(summary)).toEqual(summary);
-    expect(ListAgentsResponseSchema.parse({ agents: [summary] })).toEqual({ agents: [summary] });
-    expect(AgentDetailSchema.parse({ ...summary, viewerCapabilities: { canManage: false } })).toMatchObject({
+    const listItem = {
+      ...summary,
+      activity: { state: "idle" },
+      usage: { windowDays: 30, tasks: 3, failed: 1, tokens: 420 },
+    };
+    expect(ListAgentsResponseSchema.parse({ agents: [listItem] })).toEqual({ agents: [listItem] });
+    expect(
+      ListAgentsResponseSchema.parse({
+        agents: [
+          {
+            ...summary,
+            activity: { state: "working", startedAt: agent.updatedAt },
+            usage: { windowDays: 30, tasks: 1, failed: 0, tokens: 0 },
+          },
+        ],
+      }),
+    ).toMatchObject({ agents: [{ activity: { state: "working", startedAt: agent.updatedAt } }] });
+    expect(() =>
+      ListAgentsResponseSchema.parse({
+        agents: [
+          {
+            ...summary,
+            activity: { state: "working", startedAt: agent.updatedAt, summary: "Private conversation content" },
+            usage: { windowDays: 30, tasks: 1, failed: 0, tokens: 0 },
+          },
+        ],
+      }),
+    ).toThrow();
+    expect(
+      AgentDetailSchema.parse({ ...summary, activity: { state: "idle" }, viewerCapabilities: { canManage: false } }),
+    ).toMatchObject({
+      activity: { state: "idle" },
       viewerCapabilities: { canManage: false },
     });
+    expect(() =>
+      AgentDetailSchema.parse({
+        ...summary,
+        activity: { state: "working", startedAt: agent.updatedAt, summary: "Private conversation content" },
+        viewerCapabilities: { canManage: false },
+      }),
+    ).toThrow();
     expect(() => AgentAdminConfigSchema.parse({ ...agent, deletedAt: null })).toThrow();
     expect(() => AgentRuntimeConfigSchema.parse({ ...agent.runtimeConfig, allowedTools: [] })).toThrow();
+  });
+
+  it("validates detailed Agent usage and supported periods", () => {
+    const usage = {
+      windowDays: 30,
+      startedAt: "2026-07-25T12:00:00.000Z",
+      endedAt: "2026-08-24T12:00:00.000Z",
+      tasks: 2,
+      measuredTasks: 1,
+      failed: 0,
+      inputTokens: 10,
+      cachedInputTokens: 2,
+      outputTokens: 4,
+      tokens: 14,
+      daily: [
+        {
+          date: "2026-08-24",
+          tasks: 2,
+          measuredTasks: 1,
+          inputTokens: 10,
+          cachedInputTokens: 2,
+          outputTokens: 4,
+          tokens: 14,
+        },
+      ],
+    };
+    expect(AgentUsageDetailSchema.parse(usage)).toEqual(usage);
+    expect(AgentUsageDetailSchema.parse({ ...usage, cachedInputTokens: 11 })).toMatchObject({
+      cachedInputTokens: 11,
+    });
+    expect(() => AgentUsageDetailSchema.parse({ ...usage, measuredTasks: 3 })).toThrow();
+    expect(() => AgentUsageDetailSchema.parse({ ...usage, tokens: 15 })).toThrow();
+    expect(() =>
+      AgentUsageDetailSchema.parse({ ...usage, daily: [{ ...usage.daily[0], date: "08/24/2026" }] }),
+    ).toThrow();
+    expect([7, 30, 90].map((days) => AgentUsageWindowDaysSchema.parse(days))).toEqual([7, 30, 90]);
+    expect(() => AgentUsageWindowDaysSchema.parse(14)).toThrow();
   });
 
   it("enforces runtime config UTF-8 and duration boundaries", () => {
@@ -206,5 +284,7 @@ describe("Agent contracts", () => {
     expect(agentSuspendPath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue/suspend");
     expect(AGENT_REACTIVATE_TEMPLATE).toBe("/api/v1/agents/:agentId/reactivate");
     expect(agentReactivatePath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue/reactivate");
+    expect(AGENT_USAGE_TEMPLATE).toBe("/api/v1/agents/:agentId/usage");
+    expect(agentUsagePath("agent/value", 30)).toBe("/api/v1/agents/agent%2Fvalue/usage?days=30");
   });
 });

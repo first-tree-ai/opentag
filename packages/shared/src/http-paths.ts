@@ -2,8 +2,10 @@ export const API_V1_PREFIX = "/api/v1";
 export const TEAMS_TEMPLATE = `${API_V1_PREFIX}/teams`;
 export const TEAM_AGENTS_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/agents`;
 export const TEAM_BY_ID_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId`;
+export const TEAM_SETUP_COMPLETE_TEMPLATE = `${TEAM_BY_ID_TEMPLATE}/setup/complete`;
 export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
+export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
 export const AGENT_SUSPEND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/suspend`;
 export const AGENT_REACTIVATE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/reactivate`;
 export const AGENT_IM_BINDING_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding`;
@@ -11,6 +13,9 @@ export const AGENT_IM_BINDING_HANDOFF_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/h
 export const AGENT_IM_BINDING_CONFIG_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/config`;
 export const AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/feishu/setup-attempts`;
 export const FEISHU_SETUP_ATTEMPT_TEMPLATE = `${API_V1_PREFIX}/im-bindings/feishu/setup-attempts/:attemptId`;
+export const AGENT_SLACK_SETUP_ATTEMPTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/setup-attempts`;
+export const AGENT_SLACK_EVENTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/events`;
+export const SLACK_SETUP_ATTEMPT_TEMPLATE = `${API_V1_PREFIX}/im-bindings/slack/setup-attempts/:attemptId`;
 export const IM_BINDING_BY_ID_TEMPLATE = `${API_V1_PREFIX}/im-bindings/:imBindingId`;
 export const IM_BINDING_DIAGNOSTICS_TEMPLATE = `${IM_BINDING_BY_ID_TEMPLATE}/diagnostics`;
 export const SLACK_EVENTS_PATH = `${API_V1_PREFIX}/im-bindings/slack/events`;
@@ -49,6 +54,10 @@ export function teamMembersPath(teamId: string): string {
 
 export function teamByIdPath(teamId: string): string {
   return `${API_V1_PREFIX}/teams/${encodeURIComponent(teamId)}`;
+}
+
+export function teamSetupCompletePath(teamId: string): string {
+  return `${teamByIdPath(teamId)}/setup/complete`;
 }
 
 export function teamMemberPath(teamId: string, userId: string): string {
@@ -99,6 +108,11 @@ export function agentConfigPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/config`;
 }
 
+export function agentUsagePath(agentId: string, windowDays: number): string {
+  const query = new URLSearchParams({ days: String(windowDays) });
+  return `${agentByIdPath(agentId)}/usage?${query.toString()}`;
+}
+
 export function agentSuspendPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/suspend`;
 }
@@ -133,6 +147,18 @@ export function agentFeishuSetupAttemptsPath(agentId: string): string {
 
 export function feishuSetupAttemptPath(attemptId: string): string {
   return `${API_V1_PREFIX}/im-bindings/feishu/setup-attempts/${encodeURIComponent(attemptId)}`;
+}
+
+export function agentSlackSetupAttemptsPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/im-binding/slack/setup-attempts`;
+}
+
+export function agentSlackEventsPath(agentId: string): string {
+  return `${agentByIdPath(agentId)}/im-binding/slack/events`;
+}
+
+export function slackSetupAttemptPath(attemptId: string): string {
+  return `${API_V1_PREFIX}/im-bindings/slack/setup-attempts/${encodeURIComponent(attemptId)}`;
 }
 
 export function imBindingDisablePath(imBindingId: string): string {

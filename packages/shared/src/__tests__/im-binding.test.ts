@@ -7,6 +7,7 @@ import {
   ImBindingHandoffStatusSchema,
   ImBindingSummarySchema,
   SlackBindingActivationSchema,
+  SlackSetupIdentitySchema,
 } from "../im-binding.js";
 import { ImContentV1Schema, NormalizedInboundImEventSchema } from "../im-message.js";
 
@@ -104,11 +105,19 @@ describe("IM binding contracts", () => {
       bindingState: "active",
       bot: { displayName: "Reviewer", avatarUrl: null },
       receiveMode: "mention_only",
+      pendingReceiveMode: null,
       lastInboundAt: null,
       lastConfirmedAt: "2026-08-19T00:00:00.000Z",
     };
     expect(ImBindingSummarySchema.parse(base)).toEqual(base);
     expect(() => ImBindingSummarySchema.parse({ ...base, credentialGeneration: 1 })).toThrow();
+  });
+
+  it("projects a validated Slack installation without requiring an App ID", () => {
+    const identity = { appId: null, teamId: "T1", enterpriseId: null, botUserId: "U1" };
+    expect(SlackSetupIdentitySchema.parse(identity)).toEqual(identity);
+    expect(SlackSetupIdentitySchema.parse({ ...identity, appId: "A1" })).toEqual({ ...identity, appId: "A1" });
+    expect(() => SlackSetupIdentitySchema.parse({ ...identity, teamId: null })).toThrow();
   });
 
   it("defines a strict handoff projection without changing the strict summary contract", () => {

@@ -1,4 +1,5 @@
 import {
+  CompleteTeamSetupRequestSchema,
   CreateTeamRequestSchema,
   CreateTeamResponseSchema,
   ListTeamComputersConfigResponseSchema,
@@ -13,9 +14,11 @@ import {
   TEAM_MEMBER_TEMPLATE,
   TEAM_MEMBERS_CONFIG_TEMPLATE,
   TEAM_MEMBERS_TEMPLATE,
+  TEAM_SETUP_COMPLETE_TEMPLATE,
   TEAMS_TEMPLATE,
   TeamMemberAdminConfigSchema,
   TeamProfileSchema,
+  TeamSetupCompletionSchema,
   UpdateTeamMemberRequestSchema,
   UpdateTeamProfileRequestSchema,
 } from "@opentag/shared";
@@ -23,7 +26,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler } from "../plugins/user-auth.js";
 import type { UserAuthService } from "../services/auth/index.js";
-import type { TeamMembershipService } from "../services/teams/index.js";
+import type { TeamMembershipService, TeamSetupService } from "../services/teams/index.js";
 import { parseRequest } from "./request-validation.js";
 
 const TeamParamsSchema = z.object({ teamId: z.string().uuid() }).strict();
@@ -40,6 +43,7 @@ export function registerTeamRoutes(
   authService: UserAuthService,
   teamService: TeamMembershipService,
   publicOrigin?: string,
+  teamSetupService?: TeamSetupService,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
 
@@ -55,6 +59,16 @@ export function registerTeamRoutes(
       .code(200)
       .send(TeamProfileSchema.parse(await teamService.updateTeamProfile(userId(request), teamId, input)));
   });
+
+  if (teamSetupService) {
+    app.post(TEAM_SETUP_COMPLETE_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { teamId } = parseRequest(TeamParamsSchema, request.params);
+      const { agentId } = parseRequest(CompleteTeamSetupRequestSchema, request.body);
+      return reply
+        .code(200)
+        .send(TeamSetupCompletionSchema.parse(await teamSetupService.complete(userId(request), teamId, agentId)));
+    });
+  }
 
   app.get(TEAM_MEMBERS_TEMPLATE, { preHandler }, async (request, reply) => {
     const { teamId } = parseRequest(TeamParamsSchema, request.params);

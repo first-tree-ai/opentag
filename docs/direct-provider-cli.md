@@ -12,6 +12,11 @@ Both `direct` and `ambient` Turns receive the same credential lifecycle. `direct
 
 Direct provider CLI execution requires Runtime network access and grants the Agent every permission in the bound Bot token's scope, so the configured scopes must be treated as the deliberate Agent authority boundary. Feishu and Slack CLI installation readiness is reported independently from Codex or Claude Code readiness; handoff requires both the selected Agent Runtime and provider CLI to be ready, plus a ready ingress connection when the provider requires one.
 
+Session conversation scope limits OpenTag's automatic persistence, history bootstrap, and routing; it does not restrict
+provider API targets available to the projected Bot token. The Agent may query additional native history when the task
+requires it, including another conversation the Bot can access. Provider query results remain Runtime context and do not
+automatically create `ImMessage` records or cross-Session deliveries.
+
 ## Slack CLI requirements
 
 OpenTag requires the official Slack CLI 4.2.0 or newer. `slack api <method>` exists since 4.1.0, and 4.2.0 removed the background update check that interferes with non-interactive `slack api` calls. The Client probes `slack version --skip-update` and `slack api --help --skip-update`. Only stable `X.Y.Z` releases are accepted; prerelease builds such as `v4.2.0-rc.1` and development builds such as `v4.2.0-3-gabcdef` are rejected. An older or unrecognized CLI is reported as `unavailable` on the wire, exactly like any other probe failure; the Client daemon log is the diagnosis path and records a structured warning with the detected and minimum versions (`Slack CLI version is below the supported minimum`).

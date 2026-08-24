@@ -157,6 +157,7 @@ export class InvitationService {
         teamName: team.name,
         teamDisplayName: team.displayName,
         role: membership.role,
+        setupCompletedAt: team.setupCompletedAt?.toISOString() ?? null,
       },
     };
   }

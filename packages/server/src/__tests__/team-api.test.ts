@@ -6,15 +6,17 @@ import {
   teamMemberPath,
   teamMembersConfigPath,
   teamMembersPath,
+  teamSetupCompletePath,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
 import type { InvitationService } from "../services/invitations/index.js";
-import type { TeamMembershipService } from "../services/teams/index.js";
+import { type TeamMembershipService, type TeamSetupService, TeamSetupServiceError } from "../services/teams/index.js";
 
 const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
+const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const member = {
   teamId,
   userId,
@@ -94,7 +96,10 @@ function services() {
     }),
     redeem: vi.fn(),
   };
-  return { team, invitation };
+  const setup = {
+    complete: vi.fn().mockResolvedValue({ setupCompletedAt: "2026-08-20T00:10:00.000Z" }),
+  };
+  return { team, invitation, setup };
 }
 
 function testApp() {
@@ -107,6 +112,7 @@ function testApp() {
       secureCookies: true,
     },
     teamService: value.team as unknown as TeamMembershipService,
+    teamSetupService: value.setup as unknown as TeamSetupService,
     invitationService: value.invitation as unknown as InvitationService,
   });
   apps.push(app);
@@ -114,6 +120,34 @@ function testApp() {
 }
 
 describe("Team and invitation HTTP APIs", () => {
+  it("completes Team setup through the authenticated admin boundary", async () => {
+    const { app, setup } = testApp();
+    const response = await app.inject({
+      method: "POST",
+      url: teamSetupCompletePath(teamId),
+      headers: { authorization: "Bearer access" },
+      payload: { agentId },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ setupCompletedAt: "2026-08-20T00:10:00.000Z" });
+    expect(setup.complete).toHaveBeenCalledWith(userId, teamId, agentId);
+  });
+
+  it("rejects an unready Team setup with a stable conflict error", async () => {
+    const { app, setup } = testApp();
+    setup.complete.mockRejectedValueOnce(
+      new TeamSetupServiceError("TEAM_SETUP_NOT_READY", 409, "The Agent handoff is not ready to complete Team setup"),
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: teamSetupCompletePath(teamId),
+      headers: { authorization: "Bearer access" },
+      payload: { agentId },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ error: { code: "TEAM_SETUP_NOT_READY" } });
+  });
+
   it("updates the Team profile through an authenticated PATCH", async () => {
     const { app, team } = testApp();
     const response = await app.inject({

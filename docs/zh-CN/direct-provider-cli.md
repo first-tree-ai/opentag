@@ -12,6 +12,10 @@ OpenTag 负责 IM 入站路由、Integration 凭证、Client 临时凭证投影�
 
 直接执行 provider CLI 需要 Runtime 网络权限，并让 Agent 获得绑定 Bot token scope 内的全部权限，因此已配置 scopes 必须被视为有意授予 Agent 的权限边界。Feishu/Slack CLI readiness 与 Codex/Claude Code readiness 分开报告；handoff 同时要求所选 Agent Runtime、provider CLI，以及 provider 必需的入站连接处于 ready。
 
+Session conversation scope 只限制 OpenTag 的自动持久化、历史 bootstrap 和路由，不限制投影后 Bot token 可访问的
+provider API 目标。任务需要时，Agent 可以查询 Bot 有权访问的其他 conversation 原生历史。查询结果只进入 Runtime
+context，不会自动创建 `ImMessage` 记录或跨 Session 投递。
+
 ## Slack CLI 要求
 
 OpenTag 要求官方 Slack CLI 4.2.0 或更高版本。`slack api <method>` 自 4.1.0 起提供，4.2.0 移除了会干扰非交互式 `slack api` 调用的后台更新检查。Client 通过 `slack version --skip-update` 与 `slack api --help --skip-update` 探测。只接受稳定的 `X.Y.Z` 版本；`v4.2.0-rc.1` 这类预发布版本和 `v4.2.0-3-gabcdef` 这类开发构建会被拒绝。版本过旧或无法识别的 CLI 在 wire 上与其他探测失败一样报告为 `unavailable`；诊断路径是 Client daemon 日志，其中会记录带有检测到的版本与最低版本的结构化 warning（`Slack CLI version is below the supported minimum`）。

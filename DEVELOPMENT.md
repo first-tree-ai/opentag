@@ -290,7 +290,8 @@ without rotating existing invitations makes them intentionally fail closed.
 `scripts/e2e/onboarding-e2e.mjs` drives the whole `/onboarding` flow against a real Server, a real PostgreSQL database,
 the real Web build, and a real Computer daemon. It signs in through the browser, reads the connect command from the
 page, exchanges it with the CLI, runs `daemon service-run`, waits for the negotiated Provider readiness projection,
-creates the Agent from the form, and then checks the handoff, ready, member read-only, and runtime-outage states.
+creates the Agent from the form, and then checks the handoff, the admin-only setup gate, persisted completion, and that a
+later runtime outage stays in the normal Agents product flow.
 
 ```bash
 pnpm build
@@ -317,8 +318,8 @@ than the invoking shell's, so readiness is the same on any developer machine.
 | `CLAUDE_CONFIG_DIR` | `$HOME/.claude` | Claude Code configuration the daemon reads when the stub is off |
 | `OPENTAG_E2E_KEEP_DATABASE` | `off` | Set to `on` to keep the E2E database after the run for debugging |
 
-Two parts of the flow cannot run offline. Provider readiness uses a stub executable that answers the same probe contract
-as the Claude Code CLI, because a signed-in Codex or Claude Code installation is not available in CI. Feishu
+Two parts of the flow cannot run offline. Agent Runtime and Feishu CLI readiness use stub executables that answer the
+same probe contracts as Claude Code and `lark-cli`, because signed-in local CLIs are not available in CI. Feishu
 authorization needs `open.feishu.cn`, so the check starts a real setup attempt, records its outcome, and then writes an
 authorized binding into the database to confirm that the Server projects handoff readiness and the page derives the
 ready state from it.

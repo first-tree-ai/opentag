@@ -59,8 +59,18 @@ export interface VerifiedSlackEnvelope {
 }
 
 export interface SlackApiClient {
-  authTest(token: string): Promise<{ appId: string; teamId: string; botUserId: string; botId: string }>;
+  authTest(token: string): Promise<{ appId: string | null; teamId: string; botUserId: string; botId: string }>;
+  inspectInstallation(token: string): Promise<SlackInstallationInspection>;
   fetchResource(input: ProviderResourceInput & { token: string }): Promise<ReadableResource>;
+}
+
+export interface SlackInstallationInspection {
+  appId: string | null;
+  teamId: string;
+  enterpriseId: string | null;
+  botUserId: string;
+  botId: string;
+  grantedBotScopes: string[];
 }
 
 function slackTimestampToDate(value: string | undefined, fallbackSeconds?: number): Date {
@@ -179,14 +189,14 @@ export class SlackAdapter implements ImProviderAdapter<VerifiedSlackEnvelope> {
   async validateBinding(): Promise<VerifiedBotIdentity> {
     const identity = await this.#api.authTest(this.#token);
     if (
-      identity.appId !== this.#appId ||
+      (identity.appId !== null && identity.appId !== this.#appId) ||
       identity.teamId !== this.#teamId ||
       identity.botUserId !== this.#botUserId ||
       identity.botId !== this.#botId
     ) {
       throw new Error("SLACK_BINDING_IDENTITY_MISMATCH");
     }
-    return { externalAppId: identity.appId, externalTeamId: identity.teamId, externalBotId: identity.botUserId };
+    return { externalAppId: this.#appId, externalTeamId: identity.teamId, externalBotId: identity.botUserId };
   }
 
   normalizeInbound(input: VerifiedSlackEnvelope): NormalizedInboundImEvent[] {

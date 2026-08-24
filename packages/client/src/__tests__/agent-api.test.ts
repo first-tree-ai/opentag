@@ -38,7 +38,35 @@ const agentSummary = {
   manager: { userId: managerUserId, displayName: "Manager" },
   computer: { id: safeComputerId, displayName: "Laptop", platform: "linux" },
 };
-const agentDetail = { ...agentSummary, viewerCapabilities: { canManage: true } };
+const agentListItem = {
+  ...agentSummary,
+  activity: { state: "idle" },
+  usage: { windowDays: 30, tasks: 12, failed: 1, tokens: 42_000 },
+};
+const agentDetail = { ...agentSummary, activity: { state: "idle" }, viewerCapabilities: { canManage: true } };
+const agentUsage = {
+  windowDays: 30,
+  startedAt: "2026-07-25T12:00:00.000Z",
+  endedAt: "2026-08-24T12:00:00.000Z",
+  tasks: 2,
+  measuredTasks: 1,
+  failed: 0,
+  inputTokens: 10,
+  cachedInputTokens: 2,
+  outputTokens: 4,
+  tokens: 14,
+  daily: [
+    {
+      date: "2026-08-24",
+      tasks: 2,
+      measuredTasks: 1,
+      inputTokens: 10,
+      cachedInputTokens: 2,
+      outputTokens: 4,
+      tokens: 14,
+    },
+  ],
+};
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
@@ -49,8 +77,9 @@ describe("OpenTagApi Agent methods", () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(jsonResponse(agent, 201))
-      .mockResolvedValueOnce(jsonResponse({ agents: [agentSummary] }))
+      .mockResolvedValueOnce(jsonResponse({ agents: [agentListItem] }))
       .mockResolvedValueOnce(jsonResponse(agentDetail))
+      .mockResolvedValueOnce(jsonResponse(agentUsage))
       .mockResolvedValueOnce(jsonResponse(agent))
       .mockResolvedValueOnce(jsonResponse({ ...agent, displayName: "Reviewer", revision: 2 }))
       .mockResolvedValueOnce(jsonResponse({ ...agent, status: "suspended", revision: 2 }))
@@ -68,6 +97,7 @@ describe("OpenTagApi Agent methods", () => {
     });
     await api.listAgents("access", teamId);
     await api.getAgent("access", agentId);
+    await api.getAgentUsage("access", agentId, 30);
     await api.getAgentConfig("access", agentId);
     await api.updateAgent("access", agentId, {
       displayName: "Reviewer",
@@ -82,6 +112,7 @@ describe("OpenTagApi Agent methods", () => {
       [`https://opentag.example/api/v1/teams/${teamId}/agents`, "POST"],
       [`https://opentag.example/api/v1/teams/${teamId}/agents`, "GET"],
       [`https://opentag.example/api/v1/agents/${agentId}`, "GET"],
+      [`https://opentag.example/api/v1/agents/${agentId}/usage?days=30`, "GET"],
       [`https://opentag.example/api/v1/agents/${agentId}/config`, "GET"],
       [`https://opentag.example/api/v1/agents/${agentId}`, "PATCH"],
       [`https://opentag.example/api/v1/agents/${agentId}/suspend`, "POST"],
@@ -99,7 +130,7 @@ describe("OpenTagApi Agent methods", () => {
       runtimeProvider: "codex",
       runtimeConfig: { instructions: "Custom instructions", maxDurationMs: 60_000 },
     });
-    expect(JSON.parse(String(fetchImpl.mock.calls[4]?.[1]?.body))).toEqual({
+    expect(JSON.parse(String(fetchImpl.mock.calls[5]?.[1]?.body))).toEqual({
       displayName: "Reviewer",
       expectedRevision: 1,
       runtimeConfig: { model: null, reasoningEffort: "high" },
@@ -216,6 +247,7 @@ describe("OpenTagApi Agent methods", () => {
           providerCliReadiness: "install",
           credentialGeneration: 1,
           reauthorizationRequired: false,
+          pendingReceiveMode: null,
           connection: null,
           lastInboundAt: null,
           lastErrorCode: null,

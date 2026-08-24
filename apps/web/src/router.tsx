@@ -1,6 +1,7 @@
 import type {
   AgentAdminConfig,
   AgentDetail,
+  AgentListItem as AgentListApiItem,
   AgentSummary,
   AuthProvidersResponse,
   Computer,
@@ -17,23 +18,35 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
-  type RefObject,
   useCallback,
   useContext,
   useEffect,
   useRef,
   useState,
 } from "react";
-import { Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  Link,
+  Navigate,
+  NavLink,
+  Outlet,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { type AgentCreationFacts, AgentCreationFlow } from "./agent-creation/agent-creation-flow.js";
 import { ApiError, browserApi } from "./api.js";
 // Google-provided, pre-approved button asset: https://developers.google.com/identity/branding-guidelines
 import googleSignInButton from "./assets/google-sign-in-light@2x.png";
 import { CreateTeamForm } from "./create-team-form.js";
+import { AgentUsageTab } from "./features/agent-usage.js";
 import { IntegrationsPage } from "./features/integrations-page.js";
 import { SkillsPage } from "./features/skills-page.js";
-import { UsagePage } from "./features/usage-page.js";
+import { TaskDetailPage, TasksPage } from "./features/tasks-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
+import { SlackSetup } from "./im/slack-setup.js";
 import { OnboardingPage } from "./onboarding/page.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import {
@@ -46,7 +59,6 @@ import {
   SettingsRow,
   StatusIndicator,
   type StatusTone,
-  Tabs,
 } from "./ui/design-system.js";
 
 type LoadState<T> = { kind: "loading" } | { kind: "error"; error: Error } | { kind: "ready"; value: T };
@@ -59,6 +71,7 @@ type AgentAvailability = {
     | "agent_unconfirmed"
     | "computer_offline"
     | "runtime_unavailable"
+    | "runtime_unconfirmed"
     | "im_not_connected"
     | "im_provisioning"
     | "im_reauthorization_required"
@@ -82,12 +95,15 @@ type AgentAvailability = {
   };
 };
 
-type AgentListItem = AgentSummary & {
+type AgentListItem = AgentListApiItem & {
+  availability: AgentAvailability;
   evidenceConfirmed: boolean;
-  computerConnectionStatus: TeamComputerSummary["connectionStatus"] | null;
-  computerEvidenceConfirmed: boolean;
 };
-type AgentDetailView = AgentDetail & { availability: AgentAvailability };
+type DetailEvidence<T> = { kind: "ready"; value: T | undefined } | { kind: "unconfirmed" };
+type AgentDetailView = AgentDetail & {
+  availability: AgentAvailability;
+  messaging: DetailEvidence<ImBindingSummary>;
+};
 
 function projectAgentAvailability(
   agent: AgentSummary,
@@ -134,7 +150,13 @@ function projectAgentAvailability(
       dependencies,
     };
   }
-  if (agent.runtimeProvider !== "codex") {
+  const runtimeReadiness = computer.providerReadiness?.find(
+    (observation) => observation.provider === agent.runtimeProvider,
+  );
+  if (!runtimeReadiness) {
+    return { state: "unconfirmed", reason: "runtime_unconfirmed", lastConfirmedAt: null, dependencies };
+  }
+  if (runtimeReadiness.status !== "ready") {
     return { state: "action_required", reason: "runtime_unavailable", lastConfirmedAt: null, dependencies };
   }
   if (!bindingEvidenceConfirmed || !handoffEvidenceConfirmed) {
@@ -180,13 +202,37 @@ async function loadAgentList(teamId: string): Promise<{ agents: AgentListItem[] 
     ),
   ]);
   const computers = computersResult.kind === "ready" ? computersResult.value.computers : [];
+  if (computersResult.kind === "unconfirmed") {
+    return {
+      agents: agents.map((agent) => ({
+        ...agent,
+        availability: projectAgentAvailability(agent, undefined, undefined, undefined, false, false),
+        evidenceConfirmed: true,
+      })),
+    };
+  }
+  const availability = await Promise.all(
+    agents.map(async (agent) => {
+      const [bindingResult, handoffResult] = await Promise.allSettled([
+        browserApi.imBinding(agent.id),
+        browserApi.imBindingHandoff(agent.id),
+      ]);
+      return projectAgentAvailability(
+        agent,
+        computers.find((computer) => computer.id === agent.computer.id),
+        bindingResult.status === "fulfilled" ? bindingResult.value : undefined,
+        handoffResult.status === "fulfilled" ? handoffResult.value : undefined,
+        bindingResult.status === "fulfilled",
+        handoffResult.status === "fulfilled",
+      );
+    }),
+  );
   return {
-    agents: agents.map((agent) => ({
+    agents: agents.map((agent, index) => ({
       ...agent,
+      availability:
+        availability[index] ?? projectAgentAvailability(agent, undefined, undefined, undefined, false, false),
       evidenceConfirmed: true,
-      computerConnectionStatus:
-        computers.find((computer) => computer.id === agent.computer.id)?.connectionStatus ?? null,
-      computerEvidenceConfirmed: computersResult.kind === "ready",
     })),
   };
 }
@@ -203,6 +249,8 @@ async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
   const handoff = handoffResult.status === "fulfilled" ? handoffResult.value : undefined;
   return {
     ...agent,
+    messaging:
+      bindingResult.status === "fulfilled" ? { kind: "ready", value: bindingResult.value } : { kind: "unconfirmed" },
     availability: projectAgentAvailability(
       agent,
       computers.find((computer) => computer.id === agent.computer.id),
@@ -218,9 +266,13 @@ function markAgentListUnconfirmed(value: { agents: AgentListItem[] }): { agents:
   return {
     agents: value.agents.map((agent) => ({
       ...agent,
+      availability: {
+        ...agent.availability,
+        state: "unconfirmed",
+        reason: "agent_unconfirmed",
+        lastConfirmedAt: null,
+      },
       evidenceConfirmed: false,
-      computerConnectionStatus: null,
-      computerEvidenceConfirmed: false,
     })),
   };
 }
@@ -228,6 +280,7 @@ function markAgentListUnconfirmed(value: { agents: AgentListItem[] }): { agents:
 function markAgentDetailUnconfirmed(agent: AgentDetailView): AgentDetailView {
   return {
     ...agent,
+    messaging: { kind: "unconfirmed" },
     availability: {
       ...agent.availability,
       state: "unconfirmed",
@@ -362,33 +415,40 @@ export function AppRouter() {
       <Route path="/teams/new" element={<Navigate replace to="/workspaces/new" />} />
       <Route path="/workspaces/new" element={<NewTeamPage />} />
       <Route element={<AuthenticatedTeamGate />}>
-        <Route path="/onboarding" element={<OnboardingRoute />} />
-        <Route element={<AppShell />}>
-          <Route index element={<Navigate replace to="/agents" />} />
-          <Route path="/agents" element={<AgentsPage />} />
-          <Route path="/agents/new" element={<NewAgentPage />} />
-          <Route path="/agents/:agentId" element={<Navigate replace to="general" />} />
-          <Route path="/agents/:agentId/:tab" element={<AgentDetailPage />} />
-          <Route path="/tasks" element={<TasksPage />} />
-          <Route path="/integrations" element={<IntegrationsPage />} />
-          <Route path="/skills" element={<SkillsPage />} />
-          <Route path="/resources" element={<Navigate replace to="/skills" />} />
-          <Route path="/usage" element={<UsagePage />} />
-          <Route path="/members" element={<MembersPage />} />
-          <Route path="/account" element={<AccountPage />} />
-          <Route path="/workspace" element={<WorkspacePage />} />
-          <Route path="/account/workspace" element={<Navigate replace to="/workspace" />} />
-          <Route path="/settings" element={<Navigate replace to="/members" />} />
-          <Route path="/settings/account" element={<Navigate replace to="/account" />} />
-          <Route path="/settings/team" element={<Navigate replace to="/workspace" />} />
-          <Route path="/settings/members" element={<Navigate replace to="/members" />} />
-          <Route path="/settings/access" element={<Navigate replace to="/members" />} />
-          <Route path="/settings/security" element={<Navigate replace to="/members" />} />
-          <Route path="/settings/computers" element={<Navigate replace to="/agents/new" />} />
-          <Route path="/settings/resources" element={<Navigate replace to="/skills" />} />
-          <Route path="/settings/integrations" element={<Navigate replace to="/integrations" />} />
-          <Route path="/settings/usage" element={<Navigate replace to="/usage" />} />
-          <Route path="/settings/:section" element={<Navigate replace to="/members" />} />
+        <Route element={<TeamSetupGate />}>
+          <Route path="/onboarding" element={<OnboardingRoute />} />
+          <Route element={<AppShell />}>
+            <Route index element={<Navigate replace to="/agents" />} />
+            <Route path="/agents" element={<AgentsPage />} />
+            <Route path="/agents/new" element={<NewAgentPage />} />
+            <Route path="/agents/:agentId" element={<AgentDetailPage />} />
+            <Route path="/agents/:agentId/access" element={<LegacyAgentAccessRedirect />} />
+            <Route path="/agents/:agentId/usage" element={<AgentUsagePage />} />
+            <Route path="/agents/:agentId/settings" element={<AgentSettingsPage />} />
+            <Route path="/agents/:agentId/settings/:section" element={<AgentSettingsPage />} />
+            <Route path="/agents/:agentId/:legacySection" element={<LegacyAgentSectionRedirect />} />
+            <Route path="/tasks" element={<TasksPage />} />
+            <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
+            <Route path="/integrations" element={<IntegrationsPage />} />
+            <Route path="/skills" element={<SkillsPage />} />
+            <Route path="/resources" element={<Navigate replace to="/skills" />} />
+            <Route path="/usage" element={<Navigate replace to="/agents" />} />
+            <Route path="/members" element={<Navigate replace to="/workspace#members" />} />
+            <Route path="/account" element={<AccountPage />} />
+            <Route path="/workspace" element={<WorkspacePage />} />
+            <Route path="/account/workspace" element={<Navigate replace to="/workspace" />} />
+            <Route path="/settings" element={<Navigate replace to="/workspace" />} />
+            <Route path="/settings/account" element={<Navigate replace to="/account" />} />
+            <Route path="/settings/team" element={<Navigate replace to="/workspace" />} />
+            <Route path="/settings/members" element={<Navigate replace to="/workspace#members" />} />
+            <Route path="/settings/access" element={<Navigate replace to="/workspace#members" />} />
+            <Route path="/settings/security" element={<Navigate replace to="/workspace#members" />} />
+            <Route path="/settings/computers" element={<Navigate replace to="/agents/new" />} />
+            <Route path="/settings/resources" element={<Navigate replace to="/skills" />} />
+            <Route path="/settings/integrations" element={<Navigate replace to="/integrations" />} />
+            <Route path="/settings/usage" element={<Navigate replace to="/agents" />} />
+            <Route path="/settings/:section" element={<Navigate replace to="/workspace" />} />
+          </Route>
         </Route>
       </Route>
       <Route path="*" element={<StandaloneNotFoundPage />} />
@@ -656,8 +716,34 @@ function WorkspaceSetupIncomplete({ onRetry }: { onRetry: () => void }) {
 }
 
 function OnboardingRoute() {
-  const { me, membership } = useTeam();
-  return <OnboardingPage membership={membership} user={me.user} />;
+  const { me, membership, refreshMe } = useTeam();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const targetAgentId = searchParams.get("agentId") ?? undefined;
+  return (
+    <OnboardingPage
+      membership={membership}
+      targetAgentId={targetAgentId}
+      user={me.user}
+      onSetupReady={async (agentId) => {
+        await browserApi.completeTeamSetup(membership.teamId, agentId);
+        refreshMe();
+      }}
+      onTargetAgentChange={(agentId) => {
+        const next = new URLSearchParams(searchParams);
+        next.set("agentId", agentId);
+        setSearchParams(next, { replace: true });
+      }}
+    />
+  );
+}
+
+function TeamSetupGate() {
+  const { membership } = useTeam();
+  const location = useLocation();
+  const onboarding = location.pathname === "/onboarding";
+  if (membership.setupCompletedAt) return onboarding ? <Navigate replace to="/agents" /> : <Outlet />;
+  if (membership.role === "admin") return onboarding ? <Outlet /> : <Navigate replace to="/onboarding" />;
+  return onboarding ? <Navigate replace to="/agents" /> : <Outlet />;
 }
 
 function readTeamPreference(): string | undefined {
@@ -778,14 +864,6 @@ function AppShell() {
             <NavLink to="/skills" onClick={() => setNavigationOpen(false)}>
               <WorkspaceNavIcon name="skills" />
               Skills
-            </NavLink>
-            <NavLink to="/usage" onClick={() => setNavigationOpen(false)}>
-              <WorkspaceNavIcon name="usage" />
-              Usage
-            </NavLink>
-            <NavLink to="/members" onClick={() => setNavigationOpen(false)}>
-              <WorkspaceNavIcon name="members" />
-              Members
             </NavLink>
           </nav>
         </div>
@@ -923,7 +1001,7 @@ function AppShell() {
   );
 }
 
-function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "members" | "skills" | "tasks" | "usage" }) {
+function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "skills" | "tasks" }) {
   return (
     <svg
       aria-hidden="true"
@@ -961,20 +1039,6 @@ function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "members
           <path d="m18 14 .8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8L18 14Z" />
         </>
       ) : null}
-      {name === "usage" ? (
-        <>
-          <path d="M5 19V9M12 19V5M19 19v-7" />
-          <path d="M3.5 19.5h17" />
-        </>
-      ) : null}
-      {name === "members" ? (
-        <>
-          <circle cx="9" cy="8" r="3" />
-          <path d="M3.5 19v-1.5A4.5 4.5 0 0 1 8 13h2a4.5 4.5 0 0 1 4.5 4.5V19" />
-          <circle cx="17" cy="10" r="2" />
-          <path d="M16 14.5h1.5a3 3 0 0 1 3 3V19" />
-        </>
-      ) : null}
     </svg>
   );
 }
@@ -990,16 +1054,24 @@ function AgentsPage() {
   });
   return (
     <>
-      <Page title="Agents" description="Shared AI teammates configured for your team.">
+      <Page
+        title="Agents"
+        description="Monitor availability and 30-day usage across your AI teammates."
+        action={
+          membership.role === "admin" ? (
+            <Button ref={createTriggerRef} size="compact" variant="outline" onClick={() => setCreateOpen(true)}>
+              New Agent <Icon name="plus" />
+            </Button>
+          ) : undefined
+        }
+      >
+        {!membership.setupCompletedAt && membership.role !== "admin" ? (
+          <div className="notice" role="status">
+            Team setup is not complete. An administrator needs to prepare the first Agent.
+          </div>
+        ) : null}
         <AsyncState state={state}>
-          {(value) => (
-            <AgentsContent
-              agents={value.agents}
-              canCreate={membership.role === "admin"}
-              createTriggerRef={createTriggerRef}
-              onCreate={() => setCreateOpen(true)}
-            />
-          )}
+          {(value) => <AgentsContent agents={value.agents} canCreate={membership.role === "admin"} />}
         </AsyncState>
       </Page>
       {createOpen ? <NewAgentDialog returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} /> : null}
@@ -1007,40 +1079,23 @@ function AgentsPage() {
   );
 }
 
-function AgentsContent({
-  agents,
-  canCreate,
-  createTriggerRef,
-  onCreate,
-}: {
-  agents: AgentListItem[];
-  canCreate: boolean;
-  createTriggerRef: RefObject<HTMLButtonElement | null>;
-  onCreate: () => void;
-}) {
-  return agents.length === 0 && !canCreate ? (
-    <EmptyState title="No Agents yet">An Admin can create the first Agent.</EmptyState>
-  ) : (
-    <AgentList agents={agents} canCreate={canCreate} createTriggerRef={createTriggerRef} onCreate={onCreate} />
+function AgentsContent({ agents, canCreate }: { agents: AgentListItem[]; canCreate: boolean }) {
+  if (agents.length > 0) return <AgentList agents={agents} />;
+  return (
+    <EmptyState title="No Agents yet">
+      {canCreate ? "Create the first shared AI teammate with New Agent." : "An Admin can create the first Agent."}
+    </EmptyState>
   );
 }
 
-function AgentList({
-  agents,
-  canCreate,
-  createTriggerRef,
-  onCreate,
-}: {
-  agents: AgentListItem[];
-  canCreate: boolean;
-  createTriggerRef: RefObject<HTMLButtonElement | null>;
-  onCreate: () => void;
-}) {
+function AgentList({ agents }: { agents: AgentListItem[] }) {
+  const sortedAgents = [...agents].sort(
+    (left, right) => agentCardStatus(left).priority - agentCardStatus(right).priority,
+  );
   return (
     <section className="agent-list-section" aria-label="Agents">
       <div className="agent-card-grid">
-        {canCreate ? <NewAgentCard onClick={onCreate} triggerRef={createTriggerRef} /> : null}
-        {agents.map((agent) => (
+        {sortedAgents.map((agent) => (
           <AgentCard agent={agent} key={agent.id} />
         ))}
       </div>
@@ -1048,76 +1103,128 @@ function AgentList({
   );
 }
 
-function NewAgentCard({
-  onClick,
-  triggerRef,
-}: {
-  onClick: () => void;
-  triggerRef: RefObject<HTMLButtonElement | null>;
-}) {
+function AgentCard({ agent }: { agent: AgentListItem }) {
+  const status = agentCardStatus(agent);
+  const statusDetail: ReactNode =
+    agent.activity.state === "working" && status.label === "Working" ? (
+      <>Started {formatElapsedCompact(agent.activity.startedAt)} ago</>
+    ) : status.detail ? (
+      status.reconnect ? (
+        <>
+          <span className="agent-state-reason">{status.detail}</span>
+          <span className="agent-state-separator" aria-hidden="true">
+            {" · "}
+          </span>
+          <Link
+            className={buttonClassName({ className: "agent-reconnect", variant: "inline" })}
+            to={`/agents/${agent.id}/settings/computer`}
+          >
+            Reconnect
+          </Link>
+        </>
+      ) : (
+        status.detail
+      )
+    ) : undefined;
   return (
-    <button aria-label="New Agent" className="agent-create-card" onClick={onClick} ref={triggerRef} type="button">
-      <span className="agent-create-card-icon" aria-hidden="true">
-        <Icon name="plus" />
-      </span>
-      <strong>New Agent</strong>
-      <small>Create a shared AI teammate.</small>
-    </button>
+    <article className="agent-card" data-avatar-tone={agentAvatarTone(agent.id)} data-tone={status.tone}>
+      <div className="agent-card-identity">
+        <span className="agent-avatar" aria-hidden="true">
+          {initials(agent.displayName)}
+        </span>
+        <div className="agent-card-identity-copy">
+          <strong>{agent.displayName}</strong>
+          <small>@{agent.name}</small>
+        </div>
+      </div>
+      <div className="agent-card-state">
+        <StatusIndicator className="agent-card-status" detail={statusDetail} label={status.label} tone={status.tone} />
+      </div>
+      <dl className="agent-card-usage">
+        <div>
+          <dt>Tasks</dt>
+          <dd>{formatUsageNumber(agent.usage.tasks)}</dd>
+        </div>
+        <div>
+          <dt>Tokens</dt>
+          <dd>{formatUsageNumber(agent.usage.tokens)}</dd>
+        </div>
+      </dl>
+      <Link aria-label={`Open ${agent.displayName}`} className="agent-card-action" to={`/agents/${agent.id}`}>
+        <Icon name="chevron-right" />
+      </Link>
+    </article>
   );
 }
 
-function AgentCard({ agent }: { agent: AgentListItem }) {
-  const status =
-    agent.status === "suspended"
-      ? { label: "Suspended", reason: "Not receiving new work", tone: "neutral" as const }
-      : !agent.evidenceConfirmed
-        ? { label: "Unconfirmed", reason: "Unable to refresh Agent", tone: "neutral" as const }
-        : !agent.computerEvidenceConfirmed || agent.computerConnectionStatus === null
-          ? { label: "Unconfirmed", reason: "Unable to confirm runtime", tone: "neutral" as const }
-          : agent.computerConnectionStatus === "online"
-            ? { label: "Active", reason: "Computer online", tone: "success" as const }
-            : { label: "Action required", reason: "Computer offline", tone: "warning" as const };
-  return (
-    <Link aria-label={`Open ${agent.displayName}`} className="agent-card" to={`/agents/${agent.id}/general`}>
-      <article>
-        <header className="agent-card-header">
-          <span className="agent-identity">
-            <span className="agent-avatar" aria-hidden="true">
-              {initials(agent.displayName)}
-            </span>
-            <span>
-              <strong>{agent.displayName}</strong>
-              <small>@{agent.name}</small>
-            </span>
-          </span>
-          <StatusIndicator detail={status.reason} label={status.label} tone={status.tone} />
-        </header>
-        <dl className="agent-card-facts">
-          <div>
-            <dt>Runtime</dt>
-            <dd>{providerLabel(agent.runtimeProvider)}</dd>
-          </div>
-          <div>
-            <dt>Computer</dt>
-            <dd>
-              {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
-            </dd>
-          </div>
-          <div>
-            <dt>Manager</dt>
-            <dd>{agent.manager.displayName}</dd>
-          </div>
-          <div>
-            <dt>Messaging</dt>
-            <dd>{receiveModeLabel(agent.receiveMode)}</dd>
-          </div>
-        </dl>
-        <span className="agent-card-action" aria-hidden="true">
-          View Agent <Icon name="chevron-right" />
-        </span>
-      </article>
-    </Link>
-  );
+const agentAvatarTones = ["brand", "amber", "blue", "neutral"] as const;
+
+function agentAvatarTone(agentId: string): (typeof agentAvatarTones)[number] {
+  let hash = 0;
+  for (let index = 0; index < agentId.length; index += 1) {
+    hash = (hash * 31 + agentId.charCodeAt(index)) >>> 0;
+  }
+  return agentAvatarTones[hash % agentAvatarTones.length] ?? "brand";
+}
+
+function agentCardStatus(agent: AgentListItem): {
+  detail?: string;
+  label: string;
+  priority: number;
+  reconnect?: boolean;
+  tone: StatusTone;
+} {
+  if (agent.status === "suspended") return { label: "Paused", priority: 4, tone: "neutral" };
+  if (!agent.evidenceConfirmed) {
+    return { detail: "Unable to refresh", label: "Unconfirmed", priority: 1, tone: "neutral" };
+  }
+  if (agent.availability.state === "unconfirmed") {
+    return { detail: "Unable to confirm readiness", label: "Unconfirmed", priority: 1, tone: "neutral" };
+  }
+  if (agent.availability.state === "action_required") {
+    const detail =
+      agent.availability.reason === "computer_offline"
+        ? "Computer offline"
+        : agent.availability.reason === "runtime_unavailable"
+          ? "Computer not ready"
+          : "Messaging unavailable";
+    return {
+      detail,
+      label: "Needs attention",
+      priority: 0,
+      reconnect: agent.availability.reason === "computer_offline",
+      tone: "warning",
+    };
+  }
+  if (agent.availability.state === "setting_up") {
+    return { detail: "Messaging setup in progress", label: "Setting up", priority: 2, tone: "info" };
+  }
+  if (agent.availability.state === "not_connected") {
+    return { detail: "Messaging not connected", label: "Not connected", priority: 2, tone: "neutral" };
+  }
+  if (agent.activity.state === "working") {
+    return {
+      label: "Working",
+      priority: 2,
+      tone: "success",
+    };
+  }
+  return { label: "Ready", priority: 3, tone: "success" };
+}
+
+function formatElapsedCompact(value: string): string {
+  const elapsedMinutes = Math.max(1, Math.floor((Date.now() - new Date(value).getTime()) / 60_000));
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  if (elapsedHours < 24) return `${elapsedHours}h`;
+  return `${Math.floor(elapsedHours / 24)}d`;
+}
+
+function formatUsageNumber(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: value >= 1_000 ? 1 : 0,
+    notation: value >= 1_000 ? "compact" : "standard",
+  }).format(value);
 }
 
 function useOwnComputersResource(teamId: string, refreshVersion = 0) {
@@ -1145,7 +1252,7 @@ function NewAgentPage() {
       }
     >
       {created ? (
-        <NewAgentMessagingStep agent={created} onFinish={() => navigate(`/agents/${created.id}/general`)} />
+        <NewAgentMessagingStep agent={created} onFinish={() => navigate(`/agents/${created.id}`)} />
       ) : (
         <AgentCreationContent
           computers={computers}
@@ -1172,7 +1279,7 @@ function NewAgentDialog({
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<AgentAdminConfig>();
   const finish = () => {
-    if (created) navigate(`/agents/${created.id}/general`);
+    if (created) navigate(`/agents/${created.id}`);
   };
   const close = () => {
     if (created) finish();
@@ -1327,77 +1434,274 @@ function markOwnComputersUnconfirmed(value: { computers: Computer[] }): { comput
   };
 }
 
-const agentSections = [
-  { key: "general", label: "Overview" },
-  { key: "runtime", label: "Runtime" },
-  { key: "im", label: "Messaging" },
-  { key: "access", label: "Access" },
+const agentSettingsSections = [
+  { key: "identity", label: "Identity", description: "Name and handle" },
+  { key: "instructions", label: "Instructions", description: "Guidance for every request" },
+  { key: "execution", label: "Execution", description: "Provider, model, and reasoning" },
+  { key: "messaging", label: "Messaging", description: "Contact channel and trigger rules" },
+  { key: "computer", label: "Computer", description: "Assigned device and connection" },
+  { key: "manage", label: "Manage", description: "Pause or delete this Agent" },
 ] as const;
+type AgentSettingsSection = (typeof agentSettingsSections)[number]["key"];
 
-function AgentDetailPage() {
-  const { agentId = "", tab = "general" } = useParams();
-  const [refreshVersion, setRefreshVersion] = useState(0);
-  const navigate = useNavigate();
-  const state = useResource(() => loadAgentDetail(agentId), `${agentId}:${refreshVersion}`, {
+function LegacyAgentAccessRedirect() {
+  return <Navigate replace to="/workspace#members" />;
+}
+
+function LegacyAgentSectionRedirect() {
+  const { agentId = "", legacySection = "" } = useParams();
+  const destinations: Record<string, string> = {
+    general: `/agents/${agentId}`,
+    runtime: `/agents/${agentId}/settings/execution`,
+    im: `/agents/${agentId}/settings/messaging`,
+  };
+  const destination = destinations[legacySection];
+  if (destination) return <Navigate replace to={destination} />;
+  if (legacySection === "integrations" || legacySection === "skills") {
+    return <LegacyAgentCapabilityPage capability={legacySection} />;
+  }
+  return <NotFoundPage />;
+}
+
+function LegacyAgentCapabilityPage({ capability }: { capability: "integrations" | "skills" }) {
+  const { agentId = "" } = useParams();
+  const state = useResource(() => loadAgentDetail(agentId), agentId, {
     onBackgroundError: markAgentDetailUnconfirmed,
-    revalidateMs: 30_000,
-    refreshOnFocus: true,
   });
-  const currentSection = agentSections.find((section) => section.key === tab);
-  if (!currentSection) return <NotFoundPage />;
+  const label = capability === "integrations" ? "integrations" : "skills";
   return (
     <AsyncState state={state}>
       {(agent) => (
         <section className="object-page">
-          <header className="object-header">
-            <Link className="breadcrumb" to="/agents">
-              <Icon name="arrow-left" />
-              Agents
-            </Link>
-            <div className="object-title-row">
-              <div className="object-identity">
-                <span className="agent-avatar large" aria-hidden="true">
-                  {initials(agent.displayName)}
-                </span>
-                <div>
-                  <h1>{agent.displayName}</h1>
-                  <p>
-                    <span>@{agent.name}</span>
-                    <span>Managed by {agent.manager.displayName}</span>
-                  </p>
-                </div>
-              </div>
-              <AgentAvailabilityAction agent={agent} />
-            </div>
-          </header>
-          <label className="local-nav-select">
-            <span>Agent section</span>
-            <select value={tab} onChange={(event) => navigate(`/agents/${agentId}/${event.currentTarget.value}`)}>
-              {agentSections.map((section) => (
-                <option value={section.key} key={section.key}>
-                  {section.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <div className="object-layout">
-            <Tabs collapseOnMobile label="Agent settings">
-              {agentSections.map((section) => (
-                <NavLink to={`/agents/${agentId}/${section.key}`} key={section.key}>
-                  {section.label}
-                </NavLink>
-              ))}
-            </Tabs>
-            <div className="object-content">
-              <header className="section-header">
-                <h2>{currentSection.label}</h2>
-                <p>{agentSectionDescription(currentSection.key)}</p>
-              </header>
-              <AgentTab agent={agent} tab={tab} onAgentChanged={() => setRefreshVersion((value) => value + 1)} />
+          <AgentObjectHeader agent={agent} />
+          <div className="agent-secondary-page">
+            <header className="section-header">
+              <h2>Agent {label} are not available here</h2>
+              <p>
+                OpenTag does not currently show {label} assigned to {agent.displayName}. The Workspace catalog is
+                separate from this Agent.
+              </p>
+            </header>
+            <div className="actions">
+              <Link className={buttonClassName()} to={`/agents/${agent.id}`}>
+                Back to {agent.displayName}
+              </Link>
+              <Link className={buttonClassName({ variant: "secondary" })} to={`/${capability}`}>
+                Browse Workspace {label}
+              </Link>
             </div>
           </div>
         </section>
       )}
+    </AsyncState>
+  );
+}
+
+function AgentDetailPage() {
+  const { agentId = "" } = useParams();
+  const state = useResource(() => loadAgentDetail(agentId), agentId, {
+    onBackgroundError: markAgentDetailUnconfirmed,
+    revalidateMs: 30_000,
+    refreshOnFocus: true,
+  });
+  return (
+    <AsyncState state={state}>
+      {(agent) => (
+        <section className="object-page">
+          <AgentObjectHeader agent={agent} />
+          <div className="agent-home">
+            {agent.availability.state !== "ready" ? <AgentRecoveryBanner agent={agent} /> : null}
+            <AgentCurrentActivity agent={agent} />
+            <AgentContact agent={agent} />
+            <p className="agent-home-footnote">
+              OpenTag shows confirmed status and contact information. Detailed work remains in the original messaging
+              thread.
+            </p>
+          </div>
+        </section>
+      )}
+    </AsyncState>
+  );
+}
+
+function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; backToSettings?: boolean }) {
+  return (
+    <header className="object-header">
+      <Link className="breadcrumb" to={backToSettings ? `/agents/${agent.id}` : "/agents"}>
+        <Icon name="arrow-left" />
+        {backToSettings ? agent.displayName : "Agents"}
+      </Link>
+      <div className="object-title-row">
+        <div className="object-identity">
+          <span className="agent-avatar large" aria-hidden="true">
+            {initials(agent.displayName)}
+          </span>
+          <div>
+            <h1>{agent.displayName}</h1>
+            <p>
+              <span>@{agent.name}</span>
+              <span>Managed by {agent.manager.displayName}</span>
+            </p>
+          </div>
+        </div>
+        <div className="agent-header-actions">
+          <AgentAvailabilityAction agent={agent} />
+          {agent.viewerCapabilities.canManage && !backToSettings ? (
+            <Link className={buttonClassName({ variant: "secondary" })} to={`/agents/${agent.id}/settings`}>
+              Settings
+            </Link>
+          ) : null}
+          {!backToSettings ? (
+            <details className="agent-more-menu">
+              <summary aria-label="More Agent actions">More</summary>
+              <Link to={`/agents/${agent.id}/usage`}>Usage</Link>
+            </details>
+          ) : null}
+        </div>
+      </div>
+    </header>
+  );
+}
+
+function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
+  const recovery = agentAvailabilityRecovery(agent);
+  return (
+    <section className="agent-recovery-banner" aria-label="Agent needs attention">
+      <div>
+        <strong>{availabilityStateLabel(agent.availability.state)}</strong>
+        <p>{agentRecoveryMessage(agent)}</p>
+      </div>
+      {recovery ? (
+        <Link className={buttonClassName({ size: "compact", variant: "secondary" })} to={recovery.to}>
+          {recovery.label}
+        </Link>
+      ) : null}
+    </section>
+  );
+}
+
+function AgentCurrentActivity({ agent }: { agent: AgentDetailView }) {
+  return (
+    <section className="agent-home-section" aria-labelledby="current-activity-heading">
+      <header>
+        <h2 id="current-activity-heading">Current activity</h2>
+      </header>
+      {agent.activity.state === "working" ? (
+        <div className="agent-current-work">
+          <span className="agent-activity-pulse" aria-hidden="true" />
+          <div>
+            <strong>Handling a request</strong>
+            <p>Started {formatRelativeTime(agent.activity.startedAt)}</p>
+          </div>
+          <span className="agent-state-label">Working</span>
+        </div>
+      ) : (
+        <p className="agent-empty-line">
+          <strong>No active work</strong>
+          <span>{agent.availability.state === "ready" ? "Ready for a new request" : "No request is running"}</span>
+        </p>
+      )}
+    </section>
+  );
+}
+
+function AgentContact({ agent }: { agent: AgentDetailView }) {
+  const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
+  return (
+    <section className="agent-home-section" aria-labelledby="agent-contact-heading">
+      <header className="agent-home-section-heading">
+        <div>
+          <h2 id="agent-contact-heading">Contact</h2>
+          <p>Where teammates can send this Agent work.</p>
+        </div>
+        {agent.viewerCapabilities.canManage ? (
+          <Link to={`/agents/${agent.id}/settings/messaging`}>Manage messaging</Link>
+        ) : null}
+      </header>
+      {agent.messaging.kind === "unconfirmed" ? (
+        <p className="agent-empty-line">
+          <strong>Unable to confirm messaging</strong>
+          <span>Try again shortly</span>
+        </p>
+      ) : binding ? (
+        <div className="agent-contact-body">
+          <StatusIndicator
+            detail={titleCase(binding.provider)}
+            label={binding.bot.displayName}
+            tone={messagingConnectionTone(binding, agent.availability.dependencies.handoff.state)}
+          />
+          <p>{agentUseInstruction(agent, titleCase(binding.provider))}</p>
+        </div>
+      ) : (
+        <p className="agent-empty-line">
+          <strong>No messaging connected</strong>
+          <span>Connect Feishu or Slack to start sending work</span>
+        </p>
+      )}
+    </section>
+  );
+}
+
+function AgentUsagePage() {
+  const { agentId = "" } = useParams();
+  const state = useResource(() => loadAgentDetail(agentId), agentId, {
+    onBackgroundError: markAgentDetailUnconfirmed,
+  });
+  return (
+    <AsyncState state={state}>
+      {(agent) => (
+        <section className="object-page">
+          <AgentObjectHeader agent={agent} backToSettings />
+          <div className="agent-secondary-page">
+            <header className="section-header">
+              <h2>Usage</h2>
+              <p>Review token use over time.</p>
+            </header>
+            <AgentUsageTab agentId={agent.id} />
+          </div>
+        </section>
+      )}
+    </AsyncState>
+  );
+}
+
+function AgentSettingsPage() {
+  const { agentId = "", section } = useParams();
+  const [refreshVersion, setRefreshVersion] = useState(0);
+  const state = useResource(() => loadAgentDetail(agentId), `${agentId}:${refreshVersion}`, {
+    onBackgroundError: markAgentDetailUnconfirmed,
+  });
+  const selected = section as AgentSettingsSection | undefined;
+  if (selected && !agentSettingsSections.some((item) => item.key === selected)) return <NotFoundPage />;
+  return (
+    <AsyncState state={state}>
+      {(agent) => {
+        if (!agent.viewerCapabilities.canManage) return <Navigate replace to={`/agents/${agent.id}`} />;
+        return (
+          <section className="object-page">
+            <AgentObjectHeader agent={agent} backToSettings />
+            <div className="agent-settings-layout">
+              <nav aria-label="Agent settings" className="agent-settings-nav">
+                <Link className={!selected ? "active" : undefined} to={`/agents/${agent.id}/settings`}>
+                  Settings
+                </Link>
+                {agentSettingsSections.map((item) => (
+                  <NavLink key={item.key} to={`/agents/${agent.id}/settings/${item.key}`}>
+                    {item.label}
+                  </NavLink>
+                ))}
+              </nav>
+              <div className="agent-settings-content">
+                <AgentSettingsContent
+                  agent={agent}
+                  section={selected}
+                  onAgentChanged={() => setRefreshVersion((value) => value + 1)}
+                />
+              </div>
+            </div>
+          </section>
+        );
+      }}
     </AsyncState>
   );
 }
@@ -1416,17 +1720,40 @@ function AccountPage() {
 }
 
 function WorkspacePage() {
-  const { membership, refreshMe } = useTeam();
+  const { me, membership, refreshMe } = useTeam();
+  const location = useLocation();
+
+  useEffect(() => {
+    if (location.hash !== "#members") return;
+    document.getElementById("members")?.scrollIntoView({ block: "start" });
+  }, [location.hash]);
+
   return (
-    <Page title="Workspace" description="Manage the current Workspace and create additional Workspaces.">
-      <WorkspaceSettings membership={membership} refreshMe={refreshMe} />
+    <Page
+      action={
+        <Link className={buttonClassName({ variant: "secondary" })} to="/workspaces/new">
+          Create Workspace
+        </Link>
+      }
+      title="Workspace"
+      description="Manage the current Workspace, its members, and access."
+    >
+      <WorkspaceSettings currentUserId={me.user.id} membership={membership} refreshMe={refreshMe} />
     </Page>
   );
 }
 
-function WorkspaceSettings({ membership, refreshMe }: { membership: MeMembership; refreshMe: () => void }) {
+function WorkspaceSettings({
+  currentUserId,
+  membership,
+  refreshMe,
+}: {
+  currentUserId: string;
+  membership: MeMembership;
+  refreshMe: () => void;
+}) {
   return (
-    <div className="account-workspace-stack">
+    <div className="settings-team-stack">
       <section aria-labelledby="workspace-profile-heading" className="account-workspace-profile">
         <header className="settings-subheader">
           <div>
@@ -1439,125 +1766,95 @@ function WorkspaceSettings({ membership, refreshMe }: { membership: MeMembership
         </header>
         <TeamProfileSettings membership={membership} refreshMe={refreshMe} />
       </section>
-      <section aria-labelledby="additional-workspace-heading" className="account-workspace-create">
-        <div>
-          <h2 id="additional-workspace-heading">Additional Workspace</h2>
-          <p>Create an isolated Workspace for another client or team.</p>
-        </div>
-        <Link className={buttonClassName({ variant: "secondary" })} to="/workspaces/new">
-          Create Workspace
-        </Link>
-      </section>
-    </div>
-  );
-}
-
-function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetailView; tab: string; onAgentChanged: () => void }) {
-  if (tab === "general") return <GeneralTab agent={agent} onAgentChanged={onAgentChanged} />;
-  if (tab === "runtime") return <RuntimeTab agent={agent} />;
-  if (tab === "im") return <ImTab agent={agent} onAgentChanged={onAgentChanged} />;
-  if (tab === "access") return <AccessTab agent={agent} />;
-  return <NotFoundPage />;
-}
-
-function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
-  const channel = agent.availability.dependencies.channel;
-  const channelLabel = channel.provider ? titleCase(channel.provider) : undefined;
-  const botDisplayName = channel.botDisplayName ?? agent.displayName;
-  return (
-    <div className="overview-stack">
-      <section className="overview-section" aria-labelledby="use-agent-heading">
-        <div className="overview-section-heading">
-          <h3 id="use-agent-heading">Use this Agent</h3>
-          <Link to={`/agents/${agent.id}/im`}>
-            {agent.viewerCapabilities.canManage ? "Manage messaging" : "View messaging"}
-          </Link>
-        </div>
-        {channel.state === "connected" && channelLabel ? (
-          <div className="agent-use-panel">
-            <div className="agent-use-copy">
-              <span className="agent-use-channel">{channelLabel}</span>
-              <h4>Message @{agent.name}</h4>
-              <p>{agentUseInstruction(agent, channelLabel)}</p>
-            </div>
-            <div className="agent-use-identity">
-              <span>{botDisplayName}</span>
-              <small>{receiveModeLabel(agent.receiveMode)}</small>
-            </div>
-          </div>
-        ) : channel.state === "not_connected" ? (
-          <div className="agent-use-panel empty">
-            <div className="agent-use-copy">
-              <span className="agent-use-channel">Messaging</span>
-              <h4>Connect Feishu or Slack</h4>
-              <p>This Agent needs a messaging identity before teammates can send it work.</p>
-            </div>
-          </div>
-        ) : (
-          <div className="agent-use-panel empty">
-            <div className="agent-use-copy">
-              <span className="agent-use-channel">Messaging</span>
-              <h4>Messaging status unavailable</h4>
-              <p>The messaging identity could not be confirmed. Try again in a moment.</p>
-            </div>
-          </div>
-        )}
-      </section>
-      <section className="overview-section" aria-labelledby="identity-access-heading">
-        <div className="overview-section-heading">
-          <h3 id="identity-access-heading">Identity &amp; access</h3>
-          <Link to={`/agents/${agent.id}/access`}>Manage access</Link>
-        </div>
-        <DefinitionList
-          rows={[
-            ["Manager", agent.manager.displayName],
-            ["Who can use", "Members"],
-          ]}
-        />
-      </section>
-      {agent.viewerCapabilities.canManage ? <AdminControls agent={agent} onAgentChanged={onAgentChanged} /> : null}
+      <MembersSettings
+        canManage={membership.role === "admin"}
+        currentUserId={currentUserId}
+        refreshMe={refreshMe}
+        teamId={membership.teamId}
+      />
     </div>
   );
 }
 
 function AgentAvailabilityAction({ agent }: { agent: AgentDetailView }) {
-  const recovery = agentAvailabilityRecovery(agent);
   const tone = availabilityTone(agent.availability.state);
+  const working = agent.availability.state === "ready" && agent.activity.state === "working";
   return (
     <div className={`availability-action ${tone}`}>
       <StatusIndicator
-        detail={agentAvailabilitySummary(agent)}
-        label={availabilityStateLabel(agent.availability.state)}
-        tone={tone}
+        detail={working ? "Handling a request" : agentAvailabilitySummary(agent)}
+        label={working ? "Working" : availabilityStateLabel(agent.availability.state)}
+        tone={working ? "info" : tone}
       />
-      {recovery ? <Link to={recovery.to}>{recovery.label}</Link> : null}
     </div>
   );
 }
 
-function AdminControls({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="admin-controls" id="admin-controls">
-      <button
-        aria-expanded={open}
-        className="admin-controls-trigger"
-        type="button"
-        onClick={() => setOpen((value) => !value)}
-      >
-        {open ? "Close Agent settings" : "Edit Agent settings"}
-      </button>
-      {open ? <GeneralAdminForm agent={agent} onAgentChanged={onAgentChanged} /> : null}
-    </div>
-  );
+function AgentSettingsContent({
+  agent,
+  section,
+  onAgentChanged,
+}: {
+  agent: AgentDetailView;
+  section: AgentSettingsSection | undefined;
+  onAgentChanged: () => void;
+}) {
+  if (!section) return <AgentSettingsOverview agent={agent} />;
+  if (section === "messaging") return <ImTab agent={agent} onAgentChanged={onAgentChanged} />;
+  if (section === "computer") return <AgentComputerSettings agent={agent} onAgentChanged={onAgentChanged} />;
+  return <AgentConfigSettingsContent agent={agent} section={section} onAgentChanged={onAgentChanged} />;
 }
 
-function GeneralAdminForm({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
-  const configState = useResource(() => browserApi.agentConfig(agent.id), agent.id);
+function AgentConfigSettingsContent({
+  agent,
+  section,
+  onAgentChanged,
+}: {
+  agent: AgentDetailView;
+  section: Exclude<AgentSettingsSection, "computer" | "messaging">;
+  onAgentChanged: () => void;
+}) {
+  const configState = useResource(() => browserApi.agentConfig(agent.id), `${agent.id}:${section}`);
   return (
     <AsyncState state={configState}>
-      {(config) => <GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />}
+      {(config) => {
+        if (section === "identity") {
+          return <GeneralConfigForm initialConfig={config} onAgentChanged={onAgentChanged} />;
+        }
+        if (section === "instructions" || section === "execution") {
+          return (
+            <RuntimeConfigurationForm
+              initialConfig={config}
+              save={(input) => browserApi.updateAgent(config.id, input)}
+              section={section}
+            />
+          );
+        }
+        return <AgentManageSettings initialConfig={config} onAgentChanged={onAgentChanged} />;
+      }}
     </AsyncState>
+  );
+}
+
+function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
+  return (
+    <div>
+      <header className="section-header">
+        <h2>Settings</h2>
+        <p>Change how {agent.displayName} appears, works, and receives requests.</p>
+      </header>
+      <div className="agent-settings-grid">
+        {agentSettingsSections.map((item) => (
+          <Link key={item.key} to={`/agents/${agent.id}/settings/${item.key}`}>
+            <span>
+              <strong>{item.label}</strong>
+              <small>{item.description}</small>
+            </span>
+            <Icon name="chevron-right" />
+          </Link>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -1568,7 +1865,6 @@ function GeneralConfigForm({
   initialConfig: AgentAdminConfig;
   onAgentChanged: () => void;
 }) {
-  const navigate = useNavigate();
   const [config, setConfig] = useState(initialConfig);
   const [message, setMessage] = useState<string>();
   async function submit(event: FormEvent<HTMLFormElement>) {
@@ -1576,27 +1872,107 @@ function GeneralConfigForm({
     const displayName = String(new FormData(event.currentTarget).get("displayName") ?? "");
     try {
       setConfig(await browserApi.updateAgent(config.id, { expectedRevision: config.revision, displayName }));
-      setMessage("General settings saved.");
+      setMessage("Identity saved.");
       onAgentChanged();
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to save General settings");
+      setMessage(cause instanceof Error ? cause.message : "Unable to save identity");
     }
   }
+  return (
+    <form className="form-card" onSubmit={submit}>
+      <header className="section-header">
+        <h2>Identity</h2>
+        <p>Choose the name teammates see. The handle cannot be changed.</p>
+      </header>
+      <Field htmlFor="agent-display-name" label="Display name">
+        <input
+          className="ds-control"
+          defaultValue={config.displayName}
+          id="agent-display-name"
+          key={config.revision}
+          name="displayName"
+          required
+        />
+      </Field>
+      <Field htmlFor="agent-handle" label="Handle">
+        <input className="ds-control" disabled id="agent-handle" value={`@${config.name}`} />
+      </Field>
+      <Button type="submit">Save identity</Button>
+      {message ? <p role="status">{message}</p> : null}
+    </form>
+  );
+}
+
+function AgentComputerSettings({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
+  const computerState = agent.availability.dependencies.computer;
+  const computerStatus =
+    computerState.state === "ready"
+      ? "Online"
+      : computerState.state === "action_required"
+        ? "Offline"
+        : "Unable to confirm";
+  const computerTone: StatusTone =
+    computerState.state === "ready" ? "success" : computerState.state === "action_required" ? "warning" : "neutral";
+  return (
+    <div className="agent-runtime-stack">
+      <section aria-labelledby="computer-heading" className="agent-runtime-section agent-runtime-computer">
+        <header className="agent-runtime-section__header">
+          <div>
+            <h2 id="computer-heading">Computer</h2>
+            <p>The device assigned to run this Agent.</p>
+          </div>
+          <StatusIndicator label={computerStatus} tone={computerTone} />
+        </header>
+        <div className="agent-runtime-computer__body">
+          <div>
+            <strong>
+              {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
+            </strong>
+          </div>
+          {computerState.state !== "ready" ? (
+            <div className="agent-runtime-recovery">
+              {computerState.lastConfirmedAt ? <p>Last seen {formatDate(computerState.lastConfirmedAt)}</p> : null}
+              <p>
+                {computerState.state === "action_required"
+                  ? "New requests can start after this Computer reconnects."
+                  : "OpenTag could not confirm this Computer's current connection."}
+              </p>
+              <Button size="compact" variant="outline" onClick={onAgentChanged}>
+                Check again
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function AgentManageSettings({
+  initialConfig,
+  onAgentChanged,
+}: {
+  initialConfig: AgentAdminConfig;
+  onAgentChanged: () => void;
+}) {
+  const navigate = useNavigate();
+  const [config, setConfig] = useState(initialConfig);
+  const [message, setMessage] = useState<string>();
   async function changeLifecycle(action: "suspend" | "reactivate") {
     try {
       setConfig(
         action === "suspend" ? await browserApi.suspendAgent(config.id) : await browserApi.reactivateAgent(config.id),
       );
-      setMessage(action === "suspend" ? "Agent suspended." : "Agent reactivated.");
+      setMessage(action === "suspend" ? "Agent paused." : "Agent reactivated.");
       onAgentChanged();
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to change Agent lifecycle");
+      setMessage(cause instanceof Error ? cause.message : "Unable to change Agent status");
     }
   }
   async function deleteAgent() {
     if (
       !window.confirm(
-        `Permanently delete ${config.displayName}? This will end its active Sessions and clear its IM credential and runtime configuration. Session and message history will be retained, but the Agent cannot be restored.`,
+        `Permanently delete ${config.displayName}? This will end active Sessions, remove messaging credentials and execution settings, and retain Session and message history. This Agent cannot be restored.`,
       )
     )
       return;
@@ -1608,73 +1984,40 @@ function GeneralConfigForm({
     }
   }
   return (
-    <form className="form-card" onSubmit={submit}>
-      <h2>Admin configuration</h2>
-      <Field htmlFor="agent-display-name" label="Display name">
-        <input
-          className="ds-control"
-          defaultValue={config.displayName}
-          id="agent-display-name"
-          key={config.revision}
-          name="displayName"
-          required
-        />
-      </Field>
-      <Button type="submit">Save General settings</Button>
-      <div className="actions">
-        {config.status === "active" ? (
-          <Button variant="secondary" onClick={() => void changeLifecycle("suspend")}>
-            Suspend Agent
+    <section className="agent-manage-settings">
+      <header className="section-header">
+        <h2>Manage</h2>
+        <p>Pause this Agent temporarily or remove it permanently.</p>
+      </header>
+      <SettingsList>
+        <SettingsRow
+          description={
+            config.status === "active" ? "Stop accepting new requests until reactivated." : "Allow new requests again."
+          }
+          label={config.status === "active" ? "Pause Agent" : "Reactivate Agent"}
+        >
+          <Button
+            variant="secondary"
+            onClick={() => void changeLifecycle(config.status === "active" ? "suspend" : "reactivate")}
+          >
+            {config.status === "active" ? "Pause" : "Reactivate"}
           </Button>
-        ) : (
-          <>
-            <Button onClick={() => void changeLifecycle("reactivate")}>Reactivate Agent</Button>
-            <Button variant="danger" onClick={() => void deleteAgent()}>
-              Delete Agent permanently
-            </Button>
-          </>
-        )}
-      </div>
+        </SettingsRow>
+        <SettingsRow
+          description={
+            config.status === "active"
+              ? "Pause this Agent before deleting it permanently."
+              : "Permanently remove this Agent. This cannot be undone."
+          }
+          label="Delete Agent"
+        >
+          <Button disabled={config.status === "active"} variant="danger" onClick={() => void deleteAgent()}>
+            Delete permanently
+          </Button>
+        </SettingsRow>
+      </SettingsList>
       {message ? <p role="status">{message}</p> : null}
-    </form>
-  );
-}
-
-function RuntimeTab({ agent }: { agent: AgentDetailView }) {
-  const state = useResource(
-    () => (agent.viewerCapabilities.canManage ? browserApi.agentConfig(agent.id) : Promise.resolve(undefined)),
-    `${agent.id}:${agent.viewerCapabilities.canManage}`,
-  );
-  return (
-    <AsyncState state={state}>
-      {(config) => (
-        <>
-          <DefinitionList
-            rows={[
-              ["Provider", providerLabel(agent.runtimeProvider)],
-              ["Computer", agent.computer.displayName],
-              ["System", platformLabel(agent.computer.platform)],
-              [
-                "Connection",
-                agent.availability.dependencies.computer.state === "ready"
-                  ? "Online"
-                  : agent.availability.dependencies.computer.state === "action_required"
-                    ? "Offline"
-                    : "Unable to confirm",
-              ],
-            ]}
-          />
-          {config ? (
-            <RuntimeConfigurationForm
-              initialConfig={config}
-              save={(input) => browserApi.updateAgent(config.id, input)}
-            />
-          ) : (
-            <p className="muted">Runtime instructions and tuning are visible only to Admins.</p>
-          )}
-        </>
-      )}
-    </AsyncState>
+    </section>
   );
 }
 
@@ -1711,153 +2054,213 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
         onAgentChanged();
       }}
     >
-      {(setup) => {
-        const connect = async (intent: "create" | "reauthorize" | "replace" = "create") => {
-          setError(undefined);
-          if (await setup.start(intent)) setReauthorizationNeeded(false);
-        };
-        return (
-          <AsyncState state={state}>
-            {(binding) => (
-              <div className="im-stack">
-                {binding ? (
-                  <>
-                    <section className="im-section" aria-labelledby="bot-connection-heading">
-                      <div className="im-section-heading">
-                        <h3 id="bot-connection-heading">Bot connection</h3>
-                        <p>{agent.displayName} receives messages through this dedicated identity.</p>
-                      </div>
-                      <div className="binding-status">
-                        <StatusIndicator
-                          detail={
-                            <>
-                              <span>{titleCase(binding.provider)} · </span>
-                              <span>{imBindingStateLabel(binding)}</span>
-                            </>
-                          }
-                          label={binding.bot.displayName}
-                          tone={imBindingTone(binding)}
-                        />
-                        <small>
-                          {binding.lastConfirmedAt
-                            ? `Confirmed ${formatDate(binding.lastConfirmedAt)}`
-                            : "Unable to confirm"}
-                        </small>
-                      </div>
-                      {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
-                      binding.provider === "feishu" &&
-                      agent.viewerCapabilities.canManage ? (
-                        <div className="im-actions">
-                          <Button onClick={() => void connect("reauthorize")}>Reauthorize Feishu</Button>
+      {(feishuSetup) => (
+        <SlackSetup
+          agentId={agent.id}
+          onSuccess={() => {
+            setReload((value) => value + 1);
+            onAgentChanged();
+          }}
+        >
+          {(slackSetup) => {
+            const connectFeishu = async (intent: "create" | "reauthorize" | "replace" = "create") => {
+              setError(undefined);
+              if (await feishuSetup.start(intent)) setReauthorizationNeeded(false);
+            };
+            const connectSlack = async (intent: "create" | "reauthorize" | "replace" = "create") => {
+              setError(undefined);
+              if (await slackSetup.start(intent)) setReauthorizationNeeded(false);
+            };
+            return (
+              <AsyncState state={state}>
+                {(binding) => (
+                  <div className="im-stack">
+                    {binding ? (
+                      <>
+                        <section className="im-section" aria-labelledby="contact-channel-heading">
+                          <div className="im-section-heading">
+                            <h3 id="contact-channel-heading">Contact channel</h3>
+                            <p>Where teammates can reach this Agent and whether the connection is available.</p>
+                          </div>
+                          <div className="binding-status">
+                            <StatusIndicator
+                              detail={`${titleCase(binding.provider)} · ${messagingConnectionLabel(
+                                binding,
+                                agent.availability.dependencies.handoff.state,
+                              )}`}
+                              label={binding.bot.displayName}
+                              tone={messagingConnectionTone(binding, agent.availability.dependencies.handoff.state)}
+                            />
+                            <small>
+                              {binding.lastConfirmedAt
+                                ? `Confirmed ${formatDate(binding.lastConfirmedAt)}`
+                                : "Unable to confirm"}
+                            </small>
+                          </div>
+                          <dl className="messaging-contact-facts">
+                            <div>
+                              <dt>Contact</dt>
+                              <dd>@{agent.name}</dd>
+                            </div>
+                            <div>
+                              <dt>How to use</dt>
+                              <dd>{agentUseInstruction(agent, titleCase(binding.provider))}</dd>
+                            </div>
+                          </dl>
+                          {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                          binding.provider === "feishu" &&
+                          agent.viewerCapabilities.canManage ? (
+                            <div className="im-actions">
+                              <Button onClick={() => void connectFeishu("reauthorize")}>Reauthorize Feishu</Button>
+                            </div>
+                          ) : null}
+                          {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                          binding.provider === "slack" &&
+                          agent.viewerCapabilities.canManage ? (
+                            <div className="im-actions">
+                              <Button onClick={() => void connectSlack("reauthorize")}>Reauthorize Slack</Button>
+                            </div>
+                          ) : null}
+                          {binding.bindingState === "provisioning" &&
+                          binding.provider === "slack" &&
+                          agent.viewerCapabilities.canManage ? (
+                            <SlackProvisioningActions onResume={() => void connectSlack("create")} />
+                          ) : null}
+                          {agent.viewerCapabilities.canManage ? (
+                            <div className="im-actions messaging-connection-actions">
+                              {binding.provider === "feishu" ? (
+                                <Button size="compact" variant="outline" onClick={() => void connectFeishu("replace")}>
+                                  Replace Feishu Bot
+                                </Button>
+                              ) : null}
+                              {binding.provider === "slack" && binding.bindingState !== "provisioning" ? (
+                                <Button size="compact" variant="outline" onClick={() => void connectSlack("replace")}>
+                                  Replace Slack App
+                                </Button>
+                              ) : null}
+                              <Button
+                                size="compact"
+                                variant="danger"
+                                onClick={() => {
+                                  if (
+                                    !window.confirm(
+                                      "Disable this IM binding? New IM work will stop until another binding is connected.",
+                                    )
+                                  )
+                                    return;
+                                  void browserApi.disableImBinding(binding.id).then(
+                                    () => {
+                                      setReload((value) => value + 1);
+                                      onAgentChanged();
+                                    },
+                                    (cause: unknown) =>
+                                      setError(cause instanceof Error ? cause.message : "Unable to disable IM binding"),
+                                  );
+                                }}
+                              >
+                                Disable IM binding
+                              </Button>
+                            </div>
+                          ) : (
+                            <p className="muted">Workspace admins manage this contact channel.</p>
+                          )}
+                        </section>
+                        <section className="im-section" aria-labelledby="trigger-rules-heading">
+                          <div className="im-section-heading">
+                            <h3 id="trigger-rules-heading">Trigger rules</h3>
+                            <p>Which incoming messages can start Agent work.</p>
+                          </div>
+                          <SettingsList className="agent-message-rules">
+                            <SettingsRow description="A direct message can always start work." label="Direct messages">
+                              <strong>Always</strong>
+                            </SettingsRow>
+                            <SettingsRow
+                              description={
+                                binding.receiveMode === "mention_only"
+                                  ? `Teammates must mention @${agent.name}.`
+                                  : "Every new conversation message can start work."
+                              }
+                              label={`${titleCase(binding.provider)} conversations`}
+                            >
+                              {agent.viewerCapabilities.canManage ? (
+                                <fieldset aria-label="Conversation trigger rule" className="segmented-control">
+                                  {binding.receiveMode === "mention_only" ? (
+                                    <>
+                                      <span className="active">Mentions only</span>
+                                      <button type="button" onClick={() => void changeReceiveMode("all_message")}>
+                                        All messages
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
+                                        Mentions only
+                                      </button>
+                                      <span className="active">All messages</span>
+                                    </>
+                                  )}
+                                </fieldset>
+                              ) : (
+                                <strong>{receiveModeLabel(binding.receiveMode)}</strong>
+                              )}
+                            </SettingsRow>
+                          </SettingsList>
+                          {binding.pendingReceiveMode ? (
+                            <p className="muted">
+                              Scope upgrade pending: {receiveModeLabel(binding.pendingReceiveMode)} takes effect once{" "}
+                              {titleCase(binding.provider)} grants the additional permissions through reauthorization.
+                            </p>
+                          ) : null}
+                        </section>
+                      </>
+                    ) : (
+                      <section className="im-section" aria-labelledby="contact-channel-heading">
+                        <div className="im-section-heading">
+                          <h3 id="contact-channel-heading">Contact channel</h3>
+                          <p>Where teammates can reach this Agent.</p>
                         </div>
-                      ) : null}
-                      {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
-                      binding.provider === "slack" ? (
-                        <span className="notice">Slack reauthorization is not available in this release.</span>
-                      ) : null}
-                    </section>
-                    <section className="im-section" aria-labelledby="message-policy-heading">
-                      <div className="im-section-heading">
-                        <h3 id="message-policy-heading">Message policy</h3>
-                        <p>Choose which channel messages can start Agent work.</p>
-                      </div>
-                      <div className="message-policy">
-                        <div className="message-policy-copy">
-                          <strong>Receive mode</strong>
-                          <p>Mentions only is the safer default and reduces unnecessary context.</p>
-                        </div>
+                        <EmptyState title="No messaging channel">
+                          Teammates cannot contact this Agent until a supported bot is connected.
+                        </EmptyState>
                         {agent.viewerCapabilities.canManage ? (
-                          <div className="segmented-control">
-                            {binding.receiveMode === "mention_only" ? (
-                              <>
-                                <span className="active">Mentions only</span>
-                                <button type="button" onClick={() => void changeReceiveMode("all_message")}>
-                                  Enable all messages
-                                </button>
-                              </>
-                            ) : (
-                              <>
-                                <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
-                                  Use mentions only
-                                </button>
-                                <span className="active">All messages</span>
-                              </>
-                            )}
+                          <div className="im-actions">
+                            <Button onClick={() => void connectFeishu()}>Connect a Feishu Bot</Button>
+                            <Button variant="secondary" onClick={() => void connectSlack()}>
+                              Connect Slack App
+                            </Button>
                           </div>
                         ) : (
-                          <strong>{receiveModeLabel(binding.receiveMode)}</strong>
+                          <p className="muted">Workspace admins manage messaging setup.</p>
                         )}
-                      </div>
-                    </section>
-                    {agent.viewerCapabilities.canManage ? (
-                      <section className="im-section" aria-labelledby="connection-actions-heading">
-                        <div className="im-section-heading">
-                          <h3 id="connection-actions-heading">Connection actions</h3>
-                          <p>Changes here can temporarily stop new IM work.</p>
-                        </div>
-                        <div className="im-actions">
-                          {binding.provider === "feishu" ? (
-                            <Button variant="secondary" onClick={() => void connect("replace")}>
-                              Replace with existing or new Feishu Bot
-                            </Button>
-                          ) : null}
-                          <Button
-                            variant="danger"
-                            onClick={() => {
-                              if (
-                                !window.confirm(
-                                  "Disable this IM binding? New IM work will stop until another binding is connected.",
-                                )
-                              )
-                                return;
-                              void browserApi.disableImBinding(binding.id).then(
-                                () => {
-                                  setReload((value) => value + 1);
-                                  onAgentChanged();
-                                },
-                                (cause: unknown) =>
-                                  setError(cause instanceof Error ? cause.message : "Unable to disable IM binding"),
-                              );
-                            }}
-                          >
-                            Disable IM binding
-                          </Button>
-                        </div>
                       </section>
-                    ) : (
-                      <p className="muted">IM setup is managed by Admins.</p>
                     )}
-                  </>
-                ) : (
-                  <section className="im-section" aria-labelledby="bot-connection-heading">
-                    <div className="im-section-heading">
-                      <h3 id="bot-connection-heading">Bot connection</h3>
-                      <p>Connect a supported IM bot when the Agent is ready.</p>
-                    </div>
-                    <EmptyState title="No IM binding">
-                      This Agent does not have a Feishu or Slack identity yet.
-                    </EmptyState>
-                    {agent.viewerCapabilities.canManage ? (
-                      <div className="im-actions">
-                        <Button onClick={() => void connect()}>Connect existing or new Feishu Bot</Button>
+                    {feishuSetup.feedback}
+                    {slackSetup.feedback}
+                    {error ? (
+                      <div className="notice error" role="alert">
+                        {error}
                       </div>
-                    ) : (
-                      <p className="muted">IM setup is managed by Admins.</p>
-                    )}
-                  </section>
-                )}
-                {setup.feedback}
-                {error ? (
-                  <div className="notice error" role="alert">
-                    {error}
+                    ) : null}
                   </div>
-                ) : null}
-              </div>
-            )}
-          </AsyncState>
-        );
-      }}
+                )}
+              </AsyncState>
+            );
+          }}
+        </SlackSetup>
+      )}
     </FeishuSetup>
+  );
+}
+
+/**
+ * A provisioning Slack binding may represent an active or terminal setup attempt. Only an explicit
+ * Admin action may reuse the active attempt or create a successor after cancellation.
+ */
+function SlackProvisioningActions({ onResume }: { onResume: () => void }) {
+  return (
+    <div className="im-actions">
+      <Button onClick={onResume}>Resume Slack setup</Button>
+    </div>
   );
 }
 
@@ -1885,79 +2288,26 @@ function imBindingTone(binding: ImBindingSummary): StatusTone {
   return tones[binding.bindingState];
 }
 
-function AccessTab({ agent }: { agent: AgentDetailView }) {
-  return (
-    <DefinitionList
-      rows={[
-        ["Safe read", "All active members"],
-        ["Use", "All active members (fixed v0.1 policy)"],
-        ["Manage", agent.viewerCapabilities.canManage ? "Admins (you can manage)" : "Admins"],
-      ]}
-    />
-  );
+function messagingConnectionLabel(
+  binding: ImBindingSummary,
+  handoffState: AgentAvailability["dependencies"]["handoff"]["state"],
+): string {
+  if (binding.bindingState !== "active") return imBindingStateLabel(binding);
+  if (handoffState === "ready") return "Available";
+  if (handoffState === "setting_up") return "Setting up";
+  if (handoffState === "unconfirmed") return "Unable to confirm";
+  return "Needs attention";
 }
 
-function MembersPage() {
-  const { me, membership, refreshMe } = useTeam();
-  return (
-    <Page title="Members" description="Manage members, invitations, and roles.">
-      <MembersSettings
-        canManage={membership.role === "admin"}
-        currentUserId={me.user.id}
-        refreshMe={refreshMe}
-        teamId={membership.teamId}
-      />
-    </Page>
-  );
-}
-
-function TasksPage() {
-  return (
-    <Page title="Tasks" description="Track work assigned to Agents.">
-      <CapabilityUnavailable
-        details={[
-          "The current server does not expose a Tasks API.",
-          "No sample, inferred, or locally generated Task records are shown.",
-        ]}
-        status="Coming later"
-        title="Tasks are not available yet"
-      >
-        Tasks will appear here after OpenTag can load authoritative Task records from the server.
-      </CapabilityUnavailable>
-    </Page>
-  );
-}
-
-function CapabilityUnavailable({
-  action,
-  children,
-  details,
-  status = "Not enabled",
-  title,
-}: {
-  action?: { label: string; to: string };
-  children: ReactNode;
-  details: readonly string[];
-  status?: string;
-  title: string;
-}) {
-  return (
-    <section className="settings-unavailable">
-      <span className="settings-state-label">{status}</span>
-      <h2>{title}</h2>
-      <p>{children}</p>
-      <ul>
-        {details.map((detail) => (
-          <li key={detail}>{detail}</li>
-        ))}
-      </ul>
-      {action ? (
-        <Link className="settings-state-action" to={action.to}>
-          {action.label} <Icon name="arrow-right" />
-        </Link>
-      ) : null}
-    </section>
-  );
+function messagingConnectionTone(
+  binding: ImBindingSummary,
+  handoffState: AgentAvailability["dependencies"]["handoff"]["state"],
+): StatusTone {
+  if (binding.bindingState !== "active") return imBindingTone(binding);
+  if (handoffState === "ready") return "success";
+  if (handoffState === "setting_up") return "info";
+  if (handoffState === "unconfirmed") return "neutral";
+  return "warning";
 }
 
 function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeResponse["user"] }) {
@@ -2226,6 +2576,12 @@ function MembersSettings({
 
   return (
     <section className="settings-list-section settings-members-section" id="members">
+      <header className="settings-subheader">
+        <div>
+          <h2>Members &amp; access</h2>
+          <p>Review members, manage roles, and invite people to this Workspace.</p>
+        </div>
+      </header>
       <AsyncState state={state}>
         {(value) => {
           const adminCount = value.members.filter((member: TeamMemberSummary) => member.role === "admin").length;
@@ -2491,10 +2847,6 @@ function titleCase(value: string) {
     .join(" ");
 }
 
-function providerLabel(provider: AgentSummary["runtimeProvider"]): string {
-  return provider === "claude-code" ? "Claude Code" : "Codex";
-}
-
 function platformLabel(platform: AgentSummary["computer"]["platform"]): string {
   if (platform === "darwin") return "macOS";
   if (platform === "win32") return "Windows";
@@ -2548,7 +2900,7 @@ function agentAvailabilitySummary(agent: AgentDetailView): string {
 function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to: string } | undefined {
   if (!agent.viewerCapabilities.canManage || agent.availability.state === "ready") return undefined;
   if (agent.availability.reason === "agent_suspended") {
-    return { label: "Manage", to: `/agents/${agent.id}/general#admin-controls` };
+    return { label: "Manage Agent", to: `/agents/${agent.id}/settings/manage` };
   }
   if (
     agent.availability.reason === "im_not_connected" ||
@@ -2556,11 +2908,31 @@ function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to:
     agent.availability.reason === "im_reauthorization_required" ||
     agent.availability.reason === "im_error"
   ) {
-    return { label: "Review messaging", to: `/agents/${agent.id}/im` };
+    return { label: "Review messaging", to: `/agents/${agent.id}/settings/messaging` };
   }
-  if (agent.availability.reason === "handoff_unavailable") return undefined;
+  if (agent.availability.reason === "handoff_unavailable") {
+    return { label: "Review messaging", to: `/agents/${agent.id}/settings/messaging` };
+  }
   if (agent.availability.state === "unconfirmed") return undefined;
-  return { label: "Review runtime", to: `/agents/${agent.id}/runtime` };
+  return { label: "Review Computer", to: `/agents/${agent.id}/settings/computer` };
+}
+
+function agentRecoveryMessage(agent: AgentDetailView): string {
+  const messages: Record<NonNullable<AgentAvailability["reason"]>, string> = {
+    agent_suspended: "This Agent is paused and cannot accept new requests.",
+    agent_unconfirmed: "OpenTag could not confirm this Agent's current status.",
+    computer_offline: "The assigned Computer is offline, so new requests cannot start.",
+    runtime_unavailable: "The assigned Computer is not ready to run this Agent.",
+    runtime_unconfirmed: "OpenTag could not confirm whether the assigned Computer is ready.",
+    im_not_connected: "Connect Feishu or Slack so teammates can send this Agent work.",
+    im_provisioning: "The messaging connection is still being set up.",
+    im_reauthorization_required: "The messaging connection needs permission to continue receiving requests.",
+    im_error: "The messaging connection needs attention before it can receive requests.",
+    handoff_unavailable: "Messages cannot currently be handed off to this Agent.",
+    computer_unconfirmed: "OpenTag could not confirm the assigned Computer's connection.",
+    handoff_unconfirmed: "OpenTag could not confirm whether messaging is available.",
+  };
+  return agent.availability.reason ? messages[agent.availability.reason] : agentAvailabilitySummary(agent);
 }
 
 function initials(value: string): string {
@@ -2572,18 +2944,17 @@ function initials(value: string): string {
     .join("");
 }
 
-function agentSectionDescription(section: (typeof agentSections)[number]["key"]): string {
-  const descriptions = {
-    general: "See how teammates use this Agent and who can access it.",
-    runtime: "Inspect the bound Computer, provider, model, instructions, and execution limits.",
-    im: "Manage the Agent's Feishu or Slack bot and message policy.",
-    access: "Understand who can use, inspect, and manage this Agent.",
-  } satisfies Record<(typeof agentSections)[number]["key"], string>;
-  return descriptions[section];
-}
-
 function formatDate(value: string) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+}
+
+function formatRelativeTime(value: string): string {
+  const elapsedSeconds = Math.max(0, Math.round((Date.now() - new Date(value).getTime()) / 1_000));
+  if (elapsedSeconds < 60) return "just now";
+  const elapsedMinutes = Math.floor(elapsedSeconds / 60);
+  if (elapsedMinutes < 60) return `${elapsedMinutes} ${elapsedMinutes === 1 ? "minute" : "minutes"} ago`;
+  const elapsedHours = Math.floor(elapsedMinutes / 60);
+  return `${elapsedHours} ${elapsedHours === 1 ? "hour" : "hours"} ago`;
 }
 
 function formatInviteExpiry(value: string) {

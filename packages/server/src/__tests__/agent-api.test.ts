@@ -3,6 +3,7 @@ import {
   agentConfigPath,
   agentReactivatePath,
   agentSuspendPath,
+  agentUsagePath,
   OPENTAG_PLATFORM_INSTRUCTIONS,
   RUNTIME_INSTRUCTIONS_MAX_BYTES,
   teamAgentsPath,
@@ -51,7 +52,35 @@ const agentSummary = {
   manager: { userId: managerUserId, displayName: "Admin" },
   computer: { id: safeComputerId, displayName: "Laptop", platform: "linux" as const },
 };
-const agentDetail = { ...agentSummary, viewerCapabilities: { canManage: true } };
+const agentListItem = {
+  ...agentSummary,
+  activity: { state: "idle" as const },
+  usage: { windowDays: 30 as const, tasks: 0, failed: 0, tokens: 0 },
+};
+const agentDetail = { ...agentSummary, activity: { state: "idle" as const }, viewerCapabilities: { canManage: true } };
+const agentUsage = {
+  windowDays: 30 as const,
+  startedAt: "2026-07-25T12:00:00.000Z",
+  endedAt: "2026-08-24T12:00:00.000Z",
+  tasks: 2,
+  measuredTasks: 1,
+  failed: 0,
+  inputTokens: 10,
+  cachedInputTokens: 2,
+  outputTokens: 4,
+  tokens: 14,
+  daily: [
+    {
+      date: "2026-08-24",
+      tasks: 2,
+      measuredTasks: 1,
+      inputTokens: 10,
+      cachedInputTokens: 2,
+      outputTokens: 4,
+      tokens: 14,
+    },
+  ],
+};
 
 const apps: ReturnType<typeof createApp>[] = [];
 
@@ -78,8 +107,9 @@ function authService(): UserAuthService {
 function agentService() {
   return {
     createForTeam: vi.fn().mockResolvedValue(agent),
-    listForTeam: vi.fn().mockResolvedValue({ agents: [agentSummary] }),
+    listForTeam: vi.fn().mockResolvedValue({ agents: [agentListItem] }),
     getById: vi.fn().mockResolvedValue(agentDetail),
+    getUsageById: vi.fn().mockResolvedValue(agentUsage),
     getConfigById: vi.fn().mockResolvedValue(agent),
     updateById: vi.fn().mockResolvedValue({ ...agent, displayName: "Reviewer", revision: 2 }),
     suspendById: vi.fn().mockResolvedValue({ ...agent, status: "suspended", revision: 2 }),
@@ -125,7 +155,7 @@ describe("Agent HTTP API", () => {
 
     const list = await app.inject({ method: "GET", url: teamAgentsPath(teamId), headers: authorization });
     expect(list.statusCode).toBe(200);
-    expect(list.json()).toEqual({ agents: [agentSummary] });
+    expect(list.json()).toEqual({ agents: [agentListItem] });
     expect(service.listForTeam).toHaveBeenCalledWith(userId, teamId);
   });
 
@@ -165,6 +195,18 @@ describe("Agent HTTP API", () => {
     expect(deleted.statusCode).toBe(204);
     expect(deleted.body).toBe("");
     expect(service.deleteById).toHaveBeenCalledWith(userId, agentId);
+  });
+
+  it("gets Agent usage through a strict supported period", async () => {
+    const { app, service } = appWith();
+    const response = await app.inject({ method: "GET", url: agentUsagePath(agentId, 30), headers: authorization });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(agentUsage);
+    expect(service.getUsageById).toHaveBeenCalledWith(userId, agentId, 30);
+
+    const invalid = await app.inject({ method: "GET", url: agentUsagePath(agentId, 14), headers: authorization });
+    expect(invalid.statusCode).toBe(400);
+    expect(service.getUsageById).toHaveBeenCalledTimes(1);
   });
 
   it("rejects missing credentials, invalid params, and immutable authority fields", async () => {

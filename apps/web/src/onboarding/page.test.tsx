@@ -1,6 +1,6 @@
 import type {
   AgentAdminConfig,
-  AgentSummary,
+  AgentListItem,
   Computer,
   CreateAgentRequest,
   ImBindingHandoffStatus,
@@ -9,7 +9,7 @@ import type {
   TeamMemberSummary,
   UserProfile,
 } from "@opentag/shared/browser";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentCreationFlow } from "../agent-creation/agent-creation-flow.js";
 import { browserApi } from "../api.js";
@@ -23,7 +23,13 @@ const computerBId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 
 const user: UserProfile = { id: userId, email: "ada@example.com", displayName: "Ada" };
-const admin: MeMembership = { teamId, teamName: "example", teamDisplayName: "Example", role: "admin" };
+const admin: MeMembership = {
+  teamId,
+  teamName: "example",
+  teamDisplayName: "Example",
+  role: "admin",
+  setupCompletedAt: null,
+};
 const member: MeMembership = { ...admin, role: "member" };
 const computerA: TeamComputerSummary = {
   id: computerAId,
@@ -42,7 +48,7 @@ const computerB: TeamComputerSummary = {
   id: computerBId,
   displayName: "Studio Mac",
 };
-const agent: AgentSummary = {
+const agent: AgentListItem = {
   id: agentId,
   teamId,
   name: "opentag",
@@ -52,6 +58,8 @@ const agent: AgentSummary = {
   runtimeProvider: "codex",
   receiveMode: "mention_only",
   status: "active",
+  activity: { state: "idle" },
+  usage: { windowDays: 30, tasks: 0, failed: 0, tokens: 0 },
   createdAt: "2026-08-20T00:00:00.000Z",
   updatedAt: "2026-08-20T00:00:00.000Z",
 };
@@ -101,7 +109,7 @@ function installFacts({
   handoff,
   members = [],
 }: {
-  agents?: AgentSummary[];
+  agents?: AgentListItem[];
   computers?: TeamComputerSummary[];
   handoff?: ImBindingHandoffStatus;
   members?: TeamMemberSummary[];
@@ -182,8 +190,10 @@ describe("OnboardingPage", () => {
         { computerId: computerBId, provider: "codex", runtimeReady: true },
       ]),
     });
-    expect(await screen.findByText("Codex · Ada's Mac")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Change" }));
+    const runtime = await screen.findByRole("region", { name: "Where it runs" });
+    expect(within(runtime).getByText("Ada's Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Codex")).toBeTruthy();
+    fireEvent.click(within(runtime).getByRole("button", { name: "Change Computer" }));
     expect(screen.getByRole("button", { name: /Ada's Mac/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /Studio Mac/ })).toBeTruthy();
     expect(vi.spyOn(browserApi, "createAgent")).not.toHaveBeenCalled();
@@ -198,16 +208,49 @@ describe("OnboardingPage", () => {
       ]),
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Change" }));
+    const runtime = await screen.findByRole("region", { name: "Where it runs" });
+    fireEvent.click(within(runtime).getByRole("button", { name: "Change Computer" }));
     fireEvent.click(screen.getByRole("button", { name: /Studio Mac/ }));
-    expect(await screen.findByText("Codex · Studio Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Studio Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Codex")).toBeTruthy();
   });
 
-  it("does not offer an unconfirmed Computer route before runtime facts arrive", async () => {
+  it("shows unavailable Runtime states after selecting a Computer without a ready route", async () => {
+    installFacts({ computers: [computerA, computerB] });
+    renderPage({
+      runtime: runtimeFacts([
+        { computerId: computerAId, provider: "codex", runtimeReady: true, status: "ready" },
+        { computerId: computerBId, provider: "claude-code", runtimeReady: false, status: "sign-in" },
+      ]),
+    });
+
+    const runtime = await screen.findByRole("region", { name: "Where it runs" });
+    expect(within(runtime).getByText("Ada's Mac")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toHaveProperty("disabled", false);
+
+    fireEvent.click(within(runtime).getByRole("button", { name: "Change Computer" }));
+    const unavailableComputer = within(runtime).getByRole("button", { name: /Studio Mac/ });
+    expect(unavailableComputer).toHaveProperty("disabled", false);
+    fireEvent.click(unavailableComputer);
+
+    expect(within(runtime).getByText("Studio Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Claude Code")).toBeTruthy();
+    expect(within(runtime).getByText("Sign-in required")).toBeTruthy();
+    expect(within(runtime).getByText("Finish sign-in on Studio Mac.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create Agent" })).toHaveProperty("disabled", true);
+  });
+
+  it("allows inspecting an unconfirmed Computer before runtime facts arrive", async () => {
     installFacts({ computers: [computerA, computerB] });
     renderPage();
-    expect(await screen.findByText("Readiness unconfirmed")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
+    const runtime = await screen.findByRole("region", { name: "Where it runs" });
+    expect(within(runtime).getByText("Readiness unconfirmed")).toBeTruthy();
+    fireEvent.click(within(runtime).getByRole("button", { name: "Change Computer" }));
+    const studioMac = within(runtime).getByRole("button", { name: /Studio Mac/ });
+    expect(studioMac).toHaveProperty("disabled", false);
+    fireEvent.click(studioMac);
+    expect(within(runtime).getByText("Studio Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Readiness unconfirmed")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Create Agent" })).toHaveProperty("disabled", true);
   });
 
@@ -248,6 +291,24 @@ describe("OnboardingPage", () => {
     expect(await screen.findByRole("heading", { name: "OpenTag is ready" })).toBeTruthy();
   });
 
+  it("asks the Server to complete setup as soon as the verified handoff is ready", async () => {
+    const onSetupReady = vi.fn().mockResolvedValue(undefined);
+    installFacts({
+      agents: [agent],
+      computers: [
+        {
+          ...computerA,
+          providerReadiness: [{ provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" }],
+        },
+      ],
+      handoff: { bindingState: "active", handoffReady: true },
+    });
+    render(<OnboardingPage membership={admin} onSetupReady={onSetupReady} user={user} />);
+
+    await waitFor(() => expect(onSetupReady).toHaveBeenCalledWith(agentId));
+    expect(screen.getByRole("heading", { name: "Finishing Team setup" })).toBeTruthy();
+  });
+
   it("hands a completed setup over to the Agent it created", async () => {
     installFacts({
       agents: [agent],
@@ -263,7 +324,7 @@ describe("OnboardingPage", () => {
     expect(await screen.findByRole("heading", { name: "OpenTag is ready" })).toBeTruthy();
 
     const manage = screen.getByRole("link", { name: "Manage this Agent" }) as HTMLAnchorElement;
-    expect(new URL(manage.href).pathname).toBe(`/agents/${agentId}/general`);
+    expect(new URL(manage.href).pathname).toBe(`/agents/${agentId}`);
     expect(screen.getByRole("link", { name: "Open Feishu" })).toBeTruthy();
   });
 
@@ -579,11 +640,12 @@ describe("OnboardingPage", () => {
       ]),
     });
 
-    expect(await screen.findByText("Codex · Ada's Mac")).toBeTruthy();
+    const runtime = await screen.findByRole("region", { name: "Where it runs" });
+    expect(within(runtime).getByText("Codex")).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Change" }));
-    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
-    expect(await screen.findByText("Claude Code · Ada's Mac")).toBeTruthy();
+    fireEvent.click(within(runtime).getByRole("button", { name: "Change Runtime" }));
+    fireEvent.click(within(runtime).getByRole("button", { name: /Claude Code/ }));
+    expect(within(runtime).getByText("Claude Code")).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
@@ -608,10 +670,11 @@ describe("OnboardingPage", () => {
     const runtime: RuntimeFactsAdapter = { load: vi.fn().mockResolvedValue(available) };
     renderPage({ runtime });
 
-    await screen.findByText("Codex · Ada's Mac");
-    fireEvent.click(screen.getByRole("button", { name: "Change" }));
-    fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
-    expect(await screen.findByText("Claude Code · Ada's Mac")).toBeTruthy();
+    const runtimeRegion = await screen.findByRole("region", { name: "Where it runs" });
+    expect(within(runtimeRegion).getByText("Codex")).toBeTruthy();
+    fireEvent.click(within(runtimeRegion).getByRole("button", { name: "Change Runtime" }));
+    fireEvent.click(within(runtimeRegion).getByRole("button", { name: /Claude Code/ }));
+    expect(within(runtimeRegion).getByText("Claude Code")).toBeTruthy();
     expect(runtime.load).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
     await waitFor(() =>
@@ -623,7 +686,7 @@ describe("OnboardingPage", () => {
   });
 
   it("replays a lost create response with the same creationIntentId", async () => {
-    let serverAgents: AgentSummary[] = [];
+    let serverAgents: AgentListItem[] = [];
     const agentReads = vi.spyOn(browserApi, "agents").mockImplementation(async () => ({ agents: serverAgents }));
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computerA] });
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
@@ -646,7 +709,7 @@ describe("OnboardingPage", () => {
   });
 
   it("recovers the durable create intent after the page remounts", async () => {
-    let serverAgents: AgentSummary[] = [];
+    let serverAgents: AgentListItem[] = [];
     vi.spyOn(browserApi, "agents").mockImplementation(async () => ({ agents: serverAgents }));
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computerA] });
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
@@ -673,7 +736,7 @@ describe("OnboardingPage", () => {
   });
 
   it("uses one logical create across parallel page controllers", async () => {
-    let serverAgents: AgentSummary[] = [];
+    let serverAgents: AgentListItem[] = [];
     vi.spyOn(browserApi, "agents").mockImplementation(async () => ({ agents: serverAgents }));
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computerA] });
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
@@ -859,16 +922,18 @@ describe("OnboardingPage", () => {
         { computerId: computerBId, provider: "codex", runtimeReady: true },
       ]),
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Change" }));
+    const runtime = await screen.findByRole("region", { name: "Where it runs" });
+    fireEvent.click(within(runtime).getByRole("button", { name: "Change Computer" }));
     fireEvent.click(screen.getByRole("button", { name: /Studio Mac/ }));
 
-    expect(await screen.findByText("Codex · Studio Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Studio Mac")).toBeTruthy();
+    expect(within(runtime).getByText("Codex")).toBeTruthy();
   });
 
-  it("keeps an explicit Agent choice in memory when localStorage throws", async () => {
+  it("publishes an explicit Agent choice for the route URL anchor", async () => {
     const storageTeamId = "b3fda800-7ce2-4338-aae8-3d2120401ed6";
     const storageAdmin = { ...admin, teamId: storageTeamId };
-    const researchAgent: AgentSummary = {
+    const researchAgent: AgentListItem = {
       ...agent,
       id: "2a63a21e-f6c7-4474-91ea-4dabf0566a24",
       teamId: storageTeamId,
@@ -876,23 +941,25 @@ describe("OnboardingPage", () => {
       displayName: "Research Agent",
     };
     const handoff = vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
-    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-      throw new Error("Storage unavailable");
-    });
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new Error("Storage unavailable");
-    });
+    const onTargetAgentChange = vi.fn();
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computerA] });
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [{ ...agent, teamId: storageTeamId }, researchAgent] });
     vi.spyOn(browserApi, "logout").mockResolvedValue();
 
-    renderPage({
-      membership: storageAdmin,
-      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true, status: "ready" }]),
-    });
+    render(
+      <OnboardingPage
+        membership={storageAdmin}
+        onTargetAgentChange={onTargetAgentChange}
+        runtimeFacts={runtimeFacts([
+          { computerId: computerAId, provider: "codex", runtimeReady: true, status: "ready" },
+        ])}
+        user={user}
+      />,
+    );
     fireEvent.click(await screen.findByRole("button", { name: /Research Agent/ }));
 
     expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
     expect(handoff).toHaveBeenLastCalledWith(researchAgent.id);
+    expect(onTargetAgentChange).toHaveBeenCalledWith(researchAgent.id);
   });
 });

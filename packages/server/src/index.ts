@@ -36,10 +36,10 @@ import {
   FeishuSetupService,
 } from "./services/im-bindings/feishu/index.js";
 import { createImProviderAdapterResolver, ImBindingService } from "./services/im-bindings/index.js";
-import { DefaultSlackApiClient, SlackAdapter } from "./services/im-bindings/slack/index.js";
+import { DefaultSlackApiClient, SlackAdapter, SlackSetupService } from "./services/im-bindings/slack/index.js";
 import { InvitationService } from "./services/invitations/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
-import { TeamMembershipService } from "./services/teams/index.js";
+import { TeamMembershipService, TeamSetupService } from "./services/teams/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
 
 export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
@@ -141,6 +141,7 @@ export async function startServer(): Promise<void> {
         );
       },
     });
+    const teamSetupService = new TeamSetupService(database, teamService, imBindingService);
     const imMessageInbox = new ImMessageInbox(database);
     const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
       onImCredentialGrant: (request, context) =>
@@ -174,6 +175,14 @@ export async function startServer(): Promise<void> {
       onDiagnostic: reportDiagnostic,
     });
     const slackApi = new DefaultSlackApiClient();
+    const slackSetupService = new SlackSetupService({
+      api: slackApi,
+      cipher: applicationCipher,
+      database,
+      imBindings: imBindingService,
+      instanceId,
+      publicOrigin: config.publicUrl,
+    });
     const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
     const imResourceService = new ImResourceService(database, resolveImAdapter);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
@@ -218,12 +227,14 @@ export async function startServer(): Promise<void> {
       invitationService,
       imBindingService,
       feishuSetupService,
+      slackSetupService,
       imResourceService,
       readiness,
       runtime: { registry, domainOwner },
       slackEvents: {
         imBindings: imBindingService,
         inbox: imMessageInbox,
+        setup: slackSetupService,
         createAdapter: (binding) =>
           new SlackAdapter({
             api: slackApi,
@@ -235,6 +246,7 @@ export async function startServer(): Promise<void> {
           }),
       },
       teamService,
+      teamSetupService,
     });
     feishuSetupService.start();
     feishuConnections.start();

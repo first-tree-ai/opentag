@@ -1,19 +1,26 @@
 import { createHash } from "node:crypto";
 import {
+  AGENT_USAGE_WINDOW_DAYS,
   type AgentAdminConfig,
   type AgentDetail,
+  type AgentListActivity,
+  type AgentListItem,
   type AgentRuntimeConfig,
   AgentRuntimeConfigSchema,
+  type AgentRuntimeProvider,
   type AgentSummary,
+  type AgentUsageDetail,
+  type AgentUsageWindowDays,
   type CreateAgentRequest,
   CreateAgentRequestSchema,
   type CreateAgentRuntimeConfig,
   hasRequiredFeishuTenantScopes,
   type ListAgentsResponse,
+  runtimeUsageTotalTokens,
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
-import { and, asc, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -21,6 +28,7 @@ import {
   agents,
   computers,
   imBindings,
+  imMessageDeliveries,
   memberships,
   sessionPlacements,
   sessions,
@@ -56,6 +64,38 @@ interface AgentSafeRow {
   status: AgentRow["status"];
   createdAt: Date;
   updatedAt: Date;
+}
+
+interface AgentActivityEvidence {
+  acceptedAt: Date | null;
+  agentId: string;
+  bindingStatus: string;
+  reportedAt: Date | null;
+  sessionEndedAt: Date | null;
+  state: string;
+}
+
+function projectActivityByAgent(rows: readonly AgentActivityEvidence[]): Map<string, AgentListActivity> {
+  const workingStartedAt = new Map<string, Date>();
+  for (const row of rows) {
+    if (
+      row.state !== "accepted" ||
+      row.reportedAt !== null ||
+      !row.acceptedAt ||
+      row.bindingStatus !== "active" ||
+      row.sessionEndedAt !== null
+    ) {
+      continue;
+    }
+    const current = workingStartedAt.get(row.agentId);
+    if (!current || row.acceptedAt > current) workingStartedAt.set(row.agentId, row.acceptedAt);
+  }
+  return new Map(
+    [...workingStartedAt].map(([agentId, startedAt]) => [
+      agentId,
+      { state: "working", startedAt: startedAt.toISOString() },
+    ]),
+  );
 }
 
 export interface AgentSessionStopTarget {
@@ -113,6 +153,57 @@ function toAgentSummary(row: AgentSafeRow): AgentSummary {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+interface UsageTokenCounts {
+  cachedInputTokens: number;
+  inputTokens: number;
+  measured: boolean;
+  outputTokens: number;
+  tokens: number;
+}
+
+function deliveryUsageTokenCounts(
+  provider: AgentRuntimeProvider,
+  inputTokens: string | null,
+  cachedInputTokens: string | null,
+  outputTokens: string | null,
+): UsageTokenCounts {
+  const parse = (value: string | null): number | undefined => {
+    if (value === null) return undefined;
+    const result = Number(value);
+    if (!Number.isSafeInteger(result) || result < 0) {
+      throw new Error("Agent usage contains an invalid token count");
+    }
+    return result;
+  };
+  const usage = {
+    inputTokens: parse(inputTokens),
+    cachedInputTokens: parse(cachedInputTokens),
+    outputTokens: parse(outputTokens),
+  };
+  const normalizedInputTokens =
+    (usage.inputTokens ?? 0) + (provider === "claude-code" ? (usage.cachedInputTokens ?? 0) : 0);
+  return {
+    inputTokens: normalizedInputTokens,
+    cachedInputTokens: usage.cachedInputTokens ?? 0,
+    outputTokens: usage.outputTokens ?? 0,
+    tokens: runtimeUsageTotalTokens(provider, usage),
+    measured: Object.values(usage).some((value) => value !== undefined),
+  };
+}
+
+function addUsageTokenCounts(
+  target: Pick<AgentUsageDetail, "cachedInputTokens" | "inputTokens" | "outputTokens" | "tokens">,
+  value: UsageTokenCounts,
+): void {
+  target.inputTokens += value.inputTokens;
+  target.cachedInputTokens += value.cachedInputTokens;
+  target.outputTokens += value.outputTokens;
+  target.tokens += value.tokens;
+  if (![target.inputTokens, target.cachedInputTokens, target.outputTokens, target.tokens].every(Number.isSafeInteger)) {
+    throw new Error("Agent usage token total exceeds the safe integer range");
+  }
 }
 
 function runtimeConfigsEqual(
@@ -333,13 +424,75 @@ export class AgentService {
       )
       .orderBy(asc(agents.name), asc(agents.id));
     if (rows.length === 0) throw resourceNotFound();
+    const summaries = rows.flatMap((row) => {
+      if (!row.id) return [];
+      if (!row.managerDisplayName || !row.computerId || !row.computerDisplayName || !row.computerPlatform) {
+        throw new Error("Active Agent is missing its manager or Computer");
+      }
+      return [toAgentSummary(row as AgentSafeRow)];
+    });
+    if (summaries.length === 0) return { agents: [] };
+
+    const now = this.#now();
+    const usageStartedAt = new Date(now.getTime() - AGENT_USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1_000);
+    const activityRows = await this.#database
+      .select({
+        acceptedAt: imMessageDeliveries.acceptedAt,
+        agentId: imBindings.agentId,
+        cachedInputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}'`,
+        inputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}'`,
+        outcome: sql<string | null>`${imMessageDeliveries.turnReport} ->> 'outcome'`,
+        outputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,outputTokens}'`,
+        reportedAt: imMessageDeliveries.reportedAt,
+        bindingStatus: imBindings.status,
+        sessionEndedAt: sessions.endedAt,
+        state: imMessageDeliveries.state,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          inArray(
+            imBindings.agentId,
+            summaries.map((agent) => agent.id),
+          ),
+          or(
+            and(eq(imMessageDeliveries.state, "accepted"), isNull(imMessageDeliveries.reportedAt)),
+            gte(imMessageDeliveries.acceptedAt, usageStartedAt),
+          ),
+        ),
+      );
+
+    const usageByAgent = new Map<string, { failed: number; tasks: number; tokens: number }>();
+    const activityByAgent = projectActivityByAgent(activityRows);
+    const runtimeProviderByAgent = new Map(summaries.map((agent) => [agent.id, agent.runtimeProvider]));
+    for (const row of activityRows) {
+      if (!row.acceptedAt || row.acceptedAt < usageStartedAt) continue;
+      const usage = usageByAgent.get(row.agentId) ?? { failed: 0, tasks: 0, tokens: 0 };
+      usage.tasks += 1;
+      if (row.outcome === "failed") usage.failed += 1;
+      const runtimeProvider = runtimeProviderByAgent.get(row.agentId);
+      if (!runtimeProvider) throw new Error("Agent usage is missing its runtime Provider");
+      usage.tokens += deliveryUsageTokenCounts(
+        runtimeProvider,
+        row.inputTokens,
+        row.cachedInputTokens,
+        row.outputTokens,
+      ).tokens;
+      if (!Number.isSafeInteger(usage.tokens))
+        throw new Error("Agent usage token total exceeds the safe integer range");
+      usageByAgent.set(row.agentId, usage);
+    }
+
     return {
-      agents: rows.flatMap((row) => {
-        if (!row.id) return [];
-        if (!row.managerDisplayName || !row.computerId || !row.computerDisplayName || !row.computerPlatform) {
-          throw new Error("Active Agent is missing its manager or Computer");
-        }
-        return [toAgentSummary(row as AgentSafeRow)];
+      agents: summaries.map((agent): AgentListItem => {
+        const usage = usageByAgent.get(agent.id) ?? { failed: 0, tasks: 0, tokens: 0 };
+        return {
+          ...agent,
+          activity: activityByAgent.get(agent.id) ?? { state: "idle" },
+          usage: { windowDays: AGENT_USAGE_WINDOW_DAYS, ...usage },
+        };
       }),
     };
   }
@@ -370,7 +523,115 @@ export class AgentService {
       .limit(1);
     if (!row) throw resourceNotFound();
     const role = await this.#requireTeamMembership(this.#database, callerUserId, row.teamId);
-    return { ...toAgentSummary(row), viewerCapabilities: { canManage: role === "admin" } };
+    const activityRows = await this.#database
+      .select({
+        acceptedAt: imMessageDeliveries.acceptedAt,
+        agentId: imBindings.agentId,
+        reportedAt: imMessageDeliveries.reportedAt,
+        bindingStatus: imBindings.status,
+        sessionEndedAt: sessions.endedAt,
+        state: imMessageDeliveries.state,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          eq(imBindings.agentId, agentId),
+          eq(imMessageDeliveries.state, "accepted"),
+          isNull(imMessageDeliveries.reportedAt),
+        ),
+      );
+    return {
+      ...toAgentSummary(row),
+      activity: projectActivityByAgent(activityRows).get(agentId) ?? { state: "idle" },
+      viewerCapabilities: { canManage: role === "admin" },
+    };
+  }
+
+  async getUsageById(
+    callerUserId: string,
+    agentId: string,
+    windowDays: AgentUsageWindowDays,
+  ): Promise<AgentUsageDetail> {
+    const { agent } = await this.#resolveAgentScope(this.#database, callerUserId, agentId);
+    const usageEndedAt = this.#now();
+    const usageStartedAt = new Date(usageEndedAt.getTime() - windowDays * 24 * 60 * 60 * 1_000);
+    const rows = await this.#database
+      .select({
+        acceptedAt: imMessageDeliveries.acceptedAt,
+        cachedInputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}'`,
+        inputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}'`,
+        outcome: sql<string | null>`${imMessageDeliveries.turnReport} ->> 'outcome'`,
+        outputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,outputTokens}'`,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          eq(imBindings.agentId, agentId),
+          gte(imMessageDeliveries.acceptedAt, usageStartedAt),
+          lte(imMessageDeliveries.acceptedAt, usageEndedAt),
+        ),
+      )
+      .orderBy(asc(imMessageDeliveries.acceptedAt), asc(imMessageDeliveries.id));
+
+    const result: AgentUsageDetail = {
+      windowDays,
+      startedAt: usageStartedAt.toISOString(),
+      endedAt: usageEndedAt.toISOString(),
+      tasks: 0,
+      measuredTasks: 0,
+      failed: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      tokens: 0,
+      daily: [],
+    };
+    const daily = new Map<string, AgentUsageDetail["daily"][number]>();
+    const firstDate = Date.UTC(
+      usageStartedAt.getUTCFullYear(),
+      usageStartedAt.getUTCMonth(),
+      usageStartedAt.getUTCDate(),
+    );
+    const lastDate = Date.UTC(usageEndedAt.getUTCFullYear(), usageEndedAt.getUTCMonth(), usageEndedAt.getUTCDate());
+    for (let timestamp = firstDate; timestamp <= lastDate; timestamp += 24 * 60 * 60 * 1_000) {
+      const date = new Date(timestamp).toISOString().slice(0, 10);
+      daily.set(date, {
+        date,
+        tasks: 0,
+        measuredTasks: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        tokens: 0,
+      });
+    }
+    for (const row of rows) {
+      if (!row.acceptedAt) continue;
+      result.tasks += 1;
+      if (row.outcome === "failed") result.failed += 1;
+      const tokenCounts = deliveryUsageTokenCounts(
+        agent.runtimeProvider,
+        row.inputTokens,
+        row.cachedInputTokens,
+        row.outputTokens,
+      );
+      if (tokenCounts.measured) result.measuredTasks += 1;
+      addUsageTokenCounts(result, tokenCounts);
+
+      const date = row.acceptedAt.toISOString().slice(0, 10);
+      const point = daily.get(date);
+      if (!point) throw new Error("Agent usage date falls outside the requested window");
+      point.tasks += 1;
+      if (tokenCounts.measured) point.measuredTasks += 1;
+      addUsageTokenCounts(point, tokenCounts);
+      daily.set(date, point);
+    }
+    result.daily = [...daily.values()];
+    return result;
   }
 
   async getConfigById(callerUserId: string, agentId: string): Promise<AgentAdminConfig> {
@@ -381,7 +642,7 @@ export class AgentService {
 
   async updateById(callerUserId: string, agentId: string, rawInput: UpdateAgentRequest): Promise<AgentAdminConfig> {
     const input = UpdateAgentRequestSchema.parse(rawInput);
-    return this.#database.transaction(async (transaction) => {
+    const result = await this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
       if (scope.agent.revision !== input.expectedRevision) {
@@ -392,27 +653,77 @@ export class AgentService {
           409,
         );
       }
-      if (input.receiveMode === "all_message") {
+      const now = this.#now();
+      if (input.receiveMode !== undefined) {
         const [imBinding] = await transaction
-          .select({ provider: imBindings.provider, capabilities: imBindings.grantedCapabilities })
+          .select({
+            id: imBindings.id,
+            provider: imBindings.provider,
+            status: imBindings.status,
+            lastErrorCode: imBindings.lastErrorCode,
+            setupState: imBindings.setupState,
+            pendingReceiveMode: imBindings.pendingReceiveMode,
+            credentialGeneration: imBindings.credentialGeneration,
+            capabilities: imBindings.grantedCapabilities,
+          })
           .from(imBindings)
           .where(and(eq(imBindings.agentId, agentId), isNull(imBindings.disabledAt)))
-          .limit(1);
-        const missingRequiredCapabilities =
+          .limit(1)
+          .for("update");
+        if (
+          input.receiveMode !== scope.agent.receiveMode &&
+          input.receiveMode === "all_message" &&
           imBinding?.provider === "feishu"
-            ? !hasRequiredFeishuTenantScopes(imBinding.capabilities)
-            : imBinding?.provider === "slack"
-              ? ["channels:history", "groups:history", "mpim:history"].some(
-                  (capability) => !imBinding.capabilities.includes(capability),
-                )
-              : false;
-        if (imBinding && missingRequiredCapabilities) {
-          throw new AgentServiceError(
-            "IM_BINDING_SCOPE_REAUTH_REQUIRED",
-            "deterministic",
-            "The IM binding must be reauthorized before enabling all-message receive mode",
-            409,
+        ) {
+          const missingRequiredCapabilities = !hasRequiredFeishuTenantScopes(imBinding.capabilities);
+          if (missingRequiredCapabilities) {
+            throw new AgentServiceError(
+              "IM_BINDING_SCOPE_REAUTH_REQUIRED",
+              "deterministic",
+              "The IM binding must be reauthorized before enabling all-message receive mode",
+              409,
+            );
+          }
+        }
+        if (imBinding?.provider === "slack") {
+          const missingHistoryCapabilities = ["channels:history", "groups:history", "mpim:history"].some(
+            (capability) => !imBinding.capabilities.includes(capability),
           );
+          const scopeUpgradeRequired =
+            input.receiveMode !== scope.agent.receiveMode &&
+            input.receiveMode === "all_message" &&
+            missingHistoryCapabilities &&
+            imBinding.credentialGeneration >= 1;
+          // Compare against the effective target so a no-op receive-mode save never cancels setup.
+          const targetChanged = (imBinding.pendingReceiveMode ?? scope.agent.receiveMode) !== input.receiveMode;
+          const cancelActiveSetup =
+            targetChanged && (imBinding.setupState === "awaiting_user" || imBinding.setupState === "validating");
+          await transaction
+            .update(imBindings)
+            .set({
+              pendingReceiveMode: scopeUpgradeRequired ? input.receiveMode : null,
+              lastErrorCode: scopeUpgradeRequired
+                ? imBinding.status === "active"
+                  ? "IM_BINDING_SCOPE_REAUTH_REQUIRED"
+                  : imBinding.lastErrorCode
+                : cancelActiveSetup
+                  ? "SLACK_SETUP_CANCELED"
+                  : imBinding.lastErrorCode === "IM_BINDING_SCOPE_REAUTH_REQUIRED"
+                    ? null
+                    : imBinding.lastErrorCode,
+              ...(cancelActiveSetup
+                ? {
+                    setupState: "canceled" as const,
+                    setupOwnerInstanceId: null,
+                    setupOwnerHeartbeatAt: null,
+                    encryptedSetupContext: null,
+                    setupExpiresAt: null,
+                  }
+                : {}),
+              updatedAt: now,
+            })
+            .where(eq(imBindings.id, imBinding.id));
+          if (scopeUpgradeRequired) return { scopeReauthorizationRequired: true as const };
         }
       }
       const currentRuntimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
@@ -430,7 +741,6 @@ export class AgentService {
             : currentRuntimeProjection.maxDurationMs,
       });
       const runtimeConfigChanged = !runtimeConfigsEqual(currentRuntimeConfig, nextRuntimeConfig);
-      const now = this.#now();
       const [updated] = await transaction
         .update(agents)
         .set({
@@ -452,7 +762,7 @@ export class AgentService {
           if (!updatedRuntimeConfig) throw new Error("Agent runtime config update did not return a row");
           runtimeConfig = updatedRuntimeConfig;
         }
-        return toAgentAdminConfig(updated, runtimeConfig);
+        return { config: toAgentAdminConfig(updated, runtimeConfig) };
       }
 
       const current = await this.#resolveAgentScope(transaction, callerUserId, agentId);
@@ -464,6 +774,15 @@ export class AgentService {
         409,
       );
     });
+    if ("scopeReauthorizationRequired" in result) {
+      throw new AgentServiceError(
+        "IM_BINDING_SCOPE_REAUTH_REQUIRED",
+        "deterministic",
+        "The IM binding must be reauthorized before enabling all-message receive mode",
+        409,
+      );
+    }
+    return result.config;
   }
 
   async suspendById(callerUserId: string, agentId: string): Promise<AgentAdminConfig> {

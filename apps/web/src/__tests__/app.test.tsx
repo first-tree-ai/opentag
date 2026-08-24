@@ -1,3 +1,4 @@
+import type { AgentUsageDetail } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -26,6 +27,11 @@ const agentSummary = {
   createdAt: "2026-08-20T00:00:00.000Z",
   updatedAt: "2026-08-20T00:00:00.000Z",
 };
+const agentListItem = {
+  ...agentSummary,
+  activity: { state: "idle" as const },
+  usage: { windowDays: 30 as const, tasks: 32, failed: 0, tokens: 428_000 },
+};
 
 function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } });
@@ -36,7 +42,9 @@ function installApi(
   options: {
     agentRead?: () => Promise<void> | void;
     agentReadStatus?: () => number | undefined;
+    agentUsage?: Omit<AgentUsageDetail, "endedAt" | "startedAt" | "windowDays">;
     agentListStatus?: () => number | undefined;
+    agentActivity?: { state: "idle" } | { state: "working"; startedAt: string };
     emptyAgents?: boolean;
     agentCreate?: (input: Record<string, unknown>) => Promise<void> | void;
     alreadyJoinedInvitation?: boolean;
@@ -44,11 +52,17 @@ function installApi(
     authProviders?: readonly { enabled: boolean; id: string; startUrl: string | null }[];
     bindingReauth?: boolean;
     bindingEvidenceFails?: boolean;
+    bindingState?: "provisioning" | "active";
     bound?: boolean;
     computers?:
       | readonly Record<string, unknown>[]
       | (() => Promise<readonly Record<string, unknown>[]> | readonly Record<string, unknown>[]);
     computerEvidenceFails?: boolean;
+    computerProviderReadiness?: readonly {
+      observedAt: string | null;
+      provider: "codex" | "claude-code";
+      status: "checking" | "install" | "sign-in" | "ready" | "unavailable";
+    }[];
     computerStatus?: () => "online" | "offline";
     ownComputerReadStatus?: () => number | undefined;
     handoffReady?: boolean;
@@ -58,12 +72,15 @@ function installApi(
     invitationRotate?: () => Promise<Response> | Response;
     ownComputer?: boolean;
     provider?: "feishu" | "slack";
+    runtimeProvider?: "codex" | "claude-code";
     profileUpdate?: (displayName: string) => Promise<Response> | Response;
     profileUpdateFails?: boolean;
     redeemFails?: boolean;
     roleUpdate?: (targetUserId: string, role: "admin" | "member") => Promise<Response> | Response;
     roleUpdateFails?: boolean;
     setupFailureCode?: string;
+    slackSetupState?: "awaiting_credentials" | "awaiting_verification";
+    setupCompletedAt?: string | null;
     scopeReauth?: boolean;
     unauthenticated?: boolean;
     teamless?: boolean;
@@ -79,7 +96,7 @@ function installApi(
     teamId,
     name: agentSummary.name,
     displayName: agentSummary.displayName,
-    runtimeProvider: agentSummary.runtimeProvider,
+    runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,
     receiveMode: agentSummary.receiveMode,
     status: lifecycleStatus,
     createdAt: agentSummary.createdAt,
@@ -95,7 +112,14 @@ function installApi(
       maxDurationMs: null,
     },
   });
-  const createdMemberships: { teamId: string; teamName: string; teamDisplayName: string; role: "admin" }[] = [];
+  const createdMemberships: {
+    teamId: string;
+    teamName: string;
+    teamDisplayName: string;
+    role: "admin";
+    setupCompletedAt: string | null;
+  }[] = [];
+  let setupCompletedAt = options.setupCompletedAt === undefined ? "2026-08-20T00:00:00.000Z" : options.setupCompletedAt;
   let currentRole = role;
   let currentDisplayName = "Ada";
   let memberRole: "admin" | "member" = "member";
@@ -140,7 +164,15 @@ function installApi(
       if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
       const existing = options.teamless
         ? []
-        : [{ teamId, teamName: teamProfile.name, teamDisplayName: teamProfile.displayName, role: currentRole }];
+        : [
+            {
+              teamId,
+              teamName: teamProfile.name,
+              teamDisplayName: teamProfile.displayName,
+              role: currentRole,
+              setupCompletedAt,
+            },
+          ];
       return json({
         user: { id: userId, email: "ada@example.com", displayName: currentDisplayName },
         memberships: [
@@ -152,6 +184,7 @@ function installApi(
                   teamName: "invited-team",
                   teamDisplayName: "Invited Team",
                   role: "member" as const,
+                  setupCompletedAt: "2026-08-20T00:00:00.000Z",
                 },
               ]
             : []),
@@ -179,6 +212,7 @@ function installApi(
         teamName: body.name,
         teamDisplayName: body.displayName,
         role: "admin",
+        setupCompletedAt: null,
       });
       return json(
         {
@@ -191,6 +225,10 @@ function installApi(
         },
         201,
       );
+    }
+    if (path === `/api/v1/teams/${teamId}/setup/complete` && init?.method === "POST") {
+      setupCompletedAt = "2026-08-20T00:10:00.000Z";
+      return json({ setupCompletedAt });
     }
     if (path === `/api/v1/teams/${teamId}` && init?.method === "PATCH") {
       const body = JSON.parse(String(init.body)) as { displayName?: string; name?: string };
@@ -244,8 +282,19 @@ function installApi(
           ? []
           : [
               path.includes(invitedTeamId)
-                ? { ...agentSummary, teamId: invitedTeamId, status: lifecycleStatus }
-                : { ...agentSummary, status: lifecycleStatus },
+                ? {
+                    ...agentListItem,
+                    activity: options.agentActivity ?? agentListItem.activity,
+                    teamId: invitedTeamId,
+                    status: lifecycleStatus,
+                    runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
+                  }
+                : {
+                    ...agentListItem,
+                    activity: options.agentActivity ?? agentListItem.activity,
+                    status: lifecycleStatus,
+                    runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
+                  },
             ],
       });
     }
@@ -343,6 +392,9 @@ function installApi(
             displayName: "Ada's Mac",
             platform: "darwin",
             connectionStatus: options.computerStatus?.() ?? "online",
+            providerReadiness: options.computerProviderReadiness ?? [
+              { provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" },
+            ],
             connectedAt: "2026-08-20T00:00:00.000Z",
             lastSeenAt: "2026-08-20T00:00:00.000Z",
             observedAt: "2026-08-20T00:00:00.000Z",
@@ -386,6 +438,52 @@ function installApi(
         201,
       );
     }
+    if (path.startsWith(`/api/v1/agents/${agentId}/usage?`)) {
+      const days = Number(new URL(path, "https://opentag.test").searchParams.get("days"));
+      return json({
+        windowDays: days,
+        startedAt: "2026-07-25T12:00:00.000Z",
+        endedAt: "2026-08-24T12:00:00.000Z",
+        ...(options.agentUsage ?? {
+          tasks: 32,
+          measuredTasks: 31,
+          failed: 0,
+          inputTokens: 360_000,
+          cachedInputTokens: 120_000,
+          outputTokens: 68_000,
+          tokens: 428_000,
+          daily: [
+            {
+              date: "2026-08-20",
+              tasks: 15,
+              measuredTasks: 15,
+              inputTokens: 160_000,
+              cachedInputTokens: 50_000,
+              outputTokens: 30_000,
+              tokens: 190_000,
+            },
+            {
+              date: "2026-08-22",
+              tasks: 0,
+              measuredTasks: 0,
+              inputTokens: 0,
+              cachedInputTokens: 0,
+              outputTokens: 0,
+              tokens: 0,
+            },
+            {
+              date: "2026-08-24",
+              tasks: 17,
+              measuredTasks: 16,
+              inputTokens: 200_000,
+              cachedInputTokens: 70_000,
+              outputTokens: 38_000,
+              tokens: 238_000,
+            },
+          ],
+        }),
+      });
+    }
     if (path === `/api/v1/agents/${agentId}`) {
       if (init?.method === "PATCH" && options.scopeReauth) {
         return json(
@@ -411,7 +509,9 @@ function installApi(
       }
       return json({
         ...agentSummary,
+        runtimeProvider: options.runtimeProvider ?? agentSummary.runtimeProvider,
         status: lifecycleStatus,
+        activity: options.agentActivity ?? { state: "idle" },
         viewerCapabilities: { canManage: currentRole === "admin" },
       });
     }
@@ -429,21 +529,44 @@ function installApi(
       return json(adminConfig());
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/handoff`) {
-      if (options.bindingEvidenceFails) return json({ error: { message: "Handoff evidence unavailable" } }, 503);
+      if (options.bindingEvidenceFails) {
+        return json(
+          {
+            error: {
+              code: "SERVICE_UNAVAILABLE",
+              category: "transient",
+              message: "Handoff evidence unavailable",
+            },
+          },
+          503,
+        );
+      }
       if (!options.bound) return new Response(null, { status: 204 });
       const bindingState = options.bindingReauth ? "reauthorization_required" : "active";
       return json({ bindingState, handoffReady: options.handoffReady ?? bindingState === "active" });
     }
     if (path === `/api/v1/agents/${agentId}/im-binding`) {
-      if (options.bindingEvidenceFails) return json({ error: { message: "Binding evidence unavailable" } }, 503);
+      if (options.bindingEvidenceFails) {
+        return json(
+          {
+            error: {
+              code: "SERVICE_UNAVAILABLE",
+              category: "transient",
+              message: "Binding evidence unavailable",
+            },
+          },
+          503,
+        );
+      }
       if (!options.bound) return new Response(null, { status: 204 });
       return json({
         id: crypto.randomUUID(),
         agentId,
         provider: options.provider ?? "feishu",
-        bindingState: options.bindingReauth ? "reauthorization_required" : "active",
+        bindingState: options.bindingState ?? (options.bindingReauth ? "reauthorization_required" : "active"),
         bot: { displayName: "Reviewer", avatarUrl: null },
         receiveMode: "mention_only",
+        pendingReceiveMode: null,
         lastInboundAt: null,
         lastConfirmedAt: "2026-08-20T00:00:00.000Z",
       });
@@ -464,6 +587,41 @@ function installApi(
         },
         201,
       );
+    }
+    const slackAttemptId = "f645f26d-9184-4f2f-98a1-4ee83ae6a604";
+    const slackAttempt = (intent: "create" | "reauthorize" | "replace", state = options.slackSetupState) => ({
+      id: slackAttemptId,
+      agentId,
+      intent,
+      state: state ?? "awaiting_credentials",
+      manifest: { display_information: { name: "Reviewer - OpenTag" } },
+      manifestUrl: "https://api.slack.com/apps?new_app=1&manifest_json=example",
+      eventsUrl: `https://opentag.example.com/api/v1/agents/${agentId}/im-binding/slack/events`,
+      requiredBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
+      currentAppId: null,
+      identity:
+        state === "awaiting_verification" ? { appId: null, teamId: "T1", enterpriseId: null, botUserId: "U1" } : null,
+      challengeVerified: false,
+      lastVerificationErrorCode: null,
+      lastVerificationAt: null,
+      expiresAt: "2026-08-20T00:30:00.000Z",
+      errorCode: null,
+      completedAt: null,
+      createdAt: "2026-08-20T00:00:00.000Z",
+    });
+    if (path === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as { intent: "create" | "reauthorize" | "replace" };
+      return json(slackAttempt(body.intent), 201);
+    }
+    if (path === `/api/v1/im-bindings/slack/setup-attempts/${slackAttemptId}` && (init?.method ?? "GET") === "GET") {
+      return json(slackAttempt("create"));
+    }
+    if (path === `/api/v1/im-bindings/slack/setup-attempts/${slackAttemptId}/cancel` && init?.method === "POST") {
+      return json({
+        ...slackAttempt("create", "awaiting_credentials"),
+        state: "canceled",
+        errorCode: "SLACK_SETUP_CANCELED",
+      });
     }
     if (path === "/api/v1/auth/browser/logout" && init?.method === "POST") return new Response(null, { status: 204 });
     throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${path}`);
@@ -487,6 +645,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents");
     expect(screen.queryByText("Infrastructure")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Agent runtime" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Computers" })).toBeNull();
@@ -496,19 +655,66 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText("Example")).toBeNull();
     const agentLink = await screen.findByRole("link", { name: "Open Reviewer" });
     const createAgent = screen.getByRole("button", { name: "New Agent" });
-    expect(createAgent.closest(".agent-card-grid")?.firstElementChild).toBe(createAgent);
-    expect(agentLink.closest(".agent-card-grid")).toBe(createAgent.closest(".agent-card-grid"));
-    expect(screen.getByText("Ada's Mac · macOS")).toBeTruthy();
-    expect(screen.getByText("Mentions only")).toBeTruthy();
+    expect(createAgent.closest(".page-header")).toBeTruthy();
+    const agentCard = agentLink.closest(".agent-card");
+    expect(agentCard).toBeTruthy();
+    expect(screen.getByText("Monitor availability and 30-day usage across your AI teammates.")).toBeTruthy();
+    expect(screen.queryByText("Usage · Last 30 days")).toBeNull();
+    expect(within(agentCard as HTMLElement).getByText("Tasks")).toBeTruthy();
+    expect(within(agentCard as HTMLElement).getByText("Tokens")).toBeTruthy();
+    expect(within(agentCard as HTMLElement).getByText("428K")).toBeTruthy();
+    expect(within(agentCard as HTMLElement).getByText("Not connected")).toBeTruthy();
+    expect(screen.queryByText("Ada's Mac · macOS")).toBeNull();
+    expect(screen.queryByText("Mentions only")).toBeNull();
     const workspaceNavigation = screen.getByRole("navigation", { name: "Product" });
     expect(
       within(workspaceNavigation)
         .getAllByRole("link")
         .map((item) => item.textContent),
-    ).toEqual(["Agents", "Tasks", "Integrations", "Skills", "Usage", "Members"]);
+    ).toEqual(["Agents", "Tasks", "Integrations", "Skills"]);
     const navigationIcons = workspaceNavigation.querySelectorAll(".primary-nav-icon");
-    expect(navigationIcons).toHaveLength(6);
+    expect(navigationIcons).toHaveLength(4);
     expect(Array.from(navigationIcons).every((icon) => icon.getAttribute("aria-hidden") === "true")).toBe(true);
+  });
+
+  it("shows elapsed time without exposing conversation content for a working Agent", async () => {
+    installApi("admin", {
+      agentActivity: {
+        state: "working",
+        startedAt: new Date(Date.now() - 8 * 60_000).toISOString(),
+      },
+      bound: true,
+      handoffReady: true,
+    });
+    render(<App />);
+
+    const agentCard = (await screen.findByRole("link", { name: "Open Reviewer" })).closest(".agent-card");
+    expect(agentCard).toBeTruthy();
+    const status = within(agentCard as HTMLElement)
+      .getByText("Working")
+      .closest(".ds-status");
+    expect(status).toBeTruthy();
+    expect(within(status as HTMLElement).getByText("Started 8m ago")).toBeTruthy();
+  });
+
+  it("keeps an offline reason and reconnect action together in the Agent status", async () => {
+    installApi("admin", {
+      bound: true,
+      computerStatus: () => "offline",
+      handoffReady: true,
+    });
+    render(<App />);
+
+    const agentCard = (await screen.findByRole("link", { name: "Open Reviewer" })).closest(".agent-card");
+    expect(agentCard).toBeTruthy();
+    const status = within(agentCard as HTMLElement)
+      .getByText("Needs attention")
+      .closest(".ds-status");
+    expect(status).toBeTruthy();
+    expect(within(status as HTMLElement).getByText("Computer offline")).toBeTruthy();
+    const reconnect = within(status as HTMLElement).getByRole("link", { name: "Reconnect" });
+    expect(reconnect.classList.contains("ds-button--inline")).toBe(true);
+    expect(reconnect.classList.contains("ds-button--outline")).toBe(false);
   });
 
   it.each(["/", "/agents"])("redirects unauthenticated protected path %s to login", async (path) => {
@@ -566,14 +772,13 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("button", { name: "New Agent" })).toBeNull();
   });
 
-  it("uses the New Agent card as the sole empty-state action for admins", async () => {
+  it("uses the page header as the sole empty-state action for admins", async () => {
     installApi("admin", { emptyAgents: true });
     render(<App />);
 
-    const agents = await screen.findByRole("region", { name: "Agents" });
-    expect(within(agents).getByRole("button", { name: "New Agent" })).toBeTruthy();
-    expect(within(agents).queryByRole("link")).toBeNull();
-    expect(screen.queryByText("No Agents yet")).toBeNull();
+    expect(await screen.findByRole("heading", { name: "No Agents yet" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "New Agent" }).closest(".page-header")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Agents" })).toBeNull();
   });
 
   it("opens the complete New Agent form in a dialog and returns focus when cancelled", async () => {
@@ -614,6 +819,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
 
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
     const trigger = within(dialog).getByRole("button", { name: "Connect another Computer" });
     expect(trigger.getAttribute("aria-expanded")).toBe("false");
 
@@ -671,6 +877,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.change(within(dialog).getByLabelText("Agent name"), {
       target: { value: "research-assistant" },
     });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Connect another Computer" }));
 
     vi.useFakeTimers();
@@ -693,11 +900,12 @@ describe("OpenTag Web App Shell", () => {
         await Promise.resolve();
       });
 
-      expect(within(dialog).getByText("Codex · Ada's Linux Computer")).toBeTruthy();
+      expect(within(dialog).getByText("Ada's Linux Computer")).toBeTruthy();
+      expect(within(dialog).getByText("Codex")).toBeTruthy();
       expect((within(dialog).getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Assistant");
       expect((within(dialog).getByLabelText("Agent name") as HTMLInputElement).value).toBe("research-assistant");
       expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
-      expect(within(dialog).getByRole("button", { name: "Connect another Computer" })).toBe(document.activeElement);
+      expect(within(dialog).getByRole("button", { name: "Change Computer" })).toBe(document.activeElement);
     } finally {
       vi.useRealTimers();
     }
@@ -787,6 +995,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.change(within(dialog).getByLabelText("Agent name"), {
       target: { value: "research-assistant" },
     });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change Computer" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Connect another Computer" }));
 
     vi.useFakeTimers();
@@ -801,11 +1010,12 @@ describe("OpenTag Web App Shell", () => {
         await vi.advanceTimersByTimeAsync(1_500);
       });
 
-      expect(within(dialog).getByText("Codex · Ada's Mac")).toBeTruthy();
+      expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
+      expect(within(dialog).getByText("Codex")).toBeTruthy();
       expect((within(dialog).getByLabelText("Display name") as HTMLInputElement).value).toBe("Research Assistant");
       expect((within(dialog).getByLabelText("Agent name") as HTMLInputElement).value).toBe("research-assistant");
       expect(within(dialog).queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
-      expect(within(dialog).getByRole("button", { name: "Connect another Computer" })).toBe(document.activeElement);
+      expect(within(dialog).getByRole("button", { name: "Change Computer" })).toBe(document.activeElement);
     } finally {
       vi.useRealTimers();
     }
@@ -866,8 +1076,9 @@ describe("OpenTag Web App Shell", () => {
         await Promise.resolve();
       });
 
-      expect(within(dialog).getByText("Codex · Ada's Mac")).toBeTruthy();
-      expect(within(dialog).getByRole("button", { name: "Connect another Computer" })).toBe(document.activeElement);
+      expect(within(dialog).getByText("Ada's Mac")).toBeTruthy();
+      expect(within(dialog).getByText("Codex")).toBeTruthy();
+      expect(within(dialog).getByRole("button", { name: "Change Computer" })).toBe(document.activeElement);
     } finally {
       vi.useRealTimers();
     }
@@ -885,7 +1096,7 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await within(dialog).findByRole("heading", { name: "Connect messaging" })).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Set up later" }));
-    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}/general`));
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}`));
     const createCall = vi
       .mocked(fetch)
       .mock.calls.find(
@@ -943,7 +1154,7 @@ describe("OpenTag Web App Shell", () => {
     resolveCreate();
     expect(await within(dialog).findByRole("heading", { name: "Connect messaging" })).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Set up later" }));
-    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}/general`));
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}`));
   });
 
   it("reuses one creation intent when an unchanged Agent request is retried", async () => {
@@ -968,7 +1179,7 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await within(dialog).findByRole("heading", { name: "Connect messaging" })).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("button", { name: "Set up later" }));
-    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}/general`));
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}`));
     expect(attempts).toHaveLength(2);
     expect(attempts[0]?.creationIntentId).toMatch(/^[0-9a-f-]{36}$/i);
     expect(attempts[1]?.creationIntentId).toBe(attempts[0]?.creationIntentId);
@@ -1036,92 +1247,188 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Ada")).toBeTruthy();
   });
 
-  it("keeps account and advanced Workspace editing out of Members", async () => {
+  it("keeps account editing separate from Workspace settings", async () => {
     installApi("admin");
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
-    expect(screen.queryByLabelText("Workspace name")).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Workspace" })).toBeTruthy();
+    expect(screen.getByLabelText("Workspace name")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Save account profile" })).toBeNull();
   });
 
   it("keeps suspended lifecycle visible but read-only for members", async () => {
     installApi("member", { initialStatus: "suspended" });
-    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
-    expect(await screen.findByText("Suspended")).toBeTruthy();
+    expect((await screen.findAllByText("Suspended")).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Reactivate Agent" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Delete Agent permanently" })).toBeNull();
   });
 
-  it("requires suspension and destructive confirmation before an admin deletes an Agent", async () => {
-    installApi("admin");
-    window.history.replaceState({}, "", `/agents/${agentId}/general`);
-    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+  it("keeps the Agent home focused on status, current activity, and contact", async () => {
+    installApi("admin", { bound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Edit Agent settings" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Suspend Agent" }));
-    await waitFor(() =>
-      expect(
-        vi
-          .mocked(fetch)
-          .mock.calls.filter(
-            ([input, init]) => String(input) === `/api/v1/agents/${agentId}` && (init?.method ?? "GET") === "GET",
-          ),
-      ).toHaveLength(2),
-    );
-    expect(await screen.findByText("Not receiving new work")).toBeTruthy();
-    expect(await screen.findByRole("button", { name: "Reactivate Agent" })).toBeTruthy();
-    const deleteButton = await screen.findByRole("button", { name: "Delete Agent permanently" });
-    fireEvent.click(deleteButton);
-    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
-    fireEvent.click(deleteButton);
-    await waitFor(() => expect(window.location.pathname).toBe("/agents"));
-    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(true);
-    expect(confirm).toHaveBeenLastCalledWith(
-      expect.stringMatching(/end its active Sessions.*IM credential.*runtime configuration/),
-    );
-    confirm.mockRestore();
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Current activity" })).toBeTruthy();
+    expect(screen.getByText("No active work")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Contact" })).toBeTruthy();
+    expect(screen.getByText("Send a direct message, or mention @reviewer in a Feishu conversation.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe(`/agents/${agentId}/settings`);
+    expect(screen.getByRole("link", { name: "Usage" }).getAttribute("href")).toBe(`/agents/${agentId}/usage`);
+    expect(screen.queryByRole("navigation", { name: "Agent sections" })).toBeNull();
+    expect(screen.queryByText("Runtime")).toBeNull();
   });
 
-  it("uses top tabs for Agent detail navigation", async () => {
-    installApi("admin");
-    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+  it("shows confirmed active work without exposing conversation content", async () => {
+    installApi("admin", {
+      bound: true,
+      agentActivity: { state: "working", startedAt: "2026-08-24T09:00:00.000Z" },
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    const navigation = screen.getByRole("navigation", { name: "Agent settings" });
-    expect(navigation.className).toContain("ds-tabs");
-    expect(navigation.className).toContain("ds-tabs--collapsible");
+
+    expect((await screen.findAllByText("Working")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Handling a request").length).toBeGreaterThan(0);
+    expect(screen.getByText(/^Started /)).toBeTruthy();
+    expect(document.body.textContent).not.toContain("Private conversation content");
+  });
+
+  it("keeps all admin-only controls in six understandable Settings sections", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", `/agents/${agentId}/settings`);
+    render(<App />);
+
+    const navigation = await screen.findByRole("navigation", { name: "Agent settings" });
     expect(
       within(navigation)
         .getAllByRole("link")
         .map((link) => link.textContent),
-    ).toEqual(["Overview", "Runtime", "Messaging", "Access"]);
+    ).toEqual(["Settings", "Identity", "Instructions", "Execution", "Messaging", "Computer", "Manage"]);
+    expect(screen.getByText("Provider, model, and reasoning")).toBeTruthy();
+    expect(screen.queryByText("Runtime")).toBeNull();
   });
 
-  it("keeps bound Computer details with the individual Agent runtime", async () => {
-    installApi("admin", { bound: true });
+  it("pauses and deletes an Agent from Manage with destructive confirmation", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/manage`);
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    render(<App />);
+
+    const unavailableDeleteButton = await screen.findByRole("button", { name: "Delete permanently" });
+    expect(unavailableDeleteButton.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText("Pause this Agent before deleting it permanently.")).toBeTruthy();
+    fireEvent.click(unavailableDeleteButton);
+    expect(confirm).not.toHaveBeenCalled();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Pause" }));
+    expect(await screen.findByRole("button", { name: "Reactivate" })).toBeTruthy();
+    const deleteButton = screen.getByRole("button", { name: "Delete permanently" });
+    expect(deleteButton.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(deleteButton);
+    expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
+    fireEvent.click(deleteButton);
+    await waitFor(() => expect(window.location.pathname).toBe("/agents"));
+    expect(confirm).toHaveBeenLastCalledWith(
+      "Permanently delete Reviewer? This will end active Sessions, remove messaging credentials and execution settings, and retain Session and message history. This Agent cannot be restored.",
+    );
+    confirm.mockRestore();
+  });
+
+  it("shows detailed Agent Token usage and changes the selected period", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", `/agents/${agentId}/usage`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
+    expect(await screen.findByRole("img", { name: /428K Tokens used during the last 30 days/ })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Token usage over time" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Token breakdown" })).toBeTruthy();
+    expect(screen.getAllByText(/0 Tokens$/).length).toBeGreaterThan(0);
+    expect(screen.getByText("Input")).toBeTruthy();
+    expect(screen.getByText("Output")).toBeTruthy();
+    expect(screen.getByText("Cached input")).toBeTruthy();
+    expect(screen.queryByText("Turns")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Usage period"), { target: { value: "7" } });
+    await waitFor(() =>
+      expect(
+        vi.mocked(fetch).mock.calls.some(([input]) => String(input) === `/api/v1/agents/${agentId}/usage?days=7`),
+      ).toBe(true),
+    );
+    expect(await screen.findByRole("img", { name: /428K Tokens used during the last 7 days/ })).toBeTruthy();
+  });
+
+  it("redirects legacy Agent URLs without keeping the old UI", async () => {
+    installApi("admin");
     window.history.replaceState({}, "", `/agents/${agentId}/runtime`);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Execution" })).toBeTruthy();
+    expect(window.location.pathname).toBe(`/agents/${agentId}/settings/execution`);
+    expect(screen.queryByText("Runtime")).toBeNull();
+  });
+
+  it.each([
+    ["integrations", "Agent integrations are not available here", "Browse Workspace integrations"],
+    ["skills", "Agent skills are not available here", "Browse Workspace skills"],
+  ])("keeps legacy Agent %s URLs inside an explicit Agent-scoped boundary", async (section, heading, action) => {
+    installApi("admin");
+    window.history.replaceState({}, "", `/agents/${agentId}/${section}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: heading })).toBeTruthy();
+    expect(window.location.pathname).toBe(`/agents/${agentId}/${section}`);
+    expect(screen.getByText(/assigned to Reviewer.*Workspace catalog is separate/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: action }).getAttribute("href")).toBe(`/${section}`);
+  });
+
+  it("redirects the removed Agent Access URL to Workspace members", async () => {
+    installApi("member");
+    window.history.replaceState({}, "", `/agents/${agentId}/access`);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Workspace" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/workspace");
+    expect(window.location.hash).toBe("#members");
+  });
+
+  it("keeps assigned Computer details in its own Settings page", async () => {
+    installApi("admin", { bound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
-    expect(screen.getByText("macOS")).toBeTruthy();
+    expect(await screen.findByText("Ada's Mac · macOS")).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Execution choices" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Computer" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Execution" })).toBeNull();
+    expect(screen.queryByText(/Turn timeout/i)).toBeNull();
+    expect(screen.queryByText(/Last seen/i)).toBeNull();
+  });
+
+  it("shows Computer recovery details only when the assigned Computer is offline", async () => {
+    installApi("admin", { bound: true, computerStatus: () => "offline" });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
+    render(<App />);
+
+    expect(await screen.findByText("Ada's Mac · macOS")).toBeTruthy();
+    expect(screen.getByText("Offline")).toBeTruthy();
+    expect(screen.getByText(/Last seen/)).toBeTruthy();
+    expect(screen.getByText("New requests can start after this Computer reconnects.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
 
   it("refreshes Agent availability when the page regains focus", async () => {
     let computerStatus: "online" | "offline" = "online";
     installApi("admin", { bound: true, computerStatus: () => computerStatus });
-    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
     expect((await screen.findAllByText("Ready")).length).toBeGreaterThan(0);
 
     computerStatus = "offline";
     fireEvent(window, new Event("focus"));
-    expect(await screen.findByText("Cannot receive new work")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Review runtime" })).toBeTruthy();
+    expect(await screen.findByText("The assigned Computer is offline, so new requests cannot start.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Review Computer" })).toBeTruthy();
   });
 
   it("keeps Agent cards useful when Computer status cannot be confirmed", async () => {
@@ -1131,8 +1438,8 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByText("Reviewer")).toBeTruthy();
     expect(screen.getByText("Unconfirmed")).toBeTruthy();
-    expect(screen.getByText("Unable to confirm runtime")).toBeTruthy();
-    expect(screen.getByText("Ada's Mac · macOS")).toBeTruthy();
+    expect(screen.getByText("Unable to confirm readiness")).toBeTruthy();
+    expect(screen.queryByText("Ada's Mac · macOS")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/computers"))).toBe(true);
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes(`/agents/${agentId}/im-binding`))).toBe(
@@ -1140,46 +1447,94 @@ describe("OpenTag Web App Shell", () => {
     );
   });
 
-  it("keeps readiness implementation details out of the Agent overview", async () => {
+  it("requires the selected runtime Provider to be ready before an Agent card is Ready", async () => {
+    installApi("admin", {
+      bound: true,
+      runtimeProvider: "claude-code",
+      computerProviderReadiness: [
+        { provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" },
+        { provider: "claude-code", status: "sign-in", observedAt: "2026-08-20T00:00:00.000Z" },
+      ],
+    });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+
+    expect(await screen.findByText("Needs attention")).toBeTruthy();
+    expect(screen.getByText("Computer not ready")).toBeTruthy();
+    expect(screen.queryByText("Ready")).toBeNull();
+  });
+
+  it("shows a user-facing recovery without readiness implementation details", async () => {
     installApi("admin", { bound: true, handoffReady: false });
-    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Use this Agent" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Message @reviewer" })).toBeTruthy();
-    expect(screen.getByText("Send a direct message, or mention @reviewer in a Feishu conversation.")).toBeTruthy();
-    expect(screen.getByText("Cannot receive new work")).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Review messaging" })).toBeNull();
-    expect(screen.queryByRole("link", { name: "Review runtime" })).toBeNull();
+    expect(screen.getByText("Messages cannot currently be handed off to this Agent.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Review messaging" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Current activity" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Contact" })).toBeTruthy();
     expect(screen.queryByText("Handoff")).toBeNull();
-    expect(screen.queryByText("Computer")).toBeNull();
     expect(screen.queryByText("Ada's Mac")).toBeNull();
+    expect(screen.queryByText("Runtime")).toBeNull();
   });
 
-  it("preserves the Agent detail when handoff evidence cannot be confirmed", async () => {
+  it("does not infer an empty contact when messaging evidence cannot be confirmed", async () => {
     installApi("admin", { bound: true, bindingEvidenceFails: true });
-    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     expect(await screen.findByText("Status temporarily unavailable")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Messaging status unavailable" })).toBeTruthy();
-    expect(screen.getByText("The messaging identity could not be confirmed. Try again in a moment.")).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Connect Feishu or Slack" })).toBeNull();
-    expect(screen.queryByText("This Agent needs a messaging identity before teammates can send it work.")).toBeNull();
+    expect(screen.getByText("Unable to confirm messaging")).toBeTruthy();
+    expect(screen.queryByText("No messaging connected")).toBeNull();
     expect(screen.queryByText("Handoff")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("offers messaging setup only when the missing binding is confirmed", async () => {
     installApi("admin", { bound: false });
-    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Connect Feishu or Slack" })).toBeTruthy();
-    expect(screen.getByText("This Agent needs a messaging identity before teammates can send it work.")).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Messaging status unavailable" })).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Contact channel" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "No messaging channel" })).toBeTruthy();
+    expect(screen.getByText(/cannot contact this Agent/)).toBeTruthy();
+  });
+
+  it("separates a connected contact channel from its trigger rules", async () => {
+    installApi("admin", { bound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Contact channel" })).toBeTruthy();
+    expect(screen.getByText(/Feishu · Available/)).toBeTruthy();
+    expect(screen.getAllByText("@reviewer")).toHaveLength(2);
+    expect(screen.getByText("Send a direct message, or mention @reviewer in a Feishu conversation.")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Trigger rules" })).toBeTruthy();
+    expect(screen.getByText("A direct message can always start work.")).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Conversation trigger rule" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Replace Feishu Bot" })).toBeTruthy();
+  });
+
+  it("keeps the contact summary readable and Settings unavailable to regular members", async () => {
+    installApi("member", { bound: true });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Contact" })).toBeTruthy();
+    expect(screen.getByText("Send a direct message, or mention @reviewer in a Feishu conversation.")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Manage messaging" })).toBeNull();
+  });
+
+  it("shows a Messaging error instead of inferring an empty channel", async () => {
+    installApi("admin", { bindingEvidenceFails: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Binding evidence unavailable");
+    expect(screen.queryByRole("heading", { name: "No messaging channel" })).toBeNull();
   });
 
   it("does not overlap focus refreshes while an Agent read is still pending", async () => {
@@ -1197,7 +1552,7 @@ describe("OpenTag Web App Shell", () => {
       bound: true,
       computerStatus: () => computerStatus,
     });
-    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
 
@@ -1214,7 +1569,7 @@ describe("OpenTag Web App Shell", () => {
   it("invalidates a stale Agent detail after a background not-found response", async () => {
     let agentReadStatus: number | undefined;
     installApi("admin", { agentReadStatus: () => agentReadStatus, bound: true });
-    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    window.history.replaceState({}, "", `/agents/${agentId}`);
     render(<App />);
     expect((await screen.findAllByText("Ready")).length).toBeGreaterThan(0);
 
@@ -1226,10 +1581,10 @@ describe("OpenTag Web App Shell", () => {
 
   it("marks retained Agent rows unconfirmed after a transient primary refresh failure", async () => {
     let agentListStatus: number | undefined;
-    installApi("admin", { agentListStatus: () => agentListStatus });
+    installApi("admin", { agentListStatus: () => agentListStatus, bound: true });
     window.history.replaceState({}, "", "/agents");
     render(<App />);
-    expect(await screen.findByText("Active")).toBeTruthy();
+    expect(await screen.findByText("Ready")).toBeTruthy();
 
     agentListStatus = 503;
     fireEvent(window, new Event("focus"));
@@ -1241,9 +1596,9 @@ describe("OpenTag Web App Shell", () => {
   it("refreshes the parent Agent projection after an IM mutation", async () => {
     installApi("admin", { bound: true });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Enable all messages" }));
+    fireEvent.click(await screen.findByRole("button", { name: "All messages" }));
     await waitFor(() =>
       expect(
         vi
@@ -1256,23 +1611,126 @@ describe("OpenTag Web App Shell", () => {
     confirm.mockRestore();
   });
 
-  it("shows an honest Tasks unavailable state without synthetic records", async () => {
+  it("resumes a provisioning Slack setup after a refresh before credentials were submitted", async () => {
+    installApi("admin", { bound: true, provider: "slack", bindingState: "provisioning" });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    const view = render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Replace Slack App" })).toBeNull();
+    expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([input, init]) =>
+            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
+        ),
+    ).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume Slack setup" }));
+    expect(await screen.findByLabelText("Bot User OAuth Token")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Cancel setup" })).toBeTruthy();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([input, init]) =>
+            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
+        ),
+    ).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel setup" }));
+    expect(await screen.findByText(/State: canceled/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Retry Slack setup" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
+
+    // The binding row remains provisioning after cancellation, but a refresh must not mutate it.
+    view.unmount();
+    vi.mocked(fetch).mockClear();
+    render(<App />);
+    expect(await screen.findByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
+    expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([input, init]) =>
+            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
+        ),
+    ).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Resume Slack setup" }));
+    expect(await screen.findByLabelText("Bot User OAuth Token")).toBeTruthy();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([input, init]) =>
+            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
+        ),
+    ).toHaveLength(1);
+  });
+
+  it("resumes a provisioning Slack setup after a refresh while verification is pending", async () => {
+    installApi("admin", {
+      bound: true,
+      provider: "slack",
+      bindingState: "provisioning",
+      slackSetupState: "awaiting_verification",
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
+    expect(screen.queryByText(/Bot Token validated/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Resume Slack setup" }));
+    expect(await screen.findByText(/Bot Token validated/)).toBeTruthy();
+    expect(screen.getByText(/for workspace T1 \(bot user U1\)/)).toBeTruthy();
+    expect(screen.getByText(/Signing Secret not yet verified/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Edit credentials" })).toBeTruthy();
+    expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Replace Slack App" })).toBeNull();
+  });
+
+  it("shows the Tasks demo and opens a Task detail", async () => {
     installApi("admin");
     window.history.replaceState({}, "", "/tasks");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Tasks" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Tasks are not available yet" })).toBeTruthy();
-    expect(screen.getByText("The current server does not expose a Tasks API.")).toBeTruthy();
-    expect(screen.getByText("No sample, inferred, or locally generated Task records are shown.")).toBeTruthy();
+    expect(screen.getByText("Demo data")).toBeTruthy();
+    const task = screen.getByRole("link", {
+      name: "Review the Q3 launch plan, identify unresolved owners, and flag every item without a confirmed date.",
+    });
+    fireEvent.click(task);
+    expect(
+      await screen.findByText(
+        "Eight items were checked. Five are ready, two still need owners, and one has no confirmed date.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("Task source").textContent).toContain("Product Launch");
+    expect(window.location.pathname).toBe("/tasks/q3-launch-readiness");
   });
 
-  it("groups invitations with Members", async () => {
+  it("labels a directly opened Task detail as demo data", async () => {
     installApi("admin");
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/tasks/q3-launch-readiness");
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
-    expect(screen.getAllByRole("heading", { name: "Members" })).toHaveLength(1);
+    expect(
+      await screen.findByText(
+        "Eight items were checked. Five are ready, two still need owners, and one has no confirmed date.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("Demo data")).toBeTruthy();
+  });
+
+  it("groups members and invitations with Workspace settings", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", "/workspace#members");
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Workspace" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Members & access" })).toBeTruthy();
     const membersSection = document.querySelector<HTMLElement>("#members");
     if (!membersSection) throw new Error("Members section was not rendered");
     const memberRows = await within(membersSection).findAllByRole("rowheader");
@@ -1283,25 +1741,27 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("button", { name: "Invite members" })).toBeNull();
   });
 
-  it.each(["/settings", "/settings/members", "/settings/access", "/settings/security"])(
+  it.each(["/settings/members", "/settings/access", "/settings/security"])(
     "redirects legacy member administration URL %s",
     async (path) => {
       installApi("member");
       window.history.replaceState({}, "", path);
       render(<App />);
 
-      expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
-      expect(window.location.pathname).toBe("/members");
+      expect(await screen.findByRole("heading", { name: "Members & access" })).toBeTruthy();
+      expect(window.location.pathname).toBe("/workspace");
+      expect(window.location.hash).toBe("#members");
     },
   );
 
-  it("redirects the legacy Members URL to the first-class Members page", async () => {
+  it("redirects the former Members page to Workspace member access", async () => {
     installApi("member");
-    window.history.replaceState({}, "", "/settings/members");
+    window.history.replaceState({}, "", "/members");
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/members");
+    expect(await screen.findByRole("heading", { name: "Members & access" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/workspace");
+    expect(window.location.hash).toBe("#members");
   });
 
   it("redirects the legacy Settings account URL to the editable Account page", async () => {
@@ -1322,17 +1782,20 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("button", { name: "Save account profile" })).toBeTruthy();
   });
 
-  it("redirects the legacy Team profile URL to the first-class Workspace page", async () => {
-    installApi("admin");
-    window.history.replaceState({}, "", "/settings/team");
-    render(<App />);
+  it.each(["/settings", "/settings/team"])(
+    "redirects legacy Workspace settings URL %s to the first-class Workspace page",
+    async (path) => {
+      installApi("admin");
+      window.history.replaceState({}, "", path);
+      render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Workspace profile" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Workspace", level: 1 })).toBeTruthy();
-    expect(window.location.pathname).toBe("/workspace");
-    expect(window.location.hash).toBe("");
-    expect(screen.getByLabelText("Workspace name")).toBeTruthy();
-  });
+      expect(await screen.findByRole("heading", { name: "Workspace profile" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Workspace", level: 1 })).toBeTruthy();
+      expect(window.location.pathname).toBe("/workspace");
+      expect(window.location.hash).toBe("");
+      expect(screen.getByLabelText("Workspace name")).toBeTruthy();
+    },
+  );
 
   it("keeps the legacy Workspace management hash compatible with the Workspace page", async () => {
     installApi("admin");
@@ -1369,7 +1832,7 @@ describe("OpenTag Web App Shell", () => {
     },
   );
 
-  it("navigates between the minimal capability pages", async () => {
+  it("navigates between the remaining minimal capability pages", async () => {
     installApi("admin");
     window.history.replaceState({}, "", "/skills");
     render(<App />);
@@ -1377,11 +1840,19 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Skills" })).toBeTruthy();
     fireEvent.click(screen.getByRole("link", { name: "Integrations" }));
     expect(await screen.findByRole("heading", { name: "Integrations" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Workspace Integrations are not available yet" })).toBeTruthy();
-    expect(screen.queryByText("GitHub")).toBeNull();
-    fireEvent.click(screen.getByRole("link", { name: "Usage" }));
-    expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
-    expect(screen.getByLabelText("Usage metrics")).toBeTruthy();
+    expect(screen.getByRole("table", { name: "Demo Integrations" })).toBeTruthy();
+    expect(screen.getByText("Demo data")).toBeTruthy();
+    expect(screen.getByText("GitHub")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Usage" })).toBeNull();
+  });
+
+  it.each(["/usage", "/settings/usage"])("redirects removed Workspace Usage URL %s to Agents", async (path) => {
+    installApi("admin");
+    window.history.replaceState({}, "", path);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents");
   });
 
   it("lets admins rename a Workspace from its top-level page without changing the CLI identifier", async () => {
@@ -1497,7 +1968,7 @@ describe("OpenTag Web App Shell", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText } });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
     expect(await screen.findByText("This link lets anyone join as a member until it expires.")).toBeTruthy();
     const createInviteLink = await screen.findByRole("button", { name: "Create invite link" });
@@ -1517,7 +1988,7 @@ describe("OpenTag Web App Shell", () => {
   it("replaces a locally rotated invitation with a newer successful server read", async () => {
     const api = installApi("admin", { invitationExists: true });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
 
     expect(((await screen.findByLabelText("Invite link")) as HTMLInputElement).value).toContain("/invites/AAA");
@@ -1529,8 +2000,9 @@ describe("OpenTag Web App Shell", () => {
     api.setInvitationVersion("C");
     fireEvent.click(screen.getByRole("link", { name: "Agents" }));
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("link", { name: "Members" }));
-    expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Workspace settings" }));
+    expect(await screen.findByRole("heading", { name: "Members & access" })).toBeTruthy();
 
     await waitFor(() =>
       expect((screen.getByLabelText("Invite link") as HTMLInputElement).value).toContain("/invites/CCC"),
@@ -1551,9 +2023,9 @@ describe("OpenTag Web App Shell", () => {
 
   it("keeps invitation-link management hidden from regular members", async () => {
     installApi("member");
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Members" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Members & access" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Invite people" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Invite members" })).toBeNull();
     expect(screen.queryByLabelText("Role for Ada")).toBeNull();
@@ -1562,7 +2034,7 @@ describe("OpenTag Web App Shell", () => {
 
   it("lets Team admins update another member role from the member list", async () => {
     installApi("admin");
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
     const role = (await screen.findByLabelText("Role for Grace")) as HTMLSelectElement;
     expect(within(role).getByRole("option", { name: "Admin" })).toBeTruthy();
@@ -1587,7 +2059,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin", {
       roleUpdate: (targetUserId) => (targetUserId === memberUserId ? graceUpdate : linUpdate),
     });
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
     const graceRole = (await screen.findByLabelText("Role for Grace")) as HTMLSelectElement;
     const linRole = screen.getByLabelText("Role for Lin") as HTMLSelectElement;
@@ -1642,7 +2114,7 @@ describe("OpenTag Web App Shell", () => {
 
   it("refreshes current membership authority after an admin demotes themself", async () => {
     installApi("admin");
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
     fireEvent.change(await screen.findByLabelText("Role for Ada"), { target: { value: "member" } });
     await waitFor(() =>
@@ -1654,7 +2126,7 @@ describe("OpenTag Web App Shell", () => {
 
   it("keeps the confirmed role and displays the server error when an update is rejected", async () => {
     installApi("admin", { roleUpdateFails: true });
-    window.history.replaceState({}, "", "/members");
+    window.history.replaceState({}, "", "/workspace#members");
     render(<App />);
     const role = (await screen.findByLabelText("Role for Ada")) as HTMLSelectElement;
     fireEvent.change(role, { target: { value: "member" } });
@@ -1664,17 +2136,17 @@ describe("OpenTag Web App Shell", () => {
 
   it("does not create an IM setup attempt while rendering Agent detail", async () => {
     installApi("admin");
-    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    expect(await screen.findByRole("button", { name: "Connect existing or new Feishu Bot" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Connect a Feishu Bot" })).toBeTruthy();
     expect(vi.mocked(fetch).mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
   });
 
   it("creates a Feishu setup attempt only after an explicit admin click", async () => {
     installApi("admin");
-    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Connect existing or new Feishu Bot" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect a Feishu Bot" }));
     expect(await screen.findByText("Feishu setup started")).toBeTruthy();
     expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
     expect(await screen.findByRole("img", { name: "Scan this QR code in Feishu" })).toBeTruthy();
@@ -1691,12 +2163,12 @@ describe("OpenTag Web App Shell", () => {
 
   it("offers a legacy Feishu Bot permission update without claiming live connectivity", async () => {
     installApi("admin", { bindingReauth: true, bound: true });
-    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    expect(await screen.findByText("Permissions update required")).toBeTruthy();
+    expect(await screen.findByText(/Permissions update required/)).toBeTruthy();
     expect(screen.queryByText(/Online/)).toBeNull();
     expect(screen.getByRole("button", { name: "Reauthorize Feishu" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Replace with existing or new Feishu Bot" }));
+    fireEvent.click(screen.getByRole("button", { name: "Replace Feishu Bot" }));
     expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
     const request = vi
       .mocked(fetch)
@@ -1706,20 +2178,20 @@ describe("OpenTag Web App Shell", () => {
     expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "replace" });
   });
 
-  it("describes an active binding as configured when handoff is unavailable", async () => {
+  it("describes an active binding as needing attention when handoff is unavailable", async () => {
     installApi("admin", { bound: true, handoffReady: false });
-    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    expect((await screen.findByText("Configured")).closest(".ds-status")).toBeTruthy();
+    expect((await screen.findByText(/Needs attention/)).closest(".ds-status")).toBeTruthy();
     expect(screen.queryByText(/Online/)).toBeNull();
   });
 
   it("shows a safe occupied-App recovery and retries the original replacement intent", async () => {
     installApi("admin", { bound: true, setupFailureCode: "FEISHU_APP_ALREADY_BOUND" });
-    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Replace with existing or new Feishu Bot" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Replace Feishu Bot" }));
     const setupNotice = (await screen.findByText("Feishu setup started")).parentElement;
     expect(setupNotice?.textContent).toContain(
       "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",
@@ -1741,17 +2213,36 @@ describe("OpenTag Web App Shell", () => {
 
   it.each([
     ["feishu", "Reauthorize Feishu"],
-    ["slack", "Slack reauthorization is not available in this release."],
+    ["slack", "Reauthorize Slack"],
   ] as const)("offers provider-correct recovery when %s needs additional scopes", async (provider, recovery) => {
     installApi("admin", { bound: true, provider, scopeReauth: true });
-    window.history.replaceState({}, "", `/agents/${agentId}/im`);
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Enable all messages" }));
+    fireEvent.click(await screen.findByRole("button", { name: "All messages" }));
     expect(await screen.findByText("Additional IM scopes are required")).toBeTruthy();
     expect(await screen.findByText(recovery)).toBeTruthy();
     if (provider === "slack") expect(screen.queryByRole("button", { name: "Reauthorize Feishu" })).toBeNull();
     confirm.mockRestore();
+  });
+
+  it("starts a dedicated customer-owned Slack App setup from the Agent IM tab", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Slack App" }));
+
+    expect(await screen.findByRole("link", { name: /Create a dedicated Slack App/ })).toBeTruthy();
+    expect(screen.getByLabelText("Bot User OAuth Token")).toBeTruthy();
+    expect(screen.getByLabelText("Signing Secret")).toBeTruthy();
+    expect(screen.getByText(/files:read/)).toBeTruthy();
+    const request = vi
+      .mocked(fetch)
+      .mock.calls.find(
+        ([input, init]) => String(input).endsWith("/im-binding/slack/setup-attempts") && init?.method === "POST",
+      );
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "create" });
   });
 
   it("creates a Computer connection command only after an explicit admin click", async () => {
@@ -1833,7 +2324,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
     expect(await screen.findByRole("heading", { name: "Connect messaging" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Set up later" }));
-    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}/general`));
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}`));
     const createCall = vi
       .mocked(fetch)
       .mock.calls.find(
@@ -1911,9 +2402,11 @@ describe("OpenTag Web App Shell", () => {
     });
     window.history.replaceState({}, "", "/agents/new");
     render(<App />);
-    expect(await screen.findByText("Codex · Ada's Mac")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Change" })).toBeNull();
-    expect(screen.queryByText(/Claude Code/)).toBeNull();
+    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
+    expect(screen.getByText("Codex")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Change Runtime" }));
+    const claudeCode = screen.getByRole("button", { name: /Claude Code Sign-in required/ });
+    expect(claudeCode.hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "Create Agent" }).hasAttribute("disabled")).toBe(false);
     fireEvent.change(screen.getByLabelText("Display name"), { target: { value: "Codex Reviewer" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
@@ -1966,19 +2459,23 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "New Agent" }));
     const dialog = await screen.findByRole("dialog", { name: "New Agent" });
-    await within(dialog).findByText("Codex · Ada's Mac");
-    expect(within(dialog).queryByRole("button", { name: "Change" })).toBeNull();
+    await within(dialog).findByText("Ada's Mac");
+    expect(within(dialog).getByText("Codex")).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Change Runtime" }));
+    expect(
+      within(dialog)
+        .getByRole("button", { name: /Claude Code Unavailable/ })
+        .hasAttribute("disabled"),
+    ).toBe(true);
 
     claudeReadiness.status = "ready";
     window.dispatchEvent(new Event("focus"));
-    const change = await within(dialog).findByRole("button", { name: "Change" });
-    fireEvent.click(change);
-    fireEvent.click(within(dialog).getByRole("button", { name: /Claude Code/ }));
-    expect(await within(dialog).findByText("Claude Code · Ada's Mac")).toBeTruthy();
+    fireEvent.click(await within(dialog).findByRole("button", { name: /Claude Code Ready/ }));
+    expect(await within(dialog).findByText("Claude Code")).toBeTruthy();
 
     claudeReadiness.status = "unavailable";
     window.dispatchEvent(new Event("focus"));
-    expect(await within(dialog).findByText("Codex · Ada's Mac")).toBeTruthy();
+    expect(await within(dialog).findByText("Codex")).toBeTruthy();
 
     ownComputerReadStatus = 503;
     window.dispatchEvent(new Event("focus"));
@@ -2031,8 +2528,34 @@ describe("OpenTag Web App Shell", () => {
     ).toBe(false);
   });
 
-  it("loads standalone onboarding when selected Team preference storage is unavailable", async () => {
+  it("routes an admin with incomplete Team setup into onboarding", async () => {
+    installApi("admin", { setupCompletedAt: null });
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Set up OpenTag" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
+  });
+
+  it("keeps completed Teams out of onboarding even when it is requested directly", async () => {
     installApi("admin");
+    window.history.replaceState({}, "", "/onboarding");
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents");
+  });
+
+  it("keeps a member out of incomplete onboarding and names the admin dependency", async () => {
+    installApi("member", { setupCompletedAt: null });
+    window.history.replaceState({}, "", "/onboarding");
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents");
+    expect(
+      screen.getByText("Team setup is not complete. An administrator needs to prepare the first Agent."),
+    ).toBeTruthy();
+  });
+
+  it("loads standalone onboarding when selected Team preference storage is unavailable", async () => {
+    installApi("admin", { computerProviderReadiness: [], setupCompletedAt: null });
     window.history.replaceState({}, "", "/onboarding");
     const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("Storage unavailable");
@@ -2057,7 +2580,8 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     fireEvent.change(await screen.findByLabelText("Workspace name"), { target: { value: "Example" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Workspace" }));
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Set up OpenTag" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
     const createRequests = vi
       .mocked(fetch)
       .mock.calls.filter(([path, init]) => path === "/api/v1/teams" && init?.method === "POST");
@@ -2075,7 +2599,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     fireEvent.change(await screen.findByLabelText("Workspace name"), { target: { value: "示例团队" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Workspace" }));
-    await screen.findByRole("heading", { name: "Agents" });
+    await screen.findByRole("heading", { name: "Set up OpenTag" });
     const requests = vi
       .mocked(fetch)
       .mock.calls.filter(([path, init]) => path === "/api/v1/teams" && init?.method === "POST");
@@ -2088,7 +2612,7 @@ describe("OpenTag Web App Shell", () => {
     expect(new Set(bodies.map((body) => body.name))).toHaveProperty("size", 3);
   });
 
-  it("creates an additional Workspace from the top-level Workspace page and offers both in the account menu", async () => {
+  it("creates an additional Workspace and enters its first-time setup", async () => {
     installApi("admin");
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
@@ -2097,20 +2621,9 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(screen.getByRole("link", { name: "Create Workspace" }));
     fireEvent.change(await screen.findByLabelText("Workspace name"), { target: { value: "Second Team" } });
     fireEvent.click(screen.getByRole("button", { name: "Create Workspace" }));
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
-    const menu = screen.getByRole("group", { name: "Workspaces" });
-    expect(within(menu).getByRole("menuitem", { name: /Example Admin/ })).toBeTruthy();
-    expect(
-      within(menu)
-        .getByRole("menuitem", { name: /Second Team Admin/ })
-        .getAttribute("aria-current"),
-    ).toBe("true");
-    fireEvent.click(screen.getByRole("menuitem", { name: "Workspace settings" }));
-    expect(await screen.findByRole("heading", { name: "Workspace profile" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/workspace");
-    expect(window.location.hash).toBe("");
-    expect(screen.getByRole("link", { name: "Create Workspace" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Set up OpenTag" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/onboarding");
+    expect(window.localStorage.getItem("opentag.selectedTeamId")).toBe(createdTeamId);
   });
 
   it("switches Teams when Team preference storage is unavailable", async () => {
@@ -2140,7 +2653,7 @@ describe("OpenTag Web App Shell", () => {
     }
   });
 
-  it.each([`/agents/${agentId}/general`, "/agents/new"])(
+  it.each([`/agents/${agentId}`, "/agents/new"])(
     "leaves Workspace-scoped Agent route %s when switching Workspaces",
     async (path) => {
       installApi("admin", { alreadyJoinedInvitation: true });

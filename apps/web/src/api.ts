@@ -3,6 +3,9 @@ import {
   AgentAdminConfigSchema,
   type AgentDetail,
   AgentDetailSchema,
+  type AgentUsageDetail,
+  AgentUsageDetailSchema,
+  type AgentUsageWindowDays,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
   agentByIdPath,
@@ -12,7 +15,9 @@ import {
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentReactivatePath,
+  agentSlackSetupAttemptsPath,
   agentSuspendPath,
+  agentUsagePath,
   type ConnectCodeIssueResponse,
   ConnectCodeIssueResponseSchema,
   type CreateAgentRequest,
@@ -51,12 +56,18 @@ import {
   type MeResponse,
   MeResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
+  type SlackSetupAttempt,
+  SlackSetupAttemptSchema,
+  type SubmitSlackSetupCredentialsRequest,
+  slackSetupAttemptPath,
   type TeamInvitation,
   TeamInvitationSchema,
   type TeamMemberAdminConfig,
   TeamMemberAdminConfigSchema,
   type TeamProfile,
   TeamProfileSchema,
+  type TeamSetupCompletion,
+  TeamSetupCompletionSchema,
   teamAgentsPath,
   teamByIdPath,
   teamComputersPath,
@@ -64,6 +75,7 @@ import {
   teamInvitationRotatePath,
   teamMemberPath,
   teamMembersPath,
+  teamSetupCompletePath,
   type UpdateAgentRequest,
   type UpdateTeamMemberRequest,
   type UpdateTeamProfileRequest,
@@ -137,12 +149,24 @@ export class BrowserApi {
     });
   }
 
+  completeTeamSetup(teamId: string, agentId: string): Promise<TeamSetupCompletion> {
+    return this.request(teamSetupCompletePath(teamId), TeamSetupCompletionSchema, {
+      method: "POST",
+      body: JSON.stringify({ agentId }),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
   agents(teamId: string): Promise<ListAgentsResponse> {
     return this.request(teamAgentsPath(teamId), ListAgentsResponseSchema);
   }
 
   agent(agentId: string): Promise<AgentDetail> {
     return this.request(agentByIdPath(agentId), AgentDetailSchema);
+  }
+
+  agentUsage(agentId: string, windowDays: AgentUsageWindowDays): Promise<AgentUsageDetail> {
+    return this.request(agentUsagePath(agentId, windowDays), AgentUsageDetailSchema);
   }
 
   agentConfig(agentId: string): Promise<AgentAdminConfig> {
@@ -211,6 +235,39 @@ export class BrowserApi {
 
   feishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
     return this.request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema);
+  }
+
+  createSlackSetupAttempt(
+    agentId: string,
+    intent: "create" | "reauthorize" | "replace" = "create",
+  ): Promise<SlackSetupAttempt> {
+    return this.request(agentSlackSetupAttemptsPath(agentId), SlackSetupAttemptSchema, {
+      method: "POST",
+      body: JSON.stringify({ intent }),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  submitSlackSetupCredentials(
+    attemptId: string,
+    input: SubmitSlackSetupCredentialsRequest,
+  ): Promise<SlackSetupAttempt> {
+    return this.request(`${slackSetupAttemptPath(attemptId)}/credentials`, SlackSetupAttemptSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  slackSetupAttempt(attemptId: string): Promise<SlackSetupAttempt> {
+    return this.request(slackSetupAttemptPath(attemptId), SlackSetupAttemptSchema);
+  }
+
+  cancelSlackSetupAttempt(attemptId: string): Promise<SlackSetupAttempt> {
+    return this.request(`${slackSetupAttemptPath(attemptId)}/cancel`, SlackSetupAttemptSchema, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
   }
 
   imBindingDiagnostics(imBindingId: string): Promise<ImBindingDiagnostics> {

@@ -176,6 +176,7 @@ vi.mock("../services/im-bindings/index.js", () => ({
 }));
 vi.mock("../services/im-bindings/slack/index.js", () => ({
   DefaultSlackApiClient: class {},
+  SlackSetupService: class {},
   SlackAdapter: class {
     constructor(options: unknown) {
       state.slackAdapterOptions = options;
@@ -184,7 +185,7 @@ vi.mock("../services/im-bindings/slack/index.js", () => ({
 }));
 vi.mock("../services/invitations/index.js", () => ({ InvitationService: class {} }));
 vi.mock("../services/runtime-config/index.js", () => ({ EffectiveRuntimeSnapshotAssembler: class {} }));
-vi.mock("../services/teams/index.js", () => ({ TeamMembershipService: class {} }));
+vi.mock("../services/teams/index.js", () => ({ TeamMembershipService: class {}, TeamSetupService: class {} }));
 vi.mock("../web-app.js", () => ({ defaultWebAppRoot: "/mock-web" }));
 
 import { startServer } from "../index.js";

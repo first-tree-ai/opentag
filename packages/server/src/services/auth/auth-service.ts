@@ -163,6 +163,7 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
         teamDisplayName: teams.displayName,
         teamId: teams.id,
         teamName: teams.name,
+        setupCompletedAt: teams.setupCompletedAt,
       })
       .from(memberships)
       .innerJoin(teams, eq(memberships.teamId, teams.id))
@@ -170,7 +171,10 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
 
     return {
       user: { id: user.id, email: user.email, displayName: user.displayName },
-      memberships: activeMemberships,
+      memberships: activeMemberships.map((membership) => ({
+        ...membership,
+        setupCompletedAt: membership.setupCompletedAt?.toISOString() ?? null,
+      })),
     };
   }
 }

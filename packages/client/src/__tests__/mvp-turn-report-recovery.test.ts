@@ -329,6 +329,7 @@ function turnReport(agentId: string, sessionId: string, suffix: string): TurnRep
     outcome: "completed" as const,
     executionEffects: "completed" as const,
     finalText: `${suffix} result`,
+    usage: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 4 },
     traceSummary: { lastSequence: 1, droppedEvents: 0 },
   };
   return {

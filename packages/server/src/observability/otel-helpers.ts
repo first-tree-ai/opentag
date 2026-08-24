@@ -48,6 +48,8 @@ function isSensitiveKey(key: string): boolean {
 
 function sanitizeString(value: string): string {
   const scrubbed = value
+    // Slack credential material is prefix-recognizable (xoxb-/xoxp-/xoxe-/...); never export it.
+    .replace(/\bxox[a-z]-[\w-]*/gi, "[scrubbed]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [scrubbed]")
     .replace(
       /\b(authorization|cookie|token|secret|credential|password|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi,

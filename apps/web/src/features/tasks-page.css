@@ -665,11 +665,34 @@
   }
 
   .task-tool-call {
+    align-items: start;
     grid-template-columns: 24px minmax(0, 1fr) auto;
+    padding-block: var(--space-2);
+  }
+
+  .task-tool-call .task-action-mark {
+    grid-row: 1 / span 2;
+    margin-top: 1px;
+  }
+
+  .task-tool-action {
+    grid-column: 2;
+    grid-row: 1;
   }
 
   .task-tool-target {
-    display: none;
+    display: block;
+    grid-column: 2 / 4;
+    grid-row: 2;
+    margin-top: 2px;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .task-tool-call .ds-status {
+    grid-column: 3;
+    grid-row: 1;
   }
 }
 
@@ -699,7 +722,7 @@
   }
 
   .task-breadcrumb-actions .tasks-demo-note {
-    display: none;
+    display: inline;
   }
 
   .task-thread-link {

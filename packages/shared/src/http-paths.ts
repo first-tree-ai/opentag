@@ -5,6 +5,7 @@ export const TEAM_BY_ID_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId`;
 export const TEAM_SETUP_COMPLETE_TEMPLATE = `${TEAM_BY_ID_TEMPLATE}/setup/complete`;
 export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
+export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
 export const AGENT_SUSPEND_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/suspend`;
 export const AGENT_REACTIVATE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/reactivate`;
 export const AGENT_IM_BINDING_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding`;
@@ -105,6 +106,11 @@ export function agentByIdPath(agentId: string): string {
 
 export function agentConfigPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/config`;
+}
+
+export function agentUsagePath(agentId: string, windowDays: number): string {
+  const query = new URLSearchParams({ days: String(windowDays) });
+  return `${agentByIdPath(agentId)}/usage?${query.toString()}`;
 }
 
 export function agentSuspendPath(agentId: string): string {

@@ -3,6 +3,9 @@ import {
   AgentAdminConfigSchema,
   type AgentDetail,
   AgentDetailSchema,
+  type AgentUsageDetail,
+  AgentUsageDetailSchema,
+  type AgentUsageWindowDays,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
   agentByIdPath,
@@ -14,6 +17,7 @@ import {
   agentReactivatePath,
   agentSlackSetupAttemptsPath,
   agentSuspendPath,
+  agentUsagePath,
   type ConnectCodeIssueResponse,
   ConnectCodeIssueResponseSchema,
   type CreateAgentRequest,
@@ -159,6 +163,10 @@ export class BrowserApi {
 
   agent(agentId: string): Promise<AgentDetail> {
     return this.request(agentByIdPath(agentId), AgentDetailSchema);
+  }
+
+  agentUsage(agentId: string, windowDays: AgentUsageWindowDays): Promise<AgentUsageDetail> {
+    return this.request(agentUsagePath(agentId, windowDays), AgentUsageDetailSchema);
   }
 
   agentConfig(agentId: string): Promise<AgentAdminConfig> {

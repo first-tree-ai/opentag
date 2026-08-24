@@ -1,3 +1,4 @@
+import type { AgentUsageDetail } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { StrictMode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -41,6 +42,7 @@ function installApi(
   options: {
     agentRead?: () => Promise<void> | void;
     agentReadStatus?: () => number | undefined;
+    agentUsage?: Omit<AgentUsageDetail, "endedAt" | "startedAt" | "windowDays">;
     agentListStatus?: () => number | undefined;
     agentActivity?: { state: "idle" } | { state: "working"; startedAt: string };
     emptyAgents?: boolean;
@@ -436,6 +438,52 @@ function installApi(
         201,
       );
     }
+    if (path.startsWith(`/api/v1/agents/${agentId}/usage?`)) {
+      const days = Number(new URL(path, "https://opentag.test").searchParams.get("days"));
+      return json({
+        windowDays: days,
+        startedAt: "2026-07-25T12:00:00.000Z",
+        endedAt: "2026-08-24T12:00:00.000Z",
+        ...(options.agentUsage ?? {
+          tasks: 32,
+          measuredTasks: 31,
+          failed: 0,
+          inputTokens: 360_000,
+          cachedInputTokens: 120_000,
+          outputTokens: 68_000,
+          tokens: 428_000,
+          daily: [
+            {
+              date: "2026-08-20",
+              tasks: 15,
+              measuredTasks: 15,
+              inputTokens: 160_000,
+              cachedInputTokens: 50_000,
+              outputTokens: 30_000,
+              tokens: 190_000,
+            },
+            {
+              date: "2026-08-22",
+              tasks: 0,
+              measuredTasks: 0,
+              inputTokens: 0,
+              cachedInputTokens: 0,
+              outputTokens: 0,
+              tokens: 0,
+            },
+            {
+              date: "2026-08-24",
+              tasks: 17,
+              measuredTasks: 16,
+              inputTokens: 200_000,
+              cachedInputTokens: 70_000,
+              outputTokens: 38_000,
+              tokens: 238_000,
+            },
+          ],
+        }),
+      });
+    }
     if (path === `/api/v1/agents/${agentId}`) {
       if (init?.method === "PATCH" && options.scopeReauth) {
         return json(
@@ -622,9 +670,9 @@ describe("OpenTag Web App Shell", () => {
       within(workspaceNavigation)
         .getAllByRole("link")
         .map((item) => item.textContent),
-    ).toEqual(["Agents", "Tasks", "Integrations", "Skills", "Usage"]);
+    ).toEqual(["Agents", "Tasks", "Integrations", "Skills"]);
     const navigationIcons = workspaceNavigation.querySelectorAll(".primary-nav-icon");
-    expect(navigationIcons).toHaveLength(5);
+    expect(navigationIcons).toHaveLength(4);
     expect(Array.from(navigationIcons).every((icon) => icon.getAttribute("aria-hidden") === "true")).toBe(true);
   });
 
@@ -1228,22 +1276,97 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/general`);
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    const navigation = screen.getByRole("navigation", { name: "Agent settings" });
+    const navigation = screen.getByRole("navigation", { name: "Agent sections" });
     expect(navigation.className).toContain("ds-tabs");
     expect(navigation.className).toContain("ds-tabs--collapsible");
     expect(
       within(navigation)
         .getAllByRole("link")
         .map((link) => link.textContent),
-    ).toEqual(["Overview", "Runtime", "Messaging", "Integrations", "Skills"]);
+    ).toEqual(["Overview", "Usage", "Runtime", "Messaging", "Integrations", "Skills"]);
     expect(within(navigation).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBe("page");
+  });
+
+  it("shows a compact 30-day Token summary in Agent Overview", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+
+    const heading = await screen.findByRole("heading", { name: "Recent usage" });
+    const section = heading.closest("section");
+    if (!section) throw new Error("Recent usage section was not rendered");
+    expect(await within(section).findByText("428K")).toBeTruthy();
+    expect(within(section).getByText("32")).toBeTruthy();
+    expect(within(section).getByText("Average per measured Task")).toBeTruthy();
+    expect(within(section).getByText("13.8K")).toBeTruthy();
+    expect(within(section).getByText("Token totals are available for 31 of 32 Tasks.")).toBeTruthy();
+    expect(within(section).getByRole("link", { name: "View usage details" }).getAttribute("href")).toBe(
+      `/agents/${agentId}/usage`,
+    );
+  });
+
+  it("marks the average unavailable when no Tasks have measured Token usage", async () => {
+    installApi("admin", {
+      agentUsage: {
+        tasks: 3,
+        measuredTasks: 0,
+        failed: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        tokens: 0,
+        daily: [
+          {
+            date: "2026-08-24",
+            tasks: 3,
+            measuredTasks: 0,
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            tokens: 0,
+          },
+        ],
+      },
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/general`);
+    render(<App />);
+
+    const heading = await screen.findByRole("heading", { name: "Recent usage" });
+    const section = heading.closest("section");
+    if (!section) throw new Error("Recent usage section was not rendered");
+    expect(await within(section).findByText("—")).toBeTruthy();
+    expect(within(section).getByText("Token totals are unavailable for 3 Tasks.")).toBeTruthy();
+  });
+
+  it("shows detailed Agent Token usage and changes the selected period", async () => {
+    installApi("admin");
+    window.history.replaceState({}, "", `/agents/${agentId}/usage`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
+    expect(await screen.findByRole("img", { name: /428K Tokens used during the last 30 days/ })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Token usage over time" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Token breakdown" })).toBeTruthy();
+    expect(screen.getAllByText(/0 Tokens$/).length).toBeGreaterThan(0);
+    expect(screen.getByText("Input")).toBeTruthy();
+    expect(screen.getByText("Output")).toBeTruthy();
+    expect(screen.getByText("Cached input")).toBeTruthy();
+    expect(screen.queryByText("Turns")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Usage period"), { target: { value: "7" } });
+    await waitFor(() =>
+      expect(
+        vi.mocked(fetch).mock.calls.some(([input]) => String(input) === `/api/v1/agents/${agentId}/usage?days=7`),
+      ).toBe(true),
+    );
+    expect(await screen.findByRole("img", { name: /428K Tokens used during the last 7 days/ })).toBeTruthy();
   });
 
   it("navigates Agent tabs by link and compact select with stable active state", async () => {
     installApi("admin", { bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}/general`);
     render(<App />);
-    const navigation = await screen.findByRole("navigation", { name: "Agent settings" });
+    const navigation = await screen.findByRole("navigation", { name: "Agent sections" });
     const integrations = within(navigation).getByRole("link", { name: "Integrations" });
     integrations.focus();
     expect(document.activeElement).toBe(integrations);
@@ -1264,7 +1387,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin", { bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}/runtime`);
     render(<App />);
-    const navigation = await screen.findByRole("navigation", { name: "Agent settings" });
+    const navigation = await screen.findByRole("navigation", { name: "Agent sections" });
     fireEvent.click(within(navigation).getByRole("link", { name: "Messaging" }));
     expect(await screen.findByRole("heading", { name: "Contact channel" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/im`);
@@ -1742,7 +1865,7 @@ describe("OpenTag Web App Shell", () => {
     },
   );
 
-  it("navigates between the minimal capability pages", async () => {
+  it("navigates between the remaining minimal capability pages", async () => {
     installApi("admin");
     window.history.replaceState({}, "", "/skills");
     render(<App />);
@@ -1753,9 +1876,16 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("table", { name: "Demo Integrations" })).toBeTruthy();
     expect(screen.getByText("Demo data")).toBeTruthy();
     expect(screen.getByText("GitHub")).toBeTruthy();
-    fireEvent.click(screen.getByRole("link", { name: "Usage" }));
-    expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
-    expect(screen.getByLabelText("Usage metrics")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Usage" })).toBeNull();
+  });
+
+  it.each(["/usage", "/settings/usage"])("redirects removed Workspace Usage URL %s to Agents", async (path) => {
+    installApi("admin");
+    window.history.replaceState({}, "", path);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents");
   });
 
   it("lets admins rename a Workspace from its top-level page without changing the CLI identifier", async () => {

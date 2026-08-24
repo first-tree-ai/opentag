@@ -42,10 +42,10 @@ import { ApiError, browserApi } from "./api.js";
 // Google-provided, pre-approved button asset: https://developers.google.com/identity/branding-guidelines
 import googleSignInButton from "./assets/google-sign-in-light@2x.png";
 import { CreateTeamForm } from "./create-team-form.js";
+import { AgentUsageOverview, AgentUsageTab } from "./features/agent-usage.js";
 import { IntegrationsPage } from "./features/integrations-page.js";
 import { SkillsPage } from "./features/skills-page.js";
 import { TaskDetailPage, TasksPage } from "./features/tasks-page.js";
-import { UsagePage } from "./features/usage-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
 import { SlackSetup } from "./im/slack-setup.js";
 import { OnboardingPage } from "./onboarding/page.js";
@@ -424,7 +424,7 @@ export function AppRouter() {
             <Route path="/integrations" element={<IntegrationsPage />} />
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/resources" element={<Navigate replace to="/skills" />} />
-            <Route path="/usage" element={<UsagePage />} />
+            <Route path="/usage" element={<Navigate replace to="/agents" />} />
             <Route path="/members" element={<Navigate replace to="/workspace#members" />} />
             <Route path="/account" element={<AccountPage />} />
             <Route path="/workspace" element={<WorkspacePage />} />
@@ -438,7 +438,7 @@ export function AppRouter() {
             <Route path="/settings/computers" element={<Navigate replace to="/agents/new" />} />
             <Route path="/settings/resources" element={<Navigate replace to="/skills" />} />
             <Route path="/settings/integrations" element={<Navigate replace to="/integrations" />} />
-            <Route path="/settings/usage" element={<Navigate replace to="/usage" />} />
+            <Route path="/settings/usage" element={<Navigate replace to="/agents" />} />
             <Route path="/settings/:section" element={<Navigate replace to="/workspace" />} />
           </Route>
         </Route>
@@ -857,10 +857,6 @@ function AppShell() {
               <WorkspaceNavIcon name="skills" />
               Skills
             </NavLink>
-            <NavLink to="/usage" onClick={() => setNavigationOpen(false)}>
-              <WorkspaceNavIcon name="usage" />
-              Usage
-            </NavLink>
           </nav>
         </div>
         <div className="sidebar-bottom">
@@ -997,7 +993,7 @@ function AppShell() {
   );
 }
 
-function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "skills" | "tasks" | "usage" }) {
+function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "skills" | "tasks" }) {
   return (
     <svg
       aria-hidden="true"
@@ -1033,12 +1029,6 @@ function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "skills"
         <>
           <path d="m12 3 1.5 4.2L18 9l-4.5 1.8L12 15l-1.5-4.2L6 9l4.5-1.8L12 3Z" />
           <path d="m18 14 .8 2.2L21 17l-2.2.8L18 20l-.8-2.2L15 17l2.2-.8L18 14Z" />
-        </>
-      ) : null}
-      {name === "usage" ? (
-        <>
-          <path d="M5 19V9M12 19V5M19 19v-7" />
-          <path d="M3.5 19.5h17" />
         </>
       ) : null}
     </svg>
@@ -1422,6 +1412,7 @@ function markOwnComputersUnconfirmed(value: { computers: Computer[] }): { comput
 
 const agentSections = [
   { key: "general", label: "Overview" },
+  { key: "usage", label: "Usage" },
   { key: "runtime", label: "Runtime" },
   { key: "im", label: "Messaging" },
   { key: "integrations", label: "Integrations" },
@@ -1495,7 +1486,7 @@ function AgentDetailPage() {
             </select>
           </label>
           <div className="object-layout">
-            <Tabs collapseOnMobile label="Agent settings">
+            <Tabs collapseOnMobile label="Agent sections">
               {agentSections.map((section) => (
                 <NavLink to={`/agents/${agentId}/${section.key}`} key={section.key}>
                   {section.label}
@@ -1589,6 +1580,7 @@ function WorkspaceSettings({
 
 function AgentTab({ agent, tab, onAgentChanged }: { agent: AgentDetailView; tab: string; onAgentChanged: () => void }) {
   if (tab === "general") return <GeneralTab agent={agent} onAgentChanged={onAgentChanged} />;
+  if (tab === "usage") return <AgentUsageTab agentId={agent.id} />;
   if (tab === "runtime") return <RuntimeTab agent={agent} onAgentChanged={onAgentChanged} />;
   if (tab === "im") return <ImTab agent={agent} onAgentChanged={onAgentChanged} />;
   if (tab === "integrations") return <AgentIntegrationsTab />;
@@ -1615,6 +1607,7 @@ function GeneralTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgent
           ]}
         />
       </section>
+      <AgentUsageOverview agentId={agent.id} />
       <section
         className="overview-section"
         id="permissions"
@@ -2757,6 +2750,7 @@ function initials(value: string): string {
 function agentSectionDescription(section: (typeof agentSections)[number]["key"]): string {
   const descriptions = {
     general: "Review this Agent's identity, ownership, and Workspace permissions.",
+    usage: "Review this Agent's Token use over time.",
     runtime: "Review this Agent's Computer, runtime, and instructions.",
     im: "See where teammates can contact this Agent and which messages trigger work.",
     integrations: "Review the external services and data available to this Agent.",

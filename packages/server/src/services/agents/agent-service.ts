@@ -3,6 +3,7 @@ import {
   AGENT_USAGE_WINDOW_DAYS,
   type AgentAdminConfig,
   type AgentDetail,
+  type AgentListActivity,
   type AgentListItem,
   type AgentRuntimeConfig,
   AgentRuntimeConfigSchema,
@@ -63,6 +64,38 @@ interface AgentSafeRow {
   status: AgentRow["status"];
   createdAt: Date;
   updatedAt: Date;
+}
+
+interface AgentActivityEvidence {
+  acceptedAt: Date | null;
+  agentId: string;
+  bindingStatus: string;
+  reportedAt: Date | null;
+  sessionEndedAt: Date | null;
+  state: string;
+}
+
+function projectActivityByAgent(rows: readonly AgentActivityEvidence[]): Map<string, AgentListActivity> {
+  const workingStartedAt = new Map<string, Date>();
+  for (const row of rows) {
+    if (
+      row.state !== "accepted" ||
+      row.reportedAt !== null ||
+      !row.acceptedAt ||
+      row.bindingStatus !== "active" ||
+      row.sessionEndedAt !== null
+    ) {
+      continue;
+    }
+    const current = workingStartedAt.get(row.agentId);
+    if (!current || row.acceptedAt > current) workingStartedAt.set(row.agentId, row.acceptedAt);
+  }
+  return new Map(
+    [...workingStartedAt].map(([agentId, startedAt]) => [
+      agentId,
+      { state: "working", startedAt: startedAt.toISOString() },
+    ]),
+  );
 }
 
 export interface AgentSessionStopTarget {
@@ -432,19 +465,9 @@ export class AgentService {
       );
 
     const usageByAgent = new Map<string, { failed: number; tasks: number; tokens: number }>();
-    const workingByAgent = new Map<string, Date>();
+    const activityByAgent = projectActivityByAgent(activityRows);
     const runtimeProviderByAgent = new Map(summaries.map((agent) => [agent.id, agent.runtimeProvider]));
     for (const row of activityRows) {
-      if (
-        row.state === "accepted" &&
-        row.reportedAt === null &&
-        row.acceptedAt &&
-        row.bindingStatus === "active" &&
-        row.sessionEndedAt === null
-      ) {
-        const currentStartedAt = workingByAgent.get(row.agentId);
-        if (!currentStartedAt || row.acceptedAt > currentStartedAt) workingByAgent.set(row.agentId, row.acceptedAt);
-      }
       if (!row.acceptedAt || row.acceptedAt < usageStartedAt) continue;
       const usage = usageByAgent.get(row.agentId) ?? { failed: 0, tasks: 0, tokens: 0 };
       usage.tasks += 1;
@@ -465,15 +488,9 @@ export class AgentService {
     return {
       agents: summaries.map((agent): AgentListItem => {
         const usage = usageByAgent.get(agent.id) ?? { failed: 0, tasks: 0, tokens: 0 };
-        const currentWorkStartedAt = workingByAgent.get(agent.id);
         return {
           ...agent,
-          activity: currentWorkStartedAt
-            ? {
-                state: "working",
-                startedAt: currentWorkStartedAt.toISOString(),
-              }
-            : { state: "idle" },
+          activity: activityByAgent.get(agent.id) ?? { state: "idle" },
           usage: { windowDays: AGENT_USAGE_WINDOW_DAYS, ...usage },
         };
       }),
@@ -506,7 +523,30 @@ export class AgentService {
       .limit(1);
     if (!row) throw resourceNotFound();
     const role = await this.#requireTeamMembership(this.#database, callerUserId, row.teamId);
-    return { ...toAgentSummary(row), viewerCapabilities: { canManage: role === "admin" } };
+    const activityRows = await this.#database
+      .select({
+        acceptedAt: imMessageDeliveries.acceptedAt,
+        agentId: imBindings.agentId,
+        reportedAt: imMessageDeliveries.reportedAt,
+        bindingStatus: imBindings.status,
+        sessionEndedAt: sessions.endedAt,
+        state: imMessageDeliveries.state,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          eq(imBindings.agentId, agentId),
+          eq(imMessageDeliveries.state, "accepted"),
+          isNull(imMessageDeliveries.reportedAt),
+        ),
+      );
+    return {
+      ...toAgentSummary(row),
+      activity: projectActivityByAgent(activityRows).get(agentId) ?? { state: "idle" },
+      viewerCapabilities: { canManage: role === "admin" },
+    };
   }
 
   async getUsageById(
@@ -514,7 +554,7 @@ export class AgentService {
     agentId: string,
     windowDays: AgentUsageWindowDays,
   ): Promise<AgentUsageDetail> {
-    const agent = await this.getById(callerUserId, agentId);
+    const { agent } = await this.#resolveAgentScope(this.#database, callerUserId, agentId);
     const usageEndedAt = this.#now();
     const usageStartedAt = new Date(usageEndedAt.getTime() - windowDays * 24 * 60 * 60 * 1_000);
     const rows = await this.#database

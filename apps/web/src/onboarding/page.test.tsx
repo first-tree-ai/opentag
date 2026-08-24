@@ -324,7 +324,7 @@ describe("OnboardingPage", () => {
     expect(await screen.findByRole("heading", { name: "OpenTag is ready" })).toBeTruthy();
 
     const manage = screen.getByRole("link", { name: "Manage this Agent" }) as HTMLAnchorElement;
-    expect(new URL(manage.href).pathname).toBe(`/agents/${agentId}/general`);
+    expect(new URL(manage.href).pathname).toBe(`/agents/${agentId}`);
     expect(screen.getByRole("link", { name: "Open Feishu" })).toBeTruthy();
   });
 

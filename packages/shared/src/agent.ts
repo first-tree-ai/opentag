@@ -97,10 +97,6 @@ export const AgentSummarySchema = AgentIdentitySchema.extend({
     .strict(),
 }).strict();
 
-export const AgentDetailSchema = AgentSummarySchema.extend({
-  viewerCapabilities: z.object({ canManage: z.boolean() }).strict(),
-}).strict();
-
 export const AGENT_USAGE_WINDOW_DAYS = 30;
 export const AGENT_USAGE_WINDOW_OPTIONS = [7, AGENT_USAGE_WINDOW_DAYS, 90] as const;
 export const AgentUsageWindowDaysSchema = z.union([
@@ -118,6 +114,11 @@ export const AgentListActivitySchema = z.discriminatedUnion("state", [
     })
     .strict(),
 ]);
+
+export const AgentDetailSchema = AgentSummarySchema.extend({
+  activity: AgentListActivitySchema,
+  viewerCapabilities: z.object({ canManage: z.boolean() }).strict(),
+}).strict();
 
 export const AgentUsageSummarySchema = z
   .object({

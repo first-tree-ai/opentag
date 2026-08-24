@@ -208,41 +208,69 @@ function TaskConversationExchange({ task, exchange }: { task: TaskPreview; excha
           </span>
         </header>
 
-        <TaskAgentProcess exchange={exchange} id={processId} />
-
-        {exchange.finalAnswer ? (
-          <section className="task-agent-response" aria-label="Agent final answer">
-            {exchange.finalAnswer.blocks.map((block) => {
-              if (block.kind === "paragraph") {
-                return (
-                  <p className="task-answer-paragraph" key={block.text}>
-                    {block.text}
-                  </p>
-                );
-              }
-              return (
-                <ul key={block.items.join("\n")}>
-                  {block.items.map((item) => (
-                    <li key={item}>{item}</li>
-                  ))}
-                </ul>
-              );
-            })}
-            {exchange.finalAnswerObservedAt ? (
-              <p className="task-result-observation">
-                Recorded locally at {exchange.finalAnswerObservedAt} · Open Feishu for the authoritative thread
-              </p>
-            ) : null}
-          </section>
+        {exchange.status === "processing" ? <TaskProgressSummary exchange={exchange} /> : null}
+        {exchange.finalAnswer ? <TaskAgentAnswer exchange={exchange} finalAnswer={exchange.finalAnswer} /> : null}
+        {exchange.status === "needs_attention" && !exchange.finalAnswer ? (
+          <p className="task-attention-summary">
+            This request needs attention before it can continue. Open the Feishu thread for the latest context.
+          </p>
         ) : null}
+        <TaskAgentProcess exchange={exchange} id={processId} />
       </article>
+    </section>
+  );
+}
+
+function TaskProgressSummary({ exchange }: { exchange: TaskExchange }) {
+  const latestReasoning = [...exchange.events].reverse().find((event) => event.kind === "reasoning_summary");
+  return (
+    <p className="task-progress-summary">
+      {latestReasoning?.kind === "reasoning_summary" ? latestReasoning.text : "Working on the request."}
+    </p>
+  );
+}
+
+function TaskAgentAnswer({
+  exchange,
+  finalAnswer,
+}: {
+  exchange: TaskExchange;
+  finalAnswer: NonNullable<TaskExchange["finalAnswer"]>;
+}) {
+  return (
+    <section className="task-agent-response" aria-label="Agent final answer">
+      {finalAnswer.blocks.map((block) => {
+        if (block.kind === "paragraph") {
+          return (
+            <p className="task-answer-paragraph" key={block.text}>
+              {block.text}
+            </p>
+          );
+        }
+        return (
+          <ul key={block.items.join("\n")}>
+            {block.items.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        );
+      })}
+      {exchange.finalAnswerObservedAt ? (
+        <p className="task-result-observation">
+          Recorded locally at {exchange.finalAnswerObservedAt} · Open Feishu for the authoritative thread
+        </p>
+      ) : null}
     </section>
   );
 }
 
 function TaskAgentProcess({ exchange, id }: { exchange: TaskExchange; id: string }) {
   const toolCalls = exchange.events.filter((event): event is TaskToolCall => event.kind === "tool_call");
-  const processItems = groupTaskProcessItems(exchange.events);
+  const surfacedReasoningId =
+    exchange.status === "processing"
+      ? [...exchange.events].reverse().find((event) => event.kind === "reasoning_summary")?.id
+      : undefined;
+  const processItems = groupTaskProcessItems(exchange.events).filter((item) => item.id !== surfacedReasoningId);
   const firstToolGroup = processItems.find((item): item is TaskToolCallGroup => item.kind === "tool_call_group");
   const usage = exchange.usage.total
     ? [`${exchange.usage.total} tokens`]
@@ -250,7 +278,8 @@ function TaskAgentProcess({ exchange, id }: { exchange: TaskExchange; id: string
         exchange.usage.input ? `${exchange.usage.input} input` : null,
         exchange.usage.output ? `${exchange.usage.output} output` : null,
       ].filter(Boolean);
-  const processSummary = exchange.status === "processing" ? "Working" : `Worked for ${exchange.duration}`;
+  const processSummary =
+    exchange.status === "processing" ? "Activity details · In progress" : `Activity details · ${exchange.duration}`;
   const processMetadata = [
     `${toolCalls.length} ${toolCalls.length === 1 ? "tool call" : "tool calls"}`,
     `${exchange.retries} ${exchange.retries === 1 ? "retry" : "retries"}`,
@@ -258,7 +287,7 @@ function TaskAgentProcess({ exchange, id }: { exchange: TaskExchange; id: string
   ];
 
   return (
-    <details className="task-agent-process" open={exchange.status !== "completed"}>
+    <details className="task-agent-process">
       <summary id={id}>
         <span>{processSummary}</span>
         <Icon name="chevron-right" />

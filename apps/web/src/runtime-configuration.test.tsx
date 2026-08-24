@@ -28,10 +28,10 @@ const config: AgentAdminConfig = {
 };
 
 describe("RuntimeConfigurationForm", () => {
-  it("presents a concise Runtime summary without exposing the Turn timeout", () => {
+  it("presents concise Execution choices without exposing the request timeout", () => {
     render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} />);
 
-    expect(screen.getByRole("heading", { name: "Runtime" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Execution" })).toBeTruthy();
     expect(screen.getByText("Codex")).toBeTruthy();
     expect(screen.getAllByText("Provider default")).toHaveLength(2);
     expect(screen.getByRole("heading", { name: "Agent instructions" })).toBeTruthy();
@@ -129,7 +129,7 @@ describe("RuntimeConfigurationForm", () => {
         reasoningEffort: "high",
       },
     });
-    expect((await screen.findByRole("status")).textContent).toBe("Runtime settings saved.");
+    expect((await screen.findByRole("status")).textContent).toBe("Execution settings saved.");
     expect(screen.getByText("gpt-5.6-codex")).toBeTruthy();
   });
 

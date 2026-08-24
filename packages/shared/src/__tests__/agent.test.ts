@@ -171,9 +171,19 @@ describe("Agent contracts", () => {
         ],
       }),
     ).toThrow();
-    expect(AgentDetailSchema.parse({ ...summary, viewerCapabilities: { canManage: false } })).toMatchObject({
+    expect(
+      AgentDetailSchema.parse({ ...summary, activity: { state: "idle" }, viewerCapabilities: { canManage: false } }),
+    ).toMatchObject({
+      activity: { state: "idle" },
       viewerCapabilities: { canManage: false },
     });
+    expect(() =>
+      AgentDetailSchema.parse({
+        ...summary,
+        activity: { state: "working", startedAt: agent.updatedAt, summary: "Private conversation content" },
+        viewerCapabilities: { canManage: false },
+      }),
+    ).toThrow();
     expect(() => AgentAdminConfigSchema.parse({ ...agent, deletedAt: null })).toThrow();
     expect(() => AgentRuntimeConfigSchema.parse({ ...agent.runtimeConfig, allowedTools: [] })).toThrow();
   });

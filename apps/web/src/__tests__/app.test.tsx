@@ -1414,14 +1414,19 @@ describe("OpenTag Web App Shell", () => {
     confirm.mockRestore();
   });
 
-  it("shows an honest Tasks unavailable state without synthetic records", async () => {
+  it("shows the Tasks demo and opens a Task detail", async () => {
     installApi("admin");
     window.history.replaceState({}, "", "/tasks");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Tasks" })).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Tasks are not available yet" })).toBeTruthy();
-    expect(screen.getByText("The current server does not expose a Tasks API.")).toBeTruthy();
-    expect(screen.getByText("No sample, inferred, or locally generated Task records are shown.")).toBeTruthy();
+    expect(screen.getByText("Demo data")).toBeTruthy();
+    const task = screen.getByRole("link", {
+      name: "Review the Q3 launch plan, identify unresolved owners, and flag every item without a confirmed date.",
+    });
+    fireEvent.click(task);
+    expect(await screen.findByRole("heading", { name: "Launch plan reviewed" })).toBeTruthy();
+    expect(screen.getByLabelText("Task source").textContent).toContain("Product Launch");
+    expect(window.location.pathname).toBe("/tasks/q3-launch-readiness");
   });
 
   it("groups invitations with Members", async () => {

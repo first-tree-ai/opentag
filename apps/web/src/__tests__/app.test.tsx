@@ -1330,7 +1330,9 @@ describe("OpenTag Web App Shell", () => {
     expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(false);
     fireEvent.click(deleteButton);
     await waitFor(() => expect(window.location.pathname).toBe("/agents"));
-    expect(confirm).toHaveBeenLastCalledWith("Permanently delete Reviewer? This Agent cannot be restored.");
+    expect(confirm).toHaveBeenLastCalledWith(
+      "Permanently delete Reviewer? This will end active Sessions, remove messaging credentials and execution settings, and retain Session and message history. This Agent cannot be restored.",
+    );
     confirm.mockRestore();
   });
 
@@ -1365,6 +1367,20 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Execution" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/settings/execution`);
     expect(screen.queryByText("Runtime")).toBeNull();
+  });
+
+  it.each([
+    ["integrations", "Agent integrations are not available here", "Browse Workspace integrations"],
+    ["skills", "Agent skills are not available here", "Browse Workspace skills"],
+  ])("keeps legacy Agent %s URLs inside an explicit Agent-scoped boundary", async (section, heading, action) => {
+    installApi("admin");
+    window.history.replaceState({}, "", `/agents/${agentId}/${section}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: heading })).toBeTruthy();
+    expect(window.location.pathname).toBe(`/agents/${agentId}/${section}`);
+    expect(screen.getByText(/assigned to Reviewer.*Workspace catalog is separate/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: action }).getAttribute("href")).toBe(`/${section}`);
   });
 
   it("redirects the removed Agent Access URL to Workspace members", async () => {
@@ -1444,7 +1460,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByText("Needs attention")).toBeTruthy();
-    expect(screen.getByText("Runtime unavailable")).toBeTruthy();
+    expect(screen.getByText("Computer not ready")).toBeTruthy();
     expect(screen.queryByText("Ready")).toBeNull();
   });
 

@@ -1186,7 +1186,7 @@ function agentCardStatus(agent: AgentListItem): {
       agent.availability.reason === "computer_offline"
         ? "Computer offline"
         : agent.availability.reason === "runtime_unavailable"
-          ? "Runtime unavailable"
+          ? "Computer not ready"
           : "Messaging unavailable";
     return {
       detail,
@@ -1454,11 +1454,47 @@ function LegacyAgentSectionRedirect() {
     general: `/agents/${agentId}`,
     runtime: `/agents/${agentId}/settings/execution`,
     im: `/agents/${agentId}/settings/messaging`,
-    integrations: "/integrations",
-    skills: "/skills",
   };
   const destination = destinations[legacySection];
-  return destination ? <Navigate replace to={destination} /> : <NotFoundPage />;
+  if (destination) return <Navigate replace to={destination} />;
+  if (legacySection === "integrations" || legacySection === "skills") {
+    return <LegacyAgentCapabilityPage capability={legacySection} />;
+  }
+  return <NotFoundPage />;
+}
+
+function LegacyAgentCapabilityPage({ capability }: { capability: "integrations" | "skills" }) {
+  const { agentId = "" } = useParams();
+  const state = useResource(() => loadAgentDetail(agentId), agentId, {
+    onBackgroundError: markAgentDetailUnconfirmed,
+  });
+  const label = capability === "integrations" ? "integrations" : "skills";
+  return (
+    <AsyncState state={state}>
+      {(agent) => (
+        <section className="object-page">
+          <AgentObjectHeader agent={agent} />
+          <div className="agent-secondary-page">
+            <header className="section-header">
+              <h2>Agent {label} are not available here</h2>
+              <p>
+                OpenTag does not currently show {label} assigned to {agent.displayName}. The Workspace catalog is
+                separate from this Agent.
+              </p>
+            </header>
+            <div className="actions">
+              <Link className={buttonClassName()} to={`/agents/${agent.id}`}>
+                Back to {agent.displayName}
+              </Link>
+              <Link className={buttonClassName({ variant: "secondary" })} to={`/${capability}`}>
+                Browse Workspace {label}
+              </Link>
+            </div>
+          </div>
+        </section>
+      )}
+    </AsyncState>
+  );
 }
 
 function AgentDetailPage() {
@@ -1655,13 +1691,13 @@ function AgentSettingsPage() {
                   </NavLink>
                 ))}
               </nav>
-              <main className="agent-settings-content">
+              <div className="agent-settings-content">
                 <AgentSettingsContent
                   agent={agent}
                   section={selected}
                   onAgentChanged={() => setRefreshVersion((value) => value + 1)}
                 />
-              </main>
+              </div>
             </div>
           </section>
         );
@@ -1934,7 +1970,12 @@ function AgentManageSettings({
     }
   }
   async function deleteAgent() {
-    if (!window.confirm(`Permanently delete ${config.displayName}? This Agent cannot be restored.`)) return;
+    if (
+      !window.confirm(
+        `Permanently delete ${config.displayName}? This will end active Sessions, remove messaging credentials and execution settings, and retain Session and message history. This Agent cannot be restored.`,
+      )
+    )
+      return;
     try {
       await browserApi.deleteAgent(config.id);
       navigate("/agents");

@@ -546,6 +546,24 @@ export class AgentService {
       daily: [],
     };
     const daily = new Map<string, AgentUsageDetail["daily"][number]>();
+    const firstDate = Date.UTC(
+      usageStartedAt.getUTCFullYear(),
+      usageStartedAt.getUTCMonth(),
+      usageStartedAt.getUTCDate(),
+    );
+    const lastDate = Date.UTC(usageEndedAt.getUTCFullYear(), usageEndedAt.getUTCMonth(), usageEndedAt.getUTCDate());
+    for (let timestamp = firstDate; timestamp <= lastDate; timestamp += 24 * 60 * 60 * 1_000) {
+      const date = new Date(timestamp).toISOString().slice(0, 10);
+      daily.set(date, {
+        date,
+        tasks: 0,
+        measuredTasks: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        tokens: 0,
+      });
+    }
     for (const row of rows) {
       if (!row.acceptedAt) continue;
       result.tasks += 1;
@@ -560,15 +578,8 @@ export class AgentService {
       addUsageTokenCounts(result, tokenCounts);
 
       const date = row.acceptedAt.toISOString().slice(0, 10);
-      const point = daily.get(date) ?? {
-        date,
-        tasks: 0,
-        measuredTasks: 0,
-        inputTokens: 0,
-        cachedInputTokens: 0,
-        outputTokens: 0,
-        tokens: 0,
-      };
+      const point = daily.get(date);
+      if (!point) throw new Error("Agent usage date falls outside the requested window");
       point.tasks += 1;
       if (tokenCounts.measured) point.measuredTasks += 1;
       addUsageTokenCounts(point, tokenCounts);

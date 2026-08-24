@@ -222,7 +222,7 @@ function TokenBreakdown({ usage }: { usage: AgentUsageDetail }) {
         <BreakdownRow label="Output" tone="output" value={usage.outputTokens} />
         <BreakdownRow label="Cached input" tone="cached" value={usage.cachedInputTokens} />
       </dl>
-      <p>Cached input is included in Input.</p>
+      <p>Cached input is shown separately and is not added again to Total.</p>
     </div>
   );
 }

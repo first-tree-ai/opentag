@@ -158,13 +158,6 @@ export const AgentUsageDetailSchema = z
       breakdown: z.infer<typeof AgentUsageTokenBreakdownSchema>,
       path: readonly (number | string)[],
     ) => {
-      if (breakdown.cachedInputTokens > breakdown.inputTokens) {
-        context.addIssue({
-          code: "custom",
-          path: [...path, "cachedInputTokens"],
-          message: "Cached input Tokens cannot exceed input Tokens",
-        });
-      }
       if (breakdown.tokens !== breakdown.inputTokens + breakdown.outputTokens) {
         context.addIssue({
           code: "custom",

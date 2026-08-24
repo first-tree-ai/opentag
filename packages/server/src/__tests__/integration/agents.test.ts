@@ -230,11 +230,12 @@ describe("Agent persistence and authorization", () => {
   });
 
   it.each([
-    ["codex", 14],
+    ["codex", 4],
     ["claude-code", 116],
   ] as const)("projects current work and Provider-correct historical usage for %s", async (runtimeProvider, tokens) => {
-    // The Claude adapter folds 100 cache-creation tokens into inputTokens and keeps 2 cache-read tokens separate.
-    const inputTokens = runtimeProvider === "claude-code" ? 110 : 10;
+    // Runtime usage fields are independently optional. The Codex case preserves a valid partial report where
+    // cached input exceeds the reported provider-native input count.
+    const inputTokens = runtimeProvider === "claude-code" ? 110 : 0;
     const value = await fixture();
     try {
       const now = new Date("2026-08-24T12:00:00.000Z");
@@ -358,28 +359,38 @@ describe("Agent persistence and authorization", () => {
           },
         ],
       });
-      await expect(service.getUsageById(value.bootstrap.userId, created.id, 30)).resolves.toMatchObject({
+      const usage = await service.getUsageById(value.bootstrap.userId, created.id, 30);
+      expect(usage).toMatchObject({
         windowDays: 30,
         startedAt: "2026-07-25T12:00:00.000Z",
         endedAt: now.toISOString(),
         tasks: 2,
         measuredTasks: 1,
         failed: 1,
-        inputTokens: runtimeProvider === "claude-code" ? 112 : 10,
+        inputTokens: runtimeProvider === "claude-code" ? 112 : 0,
         cachedInputTokens: 2,
         outputTokens: 4,
         tokens,
-        daily: [
-          {
-            date: "2026-08-24",
-            tasks: 2,
-            measuredTasks: 1,
-            inputTokens: runtimeProvider === "claude-code" ? 112 : 10,
-            cachedInputTokens: 2,
-            outputTokens: 4,
-            tokens,
-          },
-        ],
+      });
+      expect(usage.daily).toHaveLength(31);
+      expect(usage.daily[0]).toEqual({
+        date: "2026-07-25",
+        tasks: 0,
+        measuredTasks: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        tokens: 0,
+      });
+      expect(usage.daily[15]).toMatchObject({ date: "2026-08-09", tasks: 0, tokens: 0 });
+      expect(usage.daily.at(-1)).toEqual({
+        date: "2026-08-24",
+        tasks: 2,
+        measuredTasks: 1,
+        inputTokens: runtimeProvider === "claude-code" ? 112 : 0,
+        cachedInputTokens: 2,
+        outputTokens: 4,
+        tokens,
       });
 
       await value.database.update(sessions).set({ endedAt: now }).where(eq(sessions.id, session.id));

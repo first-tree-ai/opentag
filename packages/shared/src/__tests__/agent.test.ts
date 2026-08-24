@@ -181,9 +181,11 @@ describe("Agent contracts", () => {
       ],
     };
     expect(AgentUsageDetailSchema.parse(usage)).toEqual(usage);
+    expect(AgentUsageDetailSchema.parse({ ...usage, cachedInputTokens: 11 })).toMatchObject({
+      cachedInputTokens: 11,
+    });
     expect(() => AgentUsageDetailSchema.parse({ ...usage, measuredTasks: 3 })).toThrow();
     expect(() => AgentUsageDetailSchema.parse({ ...usage, tokens: 15 })).toThrow();
-    expect(() => AgentUsageDetailSchema.parse({ ...usage, cachedInputTokens: 11 })).toThrow();
     expect(() =>
       AgentUsageDetailSchema.parse({ ...usage, daily: [{ ...usage.daily[0], date: "08/24/2026" }] }),
     ).toThrow();

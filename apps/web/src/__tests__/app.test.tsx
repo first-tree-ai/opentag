@@ -457,6 +457,15 @@ function installApi(
             tokens: 190_000,
           },
           {
+            date: "2026-08-22",
+            tasks: 0,
+            measuredTasks: 0,
+            inputTokens: 0,
+            cachedInputTokens: 0,
+            outputTokens: 0,
+            tokens: 0,
+          },
+          {
             date: "2026-08-24",
             tasks: 17,
             measuredTasks: 16,
@@ -1278,6 +1287,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("img", { name: /428K Tokens used during the last 30 days/ })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Token usage over time" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Token breakdown" })).toBeTruthy();
+    expect(screen.getAllByText(/0 Tokens$/).length).toBeGreaterThan(0);
     expect(screen.getByText("Input")).toBeTruthy();
     expect(screen.getByText("Output")).toBeTruthy();
     expect(screen.getByText("Cached input")).toBeTruthy();

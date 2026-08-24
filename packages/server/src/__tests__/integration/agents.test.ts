@@ -286,8 +286,8 @@ describe("Agent persistence and authorization", () => {
             authorExternalId: "U_HUMAN",
             content: {
               version: 1 as const,
-              fallbackText: suffix,
-              blocks: [{ type: "text" as const, text: suffix }],
+              fallbackText: suffix === "working" ? "Review PR #127" : suffix,
+              blocks: [{ type: "text" as const, text: suffix === "working" ? "Review PR #127" : suffix }],
               truncated: false,
             },
             occurredAt: new Date(now.getTime() - (index + 1) * 60_000),
@@ -353,7 +353,11 @@ describe("Agent persistence and authorization", () => {
         agents: [
           {
             id: created.id,
-            activity: { state: "working", startedAt: workingAcceptedAt.toISOString() },
+            activity: {
+              state: "working",
+              startedAt: workingAcceptedAt.toISOString(),
+              summary: "Review PR #127",
+            },
             usage: { windowDays: 30, tasks: 2, failed: 1, tokens },
           },
         ],

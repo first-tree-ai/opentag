@@ -42,6 +42,7 @@ function installApi(
     agentRead?: () => Promise<void> | void;
     agentReadStatus?: () => number | undefined;
     agentListStatus?: () => number | undefined;
+    agentActivity?: { state: "idle" } | { state: "working"; startedAt: string; summary: string };
     emptyAgents?: boolean;
     agentCreate?: (input: Record<string, unknown>) => Promise<void> | void;
     alreadyJoinedInvitation?: boolean;
@@ -281,12 +282,14 @@ function installApi(
               path.includes(invitedTeamId)
                 ? {
                     ...agentListItem,
+                    activity: options.agentActivity ?? agentListItem.activity,
                     teamId: invitedTeamId,
                     status: lifecycleStatus,
                     runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
                   }
                 : {
                     ...agentListItem,
+                    activity: options.agentActivity ?? agentListItem.activity,
                     status: lifecycleStatus,
                     runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
                   },
@@ -606,7 +609,8 @@ describe("OpenTag Web App Shell", () => {
     expect(createAgent.closest(".page-header")).toBeTruthy();
     const agentCard = agentLink.closest(".agent-card");
     expect(agentCard).toBeTruthy();
-    expect(screen.getByText("Usage · Last 30 days")).toBeTruthy();
+    expect(screen.getByText("Monitor availability and 30-day usage across your AI teammates.")).toBeTruthy();
+    expect(screen.queryByText("Usage · Last 30 days")).toBeNull();
     expect(within(agentCard as HTMLElement).getByText("Tasks")).toBeTruthy();
     expect(within(agentCard as HTMLElement).getByText("Tokens")).toBeTruthy();
     expect(within(agentCard as HTMLElement).getByText("428K")).toBeTruthy();
@@ -622,6 +626,25 @@ describe("OpenTag Web App Shell", () => {
     const navigationIcons = workspaceNavigation.querySelectorAll(".primary-nav-icon");
     expect(navigationIcons).toHaveLength(5);
     expect(Array.from(navigationIcons).every((icon) => icon.getAttribute("aria-hidden") === "true")).toBe(true);
+  });
+
+  it("shows the current task and elapsed time for a working Agent", async () => {
+    installApi("admin", {
+      agentActivity: {
+        state: "working",
+        startedAt: new Date(Date.now() - 8 * 60_000).toISOString(),
+        summary: "Review PR #127",
+      },
+      bound: true,
+      handoffReady: true,
+    });
+    render(<App />);
+
+    const agentCard = (await screen.findByRole("link", { name: "Open Reviewer" })).closest(".agent-card");
+    expect(agentCard).toBeTruthy();
+    expect(within(agentCard as HTMLElement).getByText("Working")).toBeTruthy();
+    expect(within(agentCard as HTMLElement).getByText("Review PR #127")).toBeTruthy();
+    expect(within(agentCard as HTMLElement).getByText("Started 8m ago")).toBeTruthy();
   });
 
   it.each(["/", "/agents"])("redirects unauthenticated protected path %s to login", async (path) => {

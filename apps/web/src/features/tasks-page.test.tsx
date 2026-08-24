@@ -85,7 +85,12 @@ describe("Tasks demo", () => {
         "The checklist and brief disagree on three items. I’m checking the recent thread before treating any owner or date as confirmed.",
       ),
     ).toBeTruthy();
-    expect(within(conversation).getByRole("heading", { name: "Follow-ups drafted" })).toBeTruthy();
+    expect(
+      within(conversation).getByText(
+        "Three follow-up messages were prepared with suggested owners. No ownership was recorded as confirmed.",
+      ),
+    ).toBeTruthy();
+    expect(within(conversation).getByText("Partner announcement — Suggested owner: Jordan Lee")).toBeTruthy();
     expect(
       within(conversation).getAllByText(/Recorded locally at .*Open Feishu for the authoritative thread/),
     ).toHaveLength(2);
@@ -93,13 +98,19 @@ describe("Tasks demo", () => {
     expect(within(conversation).queryByText(/Chain of Thought/i)).toBeNull();
 
     const process = within(conversation).getByText("Worked for 8m 12s").closest("details");
-    const result = within(conversation).getByRole("heading", { name: "Launch plan reviewed" });
+    const finalAnswer = within(conversation).getByText(
+      "Eight items were checked. Five are ready, two still need owners, and one has no confirmed date.",
+    );
     expect(process).toBeTruthy();
     if (!process) throw new Error("Expected the Agent process details");
-    expect(process.hasAttribute("open")).toBe(true);
-    expect(process.compareDocumentPosition(result) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(process.hasAttribute("open")).toBe(false);
+    expect(process.compareDocumentPosition(finalAnswer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(within(process).getByText("3 tool calls · 0 retries · 8.1K input · 6.1K output · 14.2K total")).toBeTruthy();
-    expect(screen.getByText("Task details").closest("details")?.hasAttribute("open")).toBe(false);
+    expect(within(conversation).getByText("Partner announcement copy — Needs owner")).toBeTruthy();
+    expect(within(conversation).getByText("Security review sign-off — Date unconfirmed")).toBeTruthy();
+    expect(within(conversation).queryByText("Launch plan reviewed")).toBeNull();
+    expect(within(conversation).queryByText("Follow-ups drafted")).toBeNull();
+    expect(screen.queryByText("Task details")).toBeNull();
     expect(screen.queryByRole("complementary")).toBeNull();
   });
 
@@ -134,6 +145,11 @@ describe("Tasks demo", () => {
     expect(
       within(process as HTMLElement).getByText("2 tool calls · 1 retry · 11.8K input · 6.8K output · 18.6K total"),
     ).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Two source documents are missing" })).toBeTruthy();
+    expect(
+      screen.getByText(
+        "The review is paused because the access checklist and security orientation steps are not available.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("Access provisioning checklist — Missing input")).toBeTruthy();
   });
 });

@@ -379,7 +379,7 @@
   margin-left: 44px;
   border-radius: 12px;
   background: var(--surface-soft);
-  padding: var(--space-4) var(--space-5);
+  padding: var(--space-2) var(--space-4);
 }
 
 .task-request-bubble p {
@@ -390,8 +390,7 @@
 }
 
 .task-agent-process,
-.task-agent-response,
-.task-result-observation {
+.task-agent-response {
   margin-left: 44px;
 }
 
@@ -400,8 +399,7 @@
   border-bottom: 1px solid var(--border);
 }
 
-.task-agent-process summary,
-.task-record-details summary {
+.task-agent-process summary {
   display: flex;
   min-height: 44px;
   align-items: center;
@@ -413,20 +411,17 @@
   list-style: none;
 }
 
-.task-agent-process summary::-webkit-details-marker,
-.task-record-details summary::-webkit-details-marker {
+.task-agent-process summary::-webkit-details-marker {
   display: none;
 }
 
-.task-agent-process summary .ds-icon,
-.task-record-details summary .ds-icon {
+.task-agent-process summary .ds-icon {
   width: 16px;
   height: 16px;
   transition: transform 160ms ease;
 }
 
-.task-agent-process[open] summary .ds-icon,
-.task-record-details[open] summary .ds-icon {
+.task-agent-process[open] summary .ds-icon {
   transform: rotate(90deg);
 }
 
@@ -520,94 +515,43 @@
 
 .task-agent-response {
   max-width: 720px;
-  padding-top: var(--space-5);
+  padding-top: var(--space-6);
 }
 
-.task-agent-response h2 {
-  margin-bottom: var(--space-3);
-  color: var(--foreground);
-  font-size: var(--text-section);
-}
-
-.task-agent-response > p {
+.task-answer-paragraph {
   margin: 0;
   color: var(--secondary-foreground);
   font-size: var(--text-body);
   line-height: var(--lh-prose);
 }
 
+.task-answer-paragraph + .task-answer-paragraph {
+  margin-top: var(--space-4);
+}
+
 .task-agent-response ul {
-  margin: var(--space-5) 0 0;
+  margin: var(--space-4) 0 0;
   padding-left: 18px;
   list-style: disc;
 }
 
 .task-agent-response li {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(180px, 0.75fr);
-  gap: var(--space-6);
   padding: 5px 0;
-  font-size: var(--text-ui);
+  color: var(--foreground);
+  font-size: var(--text-body);
+  line-height: var(--lh-prose);
 }
 
 .task-agent-response li::marker {
   color: var(--muted);
 }
 
-.task-agent-response li span {
-  color: var(--foreground);
-}
-
-.task-agent-response li small {
-  color: var(--muted);
-  font-size: inherit;
-}
-
 .task-result-observation {
   max-width: 720px;
-  margin-top: var(--space-5);
+  margin-top: var(--space-4);
   margin-bottom: 0;
   color: var(--muted);
   font-size: var(--text-meta);
-}
-
-.task-record-details {
-  margin: 0 0 var(--space-8) 44px;
-  border-top: 1px solid var(--border);
-  border-bottom: 1px solid var(--border);
-}
-
-.task-record-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-8);
-  padding: var(--space-2) 0 var(--space-5);
-}
-
-.task-record-grid dl {
-  margin: 0;
-}
-
-.task-record-grid dl > div {
-  display: grid;
-  grid-template-columns: minmax(92px, 116px) minmax(0, 1fr);
-  gap: var(--space-4);
-  min-height: 30px;
-  align-items: baseline;
-}
-
-.task-record-grid dt,
-.task-record-grid dd {
-  font-size: var(--text-meta);
-}
-
-.task-record-grid dt {
-  color: var(--muted);
-}
-
-.task-record-grid dd {
-  overflow-wrap: anywhere;
-  color: var(--secondary-foreground);
 }
 
 @media (max-width: 900px) {
@@ -657,11 +601,6 @@
     font-size: var(--text-micro);
     font-weight: var(--fw-semibold);
     text-transform: uppercase;
-  }
-
-  .task-record-grid {
-    grid-template-columns: 1fr;
-    gap: 0;
   }
 
   .task-tool-call {
@@ -744,18 +683,7 @@
 
   .task-request-bubble,
   .task-agent-process,
-  .task-agent-response,
-  .task-result-observation,
-  .task-record-details {
+  .task-agent-response {
     margin-left: 0;
-  }
-
-  .task-record-grid dl > div {
-    grid-template-columns: 100px minmax(0, 1fr);
-  }
-
-  .task-agent-response li {
-    grid-template-columns: 1fr;
-    gap: 1px;
   }
 }

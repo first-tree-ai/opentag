@@ -86,4 +86,9 @@ describe("workspace page layout", () => {
     expect(declarationValue(taskStyles, ".task-tool-target", "grid-row")).toBe("2");
     expect(declarationValue(taskStyles, ".task-tool-target", "white-space")).toBe("normal");
   });
+
+  it("keeps Task final answers in a single reading column", () => {
+    expect(topLevelDeclarationValue(taskStyles, ".task-agent-response li", "color")).toBe("var(--foreground)");
+    expect(topLevelDeclarationValue(taskStyles, ".task-agent-response li", "font-size")).toBe("var(--text-body)");
+  });
 });

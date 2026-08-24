@@ -1591,7 +1591,11 @@ describe("OpenTag Web App Shell", () => {
       name: "Review the Q3 launch plan, identify unresolved owners, and flag every item without a confirmed date.",
     });
     fireEvent.click(task);
-    expect(await screen.findByRole("heading", { name: "Launch plan reviewed" })).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "Eight items were checked. Five are ready, two still need owners, and one has no confirmed date.",
+      ),
+    ).toBeTruthy();
     expect(screen.getByLabelText("Task source").textContent).toContain("Product Launch");
     expect(window.location.pathname).toBe("/tasks/q3-launch-readiness");
   });
@@ -1601,7 +1605,11 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/tasks/q3-launch-readiness");
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Launch plan reviewed" })).toBeTruthy();
+    expect(
+      await screen.findByText(
+        "Eight items were checked. Five are ready, two still need owners, and one has no confirmed date.",
+      ),
+    ).toBeTruthy();
     expect(screen.getByText("Demo data")).toBeTruthy();
   });
 

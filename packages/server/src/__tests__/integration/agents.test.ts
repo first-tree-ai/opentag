@@ -358,6 +358,29 @@ describe("Agent persistence and authorization", () => {
           },
         ],
       });
+      await expect(service.getUsageById(value.bootstrap.userId, created.id, 30)).resolves.toMatchObject({
+        windowDays: 30,
+        startedAt: "2026-07-25T12:00:00.000Z",
+        endedAt: now.toISOString(),
+        tasks: 2,
+        measuredTasks: 1,
+        failed: 1,
+        inputTokens: runtimeProvider === "claude-code" ? 112 : 10,
+        cachedInputTokens: 2,
+        outputTokens: 4,
+        tokens,
+        daily: [
+          {
+            date: "2026-08-24",
+            tasks: 2,
+            measuredTasks: 1,
+            inputTokens: runtimeProvider === "claude-code" ? 112 : 10,
+            cachedInputTokens: 2,
+            outputTokens: 4,
+            tokens,
+          },
+        ],
+      });
 
       await value.database.update(sessions).set({ endedAt: now }).where(eq(sessions.id, session.id));
       await expect(service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).resolves.toMatchObject({

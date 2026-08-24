@@ -3,6 +3,9 @@ import {
   AgentAdminConfigSchema,
   type AgentDetail,
   AgentDetailSchema,
+  type AgentUsageDetail,
+  AgentUsageDetailSchema,
+  type AgentUsageWindowDays,
   agentByIdPath,
   agentConfigPath,
   agentFeishuSetupAttemptsPath,
@@ -10,6 +13,7 @@ import {
   agentImBindingPath,
   agentReactivatePath,
   agentSuspendPath,
+  agentUsagePath,
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
   type CreateAgentRequest,
@@ -233,6 +237,12 @@ export class OpenTagApi {
 
   getAgent(accessToken: string, agentId: string): Promise<AgentDetail> {
     return this.#request(agentByIdPath(agentId), AgentDetailSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  getAgentUsage(accessToken: string, agentId: string, windowDays: AgentUsageWindowDays): Promise<AgentUsageDetail> {
+    return this.#request(agentUsagePath(agentId, windowDays), AgentUsageDetailSchema, {
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }

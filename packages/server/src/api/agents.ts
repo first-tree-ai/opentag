@@ -3,8 +3,12 @@ import {
   AGENT_CONFIG_TEMPLATE,
   AGENT_REACTIVATE_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
+  AGENT_USAGE_TEMPLATE,
+  AGENT_USAGE_WINDOW_DAYS,
   AgentAdminConfigSchema,
   AgentDetailSchema,
+  AgentUsageDetailSchema,
+  AgentUsageWindowDaysSchema,
   CreateAgentRequestSchema,
   ListAgentsResponseSchema,
   TEAM_AGENTS_TEMPLATE,
@@ -19,6 +23,9 @@ import { parseRequest } from "./request-validation.js";
 
 const TeamParamsSchema = z.object({ teamId: z.string().uuid() }).strict();
 const AgentParamsSchema = z.object({ agentId: z.string().uuid() }).strict();
+const AgentUsageQuerySchema = z
+  .object({ days: z.coerce.number().pipe(AgentUsageWindowDaysSchema).default(AGENT_USAGE_WINDOW_DAYS) })
+  .strict();
 
 function authenticatedUserId(request: FastifyRequest): string {
   const userId = request.authContext?.me.user.id;
@@ -54,6 +61,15 @@ export function registerAgentRoutes(
   app.get(AGENT_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
     const response = AgentDetailSchema.parse(await agentService.getById(authenticatedUserId(request), agentId));
+    return reply.code(200).send(response);
+  });
+
+  app.get(AGENT_USAGE_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { agentId } = parseRequest(AgentParamsSchema, request.params);
+    const { days } = parseRequest(AgentUsageQuerySchema, request.query);
+    const response = AgentUsageDetailSchema.parse(
+      await agentService.getUsageById(authenticatedUserId(request), agentId, days),
+    );
     return reply.code(200).send(response);
   });
 

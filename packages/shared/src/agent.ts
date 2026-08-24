@@ -102,6 +102,12 @@ export const AgentDetailSchema = AgentSummarySchema.extend({
 }).strict();
 
 export const AGENT_USAGE_WINDOW_DAYS = 30;
+export const AGENT_USAGE_WINDOW_OPTIONS = [7, AGENT_USAGE_WINDOW_DAYS, 90] as const;
+export const AgentUsageWindowDaysSchema = z.union([
+  z.literal(AGENT_USAGE_WINDOW_OPTIONS[0]),
+  z.literal(AGENT_USAGE_WINDOW_OPTIONS[1]),
+  z.literal(AGENT_USAGE_WINDOW_OPTIONS[2]),
+]);
 
 export const AgentListActivitySchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("idle") }).strict(),
@@ -116,6 +122,85 @@ export const AgentUsageSummarySchema = z
     tokens: z.number().int().safe().nonnegative(),
   })
   .strict();
+
+const AgentUsageTokenBreakdownSchema = z
+  .object({
+    inputTokens: z.number().int().safe().nonnegative(),
+    cachedInputTokens: z.number().int().safe().nonnegative(),
+    outputTokens: z.number().int().safe().nonnegative(),
+    tokens: z.number().int().safe().nonnegative(),
+  })
+  .strict();
+
+export const AgentUsageDetailSchema = z
+  .object({
+    windowDays: AgentUsageWindowDaysSchema,
+    startedAt: z.string().datetime(),
+    endedAt: z.string().datetime(),
+    tasks: z.number().int().safe().nonnegative(),
+    measuredTasks: z.number().int().safe().nonnegative(),
+    failed: z.number().int().safe().nonnegative(),
+    ...AgentUsageTokenBreakdownSchema.shape,
+    daily: z.array(
+      z
+        .object({
+          date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+          tasks: z.number().int().safe().nonnegative(),
+          measuredTasks: z.number().int().safe().nonnegative(),
+          ...AgentUsageTokenBreakdownSchema.shape,
+        })
+        .strict(),
+    ),
+  })
+  .strict()
+  .superRefine((usage, context) => {
+    const validateTokenBreakdown = (
+      breakdown: z.infer<typeof AgentUsageTokenBreakdownSchema>,
+      path: readonly (number | string)[],
+    ) => {
+      if (breakdown.cachedInputTokens > breakdown.inputTokens) {
+        context.addIssue({
+          code: "custom",
+          path: [...path, "cachedInputTokens"],
+          message: "Cached input Tokens cannot exceed input Tokens",
+        });
+      }
+      if (breakdown.tokens !== breakdown.inputTokens + breakdown.outputTokens) {
+        context.addIssue({
+          code: "custom",
+          path: [...path, "tokens"],
+          message: "Total Tokens must equal input and output Tokens",
+        });
+      }
+    };
+    if (usage.failed > usage.tasks) {
+      context.addIssue({ code: "custom", path: ["failed"], message: "Failed Tasks cannot exceed Tasks" });
+    }
+    if (usage.measuredTasks > usage.tasks) {
+      context.addIssue({ code: "custom", path: ["measuredTasks"], message: "Measured Tasks cannot exceed Tasks" });
+    }
+    if (new Date(usage.startedAt).getTime() > new Date(usage.endedAt).getTime()) {
+      context.addIssue({ code: "custom", path: ["startedAt"], message: "Usage start cannot follow usage end" });
+    }
+    validateTokenBreakdown(usage, []);
+    for (const [index, point] of usage.daily.entries()) {
+      if (point.measuredTasks > point.tasks) {
+        context.addIssue({
+          code: "custom",
+          path: ["daily", index, "measuredTasks"],
+          message: "Measured Tasks cannot exceed Tasks",
+        });
+      }
+      if (index > 0 && point.date <= (usage.daily[index - 1]?.date ?? "")) {
+        context.addIssue({
+          code: "custom",
+          path: ["daily", index, "date"],
+          message: "Daily usage dates must be unique and ordered",
+        });
+      }
+      validateTokenBreakdown(point, ["daily", index]);
+    }
+  });
 
 export const AgentListItemSchema = AgentSummarySchema.extend({
   activity: AgentListActivitySchema,
@@ -171,6 +256,8 @@ export type AgentSummary = z.infer<typeof AgentSummarySchema>;
 export type AgentDetail = z.infer<typeof AgentDetailSchema>;
 export type AgentListActivity = z.infer<typeof AgentListActivitySchema>;
 export type AgentUsageSummary = z.infer<typeof AgentUsageSummarySchema>;
+export type AgentUsageWindowDays = z.infer<typeof AgentUsageWindowDaysSchema>;
+export type AgentUsageDetail = z.infer<typeof AgentUsageDetailSchema>;
 export type AgentListItem = z.infer<typeof AgentListItemSchema>;
 export type AgentAdminConfig = z.infer<typeof AgentAdminConfigSchema>;
 export type CreateAgentRequest = z.infer<typeof CreateAgentRequestSchema>;

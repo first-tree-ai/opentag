@@ -8,6 +8,8 @@ import {
   AgentRuntimeConfigSchema,
   type AgentRuntimeProvider,
   type AgentSummary,
+  type AgentUsageDetail,
+  type AgentUsageWindowDays,
   type CreateAgentRequest,
   CreateAgentRequestSchema,
   type CreateAgentRuntimeConfig,
@@ -17,7 +19,7 @@ import {
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
-import { and, asc, eq, gte, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -120,12 +122,20 @@ function toAgentSummary(row: AgentSafeRow): AgentSummary {
   };
 }
 
-function deliveryTokenCount(
+interface UsageTokenCounts {
+  cachedInputTokens: number;
+  inputTokens: number;
+  measured: boolean;
+  outputTokens: number;
+  tokens: number;
+}
+
+function deliveryUsageTokenCounts(
   provider: AgentRuntimeProvider,
   inputTokens: string | null,
   cachedInputTokens: string | null,
   outputTokens: string | null,
-): number {
+): UsageTokenCounts {
   const parse = (value: string | null): number | undefined => {
     if (value === null) return undefined;
     const result = Number(value);
@@ -134,11 +144,33 @@ function deliveryTokenCount(
     }
     return result;
   };
-  return runtimeUsageTotalTokens(provider, {
+  const usage = {
     inputTokens: parse(inputTokens),
     cachedInputTokens: parse(cachedInputTokens),
     outputTokens: parse(outputTokens),
-  });
+  };
+  const normalizedInputTokens =
+    (usage.inputTokens ?? 0) + (provider === "claude-code" ? (usage.cachedInputTokens ?? 0) : 0);
+  return {
+    inputTokens: normalizedInputTokens,
+    cachedInputTokens: usage.cachedInputTokens ?? 0,
+    outputTokens: usage.outputTokens ?? 0,
+    tokens: runtimeUsageTotalTokens(provider, usage),
+    measured: Object.values(usage).some((value) => value !== undefined),
+  };
+}
+
+function addUsageTokenCounts(
+  target: Pick<AgentUsageDetail, "cachedInputTokens" | "inputTokens" | "outputTokens" | "tokens">,
+  value: UsageTokenCounts,
+): void {
+  target.inputTokens += value.inputTokens;
+  target.cachedInputTokens += value.cachedInputTokens;
+  target.outputTokens += value.outputTokens;
+  target.tokens += value.tokens;
+  if (![target.inputTokens, target.cachedInputTokens, target.outputTokens, target.tokens].every(Number.isSafeInteger)) {
+    throw new Error("Agent usage token total exceeds the safe integer range");
+  }
 }
 
 function runtimeConfigsEqual(
@@ -419,7 +451,12 @@ export class AgentService {
       if (row.outcome === "failed") usage.failed += 1;
       const runtimeProvider = runtimeProviderByAgent.get(row.agentId);
       if (!runtimeProvider) throw new Error("Agent usage is missing its runtime Provider");
-      usage.tokens += deliveryTokenCount(runtimeProvider, row.inputTokens, row.cachedInputTokens, row.outputTokens);
+      usage.tokens += deliveryUsageTokenCounts(
+        runtimeProvider,
+        row.inputTokens,
+        row.cachedInputTokens,
+        row.outputTokens,
+      ).tokens;
       if (!Number.isSafeInteger(usage.tokens))
         throw new Error("Agent usage token total exceeds the safe integer range");
       usageByAgent.set(row.agentId, usage);
@@ -465,6 +502,80 @@ export class AgentService {
     if (!row) throw resourceNotFound();
     const role = await this.#requireTeamMembership(this.#database, callerUserId, row.teamId);
     return { ...toAgentSummary(row), viewerCapabilities: { canManage: role === "admin" } };
+  }
+
+  async getUsageById(
+    callerUserId: string,
+    agentId: string,
+    windowDays: AgentUsageWindowDays,
+  ): Promise<AgentUsageDetail> {
+    const agent = await this.getById(callerUserId, agentId);
+    const usageEndedAt = this.#now();
+    const usageStartedAt = new Date(usageEndedAt.getTime() - windowDays * 24 * 60 * 60 * 1_000);
+    const rows = await this.#database
+      .select({
+        acceptedAt: imMessageDeliveries.acceptedAt,
+        cachedInputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,cachedInputTokens}'`,
+        inputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,inputTokens}'`,
+        outcome: sql<string | null>`${imMessageDeliveries.turnReport} ->> 'outcome'`,
+        outputTokens: sql<string | null>`${imMessageDeliveries.turnReport} #>> '{usage,outputTokens}'`,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          eq(imBindings.agentId, agentId),
+          gte(imMessageDeliveries.acceptedAt, usageStartedAt),
+          lte(imMessageDeliveries.acceptedAt, usageEndedAt),
+        ),
+      )
+      .orderBy(asc(imMessageDeliveries.acceptedAt), asc(imMessageDeliveries.id));
+
+    const result: AgentUsageDetail = {
+      windowDays,
+      startedAt: usageStartedAt.toISOString(),
+      endedAt: usageEndedAt.toISOString(),
+      tasks: 0,
+      measuredTasks: 0,
+      failed: 0,
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      tokens: 0,
+      daily: [],
+    };
+    const daily = new Map<string, AgentUsageDetail["daily"][number]>();
+    for (const row of rows) {
+      if (!row.acceptedAt) continue;
+      result.tasks += 1;
+      if (row.outcome === "failed") result.failed += 1;
+      const tokenCounts = deliveryUsageTokenCounts(
+        agent.runtimeProvider,
+        row.inputTokens,
+        row.cachedInputTokens,
+        row.outputTokens,
+      );
+      if (tokenCounts.measured) result.measuredTasks += 1;
+      addUsageTokenCounts(result, tokenCounts);
+
+      const date = row.acceptedAt.toISOString().slice(0, 10);
+      const point = daily.get(date) ?? {
+        date,
+        tasks: 0,
+        measuredTasks: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        tokens: 0,
+      };
+      point.tasks += 1;
+      if (tokenCounts.measured) point.measuredTasks += 1;
+      addUsageTokenCounts(point, tokenCounts);
+      daily.set(date, point);
+    }
+    result.daily = [...daily.values()];
+    return result;
   }
 
   async getConfigById(callerUserId: string, agentId: string): Promise<AgentAdminConfig> {

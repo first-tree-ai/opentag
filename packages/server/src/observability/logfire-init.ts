@@ -13,6 +13,7 @@ import {
 } from "@opentelemetry/sdk-trace-base";
 import { NodeTracerProvider } from "@opentelemetry/sdk-trace-node";
 import { configureLogfireApi } from "logfire";
+import { normalizeTelemetryAttrs, sanitizeTelemetryString } from "./otel-helpers.js";
 
 export interface TracingConfig {
   endpoint: string;
@@ -104,6 +105,35 @@ export async function initTelemetry(
   enabled = true;
 }
 
+/**
+ * Re-applies attribute scrubbing at the export boundary. The tracing helpers already normalize every
+ * attribute they set, but a direct `setAttribute`, `addEvent`, `recordException`, or `setStatus` call —
+ * including ones made by instrumentation OpenTag does not own — bypasses them. Scrubbing again here
+ * makes "no credential material leaves the process" a property of the exporter rather than a property
+ * of every call site. Spans are read-only in `onEnd`, so the scrubbed view is a proxy overlay.
+ */
+function scrubExportedSpan(span: ReadableSpan): ReadableSpan {
+  const overrides: Partial<ReadableSpan> = {
+    attributes: normalizeTelemetryAttrs(span.attributes),
+    events: span.events.map((event) => ({
+      ...event,
+      name: sanitizeTelemetryString(event.name),
+      attributes: normalizeTelemetryAttrs(event.attributes),
+    })),
+    status:
+      typeof span.status.message === "string"
+        ? { ...span.status, message: sanitizeTelemetryString(span.status.message) }
+        : span.status,
+  };
+  return new Proxy(span, {
+    get(target, property, receiver) {
+      if (property in overrides) return overrides[property as keyof ReadableSpan];
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
+
 class AllowlistedSpanProcessor implements SpanProcessor {
   constructor(readonly delegate: SpanProcessor) {}
 
@@ -122,7 +152,9 @@ class AllowlistedSpanProcessor implements SpanProcessor {
   }
 
   onEnd(span: ReadableSpan): void {
-    if (ALLOWED_INSTRUMENTATION_SCOPES.has(span.instrumentationScope.name)) this.delegate.onEnd(span);
+    if (ALLOWED_INSTRUMENTATION_SCOPES.has(span.instrumentationScope.name)) {
+      this.delegate.onEnd(scrubExportedSpan(span));
+    }
   }
 
   shutdown(): Promise<void> {

@@ -18,7 +18,12 @@ import { registerTeamRoutes } from "./api/teams.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { currentTraceId } from "./observability/index.js";
 import { type AgentService, AgentServiceError } from "./services/agents/index.js";
-import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
+import {
+  AuthServiceError,
+  type ConnectCodeIssuer,
+  redactSecrets,
+  type UserAuthService,
+} from "./services/auth/index.js";
 import type { ComputerService } from "./services/computers/index.js";
 import type { ImResourceService } from "./services/im/index.js";
 import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
@@ -91,24 +96,55 @@ function contentTypeParserErrorStatus(error: unknown): number | undefined {
   return typeof statusCode === "number" && statusCode >= 400 && statusCode < 500 ? statusCode : undefined;
 }
 
+/*
+ * Sink-level credential scrubbing. Even when a log call is handed a credential-bearing object, these
+ * key shapes never reach the transport, and `err` messages and stacks pass through the same pattern
+ * redaction the startup path uses. Pattern-level scrubbing for trace attributes lives in
+ * observability/otel-helpers.ts.
+ */
+const CREDENTIAL_LOG_KEYS = [
+  "authorization",
+  "botAccessToken",
+  "signingSecret",
+  "token",
+  "accessToken",
+  "refreshToken",
+  "appSecret",
+];
+
+const CREDENTIAL_REDACT_PATHS = [
+  "req.headers.authorization",
+  'req.headers["x-slack-signature"]',
+  ...CREDENTIAL_LOG_KEYS.flatMap((key) => [key, `*.${key}`, `*.*.${key}`, `*[*].${key}`]),
+];
+
+/*
+ * `redact` only reaches keyed values, so a credential interpolated into a message string would still
+ * reach the transport. This hook puts every string argument through the same pattern redaction.
+ */
+function scrubLogArguments(this: unknown, args: unknown[], method: (...passed: never[]) => void): void {
+  method.apply(
+    this,
+    args.map((argument) => (typeof argument === "string" ? redactSecrets(argument) : argument)) as never[],
+  );
+}
+
+function serializeLoggedError(error: Error): { type: string; message: string; stack: string } {
+  return {
+    type: error.name,
+    message: redactSecrets(error.message),
+    stack: redactSecrets(error.stack ?? ""),
+  };
+}
+
 export function createApp(options: CreateAppOptions = {}) {
   const app = Fastify({
     logger: {
       ...(options.loggerStream ? { stream: options.loggerStream } : {}),
-      // Defense in depth for G16: even when a log call receives a credential-bearing object, the
-      // known key shapes never reach the sink. Pattern-level scrubbing for trace attributes lives in
-      // observability/otel-helpers.ts.
-      redact: {
-        paths: [
-          "req.headers.authorization",
-          'req.headers["x-slack-signature"]',
-          ...["botAccessToken", "signingSecret", "token", "accessToken", "refreshToken", "appSecret"].flatMap(
-            (key) => [key, `*.${key}`, `*.*.${key}`, `*[*].${key}`],
-          ),
-        ],
-        censor: "[REDACTED]",
-      },
+      redact: { paths: CREDENTIAL_REDACT_PATHS, censor: "[REDACTED]" },
+      hooks: { logMethod: scrubLogArguments },
       serializers: {
+        err: serializeLoggedError,
         req: (request) => ({
           method: request.method,
           url: sanitizeRequestUrl(request.url),

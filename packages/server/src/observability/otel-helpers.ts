@@ -37,6 +37,21 @@ const SENSITIVE_KEY_PARTS = [
   "display_name",
 ];
 
+/*
+ * Slack issues prefix-recognizable credentials: bot/user/legacy tokens are `xox<letter>-` and
+ * app-level tokens are `xapp-`. `services/auth/security.ts` keeps an intentionally independent copy for
+ * the startup log path, so removing one sink never silently disables the other.
+ */
+const SLACK_TOKEN_PATTERN = /\b(?:xox[a-z]|xapp)-[\w-]*/gi;
+
+/*
+ * Labelled credential values. Both `secret`-style words and the camelCase field names the Slack and
+ * Feishu binding records use are covered, because a word boundary alone never matches the `Secret` in
+ * `signingSecret`.
+ */
+const CREDENTIAL_FIELD_PATTERN =
+  /\b(authorization|cookie|token|secret|credential|password|api[_-]?key|signing[_-]?secret|bot[_-]?access[_-]?token|app[_-]?secret|access[_-]?token|refresh[_-]?token)\s*[:=]\s*[^\s,;]+/gi;
+
 export function getServerTracer() {
   return trace.getTracer(TRACER_NAME, TRACER_VERSION);
 }
@@ -46,15 +61,20 @@ function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEY_PARTS.some((part) => normalized.includes(part));
 }
 
+/**
+ * Removes recognizable credential material from a telemetry string and bounds its length. Exported so
+ * the export-boundary processor can apply the same rules to span status messages and event names that
+ * never passed through the helpers below.
+ */
+export function sanitizeTelemetryString(value: string): string {
+  return sanitizeString(value);
+}
+
 function sanitizeString(value: string): string {
   const scrubbed = value
-    // Slack credential material is prefix-recognizable (xoxb-/xoxp-/xoxe-/...); never export it.
-    .replace(/\bxox[a-z]-[\w-]*/gi, "[scrubbed]")
+    .replace(SLACK_TOKEN_PATTERN, "[scrubbed]")
     .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [scrubbed]")
-    .replace(
-      /\b(authorization|cookie|token|secret|credential|password|api[_-]?key)\s*[:=]\s*[^\s,;]+/gi,
-      "$1=[scrubbed]",
-    );
+    .replace(CREDENTIAL_FIELD_PATTERN, "$1=[scrubbed]");
   return scrubbed.length <= MAX_ATTRIBUTE_LENGTH
     ? scrubbed
     : `${scrubbed.slice(0, MAX_ATTRIBUTE_LENGTH)}...[truncated]`;

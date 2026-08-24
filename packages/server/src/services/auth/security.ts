@@ -11,7 +11,8 @@ export function generateSecret(byteLength = 32): string {
 const TOKEN_FIELD_PATTERN =
   /("?(?:accessToken|refreshToken|code|botAccessToken|signingSecret|appSecret)"?\s*[:=]\s*)[^\s,}\]]+/gi;
 const BEARER_PATTERN = /Bearer\s+[A-Za-z0-9._~-]+/gi;
-const SLACK_TOKEN_PATTERN = /\bxox[a-z]-[\w-]*/gi;
+/* Slack bot/user/legacy tokens are `xox<letter>-`; app-level tokens are `xapp-`. */
+const SLACK_TOKEN_PATTERN = /\b(?:xox[a-z]|xapp)-[\w-]*/gi;
 
 export function redactSecrets(value: string): string {
   return value

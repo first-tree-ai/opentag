@@ -1297,11 +1297,21 @@ describe("OpenTag Web App Shell", () => {
   it("resumes a provisioning Slack setup after a refresh before credentials were submitted", async () => {
     installApi("admin", { bound: true, provider: "slack", bindingState: "provisioning" });
     window.history.replaceState({}, "", `/agents/${agentId}/im`);
-    render(<App />);
+    const view = render(<App />);
 
     expect(await screen.findByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Replace Slack App" })).toBeNull();
-    // Mounting the IM tab hydrates the in-flight attempt through the create intent.
+    expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([input, init]) =>
+            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
+        ),
+    ).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Resume Slack setup" }));
     expect(await screen.findByLabelText("Bot User OAuth Token")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel setup" })).toBeTruthy();
     expect(
@@ -1317,6 +1327,31 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByText(/State: canceled/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Retry Slack setup" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
+
+    // The binding row remains provisioning after cancellation, but a refresh must not mutate it.
+    view.unmount();
+    vi.mocked(fetch).mockClear();
+    render(<App />);
+    expect(await screen.findByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
+    expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([input, init]) =>
+            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
+        ),
+    ).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Resume Slack setup" }));
+    expect(await screen.findByLabelText("Bot User OAuth Token")).toBeTruthy();
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([input, init]) =>
+            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
+        ),
+    ).toHaveLength(1);
   });
 
   it("resumes a provisioning Slack setup after a refresh while verification is pending", async () => {
@@ -1329,6 +1364,9 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/im`);
     render(<App />);
 
+    expect(await screen.findByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
+    expect(screen.queryByText(/Bot Token validated/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Resume Slack setup" }));
     expect(await screen.findByText(/Bot Token validated/)).toBeTruthy();
     expect(screen.getByText(/for workspace T1 \(bot user U1\)/)).toBeTruthy();
     expect(screen.getByText(/Signing Secret not yet verified/)).toBeTruthy();

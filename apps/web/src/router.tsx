@@ -1774,10 +1774,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                           {binding.bindingState === "provisioning" &&
                           binding.provider === "slack" &&
                           agent.viewerCapabilities.canManage ? (
-                            <SlackProvisioningActions
-                              hydrate={slackSetup.start}
-                              onResume={() => void connectSlack("create")}
-                            />
+                            <SlackProvisioningActions onResume={() => void connectSlack("create")} />
                           ) : null}
                         </section>
                         <section className="im-section" aria-labelledby="message-policy-heading">
@@ -1904,19 +1901,10 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
 }
 
 /**
- * A provisioning Slack binding means a setup attempt was started earlier (possibly before a page
- * refresh). Hydrating through the create intent returns the in-flight attempt instead of a new one.
+ * A provisioning Slack binding may represent an active or terminal setup attempt. Only an explicit
+ * Admin action may reuse the active attempt or create a successor after cancellation.
  */
-function SlackProvisioningActions({
-  hydrate,
-  onResume,
-}: {
-  hydrate: (intent: "create") => Promise<boolean>;
-  onResume: () => void;
-}) {
-  useEffect(() => {
-    void hydrate("create");
-  }, [hydrate]);
+function SlackProvisioningActions({ onResume }: { onResume: () => void }) {
   return (
     <div className="im-actions">
       <Button onClick={onResume}>Resume Slack setup</Button>

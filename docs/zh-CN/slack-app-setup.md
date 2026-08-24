@@ -20,7 +20,9 @@ Server 已记录的待生效接收模式所需的 bot scopes 和事件；同时�
 ## 管理员流程
 
 1. 在 Agent 的 **IM** 页面选择 **Connect Slack App**、**Reauthorize Slack** 或 **Replace Slack App**。处于 provisioning
-   的绑定（例如刷新页面前已经开始的 setup）会改为显示 **Resume Slack setup**；恢复会返回进行中的 attempt，而不是新建一个。
+   的绑定（例如刷新页面前已经开始的 setup）会改为显示 **Resume Slack setup**。仅打开或刷新页面绝不会调用会改变状态的 setup
+   endpoint；管理员必须显式选择 **Resume Slack setup**。如果 attempt 仍在进行中则返回原 attempt，只有旧 attempt 已进入终态时
+   才创建后继 attempt。
 2. 按所选意图准备 App。OpenTag 同时以「创建新 App 链接」和「可复制的 JSON」两种形式展示生成的 manifest：
    - **Connect** 与 **Replace** 从 manifest 创建一个专属的新 App，并安装到目标工作区。
    - **Reauthorize** 保持同一个 App、工作区和 bot user：打开现有 App 的 **App Manifest** 页面，用生成的 JSON 替换 manifest
@@ -53,8 +55,9 @@ attempt 会一直显示「Signing Secret not yet verified」。重新授权的�
 - 错误的 Signing Secret 不会让 attempt 失败。失败的 URL 验证会作为非机密诊断记录在 attempt 上
   （`SLACK_SIGNING_SECRET_INVALID` 及其时间），IM 页面会显示。选择 **Edit credentials** 向同一个 attempt 提交修正后的
   token 和 secret：OpenTag 重新调用 `auth.test`，原子替换两个 secret，并重新开始 URL 验证。提交的 secret 永不回显。
-- **Cancel setup** 可随时结束一个 attempt。attempt 活动期间不能开始另一种意图（`SLACK_SETUP_INTENT_CONFLICT`），需要先取消
-  当前的。再次开始相同意图会返回进行中的 attempt，刷新页面后也一样。
+- **Cancel setup** 可随时结束一个 attempt，且取消状态会跨导航和刷新保持；只有显式选择 **Resume Slack setup** 或重试操作才会
+  创建后继 attempt。attempt 活动期间不能开始另一种意图（`SLACK_SETUP_INTENT_CONFLICT`），需要先取消当前的。再次开始相同意图
+  会返回进行中的 attempt。
 - attempt 在开始 30 分钟后过期。截止后提交的凭证或收到的 URL 验证都以 `SLACK_SETUP_EXPIRED` 拒绝，不会写入已失效的
   attempt。
 - URL 验证写入会比较其实际验证的精确加密凭证/证明快照。同一 attempt 并发替换凭证时，旧 challenge 以

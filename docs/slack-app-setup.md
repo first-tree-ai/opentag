@@ -23,7 +23,9 @@ enables a writable App Home Messages tab so a user can start a direct-message co
 
 1. In the Agent's **IM** page, choose **Connect Slack App**, **Reauthorize Slack**, or **Replace Slack App**. A
    provisioning binding (a setup that was started earlier, for example before a page refresh) shows **Resume Slack
-   setup** instead; resuming returns the in-flight attempt rather than starting a new one.
+   setup** instead. Merely opening or refreshing the page never calls the mutating setup endpoint. The Admin must
+   explicitly choose **Resume Slack setup**; it returns the in-flight attempt when one remains active and starts a
+   successor only when the previous attempt is terminal.
 2. Prepare the App for the chosen intent. OpenTag shows the generated manifest both as a create-new-App link and as
    copyable JSON:
    - **Connect** and **Replace** create a dedicated new App from the manifest and install it to the intended workspace.
@@ -62,9 +64,10 @@ setup with no active binding, a correctly signed event is acknowledged (`200`, p
   non-secret diagnostic (`SLACK_SIGNING_SECRET_INVALID` plus its time) and the IM page shows it. Choose **Edit
   credentials** to submit a corrected token and secret to the same attempt: OpenTag re-runs `auth.test`, replaces both
   secrets atomically, and restarts URL verification. Submitted secrets are never echoed back.
-- **Cancel setup** ends an attempt at any time. A different intent cannot start while an attempt is active
-  (`SLACK_SETUP_INTENT_CONFLICT`); cancel the current one first. Starting the same intent again returns the in-flight
-  attempt, also after a page refresh.
+- **Cancel setup** ends an attempt at any time and remains terminal across navigation or refresh. Only an explicit
+  **Resume Slack setup** or retry action may create its successor. A different intent cannot start while an attempt is
+  active (`SLACK_SETUP_INTENT_CONFLICT`); cancel the current one first. Starting the same intent again returns the
+  in-flight attempt.
 - An attempt expires 30 minutes after it starts. Credentials submitted or URL verifications received after the deadline
   are rejected with `SLACK_SETUP_EXPIRED` instead of being persisted into a dead attempt.
 - URL-verification writes compare the exact encrypted credential/proof snapshot they verified. If credentials are

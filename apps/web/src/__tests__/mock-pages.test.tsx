@@ -7,7 +7,7 @@ import { UsagePage } from "../features/usage-page.js";
 describe("capability entry pages", () => {
   afterEach(() => vi.unstubAllEnvs());
 
-  it("renders a minimal static Skills demo without unavailable controls", () => {
+  it("renders a minimal interactive Skills demo", () => {
     render(<SkillsPage />);
 
     expect(screen.getByRole("heading", { name: "Skills" })).toBeTruthy();
@@ -16,16 +16,14 @@ describe("capability entry pages", () => {
     expect(screen.getByText("Browser validation")).toBeTruthy();
     expect(screen.getByText("Issue triage")).toBeTruthy();
     expect(screen.getAllByText("Demo")).toHaveLength(3);
-    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
-      "Name",
-      "Source",
-      "Used by",
-      "Status",
-    ]);
+    expect(screen.getByRole("heading", { name: "All skills" })).toBeTruthy();
+    expect(screen.getAllByRole("article")).toHaveLength(3);
+    expect(screen.getByRole("button", { name: "Upload skill" })).toBeTruthy();
+    expect(screen.getByText("Built by OpenTag")).toBeTruthy();
+    expect(screen.queryByText("Workspace")).toBeNull();
     expect(screen.queryByText("Repositories")).toBeNull();
     expect(screen.queryByText("Tools")).toBeNull();
     expect(screen.queryByText("Prompts")).toBeNull();
-    expect(screen.queryByRole("button")).toBeNull();
   });
 
   it("renders an explicitly labeled Integrations mock", () => {

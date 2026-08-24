@@ -1282,6 +1282,34 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText("Runtime")).toBeNull();
   });
 
+  it.each([
+    ["Usage", "Usage"],
+    ["Settings", "Agent settings"],
+  ])("keeps Agent context visible while opening %s", async (linkName, destinationHeading) => {
+    let agentReads = 0;
+    let releaseAgentRead = () => {};
+    const pendingAgentRead = new Promise<void>((resolve) => {
+      releaseAgentRead = resolve;
+    });
+    installApi("admin", {
+      agentRead: () => {
+        agentReads += 1;
+        return agentReads === 1 ? undefined : pendingAgentRead;
+      },
+      bound: true,
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("link", { name: linkName }));
+
+    expect(await screen.findByRole("heading", { name: destinationHeading })).toBeTruthy();
+    await waitFor(() => expect(agentReads).toBe(2));
+    expect(screen.queryByLabelText("Loading current server state")).toBeNull();
+    await act(async () => releaseAgentRead());
+  });
+
   it("shows confirmed active work without exposing conversation content", async () => {
     installApi("admin", {
       bound: true,

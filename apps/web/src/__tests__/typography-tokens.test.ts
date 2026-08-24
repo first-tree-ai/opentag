@@ -13,13 +13,7 @@ import { describe, expect, it } from "vitest";
  * role. Anywhere else, a rebinding is component-local drift: the thing this
  * PR removed.
  */
-const READING_SURFACES = new Set([
-  ".settings-page",
-  ".onboarding-shell",
-  ".decorative-page",
-  ".dialog-card",
-  ".agent-profile-page",
-]);
+const READING_SURFACES = new Set([".settings-page", ".onboarding-shell", ".decorative-page", ".dialog-card"]);
 
 /*
  * Every check reads parsed declarations rather than raw text. Matching CSS

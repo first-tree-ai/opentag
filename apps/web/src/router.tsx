@@ -301,13 +301,16 @@ function useResource<T>(
   loader: () => Promise<T>,
   key: string,
   options: {
+    initialValue?: T;
     keepPreviousData?: boolean;
     onBackgroundError?: (value: T, error: Error) => T;
     revalidateMs?: number;
     refreshOnFocus?: boolean;
   } = {},
 ): LoadState<T> {
-  const [state, setState] = useState<LoadState<T>>({ kind: "loading" });
+  const [state, setState] = useState<LoadState<T>>(() =>
+    options.initialValue === undefined ? { kind: "loading" } : { kind: "ready", value: options.initialValue },
+  );
   const loaderRef = useRef(loader);
   const keyRef = useRef(key);
   const optionsRef = useRef(options);
@@ -352,7 +355,7 @@ function useResource<T>(
         });
     };
     const revalidate = () => load(false);
-    load(!options.keepPreviousData);
+    load(!options.keepPreviousData && options.initialValue === undefined);
     const interval = options.revalidateMs ? window.setInterval(revalidate, options.revalidateMs) : undefined;
     const refreshVisible = () => {
       if (document.visibilityState === "visible") revalidate();
@@ -367,7 +370,7 @@ function useResource<T>(
       window.removeEventListener("focus", revalidate);
       document.removeEventListener("visibilitychange", refreshVisible);
     };
-  }, [key, options.keepPreviousData, options.refreshOnFocus, options.revalidateMs]);
+  }, [key, options.initialValue, options.keepPreviousData, options.refreshOnFocus, options.revalidateMs]);
   return state;
 }
 
@@ -375,14 +378,24 @@ function isTerminalResourceError(error: Error): boolean {
   return error instanceof ApiError && [401, 403, 404, 410].includes(error.status);
 }
 
-function AsyncState<T>({ state, children }: { state: LoadState<T>; children: (value: T) => ReactNode }) {
+function AsyncState<T>({
+  state,
+  children,
+  loading,
+}: {
+  state: LoadState<T>;
+  children: (value: T) => ReactNode;
+  loading?: ReactNode;
+}) {
   if (state.kind === "loading")
     return (
-      <div aria-label="Loading current server state" className="loading-state" role="status">
-        <span />
-        <span />
-        <span />
-      </div>
+      loading ?? (
+        <div aria-label="Loading current server state" className="loading-state" role="status">
+          <span />
+          <span />
+          <span />
+        </div>
+      )
     );
   if (state.kind === "error")
     return (
@@ -1591,12 +1604,16 @@ function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; 
         </div>
         <div className="agent-header-actions">
           {!backToSettings ? (
-            <Link className="agent-usage-link" to={`/agents/${agent.id}/usage`}>
+            <Link className="agent-usage-link" state={{ agent }} to={`/agents/${agent.id}/usage`}>
               Usage
             </Link>
           ) : null}
           {agent.viewerCapabilities.canManage && !backToSettings ? (
-            <Link className={buttonClassName({ variant: "secondary" })} to={`/agents/${agent.id}/settings`}>
+            <Link
+              className={buttonClassName({ variant: "secondary" })}
+              state={{ agent }}
+              to={`/agents/${agent.id}/settings`}
+            >
               <Icon name="settings" /> Settings
             </Link>
           ) : null}
@@ -1615,7 +1632,7 @@ function AgentRecoveryBanner({ agent }: { agent: AgentDetailView }) {
         <p>{agentRecoveryMessage(agent)}</p>
       </div>
       {recovery ? (
-        <Link className={buttonClassName({ size: "compact", variant: "secondary" })} to={recovery.to}>
+        <Link className={buttonClassName({ size: "compact", variant: "secondary" })} state={{ agent }} to={recovery.to}>
           {recovery.label}
         </Link>
       ) : null}
@@ -1677,7 +1694,7 @@ function AgentContact({ agent }: { agent: AgentDetailView }) {
           {agent.viewerCapabilities.canManage ? (
             <Link
               className={buttonClassName({ size: "compact", variant: "outline" })}
-              state={{ returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
+              state={{ agent, returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
               to={`/agents/${agent.id}/settings/messaging`}
             >
               Manage
@@ -1710,7 +1727,11 @@ function AgentContact({ agent }: { agent: AgentDetailView }) {
 
 function AgentUsagePage() {
   const { agentId = "" } = useParams();
+  const location = useLocation();
+  const routeState = location.state as { agent?: AgentDetailView } | null;
+  const initialAgent = routeState?.agent?.id === agentId ? routeState.agent : undefined;
   const state = useResource(() => loadAgentDetail(agentId), agentId, {
+    initialValue: initialAgent,
     onBackgroundError: markAgentDetailUnconfirmed,
   });
   return (
@@ -1734,8 +1755,15 @@ function AgentUsagePage() {
 function AgentSettingsPage() {
   const { agentId = "", section } = useParams();
   const location = useLocation();
+  const routeState = location.state as {
+    agent?: AgentDetailView;
+    returnLabel?: string;
+    returnTo?: string;
+  } | null;
+  const initialAgent = routeState?.agent?.id === agentId ? routeState.agent : undefined;
   const [refreshVersion, setRefreshVersion] = useState(0);
   const state = useResource(() => loadAgentDetail(agentId), `${agentId}:${refreshVersion}`, {
+    initialValue: initialAgent,
     keepPreviousData: true,
     onBackgroundError: markAgentDetailUnconfirmed,
   });
@@ -1745,9 +1773,8 @@ function AgentSettingsPage() {
     <AsyncState state={state}>
       {(agent) => {
         if (!agent.viewerCapabilities.canManage) return <Navigate replace to={`/agents/${agent.id}`} />;
-        const returnState = location.state as { returnLabel?: string; returnTo?: string } | null;
-        const backTo = selected ? (returnState?.returnTo ?? `/agents/${agent.id}/settings`) : `/agents/${agent.id}`;
-        const backLabel = selected ? (returnState?.returnLabel ?? "Agent settings") : agent.displayName;
+        const backTo = selected ? (routeState?.returnTo ?? `/agents/${agent.id}/settings`) : `/agents/${agent.id}`;
+        const backLabel = selected ? (routeState?.returnLabel ?? "Agent settings") : agent.displayName;
         return (
           <section className="object-page agent-profile-page">
             <div className="agent-settings-page">
@@ -1907,7 +1934,7 @@ function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
         <h1>Agent settings</h1>
         <p>Change how {agent.displayName} works and receives requests.</p>
       </header>
-      <AsyncState state={configState}>
+      <AsyncState loading={<AgentSettingsDirectoryLoading />} state={configState}>
         {(config) => (
           <div className="agent-settings-groups">
             {agentSettingsGroups.map((group) => (
@@ -1957,6 +1984,33 @@ function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
           </div>
         )}
       </AsyncState>
+    </div>
+  );
+}
+
+function AgentSettingsDirectoryLoading() {
+  return (
+    <div aria-label="Loading Agent settings" className="agent-settings-loading" role="status">
+      <div aria-hidden="true" className="agent-settings-groups">
+        {agentSettingsGroups.map((group) => (
+          <div className="agent-settings-group" key={group.key}>
+            <span className="agent-settings-loading-label" />
+            <div className="agent-settings-grid">
+              {agentSettingsSections
+                .filter((item) => item.group === group.key)
+                .map((item) => (
+                  <div className="agent-settings-entry is-static is-loading" key={item.key}>
+                    <span className="agent-settings-icon" />
+                    <span className="agent-settings-loading-copy">
+                      <span className="agent-settings-loading-title" />
+                      <span className="agent-settings-loading-summary" />
+                    </span>
+                  </div>
+                ))}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

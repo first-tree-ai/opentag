@@ -1,0 +1,139 @@
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { describe, expect, it } from "vitest";
+import { TaskDetailPage, TasksPage } from "./tasks-page.js";
+
+describe("Tasks demo", () => {
+  it("renders the minimal Feishu-only Task list in English", () => {
+    const { container } = render(
+      <MemoryRouter>
+        <TasksPage />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
+      "Work",
+      "Source",
+      "Activity",
+    ]);
+    expect(screen.getAllByRole("row")).toHaveLength(4);
+    expect(screen.getAllByText(/^Feishu ·/)).toHaveLength(3);
+    expect(screen.queryByLabelText("Filter by source")).toBeNull();
+    expect(container.textContent).not.toMatch(/[\u3400-\u9fff]/u);
+  });
+
+  it("filters demo Tasks by Agent, status, and search text", () => {
+    render(
+      <MemoryRouter>
+        <TasksPage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.change(screen.getByLabelText("Filter by Agent"), { target: { value: "Scout" } });
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    expect(screen.getByText("Customer Feedback")).toBeTruthy();
+    expect(screen.queryByText("Product Launch")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Filter by Agent"), { target: { value: "all" } });
+    fireEvent.change(screen.getByLabelText("Filter by status"), { target: { value: "needs_attention" } });
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    expect(screen.getByText("Engineering Collaboration")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Filter by status"), { target: { value: "all" } });
+    fireEvent.change(screen.getByLabelText("Search Tasks"), { target: { value: "confirmed date" } });
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    expect(screen.getByText("Product Launch")).toBeTruthy();
+  });
+
+  it("shows a compact empty result state", () => {
+    render(
+      <MemoryRouter>
+        <TasksPage />
+      </MemoryRouter>,
+    );
+
+    fireEvent.change(screen.getByLabelText("Search Tasks"), { target: { value: "no matching task" } });
+    expect(screen.getByRole("heading", { name: "No Tasks found" })).toBeTruthy();
+    expect(screen.queryByRole("table")).toBeNull();
+  });
+
+  it("renders each request, provider event stream, and final answer in order", () => {
+    render(
+      <MemoryRouter initialEntries={["/tasks/q3-launch-readiness"]}>
+        <Routes>
+          <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByText("Demo data")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Open in Feishu" }).getAttribute("href")).toBe("https://www.feishu.cn/");
+    expect(screen.getByLabelText("Task source").textContent).toContain("Product Launch");
+
+    const conversation = screen.getByLabelText("Task conversation");
+    expect(within(conversation).getAllByText("Mia Zhang")).toHaveLength(2);
+    expect(
+      within(conversation).getByText(
+        "Please review the Q3 launch plan and call out anything that is still unowned or missing a confirmed date.",
+      ),
+    ).toBeTruthy();
+    expect(within(conversation).getByText("Read thread")).toBeTruthy();
+    expect(within(conversation).getByText("Open document")).toBeTruthy();
+    expect(within(conversation).getByText("Search messages")).toBeTruthy();
+    expect(
+      within(conversation).getByText(
+        "The checklist and brief disagree on three items. I’m checking the recent thread before treating any owner or date as confirmed.",
+      ),
+    ).toBeTruthy();
+    expect(within(conversation).getByRole("heading", { name: "Follow-ups drafted" })).toBeTruthy();
+    expect(
+      within(conversation).getAllByText(/Recorded locally at .*Open Feishu for the authoritative thread/),
+    ).toHaveLength(2);
+    expect(within(conversation).queryByText(/Turn \d/u)).toBeNull();
+    expect(within(conversation).queryByText(/Chain of Thought/i)).toBeNull();
+
+    const process = within(conversation).getByText("Worked for 8m 12s").closest("details");
+    const result = within(conversation).getByRole("heading", { name: "Launch plan reviewed" });
+    expect(process).toBeTruthy();
+    if (!process) throw new Error("Expected the Agent process details");
+    expect(process.hasAttribute("open")).toBe(true);
+    expect(process.compareDocumentPosition(result) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(process).getByText("3 tool calls · 0 retries · 8.1K input · 6.1K output · 14.2K total")).toBeTruthy();
+    expect(screen.getByText("Task details").closest("details")?.hasAttribute("open")).toBe(false);
+    expect(screen.queryByRole("complementary")).toBeNull();
+  });
+
+  it("shows live provider events without inventing a final answer or zero usage", () => {
+    render(
+      <MemoryRouter initialEntries={["/tasks/customer-visit-feedback"]}>
+        <Routes>
+          <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const process = screen.getByText("Working").closest("details");
+    expect(process?.hasAttribute("open")).toBe(true);
+    expect(within(process as HTMLElement).getByText("2 tool calls · 0 retries · 6.4K input")).toBeTruthy();
+    expect(within(process as HTMLElement).getByText("In progress")).toBeTruthy();
+    expect(screen.queryByText(/0 output/)).toBeNull();
+    expect(screen.queryByRole("heading", { level: 2 })).toBeNull();
+  });
+
+  it("keeps provider attention and retry state attached to the execution that produced it", () => {
+    render(
+      <MemoryRouter initialEntries={["/tasks/onboarding-document-review"]}>
+        <Routes>
+          <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const process = screen.getByText("Worked for 11m 03s").closest("details");
+    expect(within(process as HTMLElement).getByText("Needs attention")).toBeTruthy();
+    expect(
+      within(process as HTMLElement).getByText("2 tool calls · 1 retry · 11.8K input · 6.8K output · 18.6K total"),
+    ).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Two source documents are missing" })).toBeTruthy();
+  });
+});

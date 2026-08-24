@@ -139,7 +139,12 @@ describe("Agent contracts", () => {
       computer: { id: computerId, displayName: "Laptop", platform: "darwin" },
     };
     expect(AgentSummarySchema.parse(summary)).toEqual(summary);
-    expect(ListAgentsResponseSchema.parse({ agents: [summary] })).toEqual({ agents: [summary] });
+    const listItem = {
+      ...summary,
+      activity: { state: "idle" },
+      usage: { windowDays: 30, tasks: 3, failed: 1, tokens: 420 },
+    };
+    expect(ListAgentsResponseSchema.parse({ agents: [listItem] })).toEqual({ agents: [listItem] });
     expect(AgentDetailSchema.parse({ ...summary, viewerCapabilities: { canManage: false } })).toMatchObject({
       viewerCapabilities: { canManage: false },
     });

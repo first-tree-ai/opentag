@@ -51,6 +51,11 @@ const agentSummary = {
   manager: { userId: managerUserId, displayName: "Admin" },
   computer: { id: safeComputerId, displayName: "Laptop", platform: "linux" as const },
 };
+const agentListItem = {
+  ...agentSummary,
+  activity: { state: "idle" as const },
+  usage: { windowDays: 30 as const, tasks: 0, failed: 0, tokens: 0 },
+};
 const agentDetail = { ...agentSummary, viewerCapabilities: { canManage: true } };
 
 const apps: ReturnType<typeof createApp>[] = [];
@@ -78,7 +83,7 @@ function authService(): UserAuthService {
 function agentService() {
   return {
     createForTeam: vi.fn().mockResolvedValue(agent),
-    listForTeam: vi.fn().mockResolvedValue({ agents: [agentSummary] }),
+    listForTeam: vi.fn().mockResolvedValue({ agents: [agentListItem] }),
     getById: vi.fn().mockResolvedValue(agentDetail),
     getConfigById: vi.fn().mockResolvedValue(agent),
     updateById: vi.fn().mockResolvedValue({ ...agent, displayName: "Reviewer", revision: 2 }),
@@ -125,7 +130,7 @@ describe("Agent HTTP API", () => {
 
     const list = await app.inject({ method: "GET", url: teamAgentsPath(teamId), headers: authorization });
     expect(list.statusCode).toBe(200);
-    expect(list.json()).toEqual({ agents: [agentSummary] });
+    expect(list.json()).toEqual({ agents: [agentListItem] });
     expect(service.listForTeam).toHaveBeenCalledWith(userId, teamId);
   });
 

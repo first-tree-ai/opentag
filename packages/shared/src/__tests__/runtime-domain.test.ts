@@ -11,6 +11,7 @@ import {
   EffectiveRuntimeSnapshotSchema,
   ImMessageDeliveryResultSchema,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
+  runtimeUsageTotalTokens,
   ServerRuntimeBusinessFrameSchema,
   SessionReconcileRequestSchema,
   SessionReconcileResultSchema,
@@ -228,6 +229,19 @@ describe("runtime domain contract", () => {
     for (const placementGeneration of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
       expect(() => DirectImMessageDeliveryRequestSchema.parse({ ...valid, placementGeneration })).toThrow();
     }
+  });
+
+  it("B-07 counts Provider-native cached input exactly once", () => {
+    const usage = { inputTokens: 10, cachedInputTokens: 2, outputTokens: 4 };
+    expect(runtimeUsageTotalTokens("codex", usage)).toBe(14);
+    expect(runtimeUsageTotalTokens("claude-code", usage)).toBe(16);
+    expect(runtimeUsageTotalTokens("codex", {})).toBe(0);
+    expect(() =>
+      runtimeUsageTotalTokens("claude-code", {
+        inputTokens: Number.MAX_SAFE_INTEGER,
+        cachedInputTokens: 1,
+      }),
+    ).toThrow("safe integer range");
   });
 });
 

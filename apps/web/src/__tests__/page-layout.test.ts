@@ -38,6 +38,7 @@ function topLevelDeclarationValue(stylesheet: Root, selector: string, property: 
 const appStyles = postcss.parse(readFileSync(locateStylesheet("src/styles.css"), "utf8"));
 const designSystemStyles = postcss.parse(readFileSync(locateStylesheet("src/ui/design-system.css"), "utf8"));
 const capabilityStyles = postcss.parse(readFileSync(locateStylesheet("src/mock-pages.css"), "utf8"));
+const taskStyles = postcss.parse(readFileSync(locateStylesheet("src/features/tasks-page.css"), "utf8"));
 
 describe("workspace page layout", () => {
   it("uses one 1024px frame with a 960px visible content contract", () => {
@@ -77,5 +78,12 @@ describe("workspace page layout", () => {
     expect(declarationValue(designSystemStyles, ".ds-settings-list", "border-radius")).toBe("var(--radius-panel)");
     expect(declarationValue(designSystemStyles, ".ds-settings-row", "padding")).toBe("var(--space-6)");
     expect(declarationValue(designSystemStyles, "select.ds-control--compact", "min-height")).toBe("36px");
+  });
+
+  it("keeps Task provenance and execution targets visible in the compact layout", () => {
+    expect(declarationValue(taskStyles, ".task-breadcrumb-actions .tasks-demo-note", "display")).toBe("inline");
+    expect(declarationValue(taskStyles, ".task-tool-target", "display")).toBe("block");
+    expect(declarationValue(taskStyles, ".task-tool-target", "grid-row")).toBe("2");
+    expect(declarationValue(taskStyles, ".task-tool-target", "white-space")).toBe("normal");
   });
 });

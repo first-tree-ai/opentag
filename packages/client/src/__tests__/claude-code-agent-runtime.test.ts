@@ -35,7 +35,7 @@ describe("ClaudeCodeAgentRuntime", () => {
     expect(result).toMatchObject({
       status: "completed",
       output: [{ type: "text", text: "final answer" }],
-      usage: { inputTokens: 10, cachedInputTokens: 2, outputTokens: 3 },
+      usage: { inputTokens: 110, cachedInputTokens: 2, outputTokens: 3 },
       providerDiagnostics: {
         providerSessionId: SESSION_ID,
         resultSubtype: "success",
@@ -362,7 +362,12 @@ function messages(scenario: Exclude<Scenario, "hold">): ReadonlyArray<Record<str
       num_turns: 2,
       total_cost_usd: 0.01,
       permission_denials: [],
-      usage: { input_tokens: 10, cache_read_input_tokens: 2, output_tokens: 3 },
+      usage: {
+        input_tokens: 10,
+        cache_creation_input_tokens: 100,
+        cache_read_input_tokens: 2,
+        output_tokens: 3,
+      },
     },
   ];
 }

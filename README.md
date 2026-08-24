@@ -81,7 +81,7 @@ Configure `OPENTAG_GOOGLE_CLIENT_ID` and `OPENTAG_GOOGLE_CLIENT_SECRET` to enabl
 `http://127.0.0.1:8000/`. Active Team members share the same App Shell and member-safe views; Team Admins additionally
 manage Agents, runtime configuration, IM bindings, and Local Computer setup. Computer setup is Agent-scoped: Admins can
 connect another Computer with a short-lived install/login command while creating an Agent, then inspect the bound
-Computer from that Agent's pages. The **Members** page lets Team
+Computer from that Agent's pages. **Workspace settings** groups the Workspace profile with member roles and lets Team
 Admins create, copy, and rotate the bearer invitation link. Invitees can preview the link before signing in; after
 redemption, the Web selects the joined Team. Membership role and lifecycle changes remain explicit CLI operations:
 

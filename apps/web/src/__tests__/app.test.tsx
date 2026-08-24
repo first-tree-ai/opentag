@@ -1208,8 +1208,10 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Workspace permissions" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/general`);
     expect(window.location.hash).toBe("#permissions");
-    expect(document.activeElement).toBe(
-      screen.getByRole("heading", { name: "Workspace permissions" }).closest("section"),
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("heading", { name: "Workspace permissions" }).closest("section"),
+      ),
     );
     expect(screen.queryByRole("link", { name: "Access" })).toBeNull();
   });

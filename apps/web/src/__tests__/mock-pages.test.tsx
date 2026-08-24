@@ -28,8 +28,8 @@ describe("capability entry pages", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("renders an explicitly labeled Integrations mock", () => {
-    vi.stubEnv("DEV", true);
+  it("renders an explicitly labeled Integrations mock in production mode", () => {
+    vi.stubEnv("DEV", false);
     render(<IntegrationsPage />);
 
     expect(screen.getByRole("heading", { name: "Integrations" })).toBeTruthy();
@@ -42,7 +42,6 @@ describe("capability entry pages", () => {
   });
 
   it("filters the Integrations mock and exposes preview-only connection details", () => {
-    vi.stubEnv("DEV", true);
     render(<IntegrationsPage />);
 
     fireEvent.change(screen.getByLabelText("Search integrations"), { target: { value: "errors" } });
@@ -60,16 +59,6 @@ describe("capability entry pages", () => {
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(trigger);
-  });
-
-  it("keeps the Integrations proposal behind the development preview gate", () => {
-    vi.stubEnv("DEV", false);
-    render(<IntegrationsPage />);
-
-    expect(screen.getByRole("heading", { name: "Workspace Integrations are not available yet" })).toBeTruthy();
-    expect(screen.getByText("No preview records are shown in production.")).toBeTruthy();
-    expect(screen.queryByText("GitHub")).toBeNull();
-    expect(screen.queryByRole("button")).toBeNull();
   });
 
   it("renders the fixed 30-day Usage overview without a range control", () => {

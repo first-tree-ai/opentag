@@ -8,10 +8,6 @@ type CategoryFilter = "All categories" | IntegrationCategory;
 const categoryFilters: readonly CategoryFilter[] = ["All categories", "Developer tools", "Knowledge", "Productivity"];
 
 export function IntegrationsPage() {
-  return import.meta.env.DEV ? <IntegrationsPreview /> : <IntegrationsUnavailable />;
-}
-
-export function IntegrationsPreview() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<CategoryFilter>("All categories");
   const [selectedIntegration, setSelectedIntegration] = useState<IntegrationPreview>();
@@ -31,7 +27,7 @@ export function IntegrationsPreview() {
   const available = filteredIntegrations.filter((integration) => integration.connection.state === "available");
 
   return (
-    <section aria-label="Preview Workspace integrations" className="capability-page">
+    <section className="capability-page" aria-labelledby="integrations-page-title">
       <header className="capability-page-header integration-page-header">
         <div>
           <h1 id="integrations-page-title">Integrations</h1>
@@ -141,30 +137,6 @@ export function IntegrationsPreview() {
           onClose={() => setSelectedIntegration(undefined)}
         />
       ) : null}
-    </section>
-  );
-}
-
-export function IntegrationsUnavailable() {
-  return (
-    <section className="capability-page" aria-labelledby="integrations-page-title">
-      <header className="capability-page-header">
-        <div>
-          <h1 id="integrations-page-title">Integrations</h1>
-          <p>Review Workspace-level service connections when OpenTag exposes an authoritative API.</p>
-        </div>
-      </header>
-
-      <section className="settings-unavailable">
-        <span className="settings-state-label">Coming later</span>
-        <h2>Workspace Integrations are not available yet</h2>
-        <p>The current server does not expose a Workspace Integration contract.</p>
-        <ul>
-          <li>No connection state or Agent assignment is inferred or generated here.</li>
-          <li>Provider Bot connections remain managed from each Agent&apos;s Messaging page.</li>
-        </ul>
-        <p>No preview records are shown in production.</p>
-      </section>
     </section>
   );
 }

@@ -176,8 +176,18 @@ export class ImCredentialEnvironmentManager {
   /**
    * The official Slack CLI writes config, credentials, and a debug log into its system config
    * directory on every invocation, so the Turn projects a private writable one instead of letting
-   * the CLI fall back to `$HOME/.slack`. Slack documents only the `--config-dir` flag for this, so
-   * the path travels under an OpenTag-owned name that the Turn prompt passes to that flag.
+   * the CLI fall back to `$HOME/.slack`, where a sandboxed Turn fails before issuing any API call.
+   *
+   * The same path is exported twice on purpose; do not collapse this to one variable.
+   * `OPENTAG_SLACK_CONFIG_DIR` is the load-bearing mechanism: Slack documents `--config-dir` as a
+   * global flag, and the Turn prompt tells the Agent to pass this value to it. `SLACK_CONFIG_DIR`
+   * is a deliberately redundant second path to the same directory, because the whole defect being
+   * fixed is that an Agent which omits the flag fails the Turn with a filesystem error that never
+   * names Slack. `SLACK_CONFIG_DIR` is undocumented -- it is present in the 4.6.0 binary and is
+   * empirically honoured, but it appears in neither `slack --help` nor the reference docs -- so it
+   * must never become the only mechanism. The redundancy is safe in the direction that matters: a
+   * CLI at our 4.2.0 floor that ignores the variable still works through the flag, and the variable
+   * can only ever point at a directory this Client created for this Turn.
    */
   async #slackEnvironment(
     sessionId: string,
@@ -190,6 +200,7 @@ export class ImCredentialEnvironmentManager {
       SLACK_USER_TOKEN: undefined,
       SLACK_APP_TOKEN: undefined,
       OPENTAG_SLACK_CONFIG_DIR: configDir,
+      SLACK_CONFIG_DIR: configDir,
     };
   }
 

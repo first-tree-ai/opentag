@@ -18,7 +18,7 @@ OpenTag 要求官方 Slack CLI 4.2.0 或更高版本。`slack api <method>` 自 
 
 托管 Turn prompt 只向 Agent 提供 Slack thread 的机制，不提供放置偏好：若 Agent 的 Session policy 选择在 thread 内回复，`thread_ts` 为入站 `threadTs`，若无则为入站 `messageTs`；顶层消息省略 `thread_ts`。消息通过 `slack api chat.postMessage --json <body> --skip-update` 发送。请求体必须用 JSON 库序列化并作为单个 `--json` 参数传递，不得通过字符串拼接或 shell 替换手工拼装，也不得使用 `key=value` 参数：`key=value` 参数会被 form-encode 并把 Bot token 放进请求体，而 `--json` 则通过 Bearer header 发送。Agent 不得传 `--token`、`--app`、`-w` 或 `--team`；投影的 `SLACK_BOT_TOKEN` 是唯一凭证，且优先于本机已登录的任何 Slack CLI session。
 
-Slack CLI 每次调用都会把配置、凭证和一份 debug 日志写入系统配置目录，仅调用 `slack api` 时也是如此。当该目录不可写时——例如沙箱化的 Turn 无法写入 `$HOME/.slack/logs`——CLI 会在发出任何 API 调用之前就失败，而报出的文件系统错误并不会指向 Slack。因此 Turn 会按 Turn 投影一个私有的 `0700` 目录，并以 `OPENTAG_SLACK_CONFIG_DIR` 导出其路径；托管 Turn prompt 要求 Agent 在每次 `slack` 调用中以 `--config-dir "$OPENTAG_SLACK_CONFIG_DIR"` 传入该路径。Slack 只把 `--config-dir` 记录为全局 flag，并未记录对应的环境变量，所以 OpenTag 用自己的变量名承载该路径，而不依赖未公开的 CLI 变量。
+Slack CLI 每次调用都会把配置、凭证和一份 debug 日志写入系统配置目录，仅调用 `slack api` 时也是如此。当该目录不可写时——例如沙箱化的 Turn 无法写入 `$HOME/.slack/logs`——CLI 会在发出任何 API 调用之前就失败，而报出的文件系统错误并不会指向 Slack。因此 Turn 会按 Turn 投影一个私有的 `0700` 目录，并以 `OPENTAG_SLACK_CONFIG_DIR` 导出其路径；托管 Turn prompt 要求 Agent 在每次 `slack` 调用中以 `--config-dir "$OPENTAG_SLACK_CONFIG_DIR"` 传入该路径。`--config-dir` 是已公开的全局 flag，也是承重机制。同一路径还会额外以 `SLACK_CONFIG_DIR` 导出，这是刻意的冗余：否则漏传该 flag 的 Agent 会以一个根本不指向 Slack 的文件系统错误让整个 Turn 失败。`SLACK_CONFIG_DIR` 未被官方记录——它存在于 4.6.0 二进制中并经实测生效，但既不出现在 `slack --help` 也不出现在官方参考文档里——所以它绝不能成为唯一机制；而处于所支持的 4.2.0 下限、会忽略该变量的 CLI 仍可通过 flag 正常工作。
 
 Slack CLI 没有 stdin 或文件形式的请求体，因此出站消息文本始终出现在 `slack api` 的命令行中，本机任何能列出进程参数的进程都能看到。不要在出站消息中放置机密，并把 Client 机器视为与 Bot token 同等信任级别。
 

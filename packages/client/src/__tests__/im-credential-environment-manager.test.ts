@@ -35,8 +35,11 @@ describe("ImCredentialEnvironmentManager", () => {
       const path = await manager.prepare(request);
       const configDir = join(home, "data", "runtime", "provider-credentials", `${request.sessionId}-slack-config`);
       expect(await readFile(path, "utf8")).toBe(
-        `export SLACK_BOT_TOKEN='xoxb-${attention}'\nunset SLACK_USER_TOKEN\nunset SLACK_APP_TOKEN\nexport OPENTAG_SLACK_CONFIG_DIR='${configDir}'\n`,
+        `export SLACK_BOT_TOKEN='xoxb-${attention}'\nunset SLACK_USER_TOKEN\nunset SLACK_APP_TOKEN\nexport OPENTAG_SLACK_CONFIG_DIR='${configDir}'\nexport SLACK_CONFIG_DIR='${configDir}'\n`,
       );
+      const projected = parseEnvironmentFile(await readFile(path, "utf8"));
+      expect(projected.OPENTAG_SLACK_CONFIG_DIR).toBe(configDir);
+      expect(projected.SLACK_CONFIG_DIR).toBe(projected.OPENTAG_SLACK_CONFIG_DIR);
       expect((await stat(path)).mode & 0o777).toBe(0o600);
       expect((await stat(configDir)).isDirectory()).toBe(true);
       expect((await stat(configDir)).mode & 0o777).toBe(0o700);
@@ -99,8 +102,34 @@ describe("ImCredentialEnvironmentManager", () => {
   it("lets an ambient Turn invoke a fake official Slack CLI with only the temporary environment file", async () => {
     const home = await temporaryHome();
     const fakeSlack = join(home, "slack");
-    await writeFile(fakeSlack, '#!/bin/sh\nprintf "%s|%s\\n" "$SLACK_BOT_TOKEN" "$*"\n', "utf8");
+    // The fake CLI stands in for the config-directory behaviour of the real binary: it resolves the
+    // directory from `--config-dir` when the invocation passes it and from `SLACK_CONFIG_DIR`
+    // otherwise, then writes a debug log there before doing anything else and fails when that write
+    // is impossible. It cannot prove what the real binary honours; it pins what this Client hands to
+    // a CLI that honours either path.
+    await writeFile(
+      fakeSlack,
+      [
+        "#!/bin/sh",
+        'config_dir="${SLACK_CONFIG_DIR:-$HOME/.slack}"',
+        'previous=""',
+        'for argument in "$@"; do',
+        '  if [ "$previous" = "--config-dir" ]; then config_dir="$argument"; fi',
+        '  previous="$argument"',
+        "done",
+        'mkdir -p "$config_dir/logs" || exit 78',
+        ': >"$config_dir/logs/slack-debug.log" || exit 78',
+        'printf "%s|%s|%s\\n" "$SLACK_BOT_TOKEN" "$config_dir" "$*"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
     await chmod(fakeSlack, 0o700);
+    // A Turn that has to fall back to `$HOME/.slack` cannot create it, which is the sandbox defect.
+    const sandbox = join(home, "sandbox");
+    await mkdir(sandbox, { recursive: true });
+    await chmod(sandbox, 0o500);
+    const unwritableHome = join(sandbox, "home");
     const connection = grantConnection((request) => ({
       type: "im:credential:result",
       requestId: request.requestId,
@@ -110,26 +139,35 @@ describe("ImCredentialEnvironmentManager", () => {
     }));
     const manager = new ImCredentialEnvironmentManager({ connection, home, platform: "linux" });
     const environmentPath = await manager.prepare(delivery("ambient"));
+    const environment = { OPENTAG_PROVIDER_ENV_FILE: environmentPath, FAKE_SLACK: fakeSlack, HOME: unwritableHome };
 
     const result = await execFileAsync(
       "/bin/sh",
       [
         "-c",
-        '. "$OPENTAG_PROVIDER_ENV_FILE"; printf "%s\\n" "$SLACK_BOT_TOKEN|$OPENTAG_SLACK_CONFIG_DIR"; : > "$OPENTAG_SLACK_CONFIG_DIR/slack-debug.log"; "$FAKE_SLACK" api chat.postMessage --json "{}" --config-dir "$OPENTAG_SLACK_CONFIG_DIR"',
+        '. "$OPENTAG_PROVIDER_ENV_FILE"; printf "%s\\n" "$SLACK_BOT_TOKEN|$OPENTAG_SLACK_CONFIG_DIR|$SLACK_CONFIG_DIR"; "$FAKE_SLACK" api chat.postMessage --json "{}" --config-dir "$OPENTAG_SLACK_CONFIG_DIR"; "$FAKE_SLACK" api chat.postMessage --json "{}"',
       ],
-      {
-        env: {
-          OPENTAG_PROVIDER_ENV_FILE: environmentPath,
-          FAKE_SLACK: fakeSlack,
-        },
-      },
+      { env: environment },
     );
     const configDir = join(home, "data", "runtime", "provider-credentials", "session-1-slack-config");
     expect(result.stdout.trim().split("\n")).toEqual([
-      `xoxb-ambient-cli|${configDir}`,
-      `xoxb-ambient-cli|api chat.postMessage --json {} --config-dir ${configDir}`,
+      `xoxb-ambient-cli|${configDir}|${configDir}`,
+      `xoxb-ambient-cli|${configDir}|api chat.postMessage --json {} --config-dir ${configDir}`,
+      `xoxb-ambient-cli|${configDir}|api chat.postMessage --json {}`,
     ]);
-    expect((await stat(join(configDir, "slack-debug.log"))).isFile()).toBe(true);
+    expect((await stat(join(configDir, "logs", "slack-debug.log"))).isFile()).toBe(true);
+    await expect(stat(unwritableHome)).rejects.toMatchObject({ code: "ENOENT" });
+
+    // Removing both paths to the projection reproduces the defect the projection exists to prevent.
+    await expect(
+      execFileAsync(
+        "/bin/sh",
+        ["-c", '. "$OPENTAG_PROVIDER_ENV_FILE"; unset SLACK_CONFIG_DIR; "$FAKE_SLACK" api chat.postMessage'],
+        { env: environment },
+      ),
+    ).rejects.toMatchObject({ code: 78 });
+
+    await chmod(sandbox, 0o700);
     await manager.close();
     await expect(stat(configDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -383,6 +421,16 @@ describe("ImCredentialEnvironmentManager", () => {
     );
   });
 });
+
+function parseEnvironmentFile(content: string): Record<string, string> {
+  return Object.fromEntries(
+    content
+      .split("\n")
+      .map((line) => /^export (?<name>[A-Z_]+)='(?<value>.*)'$/.exec(line))
+      .filter((match): match is RegExpExecArray => match !== null)
+      .map((match) => [match.groups?.name ?? "", (match.groups?.value ?? "").replaceAll(`'"'"'`, "'")]),
+  );
+}
 
 async function temporaryHome(): Promise<string> {
   const home = await mkdtemp(join(tmpdir(), "opentag-im-credentials-"));

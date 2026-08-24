@@ -1,15 +1,26 @@
 import { describe, expect, it } from "vitest";
 import {
+  CompleteTeamSetupRequestSchema,
   CreateTeamRequestSchema,
   CreateTeamResponseSchema,
   ListTeamComputersResponseSchema,
   TeamMemberAdminConfigSchema,
   TeamMemberSummarySchema,
   TeamProfileSchema,
+  TeamSetupCompletionSchema,
   UpdateTeamProfileRequestSchema,
 } from "../index.js";
 
 describe("Team contracts", () => {
+  it("validates the explicit Team setup completion boundary", () => {
+    const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
+    expect(CompleteTeamSetupRequestSchema.parse({ agentId })).toEqual({ agentId });
+    expect(() => CompleteTeamSetupRequestSchema.parse({ agentId, ready: true })).toThrow();
+    expect(TeamSetupCompletionSchema.parse({ setupCompletedAt: "2026-08-20T00:00:00.000Z" })).toEqual({
+      setupCompletedAt: "2026-08-20T00:00:00.000Z",
+    });
+  });
+
   it("keeps membership role and lifecycle as separate strict fields", () => {
     expect(
       TeamMemberAdminConfigSchema.parse({

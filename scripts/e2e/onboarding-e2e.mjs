@@ -6,9 +6,9 @@
  * build, drives a real Chromium browser through `/onboarding`, and connects a
  * real Computer with the real CLI daemon over the runtime WebSocket protocol.
  * Nothing in the Server, Web, Client, or CLI code paths is stubbed. The only
- * substituted artifact is the Agent Runtime provider executable, because
- * provider readiness otherwise depends on an installed and signed-in Codex or
- * Claude Code CLI; the stub answers the same probe contract the Client runs.
+ * substituted artifacts are the local Claude Code and lark-cli executables,
+ * because readiness otherwise depends on installed and signed-in CLIs; the
+ * stubs answer the same probe contracts the Client runs.
  *
  * The Feishu leg cannot be authorized offline, so the check does two things: it
  * starts a real setup attempt and records the outcome, then writes an authorized
@@ -234,13 +234,24 @@ set -euo pipefail
 case "\${1:-}" in
   --version) echo "9.9.9 (opentag-e2e-stub)" ;;
   --help)
-    echo "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools"
+    echo "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt"
     ;;
   auth)
     echo '{"loggedIn":true}'
     ;;
   *) echo "opentag e2e stub does not run turns" >&2; exit 1 ;;
 esac
+`;
+
+/** Answers exactly the Feishu CLI readiness probe used by the Client. */
+const LARK_CLI_STUB = `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "\${1:-}" == "--version" ]] || [[ "\${1:-}" == "im" && "\${2:-}" == "--help" ]]; then
+  echo "opentag-e2e-stub"
+  exit 0
+fi
+echo "opentag e2e stub does not run Feishu commands" >&2
+exit 1
 `;
 
 async function main() {
@@ -254,7 +265,8 @@ async function main() {
   await mkdir(stubBin, { recursive: true });
   await mkdir(ARTIFACT_DIRECTORY, { recursive: true });
   await writeFile(join(stubBin, "claude"), CLAUDE_STUB, { mode: 0o755 });
-  await chmod(join(stubBin, "claude"), 0o755);
+  await writeFile(join(stubBin, "lark-cli"), LARK_CLI_STUB, { mode: 0o755 });
+  await Promise.all([chmod(join(stubBin, "claude"), 0o755), chmod(join(stubBin, "lark-cli"), 0o755)]);
 
   const serverLogPath = join(ARTIFACT_DIRECTORY, "server.log");
   const daemonLogPath = join(ARTIFACT_DIRECTORY, "daemon.log");
@@ -419,18 +431,18 @@ async function main() {
         },
         { timeoutMs: 90_000 },
       );
-      return connected ? `${PROVIDER_STUB ? "stubbed" : "installed"} Provider CLI, daemon log: ${daemonLogPath}` : "";
+      return connected ? `${PROVIDER_STUB ? "stubbed" : "installed"} local CLIs, daemon log: ${daemonLogPath}` : "";
     });
 
     await step("advance the page to the Agent creation step", async () => {
-      const heading = page.getByRole("heading", { name: "Create your Agent" });
+      const createAgent = page.getByRole("button", { name: "Create Agent" });
       const providerHeading = page.getByRole("heading", {
         name: /Prepare Codex or Claude Code|Confirm the runtime route/,
       });
       await waitFor(
         "the Agent creation step",
         async () => {
-          if (await heading.isVisible().catch(() => false)) return true;
+          if (await createAgent.isEnabled().catch(() => false)) return true;
           const checkAgain = page.getByRole("button", { name: /Check again|Checking…/ });
           if (await providerHeading.isVisible().catch(() => false)) {
             if (await checkAgain.isEnabled().catch(() => false)) await checkAgain.click();
@@ -439,16 +451,16 @@ async function main() {
         },
         { timeoutMs: 120_000, intervalMs: 1_500 },
       );
-      const description = await page.locator(".onboarding-action-heading p").first().innerText();
+      const description = await page.getByRole("region", { name: "Where it runs" }).innerText();
       await shot("03-create-agent");
       if (!description.includes("Claude Code")) throw new Error(`Unexpected runtime route: ${description}`);
       return description;
     });
 
     await step("create the Agent from the onboarding form", async () => {
-      const input = page.locator(".onboarding-agent-form input");
+      const input = page.getByLabel("Display name");
       await input.fill("OpenTag E2E");
-      await page.getByRole("button", { name: "Create agent" }).click();
+      await page.getByRole("button", { name: "Create Agent" }).click();
       await page.getByRole("heading", { name: "Connect OpenTag to Feishu" }).waitFor({ timeout: 60_000 });
       await shot("04-handoff");
       return "handoff step reached";
@@ -500,13 +512,17 @@ async function main() {
       return outcome;
     });
 
-    await step("show a member the same facts without controls", async () => {
+    await step("keep a member out of the admin-only onboarding flow", async () => {
       await psql(DATABASE_URL, `update memberships set role = 'member' where user_id = '${USER_ID}'`);
       await page.reload({ waitUntil: "networkidle" });
-      await page.locator(".status-chip", { hasText: "Read only" }).waitFor({ timeout: 30_000 });
-      await shot("06-member-read-only");
+      await page.waitForURL(`${BASE_URL}/agents`, { timeout: 30_000 });
+      await page
+        .getByText("An administrator needs to prepare the first Agent.", { exact: false })
+        .waitFor({ timeout: 30_000 });
+      await shot("06-member-waiting-for-admin");
       await psql(DATABASE_URL, `update memberships set role = 'admin' where user_id = '${USER_ID}'`);
-      return "read-only state rendered for a member";
+      await page.goto(`${BASE_URL}/onboarding`, { waitUntil: "networkidle" });
+      return "member redirected to Agents with the admin dependency explained";
     });
 
     await step("reach the ready state with an authorized Feishu binding", async () => {
@@ -517,7 +533,8 @@ async function main() {
       const scopes = FEISHU_REQUIRED_TENANT_SCOPES.map((scope) => `'${scope}'`).join(", ");
       await psql(
         DATABASE_URL,
-        `insert into im_bindings (
+        `delete from im_bindings where agent_id = '${agentId}';
+         insert into im_bindings (
            agent_id, provider, status, external_app_id, external_team_id, external_bot_id,
            external_team_brand, bot_display_name, credential_schema_version, credential_generation,
            encrypted_credential, granted_capabilities, connection_owner_instance_id,
@@ -530,9 +547,11 @@ async function main() {
          )`,
       );
       await page.reload({ waitUntil: "networkidle" });
-      await page.getByRole("heading", { name: "OpenTag is ready" }).waitFor({ timeout: 30_000 });
-      await shot("07-ready");
-      return "handoff readiness projected from the Server, ready step rendered";
+      await page.waitForURL(`${BASE_URL}/agents`, { timeout: 30_000 });
+      const completedAt = await psql(DATABASE_URL, `select setup_completed_at from teams where id = '${TEAM_ID}'`);
+      if (!completedAt) throw new Error("Team setup completion was not persisted");
+      await shot("07-completed");
+      return `handoff readiness projected and Team setup completed at ${completedAt}`;
     });
 
     await step("survive a Computer outage without losing the Agent", async () => {
@@ -546,14 +565,14 @@ async function main() {
         { timeoutMs: 60_000 },
       );
       await page.reload({ waitUntil: "networkidle" });
-      await page
-        .getByText("The Agent identity and Feishu setup are unchanged.", { exact: false })
-        .waitFor({ timeout: 30_000 });
-      const outageTitle = await page.locator(".onboarding-action-heading h2").first().innerText();
+      await page.waitForURL(`${BASE_URL}/agents`, { timeout: 30_000 });
+      await page.getByRole("heading", { name: "Agents" }).waitFor({ timeout: 30_000 });
       await shot("08-runtime-outage");
       const agents = await psql(DATABASE_URL, `select count(*) from agents where team_id = '${TEAM_ID}'`);
       if (Number(agents) !== 1) throw new Error(`Expected exactly one Agent, found ${agents}`);
-      return `"${outageTitle}" — Agent identity preserved while the runtime route is unavailable`;
+      const completedAt = await psql(DATABASE_URL, `select setup_completed_at from teams where id = '${TEAM_ID}'`);
+      if (!completedAt) throw new Error("Computer outage reopened Team setup");
+      return `Agents remained the product destination; setup completion stayed at ${completedAt}`;
     });
 
     await step("run the whole flow without an uncaught browser error", async () => {

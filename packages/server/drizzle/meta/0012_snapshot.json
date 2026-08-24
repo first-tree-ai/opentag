@@ -1,6 +1,6 @@
 {
-  "id": "6fefa255-90f0-49d3-9b6d-b1888f721f37",
-  "prevId": "d73a8ca3-6e00-4026-b702-a6147ff4c941",
+  "id": "bd1981cf-c9ec-4db0-9915-a009d76fe156",
+  "prevId": "6fefa255-90f0-49d3-9b6d-b1888f721f37",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1096,6 +1096,13 @@
         "setup_expires_at": {
           "name": "setup_expires_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pending_receive_mode": {
+          "name": "pending_receive_mode",
+          "type": "agent_receive_mode",
+          "typeSchema": "public",
           "primaryKey": false,
           "notNull": false
         },

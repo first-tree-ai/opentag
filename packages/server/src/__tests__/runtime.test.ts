@@ -25,7 +25,15 @@ afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
 
 const me = {
   user: { id: randomUUID(), email: "admin@example.com", displayName: "Admin" },
-  memberships: [{ teamId: randomUUID(), teamName: "example", teamDisplayName: "Example", role: "admin" as const }],
+  memberships: [
+    {
+      teamId: randomUUID(),
+      teamName: "example",
+      teamDisplayName: "Example",
+      role: "admin" as const,
+      setupCompletedAt: null,
+    },
+  ],
 };
 
 function authService(): UserAuthService {

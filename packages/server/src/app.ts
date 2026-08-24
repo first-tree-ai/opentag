@@ -25,7 +25,7 @@ import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bind
 import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
 import { type SlackSetupService, SlackSetupServiceError } from "./services/im-bindings/slack/index.js";
 import type { InvitationService } from "./services/invitations/index.js";
-import type { TeamMembershipService } from "./services/teams/index.js";
+import { type TeamMembershipService, type TeamSetupService, TeamSetupServiceError } from "./services/teams/index.js";
 import { registerWebApp } from "./web-app.js";
 
 export interface CreateAppOptions {
@@ -49,6 +49,7 @@ export interface CreateAppOptions {
   runtime?: RuntimeRoutesOptions;
   slackEvents?: SlackEventsRouteOptions;
   teamService?: TeamMembershipService;
+  teamSetupService?: TeamSetupService;
 }
 
 export function sanitizeRequestUrl(url: string): string {
@@ -176,7 +177,7 @@ export function createApp(options: CreateAppOptions = {}) {
       registerAgentRoutes(app, authService, options.agentService, publicOrigin);
     }
     if (options.teamService) {
-      registerTeamRoutes(app, authService, options.teamService, publicOrigin);
+      registerTeamRoutes(app, authService, options.teamService, publicOrigin, options.teamSetupService);
     }
     if (options.invitationService) {
       registerInvitationRoutes(app, authService, options.invitationService, publicOrigin);
@@ -236,7 +237,8 @@ export function createApp(options: CreateAppOptions = {}) {
       error instanceof AuthServiceError ||
       error instanceof AgentServiceError ||
       error instanceof ImBindingServiceError ||
-      error instanceof SlackSetupServiceError
+      error instanceof SlackSetupServiceError ||
+      error instanceof TeamSetupServiceError
     ) {
       const envelope = ErrorEnvelopeSchema.parse({
         error: {

@@ -1,10 +1,12 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { IntegrationsPage } from "../features/integrations-page.js";
 import { SkillsPage } from "../features/skills-page.js";
 import { UsagePage } from "../features/usage-page.js";
 
 describe("capability entry pages", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
   it("renders a minimal static Skills demo without unavailable controls", () => {
     render(<SkillsPage />);
 
@@ -27,6 +29,7 @@ describe("capability entry pages", () => {
   });
 
   it("renders an explicitly labeled Integrations mock", () => {
+    vi.stubEnv("DEV", true);
     render(<IntegrationsPage />);
 
     expect(screen.getByRole("heading", { name: "Integrations" })).toBeTruthy();
@@ -39,17 +42,34 @@ describe("capability entry pages", () => {
   });
 
   it("filters the Integrations mock and exposes preview-only connection details", () => {
+    vi.stubEnv("DEV", true);
     render(<IntegrationsPage />);
 
     fireEvent.change(screen.getByLabelText("Search integrations"), { target: { value: "errors" } });
     expect(screen.getByText("Sentry")).toBeTruthy();
     expect(screen.queryByText("GitHub")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    const trigger = screen.getByRole("button", { name: "Connect" });
+    trigger.focus();
+    fireEvent.click(trigger);
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Connect Sentry" })).toBeTruthy();
     expect(screen.getByText("Preview only")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("keeps the Integrations proposal behind the development preview gate", () => {
+    vi.stubEnv("DEV", false);
+    render(<IntegrationsPage />);
+
+    expect(screen.getByRole("heading", { name: "Workspace Integrations are not available yet" })).toBeTruthy();
+    expect(screen.getByText("No preview records are shown in production.")).toBeTruthy();
+    expect(screen.queryByText("GitHub")).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
   });
 
   it("renders the fixed 30-day Usage overview without a range control", () => {

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { type RefObject, useMemo, useRef, useState } from "react";
 import { type IntegrationCategory, type IntegrationPreview, integrationPreviews } from "../mock/capability-data.js";
 import { Button, Dialog, StatusIndicator } from "../ui/design-system.js";
 import "../mock-pages.css";
@@ -8,9 +8,14 @@ type CategoryFilter = "All categories" | IntegrationCategory;
 const categoryFilters: readonly CategoryFilter[] = ["All categories", "Developer tools", "Knowledge", "Productivity"];
 
 export function IntegrationsPage() {
+  return import.meta.env.DEV ? <IntegrationsPreview /> : <IntegrationsUnavailable />;
+}
+
+export function IntegrationsPreview() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<CategoryFilter>("All categories");
   const [selectedIntegration, setSelectedIntegration] = useState<IntegrationPreview>();
+  const returnFocusRef = useRef<HTMLElement>(null);
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filteredIntegrations = useMemo(
     () =>
@@ -26,7 +31,7 @@ export function IntegrationsPage() {
   const available = filteredIntegrations.filter((integration) => integration.connection.state === "available");
 
   return (
-    <section className="capability-page" aria-labelledby="integrations-page-title">
+    <section aria-label="Preview Workspace integrations" className="capability-page">
       <header className="capability-page-header integration-page-header">
         <div>
           <h1 id="integrations-page-title">Integrations</h1>
@@ -91,13 +96,23 @@ export function IntegrationsPage() {
         {filteredIntegrations.length > 0 ? (
           <div className="integration-groups">
             {connected.length > 0 ? (
-              <IntegrationGroup integrations={connected} label="Connected" onSelect={setSelectedIntegration} />
+              <IntegrationGroup
+                integrations={connected}
+                label="Connected"
+                onSelect={(integration, trigger) => {
+                  returnFocusRef.current = trigger;
+                  setSelectedIntegration(integration);
+                }}
+              />
             ) : null}
             {available.length > 0 ? (
               <IntegrationGroup
                 integrations={available}
                 label="Available to connect"
-                onSelect={setSelectedIntegration}
+                onSelect={(integration, trigger) => {
+                  returnFocusRef.current = trigger;
+                  setSelectedIntegration(integration);
+                }}
               />
             ) : null}
           </div>
@@ -120,8 +135,36 @@ export function IntegrationsPage() {
       </section>
 
       {selectedIntegration ? (
-        <IntegrationPreviewDialog integration={selectedIntegration} onClose={() => setSelectedIntegration(undefined)} />
+        <IntegrationPreviewDialog
+          integration={selectedIntegration}
+          returnFocusRef={returnFocusRef}
+          onClose={() => setSelectedIntegration(undefined)}
+        />
       ) : null}
+    </section>
+  );
+}
+
+export function IntegrationsUnavailable() {
+  return (
+    <section className="capability-page" aria-labelledby="integrations-page-title">
+      <header className="capability-page-header">
+        <div>
+          <h1 id="integrations-page-title">Integrations</h1>
+          <p>Review Workspace-level service connections when OpenTag exposes an authoritative API.</p>
+        </div>
+      </header>
+
+      <section className="settings-unavailable">
+        <span className="settings-state-label">Coming later</span>
+        <h2>Workspace Integrations are not available yet</h2>
+        <p>The current server does not expose a Workspace Integration contract.</p>
+        <ul>
+          <li>No connection state or Agent assignment is inferred or generated here.</li>
+          <li>Provider Bot connections remain managed from each Agent&apos;s Messaging page.</li>
+        </ul>
+        <p>No preview records are shown in production.</p>
+      </section>
     </section>
   );
 }
@@ -133,7 +176,7 @@ function IntegrationGroup({
 }: {
   integrations: readonly IntegrationPreview[];
   label: string;
-  onSelect: (integration: IntegrationPreview) => void;
+  onSelect: (integration: IntegrationPreview, trigger: HTMLButtonElement) => void;
 }) {
   return (
     <section
@@ -172,7 +215,7 @@ function IntegrationGroup({
               <Button
                 size="compact"
                 variant={isConnected ? "outline" : "secondary"}
-                onClick={() => onSelect(integration)}
+                onClick={(event) => onSelect(integration, event.currentTarget)}
               >
                 {isConnected ? "Manage" : "Connect"}
               </Button>
@@ -184,7 +227,15 @@ function IntegrationGroup({
   );
 }
 
-function IntegrationPreviewDialog({ integration, onClose }: { integration: IntegrationPreview; onClose: () => void }) {
+function IntegrationPreviewDialog({
+  integration,
+  onClose,
+  returnFocusRef,
+}: {
+  integration: IntegrationPreview;
+  onClose: () => void;
+  returnFocusRef: RefObject<HTMLElement | null>;
+}) {
   const { connection } = integration;
   const isConnected = connection.state === "connected";
   return (
@@ -195,6 +246,7 @@ function IntegrationPreviewDialog({ integration, onClose }: { integration: Integ
           : `Preview the information shown before connecting ${integration.name} to this Workspace.`
       }
       eyebrow="Mock interaction"
+      returnFocusRef={returnFocusRef}
       title={isConnected ? `Manage ${integration.name}` : `Connect ${integration.name}`}
       onClose={onClose}
     >

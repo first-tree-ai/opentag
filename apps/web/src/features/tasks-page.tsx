@@ -261,7 +261,7 @@ function TaskConversationTurn({ task, turn }: { task: TaskPreview; turn: Convers
   const actionCount = `${turn.actions.length} ${turn.actions.length === 1 ? "action" : "actions"}`;
   const duration = turn.duration === "In progress" ? "In progress" : turn.duration;
   const workLabel = [actionCount, ...toolLabels, duration].join(" · ");
-  const responseTime = turn.resultObservedAt ?? turn.actions.at(-1)?.time ?? turn.requestTime;
+  const responseTime = turn.resultObservedAt ?? "Time unavailable";
 
   return (
     <section className="task-turn" aria-label={`Conversation turn at ${turn.requestTime}`}>

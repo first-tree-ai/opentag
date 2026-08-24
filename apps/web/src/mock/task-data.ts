@@ -153,6 +153,7 @@ export const taskPreviews: readonly TaskPreview[] = [
     startedAt: "Aug 24, 10:42 AM",
     duration: "In progress",
     tokens: "6.4K",
+    resultObservedAt: "10:47 AM",
     result: {
       title: "Customer feedback analysis in progress",
       summary: "Three visit summaries are loaded. Scout is grouping recurring issues by account and owner.",
@@ -196,6 +197,7 @@ export const taskPreviews: readonly TaskPreview[] = [
     startedAt: "Aug 24, 10:18 AM",
     duration: "11m 03s",
     tokens: "18.6K",
+    resultObservedAt: "10:29 AM",
     result: {
       title: "Two source documents are missing",
       summary: "The review is paused because the access checklist and security orientation steps are not available.",
@@ -241,6 +243,7 @@ export const taskPreviews: readonly TaskPreview[] = [
     startedAt: "Aug 24, 9:56 AM",
     duration: "14m 21s",
     tokens: "22.1K",
+    resultObservedAt: "10:10 AM",
     result: {
       title: "Questionnaire draft completed",
       summary: "Thirty-four answers were drafted and four policy questions were flagged for legal review.",
@@ -286,6 +289,7 @@ export const taskPreviews: readonly TaskPreview[] = [
     startedAt: "Aug 24, 9:31 AM",
     duration: "17m 44s",
     tokens: "27.3K",
+    resultObservedAt: "9:49 AM",
     result: {
       title: "Likely proxy header mismatch",
       summary:

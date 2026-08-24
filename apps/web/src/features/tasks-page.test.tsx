@@ -104,8 +104,26 @@ describe("Tasks demo", () => {
     expect(details).toBeTruthy();
     const tokens = within(details as HTMLElement).getByText("Tokens").parentElement;
     expect(tokens?.textContent).toBe("TokensUnavailable");
+    expect(screen.getByText("Time unavailable")).toBeTruthy();
     expect(
       screen.getByText("The Task record is incomplete because the final provider response was not received."),
     ).toBeTruthy();
+  });
+
+  it("shows the local result observation time instead of the request time", () => {
+    render(
+      <MemoryRouter initialEntries={["/tasks/security-questionnaire"]}>
+        <Routes>
+          <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const response = screen
+      .getByRole("heading", { name: "Questionnaire draft completed" })
+      .closest(".task-message--agent");
+    expect(response).toBeTruthy();
+    expect(within(response as HTMLElement).getAllByText("10:10 AM")).toHaveLength(2);
+    expect(within(response as HTMLElement).queryByText("9:56 AM")).toBeNull();
   });
 });

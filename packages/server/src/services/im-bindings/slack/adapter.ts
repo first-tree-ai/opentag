@@ -68,8 +68,10 @@ const REVISION_SUBTYPES = new Set(["message_changed", "message_deleted"]);
 
 export type SlackInboundIgnoreReason = "unsupported_event" | "ignored_subtype" | "hidden_message";
 
+type SlackMessageEvent = z.infer<typeof SlackMessageEventSchema>;
+
 export type SlackInboundClassification =
-  | { accepted: true; eventType: string; subtype: string | undefined }
+  | { accepted: true; eventType: string; subtype: string | undefined; message: SlackMessageEvent }
   | { accepted: false; reason: SlackInboundIgnoreReason; eventType: string | undefined; subtype: string | undefined };
 
 function optionalLabel(value: unknown): string | undefined {
@@ -94,7 +96,7 @@ export function classifySlackInboundEvent(event: unknown): SlackInboundClassific
   if (message.hidden === true && !(message.subtype !== undefined && REVISION_SUBTYPES.has(message.subtype))) {
     return { accepted: false, reason: "hidden_message", eventType: message.type, subtype: message.subtype };
   }
-  return { accepted: true, eventType: message.type, subtype: message.subtype };
+  return { accepted: true, eventType: message.type, subtype: message.subtype, message };
 }
 
 export interface VerifiedSlackEnvelope {
@@ -147,8 +149,9 @@ function boundedText(value: string): { text: string; truncated: boolean } {
 }
 
 export function normalizeSlackEnvelope(envelope: VerifiedSlackEnvelope): NormalizedInboundImEvent[] {
-  if (!classifySlackInboundEvent(envelope.event).accepted) return [];
-  const event = SlackMessageEventSchema.parse(envelope.event);
+  const classification = classifySlackInboundEvent(envelope.event);
+  if (!classification.accepted) return [];
+  const event = classification.message;
   const operation =
     event.subtype === "message_deleted" ? "deleted" : event.subtype === "message_changed" ? "edited" : "created";
   const nested = operation === "edited" ? event.message : operation === "deleted" ? event.previous_message : undefined;

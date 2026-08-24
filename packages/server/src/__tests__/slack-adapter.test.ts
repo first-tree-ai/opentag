@@ -371,7 +371,11 @@ describe("Slack message subtype policy", () => {
       text: "<@U_BOT> look at this",
       files: [{ id: "F1", name: "report.pdf", mimetype: "application/pdf", size: 1024 }],
     };
-    expect(classifySlackInboundEvent(event)).toEqual({ accepted: true, eventType: "message", subtype: "file_share" });
+    expect(classifySlackInboundEvent(event)).toMatchObject({
+      accepted: true,
+      eventType: "message",
+      subtype: "file_share",
+    });
     const [normalized] = normalizeSlackEnvelope({ ...identity, event });
     expect(normalized).toMatchObject({
       message: {

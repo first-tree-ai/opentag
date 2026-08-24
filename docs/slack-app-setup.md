@@ -126,6 +126,17 @@ conversation membership.
   envelope, and token/event identity correlation before atomically advancing credentials, applying a pending
   receive-mode target, and completing the setup slot. Expired, canceled, or replaced attempts cannot activate from a
   stale event.
+- Slack disables an App's event subscription past roughly 95% delivery failures in a 60-minute window, and counts every
+  non-2xx toward that budget. Ingress therefore reserves non-2xx for requests a caller should stop sending unchanged —
+  signature failure, an unroutable or unknown binding, an App/Team identity mismatch, and structurally invalid bodies —
+  and marks them `x-slack-no-retry`. A well-formed, routable callback whose event type or subtype OpenTag deliberately
+  ignores, including `app_rate_limited`, is acknowledged with `200 {"ok":true,"ignored":"<reason>"}`.
+- Ingested message subtypes are an explicit allow-list: no subtype, `file_share`, `thread_broadcast`, `message_changed`,
+  `message_deleted`, and `bot_message` (still subject to the self filter). Every other subtype and any `hidden` message
+  that is not an edit or delete revision is acknowledged and dropped, so channel-join and topic-change notices never
+  reach the Agent.
+- `X-Slack-Retry-Num` and `X-Slack-Retry-Reason` are read before signature verification and are therefore treated as
+  untrusted: length-bounded, narrowed to Slack's documented reasons, and recorded only as span attributes.
 - `tokens_revoked` moves the binding to reauthorization-required when the current bot token is affected.
 - `app_uninstalled` disables the binding. Admins can retry an expired or failed setup, reauthorize, replace, or explicitly
   disable the binding.
@@ -148,7 +159,16 @@ The supported flow must cover:
 - wrong-secret recovery through credential re-submission, cancel, intent conflicts, and resume after a page refresh;
 - live ingress during a same-secret reauthorization that still awaits URL verification;
 - concurrent setup/activation attempts without partial cutover;
-- secret redaction in API responses, diagnostics, logs, and traces.
+- secret redaction in API responses and diagnostics, verified by asserting that the credentials and error payloads
+  contain no Bot Token or Signing Secret;
+- credential scrubbing at the log and trace sinks, verified by injecting Bot Tokens, app-level tokens, and a Signing
+  Secret directly into the Fastify logger and into raw span attributes, span events, exception messages, and status
+  messages, then asserting that neither the capturing log sink nor the in-memory span exporter receives them. The
+  enforcement is key-name and pattern based — known credential field names, Slack `xox*-` and `xapp-` prefixes,
+  `Bearer` values, and labelled `secret=`/`token=` forms — so a credential that is neither carried under a known key nor
+  recognizable by one of those patterns is not detectable and is instead prevented by never logging raw bodies;
+- Slack ingress status policy: the typed failure codes, `x-slack-no-retry` on permanent rejections, `200` for
+  deliberately ignored well-formed traffic, and one stored `im_messages` row across a duplicate retried delivery.
 
 Slack protocol references: [app manifests](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/),
 [`auth.test`](https://docs.slack.dev/reference/methods/auth.test/),

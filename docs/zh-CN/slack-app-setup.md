@@ -108,6 +108,15 @@ Slack CLI 主动查询；实际范围受已安装 Bot Token 的 scopes 和 conve
 - 事件激活会锁定并重新核验当前 setup attempt 的精确 ID、活动状态、过期时间、签名、重新解析的原始 envelope，以及
   token/event 身份关联，再在同一事务中推进 credential、应用待生效接收模式并完成 setup slot。已过期、已取消或
   已替换 attempt 的旧事件不能激活。
+- 当 60 分钟窗口内约 95% 以上的投递失败时，Slack 会停用 App 的事件订阅，并且把每个非 2xx 都计入该预算。因此 ingress 只把非 2xx
+  留给「调用方不应原样重发」的请求：签名失败、binding 不可路由或未知、App/Team 身份不一致，以及结构非法的 body；这些响应会带上
+  `x-slack-no-retry`。对于结构合法、可路由，但 event type 或 subtype 属于 OpenTag 有意忽略的回调（包括 `app_rate_limited`），
+  以 `200 {"ok":true,"ignored":"<reason>"}` 确认。
+- 会被 ingest 的消息 subtype 是一份显式允许清单：无 subtype、`file_share`、`thread_broadcast`、`message_changed`、
+  `message_deleted`，以及 `bot_message`（仍然经过自身消息过滤）。其余 subtype，以及任何非编辑/删除修订的 `hidden` 消息，都会被
+  确认并丢弃，因此加入频道、修改话题等系统通知不会到达 Agent。
+- `X-Slack-Retry-Num` 和 `X-Slack-Retry-Reason` 在签名验证之前就被读取，因此按不可信输入处理：长度受限、收敛到 Slack 文档列出的
+  reason，并且只作为 span 属性记录。
 - 当前 bot token 出现在 `tokens_revoked` 时，绑定进入需要重新授权状态。
 - `app_uninstalled` 会禁用绑定。管理员可以重试过期或失败的 setup、重新授权、替换或显式禁用绑定。
 
@@ -128,7 +137,13 @@ Slack CLI 能力都 ready 时才可 handoff。Slack 出站发送保持 provider-
 - 通过重新提交凭证恢复错误 secret、取消、意图冲突，以及刷新页面后恢复；
 - 同 secret 重新授权仍在等待 URL 验证期间的正常入口消息；
 - 并发 setup/激活不产生部分切换；
-- API 响应、诊断、日志和 trace 中的 secret 脱敏。
+- API 响应与诊断中的 secret 脱敏：断言 credentials 和错误响应体不含 Bot Token 或 Signing Secret；
+- 日志与 trace sink 层面的凭据擦除：把 Bot Token、app-level token 和 Signing Secret 直接注入 Fastify logger，以及注入原始的
+  span 属性、span event、exception message 和 status message，然后断言捕获用的日志 sink 与内存 span exporter 都收不到它们。该
+  强制是基于 key 名与模式的——已知凭据字段名、Slack 的 `xox*-` 与 `xapp-` 前缀、`Bearer` 值，以及带标签的 `secret=`/`token=`
+  形式——所以既不在已知 key 下、又不匹配上述任一模式的凭据是无法被识别的，只能依靠「从不记录原始 body」来避免泄漏；
+- Slack ingress 的状态码策略：带类型的失败 code、永久拒绝时的 `x-slack-no-retry`、对有意忽略的合法流量返回 `200`，以及重复重试
+  投递在 `im_messages` 中只落一行。
 
 Slack 协议参考：[App manifests](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/)、
 [`auth.test`](https://docs.slack.dev/reference/methods/auth.test/)、

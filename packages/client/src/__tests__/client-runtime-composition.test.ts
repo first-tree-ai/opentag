@@ -17,6 +17,7 @@ import type { AgentRuntime, AgentRuntimeFactory } from "../agent-runtime/types.j
 import { createLogger } from "../observability/logger.js";
 import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
 import { CODEX_AGENT_RUNTIME_APP_SERVER_ARGS } from "../providers/codex/agent-runtime.js";
+import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
 import {
   ComposedClientRuntime,
   codexProviderReadiness,
@@ -1504,6 +1505,205 @@ describe("createClientRuntime production composition", () => {
     await sawProbe;
     ensureSignal.abort(new Error("stop ensure"));
     await expect(ensuring).rejects.toThrow("stop ensure");
+    runtime.stop();
+  });
+
+  it("does not let a cancelled sole waiter hand its draining owner to a later caller", async () => {
+    const home = await temporaryDirectory("opentag-client-owner-evict-");
+    const connection = runtimeConnection();
+    const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
+    let releaseOldOwner!: () => void;
+    let oldOwnerReturned = false;
+    const oldOwnerDrain = new Promise<void>((resolveDrain) => {
+      releaseOldOwner = resolveDrain;
+    });
+    const refresh = vi.spyOn(AgentRuntimeProviderRegistry.prototype, "refresh");
+    refresh
+      .mockResolvedValueOnce(false)
+      .mockImplementationOnce(async () => {
+        await oldOwnerDrain;
+        oldOwnerReturned = true;
+        return true;
+      })
+      .mockResolvedValue(true);
+    cleanup.push(async () => {
+      releaseOldOwner();
+      refresh.mockRestore();
+    });
+    const runtime = await createClientRuntime(connection, {
+      capabilityRefreshIntervalMs: 60_000,
+      providerProbeDeadlineMs: 5_000,
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory("codex"),
+      home,
+    });
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+      status: "ready",
+    });
+    const firstSignal = new AbortController();
+    const first = runtime.runtimeManager.ensureRuntime("session-1", firstSignal.signal).then(
+      () => "created",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    expect(refresh).toHaveBeenCalledTimes(2);
+    firstSignal.abort(new Error("cancel sole waiter"));
+    await expect(first).resolves.toBe("cancel sole waiter");
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "checking" });
+
+    const second = runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal).then(
+      () => "created",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(3));
+    await expect(second).resolves.toContain("not used");
+    await expect(second).resolves.not.toContain("has no waiters");
+    await vi.waitFor(() => expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" }));
+    expect(oldOwnerReturned).toBe(false);
+    const published = readinessUpdates.mock.calls.length;
+    releaseOldOwner();
+    await vi.waitFor(() => expect(oldOwnerReturned).toBe(true));
+    await new Promise((resolveWait) => setTimeout(resolveWait, 0));
+    expect(readinessUpdates).toHaveBeenCalledTimes(published);
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" });
+    runtime.stop();
+  });
+
+  it("does not let cancelled-owner cleanup evict or publish over its live successor", async () => {
+    const home = await temporaryDirectory("opentag-client-owner-identity-");
+    const connection = runtimeConnection();
+    const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
+    let releaseOldOwner!: () => void;
+    let releaseNewOwner!: () => void;
+    let oldOwnerReturned = false;
+    const oldOwnerDrain = new Promise<void>((resolveDrain) => {
+      releaseOldOwner = resolveDrain;
+    });
+    const newOwnerDrain = new Promise<void>((resolveDrain) => {
+      releaseNewOwner = resolveDrain;
+    });
+    const refresh = vi.spyOn(AgentRuntimeProviderRegistry.prototype, "refresh");
+    refresh
+      .mockResolvedValueOnce(false)
+      .mockImplementationOnce(async () => {
+        await oldOwnerDrain;
+        oldOwnerReturned = true;
+        return true;
+      })
+      .mockImplementationOnce(async () => {
+        await newOwnerDrain;
+        return true;
+      })
+      .mockResolvedValue(false);
+    cleanup.push(async () => {
+      releaseOldOwner();
+      releaseNewOwner();
+      refresh.mockRestore();
+    });
+    const runtime = await createClientRuntime(connection, {
+      capabilityRefreshIntervalMs: 60_000,
+      providerProbeDeadlineMs: 5_000,
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory("codex"),
+      home,
+    });
+    for (const sessionId of ["session-1", "session-2", "session-3"]) {
+      expect(
+        await runtime.reconciler.reconcile({
+          ...reconcileRequest(connection.computerId, snapshot()),
+          requestId: randomUUID(),
+          sessionId,
+        }),
+      ).toMatchObject({ status: "ready" });
+    }
+
+    const firstSignal = new AbortController();
+    const first = runtime.runtimeManager.ensureRuntime("session-1", firstSignal.signal).then(
+      () => "created",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    expect(refresh).toHaveBeenCalledTimes(2);
+    firstSignal.abort(new Error("cancel old owner"));
+    await expect(first).resolves.toBe("cancel old owner");
+
+    const second = runtime.runtimeManager.ensureRuntime("session-2", new AbortController().signal).then(
+      () => "created",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(3));
+    releaseOldOwner();
+    await vi.waitFor(() => expect(oldOwnerReturned).toBe(true));
+    await new Promise((resolveWait) => setTimeout(resolveWait, 0));
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "checking" });
+
+    const third = runtime.runtimeManager.ensureRuntime("session-3", new AbortController().signal).then(
+      () => "created",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    await new Promise((resolveWait) => setTimeout(resolveWait, 0));
+    expect(refresh).toHaveBeenCalledTimes(3);
+    releaseNewOwner();
+    await expect(Promise.all([second, third])).resolves.toEqual([
+      expect.stringContaining("not used"),
+      expect.stringContaining("not used"),
+    ]);
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" });
+    runtime.stop();
+  });
+
+  it("starts a fresh owner after the previous cancelled owner has already drained", async () => {
+    const home = await temporaryDirectory("opentag-client-owner-drained-");
+    const connection = runtimeConnection();
+    const readinessUpdates = vi.spyOn(connection, "setProviderReadiness");
+    let releaseHung!: () => void;
+    const hung = new Promise<void>((resolveHung) => {
+      releaseHung = resolveHung;
+    });
+    const probe = vi.fn(async ({ signal }: { signal?: AbortSignal }) => {
+      if (probe.mock.calls.length === 1) {
+        return {
+          ready: false as const,
+          issues: [{ code: "temporarily_unavailable" as const, message: "cold" }],
+        };
+      }
+      if (probe.mock.calls.length === 2) {
+        await hung;
+        if (signal?.aborted) throw signal.reason ?? new Error("aborted");
+        return { ready: true as const, issues: [] };
+      }
+      return { ready: true as const, issues: [] };
+    });
+    const runtime = await createClientRuntime(connection, {
+      capabilityRefreshIntervalMs: 60_000,
+      providerProbeDeadlineMs: 5_000,
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory: readyFactory("codex", probe),
+      home,
+    });
+    expect(await runtime.reconciler.reconcile(reconcileRequest(connection.computerId, snapshot()))).toMatchObject({
+      status: "ready",
+    });
+    const firstSignal = new AbortController();
+    const first = runtime.runtimeManager.ensureRuntime("session-1", firstSignal.signal).then(
+      () => "created",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
+    firstSignal.abort(new Error("cancel before drain"));
+    await expect(first).resolves.toBe("cancel before drain");
+    releaseHung();
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "checking" });
+
+    const second = runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal).then(
+      () => "created",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+    await expect(second).resolves.toContain("not used");
+    expect(probe).toHaveBeenCalledTimes(3);
+    expect(readinessUpdates).toHaveBeenLastCalledWith({ provider: "codex", status: "ready" });
     runtime.stop();
   });
 

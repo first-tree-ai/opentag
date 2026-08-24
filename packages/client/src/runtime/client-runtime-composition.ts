@@ -298,9 +298,16 @@ export async function createClientRuntime(
         } catch (error) {
           settled = { error };
         }
+        const isCurrentOwner = sharedProviderRefreshes.get(providerId) === owner;
+        if (!isCurrentOwner) {
+          if ("error" in settled) throw settled.error;
+          controller.signal.throwIfAborted();
+          return settled.available;
+        }
         if ("error" in settled) {
-          if (readinessSignal.aborted) throw settled.error;
-          if (controller.signal.reason !== deadlineError) throw settled.error;
+          if (readinessSignal.aborted || controller.signal.reason !== deadlineError) {
+            throw settled.error;
+          }
           const result: AgentRuntimeProbeResult = {
             ready: false,
             issues: [{ code: "temporarily_unavailable", message: "Provider readiness probe exceeded its deadline" }],
@@ -324,16 +331,22 @@ export async function createClientRuntime(
     void owner.promise.catch(() => undefined);
     return owner;
   };
+  const liveSharedProviderRefresh = (providerId: string): SharedProviderRefresh | undefined => {
+    const owner = sharedProviderRefreshes.get(providerId);
+    if (!owner || owner.settled || owner.controller.signal.aborted) return undefined;
+    return owner;
+  };
   const refreshProviderReadiness = async (providerId: string, signal?: AbortSignal): Promise<boolean> => {
     signal?.throwIfAborted();
     readinessSignal.throwIfAborted();
-    const owner = sharedProviderRefreshes.get(providerId) ?? startSharedProviderRefresh(providerId);
+    const owner = liveSharedProviderRefresh(providerId) ?? startSharedProviderRefresh(providerId);
     owner.waiters += 1;
     try {
       return await waitForSharedRefresh(owner.promise, signal);
     } finally {
       owner.waiters -= 1;
       if (owner.waiters === 0 && !owner.settled) {
+        if (sharedProviderRefreshes.get(providerId) === owner) sharedProviderRefreshes.delete(providerId);
         owner.controller.abort(new Error(`Agent Runtime provider probe has no waiters: ${providerId}`));
       }
     }

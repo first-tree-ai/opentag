@@ -690,8 +690,31 @@ describe("OpenTag Web App Shell", () => {
 
     const agentCard = (await screen.findByRole("link", { name: "Open Reviewer" })).closest(".agent-card");
     expect(agentCard).toBeTruthy();
-    expect(within(agentCard as HTMLElement).getByText("Working")).toBeTruthy();
-    expect(within(agentCard as HTMLElement).getByText("Started 8m ago")).toBeTruthy();
+    const status = within(agentCard as HTMLElement)
+      .getByText("Working")
+      .closest(".ds-status");
+    expect(status).toBeTruthy();
+    expect(within(status as HTMLElement).getByText("Started 8m ago")).toBeTruthy();
+  });
+
+  it("keeps an offline reason and reconnect action together in the Agent status", async () => {
+    installApi("admin", {
+      bound: true,
+      computerStatus: () => "offline",
+      handoffReady: true,
+    });
+    render(<App />);
+
+    const agentCard = (await screen.findByRole("link", { name: "Open Reviewer" })).closest(".agent-card");
+    expect(agentCard).toBeTruthy();
+    const status = within(agentCard as HTMLElement)
+      .getByText("Needs attention")
+      .closest(".ds-status");
+    expect(status).toBeTruthy();
+    expect(within(status as HTMLElement).getByText("Computer offline")).toBeTruthy();
+    const reconnect = within(status as HTMLElement).getByRole("link", { name: "Reconnect" });
+    expect(reconnect.classList.contains("ds-button--inline")).toBe(true);
+    expect(reconnect.classList.contains("ds-button--outline")).toBe(false);
   });
 
   it.each(["/", "/agents"])("redirects unauthenticated protected path %s to login", async (path) => {

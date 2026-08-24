@@ -1105,8 +1105,29 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
 
 function AgentCard({ agent }: { agent: AgentListItem }) {
   const status = agentCardStatus(agent);
+  const statusDetail: ReactNode =
+    agent.activity.state === "working" && status.label === "Working" ? (
+      <>Started {formatElapsedCompact(agent.activity.startedAt)} ago</>
+    ) : status.detail ? (
+      status.reconnect ? (
+        <>
+          <span className="agent-state-reason">{status.detail}</span>
+          <span className="agent-state-separator" aria-hidden="true">
+            {" · "}
+          </span>
+          <Link
+            className={buttonClassName({ className: "agent-reconnect", variant: "inline" })}
+            to={`/agents/${agent.id}/settings/computer`}
+          >
+            Reconnect
+          </Link>
+        </>
+      ) : (
+        status.detail
+      )
+    ) : undefined;
   return (
-    <article className="agent-card" data-tone={status.tone}>
+    <article className="agent-card" data-avatar-tone={agentAvatarTone(agent.id)} data-tone={status.tone}>
       <div className="agent-card-identity">
         <span className="agent-avatar" aria-hidden="true">
           {initials(agent.displayName)}
@@ -1117,22 +1138,7 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
         </div>
       </div>
       <div className="agent-card-state">
-        <StatusIndicator label={status.label} tone={status.tone} />
-        {agent.activity.state === "working" && status.label === "Working" ? (
-          <div className="agent-current-work">
-            <span>Started {formatElapsedCompact(agent.activity.startedAt)} ago</span>
-          </div>
-        ) : status.detail ? (
-          <small className="agent-state-detail">{status.detail}</small>
-        ) : null}
-        {status.reconnect ? (
-          <Link
-            className={buttonClassName({ className: "agent-reconnect", size: "compact", variant: "outline" })}
-            to={`/agents/${agent.id}/settings/computer`}
-          >
-            Reconnect
-          </Link>
-        ) : null}
+        <StatusIndicator className="agent-card-status" detail={statusDetail} label={status.label} tone={status.tone} />
       </div>
       <dl className="agent-card-usage">
         <div>
@@ -1149,6 +1155,16 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
       </Link>
     </article>
   );
+}
+
+const agentAvatarTones = ["brand", "amber", "blue", "neutral"] as const;
+
+function agentAvatarTone(agentId: string): (typeof agentAvatarTones)[number] {
+  let hash = 0;
+  for (let index = 0; index < agentId.length; index += 1) {
+    hash = (hash * 31 + agentId.charCodeAt(index)) >>> 0;
+  }
+  return agentAvatarTones[hash % agentAvatarTones.length] ?? "brand";
 }
 
 function agentCardStatus(agent: AgentListItem): {

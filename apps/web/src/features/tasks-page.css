@@ -79,8 +79,8 @@
 
 .task-table-grid {
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(190px, 236px) minmax(160px, 180px);
-  column-gap: var(--space-8);
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 160px);
+  column-gap: calc(var(--space-8) + var(--space-4));
 }
 
 .task-table-header {
@@ -94,15 +94,21 @@
 }
 
 .task-table-row {
-  min-height: 92px;
+  min-height: 104px;
   align-items: center;
   border-bottom: 1px solid var(--border);
   color: var(--secondary-foreground);
-  padding: var(--space-4) 0;
+  padding: var(--space-5) 0;
+  transition: background-color 160ms ease;
 }
 
 .task-table-row:last-child {
   border-bottom: 0;
+}
+
+.task-table-row:hover,
+.task-table-row:focus-within {
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
 }
 
 .task-work-cell a {
@@ -123,11 +129,16 @@
   text-underline-offset: 3px;
 }
 
-.task-work-cell small {
-  display: block;
-  margin-top: 5px;
+.task-list-metadata {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 3px var(--space-2);
+  margin-top: 6px;
   color: var(--muted);
   font-size: var(--text-meta);
+  line-height: var(--lh-ui);
 }
 
 .task-source-identity {
@@ -161,26 +172,20 @@
   font-size: var(--text-meta);
 }
 
-.task-source-mark {
-  display: inline-flex;
+.task-feishu-icon {
   width: 32px;
   height: 32px;
   flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  background: var(--surface);
-  color: var(--secondary-foreground);
-  font-size: 10px;
-  font-weight: var(--fw-bold);
-  letter-spacing: -0.01em;
+  object-fit: contain;
 }
 
-.task-source-mark--feishu {
-  border-color: #b8d9d5;
-  background: #edf7f5;
-  color: #176f6a;
+.task-feishu-icon--compact {
+  width: 16px;
+  height: 16px;
+}
+
+.task-status-cell {
+  align-self: center;
 }
 
 .task-table-row .ds-status {
@@ -613,7 +618,7 @@
   }
 
   .task-table-grid {
-    grid-template-columns: minmax(280px, 1fr) minmax(176px, 210px) minmax(150px, 170px);
+    grid-template-columns: minmax(0, 1fr) minmax(140px, 160px);
     column-gap: var(--space-6);
   }
 }
@@ -629,19 +634,13 @@
 
   .task-table-row {
     display: grid;
-    grid-template-columns: 1fr;
-    gap: var(--space-4);
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: var(--space-5);
     padding: var(--space-6) 0;
   }
 
-  .task-table-row td[data-label]::before {
-    display: block;
-    margin-bottom: 5px;
-    color: var(--muted);
-    content: attr(data-label);
-    font-size: var(--text-micro);
-    font-weight: var(--fw-semibold);
-    text-transform: uppercase;
+  .task-status-cell {
+    min-width: 132px;
   }
 
   .task-tool-call-detail {
@@ -662,6 +661,14 @@
 
   .task-toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .task-table-row {
+    grid-template-columns: 1fr;
+  }
+
+  .task-status-cell {
+    min-width: 0;
   }
 
   .task-search {

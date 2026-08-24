@@ -12,6 +12,10 @@ OpenTag publishes one self-contained CLI artifact in two isolated npm package id
 This guide covers published artifacts only. The Staging server is deployed from the same `main` revision by a separate
 workflow described in [deploying.md](./deploying.md).
 
+Each channel also publishes a portable release to Google Cloud Storage: a per-platform tarball carrying the same CLI
+plus its own Node.js runtime, installable without npm. It shares this guide's version coordinates and is built and
+published by the same workflow; see [portable-release.md](./portable-release.md).
+
 The internal `@opentag/client`, `@opentag/shared`, and `@opentag/server` workspaces remain private. Client and Shared
 code is bundled into the CLI tarball, and the packed manifest must not expose an `@opentag/*` runtime dependency.
 `THIRD_PARTY_NOTICES` is generated from the exact third-party packages bundled into the CLI and contains their complete

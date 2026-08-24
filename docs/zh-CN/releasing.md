@@ -1,7 +1,7 @@
 # OpenTag 发布指南
 
 > Canonical source: [../releasing.md](../releasing.md)
-> Last synced with: 2026-08-20
+> Last synced with: 2026-08-25
 
 OpenTag 以两个相互隔离的 npm package identity 发布一个自包含 CLI artifact：
 
@@ -12,6 +12,10 @@ OpenTag 以两个相互隔离的 npm package identity 发布一个自包含 CLI 
 
 本指南只覆盖已发布的 artifact。Staging server 由另一个 workflow 从同一个 `main` revision 部署，说明见
 [deploying.md](./deploying.md)。
+
+每个 channel 还会向 Google Cloud Storage 发布一份 portable release：按平台打包的 tarball，携带同一份 CLI 以及它
+自己的 Node.js runtime，无需 npm 即可安装。它沿用本指南的 version coordinate，并由同一个 workflow 构建与发布，
+说明见 [portable-release.md](./portable-release.md)。
 
 内部 `@opentag/client`、`@opentag/shared` 和 `@opentag/server` workspace 永久保持 private。Client 与 Shared
 代码会 bundle 进 CLI tarball，pack 后的 manifest 不得暴露任何 `@opentag/*` runtime dependency。

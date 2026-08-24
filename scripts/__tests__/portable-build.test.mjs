@@ -1,0 +1,310 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { constants } from "node:fs";
+import { access, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { CHANNEL_CONFIG } from "../channel-config.mjs";
+import {
+  APP_ENTRY,
+  artifactDownloadUrl,
+  artifactFileName,
+  assertBundledCliHasNoRuntimeDependencies,
+  buildPortableReleaseMetadata,
+  DEFAULT_DOWNLOAD_BASE_URL,
+  getPortableChannelConfig,
+  hostPlatform,
+  manifestDownloadUrl,
+  normalizeDownloadBaseUrl,
+  normalizeGeneratedAt,
+  normalizeNodeVersion,
+  PORTABLE_PLATFORMS,
+  parsePlatform,
+  portableAppPackageJson,
+  portableArtifactShim,
+  portableTarCreateArgs,
+  readDefaultNodeVersion,
+  renderInstallerForChannel,
+  tarOwnershipArgs,
+  validateChannelVersion,
+} from "../portable/build-portable.mjs";
+
+const scriptsDir = join(dirname(fileURLToPath(import.meta.url)), "..");
+const portableDir = join(scriptsDir, "portable");
+
+test("portable coordinates follow the published npm channel identities", () => {
+  assert.deepEqual(getPortableChannelConfig("prod"), CHANNEL_CONFIG.prod);
+  assert.deepEqual(getPortableChannelConfig("staging"), CHANNEL_CONFIG.staging);
+  assert.throws(() => getPortableChannelConfig("dev"), /--channel must be one of/);
+
+  validateChannelVersion("prod", "1.2.3");
+  validateChannelVersion("staging", "0.0.2-staging.4.1");
+  assert.throws(() => validateChannelVersion("prod", "0.0.2-staging.4.1"), /stable semantic version/);
+  assert.throws(() => validateChannelVersion("staging", "1.2.3"), /staging semantic version/);
+});
+
+test("artifact names and download URLs stay derivable from the release coordinates", () => {
+  assert.equal(
+    artifactFileName({ packageName: "open-tag", platform: "linux-x64", version: "1.2.3" }),
+    "open-tag-1.2.3-linux-x64.tar.gz",
+  );
+  assert.throws(
+    () => artifactFileName({ packageName: "open-tag", platform: "windows-x64", version: "1.2.3" }),
+    /unsupported portable platform/,
+  );
+  assert.deepEqual(parsePlatform("darwin-arm64"), { arch: "arm64", os: "darwin" });
+  assert.equal(hostPlatform("darwin", "arm64"), "darwin-arm64");
+  assert.equal(hostPlatform("win32", "x64"), null);
+
+  assert.equal(
+    artifactDownloadUrl({
+      channel: "prod",
+      downloadBaseUrl: `${DEFAULT_DOWNLOAD_BASE_URL}/`,
+      fileName: "open-tag-1.2.3-linux-x64.tar.gz",
+      version: "1.2.3",
+    }),
+    "https://download.opentag.build/releases/prod/1.2.3/open-tag-1.2.3-linux-x64.tar.gz",
+  );
+  assert.equal(
+    manifestDownloadUrl({
+      channel: "staging",
+      downloadBaseUrl: DEFAULT_DOWNLOAD_BASE_URL,
+      version: "0.0.2-staging.4.1",
+    }),
+    "https://download.opentag.build/releases/staging/0.0.2-staging.4.1/manifest.json",
+  );
+});
+
+test("download base URLs reject inputs that would publish to the wrong prefix", () => {
+  assert.equal(
+    normalizeDownloadBaseUrl("https://download.opentag.build/releases//"),
+    "https://download.opentag.build/releases",
+  );
+  assert.throws(
+    () => normalizeDownloadBaseUrl("https://download.opentag.build/releases/prod"),
+    /must not include the channel segment/,
+  );
+  assert.throws(() => normalizeDownloadBaseUrl("http://download.opentag.build/releases"), /must use https/);
+  assert.throws(() => normalizeDownloadBaseUrl(""), /is required/);
+  // Local endpoints stay usable so an installer can be exercised without a public bucket.
+  assert.equal(normalizeDownloadBaseUrl("http://127.0.0.1:8799"), "http://127.0.0.1:8799");
+});
+
+test("release metadata pins the version manifest the channel pointer resolves to", () => {
+  const assets = [
+    {
+      platform: "linux-x64",
+      fileName: "open-tag-1.2.3-linux-x64.tar.gz",
+      url: "https://download.opentag.build/releases/prod/1.2.3/open-tag-1.2.3-linux-x64.tar.gz",
+      sha256: "a".repeat(64),
+      size: 42,
+    },
+  ];
+  const { latest, manifest } = buildPortableReleaseMetadata({
+    assets,
+    channel: "prod",
+    channelConfig: CHANNEL_CONFIG.prod,
+    downloadBaseUrl: DEFAULT_DOWNLOAD_BASE_URL,
+    generatedAt: "2026-08-25T00:00:00Z",
+    gitSha: "b".repeat(40),
+    nodeVersion: "v24.19.0",
+    version: "1.2.3",
+  });
+
+  assert.equal(manifest.schemaVersion, 1);
+  assert.equal(manifest.binName, "opentag");
+  assert.equal(manifest.packageName, "open-tag");
+  assert.equal(manifest.generatedAt, "2026-08-25T00:00:00.000Z");
+  assert.deepEqual(manifest.assets, assets);
+  assert.equal(manifest.manifestUrl, undefined);
+  assert.equal(latest.manifestUrl, "https://download.opentag.build/releases/prod/1.2.3/manifest.json");
+});
+
+test("normalizers fail closed on inexact release inputs", () => {
+  assert.equal(normalizeNodeVersion("24.19.0"), "v24.19.0");
+  assert.equal(normalizeNodeVersion(" v24.19.0\n"), "v24.19.0");
+  assert.throws(() => normalizeNodeVersion("24"), /exact Node\.js version/);
+  assert.throws(() => normalizeNodeVersion("lts/*"), /exact Node\.js version/);
+  assert.equal(readDefaultNodeVersion(), normalizeNodeVersion(readDefaultNodeVersion()));
+
+  assert.equal(normalizeGeneratedAt("2026-08-25T00:00:00Z"), "2026-08-25T00:00:00.000Z");
+  assert.throws(() => normalizeGeneratedAt("not-a-date"), /valid timestamp/);
+  assert.throws(() => normalizeGeneratedAt(""), /requires a timestamp value/);
+});
+
+test("the portable app manifest exposes exactly one channel binary and no runtime dependencies", () => {
+  const sourcePackage = {
+    description: "OpenTag command-line interface",
+    engines: { node: "^24.0.0" },
+    license: "Apache-2.0",
+    repository: { type: "git", url: "git+https://github.com/first-tree-ai/opentag.git" },
+  };
+  const appPackage = portableAppPackageJson({ channelConfig: CHANNEL_CONFIG.prod, sourcePackage, version: "1.2.3" });
+  assert.equal(appPackage.name, "open-tag");
+  assert.equal(appPackage.version, "1.2.3");
+  assert.deepEqual(appPackage.bin, { opentag: "./cli/index.mjs" });
+  assert.equal(appPackage.dependencies, undefined);
+
+  assertBundledCliHasNoRuntimeDependencies(sourcePackage);
+  assert.throws(
+    () => assertBundledCliHasNoRuntimeDependencies({ dependencies: { commander: "^13.1.0" } }),
+    /ships without node_modules/,
+  );
+  assert.throws(
+    () => assertBundledCliHasNoRuntimeDependencies({ optionalDependencies: { bufferutil: "^4.0.0" } }),
+    /ships without node_modules/,
+  );
+});
+
+test("tar arguments erase build-machine identity for byte-reproducible retries", () => {
+  assert.deepEqual(tarOwnershipArgs("gnu"), ["--owner=0", "--group=0", "--numeric-owner"]);
+  assert.deepEqual(tarOwnershipArgs("bsd"), ["--uid", "0", "--gid", "0", "--uname", "", "--gname", ""]);
+  assert.throws(() => tarOwnershipArgs("pax"), /unsupported tar flavor/);
+
+  const args = portableTarCreateArgs({
+    fileListPath: "/tmp/files.txt",
+    sourceDir: "/tmp/artifact",
+    tarballPath: "/tmp/payload.tar",
+    tarFlavor: "gnu",
+  });
+  assert.deepEqual(args, [
+    "--no-recursion",
+    "--no-xattrs",
+    "--owner=0",
+    "--group=0",
+    "--numeric-owner",
+    "-cf",
+    "/tmp/payload.tar",
+    "-C",
+    "/tmp/artifact",
+    "-T",
+    "/tmp/files.txt",
+  ]);
+});
+
+test("the artifact shim runs the embedded runtime through relative paths only", () => {
+  const shim = portableArtifactShim();
+  assert.match(shim, /^#!\/bin\/sh\n/);
+  assert.match(shim, /export OPENTAG_INSTALL_MODE=portable/);
+  assert.match(shim, new RegExp(`exec "\\$root/node/bin/node" "\\$root/${APP_ENTRY}" "\\$@"`));
+  assert.doesNotMatch(shim, /\/(Users|home|tmp)\//, "the shim must not embed a build machine path");
+});
+
+test("rendered installers pin the channel and base URL they were released with", async () => {
+  const template = await readFile(join(portableDir, "install.sh"), "utf8");
+  const rendered = renderInstallerForChannel("staging", "https://download.opentag.build/releases", template);
+  assert.match(rendered, /PORTABLE_CHANNEL="\$\{OPENTAG_PORTABLE_CHANNEL:-staging\}"/);
+  assert.match(
+    rendered,
+    /DOWNLOAD_BASE_URL="\$\{OPENTAG_PORTABLE_DOWNLOAD_BASE_URL:-https:\/\/download\.opentag\.build\/releases\}"/,
+  );
+  assert.throws(
+    () => renderInstallerForChannel("dev", DEFAULT_DOWNLOAD_BASE_URL, template),
+    /unsupported installer channel/,
+  );
+  assert.throws(
+    () => renderInstallerForChannel("prod", DEFAULT_DOWNLOAD_BASE_URL, "#!/bin/sh\n"),
+    /missing the portable channel fallback/,
+  );
+});
+
+test("the installer only commits a release after it verifies and smoke-tests the payload", async () => {
+  const source = await readFile(join(portableDir, "install.sh"), "utf8");
+  await access(join(portableDir, "install.sh"), constants.X_OK);
+
+  const checksumIndex = source.indexOf('die "checksum mismatch for portable payload');
+  const smokeIndex = source.indexOf("portable payload failed the pre-commit runtime smoke check");
+  const shimIndex = source.indexOf('write_shim "$BIN_DIR/$BIN_NAME"');
+  const commitIndex = source.indexOf('atomic_replace_current_link "$NEW_LINK" "$CURRENT_LINK"');
+  assert.ok(
+    checksumIndex > 0 && smokeIndex > checksumIndex,
+    "the payload checksum must be verified before it is executed",
+  );
+  assert.ok(shimIndex > smokeIndex, "the stable shim must only be written after the smoke check passes");
+  assert.ok(commitIndex > shimIndex, "the current symlink is the final commit point");
+
+  // The smoke check must run on the extracted payload, before an existing install is replaced.
+  const swapIndex = source.indexOf('mv "$TEMP_VERSION_DIR" "$FINAL_VERSION_DIR"');
+  assert.ok(swapIndex > smokeIndex, "an existing install must not be replaced before the new runtime is proven");
+  assert.match(source, /"\$VALIDATION_DIR\/node\/bin\/node" "\$VALIDATION_DIR\/\$INSTALL_ENTRY" --version/);
+
+  // The up-to-date short-circuit must decide before the payload download, or it saves nothing.
+  const shortCircuitIndex = source.indexOf("already installed and up to date");
+  const payloadDownloadIndex = source.indexOf('download_to "$ASSET_URL" "$TARBALL"');
+  assert.ok(shortCircuitIndex > 0 && shortCircuitIndex < payloadDownloadIndex);
+  assert.match(source, /if \[ "\$FORCE" -eq 0 \] && portable_install_is_current "\$VERSION" "\$BIN_NAME"; then/);
+});
+
+test("the installer help documents the supported options", () => {
+  const result = spawnSync("sh", [join(portableDir, "install.sh"), "--help"], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  for (const flag of ["--version", "--prefix", "--bin-dir", "--force", "--no-path-edit", "--path-mode"]) {
+    assert.ok(result.stdout.includes(flag), `install.sh --help must document ${flag}`);
+  }
+
+  const rejected = spawnSync("sh", [join(portableDir, "install.sh"), "--nope"], { encoding: "utf8" });
+  assert.notEqual(rejected.status, 0);
+  assert.match(rejected.stderr, /unknown option: --nope/);
+});
+
+test("the uploader treats the version prefix as immutable and flips channel pointers last", async () => {
+  const source = await readFile(join(portableDir, "upload-gcs.sh"), "utf8");
+  await access(join(portableDir, "upload-gcs.sh"), constants.X_OK);
+
+  assert.match(source, /--if-generation-match=0/, "immutable objects must be uploaded create-only");
+  assert.match(source, /--content-md5=/, "uploads must be integrity-checked by Cloud Storage");
+  assert.match(source, /IMMUTABLE_CACHE_CONTROL="public, max-age=31536000, immutable"/);
+  assert.match(source, /MUTABLE_CACHE_CONTROL="no-cache/);
+
+  // The channel pointers are the one thing a release is allowed to overwrite.
+  const mutableUpload = source.slice(
+    source.indexOf("upload_mutable_object() {"),
+    source.indexOf("print_planned_uploads() {"),
+  );
+  assert.ok(mutableUpload.length > 0);
+  assert.doesNotMatch(mutableUpload, /--if-generation-match/);
+
+  const verifyIndex = source.indexOf("verify_remote_versioned_release\n");
+  const latestIndex = source.indexOf('upload_mutable_object "latest.json"');
+  const installerIndex = source.indexOf('upload_mutable_object "install.sh"');
+  const pointerVerifyIndex = source.indexOf("verify_remote_channel_pointers\n");
+  assert.ok(
+    verifyIndex > 0 && latestIndex > verifyIndex,
+    "channel pointers must not move before the release is public",
+  );
+  assert.ok(installerIndex > latestIndex && pointerVerifyIndex > installerIndex);
+});
+
+test("the release scripts default to the OpenTag Cloud Storage coordinates", async () => {
+  const upload = await readFile(join(portableDir, "upload-gcs.sh"), "utf8");
+  assert.match(upload, /DEFAULT_BUCKET="opentag-release"/);
+  assert.match(upload, /DEFAULT_PREFIX="releases"/);
+
+  for (const name of ["build-release.sh", "release-gcs.sh"]) {
+    const source = await readFile(join(portableDir, name), "utf8");
+    await access(join(portableDir, name), constants.X_OK);
+    assert.match(source, /DEFAULT_DOWNLOAD_BASE_URL="https:\/\/download\.opentag\.build\/releases"/);
+  }
+  assert.equal(DEFAULT_DOWNLOAD_BASE_URL, "https://download.opentag.build/releases");
+});
+
+test("forwarded option arrays survive the bash 3.2 that ships with macOS", async () => {
+  const source = await readFile(join(portableDir, "release-gcs.sh"), "utf8");
+  for (const name of ["BUILD_ARGS", "UPLOAD_ARGS"]) {
+    assert.ok(
+      source.includes(`\${${name}[@]+"\${${name}[@]}"}`),
+      `${name} must be expanded defensively; bash 3.2 rejects "\${${name}[@]}" on an empty array under set -u`,
+    );
+    assert.ok(!source.includes(`"\${${name}[@]}"\n`), `${name} must not be expanded bare`);
+  }
+});
+
+test("every supported platform is a Node.js distribution target", () => {
+  assert.deepEqual(PORTABLE_PLATFORMS, ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"]);
+  for (const platform of PORTABLE_PLATFORMS) {
+    const { arch, os } = parsePlatform(platform);
+    assert.ok(["darwin", "linux"].includes(os));
+    assert.ok(["arm64", "x64"].includes(arch));
+  }
+});

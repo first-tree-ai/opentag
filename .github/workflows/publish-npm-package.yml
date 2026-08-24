@@ -110,6 +110,34 @@ jobs:
           --version "${{ steps.version.outputs.version }}"
           --binary "${{ steps.version.outputs.binary_name }}"
 
+      # The portable release is preflighted before npm publishing so an immutable Cloud Storage
+      # conflict fails the run while npm is still unpublished and the release can be retried.
+      - name: Authenticate to Google Cloud
+        if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.OPENTAG_PORTABLE_GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up the Cloud Storage CLI
+        if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Preflight portable staging release
+        if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+        env:
+          OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: ${{ vars.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL }}
+          OPENTAG_PORTABLE_GCS_BUCKET: ${{ vars.OPENTAG_PORTABLE_GCS_BUCKET }}
+          OPENTAG_PORTABLE_GCS_PREFIX: ${{ vars.OPENTAG_PORTABLE_GCS_PREFIX }}
+          OPENTAG_PORTABLE_GCS_PROJECT: ${{ vars.OPENTAG_PORTABLE_GCS_PROJECT }}
+          OPENTAG_PORTABLE_PLATFORMS: ${{ vars.OPENTAG_PORTABLE_PLATFORMS }}
+        run: >-
+          ./scripts/portable/release-gcs.sh
+          --channel staging
+          --version "${{ steps.version.outputs.version }}"
+          --skip-workspace-build
+          --preflight-only
+
       - name: Recheck staging revision is current main
         run: node scripts/check-staging-revision.mjs
 
@@ -117,6 +145,20 @@ jobs:
         if: steps.registry.outputs.publish == 'true'
         working-directory: apps/cli
         run: npm publish --tag latest --access public
+
+      # Reuses the preflighted artifacts so the published bytes are the ones that were checked.
+      - name: Publish portable staging release
+        if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+        env:
+          OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: ${{ vars.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL }}
+          OPENTAG_PORTABLE_GCS_BUCKET: ${{ vars.OPENTAG_PORTABLE_GCS_BUCKET }}
+          OPENTAG_PORTABLE_GCS_PREFIX: ${{ vars.OPENTAG_PORTABLE_GCS_PREFIX }}
+          OPENTAG_PORTABLE_GCS_PROJECT: ${{ vars.OPENTAG_PORTABLE_GCS_PROJECT }}
+        run: >-
+          ./scripts/portable/release-gcs.sh
+          --channel staging
+          --version "${{ steps.version.outputs.version }}"
+          --skip-build
 
   production:
     name: Publish CLI Production
@@ -215,7 +257,49 @@ jobs:
           --version "${{ steps.version.outputs.version }}"
           --binary "${{ steps.version.outputs.binary_name }}"
 
+      # The portable release is preflighted before npm publishing so an immutable Cloud Storage
+      # conflict fails the run while npm is still unpublished and the release can be retried.
+      - name: Authenticate to Google Cloud
+        if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.OPENTAG_PORTABLE_GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up the Cloud Storage CLI
+        if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+        uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Preflight portable production release
+        if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+        env:
+          OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: ${{ vars.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL }}
+          OPENTAG_PORTABLE_GCS_BUCKET: ${{ vars.OPENTAG_PORTABLE_GCS_BUCKET }}
+          OPENTAG_PORTABLE_GCS_PREFIX: ${{ vars.OPENTAG_PORTABLE_GCS_PREFIX }}
+          OPENTAG_PORTABLE_GCS_PROJECT: ${{ vars.OPENTAG_PORTABLE_GCS_PROJECT }}
+          OPENTAG_PORTABLE_PLATFORMS: ${{ vars.OPENTAG_PORTABLE_PLATFORMS }}
+        run: >-
+          ./scripts/portable/release-gcs.sh
+          --channel prod
+          --version "${{ steps.version.outputs.version }}"
+          --skip-workspace-build
+          --preflight-only
+
       - name: Publish production package
         if: steps.registry.outputs.publish == 'true'
         working-directory: apps/cli
         run: npm publish --tag latest --access public --provenance
+
+      # Reuses the preflighted artifacts so the published bytes are the ones that were checked.
+      - name: Publish portable production release
+        if: vars.OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER != ''
+        env:
+          OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: ${{ vars.OPENTAG_PORTABLE_DOWNLOAD_BASE_URL }}
+          OPENTAG_PORTABLE_GCS_BUCKET: ${{ vars.OPENTAG_PORTABLE_GCS_BUCKET }}
+          OPENTAG_PORTABLE_GCS_PREFIX: ${{ vars.OPENTAG_PORTABLE_GCS_PREFIX }}
+          OPENTAG_PORTABLE_GCS_PROJECT: ${{ vars.OPENTAG_PORTABLE_GCS_PROJECT }}
+        run: >-
+          ./scripts/portable/release-gcs.sh
+          --channel prod
+          --version "${{ steps.version.outputs.version }}"
+          --skip-build

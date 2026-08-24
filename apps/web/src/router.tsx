@@ -390,21 +390,21 @@ export function AppRouter() {
             <Route path="/skills" element={<SkillsPage />} />
             <Route path="/resources" element={<Navigate replace to="/skills" />} />
             <Route path="/usage" element={<UsagePage />} />
-            <Route path="/members" element={<MembersPage />} />
+            <Route path="/members" element={<Navigate replace to="/workspace#members" />} />
             <Route path="/account" element={<AccountPage />} />
             <Route path="/workspace" element={<WorkspacePage />} />
             <Route path="/account/workspace" element={<Navigate replace to="/workspace" />} />
-            <Route path="/settings" element={<Navigate replace to="/members" />} />
+            <Route path="/settings" element={<Navigate replace to="/workspace" />} />
             <Route path="/settings/account" element={<Navigate replace to="/account" />} />
             <Route path="/settings/team" element={<Navigate replace to="/workspace" />} />
-            <Route path="/settings/members" element={<Navigate replace to="/members" />} />
-            <Route path="/settings/access" element={<Navigate replace to="/members" />} />
-            <Route path="/settings/security" element={<Navigate replace to="/members" />} />
+            <Route path="/settings/members" element={<Navigate replace to="/workspace#members" />} />
+            <Route path="/settings/access" element={<Navigate replace to="/workspace#members" />} />
+            <Route path="/settings/security" element={<Navigate replace to="/workspace#members" />} />
             <Route path="/settings/computers" element={<Navigate replace to="/agents/new" />} />
             <Route path="/settings/resources" element={<Navigate replace to="/skills" />} />
             <Route path="/settings/integrations" element={<Navigate replace to="/integrations" />} />
             <Route path="/settings/usage" element={<Navigate replace to="/usage" />} />
-            <Route path="/settings/:section" element={<Navigate replace to="/members" />} />
+            <Route path="/settings/:section" element={<Navigate replace to="/workspace" />} />
           </Route>
         </Route>
       </Route>
@@ -826,10 +826,6 @@ function AppShell() {
               <WorkspaceNavIcon name="usage" />
               Usage
             </NavLink>
-            <NavLink to="/members" onClick={() => setNavigationOpen(false)}>
-              <WorkspaceNavIcon name="members" />
-              Members
-            </NavLink>
           </nav>
         </div>
         <div className="sidebar-bottom">
@@ -966,7 +962,7 @@ function AppShell() {
   );
 }
 
-function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "members" | "skills" | "tasks" | "usage" }) {
+function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "skills" | "tasks" | "usage" }) {
   return (
     <svg
       aria-hidden="true"
@@ -1008,14 +1004,6 @@ function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "members
         <>
           <path d="M5 19V9M12 19V5M19 19v-7" />
           <path d="M3.5 19.5h17" />
-        </>
-      ) : null}
-      {name === "members" ? (
-        <>
-          <circle cx="9" cy="8" r="3" />
-          <path d="M3.5 19v-1.5A4.5 4.5 0 0 1 8 13h2a4.5 4.5 0 0 1 4.5 4.5V19" />
-          <circle cx="17" cy="10" r="2" />
-          <path d="M16 14.5h1.5a3 3 0 0 1 3 3V19" />
         </>
       ) : null}
     </svg>
@@ -1486,7 +1474,14 @@ function AccountPage() {
 }
 
 function WorkspacePage() {
-  const { membership, refreshMe } = useTeam();
+  const { me, membership, refreshMe } = useTeam();
+  const location = useLocation();
+
+  useEffect(() => {
+    if (location.hash !== "#members") return;
+    document.getElementById("members")?.scrollIntoView({ block: "start" });
+  }, [location.hash]);
+
   return (
     <Page
       action={
@@ -1495,27 +1490,43 @@ function WorkspacePage() {
         </Link>
       }
       title="Workspace"
-      description="Manage the current Workspace and create additional Workspaces."
+      description="Manage the current Workspace, its members, and access."
     >
-      <WorkspaceSettings membership={membership} refreshMe={refreshMe} />
+      <WorkspaceSettings currentUserId={me.user.id} membership={membership} refreshMe={refreshMe} />
     </Page>
   );
 }
 
-function WorkspaceSettings({ membership, refreshMe }: { membership: MeMembership; refreshMe: () => void }) {
+function WorkspaceSettings({
+  currentUserId,
+  membership,
+  refreshMe,
+}: {
+  currentUserId: string;
+  membership: MeMembership;
+  refreshMe: () => void;
+}) {
   return (
-    <section aria-labelledby="workspace-profile-heading" className="account-workspace-profile">
-      <header className="settings-subheader">
-        <div>
-          <h2 id="workspace-profile-heading">Workspace profile</h2>
-          <p>Manage the name and CLI identity of the current Workspace.</p>
-        </div>
-        {membership.role !== "admin" ? (
-          <span className="settings-role-badge">Your role: {titleCase(membership.role)}</span>
-        ) : null}
-      </header>
-      <TeamProfileSettings membership={membership} refreshMe={refreshMe} />
-    </section>
+    <div className="settings-team-stack">
+      <section aria-labelledby="workspace-profile-heading" className="account-workspace-profile">
+        <header className="settings-subheader">
+          <div>
+            <h2 id="workspace-profile-heading">Workspace profile</h2>
+            <p>Manage the name and CLI identity of the current Workspace.</p>
+          </div>
+          {membership.role !== "admin" ? (
+            <span className="settings-role-badge">Your role: {titleCase(membership.role)}</span>
+          ) : null}
+        </header>
+        <TeamProfileSettings membership={membership} refreshMe={refreshMe} />
+      </section>
+      <MembersSettings
+        canManage={membership.role === "admin"}
+        currentUserId={currentUserId}
+        refreshMe={refreshMe}
+        teamId={membership.teamId}
+      />
+    </div>
   );
 }
 
@@ -2019,20 +2030,6 @@ function messagingConnectionTone(
   return "warning";
 }
 
-function MembersPage() {
-  const { me, membership, refreshMe } = useTeam();
-  return (
-    <Page title="Members" description="Manage members, invitations, and roles.">
-      <MembersSettings
-        canManage={membership.role === "admin"}
-        currentUserId={me.user.id}
-        refreshMe={refreshMe}
-        teamId={membership.teamId}
-      />
-    </Page>
-  );
-}
-
 function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeResponse["user"] }) {
   const saveInFlight = useRef(false);
   const confirmedDisplayNameRef = useRef(user.displayName);
@@ -2299,6 +2296,12 @@ function MembersSettings({
 
   return (
     <section className="settings-list-section settings-members-section" id="members">
+      <header className="settings-subheader">
+        <div>
+          <h2>Members &amp; access</h2>
+          <p>Review members, manage roles, and invite people to this Workspace.</p>
+        </div>
+      </header>
       <AsyncState state={state}>
         {(value) => {
           const adminCount = value.members.filter((member: TeamMemberSummary) => member.role === "admin").length;

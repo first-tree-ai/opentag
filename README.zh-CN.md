@@ -80,8 +80,8 @@ Effective Runtime Snapshot 目前尚未支持。
 配置 `OPENTAG_GOOGLE_CLIENT_ID` 和 `OPENTAG_GOOGLE_CLIENT_SECRET` 后即可启用 Google 登录，然后打开
 `http://127.0.0.1:8000/`。active Team member 使用同一套 App Shell 和 member-safe 视图；Team Admin 额外管理
 Agent、runtime 配置、IM binding 与 Local Computer setup。Computer setup 归属于 Agent：Admin 可在创建 Agent 时
-通过短期有效的安装/login 命令连接另一台 Computer，随后从该 Agent 的页面查看已绑定的 Computer。Team Admin 可在
-**Members** 页面创建、复制和轮换 bearer
+通过短期有效的安装/login 命令连接另一台 Computer，随后从该 Agent 的页面查看已绑定的 Computer。**Workspace
+settings** 将 Workspace profile 与 member role 集中管理，Team Admin 可在其中创建、复制和轮换 bearer
 邀请链接；受邀者可在登录前预览邀请，兑换后 Web 会选中刚加入的 Team。membership role 与 lifecycle 变更仍通过
 显式 CLI 操作完成：
 

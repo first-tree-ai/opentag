@@ -4,6 +4,7 @@ export type SkillPreview = {
   agentCount: number;
   status: "Demo";
   description: string;
+  instructions: string;
 };
 
 export const skillPreviews: readonly SkillPreview[] = [
@@ -13,6 +14,7 @@ export const skillPreviews: readonly SkillPreview[] = [
     agentCount: 3,
     status: "Demo",
     description: "Turns merged changes into clear release notes",
+    instructions: "Review merged changes, group them by user impact, and write a concise summary for each group.",
   },
   {
     name: "Browser validation",
@@ -20,6 +22,8 @@ export const skillPreviews: readonly SkillPreview[] = [
     agentCount: 2,
     status: "Demo",
     description: "Checks key product flows and reports regressions",
+    instructions:
+      "Open each defined product flow, verify the expected outcome, and report any reproducible regression.",
   },
   {
     name: "Issue triage",
@@ -27,6 +31,8 @@ export const skillPreviews: readonly SkillPreview[] = [
     agentCount: 5,
     status: "Demo",
     description: "Classifies incoming issues and recommends priority",
+    instructions:
+      "Read the issue, identify the affected area and urgency, then recommend a priority with a short rationale.",
   },
 ];
 

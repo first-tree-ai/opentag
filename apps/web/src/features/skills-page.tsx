@@ -1,44 +1,87 @@
+import { useRef, useState } from "react";
 import { skillPreviews } from "../mock/capability-data.js";
 import "../mock-pages.css";
 
 export function SkillsPage() {
+  const uploadInputRef = useRef<HTMLInputElement>(null);
+  const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
+
   return (
-    <section className="capability-page" aria-labelledby="skills-page-title">
-      <header className="capability-page-header">
+    <section className="capability-page skills-page" aria-labelledby="skills-page-title">
+      <header className="skills-hero">
         <div>
-          <span className="capability-preview-label">Demo data</span>
           <h1 id="skills-page-title">Skills</h1>
-          <p>Reusable instructions and capability requirements that Agents use to complete Tasks.</p>
+          <p>Reusable playbooks that give Agents the context and methods they need to do specialized work.</p>
+        </div>
+        <div className="skills-header-actions">
+          <span className="skills-demo-note">Demo data</span>
+          <div className="skills-upload-entry">
+            <button
+              className="ds-button ds-button--secondary ds-button--compact"
+              type="button"
+              onClick={() => uploadInputRef.current?.click()}
+            >
+              Upload skill
+            </button>
+            <input
+              ref={uploadInputRef}
+              hidden
+              accept=".md,.zip"
+              aria-label="Skill file"
+              type="file"
+              onChange={(event) => setSelectedFileName(event.currentTarget.files?.[0]?.name ?? null)}
+            />
+            {selectedFileName ? (
+              <span className="skills-upload-status" role="status">
+                {selectedFileName} selected · Demo only, not uploaded
+              </span>
+            ) : null}
+          </div>
         </div>
       </header>
 
-      <table className="capability-table" aria-label="Demo Skills">
-        <thead>
-          <tr className="capability-table-header capability-skill-grid">
-            <th scope="col">Name</th>
-            <th scope="col">Source</th>
-            <th scope="col">Used by</th>
-            <th scope="col">Status</th>
-          </tr>
-        </thead>
-        <tbody>
+      <section className="skills-catalog" aria-labelledby="skills-catalog-title">
+        <div className="skills-catalog-heading">
+          <h2 id="skills-catalog-title">All skills</h2>
+          <p>{skillPreviews.length} skills</p>
+        </div>
+
+        <ul className="skills-list" aria-label="Available skills">
           {skillPreviews.map((skill) => (
-            <tr className="capability-table-row capability-skill-grid" key={skill.name}>
-              <td className="capability-primary-cell">
-                <strong>{skill.name}</strong>
-                <small>{skill.description}</small>
-              </td>
-              <td data-label="Source">{skill.source}</td>
-              <td data-label="Used by">
-                {skill.agentCount} {skill.agentCount === 1 ? "Agent" : "Agents"}
-              </td>
-              <td data-label="Status">
-                <span className="capability-demo-status">{skill.status}</span>
-              </td>
-            </tr>
+            <li key={skill.name}>
+              <article className="skill-row">
+                <details>
+                  <summary className="skill-row-summary">
+                    <div className="skill-row-copy">
+                      <div className="skill-row-title">
+                        <h3>{skill.name}</h3>
+                        <span className="skill-row-status">{skill.status}</span>
+                        {skill.source === "OpenTag" ? (
+                          <span className="skill-row-provider">Built by OpenTag</span>
+                        ) : null}
+                      </div>
+                      <p>{skill.description}.</p>
+                    </div>
+                    <dl className="skill-row-meta">
+                      <div>
+                        <dt>Used by</dt>
+                        <dd>
+                          {skill.agentCount} {skill.agentCount === 1 ? "Agent" : "Agents"}
+                        </dd>
+                      </div>
+                    </dl>
+                    <span className="skill-row-preview-label">Preview</span>
+                  </summary>
+                  <div className="skill-preview-panel">
+                    <h4>Instructions preview</h4>
+                    <p>{skill.instructions}</p>
+                  </div>
+                </details>
+              </article>
+            </li>
           ))}
-        </tbody>
-      </table>
+        </ul>
+      </section>
     </section>
   );
 }

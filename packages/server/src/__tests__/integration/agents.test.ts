@@ -286,8 +286,8 @@ describe("Agent persistence and authorization", () => {
             authorExternalId: "U_HUMAN",
             content: {
               version: 1 as const,
-              fallbackText: suffix,
-              blocks: [{ type: "text" as const, text: suffix }],
+              fallbackText: suffix === "working" ? "Review PR #127" : suffix,
+              blocks: [{ type: "text" as const, text: suffix === "working" ? "Review PR #127" : suffix }],
               truncated: false,
             },
             occurredAt: new Date(now.getTime() - (index + 1) * 60_000),
@@ -349,15 +349,21 @@ describe("Agent persistence and authorization", () => {
       ]);
 
       const service = new AgentService(value.database, { now: () => now });
-      await expect(service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).resolves.toMatchObject({
+      const projectedAgents = await service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId);
+      expect(projectedAgents).toMatchObject({
         agents: [
           {
             id: created.id,
-            activity: { state: "working", startedAt: workingAcceptedAt.toISOString() },
+            activity: {
+              state: "working",
+              startedAt: workingAcceptedAt.toISOString(),
+            },
             usage: { windowDays: 30, tasks: 2, failed: 1, tokens },
           },
         ],
       });
+      expect(projectedAgents.agents[0]?.activity).not.toHaveProperty("summary");
+      expect(JSON.stringify(projectedAgents)).not.toContain("Review PR #127");
 
       await value.database.update(sessions).set({ endedAt: now }).where(eq(sessions.id, session.id));
       await expect(service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).resolves.toMatchObject({

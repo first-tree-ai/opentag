@@ -410,8 +410,8 @@ export class AgentService {
         row.bindingStatus === "active" &&
         row.sessionEndedAt === null
       ) {
-        const current = workingByAgent.get(row.agentId);
-        if (!current || row.acceptedAt > current) workingByAgent.set(row.agentId, row.acceptedAt);
+        const currentStartedAt = workingByAgent.get(row.agentId);
+        if (!currentStartedAt || row.acceptedAt > currentStartedAt) workingByAgent.set(row.agentId, row.acceptedAt);
       }
       if (!row.acceptedAt || row.acceptedAt < usageStartedAt) continue;
       const usage = usageByAgent.get(row.agentId) ?? { failed: 0, tasks: 0, tokens: 0 };
@@ -428,10 +428,15 @@ export class AgentService {
     return {
       agents: summaries.map((agent): AgentListItem => {
         const usage = usageByAgent.get(agent.id) ?? { failed: 0, tasks: 0, tokens: 0 };
-        const startedAt = workingByAgent.get(agent.id);
+        const currentWorkStartedAt = workingByAgent.get(agent.id);
         return {
           ...agent,
-          activity: startedAt ? { state: "working", startedAt: startedAt.toISOString() } : { state: "idle" },
+          activity: currentWorkStartedAt
+            ? {
+                state: "working",
+                startedAt: currentWorkStartedAt.toISOString(),
+              }
+            : { state: "idle" },
           usage: { windowDays: AGENT_USAGE_WINDOW_DAYS, ...usage },
         };
       }),

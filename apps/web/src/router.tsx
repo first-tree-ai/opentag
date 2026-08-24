@@ -1058,7 +1058,7 @@ function AgentsPage() {
     <>
       <Page
         title="Agents"
-        description="Monitor availability, output, and usage across your AI teammates."
+        description="Monitor availability and 30-day usage across your AI teammates."
         action={
           membership.role === "admin" ? (
             <Button ref={createTriggerRef} size="compact" variant="outline" onClick={() => setCreateOpen(true)}>
@@ -1096,9 +1096,6 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
   );
   return (
     <section className="agent-list-section" aria-label="Agents">
-      <div className="agent-usage-caption">
-        <span>Usage · Last 30 days</span>
-      </div>
       <div className="agent-card-grid">
         {sortedAgents.map((agent) => (
           <AgentCard agent={agent} key={agent.id} />
@@ -1110,7 +1107,6 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
 
 function AgentCard({ agent }: { agent: AgentListItem }) {
   const status = agentCardStatus(agent);
-  const tokenAverage = agent.usage.tasks > 0 ? agent.usage.tokens / agent.usage.tasks : 0;
   return (
     <article className="agent-card" data-tone={status.tone}>
       <div className="agent-card-identity">
@@ -1120,31 +1116,38 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
         <div className="agent-card-identity-copy">
           <strong>{agent.displayName}</strong>
           <small>@{agent.name}</small>
-          <StatusIndicator detail={status.detail} label={status.label} tone={status.tone} />
-          {status.reconnect ? (
-            <Link
-              className={buttonClassName({ className: "agent-reconnect", size: "compact", variant: "outline" })}
-              to={`/agents/${agent.id}/runtime`}
-            >
-              Reconnect
-            </Link>
-          ) : null}
         </div>
+      </div>
+      <div className="agent-card-state">
+        <StatusIndicator label={status.label} tone={status.tone} />
+        {agent.activity.state === "working" && status.label === "Working" ? (
+          <div className="agent-current-work">
+            <span>Started {formatElapsedCompact(agent.activity.startedAt)} ago</span>
+          </div>
+        ) : status.detail ? (
+          <small className="agent-state-detail">{status.detail}</small>
+        ) : null}
+        {status.reconnect ? (
+          <Link
+            className={buttonClassName({ className: "agent-reconnect", size: "compact", variant: "outline" })}
+            to={`/agents/${agent.id}/runtime`}
+          >
+            Reconnect
+          </Link>
+        ) : null}
       </div>
       <dl className="agent-card-usage">
         <div>
           <dt>Tasks</dt>
           <dd>{formatUsageNumber(agent.usage.tasks)}</dd>
-          {agent.usage.failed > 0 ? <small className="agent-usage-failed">{agent.usage.failed} failed</small> : null}
         </div>
         <div>
           <dt>Tokens</dt>
           <dd>{formatUsageNumber(agent.usage.tokens)}</dd>
-          {tokenAverage > 0 ? <small>{formatUsageNumber(tokenAverage)} / task</small> : null}
         </div>
       </dl>
       <Link aria-label={`Open ${agent.displayName}`} className="agent-card-action" to={`/agents/${agent.id}/general`}>
-        View details <Icon name="chevron-right" />
+        <Icon name="chevron-right" />
       </Link>
     </article>
   );
@@ -1187,10 +1190,9 @@ function agentCardStatus(agent: AgentListItem): {
   }
   if (agent.activity.state === "working") {
     return {
-      detail: `Started ${formatElapsedCompact(agent.activity.startedAt)} ago`,
       label: "Working",
       priority: 2,
-      tone: "info",
+      tone: "success",
     };
   }
   return { label: "Ready", priority: 3, tone: "success" };

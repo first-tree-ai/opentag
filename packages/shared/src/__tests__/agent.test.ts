@@ -145,6 +145,28 @@ describe("Agent contracts", () => {
       usage: { windowDays: 30, tasks: 3, failed: 1, tokens: 420 },
     };
     expect(ListAgentsResponseSchema.parse({ agents: [listItem] })).toEqual({ agents: [listItem] });
+    expect(
+      ListAgentsResponseSchema.parse({
+        agents: [
+          {
+            ...summary,
+            activity: { state: "working", startedAt: agent.updatedAt },
+            usage: { windowDays: 30, tasks: 1, failed: 0, tokens: 0 },
+          },
+        ],
+      }),
+    ).toMatchObject({ agents: [{ activity: { state: "working", startedAt: agent.updatedAt } }] });
+    expect(() =>
+      ListAgentsResponseSchema.parse({
+        agents: [
+          {
+            ...summary,
+            activity: { state: "working", startedAt: agent.updatedAt, summary: "Private conversation content" },
+            usage: { windowDays: 30, tasks: 1, failed: 0, tokens: 0 },
+          },
+        ],
+      }),
+    ).toThrow();
     expect(AgentDetailSchema.parse({ ...summary, viewerCapabilities: { canManage: false } })).toMatchObject({
       viewerCapabilities: { canManage: false },
     });

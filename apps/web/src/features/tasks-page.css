@@ -368,7 +368,7 @@
 .task-work-summary,
 .task-agent-response,
 .task-agent-update,
-.task-delivery-receipt {
+.task-result-observation {
   margin-left: 44px;
 }
 
@@ -520,7 +520,7 @@
   font-size: inherit;
 }
 
-.task-delivery-receipt {
+.task-result-observation {
   display: flex;
   max-width: 720px;
   align-items: center;
@@ -531,13 +531,7 @@
   font-size: var(--text-meta);
 }
 
-.task-delivery-receipt .ds-icon {
-  width: 14px;
-  height: 14px;
-  color: var(--success);
-}
-
-.task-delivery-receipt time {
+.task-result-observation time {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
 }
@@ -677,7 +671,7 @@
   .task-work-summary,
   .task-agent-response,
   .task-agent-update,
-  .task-delivery-receipt,
+  .task-result-observation,
   .task-record-details {
     margin-left: 0;
   }

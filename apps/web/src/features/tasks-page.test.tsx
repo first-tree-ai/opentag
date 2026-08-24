@@ -80,7 +80,10 @@ describe("Tasks demo", () => {
       ),
     ).toBeTruthy();
     expect(within(conversation).getByRole("heading", { name: "Follow-ups drafted" })).toBeTruthy();
-    expect(within(conversation).getAllByText("Delivered to Product Launch")).toHaveLength(2);
+    expect(
+      within(conversation).getAllByText("Agent result recorded locally · Outbound delivery unconfirmed"),
+    ).toHaveLength(2);
+    expect(within(conversation).queryByText(/^Delivered to /)).toBeNull();
     const work = screen.getByText("2 actions · Feishu · Google Drive · 8m 12s").closest("details");
     const taskDetails = screen.getByText("Task details").closest("details");
     expect(work?.hasAttribute("open")).toBe(false);

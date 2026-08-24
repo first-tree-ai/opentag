@@ -19,12 +19,12 @@ type AgentFilter = "all" | TaskPreview["agent"];
 type ConversationTurn = {
   readonly actions: readonly TaskActivity[];
   readonly assistantUpdate?: string;
-  readonly delivery?: { readonly label: string; readonly time: string };
   readonly duration: string;
   readonly id: string;
   readonly request: string;
   readonly requestTime: string;
   readonly result: TaskResult;
+  readonly resultObservedAt?: string;
 };
 
 const statusPresentation: Record<TaskStatus, { readonly label: string; readonly tone: StatusTone }> = {
@@ -173,7 +173,7 @@ export function TaskDetailPage() {
       duration: task.duration,
       actions: progress.filter((item) => item.tool),
       result: task.result,
-      delivery: task.delivery,
+      resultObservedAt: task.resultObservedAt,
     },
     ...(task.followUps ?? []).map((followUp, index) => ({
       id: `follow-up-${index + 1}`,
@@ -183,7 +183,7 @@ export function TaskDetailPage() {
       duration: followUp.duration,
       actions: followUp.activity,
       result: followUp.result,
-      delivery: followUp.delivery,
+      resultObservedAt: followUp.resultObservedAt,
     })),
   ];
   const details = [
@@ -261,7 +261,7 @@ function TaskConversationTurn({ task, turn }: { task: TaskPreview; turn: Convers
   const actionCount = `${turn.actions.length} ${turn.actions.length === 1 ? "action" : "actions"}`;
   const duration = turn.duration === "In progress" ? "In progress" : turn.duration;
   const workLabel = [actionCount, ...toolLabels, duration].join(" · ");
-  const responseTime = turn.delivery?.time ?? turn.actions.at(-1)?.time ?? turn.requestTime;
+  const responseTime = turn.resultObservedAt ?? turn.actions.at(-1)?.time ?? turn.requestTime;
 
   return (
     <section className="task-turn" aria-label={`Conversation turn at ${turn.requestTime}`}>
@@ -335,11 +335,10 @@ function TaskConversationTurn({ task, turn }: { task: TaskPreview; turn: Convers
           </details>
         ) : null}
 
-        {turn.delivery ? (
-          <p className="task-delivery-receipt">
-            <Icon name="check" />
-            <span>{turn.delivery.label}</span>
-            <time>{turn.delivery.time}</time>
+        {turn.resultObservedAt ? (
+          <p className="task-result-observation">
+            <span>Agent result recorded locally · Outbound delivery unconfirmed</span>
+            <time>{turn.resultObservedAt}</time>
           </p>
         ) : null}
       </article>

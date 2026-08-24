@@ -20,10 +20,10 @@ export type TaskResult = {
 export type TaskFollowUp = {
   readonly activity: readonly TaskActivity[];
   readonly assistantUpdate?: string;
-  readonly delivery?: { readonly label: string; readonly time: string };
   readonly duration: string;
   readonly request: string;
   readonly requestTime: string;
+  readonly resultObservedAt?: string;
   readonly result: TaskResult;
 };
 
@@ -31,7 +31,6 @@ export type TaskPreview = {
   readonly activity: readonly TaskActivity[];
   readonly agent: "Atlas" | "Scout";
   readonly assistantUpdate?: string;
-  readonly delivery?: { readonly label: string; readonly time: string };
   readonly duration: string;
   readonly execution: readonly { readonly label: string; readonly value: string }[];
   readonly followUps?: readonly TaskFollowUp[];
@@ -39,6 +38,7 @@ export type TaskPreview = {
   readonly initiatedBy: string;
   readonly relativeUpdatedAt: string;
   readonly result: TaskResult;
+  readonly resultObservedAt?: string;
   readonly source: {
     readonly context: string;
     readonly detail: string;
@@ -70,7 +70,7 @@ export const taskPreviews: readonly TaskPreview[] = [
     tokens: "14.2K",
     assistantUpdate:
       "I’ll compare the launch checklist with the latest plan and call out anything that still needs a decision.",
-    delivery: { label: "Delivered to Product Launch", time: "11:12 AM" },
+    resultObservedAt: "11:12 AM",
     result: {
       title: "Launch plan reviewed",
       summary: "Eight items were checked. Five are ready, two still need owners, and one has no confirmed date.",
@@ -119,14 +119,14 @@ export const taskPreviews: readonly TaskPreview[] = [
         result: {
           title: "Follow-ups drafted",
           summary:
-            "Three follow-up messages were posted with suggested owners. Ownership remains unassigned until each person confirms.",
+            "Three follow-up messages were drafted with suggested owners. Ownership remains unassigned until each person confirms.",
           items: [
             { label: "Partner announcement", value: "Suggested owner: Jordan Lee" },
             { label: "Migration email", value: "Suggested owner: Priya Nair" },
             { label: "Security sign-off", value: "Date confirmation requested" },
           ],
         },
-        delivery: { label: "Delivered to Product Launch", time: "11:21 AM" },
+        resultObservedAt: "11:21 AM",
       },
     ],
     execution: [
@@ -134,7 +134,7 @@ export const taskPreviews: readonly TaskPreview[] = [
       { label: "Turns", value: "5" },
       { label: "Provider", value: "OpenAI" },
       { label: "Retries", value: "0" },
-      { label: "Record quality", value: "Complete" },
+      { label: "Record quality", value: "Local result captured" },
     ],
   },
   {
@@ -221,7 +221,7 @@ export const taskPreviews: readonly TaskPreview[] = [
       { label: "Turns", value: "4" },
       { label: "Provider", value: "OpenAI" },
       { label: "Retries", value: "1" },
-      { label: "Record quality", value: "Complete" },
+      { label: "Record quality", value: "Local result captured" },
     ],
   },
   {
@@ -266,7 +266,7 @@ export const taskPreviews: readonly TaskPreview[] = [
       { label: "Turns", value: "6" },
       { label: "Provider", value: "Anthropic" },
       { label: "Retries", value: "0" },
-      { label: "Record quality", value: "Complete" },
+      { label: "Record quality", value: "Local result captured" },
     ],
   },
   {
@@ -311,7 +311,7 @@ export const taskPreviews: readonly TaskPreview[] = [
       { label: "Turns", value: "7" },
       { label: "Provider", value: "OpenAI" },
       { label: "Retries", value: "1" },
-      { label: "Record quality", value: "Complete" },
+      { label: "Record quality", value: "Local result captured" },
     ],
   },
   {

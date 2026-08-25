@@ -62,6 +62,19 @@ describe("workspace page layout", () => {
     expect(declarationValue(appStyles, ".settings-members-section .settings-invitation-panel", "width")).toBe("100%");
   });
 
+  it("stretches the Agent row link over the whole row without covering its inline action", () => {
+    expect(topLevelDeclarationValue(appStyles, ".agent-card", "position")).toBe("relative");
+    expect(declarationValue(appStyles, ".agent-card-open::after", "position")).toBe("absolute");
+    expect(declarationValue(appStyles, ".agent-card-open::after", "inset")).toBe("0");
+    expect(declarationValue(appStyles, ".agent-reconnect", "z-index")).toBe("1");
+  });
+
+  it("keeps the Agent usage figure subordinate to the Agent name", () => {
+    expect(declarationValue(appStyles, ".agent-card-identity-copy > strong", "font-size")).toBe("var(--text-body)");
+    expect(declarationValue(appStyles, ".agent-card-usage dd", "font-size")).toBe("var(--text-ui)");
+    expect(declarationValue(appStyles, ".agent-card-usage dd", "font-family")).toBe("var(--font-sans)");
+  });
+
   it("does not introduce nested page-level width contracts", () => {
     expect(declarationValue(appStyles, ".object-content", "width")).toBe("100%");
     expect(declarationValue(appStyles, ".settings-content", "width")).toBe("100%");

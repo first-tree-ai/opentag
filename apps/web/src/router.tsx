@@ -46,7 +46,7 @@ import { IntegrationsPage } from "./features/integrations-page.js";
 import { SkillsPage } from "./features/skills-page.js";
 import { TaskDetailPage, TasksPage } from "./features/tasks-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
-import { SlackSetup } from "./im/slack-setup.js";
+import { SlackConfiguration } from "./im/slack-configuration.js";
 import { OnboardingPage } from "./onboarding/page.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import {
@@ -130,7 +130,10 @@ function projectAgentAvailability(
       state: computer ? (computerReady ? "ready" : "action_required") : "unconfirmed",
       lastConfirmedAt: computer?.lastSeenAt ?? null,
     },
-    handoff: { state: handoffState, lastConfirmedAt: binding?.lastConfirmedAt ?? null },
+    handoff: {
+      state: handoffState,
+      lastConfirmedAt: binding?.lastRuntimeObservationAt ?? binding?.lastValidatedAt ?? null,
+    },
     channel: {
       state: !bindingEvidenceConfirmed ? "unconfirmed" : binding ? "connected" : "not_connected",
       provider: binding?.provider ?? null,
@@ -168,7 +171,7 @@ function projectAgentAvailability(
     return {
       state: "setting_up",
       reason: "im_provisioning",
-      lastConfirmedAt: binding.lastConfirmedAt,
+      lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
       dependencies,
     };
   }
@@ -176,22 +179,32 @@ function projectAgentAvailability(
     return {
       state: "action_required",
       reason: "im_reauthorization_required",
-      lastConfirmedAt: binding.lastConfirmedAt,
+      lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
       dependencies,
     };
   }
   if (binding.bindingState === "error" || binding.bindingState === "disabled") {
-    return { state: "action_required", reason: "im_error", lastConfirmedAt: binding.lastConfirmedAt, dependencies };
+    return {
+      state: "action_required",
+      reason: "im_error",
+      lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
+      dependencies,
+    };
   }
   if (!handoff?.handoffReady) {
     return {
       state: "action_required",
       reason: "handoff_unavailable",
-      lastConfirmedAt: binding.lastConfirmedAt,
+      lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
       dependencies,
     };
   }
-  return { state: "ready", reason: null, lastConfirmedAt: binding.lastConfirmedAt, dependencies };
+  return {
+    state: "ready",
+    reason: null,
+    lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
+    dependencies,
+  };
 }
 
 async function loadAgentList(teamId: string): Promise<{ agents: AgentListItem[] }> {
@@ -2349,7 +2362,6 @@ function AgentManageSettings({
 function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   const [reload, setReload] = useState(0);
   const [error, setError] = useState<string>();
-  const [reauthorizationNeeded, setReauthorizationNeeded] = useState(false);
   const [confirmation, setConfirmation] = useState<
     { kind: "all_messages" } | { bindingId: string; kind: "disable_binding" }
   >();
@@ -2381,9 +2393,6 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
       setConfirmation(undefined);
       onAgentChanged();
     } catch (cause) {
-      if (cause instanceof ApiError && cause.code === "IM_BINDING_SCOPE_REAUTH_REQUIRED") {
-        setReauthorizationNeeded(true);
-      }
       const nextError = cause instanceof Error ? cause.message : "Unable to change receive mode";
       if (confirmation?.kind === "all_messages") setConfirmationError(nextError);
       else setError(nextError);
@@ -2427,21 +2436,21 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
         }}
       >
         {(feishuSetup) => (
-          <SlackSetup
+          <SlackConfiguration
             agentId={agent.id}
             onSuccess={() => {
               setReload((value) => value + 1);
               onAgentChanged();
             }}
           >
-            {(slackSetup) => {
+            {(slackConfiguration) => {
               const connectFeishu = async (intent: "create" | "reauthorize" | "replace" = "create") => {
                 setError(undefined);
-                if (await feishuSetup.start(intent)) setReauthorizationNeeded(false);
+                await feishuSetup.start(intent);
               };
               const connectSlack = async (intent: "create" | "reauthorize" | "replace" = "create") => {
                 setError(undefined);
-                if (await slackSetup.start(intent)) setReauthorizationNeeded(false);
+                await slackConfiguration.open(intent);
               };
               return (
                 <AsyncState state={state}>
@@ -2464,9 +2473,11 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                 tone={messagingConnectionTone(binding, agent.availability.dependencies.handoff.state)}
                               />
                               <small>
-                                {binding.lastConfirmedAt
-                                  ? `Last checked ${formatDate(binding.lastConfirmedAt)}`
-                                  : "Unable to confirm"}
+                                {binding.lastRuntimeObservationAt
+                                  ? `Last observed ${formatDate(binding.lastRuntimeObservationAt)}`
+                                  : binding.lastValidatedAt
+                                    ? `Validated ${formatDate(binding.lastValidatedAt)}`
+                                    : "Not yet observed"}
                               </small>
                             </div>
                             <dl className="messaging-contact-facts">
@@ -2479,24 +2490,19 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                 <dd>{agentUseInstruction(agent, binding.provider)}</dd>
                               </div>
                             </dl>
-                            {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                            {binding.bindingState === "reauthorization_required" &&
                             binding.provider === "feishu" &&
                             agent.viewerCapabilities.canManage ? (
                               <div className="im-actions">
                                 <Button onClick={() => void connectFeishu("reauthorize")}>Reauthorize Feishu</Button>
                               </div>
                             ) : null}
-                            {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                            {binding.bindingState === "reauthorization_required" &&
                             binding.provider === "slack" &&
                             agent.viewerCapabilities.canManage ? (
                               <div className="im-actions">
                                 <Button onClick={() => void connectSlack("reauthorize")}>Reauthorize Slack</Button>
                               </div>
-                            ) : null}
-                            {binding.bindingState === "provisioning" &&
-                            binding.provider === "slack" &&
-                            agent.viewerCapabilities.canManage ? (
-                              <SlackProvisioningActions onResume={() => void connectSlack("create")} />
                             ) : null}
                             {agent.viewerCapabilities.canManage ? (
                               <div className="im-actions messaging-connection-actions">
@@ -2509,7 +2515,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                     Change Feishu Bot
                                   </Button>
                                 ) : null}
-                                {binding.provider === "slack" && binding.bindingState !== "provisioning" ? (
+                                {binding.provider === "slack" ? (
                                   <Button size="compact" variant="outline" onClick={() => void connectSlack("replace")}>
                                     Change Slack App
                                   </Button>
@@ -2575,12 +2581,6 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                 )}
                               </SettingsRow>
                             </SettingsList>
-                            {binding.pendingReceiveMode ? (
-                              <p className="muted">
-                                Scope upgrade pending: {receiveModeLabel(binding.pendingReceiveMode)} takes effect once{" "}
-                                {titleCase(binding.provider)} grants the additional permissions through reauthorization.
-                              </p>
-                            ) : null}
                           </section>
                         </>
                       ) : (
@@ -2605,7 +2605,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                         </section>
                       )}
                       {feishuSetup.feedback}
-                      {slackSetup.feedback}
+                      {slackConfiguration.feedback}
                       {error ? (
                         <div className="notice error" role="alert">
                           {error}
@@ -2616,7 +2616,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                 </AsyncState>
               );
             }}
-          </SlackSetup>
+          </SlackConfiguration>
         )}
       </FeishuSetup>
       {confirmation?.kind === "all_messages" ? (
@@ -2669,18 +2669,6 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
           </div>
         </Dialog>
       ) : null}
-    </div>
-  );
-}
-
-/**
- * A provisioning Slack binding may represent an active or terminal setup attempt. Only an explicit
- * Admin action may reuse the active attempt or create a successor after cancellation.
- */
-function SlackProvisioningActions({ onResume }: { onResume: () => void }) {
-  return (
-    <div className="im-actions">
-      <Button onClick={onResume}>Resume Slack setup</Button>
     </div>
   );
 }

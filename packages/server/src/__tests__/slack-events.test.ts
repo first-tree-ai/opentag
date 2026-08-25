@@ -37,13 +37,19 @@ function signedRequest(envelope: Record<string, unknown>, signingSecret = bindin
   };
 }
 
+function matchingBotAuthorization() {
+  return [{ team_id: binding().teamId, user_id: binding().botUserId, is_bot: true }];
+}
+
 function createServices(overrides: Record<string, unknown> = {}, loggerStream?: Writable) {
   const current = binding();
   const imBindings = {
     findSlackIngressBinding: vi.fn().mockResolvedValue(current),
     findSlackIngressBindingForAgent: vi.fn().mockResolvedValue(current),
-    disableFromProvider: vi.fn().mockResolvedValue(undefined),
-    requireReauthorization: vi.fn().mockResolvedValue(undefined),
+    recordSlackObservation: vi.fn().mockResolvedValue(true),
+    recordSlackIdentityClosure: vi.fn().mockResolvedValue(true),
+    disableFromProvider: vi.fn().mockResolvedValue(true),
+    requireReauthorization: vi.fn().mockResolvedValue(true),
   };
   const inbox = { ingest: vi.fn().mockResolvedValue(undefined) };
   const adapter = { normalizeInbound: vi.fn().mockReturnValue([]) };
@@ -63,98 +69,78 @@ function createServices(overrides: Record<string, unknown> = {}, loggerStream?: 
 }
 
 describe("Slack Events API ingress", () => {
-  it("uses the Agent Events URL for signing-secret proof and first-event activation", async () => {
-    const setup = {
-      verifyChallenge: vi.fn().mockResolvedValue("challenge-ok"),
-      tryActivateFromEvent: vi.fn().mockResolvedValue({ status: "activated", binding: binding() }),
-    };
-    const { app, adapter } = createServices({ setup });
+  it("verifies the Agent Events URL signature before parsing JSON", async () => {
+    const { app, imBindings } = createServices();
+    const agentEventsUrl = "/api/v1/agents/1a63a21e-f6c7-4474-91ea-4dabf0566a24/im-binding/slack/events";
+    const payload = "{not-json";
+    const invalidSignature = await app.inject({
+      method: "POST",
+      url: agentEventsUrl,
+      payload,
+      headers: {
+        "content-type": "application/json",
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": "v0=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      },
+    });
+    expect(invalidSignature.statusCode).toBe(401);
+    expect(invalidSignature.json()).toEqual({ error: "invalid_signature" });
+    expect(imBindings.findSlackIngressBindingForAgent).toHaveBeenCalled();
+
+    const signature = `v0=${createHmac("sha256", binding().signingSecret).update(`v0:${timestamp}:${payload}`).digest("hex")}`;
+    const verifiedInvalidJson = await app.inject({
+      method: "POST",
+      url: agentEventsUrl,
+      payload,
+      headers: {
+        "content-type": "application/json",
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": signature,
+      },
+    });
+    expect(verifiedInvalidJson.statusCode).toBe(400);
+    expect(verifiedInvalidJson.json()).toEqual({ error: "invalid_json" });
+  });
+
+  it("uses the Agent Events URL only for signed runtime observation and delivery", async () => {
+    const { app, adapter, imBindings } = createServices();
     const agentEventsUrl = "/api/v1/agents/1a63a21e-f6c7-4474-91ea-4dabf0566a24/im-binding/slack/events";
     const challenge = await app.inject({
-      ...signedRequest({ type: "url_verification", challenge: "challenge-ok" }),
+      ...signedRequest({
+        type: "url_verification",
+        challenge: "challenge-ok",
+      }),
       url: agentEventsUrl,
     });
     expect(challenge.statusCode).toBe(200);
     expect(challenge.json()).toEqual({ challenge: "challenge-ok" });
-    expect(setup.verifyChallenge).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentId: "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
-        rawBody: expect.any(Buffer),
-        timestamp,
-      }),
-    );
+    expect(imBindings.recordSlackObservation).toHaveBeenCalledWith(binding().imBindingId, binding().generation);
 
     const event = {
       type: "event_callback",
       api_app_id: "A1",
       team_id: "T1",
-      event_id: "Ev-activate",
+      authorizations: matchingBotAuthorization(),
+      event_id: "Ev-runtime",
       event: { type: "app_mention", channel: "C1", text: "<@U_BOT> test", ts: "1.0" },
     };
-    const activated = await app.inject({ ...signedRequest(event), url: agentEventsUrl });
-    expect(activated.statusCode).toBe(200);
-    expect(setup.tryActivateFromEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "1a63a21e-f6c7-4474-91ea-4dabf0566a24", appId: "A1", teamId: "T1" }),
-    );
+    const delivered = await app.inject({ ...signedRequest(event), url: agentEventsUrl });
+    expect(delivered.statusCode).toBe(200);
     expect(adapter.normalizeInbound).toHaveBeenCalled();
+    expect(imBindings.recordSlackIdentityClosure).toHaveBeenCalledWith(binding().imBindingId, binding().generation);
   });
 
-  it("keeps serving the active binding while a pending attempt still awaits URL verification", async () => {
-    const setup = {
-      verifyChallenge: vi.fn(),
-      tryActivateFromEvent: vi.fn().mockResolvedValue({ status: "awaiting_challenge" }),
-    };
-    const { app, adapter, inbox, current } = createServices({ setup });
-    adapter.normalizeInbound.mockReturnValue([{ providerEventId: "Ev-live" }]);
+  it("requires an active binding and its Signing Secret for the identity-less URL challenge", async () => {
+    const agentEventsUrl = "/api/v1/agents/1a63a21e-f6c7-4474-91ea-4dabf0566a24/im-binding/slack/events";
+    const missing = createServices();
+    missing.imBindings.findSlackIngressBindingForAgent.mockResolvedValue(undefined);
+    const payload = { type: "url_verification", challenge: "challenge-ok" };
+    expect((await missing.app.inject({ ...signedRequest(payload), url: agentEventsUrl })).statusCode).toBe(404);
 
-    const response = await app.inject({
-      ...signedRequest({
-        type: "event_callback",
-        api_app_id: "A1",
-        team_id: "T1",
-        event_id: "Ev-live",
-        event: { type: "app_mention", text: "hi" },
-      }),
-      url: "/api/v1/agents/1a63a21e-f6c7-4474-91ea-4dabf0566a24/im-binding/slack/events",
-    });
-
-    expect(response.statusCode).toBe(200);
-    expect(inbox.ingest).toHaveBeenCalledWith(
-      current.imBindingId,
-      current.generation,
-      { providerEventId: "Ev-live" },
-      undefined,
-      { provider: "slack" },
-    );
-  });
-
-  it("acknowledges a pending-attempt event without ingesting when no binding is active yet", async () => {
-    const setup = {
-      verifyChallenge: vi.fn(),
-      tryActivateFromEvent: vi.fn().mockResolvedValue({ status: "awaiting_challenge" }),
-    };
-    const { app, imBindings, inbox } = createServices({ setup });
-    imBindings.findSlackIngressBindingForAgent.mockResolvedValue(undefined);
-    const request = {
-      ...signedRequest({
-        type: "event_callback",
-        api_app_id: "A1",
-        team_id: "T1",
-        event_id: "Ev-early",
-        event: { type: "app_mention", text: "hi" },
-      }),
-      url: "/api/v1/agents/1a63a21e-f6c7-4474-91ea-4dabf0566a24/im-binding/slack/events",
-    };
-
-    const pending = await app.inject(request);
-    expect(pending.statusCode).toBe(200);
-    expect(pending.json()).toEqual({ ok: true, pending: "url_verification" });
-    expect(inbox.ingest).not.toHaveBeenCalled();
-
-    setup.tryActivateFromEvent.mockResolvedValue({ status: "unmatched" });
-    const missing = await app.inject(request);
-    expect(missing.statusCode).toBe(404);
-    expect(missing.json()).toEqual({ error: "binding_not_found" });
+    const invalid = createServices();
+    const response = await invalid.app.inject({ ...signedRequest(payload, "wrong-secret"), url: agentEventsUrl });
+    expect(response.statusCode).toBe(401);
+    expect(invalid.imBindings.recordSlackObservation).not.toHaveBeenCalled();
   });
 
   it("rejects non-buffer and unroutable bodies before credential lookup", async () => {
@@ -213,17 +199,86 @@ describe("Slack Events API ingress", () => {
     expect(unsupported.json()).toEqual({ error: "unsupported_envelope" });
   });
 
-  it("disables an uninstalled binding and fences Slack token revocation", async () => {
-    const { app, imBindings, current } = createServices();
-    const base = { type: "event_callback", api_app_id: "A1", team_id: "T1", event_id: "Ev1" };
+  it.each([
+    ["missing", undefined],
+    ["human", [{ team_id: "T1", user_id: "U_BOT", is_bot: false }]],
+    ["wrong Team", [{ team_id: "T2", user_id: "U_BOT", is_bot: true }]],
+    ["wrong Bot User", [{ team_id: "T1", user_id: "U_OTHER", is_bot: true }]],
+  ])("rejects %s authorizations before ordinary event side effects", async (_label, authorizations) => {
+    const { app, imBindings, inbox, createAdapter } = createServices();
+    const response = await app.inject(
+      signedRequest({
+        type: "event_callback",
+        api_app_id: "A1",
+        team_id: "T1",
+        ...(authorizations ? { authorizations } : {}),
+        event_id: "Ev-auth",
+        event: { type: "app_mention", channel: "C1", text: "hello" },
+      }),
+    );
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: "binding_mismatch" });
+    expect(imBindings.recordSlackIdentityClosure).not.toHaveBeenCalled();
+    expect(imBindings.recordSlackObservation).not.toHaveBeenCalled();
+    expect(imBindings.disableFromProvider).not.toHaveBeenCalled();
+    expect(imBindings.requireReauthorization).not.toHaveBeenCalled();
+    expect(createAdapter).not.toHaveBeenCalled();
+    expect(inbox.ingest).not.toHaveBeenCalled();
+  });
 
-    await expect(app.inject(signedRequest({ ...base, event: { type: "app_uninstalled" } }))).resolves.toMatchObject({
-      statusCode: 200,
-    });
-    expect(imBindings.disableFromProvider).toHaveBeenCalledWith(current.imBindingId);
+  it("acknowledges a stale generation without running event side effects", async () => {
+    const { app, imBindings, inbox, createAdapter } = createServices();
+    imBindings.recordSlackIdentityClosure.mockResolvedValue(false);
+    const response = await app.inject(
+      signedRequest({
+        type: "event_callback",
+        api_app_id: "A1",
+        team_id: "T1",
+        authorizations: matchingBotAuthorization(),
+        event_id: "Ev-stale",
+        event: { type: "app_mention", channel: "C1", text: "hello" },
+      }),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(imBindings.recordSlackIdentityClosure).toHaveBeenCalledWith(binding().imBindingId, binding().generation);
+    expect(imBindings.disableFromProvider).not.toHaveBeenCalled();
+    expect(createAdapter).not.toHaveBeenCalled();
+    expect(inbox.ingest).not.toHaveBeenCalled();
+  });
+
+  it("disables an uninstalled binding and fences Slack token revocation", async () => {
+    const { app, imBindings, createAdapter, current } = createServices();
+    const base = {
+      type: "event_callback",
+      api_app_id: "A1",
+      team_id: "T1",
+      event_id: "Ev1",
+    };
+    const appUninstalled = {
+      ...base,
+      authorizations: [{ team_id: "T1", user_id: "U_INSTALLER", is_bot: false, is_enterprise_install: false }],
+      event: { type: "app_uninstalled" },
+    };
+
+    const invalidSignature = await app.inject(signedRequest(appUninstalled, "wrong-secret"));
+    expect(invalidSignature.statusCode).toBe(401);
+    const mismatchedIdentity = await app.inject(signedRequest({ ...appUninstalled, api_app_id: "A_OTHER" }));
+    expect(mismatchedIdentity.statusCode).toBe(401);
+    expect(imBindings.disableFromProvider).not.toHaveBeenCalled();
+
+    await expect(app.inject(signedRequest(appUninstalled))).resolves.toMatchObject({ statusCode: 200 });
+    expect(imBindings.disableFromProvider).toHaveBeenCalledWith(current.imBindingId, current.generation);
 
     await app.inject(
       signedRequest({ ...base, event_id: "Ev2", event: { type: "tokens_revoked", tokens: { bot: ["OTHER"] } } }),
+    );
+    expect(imBindings.requireReauthorization).not.toHaveBeenCalled();
+    await app.inject(
+      signedRequest({
+        ...base,
+        event_id: "Ev2-bot-id",
+        event: { type: "tokens_revoked", tokens: { oauth: ["U_OTHER"], bot: [current.botId] } },
+      }),
     );
     expect(imBindings.requireReauthorization).not.toHaveBeenCalled();
 
@@ -234,7 +289,14 @@ describe("Slack Events API ingress", () => {
         event: { type: "tokens_revoked", tokens: { oauth: ["U_OTHER"], bot: [current.botUserId] } },
       }),
     );
-    expect(imBindings.requireReauthorization).toHaveBeenCalledWith(current.imBindingId, "SLACK_TOKEN_REVOKED");
+    expect(imBindings.requireReauthorization).toHaveBeenCalledWith(
+      current.imBindingId,
+      current.generation,
+      "SLACK_TOKEN_REVOKED",
+    );
+    expect(imBindings.recordSlackIdentityClosure).not.toHaveBeenCalled();
+    expect(imBindings.recordSlackObservation).not.toHaveBeenCalled();
+    expect(createAdapter).not.toHaveBeenCalled();
   });
 
   it("ingests every normalized event with the verified binding generation", async () => {
@@ -245,6 +307,7 @@ describe("Slack Events API ingress", () => {
       type: "event_callback",
       api_app_id: "A1",
       team_id: "T1",
+      authorizations: matchingBotAuthorization(),
       event_id: "Ev1",
       event_time: 1_724_025_600,
       event: { type: "app_mention", channel: "C1", text: "hello" },
@@ -298,6 +361,7 @@ describe("Slack Events API ingress", () => {
           type: "event_callback",
           api_app_id: "A1",
           team_id: "T1",
+          authorizations: matchingBotAuthorization(),
           event_id: "Ev1",
           event: { type: "app_mention", text: "raw-request-body-detail" },
         }),

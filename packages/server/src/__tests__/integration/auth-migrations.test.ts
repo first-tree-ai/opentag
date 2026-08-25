@@ -74,18 +74,203 @@ async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z"), aut
 }
 
 describe("database migrations", () => {
-  it("orders the Team setup repair before the Slack pending receive-mode migration", async () => {
+  it("orders the Slack single-configuration cleanup after the deployed setup migrations", async () => {
     const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    expect(journal.entries.slice(-5).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    expect(journal.entries.slice(-6).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 10, tag: "0010_optimal_jazinda" },
       { idx: 11, tag: "0011_staging_team_setup_repair" },
       { idx: 12, tag: "0012_supreme_maddog" },
       { idx: 13, tag: "0013_bizarre_gamma_corps" },
       { idx: 14, tag: "0014_illegal_wolfsbane" },
+      { idx: 15, tag: "0015_spotty_machine_man" },
     ]);
+  });
+
+  it("removes only Slack setup state, disables incomplete rows, and fences incomplete legacy scopes", async () => {
+    const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0013-migrations-"));
+    const legacyMeta = join(legacyFolder, "meta");
+    await mkdir(legacyMeta);
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+      version: string;
+      dialect: string;
+      entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
+    };
+    const legacyEntries = journal.entries.filter(({ idx }) => idx <= 13);
+    for (const entry of legacyEntries) {
+      await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(legacyFolder, `${entry.tag}.sql`));
+    }
+    await writeFile(join(legacyMeta, "_journal.json"), JSON.stringify({ ...journal, entries: legacyEntries }, null, 2));
+
+    try {
+      await migrateDatabase(databaseUrl, legacyFolder);
+      const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      try {
+        const userId = "00000000-0000-4000-8000-000000000001";
+        const teamId = "00000000-0000-4000-8000-000000000002";
+        const computerId = "00000000-0000-4000-8000-000000000003";
+        const slackProvisioningAgentId = "00000000-0000-4000-8000-000000000011";
+        const slackIncompleteAgentId = "00000000-0000-4000-8000-000000000012";
+        const slackCompleteAgentId = "00000000-0000-4000-8000-000000000013";
+        const feishuAgentId = "00000000-0000-4000-8000-000000000014";
+        await sql`
+          insert into users (id, email, display_name) values (${userId}, 'migration@example.com', 'Migration')
+        `;
+        await sql`insert into teams (id, name, display_name) values (${teamId}, 'migration', 'Migration')`;
+        await sql`
+          insert into memberships (team_id, user_id, role, status) values (${teamId}, ${userId}, 'admin', 'active')
+        `;
+        await sql`
+          insert into computers (id, owner_user_id, display_name, platform, arch, client_version)
+          values (${computerId}, ${userId}, 'Migration Computer', 'linux', 'x64', 'test')
+        `;
+        await sql`
+          insert into agents (id, team_id, manager_user_id, computer_id, name, display_name, runtime_provider)
+          values
+            (${slackProvisioningAgentId}, ${teamId}, ${userId}, ${computerId}, 'slack-provisioning', 'Slack Provisioning', 'codex'),
+            (${slackIncompleteAgentId}, ${teamId}, ${userId}, ${computerId}, 'slack-incomplete', 'Slack Incomplete', 'codex'),
+            (${slackCompleteAgentId}, ${teamId}, ${userId}, ${computerId}, 'slack-complete', 'Slack Complete', 'codex'),
+            (${feishuAgentId}, ${teamId}, ${userId}, ${computerId}, 'feishu-setup', 'Feishu Setup', 'codex')
+        `;
+        await sql`
+          insert into im_bindings (
+            agent_id, provider, status, setup_attempt_id, setup_intent, setup_state,
+            setup_owner_instance_id, setup_owner_heartbeat_at, encrypted_setup_context, setup_expires_at,
+            pending_receive_mode
+          ) values (
+            ${slackProvisioningAgentId}, 'slack', 'provisioning', gen_random_uuid(), 'create', 'awaiting_user',
+            gen_random_uuid(), now(), 'encrypted-slack-setup', now() + interval '30 minutes', 'all_message'
+          )
+        `;
+        await sql`
+          insert into im_bindings (
+            agent_id, provider, status, external_app_id, external_team_id, external_bot_id,
+            credential_schema_version, credential_generation, encrypted_credential, granted_capabilities,
+            activated_at, pending_receive_mode
+          ) values (
+            ${slackIncompleteAgentId}, 'slack', 'active', 'A_INCOMPLETE', 'T1', 'U1',
+            1, 2, 'encrypted-incomplete',
+            array['app_mentions:read', 'chat:write', 'files:read', 'im:history']::text[], now(), 'all_message'
+          )
+        `;
+        await sql`
+          insert into im_bindings (
+            agent_id, provider, status, external_app_id, external_team_id, external_bot_id,
+            credential_schema_version, credential_generation, encrypted_credential, granted_capabilities,
+            activated_at, observed_connected_at, last_error_code, pending_receive_mode
+          ) values (
+            ${slackCompleteAgentId}, 'slack', 'reauthorization_required', 'A_COMPLETE', 'T1', 'U2',
+            1, 3, 'encrypted-complete',
+            array[
+              'app_mentions:read', 'channels:history', 'chat:write', 'files:read',
+              'groups:history', 'im:history', 'mpim:history'
+            ]::text[], now(), now(), 'IM_BINDING_SCOPE_REAUTH_REQUIRED', 'all_message'
+          )
+        `;
+        const [feishuSetup] = await sql<{ attempt_id: string }[]>`
+          insert into im_bindings (
+            agent_id, provider, status, setup_attempt_id, setup_intent, setup_state,
+            setup_owner_instance_id, setup_owner_heartbeat_at, encrypted_setup_context, setup_expires_at,
+            observed_connected_at,
+            pending_receive_mode
+          ) values (
+            ${feishuAgentId}, 'feishu', 'provisioning', gen_random_uuid(), 'create', 'awaiting_user',
+            gen_random_uuid(), now(), 'encrypted-feishu-setup', now() + interval '15 minutes', now(), null
+          ) returning setup_attempt_id::text as attempt_id
+        `;
+
+        await migrateDatabase(databaseUrl, migrationsFolder);
+
+        const rows = await sql<
+          {
+            agent_id: string;
+            encrypted_credential: string | null;
+            encrypted_setup_context: string | null;
+            last_error_code: string | null;
+            observed_connected_at: Date | null;
+            setup_attempt_id: string | null;
+            status: string;
+          }[]
+        >`
+          select agent_id::text, status, encrypted_credential, setup_attempt_id::text,
+                 encrypted_setup_context, observed_connected_at, last_error_code
+          from im_bindings
+          order by agent_id
+        `;
+        expect(rows).toEqual([
+          {
+            agent_id: slackProvisioningAgentId,
+            status: "disabled",
+            encrypted_credential: null,
+            setup_attempt_id: null,
+            encrypted_setup_context: null,
+            observed_connected_at: null,
+            last_error_code: "SLACK_CONFIGURATION_REQUIRED",
+          },
+          {
+            agent_id: slackIncompleteAgentId,
+            status: "reauthorization_required",
+            encrypted_credential: "encrypted-incomplete",
+            setup_attempt_id: null,
+            encrypted_setup_context: null,
+            observed_connected_at: null,
+            last_error_code: "SLACK_SCOPE_REAUTH_REQUIRED",
+          },
+          {
+            agent_id: slackCompleteAgentId,
+            status: "active",
+            encrypted_credential: "encrypted-complete",
+            setup_attempt_id: null,
+            encrypted_setup_context: null,
+            observed_connected_at: null,
+            last_error_code: null,
+          },
+          {
+            agent_id: feishuAgentId,
+            status: "provisioning",
+            encrypted_credential: null,
+            setup_attempt_id: feishuSetup?.attempt_id ?? null,
+            encrypted_setup_context: "encrypted-feishu-setup",
+            observed_connected_at: expect.any(Date),
+            last_error_code: null,
+          },
+        ]);
+        const pendingColumn = await sql<{ count: number }[]>`
+          select count(*)::int as count from information_schema.columns
+          where table_name = 'im_bindings' and column_name = 'pending_receive_mode'
+        `;
+        expect(pendingColumn[0]?.count).toBe(0);
+        const slackSetup = await sql<{ count: number }[]>`
+          select count(*)::int as count from im_bindings
+          where provider = 'slack' and (
+            setup_attempt_id is not null or setup_intent is not null or setup_state is not null or
+            setup_owner_instance_id is not null or setup_owner_heartbeat_at is not null or
+            encrypted_setup_context is not null or setup_expires_at is not null
+          )
+        `;
+        expect(slackSetup[0]?.count).toBe(0);
+        const slackSetupCheck = await sql<{ count: number }[]>`
+          select count(*)::int as count from pg_constraint
+          where conname = 'im_bindings_slack_setup_fields_null'
+        `;
+        expect(slackSetupCheck[0]?.count).toBe(1);
+        await expect(
+          sql`
+            update im_bindings
+            set setup_attempt_id = gen_random_uuid(), setup_intent = 'create', setup_state = 'awaiting_user',
+                setup_owner_instance_id = gen_random_uuid(), setup_owner_heartbeat_at = now(),
+                encrypted_setup_context = 'encrypted-slack-setup', setup_expires_at = now()
+            where agent_id = ${slackCompleteAgentId}
+          `,
+        ).rejects.toThrow();
+      } finally {
+        await sql.end();
+      }
+    } finally {
+      await rm(legacyFolder, { force: true, recursive: true });
+    }
   });
 
   it("migrates an empty database and reruns idempotently", async () => {
@@ -311,7 +496,7 @@ describe("database migrations", () => {
             array(select receive_mode::text from agents order by name) as receive_modes
         `;
         expect(lifecycle).toEqual({
-          count: 15,
+          count: 16,
           creation_intents_null: true,
           deleted_at_exists: false,
           setup_completed_at_exists: true,
@@ -348,7 +533,7 @@ describe("database migrations", () => {
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(15);
+        expect(rerun?.count).toBe(16);
       } finally {
         await sql.end();
       }

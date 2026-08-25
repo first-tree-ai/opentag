@@ -1124,7 +1124,7 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
     agent.activity.state === "working" && status.label === "Working" ? (
       <>Started {formatElapsedCompact(agent.activity.startedAt)} ago</>
     ) : status.detail ? (
-      status.reconnect ? (
+      status.action ? (
         <>
           <span className="agent-state-reason">{status.detail}</span>
           <span className="agent-state-separator" aria-hidden="true">
@@ -1132,9 +1132,9 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           </span>
           <Link
             className={buttonClassName({ className: "agent-reconnect", variant: "inline" })}
-            to={`/agents/${agent.id}/settings/computer`}
+            to={`/agents/${agent.id}/settings/${status.action.section}`}
           >
-            Reconnect
+            {status.action.label}
           </Link>
         </>
       ) : (
@@ -1182,11 +1182,15 @@ function agentAvatarTone(agentId: string): (typeof agentAvatarTones)[number] {
   return agentAvatarTones[hash % agentAvatarTones.length] ?? "brand";
 }
 
+/**
+ * Every state a viewer can act on carries the Settings section that explains it. A state without an
+ * exit reads as a dead end: the card reports a failure the viewer cannot follow anywhere.
+ */
 function agentCardStatus(agent: AgentListItem): {
+  action?: { label: string; section: AgentSettingsSection };
   detail?: string;
   label: string;
   priority: number;
-  reconnect?: boolean;
   tone: StatusTone;
 } {
   if (agent.status === "suspended") return { label: "Paused", priority: 4, tone: "neutral" };
@@ -1197,17 +1201,17 @@ function agentCardStatus(agent: AgentListItem): {
     return { detail: "Unable to confirm readiness", label: "Unconfirmed", priority: 1, tone: "neutral" };
   }
   if (agent.availability.state === "action_required") {
-    const detail =
+    const { action, detail } =
       agent.availability.reason === "computer_offline"
-        ? "Computer offline"
+        ? { action: { label: "View Computer", section: "computer" as const }, detail: "Computer offline" }
         : agent.availability.reason === "runtime_unavailable"
-          ? "Computer not ready"
-          : "Messaging unavailable";
+          ? { action: { label: "View runtime", section: "execution" as const }, detail: "Computer not ready" }
+          : { action: { label: "View messaging", section: "messaging" as const }, detail: "Messaging unavailable" };
     return {
+      action,
       detail,
       label: "Needs attention",
       priority: 0,
-      reconnect: agent.availability.reason === "computer_offline",
       tone: "warning",
     };
   }
@@ -1215,7 +1219,13 @@ function agentCardStatus(agent: AgentListItem): {
     return { detail: "Messaging setup in progress", label: "Setting up", priority: 2, tone: "info" };
   }
   if (agent.availability.state === "not_connected") {
-    return { detail: "Messaging not connected", label: "Not connected", priority: 2, tone: "neutral" };
+    return {
+      action: { label: "Connect messaging", section: "messaging" },
+      detail: "Messaging not connected",
+      label: "Not connected",
+      priority: 2,
+      tone: "neutral",
+    };
   }
   if (agent.activity.state === "working") {
     return {
@@ -1891,7 +1901,7 @@ function AgentSettingsContent({
 }) {
   if (!section) return <AgentSettingsOverview agent={agent} />;
   if (section === "messaging") return <ImTab agent={agent} onAgentChanged={onAgentChanged} />;
-  if (section === "computer") return <AgentComputerSettings agent={agent} onAgentChanged={onAgentChanged} />;
+  if (section === "computer") return <AgentComputerSettings agent={agent} />;
   return <AgentConfigSettingsContent agent={agent} section={section} onAgentChanged={onAgentChanged} />;
 }
 
@@ -2119,46 +2129,51 @@ function GeneralConfigForm({
   );
 }
 
-function AgentComputerSettings({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
+function AgentComputerSettings({ agent }: { agent: AgentDetailView }) {
+  const { me } = useTeam();
   const computerState = agent.availability.dependencies.computer;
-  const computerStatus =
-    computerState.state === "ready"
-      ? "Online"
-      : computerState.state === "action_required"
-        ? "Offline"
-        : "Unable to confirm";
-  const computerTone: StatusTone =
-    computerState.state === "ready" ? "success" : computerState.state === "action_required" ? "warning" : "neutral";
+  const ready = computerState.state === "ready";
+  const offline = computerState.state === "action_required";
+  const computerStatus = ready ? "Online" : offline ? "Offline" : "Unable to confirm";
+  const computerTone: StatusTone = ready ? "success" : offline ? "warning" : "neutral";
+  /**
+   * `agents_manager_computer_owner_fk` makes the Agent manager the owner of the bound Computer, so the
+   * manager is the person who can physically bring it back. Issue #125 drops that foreign key; once
+   * Workspace Computer enrollments carry an operator, read the contact from the enrollment instead.
+   */
+  const viewerOwnsComputer = agent.manager.userId === me.user.id;
   return (
     <div className="agent-runtime-stack agent-settings-section-page">
       <section aria-labelledby="computer-heading" className="agent-runtime-section agent-runtime-computer">
         <header className="agent-runtime-section__header">
           <div>
-            <h1 id="computer-heading">Connected computer</h1>
-            <p>The computer assigned to run {agent.displayName}.</p>
+            <h1 id="computer-heading">
+              {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
+            </h1>
+            {/* Carries the immutable assignment in every state, so a missing "move it" control reads as a rule. */}
+            <p>{agent.displayName} runs only on this Computer.</p>
           </div>
           <StatusIndicator label={computerStatus} tone={computerTone} />
         </header>
-        <div className="agent-runtime-computer__body">
-          <div>
-            <strong>
-              {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
-            </strong>
-          </div>
-          {computerState.state !== "ready" ? (
+        {ready ? null : (
+          <div className="agent-runtime-computer__body">
             <div className="agent-runtime-recovery">
-              {computerState.lastConfirmedAt ? <p>Last seen {formatDate(computerState.lastConfirmedAt)}</p> : null}
+              {computerState.lastConfirmedAt ? (
+                <p>
+                  Last seen {formatRelativeTime(computerState.lastConfirmedAt)} ·{" "}
+                  {formatDate(computerState.lastConfirmedAt)}
+                </p>
+              ) : null}
               <p>
-                {computerState.state === "action_required"
-                  ? "New requests can start after this Computer reconnects."
+                {offline
+                  ? viewerOwnsComputer
+                    ? `Open OpenTag on ${agent.computer.displayName} to bring it back online.`
+                    : `Ask ${agent.manager.displayName} to bring it back online.`
                   : "OpenTag could not confirm this Computer's current connection."}
               </p>
-              <Button size="compact" variant="outline" onClick={onAgentChanged}>
-                Check again
-              </Button>
             </div>
-          ) : null}
-        </div>
+          </div>
+        )}
       </section>
     </div>
   );
@@ -3384,7 +3399,9 @@ function formatRelativeTime(value: string): string {
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   if (elapsedMinutes < 60) return `${elapsedMinutes} ${elapsedMinutes === 1 ? "minute" : "minutes"} ago`;
   const elapsedHours = Math.floor(elapsedMinutes / 60);
-  return `${elapsedHours} ${elapsedHours === 1 ? "hour" : "hours"} ago`;
+  if (elapsedHours < 24) return `${elapsedHours} ${elapsedHours === 1 ? "hour" : "hours"} ago`;
+  const elapsedDays = Math.floor(elapsedHours / 24);
+  return `${elapsedDays} ${elapsedDays === 1 ? "day" : "days"} ago`;
 }
 
 function formatInviteExpiry(value: string) {

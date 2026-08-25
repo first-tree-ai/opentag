@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { RUNTIME_CLIENT_CAPABILITY_TTL_MS, RUNTIME_PROTOCOL_V2 } from "@opentag/shared";
+import { RUNTIME_CAPABILITY, RUNTIME_CLIENT_CAPABILITY_TTL_MS, RUNTIME_PROTOCOL_V2 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
@@ -100,6 +100,7 @@ describe("ConnectionRegistry", () => {
         computerId,
         instanceId: verifiedInstanceId,
         lastHeartbeatAt: 2,
+        negotiatedCapabilities: { [RUNTIME_CAPABILITY.sessionCollaboration]: 1 },
         providerReadiness: [{ provider: "codex", status: "ready" }],
         providerReadinessObservedAt: 2,
         providerReadinessProviders: ["codex"],
@@ -110,6 +111,12 @@ describe("ConnectionRegistry", () => {
     );
     expect(registry.supports(computerId, firstInstanceId, "imCredentialGrant", 2)).toBe(false);
     expect(registry.supports(computerId, verifiedInstanceId, "imCredentialGrant", 2)).toBe(true);
+    expect(registry.supportsCapability(computerId, verifiedInstanceId, RUNTIME_CAPABILITY.sessionCollaboration)).toBe(
+      true,
+    );
+    expect(registry.supportsCapability(computerId, firstInstanceId, RUNTIME_CAPABILITY.sessionCollaboration)).toBe(
+      false,
+    );
     expect(registry.supportsProvider(computerId, verifiedInstanceId, "codex", 2)).toBe(true);
     expect(registry.supportsProvider(computerId, verifiedInstanceId, "claude-code", 2)).toBe(false);
     expect(registry.providerReadiness(computerId, 2)).toEqual([

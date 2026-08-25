@@ -25,6 +25,10 @@ function authority(overrides: Record<string, unknown> = {}) {
     runtimeProvider: "codex",
     sessionEndedAt: null,
     sessionId,
+    sessionKind: "channel" as const,
+    sessionRuntimeModel: null,
+    sessionRuntimeReasoningEffort: null,
+    sessionRuntimeMaxDurationMs: null,
     ...overrides,
   };
 }
@@ -104,6 +108,81 @@ describe("EffectiveRuntimeSnapshotAssembler", () => {
       provider: "claude-code",
       execution: { approvalPolicy: "never", networkAccess: true },
     });
+  });
+
+  it("applies immutable internal overrides in the Session layer without changing visible Session projection", async () => {
+    const visible = await assembler(async () => authority()).assembleForSession(sessionId);
+    const visibleWithStoredFields = await assembler(async () =>
+      authority({
+        sessionRuntimeModel: "ignored-model",
+        sessionRuntimeReasoningEffort: "ignored-effort",
+        sessionRuntimeMaxDurationMs: 1,
+      }),
+    ).assembleForSession(sessionId);
+    expect(visibleWithStoredFields).toEqual(visible);
+
+    const internal = await assembler(async () =>
+      authority({
+        sessionKind: "internal",
+        sessionRuntimeModel: "internal-model",
+        sessionRuntimeReasoningEffort: "medium",
+        sessionRuntimeMaxDurationMs: 5_000,
+      }),
+    ).assembleForSession(sessionId);
+    expect(internal).toMatchObject({
+      model: "internal-model",
+      reasoningEffort: "medium",
+      budget: { maxDurationMs: 5_000 },
+      revision: { agent: { sequence: 7 }, session: { sequence: 7 } },
+    });
+    expect(internal.revision.agent).toEqual(visible.revision.agent);
+    expect(internal.revision.session.id).not.toBe(visible.revision.session.id);
+  });
+
+  it("advances internal Session revision with inherited Agent defaults while preserving explicit overrides", async () => {
+    const initial = await assembler(async () => authority({ sessionKind: "internal" })).assembleForSession(sessionId);
+    const updatedConfig = {
+      ...(authority().runtimeConfig as Record<string, unknown>),
+      revision: 8,
+      model: "gpt-5.1",
+      reasoningEffort: "medium",
+      maxDurationMs: 45_000,
+    };
+    const inherited = await assembler(async () =>
+      authority({ sessionKind: "internal", runtimeConfig: updatedConfig }),
+    ).assembleForSession(sessionId);
+    expect(inherited).toMatchObject({
+      model: "gpt-5.1",
+      reasoningEffort: "medium",
+      budget: { maxDurationMs: 45_000 },
+      revision: { session: { sequence: 8 } },
+    });
+    expect(inherited.revision.session.id).not.toBe(initial.revision.session.id);
+
+    const explicitBefore = await assembler(async () =>
+      authority({
+        sessionKind: "internal",
+        sessionRuntimeModel: "internal-model",
+        sessionRuntimeReasoningEffort: "high",
+        sessionRuntimeMaxDurationMs: 5_000,
+      }),
+    ).assembleForSession(sessionId);
+    const explicitAfter = await assembler(async () =>
+      authority({
+        sessionKind: "internal",
+        runtimeConfig: updatedConfig,
+        sessionRuntimeModel: "internal-model",
+        sessionRuntimeReasoningEffort: "high",
+        sessionRuntimeMaxDurationMs: 5_000,
+      }),
+    ).assembleForSession(sessionId);
+    expect(explicitAfter).toMatchObject({
+      model: "internal-model",
+      reasoningEffort: "high",
+      budget: { maxDurationMs: 5_000 },
+      revision: { session: { sequence: 8 } },
+    });
+    expect(explicitAfter.revision.session.id).toBe(explicitBefore.revision.session.id);
   });
 
   it.each([

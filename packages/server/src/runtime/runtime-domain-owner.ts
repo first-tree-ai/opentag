@@ -9,6 +9,9 @@ import {
   type ImMessageDeliveryResult,
   type RuntimeImCredentialGrantRequest,
   type RuntimeImCredentialGrantResult,
+  type SessionCollaborationCommandResult,
+  type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryResult,
   type SessionReconcileRequest,
   type SessionReconcileResult,
   type TurnReportRequest,
@@ -47,6 +50,14 @@ export interface RuntimeDomainOwnerOptions {
     request: RuntimeImCredentialGrantRequest,
     context: RuntimeBusinessContext,
   ): Promise<RuntimeImCredentialGrantResult>;
+  onSessionCollaborationCommand?(
+    request: Extract<ClientRuntimeBusinessFrame, { type: "session:internal:create" | "session:message" }>,
+    context: RuntimeBusinessContext,
+  ): Promise<SessionCollaborationCommandResult>;
+  onLocalSessionMessageDeliveryResult?(
+    result: SessionMessageDeliveryResult,
+    context: RuntimeBusinessContext,
+  ): Promise<SessionCollaborationCommandResult | undefined>;
   requestTimeoutMs?: number;
 }
 
@@ -70,7 +81,11 @@ interface PendingDelivery extends PendingBase<DirectImMessageDeliveryRequest, Im
   inputHash: string;
 }
 
-type PendingRequest = PendingReconcile | PendingDelivery;
+interface PendingSessionMessage extends PendingBase<SessionMessageDeliveryRequest, SessionMessageDeliveryResult> {
+  kind: "session-message";
+}
+
+type PendingRequest = PendingReconcile | PendingDelivery | PendingSessionMessage;
 
 interface ExpiredDelivery {
   computerId: string;
@@ -85,8 +100,8 @@ interface CompletedRequest {
   computerId: string;
   hash: string;
   instanceId: string;
-  kind: "reconcile" | "delivery";
-  result: SessionReconcileResult | ImMessageDeliveryResult;
+  kind: "reconcile" | "delivery" | "session-message";
+  result: SessionReconcileResult | ImMessageDeliveryResult | SessionMessageDeliveryResult;
 }
 
 interface StartingDelivery {
@@ -100,7 +115,10 @@ export class RuntimeDomainOwner {
   readonly #registry: ConnectionRegistry;
   readonly #custody: RuntimeCustodyStore;
   readonly #options: Required<Pick<RuntimeDomainOwnerOptions, "maxPendingRequests" | "requestTimeoutMs">> &
-    Pick<RuntimeDomainOwnerOptions, "onImCredentialGrant" | "onTrace">;
+    Pick<
+      RuntimeDomainOwnerOptions,
+      "onImCredentialGrant" | "onLocalSessionMessageDeliveryResult" | "onSessionCollaborationCommand" | "onTrace"
+    >;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #startingDeliveries = new Map<string, StartingDelivery>();
   readonly #expiredDeliveries = new Map<string, ExpiredDelivery>();
@@ -114,6 +132,8 @@ export class RuntimeDomainOwner {
       maxPendingRequests: options.maxPendingRequests ?? 1024,
       onTrace: options.onTrace,
       onImCredentialGrant: options.onImCredentialGrant,
+      onLocalSessionMessageDeliveryResult: options.onLocalSessionMessageDeliveryResult,
+      onSessionCollaborationCommand: options.onSessionCollaborationCommand,
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
     };
     if (!Number.isSafeInteger(this.#options.maxPendingRequests) || this.#options.maxPendingRequests < 1) {
@@ -227,6 +247,28 @@ export class RuntimeDomainOwner {
     );
   }
 
+  requestSessionMessageDelivery(
+    computerId: string,
+    instanceId: string,
+    request: SessionMessageDeliveryRequest,
+  ): Promise<SessionMessageDeliveryResult> {
+    return this.#request(
+      "session-message",
+      computerId,
+      instanceId,
+      request,
+      hashTuple([
+        request.messageId,
+        request.sourceSessionId,
+        request.targetSessionId,
+        request.agentId,
+        request.placementGeneration,
+        request.content,
+        request.runtime,
+      ]),
+    ) as Promise<SessionMessageDeliveryResult>;
+  }
+
   #traceOnce<T>(
     name: string,
     attrs: Record<string, unknown>,
@@ -326,8 +368,8 @@ export class RuntimeDomainOwner {
       },
       laneKey: (frame) => domainLaneKey(frame as ClientRuntimeBusinessFrame),
       handle: (frame, context) => this.handle(frame as ClientRuntimeBusinessFrame, context),
-      failureResult: (frame) => credentialFailureResult(frame),
-      overloadResult: (frame) => credentialFailureResult(frame),
+      failureResult: (frame) => businessFailureResult(frame),
+      overloadResult: (frame) => businessFailureResult(frame),
       maxConcurrent: 32,
       maxQueuedPerKey: 32,
       maxQueuedTotal: 1024,
@@ -337,7 +379,7 @@ export class RuntimeDomainOwner {
   async handle(
     frame: ClientRuntimeBusinessFrame,
     context: RuntimeBusinessContext,
-  ): Promise<TurnReportResult | RuntimeImCredentialGrantResult | undefined> {
+  ): Promise<TurnReportResult | RuntimeImCredentialGrantResult | SessionCollaborationCommandResult | undefined> {
     if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
       if (frame.type === "turn:report") {
         return {
@@ -348,14 +390,18 @@ export class RuntimeDomainOwner {
           resultHash: frame.resultHash,
         };
       }
-      return frame.type === "im:credential"
-        ? {
-            type: "im:credential:result",
-            requestId: frame.requestId,
-            status: "rejected",
-            code: "placement_stale",
-          }
-        : undefined;
+      if (frame.type === "im:credential") {
+        return {
+          type: "im:credential:result",
+          requestId: frame.requestId,
+          status: "rejected",
+          code: "placement_stale",
+        };
+      }
+      if (frame.type === "session:internal:create" || frame.type === "session:message") {
+        return collaborationFailureResult(frame, "source_unavailable");
+      }
+      return undefined;
     }
     if (frame.type === "session:reconcile:result") {
       await this.#completeRequest("reconcile", frame.requestId, frame, context);
@@ -364,6 +410,9 @@ export class RuntimeDomainOwner {
     if (frame.type === "im:deliver:result") {
       await this.#completeDelivery(frame, context);
       return undefined;
+    }
+    if (frame.type === "session:message:deliver:result") {
+      return this.#completeSessionMessage(frame, context);
     }
     if (frame.type === "agent:trace") {
       const delivery = await this.#custody.getDeliveryByTurn(frame.turnId);
@@ -379,8 +428,14 @@ export class RuntimeDomainOwner {
       return undefined;
     }
     if (frame.type === "im:credential") {
-      if (!this.#options.onImCredentialGrant) return credentialFailureResult(frame);
+      if (!this.#options.onImCredentialGrant) return businessFailureResult(frame);
       return this.#options.onImCredentialGrant(frame, context);
+    }
+    if (frame.type === "session:internal:create" || frame.type === "session:message") {
+      if (!this.#options.onSessionCollaborationCommand) {
+        return collaborationFailureResult(frame, "configuration_unsupported");
+      }
+      return this.#options.onSessionCollaborationCommand(frame, context);
     }
     return withSpan(
       "runtime.report",
@@ -402,14 +457,14 @@ export class RuntimeDomainOwner {
   }
 
   #request(
-    kind: "reconcile" | "delivery",
+    kind: "reconcile" | "delivery" | "session-message",
     computerId: string,
     instanceId: string,
-    request: SessionReconcileRequest | DirectImMessageDeliveryRequest,
+    request: SessionReconcileRequest | DirectImMessageDeliveryRequest | SessionMessageDeliveryRequest,
     hash: string,
     inputHash?: string,
     onDispatched?: () => void,
-  ): Promise<SessionReconcileResult | ImMessageDeliveryResult> {
+  ): Promise<SessionReconcileResult | ImMessageDeliveryResult | SessionMessageDeliveryResult> {
     const existing = this.#pending.get(request.requestId);
     if (existing) {
       if (
@@ -452,12 +507,16 @@ export class RuntimeDomainOwner {
     }
     if (expired) this.#expiredDeliveries.delete(request.requestId);
 
-    let resolvePromise: (result: SessionReconcileResult | ImMessageDeliveryResult) => void = () => undefined;
+    let resolvePromise: (
+      result: SessionReconcileResult | ImMessageDeliveryResult | SessionMessageDeliveryResult,
+    ) => void = () => undefined;
     let rejectPromise: (error: Error) => void = () => undefined;
-    const promise = new Promise<SessionReconcileResult | ImMessageDeliveryResult>((resolve, reject) => {
-      resolvePromise = resolve;
-      rejectPromise = reject;
-    });
+    const promise = new Promise<SessionReconcileResult | ImMessageDeliveryResult | SessionMessageDeliveryResult>(
+      (resolve, reject) => {
+        resolvePromise = resolve;
+        rejectPromise = reject;
+      },
+    );
     const timer = setTimeout(() => {
       if (this.#pending.get(request.requestId)?.promise !== promise) return;
       this.#pending.delete(request.requestId);
@@ -478,12 +537,14 @@ export class RuntimeDomainOwner {
     const pending: PendingRequest =
       kind === "reconcile"
         ? ({ ...base, kind, request: request as SessionReconcileRequest } as PendingReconcile)
-        : ({
-            ...base,
-            kind,
-            request: request as DirectImMessageDeliveryRequest,
-            inputHash: inputHash ?? "",
-          } as PendingDelivery);
+        : kind === "delivery"
+          ? ({
+              ...base,
+              kind,
+              request: request as DirectImMessageDeliveryRequest,
+              inputHash: inputHash ?? "",
+            } as PendingDelivery)
+          : ({ ...base, kind, request: request as SessionMessageDeliveryRequest } as PendingSessionMessage);
     this.#pending.set(request.requestId, pending);
     const dispatch = this.#registry.send(computerId, instanceId, request);
     onDispatched?.();
@@ -554,6 +615,25 @@ export class RuntimeDomainOwner {
     this.#rememberCompleted(expired, result);
   }
 
+  async #completeSessionMessage(
+    result: SessionMessageDeliveryResult,
+    context: RuntimeBusinessContext,
+  ): Promise<SessionCollaborationCommandResult | undefined> {
+    const pending = this.#pending.get(result.requestId);
+    if (pending?.kind !== "session-message" || !this.#matchesContext(pending, context)) {
+      return this.#options.onLocalSessionMessageDeliveryResult?.(result, context);
+    }
+    if (
+      result.messageId !== pending.request.messageId ||
+      result.targetSessionId !== pending.request.targetSessionId ||
+      result.placementGeneration !== pending.request.placementGeneration
+    ) {
+      return undefined;
+    }
+    this.#settle(pending, result);
+    return undefined;
+  }
+
   async #recordTurn(report: TurnReportRequest, context: RuntimeBusinessContext): Promise<TurnReportResult | undefined> {
     const base = {
       type: "turn:report:result" as const,
@@ -607,7 +687,10 @@ export class RuntimeDomainOwner {
     return request.computerId === context.computerId && request.instanceId === context.instanceId;
   }
 
-  #settle(pending: PendingRequest, result: SessionReconcileResult | ImMessageDeliveryResult): void {
+  #settle(
+    pending: PendingRequest,
+    result: SessionReconcileResult | ImMessageDeliveryResult | SessionMessageDeliveryResult,
+  ): void {
     if (this.#pending.get(pending.request.requestId) !== pending) return;
     this.#pending.delete(pending.request.requestId);
     clearTimeout(pending.timer);
@@ -617,7 +700,7 @@ export class RuntimeDomainOwner {
 
   #rememberCompleted(
     request: Pick<PendingRequest | ExpiredDelivery, "computerId" | "hash" | "instanceId" | "kind" | "request">,
-    result: SessionReconcileResult | ImMessageDeliveryResult,
+    result: SessionReconcileResult | ImMessageDeliveryResult | SessionMessageDeliveryResult,
   ): void {
     this.#completed.set(request.request.requestId, {
       computerId: request.computerId,
@@ -675,21 +758,47 @@ function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
   return outcomeAttrs("failed", code);
 }
 
-function credentialFailureResult(frame: unknown): RuntimeImCredentialGrantResult | undefined {
+function businessFailureResult(
+  frame: unknown,
+): RuntimeImCredentialGrantResult | SessionCollaborationCommandResult | undefined {
   const parsed = ClientRuntimeBusinessFrameSchema.safeParse(frame);
-  return parsed.success && parsed.data.type === "im:credential"
-    ? {
-        type: "im:credential:result",
-        requestId: parsed.data.requestId,
-        status: "rejected",
-        code: "credential_stale",
-      }
-    : undefined;
+  if (!parsed.success) return undefined;
+  if (parsed.data.type === "im:credential") {
+    return {
+      type: "im:credential:result",
+      requestId: parsed.data.requestId,
+      status: "rejected",
+      code: "credential_stale",
+    };
+  }
+  if (parsed.data.type === "session:internal:create" || parsed.data.type === "session:message") {
+    return collaborationFailureResult(parsed.data, "runtime_unavailable");
+  }
+  return undefined;
+}
+
+function collaborationFailureResult(
+  frame: Extract<ClientRuntimeBusinessFrame, { type: "session:internal:create" | "session:message" }>,
+  code: string,
+): SessionCollaborationCommandResult {
+  return {
+    type: "session:collaboration:result",
+    requestId: frame.requestId,
+    messageId: frame.type === "session:internal:create" ? frame.initialMessage.messageId : frame.messageId,
+    status: "rejected",
+    code,
+  };
 }
 
 function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   if (frame.type === "session:reconcile:result") return `request:${frame.requestId}`;
   if (frame.type === "im:deliver:result" || frame.type === "turn:report") return `delivery:${frame.deliveryId}`;
   if (frame.type === "im:credential") return `session:${frame.sessionId}`;
+  if (frame.type === "session:internal:create" || frame.type === "session:message") {
+    return `session:${frame.sourceSessionId}`;
+  }
+  if (frame.type === "session:message:deliver:result") {
+    return `session-message:${frame.targetSessionId}:${frame.messageId}`;
+  }
   return `turn:${frame.turnId}`;
 }

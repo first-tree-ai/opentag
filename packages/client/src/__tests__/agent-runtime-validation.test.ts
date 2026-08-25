@@ -153,9 +153,15 @@ describe("Agent Runtime validation", () => {
     expect(() =>
       assertHostedTools({ ...policy, tools: { mode: "allow-list", names: ["send", "send"] } }, hostedTools),
     ).toThrowError(expect.objectContaining({ code: "configuration_invalid" }));
-    expect(() => assertHostedTools({ ...policy, tools: { mode: "provider-default" } }, hostedTools)).toThrowError(
-      expect.objectContaining({ code: "configuration_invalid" }),
-    );
+    expect(() => assertHostedTools({ ...policy, tools: { mode: "provider-default" } }, hostedTools)).not.toThrow();
+    for (const candidate of [
+      { definitions: hostedTools.definitions, handler: undefined },
+      { definitions: undefined, handler: hostedTools.handler },
+    ]) {
+      expect(() =>
+        assertHostedTools({ ...policy, tools: { mode: "provider-default" } }, candidate as never),
+      ).toThrowError(expect.objectContaining({ code: "configuration_invalid" }));
+    }
     for (const candidate of [
       undefined,
       { ...hostedTools, definitions: [null] },

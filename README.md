@@ -17,6 +17,7 @@ This repository currently provides the engineering foundation and first control-
 - Team-owned Agent registry with immutable Computer/provider binding and revision fencing;
 - durable Agent Runtime execution, delivery custody, reporting, and recovery;
 - Feishu and Slack inbound normalization, persistence, and Channel/Thread Session routing;
+- durable, best-effort internal Session collaboration with explicit message retry;
 - direct provider CLI credential handoff for Agent-controlled replies and reactions; and
 - a same-origin, read-only Admin Web plus `doctor`, `login`, `team`, `agent`, `computer`, and daemon service management commands.
 
@@ -111,6 +112,7 @@ and broader collaboration workflows remain under development.
 - [Direct provider CLI messaging](./docs/direct-provider-cli.md)
 - [Slack App setup](./docs/slack-app-setup.md)
 - [IM Channel and Thread Sessions](./docs/thread-sessions.md)
+- [Internal Session collaboration](./docs/internal-session-collaboration.md)
 - [Contributing guide](./CONTRIBUTING.md)
 - [Release guide](./docs/releasing.md)
 - [Deployment guide](./docs/deploying.md)

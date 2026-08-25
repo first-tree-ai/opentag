@@ -17,6 +17,7 @@ import {
   CODEX_AGENT_RUNTIME_APP_SERVER_ARGS,
   CodexAgentRuntimeFactory,
   codexAgentRuntimeEnvironment,
+  codexBindingRequiresHostedToolReplacement,
 } from "../providers/codex/agent-runtime.js";
 import type {
   CodexAppServerMessage,
@@ -65,7 +66,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
         fileSystem: "workspace-write",
         network: "disabled",
         approvals: "never",
-        tools: { mode: "allow-list", names: [definition.name, definitionWithoutDescription.name] },
+        tools: { mode: "provider-default" },
       },
       hostedTools: { definitions: [definition, definitionWithoutDescription], handler },
     });
@@ -122,6 +123,140 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     await run;
     await expect(client.callDynamicTool({ ...call, callId: "late" })).resolves.toMatchObject({ success: false });
     await runtime.close();
+
+    const legacyBinding = { providerId: "codex", schemaVersion: 1, payload: { threadId: "existing-thread" } } as const;
+    const hostedTools = { definitions: [definition], handler };
+    expect(codexBindingRequiresHostedToolReplacement(legacyBinding, hostedTools)).toBe(true);
+    const incompatibleClient = new ManualCodexClient();
+    await expect(
+      factory(incompatibleClient).resume({
+        ...createRequest(() => undefined),
+        binding: legacyBinding,
+        policy: {
+          fileSystem: "workspace-write",
+          network: "disabled",
+          approvals: "never",
+          tools: { mode: "provider-default" },
+        },
+        hostedTools,
+      }),
+    ).rejects.toMatchObject({ code: "binding_incompatible" });
+    expect(incompatibleClient.call("thread/resume")).toBeUndefined();
+    expect(incompatibleClient.call("thread/start")).toBeUndefined();
+
+    const replacementClient = new ManualCodexClient();
+    const replacement = await factory(replacementClient).create({
+      ...createRequest(() => undefined),
+      policy: {
+        fileSystem: "workspace-write",
+        network: "disabled",
+        approvals: "never",
+        tools: { mode: "provider-default" },
+      },
+      hostedTools,
+    });
+    expect(replacementClient.call("thread/resume")).toBeUndefined();
+    expect(replacementClient.call("thread/start")?.params).toMatchObject({
+      ephemeral: false,
+      dynamicTools: [
+        {
+          type: "function",
+          name: definition.name,
+          description: definition.description,
+          inputSchema: definition.inputSchema,
+        },
+      ],
+    });
+    expect(replacementClient.call("thread/start")?.params).not.toHaveProperty("tools");
+    expect(replacement.binding?.payload).toMatchObject({
+      threadId: "thread-1",
+      hostedToolsHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    const upgradedBinding = replacement.binding;
+    await replacement.close();
+
+    if (!upgradedBinding) throw new Error("Expected the upgraded Codex binding");
+    expect(codexBindingRequiresHostedToolReplacement(upgradedBinding, hostedTools)).toBe(false);
+    const upgradedClient = new ManualCodexClient();
+    const resumedAgain = await factory(upgradedClient).resume({
+      ...createRequest(() => undefined),
+      binding: upgradedBinding,
+      policy: {
+        fileSystem: "workspace-write",
+        network: "disabled",
+        approvals: "never",
+        tools: { mode: "provider-default" },
+      },
+      hostedTools,
+    });
+    expect(upgradedClient.call("thread/start")).toBeUndefined();
+    expect(upgradedClient.call("thread/resume")?.params).toMatchObject({ threadId: "thread-1" });
+    expect(upgradedClient.call("thread/resume")?.params).not.toHaveProperty("dynamicTools");
+    expect(upgradedClient.call("thread/resume")?.params).not.toHaveProperty("tools");
+    expect(resumedAgain.binding).toEqual(upgradedBinding);
+    await resumedAgain.close();
+
+    expect(codexBindingRequiresHostedToolReplacement(upgradedBinding, undefined)).toBe(true);
+    const incompatibleDisabledClient = new ManualCodexClient();
+    await expect(
+      factory(incompatibleDisabledClient).resume({
+        ...createRequest(() => undefined),
+        binding: upgradedBinding,
+      }),
+    ).rejects.toMatchObject({ code: "binding_incompatible" });
+    expect(incompatibleDisabledClient.call("thread/resume")).toBeUndefined();
+    expect(incompatibleDisabledClient.call("thread/start")).toBeUndefined();
+
+    const disabledClient = new ManualCodexClient();
+    const disabled = await factory(disabledClient).create(createRequest(() => undefined));
+    expect(disabledClient.call("thread/resume")).toBeUndefined();
+    expect(disabledClient.call("thread/start")?.params).toMatchObject({ ephemeral: false });
+    expect(disabledClient.call("thread/start")?.params).not.toHaveProperty("dynamicTools");
+    expect(disabled.binding).toEqual({
+      providerId: "codex",
+      schemaVersion: 1,
+      payload: { threadId: "thread-1" },
+    });
+    const disabledBinding = disabled.binding;
+    await disabled.close();
+
+    if (!disabledBinding) throw new Error("Expected the capability-disabled Codex binding");
+    expect(codexBindingRequiresHostedToolReplacement(disabledBinding, undefined)).toBe(false);
+    const disabledAgainClient = new ManualCodexClient();
+    const disabledAgain = await factory(disabledAgainClient).resume({
+      ...createRequest(() => undefined),
+      binding: disabledBinding,
+    });
+    expect(disabledAgainClient.call("thread/start")).toBeUndefined();
+    expect(disabledAgainClient.call("thread/resume")?.params).toMatchObject({ threadId: "thread-1" });
+    expect(disabledAgainClient.call("thread/resume")?.params).not.toHaveProperty("dynamicTools");
+    await disabledAgain.close();
+
+    const allowListClient = new ManualCodexClient();
+    const allowListRuntime = await factory(allowListClient).create({
+      ...createRequest(() => undefined),
+      policy: {
+        fileSystem: "workspace-write",
+        network: "disabled",
+        approvals: "never",
+        tools: { mode: "allow-list", names: [definition.name] },
+      },
+      hostedTools: { definitions: [definition], handler },
+    });
+    const allowListRun = allowListRuntime.prompt({ runId: "allow-list-run", input: input("send") });
+    await allowListClient.called("turn/start");
+    await expect(
+      allowListClient.callDynamicTool({
+        ...call,
+        callId: "allow-list-tool",
+        threadId: "thread-1",
+        tool: definition.name,
+        turnId: "turn-1",
+      }),
+    ).resolves.toEqual({ success: true, text: "sent" });
+    allowListClient.complete();
+    await allowListRun;
+    await allowListRuntime.close();
   });
 
   it("maps all supported factory, Turn, policy, and Provider configuration variants", async () => {
@@ -885,7 +1020,14 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     await expect(
       runtimeFactory.resume({ ...valid, binding: { providerId: "other", schemaVersion: 1, payload: {} } }),
     ).rejects.toMatchObject({ code: "binding_incompatible" });
-    for (const payload of [[], {}, { threadId: "" }, { threadId: 1 }, { threadId: "x".repeat(1024 * 1024 + 1) }]) {
+    for (const payload of [
+      [],
+      {},
+      { threadId: "" },
+      { threadId: 1 },
+      { threadId: "x".repeat(1024 * 1024 + 1) },
+      { threadId: "thread", hostedToolsHash: "not-a-hash" },
+    ]) {
       await expect(
         runtimeFactory.resume({
           ...valid,
@@ -1307,6 +1449,9 @@ class ManualCodexClient implements InteractiveCodexAppServerClient {
         : { thread: { id: "thread-1" } };
     }
     if (method === "thread/resume") {
+      if (Object.hasOwn(params as object, "dynamicTools")) {
+        throw new Error("thread/resume does not accept dynamicTools");
+      }
       return Object.hasOwn(this.#options, "threadResumeResponse")
         ? this.#options.threadResumeResponse
         : { thread: { id: (params as { threadId: string }).threadId } };

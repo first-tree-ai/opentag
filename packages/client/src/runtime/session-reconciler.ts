@@ -5,6 +5,7 @@ import {
   type EffectiveRuntimeSnapshot,
   type InputRejectReason,
   type RuntimeSnapshotHashes,
+  type SessionMessageDeliveryRequest,
   type SessionReconcileRequest,
   SessionReconcileRequestSchema,
   type SessionReconcileResult,
@@ -24,6 +25,7 @@ export interface SessionActivity extends SessionTurnIdentity {
 export interface RuntimePreparation {
   prepareAgent(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void>;
   verifyAgent?(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void>;
+  requiresSessionPreparation?(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): boolean;
   prepareSession(
     request: SessionReconcileRequest,
     hashes: RuntimeSnapshotHashes,
@@ -58,6 +60,7 @@ export interface SessionRuntimeState extends RuntimeSnapshotHashes {
   revisionId: string;
   revisionSequence: number;
   sessionId: string;
+  sessionKind: "visible" | "internal";
   status: "ready" | "stopped";
   workspaceId: string;
 }
@@ -149,39 +152,54 @@ export class SessionReconciler {
 
   checkDelivery(input: DirectImMessageDeliveryRequest): InputRejectReason | undefined {
     if (input.agentId !== input.runtime.agentId) return "target_mismatch";
-    const session = this.#sessions.get(input.sessionId);
-    if (session?.status !== "ready") return "session_not_ready";
-    if (session.agentId !== input.agentId) return "target_mismatch";
-    if (input.placementGeneration < session.placementGeneration) return "stale_generation";
-    if (input.placementGeneration > session.placementGeneration) return "session_not_ready";
-    if (this.#recoveries.has(input.sessionId)) return "session_recovery_required";
+    if (this.#sessions.get(input.sessionId)?.sessionKind === "internal") return "target_mismatch";
+    return this.#checkRuntimeTarget(input.sessionId, input.agentId, input.placementGeneration, input.runtime);
+  }
 
-    const agent = this.#agents.get(input.agentId);
+  checkSessionMessageDelivery(input: SessionMessageDeliveryRequest): InputRejectReason | undefined {
+    if (input.agentId !== input.runtime.agentId) return "target_mismatch";
+    return this.#checkRuntimeTarget(input.targetSessionId, input.agentId, input.placementGeneration, input.runtime);
+  }
+
+  #checkRuntimeTarget(
+    sessionId: string,
+    agentId: string,
+    placementGeneration: number,
+    runtime: EffectiveRuntimeSnapshot,
+  ): InputRejectReason | undefined {
+    const session = this.#sessions.get(sessionId);
+    if (session?.status !== "ready") return "session_not_ready";
+    if (session.agentId !== agentId) return "target_mismatch";
+    if (placementGeneration < session.placementGeneration) return "stale_generation";
+    if (placementGeneration > session.placementGeneration) return "session_not_ready";
+    if (this.#recoveries.has(sessionId)) return "session_recovery_required";
+
+    const agent = this.#agents.get(agentId);
     if (!agent) return "session_not_ready";
-    const hashes = computeRuntimeSnapshotHashes(input.runtime);
+    const hashes = computeRuntimeSnapshotHashes(runtime);
     if (
-      agent.provider !== input.runtime.provider ||
-      agent.workspaceId !== input.runtime.workspace.workspaceId ||
-      session.provider !== input.runtime.provider ||
-      session.workspaceId !== input.runtime.workspace.workspaceId
+      agent.provider !== runtime.provider ||
+      agent.workspaceId !== runtime.workspace.workspaceId ||
+      session.provider !== runtime.provider ||
+      session.workspaceId !== runtime.workspace.workspaceId
     ) {
       return "session_binding_conflict";
     }
     if (
-      input.runtime.revision.agent.sequence < agent.revisionSequence ||
-      input.runtime.revision.session.sequence < session.revisionSequence
+      runtime.revision.agent.sequence < agent.revisionSequence ||
+      runtime.revision.session.sequence < session.revisionSequence
     ) {
       return "stale_configuration";
     }
     if (
-      input.runtime.revision.agent.sequence > agent.revisionSequence ||
-      input.runtime.revision.session.sequence > session.revisionSequence
+      runtime.revision.agent.sequence > agent.revisionSequence ||
+      runtime.revision.session.sequence > session.revisionSequence
     ) {
       return "session_not_ready";
     }
     if (
-      input.runtime.revision.agent.id !== agent.revisionId ||
-      input.runtime.revision.session.id !== session.revisionId ||
+      runtime.revision.agent.id !== agent.revisionId ||
+      runtime.revision.session.id !== session.revisionId ||
       hashes.agentConfigHash !== agent.agentConfigHash ||
       hashes.sessionConfigHash !== session.sessionConfigHash ||
       hashes.effectiveSnapshotHash !== session.effectiveSnapshotHash
@@ -189,8 +207,8 @@ export class SessionReconciler {
       return "session_binding_conflict";
     }
     return this.#localPolicy?.validateDelivery
-      ? this.#localPolicy.validateDelivery(input.runtime)
-      : this.#localPolicy?.validate(input.runtime);
+      ? this.#localPolicy.validateDelivery(runtime)
+      : this.#localPolicy?.validate(runtime);
   }
 
   async withAgentLock<T>(agentId: string, task: () => Promise<T>): Promise<T> {
@@ -217,6 +235,13 @@ export class SessionReconciler {
       return this.#result(request, "rejected", "stale_generation");
     }
     if (existingSession && existingSession.agentId !== request.agentId) {
+      return this.#result(request, "rejected", "session_binding_conflict");
+    }
+    if (
+      request.desired === "ready" &&
+      existingSession &&
+      existingSession.sessionKind !== (request.sessionKind ?? "visible")
+    ) {
       return this.#result(request, "rejected", "session_binding_conflict");
     }
     const activity = this.#activities.get(request.sessionId);
@@ -320,7 +345,8 @@ export class SessionReconciler {
       !existingSession ||
       request.placementGeneration > existingSession.placementGeneration ||
       snapshot.revision.session.sequence > existingSession.revisionSequence ||
-      existingSession.status === "stopped";
+      existingSession.status === "stopped" ||
+      this.#preparation.requiresSessionPreparation?.(request, hashes) === true;
     if (shouldPrepareAgent) await this.#preparation.prepareAgent(snapshot, hashes);
     else await this.#preparation.verifyAgent?.(snapshot, hashes);
     const preparedSession = shouldPrepareSession ? await this.#preparation.prepareSession(request, hashes) : undefined;
@@ -343,6 +369,7 @@ export class SessionReconciler {
       revisionId: snapshot.revision.session.id,
       revisionSequence: snapshot.revision.session.sequence,
       sessionId: request.sessionId,
+      sessionKind: existingSession?.sessionKind ?? request.sessionKind ?? "visible",
       status: "ready",
       workspaceId: snapshot.workspace.workspaceId,
     });

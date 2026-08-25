@@ -46,6 +46,7 @@ export interface RuntimeBusinessContext {
   computerId: string;
   connectionId?: string;
   instanceId: string;
+  negotiatedCapabilities?: RuntimeNegotiatedCapabilities;
   signal: AbortSignal;
   userId: string;
 }
@@ -92,6 +93,7 @@ export class RuntimeSession {
   #connectionId?: string;
   #instanceId?: string;
   #protocolVersion?: RuntimeProtocolVersion;
+  #negotiatedCapabilities: RuntimeNegotiatedCapabilities = {};
 
   constructor(
     socket: WebSocket,
@@ -354,6 +356,7 @@ export class RuntimeSession {
             this.#options.providerReadiness.length > 0 ? [...this.#options.providerReadiness] : undefined,
           imCliReadiness: frame.imCliReadiness,
           imCliReadinessObservedAt: frame.imCliReadiness?.length ? this.#options.now().getTime() : undefined,
+          negotiatedCapabilities,
           socket: this.#socket,
           userId,
         },
@@ -363,6 +366,7 @@ export class RuntimeSession {
           this.#computerId = frame.computerId;
           this.#connectionId = connectionId;
           this.#instanceId = frame.instanceId;
+          this.#negotiatedCapabilities = negotiatedCapabilities ?? {};
           setRuntimeConnectionAttrs(
             this.#socket,
             runtimeAttrs({
@@ -483,6 +487,7 @@ export class RuntimeSession {
       computerId: this.#computerId,
       connectionId: this.#connectionId,
       instanceId: this.#instanceId,
+      negotiatedCapabilities: { ...this.#negotiatedCapabilities },
       signal: this.#abort.signal,
       userId: this.#userId,
     };

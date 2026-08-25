@@ -230,6 +230,7 @@ export class ImBindingService {
     const [row] = await this.#database
       .select({
         sessionId: sessions.id,
+        sessionKind: sessions.kind,
         sessionEndedAt: sessions.endedAt,
         binding: imBindings,
         boundAgentId: imBindings.agentId,
@@ -254,6 +255,7 @@ export class ImBindingService {
     });
     if (
       !row ||
+      row.sessionKind === "internal" ||
       row.boundAgentId !== request.agentId ||
       row.agentComputerId !== authenticatedComputerId ||
       row.agentStatus !== "active"

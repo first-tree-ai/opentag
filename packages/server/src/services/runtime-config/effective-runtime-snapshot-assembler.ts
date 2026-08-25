@@ -19,6 +19,10 @@ interface EffectiveRuntimeSnapshotAuthority {
   runtimeProvider: string;
   sessionEndedAt: Date | null;
   sessionId: string;
+  sessionKind: "channel" | "thread" | "internal";
+  sessionRuntimeModel: string | null;
+  sessionRuntimeReasoningEffort: string | null;
+  sessionRuntimeMaxDurationMs: number | null;
 }
 
 type AuthorityLoader = (sessionId: string) => Promise<EffectiveRuntimeSnapshotAuthority | undefined>;
@@ -57,6 +61,15 @@ export class EffectiveRuntimeSnapshotAssembler {
       throw new EffectiveRuntimeSnapshotAssemblerError("INVALID_STORED_CONFIG", { cause: parsedConfig.error });
     }
     const config = parsedConfig.data;
+    const model = authority.sessionKind === "internal" ? (authority.sessionRuntimeModel ?? config.model) : config.model;
+    const reasoningEffort =
+      authority.sessionKind === "internal"
+        ? (authority.sessionRuntimeReasoningEffort ?? config.reasoningEffort)
+        : config.reasoningEffort;
+    const maxDurationMs =
+      authority.sessionKind === "internal"
+        ? (authority.sessionRuntimeMaxDurationMs ?? config.maxDurationMs)
+        : config.maxDurationMs;
     const agentRevisionId = revisionId("agent", [
       authority.agentId,
       authority.runtimeProvider,
@@ -66,31 +79,48 @@ export class EffectiveRuntimeSnapshotAssembler {
       "empty_on_create",
       "agent",
     ]);
-    const sessionRevisionId = revisionId("session", [
-      authority.sessionId,
-      config.model,
-      config.reasoningEffort,
-      null,
-      providerPolicy.execution.approvalPolicy,
-      providerPolicy.execution.networkAccess,
-      config.maxDurationMs,
-    ]);
+    const sessionRevisionId = revisionId(
+      "session",
+      authority.sessionKind === "internal"
+        ? [
+            authority.sessionId,
+            authority.sessionKind,
+            model,
+            reasoningEffort,
+            null,
+            providerPolicy.execution.approvalPolicy,
+            providerPolicy.execution.networkAccess,
+            maxDurationMs,
+          ]
+        : [
+            authority.sessionId,
+            config.model,
+            config.reasoningEffort,
+            null,
+            providerPolicy.execution.approvalPolicy,
+            providerPolicy.execution.networkAccess,
+            config.maxDurationMs,
+          ],
+    );
     const snapshot = EffectiveRuntimeSnapshotSchema.safeParse({
       revision: {
         agent: { sequence: config.revision, id: agentRevisionId },
-        session: { sequence: config.revision, id: sessionRevisionId },
+        session: {
+          sequence: config.revision,
+          id: sessionRevisionId,
+        },
       },
       agentId: authority.agentId,
       provider: authority.runtimeProvider,
-      ...(config.model !== null ? { model: config.model } : {}),
-      ...(config.reasoningEffort !== null ? { reasoningEffort: config.reasoningEffort } : {}),
+      ...(model !== null ? { model } : {}),
+      ...(reasoningEffort !== null ? { reasoningEffort } : {}),
       instructions: {
         platform: OPENTAG_PLATFORM_INSTRUCTIONS,
         agent: config.instructions,
       },
       execution: providerPolicy.execution,
       workspace: { workspaceId: authority.agentId, mode: "empty_on_create", sharing: "agent" },
-      ...(config.maxDurationMs !== null ? { budget: { maxDurationMs: config.maxDurationMs } } : {}),
+      ...(maxDurationMs !== null ? { budget: { maxDurationMs } } : {}),
     });
     if (!snapshot.success) {
       throw new EffectiveRuntimeSnapshotAssemblerError("SNAPSHOT_INVALID", { cause: snapshot.error });
@@ -106,6 +136,10 @@ async function loadAuthority(
   const [row] = await database
     .select({
       sessionId: sessions.id,
+      sessionKind: sessions.kind,
+      sessionRuntimeModel: sessions.runtimeModel,
+      sessionRuntimeReasoningEffort: sessions.runtimeReasoningEffort,
+      sessionRuntimeMaxDurationMs: sessions.runtimeMaxDurationMs,
       sessionEndedAt: sessions.endedAt,
       imBindingStatus: imBindings.status,
       agentId: agents.id,
@@ -141,6 +175,10 @@ async function loadAuthority(
     runtimeProvider: row.runtimeProvider,
     sessionEndedAt: row.sessionEndedAt,
     sessionId: row.sessionId,
+    sessionKind: row.sessionKind,
+    sessionRuntimeModel: row.sessionRuntimeModel,
+    sessionRuntimeReasoningEffort: row.sessionRuntimeReasoningEffort,
+    sessionRuntimeMaxDurationMs: row.sessionRuntimeMaxDurationMs,
   };
 }
 

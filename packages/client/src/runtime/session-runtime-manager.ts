@@ -4,7 +4,7 @@ import type {
   RuntimeSnapshotHashes,
   SessionReconcileRequest,
 } from "@opentag/shared";
-import type { AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
+import type { AgentHostedTools, AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
 import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-registry.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
 import { renderManagedSystemPrompt } from "./managed-instructions.js";
@@ -17,6 +17,10 @@ interface ManagedSessionRuntime {
   readonly effectiveSnapshotHash: string;
   readonly providerId: string;
   readonly snapshot: EffectiveRuntimeSnapshot;
+  readonly sessionKind: "visible" | "internal";
+  readonly hostedTools?: AgentHostedTools;
+  readonly hostedToolsFingerprint?: string;
+  readonly placementGeneration: number;
   binding: LocalSessionBinding;
   eventSink?: AgentRuntimeEventSink;
   runtime?: AgentRuntime;
@@ -40,6 +44,12 @@ export interface SessionRuntimeManagerOptions {
   readonly ensureProviderReady: (providerId: string, signal?: AbortSignal) => Promise<void>;
   readonly providers: AgentRuntimeProviderRegistry;
   readonly providerEnvironmentPath: (sessionId: string) => string;
+  readonly hostedToolsForSession?: (binding: {
+    agentId: string;
+    sessionId: string;
+    placementGeneration: number;
+    sessionKind: "visible" | "internal";
+  }) => AgentHostedTools | undefined;
   readonly workspace: AgentWorkspaceManager;
 }
 
@@ -49,6 +59,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #ensureProviderReady: SessionRuntimeManagerOptions["ensureProviderReady"];
   readonly #providers: AgentRuntimeProviderRegistry;
   readonly #providerEnvironmentPath: SessionRuntimeManagerOptions["providerEnvironmentPath"];
+  readonly #hostedToolsForSession?: SessionRuntimeManagerOptions["hostedToolsForSession"];
   readonly #workspace: AgentWorkspaceManager;
   readonly #sessions = new Map<string, ManagedSessionRuntime>();
   readonly #prepares = new Set<Promise<SessionPreparationResult>>();
@@ -63,6 +74,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     this.#ensureProviderReady = options.ensureProviderReady;
     this.#providers = options.providers;
     this.#providerEnvironmentPath = options.providerEnvironmentPath;
+    this.#hostedToolsForSession = options.hostedToolsForSession;
     this.#workspace = options.workspace;
   }
 
@@ -80,6 +92,12 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
 
   verifyAgent(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void> {
     return this.#workspace.verifyAgent(snapshot, hashes);
+  }
+
+  requiresSessionPreparation(request: SessionReconcileRequest): boolean {
+    const current = this.#sessions.get(request.sessionId);
+    if (!current) return false;
+    return current.hostedToolsFingerprint !== this.#hostedTools(request).fingerprint;
   }
 
   prepareSession(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): Promise<SessionPreparationResult> {
@@ -102,12 +120,16 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     if (!this.#providers.registration(snapshot.provider)) {
       throw new Error(`Agent Runtime provider is not registered: ${snapshot.provider}`);
     }
+    const hostedTools = this.#hostedTools(request);
 
     const current = this.#sessions.get(request.sessionId);
     if (
       current &&
       current.effectiveSnapshotHash === hashes.effectiveSnapshotHash &&
-      current.providerId === snapshot.provider
+      current.providerId === snapshot.provider &&
+      current.placementGeneration === request.placementGeneration &&
+      current.sessionKind === (request.sessionKind ?? "visible") &&
+      current.hostedToolsFingerprint === hostedTools.fingerprint
     ) {
       current.binding = prepared.binding;
       if (current.runtime?.state.phase === "closed") current.runtime = undefined;
@@ -131,7 +153,11 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       binding: prepared.binding,
       cwd,
       effectiveSnapshotHash: hashes.effectiveSnapshotHash,
+      hostedTools: hostedTools.tools,
+      hostedToolsFingerprint: hostedTools.fingerprint,
       providerId: snapshot.provider,
+      sessionKind: request.sessionKind ?? "visible",
+      placementGeneration: request.placementGeneration,
       snapshot,
     });
     return prepared;
@@ -179,10 +205,13 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     };
     const common = {
       eventSink,
+      hostedTools: managed.hostedTools,
       systemPrompt: renderManagedSystemPrompt(managed.snapshot),
       workspace: {
         cwd: managed.cwd,
-        environment: { OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId) },
+        ...(managed.sessionKind === "visible"
+          ? { environment: { OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId) } }
+          : {}),
         writableRoots: [managed.cwd],
       },
       policy: provider.policy(managed.snapshot),
@@ -194,9 +223,13 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     let runtime: AgentRuntime | undefined;
     try {
       try {
-        runtime = managed.binding.runtimeBinding
-          ? await provider.factory.resume({ ...common, binding: managed.binding.runtimeBinding })
-          : await provider.factory.create(common);
+        const runtimeBinding = managed.binding.runtimeBinding;
+        const replaceBinding =
+          runtimeBinding && provider.requiresBindingReplacement?.(runtimeBinding, managed.hostedTools) === true;
+        runtime =
+          runtimeBinding && !replaceBinding
+            ? await provider.factory.resume({ ...common, binding: runtimeBinding })
+            : await provider.factory.create(common);
       } catch (error) {
         throw new ClientRuntimeProviderStartError(managed.providerId, { cause: error });
       }
@@ -232,7 +265,21 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     }
   }
 
+  #hostedTools(request: SessionReconcileRequest): {
+    tools: AgentHostedTools | undefined;
+    fingerprint: string | undefined;
+  } {
+    const tools = this.#hostedToolsForSession?.({
+      agentId: request.agentId,
+      sessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      sessionKind: request.sessionKind ?? "visible",
+    });
+    return { tools, fingerprint: tools ? JSON.stringify(tools.definitions) : undefined };
+  }
+
   async stopSession(sessionId: string, placementGeneration: number): Promise<void> {
+    const sessionKind = this.#sessions.get(sessionId)?.sessionKind;
     try {
       const current = this.#sessions.get(sessionId);
       if (current) {
@@ -241,7 +288,9 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       }
       await this.#workspace.stopSession(sessionId, placementGeneration);
     } finally {
-      await this.#cleanupProviderEnvironment?.(sessionId);
+      if (sessionKind !== "internal") {
+        await this.#cleanupProviderEnvironment?.(sessionId);
+      }
     }
   }
 

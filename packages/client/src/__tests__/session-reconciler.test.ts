@@ -3,6 +3,7 @@ import type {
   DirectImMessageDeliveryRequest,
   EffectiveRuntimeSnapshot,
   InputRejectReason,
+  SessionMessageDeliveryRequest,
   SessionReconcileRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
@@ -26,6 +27,88 @@ describe("SessionReconciler", () => {
         runtime: withSessionRevision(delivery.runtime, 2, "session-revision-2"),
       }),
     ).toBe("session_not_ready");
+  });
+
+  it("keeps internal Session admission separate from Direct IM delivery", async () => {
+    const computerId = randomUUID();
+    const sessionId = randomUUID();
+    const agentId = randomUUID();
+    const reconciler = new SessionReconciler({ computerId });
+    const request = {
+      ...reconcileRequest(computerId, sessionId, snapshot(agentId, agentId)),
+      sessionKind: "internal" as const,
+    };
+    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    expect(reconciler.checkDelivery(directDelivery(request))).toBe("target_mismatch");
+    const runtime = request.runtime;
+    if (!runtime) throw new Error("Expected a ready Runtime snapshot");
+    const collaboration: SessionMessageDeliveryRequest = {
+      type: "session:message:deliver",
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      sourceSessionId: randomUUID(),
+      targetSessionId: sessionId,
+      agentId,
+      placementGeneration: 1,
+      content: { kind: "text", text: "work" },
+      runtime,
+    };
+    expect(reconciler.checkSessionMessageDelivery(collaboration)).toBeUndefined();
+    expect(reconciler.getSession(sessionId)?.sessionKind).toBe("internal");
+  });
+
+  it("keeps Session kind immutable across legacy and collaboration reconcile requests", async () => {
+    const computerId = randomUUID();
+    const internalId = randomUUID();
+    const agentId = randomUUID();
+    const reconciler = new SessionReconciler({ computerId });
+    const internal = {
+      ...reconcileRequest(computerId, internalId, snapshot(agentId, agentId)),
+      sessionKind: "internal" as const,
+    };
+    await expect(reconciler.reconcile(internal)).resolves.toMatchObject({ status: "ready" });
+
+    await expect(
+      reconciler.reconcile({ ...internal, requestId: randomUUID(), sessionKind: undefined }),
+    ).resolves.toMatchObject({ status: "rejected", reason: "session_binding_conflict" });
+    expect(reconciler.getSession(internalId)?.sessionKind).toBe("internal");
+    expect(reconciler.checkDelivery(directDelivery(internal))).toBe("target_mismatch");
+
+    const visibleId = randomUUID();
+    const visible = reconcileRequest(computerId, visibleId, snapshot(agentId, agentId));
+    await expect(reconciler.reconcile(visible)).resolves.toMatchObject({ status: "ready" });
+    await expect(
+      reconciler.reconcile({ ...visible, requestId: randomUUID(), sessionKind: "internal" }),
+    ).resolves.toMatchObject({ status: "rejected", reason: "session_binding_conflict" });
+    expect(reconciler.getSession(visibleId)?.sessionKind).toBe("visible");
+  });
+
+  it("accepts an idle internal Session configuration update when its sequence advances", async () => {
+    const computerId = randomUUID();
+    const sessionId = randomUUID();
+    const agentId = randomUUID();
+    const reconciler = new SessionReconciler({ computerId });
+    const initialRuntime = snapshot(agentId, agentId);
+    const initial = {
+      ...reconcileRequest(computerId, sessionId, initialRuntime),
+      sessionKind: "internal" as const,
+    };
+    await expect(reconciler.reconcile(initial)).resolves.toMatchObject({ status: "ready" });
+
+    const updatedRuntime: EffectiveRuntimeSnapshot = {
+      ...initialRuntime,
+      model: "gpt-5.1",
+      reasoningEffort: "medium",
+      budget: { maxDurationMs: 45_000 },
+      revision: {
+        agent: { sequence: 2, id: initialRuntime.revision.agent.id },
+        session: { sequence: 2, id: "session-revision-2" },
+      },
+    };
+    await expect(
+      reconciler.reconcile({ ...initial, requestId: randomUUID(), runtime: updatedRuntime }),
+    ).resolves.toMatchObject({ status: "ready" });
+    expect(reconciler.getSession(sessionId)).toMatchObject({ revisionSequence: 2, sessionKind: "internal" });
   });
 
   it("B-08/B-13 coalesces identical requests and same-agent bootstrap", async () => {

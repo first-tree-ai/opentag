@@ -3,6 +3,10 @@ import {
   type ImMessageDeliveryResult,
   ImMessageDeliveryResultSchema,
   ServerRuntimeBusinessFrameSchema,
+  type SessionCollaborationCommandResult,
+  type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryResult,
+  SessionMessageDeliveryResultSchema,
   type SessionReconcileRequest,
   type SessionReconcileResult,
   SessionReconcileResultSchema,
@@ -21,6 +25,10 @@ export interface ClientRuntimeOptions {
   logger?: ClientLogger;
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
   handleTurnReportResult?(result: TurnReportResult): Promise<void> | void;
+  handleSessionCollaborationResult?(result: SessionCollaborationCommandResult): Promise<void> | void;
+  handleSessionMessageDelivery?(
+    request: SessionMessageDeliveryRequest,
+  ): Promise<SessionMessageDeliveryResult> | SessionMessageDeliveryResult;
   onReconcileResultSendFailed?(
     request: SessionReconcileRequest,
     result: SessionReconcileResult,
@@ -112,6 +120,25 @@ export class ClientRuntime {
       if (result.status === "accepted") this.#logger.debug(resultFields, "IM delivery accepted");
       else this.#logger.warn(resultFields, "IM delivery rejected");
       if (result.status === "accepted") await decision.onAcceptedSent?.();
+      return;
+    }
+    if (frame.type === "session:message:deliver") {
+      const result = SessionMessageDeliveryResultSchema.parse(
+        (await this.#options.handleSessionMessageDelivery?.(frame)) ?? {
+          type: "session:message:deliver:result",
+          requestId: frame.requestId,
+          messageId: frame.messageId,
+          targetSessionId: frame.targetSessionId,
+          placementGeneration: frame.placementGeneration,
+          status: "rejected",
+          reason: "provider_unavailable",
+        },
+      );
+      await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
+      return;
+    }
+    if (frame.type === "session:collaboration:result") {
+      await this.#options.handleSessionCollaborationResult?.(frame);
       return;
     }
     if (frame.type === "im:credential:result") return;

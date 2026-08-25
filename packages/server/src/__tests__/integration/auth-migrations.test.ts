@@ -659,7 +659,8 @@ describe("authentication persistence", () => {
       });
       const issuer = new ConnectCodeService(fixture.database);
       await expect(issuer.issueForTeamAdmin(member.id, fixture.bootstrap.teamId)).rejects.toMatchObject({
-        code: "MEMBERSHIP_FORBIDDEN",
+        code: "RESOURCE_NOT_FOUND",
+        statusCode: 404,
       });
       await expect(issuer.issueForTeamAdmin(fixture.bootstrap.userId, fixture.bootstrap.teamId)).resolves.toMatchObject(
         {

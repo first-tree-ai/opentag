@@ -1,8 +1,9 @@
 import type { Computer, ComputerRegisterFrame, ListComputersResponse, MeResponse } from "@opentag/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { memberships, teams, workspaceComputerCredentials, workspaceComputers } from "../../db/schema/index.js";
+import { teams, workspaceComputerCredentials, workspaceComputers } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
+import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 import type { ComputerAuthContext } from "./machine-auth-service.js";
 import {
   type ProviderReadinessSource,
@@ -18,37 +19,22 @@ export interface ComputerServiceOptions {
   now?: () => Date;
   presenceTimeoutMs?: number;
   providerReadiness?: ProviderReadinessSource;
+  workspaceAdmins?: WorkspaceAdminAccess;
 }
 
 export class ComputerService {
-  readonly #auth: ActiveUserResolver;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
   readonly #presenceTimeoutMs: number;
   readonly #providerReadiness?: ProviderReadinessSource;
+  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
-  constructor(database: DatabaseClient, auth: ActiveUserResolver, options: ComputerServiceOptions = {}) {
+  constructor(database: DatabaseClient, _auth: ActiveUserResolver, options: ComputerServiceOptions = {}) {
     this.#database = database;
-    this.#auth = auth;
     this.#now = options.now ?? (() => new Date());
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
     this.#providerReadiness = options.providerReadiness;
-  }
-
-  /**
-   * A Computer is only meaningful inside a Team. A session can legitimately hold no membership while the
-   * user has yet to create or join one, so membership is asserted here instead of inferred from the session.
-   */
-  async #requireTeamMember(userId: string): Promise<void> {
-    const me = await this.#auth.getActiveUserById(userId);
-    if (me.memberships.length === 0) {
-      throw new AuthServiceError(
-        "AUTH_MEMBERSHIP_REQUIRED",
-        "deterministic",
-        "An active team membership is required",
-        403,
-      );
-    }
+    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
   async register(context: ComputerAuthContext, frame: ComputerRegisterFrame): Promise<void> {
@@ -124,16 +110,18 @@ export class ComputerService {
   }
 
   async listForUser(userId: string, includeProviderReadiness = false): Promise<ListComputersResponse> {
-    await this.#requireTeamMember(userId);
+    await this.#workspaceAdmins.requireAnyAdmin(userId);
+    const workspaces = await this.#workspaceAdmins.listActiveAdminWorkspaces(userId);
     const rows = await this.#database
       .select({ enrollment: workspaceComputers })
       .from(workspaceComputers)
-      .innerJoin(
-        memberships,
+      .where(
         and(
-          eq(memberships.teamId, workspaceComputers.workspaceId),
-          eq(memberships.userId, userId),
-          eq(memberships.status, "active"),
+          inArray(
+            workspaceComputers.workspaceId,
+            workspaces.map(({ teamId }) => teamId),
+          ),
+          isNull(workspaceComputers.revokedAt),
         ),
       );
     const observedAt = this.#now();

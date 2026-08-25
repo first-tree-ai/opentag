@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   type CreateTeamRequest,
   CreateTeamRequestSchema,
@@ -25,6 +24,7 @@ import {
   projectComputerImCliReadiness,
   projectComputerProviderReadiness,
 } from "../computers/provider-readiness.js";
+import { WORKSPACE_ADMIN_LIMIT, WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
@@ -38,7 +38,7 @@ type QueryExecutor = Pick<DatabaseClient, "select">;
  * which frees a slot while the Team and its canonical name persist. Bounding self-serve creation itself
  * needs a durable record of authorship, which the schema does not carry.
  */
-export const TEAM_MEMBERSHIP_LIMIT = 50;
+export const TEAM_MEMBERSHIP_LIMIT = WORKSPACE_ADMIN_LIMIT;
 
 function isTeamNameConflict(error: unknown): boolean {
   let current = error;
@@ -65,6 +65,7 @@ export class TeamMembershipService {
   readonly #now: () => Date;
   readonly #presenceTimeoutMs: number;
   readonly #providerReadiness?: ProviderReadinessSource;
+  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
   constructor(
     database: DatabaseClient,
@@ -74,6 +75,7 @@ export class TeamMembershipService {
       now?: () => Date;
       presenceTimeoutMs?: number;
       providerReadiness?: ProviderReadinessSource;
+      workspaceAdmins?: WorkspaceAdminAccess;
     } = {},
   ) {
     this.#database = database;
@@ -82,6 +84,7 @@ export class TeamMembershipService {
     this.#now = options.now ?? (() => new Date());
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
     this.#providerReadiness = options.providerReadiness;
+    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
   async requireActiveMembership(
@@ -90,34 +93,13 @@ export class TeamMembershipService {
     teamId: string,
     requiredRole?: "admin",
   ): Promise<"admin" | "member"> {
-    const [membership] = await executor
-      .select({ role: memberships.role })
-      .from(memberships)
-      .innerJoin(users, eq(users.id, memberships.userId))
-      .where(
-        and(
-          eq(memberships.teamId, teamId),
-          eq(memberships.userId, userId),
-          eq(memberships.status, "active"),
-          isNull(users.suspendedAt),
-        ),
-      )
-      .limit(1);
-    if (!membership) throw this.#notFound();
-    if (requiredRole === "admin" && membership.role !== "admin") {
-      throw new AuthServiceError("MEMBERSHIP_FORBIDDEN", "deterministic", "Team admin access is required", 403);
-    }
-    return membership.role;
+    void requiredRole;
+    await this.#workspaceAdmins.requireAdmin(userId, teamId, executor);
+    return "admin";
   }
 
   async lockTeamForMutation(transaction: DatabaseTransaction, teamId: string): Promise<void> {
-    const [team] = await transaction
-      .select({ id: teams.id })
-      .from(teams)
-      .where(eq(teams.id, teamId))
-      .limit(1)
-      .for("update");
-    if (!team) throw new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The Team was not found", 404);
+    await this.#workspaceAdmins.lockWorkspace(transaction, teamId);
   }
 
   async requireActiveMembershipForMutation(
@@ -126,8 +108,9 @@ export class TeamMembershipService {
     teamId: string,
     requiredRole?: "admin",
   ): Promise<"admin" | "member"> {
-    await this.lockTeamForMutation(transaction, teamId);
-    return (await this.#requireLockedActiveMembership(transaction, userId, teamId, requiredRole)).role;
+    void requiredRole;
+    await this.#workspaceAdmins.requireAdminForMutation(transaction, userId, teamId);
+    return "admin";
   }
 
   async joinWithInvitationInTransaction(
@@ -180,64 +163,17 @@ export class TeamMembershipService {
    * transaction is a no-op.
    */
   async lockUserForMembershipWrite(transaction: DatabaseTransaction, userId: string): Promise<void> {
-    await transaction.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1).for("update");
+    await this.#workspaceAdmins.lockAccountForGrantWrite(transaction, userId);
     await this.#afterMembershipUserLocked?.();
-  }
-
-  /**
-   * Establishes the personal Team for a solo OAuth completion. The caller must
-   * already hold the user row lock so concurrent callbacks cannot create two
-   * Teams. Existing active membership always wins and is left unchanged.
-   */
-  async establishPersonalTeamForLockedUserInTransaction(
-    transaction: DatabaseTransaction,
-    user: { readonly displayName: string; readonly id: string },
-  ): Promise<string | undefined> {
-    const [activeMembership] = await transaction
-      .select({ teamId: memberships.teamId })
-      .from(memberships)
-      .where(and(eq(memberships.userId, user.id), eq(memberships.status, "active")))
-      .limit(1);
-    if (activeMembership) return undefined;
-
-    const now = this.#now();
-    const teamId = randomUUID();
-    await transaction.insert(teams).values({
-      id: teamId,
-      name: `team-${teamId}`,
-      displayName: `${user.displayName}'s Workspace`.slice(0, 120),
-      createdAt: now,
-      updatedAt: now,
-    });
-    await transaction.insert(memberships).values({
-      teamId,
-      userId: user.id,
-      role: "admin",
-      status: "active",
-      createdAt: now,
-      updatedAt: now,
-    });
-    return teamId;
   }
 
   /** Refuses the write that would take the user past TEAM_MEMBERSHIP_LIMIT; the caller holds the user lock. */
   async #requireMembershipHeadroom(transaction: DatabaseTransaction, userId: string): Promise<void> {
-    const held = await transaction
-      .select({ teamId: memberships.teamId })
-      .from(memberships)
-      .where(and(eq(memberships.userId, userId), eq(memberships.status, "active")));
-    if (held.length >= TEAM_MEMBERSHIP_LIMIT) {
-      throw new AuthServiceError(
-        "TEAM_LIMIT_REACHED",
-        "deterministic",
-        `A user can hold at most ${TEAM_MEMBERSHIP_LIMIT} active Team memberships`,
-        409,
-      );
-    }
+    await this.#workspaceAdmins.requireWorkspaceHeadroom(transaction, userId);
   }
 
   async bootstrapAdminInTransaction(transaction: DatabaseTransaction, userId: string, teamId: string): Promise<void> {
-    await this.lockTeamForMutation(transaction, teamId);
+    await this.#workspaceAdmins.lockWorkspace(transaction, teamId);
     const [existing] = await transaction
       .select({ userId: memberships.userId })
       .from(memberships)
@@ -390,11 +326,16 @@ export class TeamMembershipService {
   ): Promise<TeamMemberAdminConfig> {
     const parsedRole = MembershipRoleSchema.parse(role);
     return this.#database.transaction(async (transaction) => {
+      if (parsedRole === "admin") await this.lockUserForMembershipWrite(transaction, userId);
       await this.requireActiveMembershipForMutation(transaction, callerUserId, teamId, "admin");
-      const activeAdmins = await this.#lockActiveAdmins(transaction, teamId);
       const target = await this.#lockMembership(transaction, teamId, userId);
       if (target.status !== "active") throw this.#notFound();
-      if (target.role === "admin" && parsedRole === "member") this.#requireAnotherAdmin(activeAdmins, userId);
+      if (target.role === "member" && parsedRole === "admin") {
+        await this.#requireMembershipHeadroom(transaction, userId);
+      }
+      if (target.role === "admin" && parsedRole === "member") {
+        await this.#workspaceAdmins.requireAnotherAdmin(transaction, teamId, userId);
+      }
       const now = this.#now();
       const [updated] = await transaction
         .update(memberships)
@@ -409,10 +350,9 @@ export class TeamMembershipService {
   async leave(callerUserId: string, teamId: string): Promise<void> {
     await this.#database.transaction(async (transaction) => {
       await this.requireActiveMembershipForMutation(transaction, callerUserId, teamId);
-      const activeAdmins = await this.#lockActiveAdmins(transaction, teamId);
       const target = await this.#lockMembership(transaction, teamId, callerUserId);
       if (target.status !== "active") throw this.#notFound();
-      await this.#guardDeparture(transaction, teamId, callerUserId, target.role, activeAdmins);
+      await this.#guardDeparture(transaction, teamId, callerUserId, target.role);
       await transaction
         .update(memberships)
         .set({ status: "left", updatedAt: this.#now() })
@@ -423,10 +363,9 @@ export class TeamMembershipService {
   async remove(callerUserId: string, teamId: string, userId: string): Promise<void> {
     await this.#database.transaction(async (transaction) => {
       await this.requireActiveMembershipForMutation(transaction, callerUserId, teamId, "admin");
-      const activeAdmins = await this.#lockActiveAdmins(transaction, teamId);
       const target = await this.#lockMembership(transaction, teamId, userId);
       if (target.status !== "active") throw this.#notFound();
-      await this.#guardDeparture(transaction, teamId, userId, target.role, activeAdmins);
+      await this.#guardDeparture(transaction, teamId, userId, target.role);
       await transaction
         .update(memberships)
         .set({ status: "removed", updatedAt: this.#now() })
@@ -454,10 +393,7 @@ export class TeamMembershipService {
     });
   }
 
-  /**
-   * Lists every Computer owned by an active, non-suspended Team member.
-   * Agent bindings decorate the Computer projection; they do not determine membership in it.
-   */
+  /** Lists active Workspace enrollments; the enrolling Account is audit metadata, not authority. */
   async listComputers(
     callerUserId: string,
     teamId: string,
@@ -607,67 +543,13 @@ export class TeamMembershipService {
     return target;
   }
 
-  async #requireLockedActiveMembership(
-    transaction: DatabaseTransaction,
-    userId: string,
-    teamId: string,
-    requiredRole?: "admin",
-  ) {
-    const membership = await this.#lockMembership(transaction, teamId, userId);
-    const [user] = await transaction
-      .select({ suspendedAt: users.suspendedAt })
-      .from(users)
-      .where(eq(users.id, userId))
-      .limit(1);
-    if (membership.status !== "active" || !user || user.suspendedAt) throw this.#notFound();
-    if (requiredRole === "admin" && membership.role !== "admin") {
-      throw new AuthServiceError("MEMBERSHIP_FORBIDDEN", "deterministic", "Team admin access is required", 403);
-    }
-    return membership;
-  }
-
   async #guardDeparture(
     transaction: DatabaseTransaction,
     teamId: string,
     userId: string,
     role: "admin" | "member",
-    activeAdmins: string[],
   ): Promise<void> {
-    const [activeAgent] = await transaction
-      .select({ id: agents.id })
-      .from(agents)
-      .where(and(eq(agents.teamId, teamId), eq(agents.managerUserId, userId), ne(agents.status, "deleted")))
-      .limit(1);
-    if (activeAgent) {
-      throw new AuthServiceError(
-        "MEMBERSHIP_ACTIVE_AGENTS",
-        "deterministic",
-        "Delete the member's active Agents before removing the Team membership",
-        409,
-      );
-    }
-    if (role === "admin") this.#requireAnotherAdmin(activeAdmins, userId);
-  }
-
-  async #lockActiveAdmins(transaction: DatabaseTransaction, teamId: string): Promise<string[]> {
-    const admins = await transaction
-      .select({ userId: memberships.userId })
-      .from(memberships)
-      .where(and(eq(memberships.teamId, teamId), eq(memberships.status, "active"), eq(memberships.role, "admin")))
-      .orderBy(asc(memberships.userId))
-      .for("update");
-    return admins.map((admin) => admin.userId);
-  }
-
-  #requireAnotherAdmin(activeAdmins: string[], excludedUserId: string): void {
-    if (!activeAdmins.some((userId) => userId !== excludedUserId)) {
-      throw new AuthServiceError(
-        "MEMBERSHIP_LAST_ADMIN",
-        "deterministic",
-        "The last active Team admin cannot leave, be removed, or be demoted",
-        409,
-      );
-    }
+    if (role === "admin") await this.#workspaceAdmins.requireAnotherAdmin(transaction, teamId, userId);
   }
 
   async #memberProjection(

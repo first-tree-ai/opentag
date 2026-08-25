@@ -509,6 +509,31 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
+  it("replays one Workspace creation intent across different Admins", async () => {
+    const value = await fixture();
+    try {
+      const otherAdmin = await createUser(
+        value.database,
+        value.bootstrap.teamId,
+        "creation-intent-admin@example.com",
+        "admin",
+      );
+      const computer = await createComputer(value.database, otherAdmin.id, value.bootstrap.teamId);
+      const input = {
+        ...createInput(computer.id),
+        creationIntentId: "d2af68d9-9017-4584-a29d-c4c00f5e5b6d",
+      };
+      const [left, right] = await Promise.all([
+        value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, input),
+        value.service.createForTeam(otherAdmin.id, value.bootstrap.teamId, input),
+      ]);
+      expect(right.id).toBe(left.id);
+      expect(await value.database.select({ id: agents.id }).from(agents)).toHaveLength(1);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("replays the original intent after the Agent changes", async () => {
     const value = await fixture();
     try {
@@ -649,7 +674,7 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
-  it("evaluates collection membership and Agent rows in one authorization statement", async () => {
+  it("linearizes a collection read when Admin authority is valid before a later revocation", async () => {
     const value = await fixture();
     const blocker = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
     const revoker = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
@@ -693,10 +718,7 @@ describe("Agent persistence and authorization", () => {
       releaseTableLock?.();
       await blockingTransaction;
 
-      await expect(listOutcome).resolves.toMatchObject({
-        status: "rejected",
-        error: { code: "RESOURCE_NOT_FOUND", statusCode: 404 },
-      });
+      await expect(listOutcome).resolves.toMatchObject({ status: "fulfilled" });
     } finally {
       releaseTableLock?.();
       await Promise.all([value.sql.end(), blocker.end(), revoker.end()]);
@@ -716,7 +738,7 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
-  it("allows Team reads, restricts management, and hides resources across Teams", async () => {
+  it("allows all Workspace Admins, rejects legacy members, and hides resources across Workspaces", async () => {
     const value = await fixture();
     try {
       const manager = await createUser(value.database, value.bootstrap.teamId, "manager@example.com", "admin");
@@ -733,22 +755,22 @@ describe("Agent persistence and authorization", () => {
         .where(and(eq(memberships.teamId, value.bootstrap.teamId), eq(memberships.userId, manager.id)));
       await expect(
         value.service.createForTeam(manager.id, value.bootstrap.teamId, createInput(managerComputer.id, "forbidden")),
-      ).rejects.toMatchObject({ code: "MEMBERSHIP_FORBIDDEN", statusCode: 403 });
+      ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
 
-      await expect(value.service.getById(member.id, created.id)).resolves.toMatchObject({
-        id: created.id,
-        viewerCapabilities: { canManage: false },
+      await expect(value.service.getById(member.id, created.id)).rejects.toMatchObject({
+        code: "RESOURCE_NOT_FOUND",
+        statusCode: 404,
       });
       await expect(value.service.getConfigById(member.id, created.id)).rejects.toMatchObject({
-        code: "AGENT_FORBIDDEN",
-        statusCode: 403,
+        code: "RESOURCE_NOT_FOUND",
+        statusCode: 404,
       });
       await expect(
         value.service.updateById(member.id, created.id, { displayName: "No", expectedRevision: 1 }),
-      ).rejects.toMatchObject({ code: "AGENT_FORBIDDEN", statusCode: 403 });
+      ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
       await expect(
         value.service.updateById(manager.id, created.id, { displayName: "Manager cannot write", expectedRevision: 1 }),
-      ).rejects.toMatchObject({ code: "AGENT_FORBIDDEN", statusCode: 403 });
+      ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
       await expect(
         value.service.updateById(value.bootstrap.userId, created.id, {
           displayName: "Admin Updated",
@@ -786,8 +808,8 @@ describe("Agent persistence and authorization", () => {
       ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
 
       await expect(value.service.deleteById(member.id, created.id)).rejects.toMatchObject({
-        code: "AGENT_FORBIDDEN",
-        statusCode: 403,
+        code: "RESOURCE_NOT_FOUND",
+        statusCode: 404,
       });
       await expect(value.service.deleteById(value.bootstrap.userId, created.id)).rejects.toMatchObject({
         code: "AGENT_LIFECYCLE_CONFLICT",
@@ -907,8 +929,8 @@ describe("Agent persistence and authorization", () => {
         statusCode: 409,
       });
       await expect(value.service.suspendById(member.id, created.id)).rejects.toMatchObject({
-        code: "AGENT_FORBIDDEN",
-        statusCode: 403,
+        code: "RESOURCE_NOT_FOUND",
+        statusCode: 404,
       });
       const suspended = await value.service.suspendById(value.bootstrap.userId, created.id);
       expect(suspended).toMatchObject({ status: "suspended", revision: 2 });
@@ -916,7 +938,10 @@ describe("Agent persistence and authorization", () => {
         code: "AGENT_LIFECYCLE_CONFLICT",
         statusCode: 409,
       });
-      await expect(value.service.getById(member.id, created.id)).resolves.toMatchObject({ status: "suspended" });
+      await expect(value.service.getById(member.id, created.id)).rejects.toMatchObject({
+        code: "RESOURCE_NOT_FOUND",
+        statusCode: 404,
+      });
       await expect(
         value.service.updateById(value.bootstrap.userId, created.id, {
           displayName: "Suspended but configurable",
@@ -975,7 +1000,7 @@ describe("Agent persistence and authorization", () => {
       await expect(suspend).resolves.toMatchObject({ status: "suspended" });
       await expect(downgrade).resolves.toMatchObject({ role: "member" });
       await expect(lifecycle.reactivateById(secondAdmin.id, created.id)).rejects.toMatchObject({
-        code: "AGENT_FORBIDDEN",
+        code: "RESOURCE_NOT_FOUND",
       });
     } finally {
       releaseMutation.resolve();

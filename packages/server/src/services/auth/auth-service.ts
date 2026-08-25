@@ -8,7 +8,8 @@ import {
 } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { connectCodes, memberships, teams, users } from "../../db/schema/index.js";
+import { connectCodes, users } from "../../db/schema/index.js";
+import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 import { AuthServiceError, invalidCredential } from "./errors.js";
 import { hashSecret } from "./security.js";
 import type { AuthTokenProvider } from "./tokens.js";
@@ -42,11 +43,17 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
   readonly #authTokens: AuthTokenProvider;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
+  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
-  constructor(database: DatabaseClient, authTokens: AuthTokenProvider, options: AuthServiceOptions = {}) {
+  constructor(
+    database: DatabaseClient,
+    authTokens: AuthTokenProvider,
+    options: AuthServiceOptions & { workspaceAdmins?: WorkspaceAdminAccess } = {},
+  ) {
     this.#database = database;
     this.#authTokens = authTokens;
     this.#now = options.now ?? (() => new Date());
+    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
   async exchangeConnectCode(code: string, expectedUserId?: string): Promise<ConnectCodeExchangeResponse> {
@@ -85,19 +92,7 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
         );
       }
 
-      const [membership] = await transaction
-        .select({ teamId: memberships.teamId })
-        .from(memberships)
-        .where(and(eq(memberships.userId, user.id), eq(memberships.status, "active")))
-        .limit(1);
-      if (!membership) {
-        throw new AuthServiceError(
-          "AUTH_MEMBERSHIP_REQUIRED",
-          "deterministic",
-          "An active team membership is required",
-          403,
-        );
-      }
+      await this.#workspaceAdmins.requireAnyAdmin(user.id, transaction);
 
       const tokenPair = await this.#authTokens.issuePairForUser(user.id);
       const [consumed] = await transaction
@@ -157,17 +152,7 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
      * step, so the user must be able to authenticate before any Team exists. Team-scoped authority is
      * always re-checked per resource, never inferred from holding a session.
      */
-    const activeMemberships = await this.#database
-      .select({
-        role: memberships.role,
-        teamDisplayName: teams.displayName,
-        teamId: teams.id,
-        teamName: teams.name,
-        setupCompletedAt: teams.setupCompletedAt,
-      })
-      .from(memberships)
-      .innerJoin(teams, eq(memberships.teamId, teams.id))
-      .where(and(eq(memberships.userId, userId), eq(memberships.status, "active")));
+    const activeMemberships = await this.#workspaceAdmins.listActiveAdminWorkspaces(userId);
 
     return {
       user: { id: user.id, email: user.email, displayName: user.displayName },

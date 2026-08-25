@@ -5,13 +5,11 @@ import type { DatabaseClient } from "../../db/client.js";
 import {
   computerConnectCodes,
   computers,
-  memberships,
-  teams,
-  users,
   workspaceComputerCredentials,
   workspaceComputers,
 } from "../../db/schema/index.js";
 import { AuthServiceError, generateSecret, hashSecret } from "../auth/index.js";
+import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 
 export const COMPUTER_CONNECT_CODE_TTL_SECONDS = 15 * 60;
 const COMPUTER_CONNECT_CODE_PREFIX = "otcc_";
@@ -58,41 +56,26 @@ export interface ComputerAuthVerifier {
 export interface MachineAuthServiceOptions {
   now?: () => Date;
   onCredentialRotated?: (workspaceComputerId: string) => Promise<void> | void;
+  workspaceAdmins?: WorkspaceAdminAccess;
 }
 
 export class MachineAuthService implements ComputerAuthVerifier, MachineConnectCodeIssuer {
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
   readonly #onCredentialRotated?: MachineAuthServiceOptions["onCredentialRotated"];
+  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
   constructor(database: DatabaseClient, options: MachineAuthServiceOptions = {}) {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
     this.#onCredentialRotated = options.onCredentialRotated;
+    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
   async issueForTeamAdmin(accountId: string, workspaceId: string): Promise<IssuedComputerConnectCode> {
     const now = this.#now();
     return this.#database.transaction(async (transaction) => {
-      const [workspace] = await transaction
-        .select({ id: teams.id })
-        .from(teams)
-        .where(eq(teams.id, workspaceId))
-        .limit(1)
-        .for("update");
-      if (!workspace) throw notFound();
-      const [authority] = await transaction
-        .select({ role: memberships.role, suspendedAt: users.suspendedAt })
-        .from(memberships)
-        .innerJoin(users, eq(users.id, memberships.userId))
-        .where(
-          and(eq(memberships.teamId, workspaceId), eq(memberships.userId, accountId), eq(memberships.status, "active")),
-        )
-        .limit(1);
-      if (!authority || authority.suspendedAt) throw notFound();
-      if (authority.role !== "admin") {
-        throw new AuthServiceError("MEMBERSHIP_FORBIDDEN", "deterministic", "Team admin access is required", 403);
-      }
+      await this.#workspaceAdmins.requireAdminForMutation(transaction, accountId, workspaceId);
       const code = `${COMPUTER_CONNECT_CODE_PREFIX}${generateSecret(24)}`;
       const expiresIn = COMPUTER_CONNECT_CODE_TTL_SECONDS;
       const expiresAt = new Date(now.getTime() + expiresIn * 1000);
@@ -117,13 +100,11 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         .where(eq(computerConnectCodes.tokenHash, tokenHash))
         .limit(1);
       if (!candidate) throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
-      const [workspace] = await transaction
-        .select({ id: teams.id })
-        .from(teams)
-        .where(eq(teams.id, candidate.workspaceId))
-        .limit(1)
-        .for("update");
-      if (!workspace) throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+      try {
+        await this.#workspaceAdmins.lockWorkspace(transaction, candidate.workspaceId);
+      } catch (error) {
+        rethrowMissingWorkspaceAsInvalidCode(error);
+      }
       const [connectCode] = await transaction
         .select()
         .from(computerConnectCodes)
@@ -139,14 +120,10 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       if (connectCode.expiresAt <= now) {
         throw invalidMachineCredential("AUTH_CODE_EXPIRED", "The Computer connect code has expired");
       }
-      const [issuer] = await transaction
-        .select({ suspendedAt: users.suspendedAt, role: memberships.role, status: memberships.status })
-        .from(users)
-        .leftJoin(memberships, and(eq(memberships.userId, users.id), eq(memberships.teamId, connectCode.workspaceId)))
-        .where(eq(users.id, connectCode.issuedByUserId))
-        .limit(1);
-      if (!issuer || issuer.suspendedAt || issuer.status !== "active" || issuer.role !== "admin") {
-        throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+      try {
+        await this.#workspaceAdmins.requireAdmin(connectCode.issuedByUserId, connectCode.workspaceId, transaction);
+      } catch (error) {
+        rethrowMissingWorkspaceAsInvalidCode(error);
       }
 
       await transaction
@@ -307,6 +284,9 @@ function invalidMachineCredential(
   return new AuthServiceError(code, "credential", message, 401);
 }
 
-function notFound(): AuthServiceError {
-  return new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The Team was not found", 404);
+function rethrowMissingWorkspaceAsInvalidCode(error: unknown): never {
+  if (error instanceof AuthServiceError && error.statusCode === 404) {
+    throw invalidMachineCredential("AUTH_INVALID_CODE", "The Computer connect code is invalid");
+  }
+  throw error;
 }

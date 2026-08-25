@@ -54,6 +54,7 @@ import { SlackSetupService } from "../../services/im-bindings/slack/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../services/runtime-config/index.js";
 import { SessionService } from "../../services/sessions/index.js";
 import { TeamMembershipService, TeamSetupService } from "../../services/teams/index.js";
+import { WorkspaceAdminAccess } from "../../services/workspace-admin-access/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -581,12 +582,14 @@ describe("IM binding persistence", () => {
     const value = await fixture();
     try {
       const completedAt = new Date("2026-08-20T12:00:00.000Z");
-      const membershipsService = new TeamMembershipService(value.database);
+      const workspaceAdmins = new WorkspaceAdminAccess(value.database);
       const runtimeUnavailable = new ImBindingService(value.database, new ApplicationCipher(Buffer.alloc(32, 7)), {
         imCliReadiness: () => "unavailable",
+        workspaceAdmins,
       });
-      const unavailableSetup = new TeamSetupService(value.database, membershipsService, runtimeUnavailable, {
+      const unavailableSetup = new TeamSetupService(value.database, runtimeUnavailable, {
         now: () => completedAt,
+        workspaceAdmins,
       });
 
       await expect(
@@ -596,8 +599,9 @@ describe("IM binding persistence", () => {
         value.database.select({ setupCompletedAt: teams.setupCompletedAt }).from(teams).limit(1),
       ).resolves.toEqual([{ setupCompletedAt: null }]);
 
-      const setup = new TeamSetupService(value.database, membershipsService, value.imBindingService, {
+      const setup = new TeamSetupService(value.database, value.imBindingService, {
         now: () => completedAt,
+        workspaceAdmins,
       });
       await expect(setup.complete(value.bootstrap.userId, value.bootstrap.teamId, value.agent.id)).resolves.toEqual({
         setupCompletedAt: completedAt.toISOString(),
@@ -617,8 +621,8 @@ describe("IM binding persistence", () => {
         .insert(memberships)
         .values({ teamId: value.bootstrap.teamId, userId: member.id, role: "member", status: "active" });
       await expect(setup.complete(member.id, value.bootstrap.teamId, value.agent.id)).rejects.toMatchObject({
-        code: "MEMBERSHIP_FORBIDDEN",
-        statusCode: 403,
+        code: "RESOURCE_NOT_FOUND",
+        statusCode: 404,
       });
     } finally {
       await value.sql.end();
@@ -740,7 +744,7 @@ describe("IM binding persistence", () => {
     }
   });
 
-  it("returns member-safe Slack handoff readiness while preserving Team authorization boundaries", async () => {
+  it("keeps Slack management reads Admin-only with cross-Workspace non-disclosure", async () => {
     const value = await fixture();
     try {
       const [member] = await value.database
@@ -752,20 +756,21 @@ describe("IM binding persistence", () => {
         .insert(memberships)
         .values({ teamId: value.bootstrap.teamId, userId: member.id, role: "member", status: "active" });
 
-      const summary = await value.imBindingService.getForAgent(member.id, value.agent.id);
+      await expect(value.imBindingService.getForAgent(member.id, value.agent.id)).rejects.toMatchObject({
+        code: "IM_BINDING_NOT_FOUND",
+        statusCode: 404,
+      });
+      const summary = await value.imBindingService.getForAgent(value.bootstrap.userId, value.agent.id);
       expect(summary).toMatchObject({ provider: "slack", bindingState: "active", receiveMode: "all_message" });
       expect(JSON.stringify(summary)).not.toMatch(/credential|identity|appId|botUserId|lastError/i);
-      const handoff = await value.imBindingService.getHandoffForAgent(member.id, value.agent.id);
+      const handoff = await value.imBindingService.getHandoffForAgent(value.bootstrap.userId, value.agent.id);
       expect(handoff).toEqual({ bindingState: "active", handoffReady: true });
-      await expect(value.imBindingService.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toEqual(
-        handoff,
-      );
       expect(JSON.stringify(handoff)).not.toMatch(/credential|identity|appId|botUserId|error|connection|secret/i);
 
       const runtimeUnavailable = new ImBindingService(value.database, new ApplicationCipher(Buffer.alloc(32, 7)), {
         imCliReadiness: () => "unavailable",
       });
-      await expect(runtimeUnavailable.getHandoffForAgent(member.id, value.agent.id)).resolves.toEqual({
+      await expect(runtimeUnavailable.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toEqual({
         bindingState: "active",
         handoffReady: false,
       });
@@ -788,12 +793,12 @@ describe("IM binding persistence", () => {
       });
 
       await expect(value.imBindingService.getConfigForAgent(member.id, value.agent.id)).rejects.toMatchObject({
-        code: "IM_BINDING_FORBIDDEN",
-        statusCode: 403,
+        code: "IM_BINDING_NOT_FOUND",
+        statusCode: 404,
       });
       await expect(value.imBindingService.diagnostics(member.id, value.imBindingId)).rejects.toMatchObject({
-        code: "IM_BINDING_FORBIDDEN",
-        statusCode: 403,
+        code: "IM_BINDING_NOT_FOUND",
+        statusCode: 404,
       });
     } finally {
       await value.sql.end();
@@ -1183,7 +1188,7 @@ describe("IM binding persistence", () => {
       expect(settled).toBe(false);
       releaseRevocation.resolve();
       await revocation;
-      await expect(mutation).rejects.toMatchObject({ code: "IM_BINDING_FORBIDDEN", statusCode: 403 });
+      await expect(mutation).rejects.toMatchObject({ code: "IM_BINDING_NOT_FOUND", statusCode: 404 });
       expect(
         (await value.database.select().from(imBindings).where(eq(imBindings.id, value.imBindingId)))[0]?.status,
       ).toBe("active");
@@ -6315,7 +6320,7 @@ describe("IM binding persistence", () => {
         .where(and(eq(memberships.teamId, value.bootstrap.teamId), eq(memberships.userId, value.bootstrap.userId)));
       releaseInspection.resolve();
 
-      await expect(submission).rejects.toMatchObject({ code: "IM_BINDING_FORBIDDEN", statusCode: 403 });
+      await expect(submission).rejects.toMatchObject({ code: "IM_BINDING_NOT_FOUND", statusCode: 404 });
       const [stored] = await value.database.select().from(imBindings).where(eq(imBindings.setupAttemptId, attempt.id));
       expect(stored?.setupState).toBe("awaiting_user");
       expect(JSON.parse(value.cipher.decrypt(stored?.encryptedSetupContext ?? ""))).toEqual({
@@ -6366,7 +6371,7 @@ describe("IM binding persistence", () => {
       releaseRevocation.resolve();
       await revocation;
 
-      await expect(cancellation).rejects.toMatchObject({ code: "IM_BINDING_FORBIDDEN", statusCode: 403 });
+      await expect(cancellation).rejects.toMatchObject({ code: "IM_BINDING_NOT_FOUND", statusCode: 404 });
       const [stored] = await value.database.select().from(imBindings).where(eq(imBindings.setupAttemptId, attempt.id));
       expect(stored?.setupState).toBe("awaiting_user");
       expect(stored?.encryptedSetupContext).not.toBeNull();

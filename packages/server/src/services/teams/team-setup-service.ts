@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents, teams } from "../../db/schema/index.js";
 import type { ImBindingService } from "../im-bindings/index.js";
-import type { TeamMembershipService } from "./team-membership-service.js";
+import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 
 export class TeamSetupServiceError extends Error {
   readonly category = "deterministic" as const;
@@ -22,23 +22,22 @@ export class TeamSetupServiceError extends Error {
 export class TeamSetupService {
   readonly #database: DatabaseClient;
   readonly #imBindings: ImBindingService;
-  readonly #memberships: TeamMembershipService;
   readonly #now: () => Date;
+  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
   constructor(
     database: DatabaseClient,
-    memberships: TeamMembershipService,
     imBindings: ImBindingService,
-    options: { now?: () => Date } = {},
+    options: { now?: () => Date; workspaceAdmins?: WorkspaceAdminAccess } = {},
   ) {
     this.#database = database;
-    this.#memberships = memberships;
     this.#imBindings = imBindings;
     this.#now = options.now ?? (() => new Date());
+    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
   async complete(callerUserId: string, teamId: string, agentId: string): Promise<TeamSetupCompletion> {
-    await this.#memberships.requireActiveMembership(this.#database, callerUserId, teamId, "admin");
+    await this.#workspaceAdmins.requireAdmin(callerUserId, teamId);
     const [current] = await this.#database
       .select({ setupCompletedAt: teams.setupCompletedAt })
       .from(teams)
@@ -69,7 +68,7 @@ export class TeamSetupService {
     }
 
     return this.#database.transaction(async (transaction) => {
-      await this.#memberships.requireActiveMembershipForMutation(transaction, callerUserId, teamId, "admin");
+      await this.#workspaceAdmins.requireAdminForMutation(transaction, callerUserId, teamId);
       const [lockedTeam] = await transaction
         .select({ setupCompletedAt: teams.setupCompletedAt })
         .from(teams)

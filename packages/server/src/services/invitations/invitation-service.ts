@@ -10,6 +10,7 @@ import { invitationRedemptions, invitations, teams } from "../../db/schema/index
 import { AuthServiceError, generateSecret, hashSecret } from "../auth/index.js";
 import type { ApplicationCipher } from "../crypto.js";
 import type { TeamMembershipService } from "../teams/index.js";
+import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 
 export interface InvitationAuditContext {
   ip?: string;
@@ -23,13 +24,14 @@ export class InvitationService {
   readonly #now: () => Date;
   readonly #publicUrl: URL;
   readonly #ttlMs: number;
+  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
   constructor(
     database: DatabaseClient,
     membershipService: TeamMembershipService,
     cipher: ApplicationCipher,
     publicUrl: string,
-    options: { now?: () => Date; ttlMs?: number } = {},
+    options: { now?: () => Date; ttlMs?: number; workspaceAdmins?: WorkspaceAdminAccess } = {},
   ) {
     this.#database = database;
     this.#membershipService = membershipService;
@@ -37,10 +39,11 @@ export class InvitationService {
     this.#publicUrl = new URL(publicUrl);
     this.#now = options.now ?? (() => new Date());
     this.#ttlMs = options.ttlMs ?? 7 * 24 * 60 * 60 * 1000;
+    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
   async get(callerUserId: string, teamId: string): Promise<TeamInvitation | undefined> {
-    await this.#membershipService.requireActiveMembership(this.#database, callerUserId, teamId, "admin");
+    await this.#workspaceAdmins.requireAdmin(callerUserId, teamId);
     const [current] = await this.#database
       .select()
       .from(invitations)
@@ -51,7 +54,7 @@ export class InvitationService {
 
   async create(callerUserId: string, teamId: string): Promise<TeamInvitation> {
     return this.#database.transaction(async (transaction) => {
-      await this.#membershipService.requireActiveMembershipForMutation(transaction, callerUserId, teamId, "admin");
+      await this.#workspaceAdmins.requireAdminForMutation(transaction, callerUserId, teamId);
       const now = this.#now();
       await transaction
         .update(invitations)
@@ -69,7 +72,7 @@ export class InvitationService {
 
   async rotate(callerUserId: string, teamId: string): Promise<TeamInvitation> {
     return this.#database.transaction(async (transaction) => {
-      await this.#membershipService.requireActiveMembershipForMutation(transaction, callerUserId, teamId, "admin");
+      await this.#workspaceAdmins.requireAdminForMutation(transaction, callerUserId, teamId);
       const now = this.#now();
       await transaction
         .update(invitations)

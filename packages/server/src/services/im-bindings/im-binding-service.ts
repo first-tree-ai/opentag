@@ -18,15 +18,13 @@ import {
   agents,
   imBindings,
   imMessages,
-  memberships,
   sessionPlacements,
   sessions,
-  users,
   workspaceComputers,
 } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import type { ApplicationCipher } from "../crypto.js";
-import { TeamMembershipService } from "../teams/index.js";
+import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
@@ -187,32 +185,32 @@ export class ImBindingService {
   readonly #afterMutationAuthorityLocked: (() => Promise<void> | void) | undefined;
   readonly #cipher: ApplicationCipher;
   readonly #database: DatabaseClient;
-  readonly #membershipService: TeamMembershipService;
   readonly #now: () => Date;
   readonly #agentRuntimeReadiness: (agentId: string) => Promise<ProviderReadinessStatus>;
   readonly #imCliReadiness: (agentId: string, provider: "feishu" | "slack") => Promise<ImCliReadinessStatus>;
+  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
   constructor(
     database: DatabaseClient,
     cipher: ApplicationCipher,
     options: {
       afterMutationAuthorityLocked?: () => Promise<void> | void;
-      membershipService?: TeamMembershipService;
       now?: () => Date;
       agentRuntimeReadiness?: (agentId: string) => Promise<ProviderReadinessStatus> | ProviderReadinessStatus;
       imCliReadiness?: (
         agentId: string,
         provider: "feishu" | "slack",
       ) => Promise<ImCliReadinessStatus> | ImCliReadinessStatus;
+      workspaceAdmins?: WorkspaceAdminAccess;
     } = {},
   ) {
     this.#database = database;
     this.#afterMutationAuthorityLocked = options.afterMutationAuthorityLocked;
-    this.#membershipService = options.membershipService ?? new TeamMembershipService(database);
     this.#cipher = cipher;
     this.#now = options.now ?? (() => new Date());
     this.#agentRuntimeReadiness = async (agentId) => (await options.agentRuntimeReadiness?.(agentId)) ?? "ready";
     this.#imCliReadiness = async (agentId, provider) => (await options.imCliReadiness?.(agentId, provider)) ?? "ready";
+    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
   async getAgentWorkspaceComputerId(agentId: string): Promise<string | undefined> {
@@ -733,23 +731,13 @@ export class ImBindingService {
     agentId: string,
     executor: QueryExecutor = this.#database,
   ): Promise<void> {
-    const [scope] = await executor
-      .select({ role: memberships.role })
-      .from(agents)
-      .innerJoin(
-        memberships,
-        and(
-          eq(memberships.teamId, agents.teamId),
-          eq(memberships.userId, callerUserId),
-          eq(memberships.status, "active"),
-        ),
-      )
-      .innerJoin(users, and(eq(users.id, memberships.userId), isNull(users.suspendedAt)))
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
-      .limit(1);
-    if (!scope) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
-    if (scope.role !== "admin") {
-      throw new ImBindingServiceError("IM_BINDING_FORBIDDEN", 403, "The caller cannot manage this IM binding");
+    try {
+      await this.#workspaceAdmins.requireAdminForAgent(callerUserId, agentId, executor);
+    } catch (error) {
+      if (error instanceof AuthServiceError && error.statusCode === 404) {
+        throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
+      }
+      throw error;
     }
   }
 
@@ -758,23 +746,9 @@ export class ImBindingService {
     agentId: string,
     transaction: DatabaseTransaction,
   ): Promise<void> {
-    const [candidate] = await transaction
-      .select({ teamId: agents.teamId })
-      .from(agents)
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
-      .limit(1);
-    if (!candidate) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
     try {
-      await this.#membershipService.requireActiveMembershipForMutation(
-        transaction,
-        callerUserId,
-        candidate.teamId,
-        "admin",
-      );
+      await this.#workspaceAdmins.requireAdminForAgentMutation(transaction, callerUserId, agentId);
     } catch (error) {
-      if (error instanceof AuthServiceError && error.statusCode === 403) {
-        throw new ImBindingServiceError("IM_BINDING_FORBIDDEN", 403, "The caller cannot manage this IM binding");
-      }
       if (error instanceof AuthServiceError && error.statusCode === 404) {
         throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
       }
@@ -783,7 +757,7 @@ export class ImBindingService {
     const [agent] = await transaction
       .select({ id: agents.id })
       .from(agents)
-      .where(and(eq(agents.id, agentId), eq(agents.teamId, candidate.teamId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1)
       .for("update");
     if (!agent) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
@@ -791,21 +765,7 @@ export class ImBindingService {
   }
 
   async #assertCanRead(callerUserId: string, agentId: string): Promise<void> {
-    const [scope] = await this.#database
-      .select({ agentId: agents.id })
-      .from(agents)
-      .innerJoin(
-        memberships,
-        and(
-          eq(memberships.teamId, agents.teamId),
-          eq(memberships.userId, callerUserId),
-          eq(memberships.status, "active"),
-        ),
-      )
-      .innerJoin(users, and(eq(users.id, memberships.userId), isNull(users.suspendedAt)))
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
-      .limit(1);
-    if (!scope) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
+    await this.assertCanManage(callerUserId, agentId);
   }
 
   async #readiness(imBinding: ImBindingReadinessInput): Promise<ImBindingReadiness> {

@@ -6,7 +6,7 @@ import {
   teamComputerConnectCodesPath,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
@@ -15,6 +15,7 @@ import { computers, memberships, teams, workspaceComputers } from "../../db/sche
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { AuthService, AuthTokenService } from "../../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
+import { WorkspaceAdminAccess } from "../../services/workspace-admin-access/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const jwtSecret = "computer-test-secret-at-least-32-characters";
@@ -259,6 +260,44 @@ describe("Computer enrollment persistence", () => {
       const rejected = results.find(({ status }) => status === "rejected");
       expect(rejected).toMatchObject({ reason: { code: "AUTH_CODE_CONSUMED", statusCode: 401 } });
     } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("preserves infrastructure failures while concealing missing or revoked Workspace authority", async () => {
+    const value = await fixture();
+    try {
+      const workspaceAdmins = new WorkspaceAdminAccess(value.database);
+      const machineAuth = new MachineAuthService(value.database, { workspaceAdmins });
+      const input = {
+        computerId: crypto.randomUUID(),
+        displayName: "workstation",
+        platform: "linux" as const,
+        arch: "x64",
+        clientVersion: "0.0.1",
+      };
+
+      const lockFailure = new Error("workspace lock connection lost");
+      const first = await machineAuth.issueForTeamAdmin(value.bootstrap.userId, value.bootstrap.teamId);
+      vi.spyOn(workspaceAdmins, "lockWorkspace").mockRejectedValueOnce(lockFailure);
+      await expect(machineAuth.exchangeConnectCode({ ...input, code: first.code })).rejects.toBe(lockFailure);
+
+      const authorityFailure = new Error("authority query connection lost");
+      const second = await machineAuth.issueForTeamAdmin(value.bootstrap.userId, value.bootstrap.teamId);
+      vi.spyOn(workspaceAdmins, "requireAdmin").mockRejectedValueOnce(authorityFailure);
+      await expect(machineAuth.exchangeConnectCode({ ...input, code: second.code })).rejects.toBe(authorityFailure);
+
+      const third = await machineAuth.issueForTeamAdmin(value.bootstrap.userId, value.bootstrap.teamId);
+      await value.database
+        .update(memberships)
+        .set({ role: "member" })
+        .where(eq(memberships.userId, value.bootstrap.userId));
+      await expect(machineAuth.exchangeConnectCode({ ...input, code: third.code })).rejects.toMatchObject({
+        code: "AUTH_INVALID_CODE",
+        statusCode: 401,
+      });
+    } finally {
+      vi.restoreAllMocks();
       await value.sql.end();
     }
   });

@@ -1,7 +1,8 @@
 import { type ChannelName, getChannelConfig } from "@opentag/shared";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { connectCodes, memberships, teams, users } from "../../db/schema/index.js";
+import { connectCodes, users } from "../../db/schema/index.js";
+import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 import { AuthServiceError } from "./errors.js";
 import { generateSecret, hashSecret } from "./security.js";
 
@@ -70,10 +71,15 @@ export interface ConnectCodeServiceOptions {
 export class ConnectCodeService implements ConnectCodeIssuer {
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
+  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
-  constructor(database: DatabaseClient, options: ConnectCodeServiceOptions = {}) {
+  constructor(
+    database: DatabaseClient,
+    options: ConnectCodeServiceOptions & { workspaceAdmins?: WorkspaceAdminAccess } = {},
+  ) {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
+    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
   async issueForUser(userId: string): Promise<IssuedConnectCode> {
@@ -88,19 +94,7 @@ export class ConnectCodeService implements ConnectCodeIssuer {
       if (!user || user.suspendedAt) {
         throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
       }
-      const [membership] = await transaction
-        .select({ teamId: memberships.teamId })
-        .from(memberships)
-        .where(and(eq(memberships.userId, userId), eq(memberships.status, "active")))
-        .limit(1);
-      if (!membership) {
-        throw new AuthServiceError(
-          "AUTH_MEMBERSHIP_REQUIRED",
-          "deterministic",
-          "An active team membership is required",
-          403,
-        );
-      }
+      await this.#workspaceAdmins.requireAnyAdmin(userId, transaction);
       return issueConnectCodeInTransaction(transaction, { issuerUserId: userId, userId }, now);
     });
   }
@@ -108,26 +102,7 @@ export class ConnectCodeService implements ConnectCodeIssuer {
   async issueForTeamAdmin(userId: string, teamId: string): Promise<IssuedConnectCode> {
     const now = this.#now();
     return this.#database.transaction(async (transaction) => {
-      const [team] = await transaction
-        .select({ id: teams.id })
-        .from(teams)
-        .where(eq(teams.id, teamId))
-        .limit(1)
-        .for("update");
-      if (!team) throw new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The Team was not found", 404);
-      const [authority] = await transaction
-        .select({ role: memberships.role, suspendedAt: users.suspendedAt })
-        .from(memberships)
-        .innerJoin(users, eq(users.id, memberships.userId))
-        .where(and(eq(memberships.teamId, teamId), eq(memberships.userId, userId), eq(memberships.status, "active")))
-        .limit(1)
-        .for("update");
-      if (!authority || authority.suspendedAt) {
-        throw new AuthServiceError("RESOURCE_NOT_FOUND", "deterministic", "The Team was not found", 404);
-      }
-      if (authority.role !== "admin") {
-        throw new AuthServiceError("MEMBERSHIP_FORBIDDEN", "deterministic", "Team admin access is required", 403);
-      }
+      await this.#workspaceAdmins.requireAdminForMutation(transaction, userId, teamId);
       return issueConnectCodeInTransaction(transaction, { issuerUserId: userId, userId }, now);
     });
   }

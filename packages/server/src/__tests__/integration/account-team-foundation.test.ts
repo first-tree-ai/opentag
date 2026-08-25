@@ -12,6 +12,7 @@ import {
   memberships,
   teams,
   users,
+  workspaceComputers,
 } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import {
@@ -25,6 +26,7 @@ import { ApplicationCipher } from "../../services/crypto.js";
 import { InvitationService } from "../../services/invitations/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../services/runtime-config/index.js";
 import { TEAM_MEMBERSHIP_LIMIT, TeamMembershipService } from "../../services/teams/index.js";
+import { WorkspaceAdminAccess } from "../../services/workspace-admin-access/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const now = new Date("2026-08-19T00:00:00.000Z");
@@ -47,21 +49,23 @@ async function fixture() {
     { displayName: "Bootstrap Admin", email: "admin@example.com", teamDisplayName: "Example", teamName: "example" },
     now,
   );
-  const teamService = new TeamMembershipService(client.database, { now: () => now });
+  const workspaceAdmins = new WorkspaceAdminAccess(client.database, { now: () => now });
+  const teamService = new TeamMembershipService(client.database, { now: () => now, workspaceAdmins });
   const invitations = new InvitationService(
     client.database,
     teamService,
     new ApplicationCipher(new Uint8Array(32).fill(9)),
     "https://opentag.example.com",
-    { now: () => now },
+    { now: () => now, workspaceAdmins },
   );
   return {
     ...client,
     bootstrap,
     teamService,
+    workspaceAdmins,
     invitations,
     identities: new AuthIdentityService(client.database, { now: () => now }),
-    postAuthentication: new PostAuthenticationService(client.database, invitations, teamService),
+    postAuthentication: new PostAuthenticationService(client.database, invitations, workspaceAdmins),
   };
 }
 
@@ -137,7 +141,7 @@ describe("account identity and Team foundation persistence", () => {
     const value = await fixture();
     try {
       const userId = await value.identities.resolveOrCreate(google("profile", "old@example.com"));
-      await value.postAuthentication.complete(userId);
+      await value.postAuthentication.complete(userId, true);
       const primaryTeam = await value.teamService.createTeam(userId, {
         name: "profile-primary",
         displayName: "Profile Primary",
@@ -177,8 +181,9 @@ describe("account identity and Team foundation persistence", () => {
       await value.database
         .insert(memberships)
         .values({ teamId: secondTeam.id, userId, role: "member", status: "active" });
-      await expect(value.teamService.listMembers(userId, secondTeam.id)).resolves.toMatchObject({
-        members: [{ userId, displayName: "Product Name" }],
+      await expect(value.teamService.listMembers(userId, secondTeam.id)).rejects.toMatchObject({
+        code: "RESOURCE_NOT_FOUND",
+        statusCode: 404,
       });
 
       const [computer] = await value.database
@@ -193,6 +198,15 @@ describe("account identity and Team foundation persistence", () => {
         })
         .returning();
       if (!computer) throw new Error("Computer fixture was not created");
+      await value.database.insert(workspaceComputers).values({
+        workspaceId: primaryTeam.id,
+        computerId: computer.id,
+        enrolledByUserId: userId,
+        displayName: computer.displayName,
+        platform: computer.platform,
+        arch: computer.arch,
+        clientVersion: computer.clientVersion,
+      });
       const computerResult = await value.teamService.listComputers(userId, primaryTeam.id, true);
       expect(computerResult.computers.find((candidate) => candidate.id === computer.id)).toMatchObject({
         ownerUserId: userId,
@@ -202,7 +216,10 @@ describe("account identity and Team foundation persistence", () => {
           { provider: "claude-code", status: "unavailable", observedAt: null },
         ],
       });
-      const agentService = new AgentService(value.database, { membershipService: value.teamService, now: () => now });
+      const agentService = new AgentService(value.database, {
+        workspaceAdmins: value.workspaceAdmins,
+        now: () => now,
+      });
       await agentService.createForTeam(userId, primaryTeam.id, {
         computerId: computer.id,
         name: "profile-agent",
@@ -217,18 +234,15 @@ describe("account identity and Team foundation persistence", () => {
     }
   });
 
-  it("idempotently establishes an admin Team for a solo OAuth completion", async () => {
+  it("establishes a default Workspace only from the Account new-row fact", async () => {
     const value = await fixture();
     try {
       const userId = await value.identities.resolveOrCreate(google("solo", "solo@example.com"));
-      const completions = await Promise.all([
-        value.postAuthentication.complete(userId),
-        value.postAuthentication.complete(userId),
-      ]);
-      const selectedTeamId = completions.find((completion) => completion.selectedTeamId)?.selectedTeamId;
+      const first = await value.postAuthentication.complete(userId, true);
+      const returning = await value.postAuthentication.complete(userId, false);
+      const selectedTeamId = first.selectedTeamId;
       expect(selectedTeamId).toEqual(expect.any(String));
-      expect(completions.filter((completion) => completion.selectedTeamId)).toHaveLength(1);
-      expect(await value.postAuthentication.complete(userId)).toEqual({ userId });
+      expect(returning).toEqual({ userId });
       expect(await value.database.select().from(memberships).where(eq(memberships.userId, userId))).toEqual([
         expect.objectContaining({ teamId: selectedTeamId, role: "admin", status: "active" }),
       ]);
@@ -239,6 +253,107 @@ describe("account identity and Team foundation persistence", () => {
           .where(eq(teams.id, selectedTeamId ?? "")),
       ).toEqual([expect.objectContaining({ displayName: "Google solo's Workspace" })]);
       expect(await value.database.select().from(teams)).toHaveLength(2);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("does not backfill a Workspace for returning Accounts with zero Admin authority", async () => {
+    const value = await fixture();
+    try {
+      const [unassigned, legacyMember, revokedAdmin] = await value.database
+        .insert(users)
+        .values([
+          { email: "unassigned-returning@example.com", displayName: "Unassigned Returning" },
+          { email: "legacy-member@example.com", displayName: "Legacy Member" },
+          { email: "revoked-admin@example.com", displayName: "Revoked Admin" },
+        ])
+        .returning();
+      if (!unassigned || !legacyMember || !revokedAdmin) throw new Error("Returning Account fixtures were not created");
+      const [legacyWorkspace] = await value.database
+        .insert(teams)
+        .values({ name: "legacy-zero-admin", displayName: "Legacy Zero Admin" })
+        .returning();
+      if (!legacyWorkspace) throw new Error("Legacy Workspace fixture was not created");
+      await value.database.insert(memberships).values([
+        { teamId: legacyWorkspace.id, userId: legacyMember.id, role: "member", status: "active" },
+        { teamId: legacyWorkspace.id, userId: revokedAdmin.id, role: "admin", status: "removed" },
+      ]);
+      const before = await value.database.select({ id: teams.id }).from(teams);
+
+      await expect(value.postAuthentication.complete(unassigned.id, false)).resolves.toEqual({
+        userId: unassigned.id,
+      });
+      await expect(value.postAuthentication.complete(legacyMember.id, false)).resolves.toEqual({
+        userId: legacyMember.id,
+      });
+      await expect(value.postAuthentication.complete(revokedAdmin.id, false)).resolves.toEqual({
+        userId: revokedAdmin.id,
+      });
+
+      expect(await value.database.select({ id: teams.id }).from(teams)).toHaveLength(before.length);
+      const auth = new AuthService(
+        value.database,
+        new AuthTokenService("development-auth-secret-at-least-32-characters", 900, 3600),
+        { workspaceAdmins: value.workspaceAdmins },
+      );
+      await expect(auth.getActiveUserById(unassigned.id)).resolves.toMatchObject({ memberships: [] });
+      await expect(auth.getActiveUserById(legacyMember.id)).resolves.toMatchObject({ memberships: [] });
+      await expect(auth.getActiveUserById(revokedAdmin.id)).resolves.toMatchObject({ memberships: [] });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("orders legacy /me Workspaces by setup completion, earliest grant, then UUID", async () => {
+    const value = await fixture();
+    try {
+      const [account] = await value.database
+        .insert(users)
+        .values({ email: "ordered-workspaces@example.com", displayName: "Ordered Workspaces" })
+        .returning();
+      if (!account) throw new Error("Ordered Workspace Account fixture was not created");
+      const workspaceIds = [
+        "10000000-0000-4000-8000-000000000003",
+        "10000000-0000-4000-8000-000000000001",
+        "10000000-0000-4000-8000-000000000002",
+      ] as const;
+      await value.database.insert(teams).values([
+        { id: workspaceIds[0], name: "setup-later", displayName: "Setup Later", setupCompletedAt: now },
+        { id: workspaceIds[1], name: "setup-first", displayName: "Setup First", setupCompletedAt: now },
+        { id: workspaceIds[2], name: "not-setup", displayName: "Not Setup" },
+      ]);
+      await value.database.insert(memberships).values([
+        {
+          teamId: workspaceIds[0],
+          userId: account.id,
+          role: "admin",
+          status: "active",
+          createdAt: new Date("2026-08-19T02:00:00.000Z"),
+        },
+        {
+          teamId: workspaceIds[1],
+          userId: account.id,
+          role: "admin",
+          status: "active",
+          createdAt: new Date("2026-08-19T01:00:00.000Z"),
+        },
+        {
+          teamId: workspaceIds[2],
+          userId: account.id,
+          role: "admin",
+          status: "active",
+          createdAt: new Date("2026-08-19T00:00:00.000Z"),
+        },
+      ]);
+      const auth = new AuthService(
+        value.database,
+        new AuthTokenService("development-auth-secret-at-least-32-characters", 900, 3600),
+        { workspaceAdmins: value.workspaceAdmins },
+      );
+
+      const me = await auth.getActiveUserById(account.id);
+      expect(me.memberships.map(({ teamId }) => teamId)).toEqual([workspaceIds[1], workspaceIds[0], workspaceIds[2]]);
     } finally {
       await value.sql.end();
     }
@@ -406,7 +521,7 @@ describe("account identity and Team foundation persistence", () => {
     }
   });
 
-  it("lists every Computer owned by an active Team member independently of Agent binding", async () => {
+  it("lists active Workspace Computer enrollments independently of legacy member ownership", async () => {
     const value = await fixture();
     try {
       const [activeMember, removedMember, suspendedMember] = await value.database
@@ -470,6 +585,44 @@ describe("account identity and Team foundation persistence", () => {
           lastSeenAt: now,
         },
       ]);
+      await value.database.insert(workspaceComputers).values([
+        {
+          workspaceId: value.bootstrap.teamId,
+          computerId: adminComputerId,
+          enrolledByUserId: value.bootstrap.userId,
+          displayName: "admin-unbound",
+          platform: "linux",
+          arch: "x64",
+          clientVersion: "0.0.1",
+          currentInstanceId: crypto.randomUUID(),
+          connectedAt: now,
+          lastSeenAt: now,
+        },
+        {
+          workspaceId: value.bootstrap.teamId,
+          computerId: activeComputerId,
+          enrolledByUserId: activeMember.id,
+          displayName: "active-bound",
+          platform: "darwin",
+          arch: "arm64",
+          clientVersion: "0.0.1",
+          currentInstanceId: crypto.randomUUID(),
+          connectedAt: now,
+          lastSeenAt: now,
+        },
+        {
+          workspaceId: value.bootstrap.teamId,
+          computerId: removedComputerId,
+          enrolledByUserId: removedMember.id,
+          displayName: "removed-unbound",
+          platform: "win32",
+          arch: "x64",
+          clientVersion: "0.0.1",
+          enrolledAt: now,
+          revokedByUserId: value.bootstrap.userId,
+          revokedAt: now,
+        },
+      ]);
       const [agent] = await value.database
         .insert(agents)
         .values({
@@ -516,7 +669,7 @@ describe("account identity and Team foundation persistence", () => {
       await expect(value.invitations.preview(firstInvite.token)).rejects.toMatchObject({ code: "INVITATION_INVALID" });
 
       const userId = await value.identities.resolveOrCreate(google("invitee", "invitee@example.com"));
-      await value.postAuthentication.complete(userId, nextInvite.token, { ip: "127.0.0.1" });
+      await value.postAuthentication.complete(userId, true, nextInvite.token, { ip: "127.0.0.1" });
       expect(await value.database.select().from(teams)).toHaveLength(1);
       const [membership] = await value.database
         .select()
@@ -545,13 +698,13 @@ describe("account identity and Team foundation persistence", () => {
         .values({ teamId: value.bootstrap.teamId, userId: member.id, role: "member", status: "active" });
 
       await expect(value.invitations.get(member.id, value.bootstrap.teamId)).rejects.toMatchObject({
-        code: "MEMBERSHIP_FORBIDDEN",
+        code: "RESOURCE_NOT_FOUND",
       });
       await expect(value.invitations.create(member.id, value.bootstrap.teamId)).rejects.toMatchObject({
-        code: "MEMBERSHIP_FORBIDDEN",
+        code: "RESOURCE_NOT_FOUND",
       });
       await expect(value.invitations.rotate(member.id, value.bootstrap.teamId)).rejects.toMatchObject({
-        code: "MEMBERSHIP_FORBIDDEN",
+        code: "RESOURCE_NOT_FOUND",
       });
       expect(await value.database.select().from(invitations)).toHaveLength(0);
     } finally {
@@ -572,7 +725,7 @@ describe("account identity and Team foundation persistence", () => {
         .values({ teamId: value.bootstrap.teamId, userId: member.id, role: "member", status: "active" });
       await expect(
         value.teamService.updateTeamProfile(member.id, value.bootstrap.teamId, { displayName: "Denied" }),
-      ).rejects.toMatchObject({ code: "MEMBERSHIP_FORBIDDEN", statusCode: 403 });
+      ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
 
       const invitation = await value.invitations.create(value.bootstrap.userId, value.bootstrap.teamId);
       await expect(
@@ -669,7 +822,7 @@ describe("account identity and Team foundation persistence", () => {
       expect(staleRenameSettled).toBe(false);
       releaseRevocation();
       await revocation;
-      await expect(staleRename).rejects.toMatchObject({ code: "MEMBERSHIP_FORBIDDEN", statusCode: 403 });
+      await expect(staleRename).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
 
       await value.teamService.changeRole(value.bootstrap.userId, value.bootstrap.teamId, secondAdmin.id, "admin");
       let signalAuthorityLocked: () => void = () => undefined;
@@ -712,7 +865,93 @@ describe("account identity and Team foundation persistence", () => {
     }
   });
 
-  it("enforces last-admin, active-Agent, left, removed, and restore invariants", async () => {
+  it("serializes legacy Admin promotion with other grant writers and rejects suspended targets", async () => {
+    const value = await fixture();
+    let releasePromotion: () => void = () => undefined;
+    try {
+      const [target, suspendedTarget] = await value.database
+        .insert(users)
+        .values([
+          { email: "promotion-target@example.com", displayName: "Promotion Target" },
+          {
+            email: "suspended-promotion-target@example.com",
+            displayName: "Suspended Promotion Target",
+            suspendedAt: now,
+          },
+        ])
+        .returning();
+      if (!target || !suspendedTarget) throw new Error("Promotion fixtures were not created");
+      await value.database.insert(memberships).values([
+        { teamId: value.bootstrap.teamId, userId: target.id, role: "member", status: "active" },
+        { teamId: value.bootstrap.teamId, userId: suspendedTarget.id, role: "member", status: "active" },
+      ]);
+
+      await expect(
+        value.teamService.changeRole(value.bootstrap.userId, value.bootstrap.teamId, suspendedTarget.id, "admin"),
+      ).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
+
+      const extraWorkspaces = Array.from({ length: TEAM_MEMBERSHIP_LIMIT - 1 }, (_, index) => ({
+        name: `promotion-workspace-${index}`,
+        displayName: `Promotion Workspace ${index}`,
+      }));
+      const insertedWorkspaces = await value.database.insert(teams).values(extraWorkspaces).returning({ id: teams.id });
+      await value.database.insert(memberships).values(
+        insertedWorkspaces.map(({ id }) => ({
+          teamId: id,
+          userId: target.id,
+          role: "admin" as const,
+          status: "active" as const,
+        })),
+      );
+
+      let signalAccountLocked: () => void = () => undefined;
+      const accountLocked = new Promise<void>((resolve) => {
+        signalAccountLocked = resolve;
+      });
+      const holdPromotion = new Promise<void>((resolve) => {
+        releasePromotion = resolve;
+      });
+      const promotionService = new TeamMembershipService(value.database, {
+        now: () => now,
+        workspaceAdmins: value.workspaceAdmins,
+        afterMembershipUserLocked: async () => {
+          signalAccountLocked();
+          await holdPromotion;
+        },
+      });
+      const promotion = promotionService.changeRole(value.bootstrap.userId, value.bootstrap.teamId, target.id, "admin");
+      await accountLocked;
+      const competingGrant = value.teamService.createTeam(target.id, {
+        name: "promotion-competing-grant",
+        displayName: "Promotion Competing Grant",
+      });
+      let competingSettled = false;
+      void competingGrant.then(
+        () => {
+          competingSettled = true;
+        },
+        () => {
+          competingSettled = true;
+        },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(competingSettled).toBe(false);
+      releasePromotion();
+
+      await expect(promotion).resolves.toMatchObject({ role: "admin", status: "active" });
+      await expect(competingGrant).rejects.toMatchObject({ code: "TEAM_LIMIT_REACHED", statusCode: 409 });
+      const activeAdminRows = await value.database
+        .select({ teamId: memberships.teamId })
+        .from(memberships)
+        .where(and(eq(memberships.userId, target.id), eq(memberships.role, "admin"), eq(memberships.status, "active")));
+      expect(activeAdminRows).toHaveLength(TEAM_MEMBERSHIP_LIMIT);
+    } finally {
+      releasePromotion();
+      await value.sql.end();
+    }
+  });
+
+  it("enforces last-admin and restore invariants without creator-owned Agent blocking", async () => {
     const value = await fixture();
     try {
       await expect(value.teamService.leave(value.bootstrap.userId, value.bootstrap.teamId)).rejects.toMatchObject({
@@ -734,7 +973,14 @@ describe("account identity and Team foundation persistence", () => {
       ]);
 
       const invitation = await value.invitations.create(value.bootstrap.userId, value.bootstrap.teamId);
-      await value.teamService.leave(member.id, value.bootstrap.teamId);
+      await expect(value.teamService.leave(member.id, value.bootstrap.teamId)).rejects.toMatchObject({
+        code: "RESOURCE_NOT_FOUND",
+        statusCode: 404,
+      });
+      await value.database
+        .update(memberships)
+        .set({ status: "left" })
+        .where(and(eq(memberships.teamId, value.bootstrap.teamId), eq(memberships.userId, member.id)));
       expect(await value.invitations.redeem(member.id, invitation.token)).toMatchObject({
         membership: { role: "member" },
       });
@@ -764,10 +1010,6 @@ describe("account identity and Team foundation persistence", () => {
         .returning();
       if (!agent) throw new Error("Agent fixture was not created");
       await value.database.insert(agentRuntimeConfigs).values({ agentId: agent.id, ...DEFAULT_AGENT_RUNTIME_CONFIG });
-      await expect(value.teamService.remove(secondAdmin.id, value.bootstrap.teamId, member.id)).rejects.toMatchObject({
-        code: "MEMBERSHIP_ACTIVE_AGENTS",
-      });
-      await value.database.update(agents).set({ status: "deleted" }).where(eq(agents.id, agent.id));
       await value.teamService.remove(secondAdmin.id, value.bootstrap.teamId, member.id);
       await expect(value.invitations.redeem(member.id, invitation.token)).rejects.toMatchObject({
         code: "MEMBERSHIP_FORBIDDEN",
@@ -783,7 +1025,42 @@ describe("account identity and Team foundation persistence", () => {
     }
   });
 
-  it("serializes Agent creation with departure so an active Agent cannot be orphaned", async () => {
+  it("serializes concurrent Admin departures so one active Admin always remains", async () => {
+    const value = await fixture();
+    try {
+      const [secondAdmin] = await value.database
+        .insert(users)
+        .values({ email: "last-admin-race@example.com", displayName: "Last Admin Race" })
+        .returning();
+      if (!secondAdmin) throw new Error("Second Admin fixture was not created");
+      await value.database
+        .insert(memberships)
+        .values({ teamId: value.bootstrap.teamId, userId: secondAdmin.id, role: "admin", status: "active" });
+
+      const outcomes = await Promise.allSettled([
+        value.teamService.leave(value.bootstrap.userId, value.bootstrap.teamId),
+        value.teamService.leave(secondAdmin.id, value.bootstrap.teamId),
+      ]);
+      expect(outcomes.filter(({ status }) => status === "fulfilled")).toHaveLength(1);
+      const [rejected] = outcomes.filter(({ status }) => status === "rejected");
+      expect(rejected).toMatchObject({ reason: { code: "MEMBERSHIP_LAST_ADMIN", statusCode: 409 } });
+      const activeAdmins = await value.database
+        .select({ userId: memberships.userId })
+        .from(memberships)
+        .where(
+          and(
+            eq(memberships.teamId, value.bootstrap.teamId),
+            eq(memberships.role, "admin"),
+            eq(memberships.status, "active"),
+          ),
+        );
+      expect(activeAdmins).toHaveLength(1);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("serializes Agent creation with departure without treating the creator as an owner", async () => {
     const value = await fixture();
     try {
       const [member] = await value.database
@@ -806,6 +1083,15 @@ describe("account identity and Team foundation persistence", () => {
         })
         .returning();
       if (!computer) throw new Error("Computer fixture was not created");
+      await value.database.insert(workspaceComputers).values({
+        workspaceId: value.bootstrap.teamId,
+        computerId: computer.id,
+        enrolledByUserId: member.id,
+        displayName: computer.displayName,
+        platform: computer.platform,
+        arch: computer.arch,
+        clientVersion: computer.clientVersion,
+      });
 
       let signalLocked: () => void = () => undefined;
       let releaseCreate: () => void = () => undefined;
@@ -816,7 +1102,7 @@ describe("account identity and Team foundation persistence", () => {
         releaseCreate = resolve;
       });
       const agentService = new AgentService(value.database, {
-        membershipService: value.teamService,
+        workspaceAdmins: value.workspaceAdmins,
         now: () => now,
         afterMembershipLocked: async () => {
           signalLocked();
@@ -835,12 +1121,12 @@ describe("account identity and Team foundation persistence", () => {
       releaseCreate();
 
       await expect(creating).resolves.toMatchObject({ managerUserId: member.id });
-      await expect(leaving).rejects.toMatchObject({ code: "MEMBERSHIP_ACTIVE_AGENTS" });
+      await expect(leaving).resolves.toBeUndefined();
       const [membership] = await value.database
         .select()
         .from(memberships)
         .where(and(eq(memberships.teamId, value.bootstrap.teamId), eq(memberships.userId, member.id)));
-      expect(membership?.status).toBe("active");
+      expect(membership?.status).toBe("left");
     } finally {
       await value.sql.end();
     }
@@ -896,7 +1182,7 @@ describe("account identity and Team foundation persistence", () => {
 
       await holder;
       await expect(revocation).resolves.toBeUndefined();
-      await expect(staleMutation).rejects.toMatchObject({ code: "MEMBERSHIP_NOT_FOUND" });
+      await expect(staleMutation).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND" });
       const rows = await value.database
         .select()
         .from(memberships)

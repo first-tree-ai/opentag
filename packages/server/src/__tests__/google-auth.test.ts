@@ -126,7 +126,9 @@ describe("GoogleBrowserAuthService", () => {
       database: { transaction: (callback: (transaction: object) => unknown) => callback({}) } as never,
       flow: { verify: vi.fn().mockResolvedValue({ next: `/invites/${token}`, oidcNonce: "oidc-nonce" }) } as never,
       google: { exchangeCode: vi.fn().mockResolvedValue({ provider: "google" }) } as never,
-      identities: { resolveOrCreateInTransaction: vi.fn().mockResolvedValue(userId) } as never,
+      identities: {
+        resolveOrCreateInTransaction: vi.fn().mockResolvedValue({ accountWasCreated: true, userId }),
+      } as never,
       postAuthentication: { completeInTransaction } as never,
       publicUrl: "https://opentag.example.com",
       tokenIssuer: { issueTokensForUser } as never,
@@ -135,7 +137,7 @@ describe("GoogleBrowserAuthService", () => {
     await expect(
       service.callback({ code: "code", state: "state" }, "signed-context", { onVerified: vi.fn() }),
     ).resolves.toMatchObject({ next: `/invites/${token}`, selectedTeamId });
-    expect(completeInTransaction).toHaveBeenCalledWith(expect.anything(), userId, token, {});
+    expect(completeInTransaction).toHaveBeenCalledWith(expect.anything(), userId, true, token, {});
     expect(issueTokensForUser).toHaveBeenCalledWith(userId);
   });
 
@@ -147,7 +149,9 @@ describe("GoogleBrowserAuthService", () => {
       database: { transaction: (callback: (transaction: object) => unknown) => callback({}) } as never,
       flow: { verify: vi.fn().mockResolvedValue({ next: "/onboarding", oidcNonce: "oidc-nonce" }) } as never,
       google: { exchangeCode: vi.fn().mockResolvedValue({ provider: "google" }) } as never,
-      identities: { resolveOrCreateInTransaction: vi.fn().mockResolvedValue(userId) } as never,
+      identities: {
+        resolveOrCreateInTransaction: vi.fn().mockResolvedValue({ accountWasCreated: true, userId }),
+      } as never,
       postAuthentication: { completeInTransaction } as never,
       publicUrl: "https://opentag.example.com",
       tokenIssuer: {
@@ -163,7 +167,7 @@ describe("GoogleBrowserAuthService", () => {
     await expect(
       service.callback({ code: "code", state: "state" }, "signed-context", { onVerified: vi.fn() }),
     ).resolves.toMatchObject({ next: "/onboarding", selectedTeamId });
-    expect(completeInTransaction).toHaveBeenCalledWith(expect.anything(), userId, undefined, {});
+    expect(completeInTransaction).toHaveBeenCalledWith(expect.anything(), userId, true, undefined, {});
   });
 
   it("preserves invalid or expired flow errors before interpreting the provider result", async () => {

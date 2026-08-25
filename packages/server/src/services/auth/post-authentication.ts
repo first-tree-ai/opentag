@@ -2,7 +2,7 @@ import { eq } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { users } from "../../db/schema/index.js";
 import type { InvitationAuditContext, InvitationService } from "../invitations/index.js";
-import type { TeamMembershipService } from "../teams/index.js";
+import type { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 import { AuthServiceError } from "./errors.js";
 
 export interface PostAuthenticationResult {
@@ -13,27 +13,29 @@ export interface PostAuthenticationResult {
 export class PostAuthenticationService {
   readonly #database: DatabaseClient;
   readonly #invitations: InvitationService;
-  readonly #teams: TeamMembershipService;
+  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
-  constructor(database: DatabaseClient, invitations: InvitationService, teams: TeamMembershipService) {
+  constructor(database: DatabaseClient, invitations: InvitationService, workspaceAdmins: WorkspaceAdminAccess) {
     this.#database = database;
     this.#invitations = invitations;
-    this.#teams = teams;
+    this.#workspaceAdmins = workspaceAdmins;
   }
 
   complete(
     userId: string,
+    accountWasCreated: boolean,
     invitationToken?: string,
     audit: InvitationAuditContext = {},
   ): Promise<PostAuthenticationResult> {
     return this.#database.transaction((transaction) =>
-      this.completeInTransaction(transaction, userId, invitationToken, audit),
+      this.completeInTransaction(transaction, userId, accountWasCreated, invitationToken, audit),
     );
   }
 
   async completeInTransaction(
     transaction: DatabaseTransaction,
     userId: string,
+    accountWasCreated: boolean,
     invitationToken?: string,
     audit: InvitationAuditContext = {},
   ): Promise<PostAuthenticationResult> {
@@ -45,7 +47,11 @@ export class PostAuthenticationService {
       const redemption = await this.#invitations.redeemInTransaction(transaction, userId, invitationToken, audit);
       return { userId, selectedTeamId: redemption.membership.teamId };
     }
-    const selectedTeamId = await this.#teams.establishPersonalTeamForLockedUserInTransaction(transaction, user);
+    const selectedTeamId = await this.#workspaceAdmins.establishDefaultWorkspaceForNewAccount(
+      transaction,
+      user,
+      accountWasCreated,
+    );
     return { userId, ...(selectedTeamId ? { selectedTeamId } : {}) };
   }
 }

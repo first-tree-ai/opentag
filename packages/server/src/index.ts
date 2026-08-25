@@ -41,6 +41,7 @@ import { InvitationService } from "./services/invitations/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { TeamMembershipService, TeamSetupService } from "./services/teams/index.js";
+import { WorkspaceAdminAccess } from "./services/workspace-admin-access/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
 
 export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
@@ -110,21 +111,29 @@ export async function startServer(): Promise<void> {
     readiness.complete("migration");
 
     const { database, sql } = createDatabaseClient(config.databaseUrl);
+    const workspaceAdmins = new WorkspaceAdminAccess(database);
     const authService = new AuthService(
       database,
       new AuthTokenService(config.jwtSecret, config.accessTokenTtlSeconds, config.refreshTokenTtlSeconds),
+      { workspaceAdmins },
     );
-    const connectCodeService = new ConnectCodeService(database);
+    const connectCodeService = new ConnectCodeService(database, { workspaceAdmins });
     const registry = new ConnectionRegistry();
     const machineAuthService = new MachineAuthService(database, {
       onCredentialRotated: async (workspaceComputerId) => {
         await registry.closeEnrollment(workspaceComputerId);
       },
+      workspaceAdmins,
     });
-    const computerService = new ComputerService(database, authService, { providerReadiness: registry });
-    const teamService = new TeamMembershipService(database, { providerReadiness: registry });
+    const computerService = new ComputerService(database, authService, {
+      providerReadiness: registry,
+      workspaceAdmins,
+    });
+    const teamService = new TeamMembershipService(database, { providerReadiness: registry, workspaceAdmins });
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
-    const invitationService = new InvitationService(database, teamService, applicationCipher, config.publicUrl);
+    const invitationService = new InvitationService(database, teamService, applicationCipher, config.publicUrl, {
+      workspaceAdmins,
+    });
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database
         .select({ workspaceComputerId: workspaceComputers.id, runtimeProvider: agents.runtimeProvider })
@@ -159,8 +168,9 @@ export async function startServer(): Promise<void> {
           observations.find(({ observation }) => observation.provider === provider)?.observation.status ?? "checking"
         );
       },
+      workspaceAdmins,
     });
-    const teamSetupService = new TeamSetupService(database, teamService, imBindingService);
+    const teamSetupService = new TeamSetupService(database, imBindingService, { workspaceAdmins });
     const imMessageInbox = new ImMessageInbox(database);
     const sessionService = new SessionService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
@@ -179,7 +189,6 @@ export async function startServer(): Promise<void> {
       sessions: sessionService,
     });
     const agentService = new AgentService(database, {
-      membershipService: teamService,
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
       stopSessions: (targets) =>
         stopAgentSessions(database, targets, {
@@ -187,6 +196,7 @@ export async function startServer(): Promise<void> {
           requestReconcile: (workspaceComputerId, instanceId, request, onDispatched) =>
             domainOwner.requestReconcile(workspaceComputerId, instanceId, request, onDispatched),
         }),
+      workspaceAdmins,
     });
     const feishuConnections = new FeishuConnectionManager({
       database,
@@ -224,7 +234,7 @@ export async function startServer(): Promise<void> {
       onDiagnostic: reportDiagnostic,
     });
     const identityService = new AuthIdentityService(database);
-    const postAuthentication = new PostAuthenticationService(database, invitationService, teamService);
+    const postAuthentication = new PostAuthenticationService(database, invitationService, workspaceAdmins);
     const google = config.google
       ? new GoogleBrowserAuthService({
           database,

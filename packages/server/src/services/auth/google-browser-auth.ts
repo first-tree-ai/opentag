@@ -94,14 +94,15 @@ export class GoogleBrowserAuthService {
     });
     const invitationToken = invitationTokenFromNext(flow.next);
     const completion = await this.#database.transaction(async (transaction) => {
-      const resolvedUserId = await this.#identities.resolveOrCreateInTransaction(transaction, identity);
+      const resolved = await this.#identities.resolveOrCreateInTransaction(transaction, identity);
       const result = await this.#postAuthentication.completeInTransaction(
         transaction,
-        resolvedUserId,
+        resolved.userId,
+        resolved.accountWasCreated,
         invitationToken,
         options.audit ?? {},
       );
-      return { selectedTeamId: result.selectedTeamId, userId: resolvedUserId };
+      return { selectedTeamId: result.selectedTeamId, userId: resolved.userId };
     });
     return {
       next: flow.next,

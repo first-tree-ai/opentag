@@ -25,12 +25,12 @@ export async function runLogin(options: LoginOptions): Promise<LoginResult> {
   const home = options.home ?? resolveOpenTagHome();
   const now = options.now ?? (() => new Date());
   const serverUrl = normalizeServerUrl(options.serverUrl);
-  const binding = await readComputerIdentity(home);
-  if (binding && binding.serverUrl !== serverUrl) {
+  const computer = await readComputerIdentity(home);
+  if (computer && computer.serverUrl !== serverUrl) {
     throw new Error("This OpenTag home is bound to another server; choose a different OPENTAG_HOME");
   }
   const api = options.api ?? new OpenTagApi(serverUrl);
-  const response = await api.exchangeConnectCode(options.code, binding?.userId);
+  const response = await api.exchangeConnectCode(options.code);
   const credentials: StoredCredentials = {
     accessToken: response.accessToken,
     accessTokenExpiresAt: new Date(now().getTime() + response.expiresIn * 1000).toISOString(),

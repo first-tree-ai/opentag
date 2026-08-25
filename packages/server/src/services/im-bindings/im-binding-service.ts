@@ -22,6 +22,7 @@ import {
   sessionPlacements,
   sessions,
   users,
+  workspaceComputers,
 } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import type { ApplicationCipher } from "../crypto.js";
@@ -214,18 +215,26 @@ export class ImBindingService {
     this.#imCliReadiness = async (agentId, provider) => (await options.imCliReadiness?.(agentId, provider)) ?? "ready";
   }
 
-  async getAgentComputerId(agentId: string): Promise<string | undefined> {
+  async getAgentWorkspaceComputerId(agentId: string): Promise<string | undefined> {
     const [agent] = await this.#database
-      .select({ computerId: agents.computerId })
+      .select({ workspaceComputerId: workspaceComputers.id })
       .from(agents)
+      .innerJoin(
+        workspaceComputers,
+        and(
+          eq(workspaceComputers.workspaceId, agents.teamId),
+          eq(workspaceComputers.computerId, agents.computerId),
+          isNull(workspaceComputers.revokedAt),
+        ),
+      )
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
-    return agent?.computerId;
+    return agent?.workspaceComputerId;
   }
 
   async issueRuntimeCredentialGrant(
     request: RuntimeImCredentialGrantRequest,
-    authenticatedComputerId: string,
+    computerAuth: { computerId: string; workspaceComputerId: string; workspaceId: string },
   ): Promise<RuntimeImCredentialGrantResult> {
     const [row] = await this.#database
       .select({
@@ -238,11 +247,21 @@ export class ImBindingService {
         agentStatus: agents.status,
         placementComputerId: sessionPlacements.computerId,
         placementGeneration: sessionPlacements.generation,
+        workspaceComputerId: workspaceComputers.id,
+        workspaceId: agents.teamId,
       })
       .from(sessions)
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .leftJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .leftJoin(
+        workspaceComputers,
+        and(
+          eq(workspaceComputers.workspaceId, agents.teamId),
+          eq(workspaceComputers.computerId, agents.computerId),
+          isNull(workspaceComputers.revokedAt),
+        ),
+      )
       .where(eq(sessions.id, request.sessionId))
       .limit(1);
     const rejected = (
@@ -257,14 +276,16 @@ export class ImBindingService {
       !row ||
       row.sessionKind === "internal" ||
       row.boundAgentId !== request.agentId ||
-      row.agentComputerId !== authenticatedComputerId ||
+      row.agentComputerId !== computerAuth.computerId ||
+      row.workspaceComputerId !== computerAuth.workspaceComputerId ||
+      row.workspaceId !== computerAuth.workspaceId ||
       row.agentStatus !== "active"
     ) {
       return rejected("agent_mismatch");
     }
     if (
       row.sessionEndedAt !== null ||
-      row.placementComputerId !== authenticatedComputerId ||
+      row.placementComputerId !== computerAuth.computerId ||
       row.placementGeneration !== request.placementGeneration
     ) {
       return rejected("placement_stale");

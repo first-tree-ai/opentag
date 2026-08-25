@@ -24,6 +24,7 @@ export const TEAM_MEMBERS_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/members`;
 export const TEAM_MEMBERS_CONFIG_TEMPLATE = `${TEAM_MEMBERS_TEMPLATE}/config`;
 export const TEAM_MEMBER_TEMPLATE = `${TEAM_MEMBERS_TEMPLATE}/:userId`;
 export const TEAM_COMPUTERS_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/computers`;
+export const TEAM_COMPUTER_CONNECT_CODES_TEMPLATE = `${TEAM_COMPUTERS_TEMPLATE}/connect-codes`;
 export const TEAM_COMPUTERS_CONFIG_TEMPLATE = `${TEAM_COMPUTERS_TEMPLATE}/config`;
 export const TEAM_INVITATION_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/invitation`;
 export const INVITATION_PREVIEW_TEMPLATE = `${API_V1_PREFIX}/invitations/:token/preview`;
@@ -33,6 +34,7 @@ export const HTTP_PATHS = {
   agentById: AGENT_BY_ID_TEMPLATE,
   slackEvents: SLACK_EVENTS_PATH,
   authConnectExchange: `${API_V1_PREFIX}/auth/connect/exchange`,
+  computerConnectExchange: `${API_V1_PREFIX}/computer/connect/exchange`,
   authBrowserLogout: `${API_V1_PREFIX}/auth/browser/logout`,
   authBrowserRefresh: `${API_V1_PREFIX}/auth/browser/refresh`,
   authDevCallback: `${API_V1_PREFIX}/auth/dev/callback`,
@@ -78,6 +80,10 @@ export function teamLeavePath(teamId: string): string {
 
 export function teamComputersPath(teamId: string): string {
   return `${API_V1_PREFIX}/teams/${encodeURIComponent(teamId)}/computers`;
+}
+
+export function teamComputerConnectCodesPath(teamId: string): string {
+  return `${teamComputersPath(teamId)}/connect-codes`;
 }
 
 export function teamInvitationPath(teamId: string): string {
@@ -172,11 +178,10 @@ export function imBindingDiagnosticsPath(imBindingId: string): string {
 export function runtimeImResourcePath(
   imMessageId: string,
   ordinal: number,
-  input: { sessionId: string; computerId: string; instanceId: string; placementGeneration: number },
+  input: { sessionId: string; instanceId: string; placementGeneration: number },
 ): string {
   const query = new URLSearchParams({
     sessionId: input.sessionId,
-    computerId: input.computerId,
     instanceId: input.instanceId,
     placementGeneration: String(input.placementGeneration),
   });

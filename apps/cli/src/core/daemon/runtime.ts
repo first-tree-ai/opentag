@@ -1,16 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { arch, hostname, platform } from "node:os";
 import {
-  AccessTokenProvider,
   type ClientLogger,
   configureClientLoggerForService,
   createClientRuntime,
   createLogger,
   OpenTagApi,
-  OpenTagApiError,
   RuntimeConnection,
   RuntimeConnectionError,
-  readCredentials,
+  readMachineCredentials,
   resolveComputerIdentity,
   resolveOpenTagHome,
 } from "@opentag/client";
@@ -114,45 +112,30 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
     }
     logger.info({}, "Daemon startup started");
     await runDaemonLifecycle(async (signal) => {
-      let credentials: Awaited<ReturnType<typeof readCredentials>>;
+      let credentials: Awaited<ReturnType<typeof readMachineCredentials>>;
       try {
-        credentials = await readCredentials(home);
+        credentials = await readMachineCredentials(home);
       } catch (error) {
-        throw new DaemonRuntimeConfigurationError("OpenTag credentials are invalid; run login again", {
-          cause: error,
-        });
-      }
-      signal.throwIfAborted();
-      if (!credentials) throw new DaemonRuntimeConfigurationError("OpenTag is not logged in; run login first");
-      const api = new OpenTagApi(credentials.serverUrl);
-      const tokenProvider = new AccessTokenProvider({ home, api });
-      let lease: Awaited<ReturnType<AccessTokenProvider["getAccessTokenLease"]>>;
-      try {
-        lease = await tokenProvider.getAccessTokenLease();
-      } catch (error) {
-        if (error instanceof OpenTagApiError && error.category === "credential") {
-          throw new DaemonRuntimeConfigurationError("OpenTag credentials are no longer valid; run login again", {
+        throw new DaemonRuntimeConfigurationError(
+          "OpenTag Computer credentials are invalid; run computer connect again",
+          {
             cause: error,
-          });
-        }
-        throw error;
+          },
+        );
       }
       signal.throwIfAborted();
-      let me: Awaited<ReturnType<OpenTagApi["me"]>>;
-      try {
-        me = await api.me(lease.accessToken);
-      } catch (error) {
-        if (error instanceof OpenTagApiError && error.category === "credential") {
-          throw new DaemonRuntimeConfigurationError("OpenTag credentials are no longer valid; run login again", {
-            cause: error,
-          });
-        }
-        throw error;
+      if (!credentials?.enrollments.length) {
+        throw new DaemonRuntimeConfigurationError("This Computer is not enrolled; run computer connect first");
       }
-      signal.throwIfAborted();
+      const serverUrls = new Set(credentials.enrollments.map((credential) => credential.serverUrl));
+      if (serverUrls.size !== 1) {
+        throw new DaemonRuntimeConfigurationError("One OpenTag home cannot connect to multiple Servers");
+      }
+      const serverUrl = credentials.enrollments[0]?.serverUrl;
+      if (!serverUrl) throw new DaemonRuntimeConfigurationError("This Computer is not enrolled");
       let identity: Awaited<ReturnType<typeof resolveComputerIdentity>>;
       try {
-        identity = await resolveComputerIdentity(home, credentials.serverUrl, me.user.id);
+        identity = await resolveComputerIdentity(home, serverUrl);
       } catch (error) {
         throw new DaemonRuntimeConfigurationError("The local Computer identity is invalid", { cause: error });
       }
@@ -161,30 +144,66 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
         throw new DaemonRuntimeConfigurationError(`Unsupported daemon service platform: ${currentPlatform}`);
       }
       terminalLogger = logger.child({ computerId: identity.computerId });
-      const runtimeLogger = gatedRuntimeLogger.logger.child({ computerId: identity.computerId });
-      const connection = new RuntimeConnection({
-        arch: arch(),
-        clientVersion: CLI_VERSION,
-        computer: identity,
-        displayName: hostname(),
-        instanceId,
-        logger: runtimeLogger.child({ module: "connection" }),
-        platform: currentPlatform,
-        tokenProvider,
-      });
-      const runtime = await createClientRuntime(connection, {
-        home,
-        clientVersion: CLI_VERSION,
-        logger: runtimeLogger,
-        signal,
-        api,
-        tokenProvider,
-      });
-      void connection.whenRegistered(signal).then(
-        () => runtimeLogger.info({}, "Daemon is ready"),
-        () => undefined,
+      const runtimes = await Promise.all(
+        credentials.enrollments.map(async (credential) => {
+          if (credential.computerId !== identity.computerId) {
+            throw new DaemonRuntimeConfigurationError("A machine credential belongs to another Computer");
+          }
+          const connectionInstanceId = randomUUID();
+          const runtimeLogger = gatedRuntimeLogger.logger.child({
+            computerId: identity.computerId,
+            instanceId: connectionInstanceId,
+            workspaceComputerId: credential.workspaceComputerId,
+            workspaceId: credential.workspaceId,
+          });
+          const api = new OpenTagApi(credential.serverUrl);
+          const connection = new RuntimeConnection({
+            arch: arch(),
+            clientVersion: CLI_VERSION,
+            computer: identity,
+            displayName: hostname(),
+            instanceId: connectionInstanceId,
+            logger: runtimeLogger.child({ module: "connection" }),
+            machineToken: credential.machineToken,
+            platform: currentPlatform,
+          });
+          const runtime = await createClientRuntime(connection, {
+            home,
+            clientVersion: CLI_VERSION,
+            logger: runtimeLogger,
+            signal,
+            api,
+            machineToken: credential.machineToken,
+          });
+          void connection.whenRegistered(signal).then(
+            () => runtimeLogger.info({}, "Workspace Computer runtime is ready"),
+            () => undefined,
+          );
+          return { credential, logger: runtimeLogger, runtime };
+        }),
       );
-      return runtime;
+      return {
+        run: async () => {
+          const results = await Promise.allSettled(
+            runtimes.map(async ({ credential, logger: runtimeLogger, runtime }) => {
+              try {
+                await runtime.run();
+              } catch (error) {
+                runtimeLogger.warn(
+                  { category: "enrollment_runtime_stopped", workspaceComputerId: credential.workspaceComputerId },
+                  "Workspace Computer runtime stopped independently",
+                );
+                throw error;
+              }
+            }),
+          );
+          const failure = results.find((result): result is PromiseRejectedResult => result.status === "rejected");
+          if (failure) throw failure.reason;
+        },
+        stop: () => {
+          for (const { runtime } of runtimes) runtime.stop();
+        },
+      };
     }, signals);
   } catch (error) {
     const logger =
@@ -231,14 +250,14 @@ function isExpectedDaemonStop(error: unknown): boolean {
 
 function daemonOperatorMessage(error: unknown): string {
   if (error instanceof DaemonRuntimeConfigurationError) {
-    return "Daemon configuration is invalid; run login or inspect daemon status";
+    return "Daemon configuration is invalid; run computer connect or inspect daemon status";
   }
   if (error instanceof DaemonOwnerStartupError) {
     return error.code === "BUSY"
       ? "Daemon is already running; inspect daemon status"
       : "Daemon ownership prevented startup; inspect daemon status";
   }
-  if (error instanceof RuntimeConnectionError) return "Daemon connection was rejected; run login again";
+  if (error instanceof RuntimeConnectionError) return "Daemon connection was rejected; run computer connect again";
   return "Daemon service configuration prevented startup; inspect daemon status";
 }
 

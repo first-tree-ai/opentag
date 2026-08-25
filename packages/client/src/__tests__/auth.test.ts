@@ -154,18 +154,16 @@ describe("AccessTokenProvider", () => {
 });
 
 describe("Computer identity", () => {
-  it("persists a stable private identity and rejects server or user rebinding", async () => {
+  it("persists a stable private physical identity and rejects server rebinding", async () => {
     const home = await temporaryHome();
-    const first = await resolveComputerIdentity(home, "https://opentag.example", crypto.randomUUID());
-    expect(await resolveComputerIdentity(home, first.serverUrl, first.userId)).toEqual(first);
+    const first = await resolveComputerIdentity(home, "https://opentag.example");
+    expect(await resolveComputerIdentity(home, first.serverUrl)).toEqual(first);
     expect(computerIdentityPath(home)).toBe(join(home, "config", "computer.json"));
     expect((await stat(computerIdentityPath(home))).mode & 0o777).toBe(0o600);
-    await expect(resolveComputerIdentity(home, "https://other.example", first.userId)).rejects.toThrow(
-      "bound to another server or user",
-    );
+    await expect(resolveComputerIdentity(home, "https://other.example")).rejects.toThrow("bound to another server");
   });
 
-  it("does not read, migrate, or delete legacy Computer identities", async () => {
+  it("upgrades the current v1 Account-bound identity without changing the physical Computer ID", async () => {
     const home = await temporaryHome();
     const rootLegacy = {
       version: 1,
@@ -185,8 +183,11 @@ describe("Computer identity", () => {
     await writeFile(rootLegacyPath, `${JSON.stringify(rootLegacy)}\n`, { mode: 0o600 });
     await writeFile(dataLegacyPath, `${JSON.stringify(dataLegacy)}\n`, { mode: 0o600 });
 
-    const current = await resolveComputerIdentity(home, "https://opentag.example", crypto.randomUUID());
-    expect(current.computerId).not.toBe(rootLegacy.computerId);
+    await mkdir(join(home, "config"), { mode: 0o700 });
+    await writeFile(computerIdentityPath(home), `${JSON.stringify(rootLegacy)}\n`, { mode: 0o600 });
+
+    const current = await resolveComputerIdentity(home, rootLegacy.serverUrl);
+    expect(current).toEqual({ version: 2, computerId: rootLegacy.computerId, serverUrl: rootLegacy.serverUrl });
     expect(current.computerId).not.toBe(dataLegacy.computerId);
     expect(await readFile(rootLegacyPath, "utf8")).toBe(`${JSON.stringify(rootLegacy)}\n`);
     expect(await readFile(dataLegacyPath, "utf8")).toBe(`${JSON.stringify(dataLegacy)}\n`);
@@ -197,9 +198,7 @@ describe("Computer identity", () => {
     const external = await temporaryHome();
     await symlink(external, join(home, "config"), "dir");
 
-    await expect(resolveComputerIdentity(home, "https://opentag.example", crypto.randomUUID())).rejects.toThrow(
-      /real director/i,
-    );
+    await expect(resolveComputerIdentity(home, "https://opentag.example")).rejects.toThrow(/real director/i);
     expect(await readdir(external)).toEqual([]);
   });
 
@@ -207,8 +206,6 @@ describe("Computer identity", () => {
     const home = await temporaryHome();
     await writeFile(join(home, "config"), "not-a-directory", "utf8");
 
-    await expect(resolveComputerIdentity(home, "https://opentag.example", crypto.randomUUID())).rejects.toThrow(
-      /real director/i,
-    );
+    await expect(resolveComputerIdentity(home, "https://opentag.example")).rejects.toThrow(/real director/i);
   });
 });

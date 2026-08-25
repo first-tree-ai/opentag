@@ -60,6 +60,15 @@ export {
   type StoredCredentials,
   writeCredentialsAtomically,
 } from "./auth/credentials.js";
+export {
+  MACHINE_CREDENTIALS_FILE_NAME,
+  type MachineEnrollmentCredential,
+  machineCredentialsPath,
+  readMachineCredentials,
+  type StoredMachineCredentials,
+  storeMachineEnrollmentCredential,
+  writeMachineCredentialsAtomically,
+} from "./auth/machine-credentials.js";
 export { type AccessTokenLease, AccessTokenProvider, type TokenProviderOptions } from "./auth/token-provider.js";
 export {
   checkServerHealth,

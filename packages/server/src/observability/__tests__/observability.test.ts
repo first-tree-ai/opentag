@@ -580,8 +580,15 @@ describe("background and WebSocket tracing", () => {
     const slowStarted = new Promise<void>((resolve) => {
       markSlowStarted = resolve;
     });
+    const machine = {
+      credentialId: randomUUID(),
+      workspaceComputerId: randomUUID(),
+      workspaceId: randomUUID(),
+      computerId: randomUUID(),
+    };
     const app = createApp({
       authService: runtimeAuthService() as never,
+      machineAuthService: { verifyMachineToken: vi.fn().mockResolvedValue(machine) } as never,
       computerService: runtimeComputerService() as never,
       runtime: {
         registry: new ConnectionRegistry(),
@@ -612,13 +619,13 @@ describe("background and WebSocket tracing", () => {
     const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
     const frames = websocketFrames(socket);
     await websocketOpened(socket);
-    socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), protocolVersion: 1, accessToken: "token" }));
+    socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), protocolVersion: 1, machineToken: "token" }));
     expect(await frames.next()).toMatchObject({ type: "auth:result", ok: true });
     expect(await frames.next()).toMatchObject({ type: "server:welcome" });
     const registration = {
       type: "computer:register",
       requestId: randomUUID(),
-      computerId: randomUUID(),
+      computerId: machine.computerId,
       instanceId: randomUUID(),
       displayName: "test",
       platform: "linux",
@@ -680,15 +687,16 @@ describe("background and WebSocket tracing", () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();
     const instanceId = randomUUID();
-    const userId = randomUUID();
+    const workspaceId = randomUUID();
     const frames: unknown[] = [];
     await registry.register(
       {
         computerId,
+        workspaceComputerId: computerId,
+        workspaceId,
         instanceId,
         lastHeartbeatAt: 1,
         socket: runtimeDomainSocket(frames),
-        userId,
       },
       async () => undefined,
     );
@@ -702,7 +710,13 @@ describe("background and WebSocket tracing", () => {
       recordTurn: vi.fn().mockResolvedValue("recorded"),
     };
     const owner = new RuntimeDomainOwner(registry, custody as never, { requestTimeoutMs: 1_000 });
-    const context = { computerId, instanceId, signal: new AbortController().signal, userId };
+    const context = {
+      computerId,
+      workspaceComputerId: computerId,
+      workspaceId,
+      instanceId,
+      signal: new AbortController().signal,
+    };
 
     const acceptedRequest = runtimeDeliveryRequest();
     const accepted = owner.requestDelivery(computerId, instanceId, acceptedRequest);
@@ -790,10 +804,11 @@ describe("background and WebSocket tracing", () => {
     await failingRegistry.register(
       {
         computerId: failingComputerId,
+        workspaceComputerId: failingComputerId,
+        workspaceId,
         instanceId: failingInstanceId,
         lastHeartbeatAt: 1,
         socket: runtimeDomainSocket([], new Error("plain Runtime send payload with private prompt")),
-        userId,
       },
       async () => undefined,
     );
@@ -963,6 +978,7 @@ function runtimeAuthService() {
 
 function runtimeComputerService() {
   return {
+    assertActiveCredential: vi.fn().mockResolvedValue(undefined),
     register: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(true),
     heartbeat: vi.fn().mockResolvedValue(true),

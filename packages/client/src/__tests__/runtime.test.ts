@@ -14,7 +14,6 @@ import {
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
-import type { AccessTokenProvider } from "../auth/token-provider.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
@@ -51,12 +50,12 @@ describe("RuntimeConnection", () => {
     connection = new RuntimeConnection({
       arch: "x64",
       clientVersion: "0.0.1",
-      computer: { version: 1, computerId, serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId, serverUrl: server.url },
       displayName: "workstation",
       instanceId,
       jitter: () => 0,
       platform: "linux",
-      tokenProvider: tokenProvider(),
+      machineToken: "machine-token",
     });
     connection.setProviderReadiness({ provider: "codex", status: "ready" });
     connection.setProviderReadiness({ provider: "claude-code", status: "ready" });
@@ -121,11 +120,11 @@ describe("RuntimeConnection", () => {
     connection = new RuntimeConnection({
       arch: "x64",
       clientVersion: "0.0.1",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
       displayName: "workstation",
       instanceId: randomUUID(),
       platform: "linux",
-      tokenProvider: tokenProvider(),
+      machineToken: "machine-token",
     });
     connection.setProviderReadiness({ provider: "codex", status: "ready" });
 
@@ -145,12 +144,7 @@ describe("RuntimeConnection", () => {
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeAuth(
-            socket,
-            frame,
-            { ...welcome(), providerReadiness: { version: 1, providers: ["codex"] } },
-            RUNTIME_CLIENT_CAPABILITY_TTL_MS * 10,
-          );
+          completeAuth(socket, frame, { ...welcome(), providerReadiness: { version: 1, providers: ["codex"] } });
         }
         if (frame.type === "computer:register") {
           expect(frame).toMatchObject({ providerReadiness: [{ provider: "codex", status: "ready" }] });
@@ -168,12 +162,12 @@ describe("RuntimeConnection", () => {
     connection = new RuntimeConnection({
       arch: "x64",
       clientVersion: "0.0.1",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
       displayName: "workstation",
       instanceId: randomUUID(),
       now: () => currentTime,
       platform: "linux",
-      tokenProvider: tokenProvider(),
+      machineToken: "machine-token",
     });
     releaseReadiness = connection.leaseProviderReadiness({ provider: "codex", status: "ready" });
 
@@ -182,79 +176,38 @@ describe("RuntimeConnection", () => {
     expect(heartbeats[1]).toMatchObject({ providerReadiness: [] });
   });
 
-  it("forces token refresh before reconnecting at the proactive refresh boundary", async () => {
+  it("fails closed on a rejected machine credential without an Account-auth fallback", async () => {
     const server = await runtimeServer();
     cleanup.push(server.close);
     let connections = 0;
-    let connection: RuntimeConnection;
     server.wss.on("connection", (socket) => {
       connections += 1;
       socket.on("message", (data) => {
         const frame = JSON.parse(data.toString()) as Record<string, unknown>;
         if (frame.type === "auth") {
-          completeAuth(socket, frame, welcome(1_000, 2_000), connections === 1 ? 30 : 60_000);
-        } else if (frame.type === "computer:register") {
-          completeRegistration(socket, frame);
-          if (connections === 2) connection.stop();
+          socket.send(
+            JSON.stringify({
+              type: "error",
+              requestId: frame.requestId,
+              code: "AUTH_INVALID_TOKEN",
+              message: "machine credential revoked",
+            }),
+          );
         }
       });
     });
-    const getAccessTokenLease = vi
-      .fn()
-      .mockResolvedValueOnce({ accessToken: "old", expiresAt: new Date(Date.now() + 30).toISOString() })
-      .mockResolvedValue({ accessToken: "new", expiresAt: new Date(Date.now() + 60_000).toISOString() });
-    connection = new RuntimeConnection({
+    const connection = new RuntimeConnection({
       arch: "arm64",
       clientVersion: "0.0.1",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
       displayName: "workstation",
       instanceId: randomUUID(),
+      machineToken: "revoked-machine-token",
       platform: "darwin",
-      tokenProvider: { getAccessTokenLease } as unknown as AccessTokenProvider,
     });
 
-    await connection.run();
-    expect(getAccessTokenLease.mock.calls).toEqual([[false], [true]]);
-  });
-
-  it("force-refreshes and reconnects when a registered server expires the access token", async () => {
-    const server = await runtimeServer();
-    cleanup.push(server.close);
-    let connections = 0;
-    let connection: RuntimeConnection;
-    server.wss.on("connection", (socket) => {
-      connections += 1;
-      socket.on("message", (data) => {
-        const frame = JSON.parse(data.toString()) as Record<string, unknown>;
-        if (frame.type === "auth") {
-          completeAuth(socket, frame, welcome(1_000, 2_000));
-        } else if (frame.type === "computer:register") {
-          completeRegistration(socket, frame);
-          if (connections === 1) {
-            socket.send(JSON.stringify({ type: "error", code: "AUTH_INVALID_TOKEN", message: "expired" }));
-          } else {
-            connection.stop();
-          }
-        }
-      });
-    });
-    const getAccessTokenLease = vi
-      .fn()
-      .mockResolvedValueOnce({ accessToken: "old", expiresAt: new Date(Date.now() + 60_000).toISOString() })
-      .mockResolvedValue({ accessToken: "new", expiresAt: new Date(Date.now() + 60_000).toISOString() });
-    connection = new RuntimeConnection({
-      arch: "x64",
-      clientVersion: "0.0.1",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
-      displayName: "workstation",
-      instanceId: randomUUID(),
-      platform: "linux",
-      tokenProvider: { getAccessTokenLease } as unknown as AccessTokenProvider,
-    });
-
-    await connection.run();
-    expect(getAccessTokenLease.mock.calls).toEqual([[false], [true]]);
-    expect(connections).toBe(2);
+    await expect(connection.run()).rejects.toThrow("machine credential revoked");
+    expect(connections).toBe(1);
   });
 
   it("reuses a process instance across reconnects and resets backoff after registration", async () => {
@@ -289,12 +242,12 @@ describe("RuntimeConnection", () => {
     connection = new RuntimeConnection({
       arch: "x64",
       clientVersion: "0.0.1",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
       displayName: "workstation",
       instanceId,
       jitter: () => 1,
       platform: "linux",
-      tokenProvider: tokenProvider(),
+      machineToken: "machine-token",
       waitForRetry: async (milliseconds) => {
         retryDelays.push(milliseconds);
       },
@@ -327,11 +280,11 @@ describe("RuntimeConnection", () => {
       active = new RuntimeConnection({
         arch: "x64",
         clientVersion: "0.0.1",
-        computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+        computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
         displayName: "workstation",
         instanceId,
         platform: "linux",
-        tokenProvider: tokenProvider(),
+        machineToken: "machine-token",
       });
       await active.run();
     }
@@ -339,13 +292,7 @@ describe("RuntimeConnection", () => {
     expect(registeredInstanceIds).toEqual(instanceIds);
   });
 
-  it("does not create a WebSocket when stopped while the access token is pending", async () => {
-    let finishToken: ((lease: { accessToken: string; expiresAt: string }) => void) | undefined;
-    const getAccessTokenLease = vi.fn().mockReturnValue(
-      new Promise((resolve) => {
-        finishToken = resolve;
-      }),
-    );
+  it("does not create a WebSocket when stopped before startup", async () => {
     const webSocketFactory = vi.fn((_url: string) => {
       throw new Error("WebSocket must not be created after stop");
     });
@@ -353,23 +300,19 @@ describe("RuntimeConnection", () => {
       arch: "x64",
       clientVersion: "0.0.1",
       computer: {
-        version: 1,
+        version: 2,
         computerId: randomUUID(),
         serverUrl: "http://127.0.0.1:3000",
-        userId: randomUUID(),
       },
       displayName: "workstation",
       instanceId: randomUUID(),
+      machineToken: "machine-token",
       platform: "linux",
-      tokenProvider: { getAccessTokenLease } as unknown as AccessTokenProvider,
       webSocketFactory,
     });
 
-    const running = connection.run();
-    await vi.waitFor(() => expect(getAccessTokenLease).toHaveBeenCalledOnce());
     connection.stop();
-    finishToken?.({ accessToken: "access", expiresAt: new Date(Date.now() + 60_000).toISOString() });
-    await running;
+    await connection.run();
 
     expect(webSocketFactory).not.toHaveBeenCalled();
   });
@@ -408,11 +351,11 @@ describe("RuntimeConnection", () => {
     connection = new RuntimeConnection({
       arch: "x64",
       clientVersion: "0.0.1",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
       displayName: "workstation",
       instanceId: randomUUID(),
       platform: "linux",
-      tokenProvider: tokenProvider(),
+      machineToken: "machine-token",
     });
 
     const running = connection.run();
@@ -452,11 +395,11 @@ describe("RuntimeConnection", () => {
     const connection = new RuntimeConnection({
       arch: "x64",
       clientVersion: "0.0.1",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
       displayName: "workstation",
       instanceId: randomUUID(),
       platform: "linux",
-      tokenProvider: tokenProvider(),
+      machineToken: "machine-token",
     });
 
     await expect(connection.run()).rejects.toThrow("unmatched heartbeat result");
@@ -494,11 +437,11 @@ describe("RuntimeConnection", () => {
     connection = new RuntimeConnection({
       arch: "x64",
       clientVersion: "0.0.2",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
       displayName: "workstation",
       instanceId: randomUUID(),
       platform: "linux",
-      tokenProvider: tokenProvider(),
+      machineToken: "machine-token",
     });
 
     await connection.run();
@@ -527,11 +470,11 @@ describe("RuntimeConnection", () => {
     const connection = new RuntimeConnection({
       arch: "x64",
       clientVersion: "0.0.2",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
       displayName: "workstation",
       instanceId: randomUUID(),
       platform: "linux",
-      tokenProvider: tokenProvider(),
+      machineToken: "machine-token",
     });
 
     await expect(connection.run()).rejects.toThrow("unmatched downgrade attempt");
@@ -550,8 +493,9 @@ describe("RuntimeConnection", () => {
             type: "auth:result",
             requestId: frame.requestId,
             ok: true,
-            userId: randomUUID(),
-            tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+            workspaceComputerId: randomUUID(),
+            workspaceId: randomUUID(),
+            computerId: randomUUID(),
           }),
         );
         socket.send(JSON.stringify({ ...welcome(), protocolVersion: 3 }));
@@ -560,11 +504,11 @@ describe("RuntimeConnection", () => {
     const connection = new RuntimeConnection({
       arch: "x64",
       clientVersion: "0.0.1",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
       displayName: "workstation",
       instanceId: randomUUID(),
       platform: "linux",
-      tokenProvider: tokenProvider(),
+      machineToken: "machine-token",
     });
     await expect(connection.run()).rejects.toThrow("protocol version is unsupported");
   });
@@ -590,11 +534,11 @@ describe("RuntimeConnection", () => {
     const connection = new RuntimeConnection({
       arch: "x64",
       clientVersion: "0.0.2",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
       displayName: "workstation",
       instanceId: randomUUID(),
       platform: "linux",
-      tokenProvider: tokenProvider(),
+      machineToken: "machine-token",
     });
 
     await expect(connection.run()).rejects.toThrow("invalid capability negotiation");
@@ -626,7 +570,7 @@ describe("RuntimeConnection", () => {
     const connection = new RuntimeConnection({
       arch: "x64",
       clientVersion: "0.0.1",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
       displayName: "workstation",
       instanceId: randomUUID(),
       logger: recordingLogger(logs),
@@ -637,7 +581,7 @@ describe("RuntimeConnection", () => {
         return value as { type: string; value: number };
       },
       platform: "linux",
-      tokenProvider: tokenProvider(),
+      machineToken: "machine-token",
     });
     connection.subscribeState((state) => states.push(state));
     connection.subscribeBusinessFrames(() => {
@@ -696,11 +640,11 @@ describe("RuntimeConnection", () => {
     const connection = new RuntimeConnection({
       arch: "x64",
       clientVersion: "0.0.1",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
       displayName: "workstation",
       instanceId: randomUUID(),
       platform: "linux",
-      tokenProvider: tokenProvider(),
+      machineToken: "machine-token",
     });
 
     await expect(connection.run()).rejects.toThrow("binary runtime frame");
@@ -723,11 +667,11 @@ describe("RuntimeConnection", () => {
     const connection = new RuntimeConnection({
       arch: "x64",
       clientVersion: "0.0.1",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
       displayName: "workstation",
       instanceId: randomUUID(),
       platform: "linux",
-      tokenProvider: tokenProvider(),
+      machineToken: "machine-token",
     });
     const running = connection.run();
     await connection.whenRegistered();
@@ -748,12 +692,12 @@ describe("RuntimeConnection", () => {
     const connection = new RuntimeConnection({
       arch: "x64",
       clientVersion: "0.0.1",
-      computer: { version: 1, computerId: randomUUID(), serverUrl: server.url, userId: randomUUID() },
+      computer: { version: 2, computerId: randomUUID(), serverUrl: server.url },
       displayName: "workstation",
       instanceId: randomUUID(),
       jitter: () => 0,
       platform: "linux",
-      tokenProvider: tokenProvider(),
+      machineToken: "machine-token",
       waitForRetry: async (_milliseconds, signal) => {
         retrySignal = signal;
         await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
@@ -812,15 +756,6 @@ describe("RuntimeConnection", () => {
   });
 });
 
-function tokenProvider(): AccessTokenProvider {
-  return {
-    getAccessTokenLease: vi.fn().mockResolvedValue({
-      accessToken: "access",
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    }),
-  } as unknown as AccessTokenProvider;
-}
-
 function welcome(
   heartbeatIntervalMs = 10,
   heartbeatTimeoutMs = 1_000,
@@ -850,15 +785,15 @@ function completeAuth(
   socket: WebSocket,
   frame: Record<string, unknown>,
   serverWelcome?: Record<string, unknown>,
-  tokenExpiresInMs = 60_000,
 ): void {
   socket.send(
     JSON.stringify({
       type: "auth:result",
       requestId: frame.requestId,
       ok: true,
-      userId: randomUUID(),
-      tokenExpiresAt: new Date(Date.now() + tokenExpiresInMs).toISOString(),
+      workspaceComputerId: randomUUID(),
+      workspaceId: randomUUID(),
+      computerId: randomUUID(),
     }),
   );
   socket.send(
@@ -925,16 +860,15 @@ function controlledConnection(socket: ControlledWebSocket, queueLimits: { trace:
     arch: "x64",
     clientVersion: "0.0.1",
     computer: {
-      version: 1,
+      version: 2,
       computerId: randomUUID(),
       serverUrl: "http://127.0.0.1:8000",
-      userId: randomUUID(),
     },
     displayName: "workstation",
     instanceId: randomUUID(),
     platform: "linux",
     queueLimits,
-    tokenProvider: tokenProvider(),
+    machineToken: "machine-token",
     webSocketFactory: () => socket as unknown as WebSocket,
   });
 }
@@ -948,8 +882,9 @@ async function registerControlled(connection: RuntimeConnection, socket: Control
     type: "auth:result",
     requestId: auth?.requestId,
     ok: true,
-    userId: randomUUID(),
-    tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    workspaceComputerId: randomUUID(),
+    workspaceId: randomUUID(),
+    computerId: randomUUID(),
   });
   socket.receive(welcome(1_000, 2_000));
   await vi.waitFor(() => expect(socket.frame("computer:register")).toBeDefined());

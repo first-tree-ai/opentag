@@ -18,10 +18,9 @@ describe("ImResourceFetcher", () => {
     homes.push(workspace);
     const openImResource = vi.fn(async () => new Response("resource-body"));
     const fetcher = new ImResourceFetcher({
-      computerId: randomUUID(),
       instanceId: randomUUID(),
       api: { openImResource },
-      tokenProvider: { getAccessTokenLease: async () => ({ accessToken: "token" }) as never },
+      machineToken: "machine-token",
     });
     const first = request();
     const second = { ...request(), imMessageId: first.imMessageId, content: first.content };

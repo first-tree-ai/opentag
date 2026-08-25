@@ -1762,21 +1762,15 @@ function runtimeConnection(serverUrl = "http://127.0.0.1:3000", now?: () => numb
     arch: "arm64",
     clientVersion: "0.0.1",
     computer: {
-      version: 1,
+      version: 2,
       computerId: randomUUID(),
       serverUrl,
-      userId: randomUUID(),
     },
     displayName: "test",
     instanceId: randomUUID(),
     now,
     platform: "darwin",
-    tokenProvider: {
-      getAccessTokenLease: async () => ({
-        accessToken: "unused",
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      }),
-    },
+    machineToken: "machine-token",
   });
 }
 
@@ -1802,8 +1796,9 @@ function completeLegacyAuth(
       type: "auth:result",
       requestId: frame.requestId,
       ok: true,
-      userId: randomUUID(),
-      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      workspaceComputerId: randomUUID(),
+      workspaceId: randomUUID(),
+      computerId: randomUUID(),
     }),
   );
   const providers = Array.isArray(providerReadiness) ? providerReadiness : providerReadiness ? ["codex"] : undefined;

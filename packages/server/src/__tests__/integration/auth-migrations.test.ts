@@ -79,12 +79,13 @@ describe("database migrations", () => {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    expect(journal.entries.slice(-5).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    expect(journal.entries.slice(-6).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 10, tag: "0010_optimal_jazinda" },
       { idx: 11, tag: "0011_staging_team_setup_repair" },
       { idx: 12, tag: "0012_supreme_maddog" },
       { idx: 13, tag: "0013_bizarre_gamma_corps" },
       { idx: 14, tag: "0014_illegal_wolfsbane" },
+      { idx: 15, tag: "0015_red_sway" },
     ]);
   });
 
@@ -245,9 +246,15 @@ describe("database migrations", () => {
         const userId = crypto.randomUUID();
         const teamId = crypto.randomUUID();
         const controlTeamId = crypto.randomUUID();
-        const computerId = crypto.randomUUID();
+        const activeAgentComputerId = crypto.randomUUID();
+        const deletedAgentComputerId = crypto.randomUUID();
+        const activeSessionComputerId = crypto.randomUUID();
+        const endedSessionComputerId = crypto.randomUUID();
         const activeAgentId = "6eb89d85-0f12-4962-8465-518071f1d3e9";
         const deletedAgentId = crypto.randomUUID();
+        const imBindingId = crypto.randomUUID();
+        const activeSessionId = crypto.randomUUID();
+        const endedSessionId = crypto.randomUUID();
         await sql`insert into users (id, email, display_name) values (${userId}, 'migration@example.com', 'Migration')`;
         await sql`insert into teams (id, name, display_name) values (${teamId}, 'migration', 'Migration')`;
         await sql`
@@ -257,19 +264,45 @@ describe("database migrations", () => {
         await sql`insert into memberships (team_id, user_id, role) values (${teamId}, ${userId}, 'admin')`;
         await sql`
           insert into computers (id, owner_user_id, display_name, platform, arch, client_version)
-          values (${computerId}, ${userId}, 'Migration Computer', 'linux', 'x64', '0.0.1')
+          values
+            (${activeAgentComputerId}, ${userId}, 'Active Agent Computer', 'linux', 'x64', '0.0.1'),
+            (${deletedAgentComputerId}, ${userId}, 'Deleted Agent Computer', 'linux', 'x64', '0.0.1'),
+            (${activeSessionComputerId}, ${userId}, 'Active Session Computer', 'linux', 'x64', '0.0.1'),
+            (${endedSessionComputerId}, ${userId}, 'Ended Session Computer', 'linux', 'x64', '0.0.1')
         `;
         await sql`
           insert into agents (id, team_id, manager_user_id, computer_id, name, display_name, runtime_provider)
-          values (${activeAgentId}, ${teamId}, ${userId}, ${computerId}, 'active-agent', 'Active Agent', 'codex')
+          values (
+            ${activeAgentId}, ${teamId}, ${userId}, ${activeAgentComputerId},
+            'active-agent', 'Active Agent', 'codex'
+          )
         `;
         await sql`
           insert into agents (
             id, team_id, manager_user_id, computer_id, name, display_name, runtime_provider, deleted_at
           )
           values (
-            ${deletedAgentId}, ${teamId}, ${userId}, ${computerId}, 'deleted-agent', 'Deleted Agent', 'codex', now()
+            ${deletedAgentId}, ${teamId}, ${userId}, ${deletedAgentComputerId},
+            'deleted-agent', 'Deleted Agent', 'codex', now()
           )
+        `;
+        await sql`
+          insert into im_bindings (id, agent_id, provider, status)
+          values (${imBindingId}, ${activeAgentId}, 'slack', 'provisioning')
+        `;
+        await sql`
+          insert into sessions (
+            id, im_binding_id, channel_id, conversation_kind, kind, ended_at
+          )
+          values
+            (${activeSessionId}, ${imBindingId}, 'active-channel', 'channel', 'channel', null),
+            (${endedSessionId}, ${imBindingId}, 'ended-channel', 'channel', 'channel', now())
+        `;
+        await sql`
+          insert into session_placements (session_id, computer_id, generation)
+          values
+            (${activeSessionId}, ${activeSessionComputerId}, 1),
+            (${endedSessionId}, ${endedSessionComputerId}, 1)
         `;
 
         await migrateDatabase(databaseUrl, migrationsFolder);
@@ -283,6 +316,9 @@ describe("database migrations", () => {
             receive_mode_default: string | null;
             statuses: string[];
             receive_modes: string[];
+            workspace_enrollments: number;
+            machine_credentials: number;
+            enrollment_presence_offline: boolean;
           }[]
         >`
           select
@@ -308,10 +344,19 @@ describe("database migrations", () => {
               where table_schema = 'public' and table_name = 'agents' and column_name = 'receive_mode'
             ) as receive_mode_default,
             array(select status::text from agents order by name) as statuses,
-            array(select receive_mode::text from agents order by name) as receive_modes
+            array(select receive_mode::text from agents order by name) as receive_modes,
+            (
+              select count(*)::int from workspace_computers
+              where workspace_id = ${teamId}
+            ) as workspace_enrollments,
+            (select count(*)::int from workspace_computer_credentials) as machine_credentials,
+            not exists(
+              select 1 from workspace_computers
+              where current_instance_id is not null or connected_at is not null
+            ) as enrollment_presence_offline
         `;
         expect(lifecycle).toEqual({
-          count: 15,
+          count: 16,
           creation_intents_null: true,
           deleted_at_exists: false,
           setup_completed_at_exists: true,
@@ -319,7 +364,49 @@ describe("database migrations", () => {
           receive_mode_default: "'all_message'::agent_receive_mode",
           statuses: ["active", "deleted"],
           receive_modes: ["mention_only", "mention_only"],
+          workspace_enrollments: 4,
+          machine_credentials: 0,
+          enrollment_presence_offline: true,
         });
+        const enrollmentStates = await sql<
+          {
+            computer_id: string;
+            current_instance_id: string | null;
+            revoked_at: Date | null;
+            revoked_by_user_id: string | null;
+          }[]
+        >`
+          select computer_id, current_instance_id, revoked_at, revoked_by_user_id
+          from workspace_computers
+          where workspace_id = ${teamId}
+        `;
+        const statesByComputer = new Map(enrollmentStates.map((row) => [row.computer_id, row]));
+        for (const computerId of [activeAgentComputerId, activeSessionComputerId]) {
+          expect(statesByComputer.get(computerId)).toMatchObject({
+            current_instance_id: null,
+            revoked_at: null,
+            revoked_by_user_id: null,
+          });
+        }
+        for (const computerId of [deletedAgentComputerId, endedSessionComputerId]) {
+          expect(statesByComputer.get(computerId)).toMatchObject({
+            current_instance_id: null,
+            revoked_at: expect.any(Date),
+            revoked_by_user_id: userId,
+          });
+        }
+        const preservedComputerIds = await sql<{ id: string }[]>`
+          select id from computers
+          where id in (
+            ${activeAgentComputerId}, ${deletedAgentComputerId},
+            ${activeSessionComputerId}, ${endedSessionComputerId}
+          )
+        `;
+        expect(preservedComputerIds).toHaveLength(4);
+        const preservedAgentIds = await sql<{ id: string }[]>`
+          select id from agents where id in (${activeAgentId}, ${deletedAgentId})
+        `;
+        expect(preservedAgentIds).toHaveLength(2);
         const repairedTeams = await sql<{ completed: boolean; name: string }[]>`
           select name, setup_completed_at is not null as completed
           from teams
@@ -348,7 +435,7 @@ describe("database migrations", () => {
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(15);
+        expect(rerun?.count).toBe(16);
       } finally {
         await sql.end();
       }

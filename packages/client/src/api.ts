@@ -14,6 +14,9 @@ import {
   agentReactivatePath,
   agentSuspendPath,
   agentUsagePath,
+  type ComputerConnectCodeExchangeRequest,
+  type ComputerConnectCodeExchangeResponse,
+  ComputerConnectCodeExchangeResponseSchema,
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
   type CreateAgentRequest,
@@ -105,6 +108,14 @@ export class OpenTagApi {
     return this.#request(HTTP_PATHS.authConnectExchange, ConnectCodeExchangeResponseSchema, {
       method: "POST",
       body: JSON.stringify({ code, ...(expectedUserId ? { expectedUserId } : {}) }),
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  exchangeComputerConnectCode(input: ComputerConnectCodeExchangeRequest): Promise<ComputerConnectCodeExchangeResponse> {
+    return this.#request(HTTP_PATHS.computerConnectExchange, ComputerConnectCodeExchangeResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
       headers: { "content-type": "application/json" },
     });
   }
@@ -333,13 +344,13 @@ export class OpenTagApi {
   }
 
   async openImResource(
-    accessToken: string,
+    machineToken: string,
     imMessageId: string,
     ordinal: number,
-    scope: { sessionId: string; computerId: string; instanceId: string; placementGeneration: number },
+    scope: { sessionId: string; instanceId: string; placementGeneration: number },
   ): Promise<Response> {
     const response = await this.#fetchResponse(runtimeImResourcePath(imMessageId, ordinal, scope), {
-      headers: { authorization: `Bearer ${accessToken}` },
+      headers: { authorization: `Bearer ${machineToken}` },
     });
     if (!response.ok) {
       const body = await response.json().catch(() => undefined);

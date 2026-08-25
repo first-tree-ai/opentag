@@ -19,7 +19,7 @@ import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { currentTraceId } from "./observability/index.js";
 import { type AgentService, AgentServiceError } from "./services/agents/index.js";
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
-import type { ComputerService } from "./services/computers/index.js";
+import type { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import type { ImResourceService } from "./services/im/index.js";
 import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
 import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
@@ -33,8 +33,13 @@ export interface CreateAppOptions {
   webAppRoot?: string;
   agentService?: AgentService;
   computerService?: ComputerService;
+  machineAuthService?: MachineAuthService;
   connectCode?: {
     issuer: ConnectCodeIssuer;
+    environment: ChannelName;
+    publicUrl: string;
+  };
+  computerConnectCode?: {
     environment: ChannelName;
     publicUrl: string;
   };
@@ -192,15 +197,24 @@ export function createApp(options: CreateAppOptions = {}) {
         publicOrigin,
       );
     }
-    if (options.imResourceService) {
-      registerImResourceRoute(app, authService, options.imResourceService, publicOrigin);
+    if (options.imResourceService && options.machineAuthService) {
+      registerImResourceRoute(app, options.machineAuthService, options.imResourceService);
     }
-    if (options.computerService) {
+    if (options.computerService && options.machineAuthService) {
       const computerService = options.computerService;
-      registerComputerRoutes(app, authService, computerService, publicOrigin);
+      const machineAuthService = options.machineAuthService;
+      registerComputerRoutes(
+        app,
+        authService,
+        computerService,
+        machineAuthService,
+        publicOrigin,
+        options.computerConnectCode?.environment,
+        options.computerConnectCode?.publicUrl,
+      );
       app.register(async (runtimeApp) => {
         await runtimeApp.register(websocket, { options: { maxPayload: 64 * 1024 } });
-        registerRuntimeRoutes(runtimeApp, authService, computerService, options.runtime);
+        registerRuntimeRoutes(runtimeApp, machineAuthService, computerService, options.runtime);
       });
     }
   }

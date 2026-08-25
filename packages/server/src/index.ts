@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { ProviderReadinessStatus } from "@opentag/shared";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
-import { agents } from "./db/schema/index.js";
+import { agents, workspaceComputers } from "./db/schema/index.js";
 import { createServerDiagnosticReporter, initTelemetry, shutdownTelemetry } from "./observability/index.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
@@ -27,7 +27,7 @@ import {
   OAuthFlowService,
   PostAuthenticationService,
 } from "./services/auth/index.js";
-import { ComputerService } from "./services/computers/index.js";
+import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import {
@@ -116,21 +116,34 @@ export async function startServer(): Promise<void> {
     );
     const connectCodeService = new ConnectCodeService(database);
     const registry = new ConnectionRegistry();
+    const machineAuthService = new MachineAuthService(database, {
+      onCredentialRotated: async (workspaceComputerId) => {
+        await registry.closeEnrollment(workspaceComputerId);
+      },
+    });
     const computerService = new ComputerService(database, authService, { providerReadiness: registry });
     const teamService = new TeamMembershipService(database, { providerReadiness: registry });
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
     const invitationService = new InvitationService(database, teamService, applicationCipher, config.publicUrl);
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database
-        .select({ computerId: agents.computerId, runtimeProvider: agents.runtimeProvider })
+        .select({ workspaceComputerId: workspaceComputers.id, runtimeProvider: agents.runtimeProvider })
         .from(agents)
+        .innerJoin(
+          workspaceComputers,
+          and(
+            eq(workspaceComputers.workspaceId, agents.teamId),
+            eq(workspaceComputers.computerId, agents.computerId),
+            isNull(workspaceComputers.revokedAt),
+          ),
+        )
         .where(eq(agents.id, agentId))
         .limit(1);
-      const currentInstanceId = agent ? registry.currentInstanceId(agent.computerId) : undefined;
+      const currentInstanceId = agent ? registry.currentInstanceId(agent.workspaceComputerId) : undefined;
       if (!agent || !currentInstanceId) return "unavailable";
       return (
         registry
-          .providerReadiness(agent.computerId)
+          .providerReadiness(agent.workspaceComputerId)
           .find(({ observation }) => observation.provider === agent.runtimeProvider)?.observation.status ?? "checking"
       );
     };
@@ -139,9 +152,9 @@ export async function startServer(): Promise<void> {
     const imBindingService = new ImBindingService(database, applicationCipher, {
       agentRuntimeReadiness: agentRuntimeReadinessForAgent,
       imCliReadiness: async (agentId, provider) => {
-        const computerId = await imBindingService.getAgentComputerId(agentId);
-        if (!computerId) return "unavailable";
-        const observations = registry.imCliReadiness(computerId);
+        const workspaceComputerId = await imBindingService.getAgentWorkspaceComputerId(agentId);
+        if (!workspaceComputerId) return "unavailable";
+        const observations = registry.imCliReadiness(workspaceComputerId);
         return (
           observations.find(({ observation }) => observation.provider === provider)?.observation.status ?? "checking"
         );
@@ -153,8 +166,7 @@ export async function startServer(): Promise<void> {
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     let sessionCollaborationService: SessionCollaborationService;
     const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
-      onImCredentialGrant: (request, context) =>
-        imBindingService.issueRuntimeCredentialGrant(request, context.computerId),
+      onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
       onLocalSessionMessageDeliveryResult: (result, context) =>
         sessionCollaborationService.handleLocalDeliveryResult(result, context),
       onSessionCollaborationCommand: (request, context) => sessionCollaborationService.handle(request, context),
@@ -171,9 +183,9 @@ export async function startServer(): Promise<void> {
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
       stopSessions: (targets) =>
         stopAgentSessions(database, targets, {
-          currentInstanceId: (computerId) => registry.currentInstanceId(computerId),
-          requestReconcile: (computerId, instanceId, request, onDispatched) =>
-            domainOwner.requestReconcile(computerId, instanceId, request, onDispatched),
+          currentInstanceId: (workspaceComputerId) => registry.currentInstanceId(workspaceComputerId),
+          requestReconcile: (workspaceComputerId, instanceId, request, onDispatched) =>
+            domainOwner.requestReconcile(workspaceComputerId, instanceId, request, onDispatched),
         }),
     });
     const feishuConnections = new FeishuConnectionManager({
@@ -241,7 +253,12 @@ export async function startServer(): Promise<void> {
         issuer: connectCodeService,
         publicUrl: config.publicUrl,
       },
+      computerConnectCode: {
+        environment: config.environment,
+        publicUrl: config.publicUrl,
+      },
       computerService,
+      machineAuthService,
       invitationService,
       imBindingService,
       feishuSetupService,

@@ -33,6 +33,7 @@ import {
   sessionPlacements,
   sessions,
   users,
+  workspaceComputers,
 } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import { disableImBindingInTransaction } from "../im-bindings/index.js";
@@ -101,6 +102,7 @@ function projectActivityByAgent(rows: readonly AgentActivityEvidence[]): Map<str
 export interface AgentSessionStopTarget {
   agentId: string;
   computerId: string;
+  workspaceComputerId: string;
   placementGeneration: number;
   sessionId: string;
 }
@@ -970,12 +972,22 @@ export class AgentService {
       .select({
         agentId: imBindings.agentId,
         computerId: sessionPlacements.computerId,
+        workspaceComputerId: workspaceComputers.id,
         placementGeneration: sessionPlacements.generation,
         sessionId: sessions.id,
       })
       .from(sessions)
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(
+        workspaceComputers,
+        and(
+          eq(workspaceComputers.workspaceId, agents.teamId),
+          eq(workspaceComputers.computerId, sessionPlacements.computerId),
+          isNull(workspaceComputers.revokedAt),
+        ),
+      )
       .where(and(eq(imBindings.agentId, agentId), isNull(sessions.endedAt)));
   }
 

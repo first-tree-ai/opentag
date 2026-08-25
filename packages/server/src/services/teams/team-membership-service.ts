@@ -18,7 +18,7 @@ import {
 } from "@opentag/shared";
 import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, computers, memberships, teams, users } from "../../db/schema/index.js";
+import { agents, memberships, teams, users, workspaceComputers } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import {
   type ProviderReadinessSource,
@@ -475,7 +475,9 @@ export class TeamMembershipService {
         continue;
       }
       const connectionStatus =
-        row.computer.currentInstanceId !== null && row.computer.lastSeenAt.getTime() >= cutoff ? "online" : "offline";
+        row.computer.currentInstanceId !== null && (row.computer.lastSeenAt?.getTime() ?? 0) >= cutoff
+          ? "online"
+          : "offline";
       byId.set(row.computer.id, {
         id: row.computer.id,
         ownerUserId: row.computer.ownerUserId,
@@ -486,13 +488,13 @@ export class TeamMembershipService {
         ...(includeProviderReadiness
           ? {
               providerReadiness: projectComputerProviderReadiness(
-                row.computer.id,
+                row.workspaceComputerId,
                 connectionStatus,
                 observedAt,
                 this.#providerReadiness,
               ),
               imCliReadiness: projectComputerImCliReadiness(
-                row.computer.id,
+                row.workspaceComputerId,
                 connectionStatus,
                 observedAt,
                 this.#providerReadiness,
@@ -500,7 +502,7 @@ export class TeamMembershipService {
             }
           : {}),
         connectedAt: row.computer.connectedAt?.toISOString() ?? null,
-        lastSeenAt: row.computer.lastSeenAt.toISOString(),
+        lastSeenAt: (row.computer.lastSeenAt ?? row.computer.enrolledAt).toISOString(),
         observedAt: observedAt.toISOString(),
         agentIds: row.agentId ? [row.agentId] : [],
       });
@@ -525,7 +527,9 @@ export class TeamMembershipService {
         continue;
       }
       const connectionStatus =
-        row.computer.currentInstanceId !== null && row.computer.lastSeenAt.getTime() >= cutoff ? "online" : "offline";
+        row.computer.currentInstanceId !== null && (row.computer.lastSeenAt?.getTime() ?? 0) >= cutoff
+          ? "online"
+          : "offline";
       byId.set(row.computer.id, {
         id: row.computer.id,
         ownerUserId: row.computer.ownerUserId,
@@ -538,13 +542,13 @@ export class TeamMembershipService {
         ...(includeProviderReadiness
           ? {
               providerReadiness: projectComputerProviderReadiness(
-                row.computer.id,
+                row.workspaceComputerId,
                 connectionStatus,
                 observedAt,
                 this.#providerReadiness,
               ),
               imCliReadiness: projectComputerImCliReadiness(
-                row.computer.id,
+                row.workspaceComputerId,
                 connectionStatus,
                 observedAt,
                 this.#providerReadiness,
@@ -552,7 +556,7 @@ export class TeamMembershipService {
             }
           : {}),
         connectedAt: row.computer.connectedAt?.toISOString() ?? null,
-        lastSeenAt: row.computer.lastSeenAt.toISOString(),
+        lastSeenAt: (row.computer.lastSeenAt ?? row.computer.enrolledAt).toISOString(),
         observedAt: observedAt.toISOString(),
         agentIds: row.agentId ? [row.agentId] : [],
       });
@@ -562,16 +566,35 @@ export class TeamMembershipService {
 
   #listComputerRows(teamId: string) {
     return this.#database
-      .select({ agentId: agents.id, computer: computers, ownerDisplayName: users.displayName })
-      .from(memberships)
-      .innerJoin(users, eq(users.id, memberships.userId))
-      .innerJoin(computers, eq(computers.ownerUserId, memberships.userId))
+      .select({
+        agentId: agents.id,
+        computer: {
+          id: workspaceComputers.computerId,
+          ownerUserId: workspaceComputers.enrolledByUserId,
+          displayName: workspaceComputers.displayName,
+          platform: workspaceComputers.platform,
+          arch: workspaceComputers.arch,
+          clientVersion: workspaceComputers.clientVersion,
+          currentInstanceId: workspaceComputers.currentInstanceId,
+          connectedAt: workspaceComputers.connectedAt,
+          lastSeenAt: workspaceComputers.lastSeenAt,
+          enrolledAt: workspaceComputers.enrolledAt,
+        },
+        ownerDisplayName: users.displayName,
+        workspaceComputerId: workspaceComputers.id,
+      })
+      .from(workspaceComputers)
+      .innerJoin(users, eq(users.id, workspaceComputers.enrolledByUserId))
       .leftJoin(
         agents,
-        and(eq(agents.teamId, memberships.teamId), eq(agents.computerId, computers.id), ne(agents.status, "deleted")),
+        and(
+          eq(agents.teamId, workspaceComputers.workspaceId),
+          eq(agents.computerId, workspaceComputers.computerId),
+          ne(agents.status, "deleted"),
+        ),
       )
-      .where(and(eq(memberships.teamId, teamId), eq(memberships.status, "active"), isNull(users.suspendedAt)))
-      .orderBy(asc(computers.displayName), asc(computers.id), asc(agents.id));
+      .where(and(eq(workspaceComputers.workspaceId, teamId), isNull(workspaceComputers.revokedAt)))
+      .orderBy(asc(workspaceComputers.displayName), asc(workspaceComputers.computerId), asc(agents.id));
   }
 
   async #lockMembership(transaction: DatabaseTransaction, teamId: string, userId: string) {

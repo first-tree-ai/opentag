@@ -1,7 +1,7 @@
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeCredentialsAtomically } from "@opentag/client";
+import { readCredentials, writeMachineCredentialsAtomically } from "@opentag/client";
 import { getChannelConfig } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { channelConfig } from "../core/channel/config.js";
@@ -125,15 +125,8 @@ describe("systemd service backend", () => {
       writeFileWithParents(staleCli, "#!/usr/bin/env node\n"),
     ]);
     await Promise.all([chmod(installedCli, 0o755), chmod(staleCli, 0o755)]);
-    await writeCredentialsAtomically(
-      {
-        accessToken: "access-token",
-        accessTokenExpiresAt: "2030-01-01T00:00:00.000Z",
-        refreshToken: "refresh-token",
-        serverUrl: "https://example.com",
-      },
-      home,
-    );
+    await writeMachineCredential(home);
+    expect(await readCredentials(home)).toBeUndefined();
     let active = false;
     const runner = fakeRunner((program, args) => {
       if (program === "loginctl") return result(0, "", "");
@@ -327,15 +320,7 @@ describe("systemd service backend", () => {
           serviceId: channelConfig.serviceId,
         }),
       );
-      await writeCredentialsAtomically(
-        {
-          accessToken: "access-token",
-          accessTokenExpiresAt: "2030-01-01T00:00:00.000Z",
-          refreshToken: "refresh-token",
-          serverUrl: "https://example.com",
-        },
-        requestedHome,
-      );
+      await writeMachineCredential(requestedHome);
       const runner = fakeRunner((_, args) => {
         if (args.includes("is-active")) return result(3, "inactive", "");
         return result(0, "", "");
@@ -365,15 +350,7 @@ describe("systemd service backend", () => {
     const canonicalFirstHome = await realpath(firstHome);
     const invocation = { args: [], program: "/usr/bin/opentag" };
     for (const home of [firstHome, secondHome]) {
-      await writeCredentialsAtomically(
-        {
-          accessToken: "access-token",
-          accessTokenExpiresAt: "2030-01-01T00:00:00.000Z",
-          refreshToken: "refresh-token",
-          serverUrl: "https://example.com",
-        },
-        home,
-      );
+      await writeMachineCredential(home);
     }
     let active = false;
     let releaseReload: (() => void) | undefined;
@@ -445,15 +422,7 @@ describe("systemd service backend", () => {
       const userHome = await temporaryDirectory("opentag-systemd-");
       const home = await temporaryDirectory("opentag-systemd-home-");
       const invocation = { args: [], program: "/usr/bin/opentag" };
-      await writeCredentialsAtomically(
-        {
-          accessToken: "access-token",
-          accessTokenExpiresAt: "2030-01-01T00:00:00.000Z",
-          refreshToken: "refresh-token",
-          serverUrl: "https://example.com",
-        },
-        home,
-      );
+      await writeMachineCredential(home);
       const runner = fakeRunner((_, args) => {
         if (args.includes("show-environment")) return result(0, "", "");
         if (args.includes("LoadState")) return result(0, "loaded", "");
@@ -809,15 +778,7 @@ describe("launchd service backend", () => {
       const userHome = await temporaryDirectory("opentag-launchd-");
       const home = join(userHome, ".opentag");
       const invocation = { args: [], program: "/usr/local/bin/opentag" };
-      await writeCredentialsAtomically(
-        {
-          accessToken: "access-token",
-          accessTokenExpiresAt: "2030-01-01T00:00:00.000Z",
-          refreshToken: "refresh-token",
-          serverUrl: "https://example.com",
-        },
-        home,
-      );
+      await writeMachineCredential(home);
       const runner = fakeRunner((_, args) => {
         if (args[0] === "print" && args[1] === "gui/501") return result(0, "domain", "");
         if (args[0] === "print") return result(0, "state = waiting", "");
@@ -844,6 +805,24 @@ describe("launchd service backend", () => {
 
 function result(code: number, stdout: string, stderr: string): CommandResult {
   return { code, stderr, stdout, timedOut: false };
+}
+
+async function writeMachineCredential(home: string): Promise<void> {
+  await writeMachineCredentialsAtomically(
+    {
+      version: 1,
+      enrollments: [
+        {
+          workspaceComputerId: crypto.randomUUID(),
+          workspaceId: crypto.randomUUID(),
+          computerId: crypto.randomUUID(),
+          machineToken: `otmc_${crypto.randomUUID()}.${"a".repeat(43)}`,
+          serverUrl: "https://example.com",
+        },
+      ],
+    },
+    home,
+  );
 }
 
 function fakeRunner(handler: (program: string, args: readonly string[]) => CommandResult = () => result(0, "", "")) {

@@ -62,7 +62,7 @@ export interface RuntimeDomainOwnerOptions {
 }
 
 interface PendingBase<TRequest, TResult> {
-  computerId: string;
+  workspaceComputerId: string;
   hash: string;
   instanceId: string;
   request: TRequest;
@@ -88,7 +88,7 @@ interface PendingSessionMessage extends PendingBase<SessionMessageDeliveryReques
 type PendingRequest = PendingReconcile | PendingDelivery | PendingSessionMessage;
 
 interface ExpiredDelivery {
-  computerId: string;
+  workspaceComputerId: string;
   hash: string;
   inputHash: string;
   instanceId: string;
@@ -97,7 +97,7 @@ interface ExpiredDelivery {
 }
 
 interface CompletedRequest {
-  computerId: string;
+  workspaceComputerId: string;
   hash: string;
   instanceId: string;
   kind: "reconcile" | "delivery" | "session-message";
@@ -105,7 +105,7 @@ interface CompletedRequest {
 }
 
 interface StartingDelivery {
-  computerId: string;
+  workspaceComputerId: string;
   hash: string;
   instanceId: string;
   promise: Promise<ImMessageDeliveryResult>;
@@ -164,7 +164,7 @@ export class RuntimeDomainOwner {
   }
 
   requestReconcile(
-    computerId: string,
+    workspaceComputerId: string,
     instanceId: string,
     request: SessionReconcileRequest,
     onDispatched?: () => void,
@@ -173,7 +173,8 @@ export class RuntimeDomainOwner {
       requestId: request.requestId,
       sessionId: request.sessionId,
       agentId: request.agentId,
-      computerId,
+      computerId: request.computerId,
+      workspaceComputerId,
       instanceId,
       placementGeneration: request.placementGeneration,
     });
@@ -181,7 +182,7 @@ export class RuntimeDomainOwner {
     try {
       operation = this.#request(
         "reconcile",
-        computerId,
+        workspaceComputerId,
         instanceId,
         request,
         computeReconcilePayloadHash(request),
@@ -209,7 +210,7 @@ export class RuntimeDomainOwner {
   }
 
   requestDelivery(
-    computerId: string,
+    workspaceComputerId: string,
     instanceId: string,
     request: DirectImMessageDeliveryRequest,
     onDispatched?: () => void,
@@ -220,13 +221,13 @@ export class RuntimeDomainOwner {
       messageId: request.imMessageId,
       sessionId: request.sessionId,
       agentId: request.agentId,
-      computerId,
+      workspaceComputerId,
       instanceId,
       placementGeneration: request.placementGeneration,
     });
     let operation: Promise<ImMessageDeliveryResult>;
     try {
-      operation = this.#requestDelivery(computerId, instanceId, request, onDispatched);
+      operation = this.#requestDelivery(workspaceComputerId, instanceId, request, onDispatched);
     } catch (error) {
       return tracePromise(
         "runtime.delivery",
@@ -248,13 +249,13 @@ export class RuntimeDomainOwner {
   }
 
   requestSessionMessageDelivery(
-    computerId: string,
+    workspaceComputerId: string,
     instanceId: string,
     request: SessionMessageDeliveryRequest,
   ): Promise<SessionMessageDeliveryResult> {
     return this.#request(
       "session-message",
-      computerId,
+      workspaceComputerId,
       instanceId,
       request,
       hashTuple([
@@ -284,7 +285,7 @@ export class RuntimeDomainOwner {
   }
 
   #requestDelivery(
-    computerId: string,
+    workspaceComputerId: string,
     instanceId: string,
     request: DirectImMessageDeliveryRequest,
     onDispatched?: () => void,
@@ -293,7 +294,11 @@ export class RuntimeDomainOwner {
     const requestHash = hashTuple([request.deliveryId, inputHash]);
     const starting = this.#startingDeliveries.get(request.requestId);
     if (starting) {
-      if (starting.hash !== requestHash || starting.computerId !== computerId || starting.instanceId !== instanceId) {
+      if (
+        starting.hash !== requestHash ||
+        starting.workspaceComputerId !== workspaceComputerId ||
+        starting.instanceId !== instanceId
+      ) {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
       }
       onDispatched?.();
@@ -306,7 +311,7 @@ export class RuntimeDomainOwner {
     ) {
       return this.#request(
         "delivery",
-        computerId,
+        workspaceComputerId,
         instanceId,
         request,
         requestHash,
@@ -314,8 +319,8 @@ export class RuntimeDomainOwner {
         onDispatched,
       ) as Promise<ImMessageDeliveryResult>;
     }
-    const promise = this.#startDelivery(computerId, instanceId, request, requestHash, inputHash, onDispatched);
-    const owner = { computerId, hash: requestHash, instanceId, promise };
+    const promise = this.#startDelivery(workspaceComputerId, instanceId, request, requestHash, inputHash, onDispatched);
+    const owner = { workspaceComputerId, hash: requestHash, instanceId, promise };
     this.#startingDeliveries.set(request.requestId, owner);
     void promise.then(
       () => {
@@ -331,21 +336,24 @@ export class RuntimeDomainOwner {
   }
 
   async #startDelivery(
-    computerId: string,
+    workspaceComputerId: string,
     instanceId: string,
     request: DirectImMessageDeliveryRequest,
     requestHash: string,
     inputHash: string,
     onDispatched?: () => void,
   ): Promise<ImMessageDeliveryResult> {
-    const dispatch = await this.#custody.beginDeliveryDispatch(request, inputHash, { computerId, instanceId });
+    const dispatch = await this.#custody.beginDeliveryDispatch(request, inputHash, {
+      workspaceComputerId,
+      instanceId,
+    });
     if (dispatch === "conflict") throw new RuntimeDomainConflictError("The delivery dispatch conflicts");
     if (dispatch === "stale_generation") {
       throw new RuntimeDomainRequestError("stale_placement", "The delivery dispatch placement is stale");
     }
     return this.#request(
       "delivery",
-      computerId,
+      workspaceComputerId,
       instanceId,
       request,
       requestHash,
@@ -357,7 +365,7 @@ export class RuntimeDomainOwner {
   async resend(requestId: string): Promise<void> {
     const pending = this.#pending.get(requestId);
     if (!pending) throw new RuntimeDomainRequestError("not_pending", "The runtime request is not pending");
-    await this.#registry.send(pending.computerId, pending.instanceId, pending.request);
+    await this.#registry.send(pending.workspaceComputerId, pending.instanceId, pending.request);
   }
 
   businessOptions(): RuntimeBusinessOptions {
@@ -380,7 +388,7 @@ export class RuntimeDomainOwner {
     frame: ClientRuntimeBusinessFrame,
     context: RuntimeBusinessContext,
   ): Promise<TurnReportResult | RuntimeImCredentialGrantResult | SessionCollaborationCommandResult | undefined> {
-    if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
+    if (this.#registry.currentInstanceId(context.workspaceComputerId) !== context.instanceId) {
       if (frame.type === "turn:report") {
         return {
           type: "turn:report:result",
@@ -418,7 +426,7 @@ export class RuntimeDomainOwner {
       const delivery = await this.#custody.getDeliveryByTurn(frame.turnId);
       if (
         delivery &&
-        delivery.computerId === context.computerId &&
+        delivery.workspaceComputerId === context.workspaceComputerId &&
         delivery.instanceId === context.instanceId &&
         delivery.sessionId === frame.sessionId &&
         delivery.placementGeneration === frame.placementGeneration
@@ -445,6 +453,7 @@ export class RuntimeDomainOwner {
         sessionId: frame.sessionId,
         agentId: frame.agentId,
         computerId: context.computerId,
+        workspaceComputerId: context.workspaceComputerId,
         instanceId: context.instanceId,
         placementGeneration: frame.placementGeneration,
       }),
@@ -458,7 +467,7 @@ export class RuntimeDomainOwner {
 
   #request(
     kind: "reconcile" | "delivery" | "session-message",
-    computerId: string,
+    workspaceComputerId: string,
     instanceId: string,
     request: SessionReconcileRequest | DirectImMessageDeliveryRequest | SessionMessageDeliveryRequest,
     hash: string,
@@ -470,7 +479,7 @@ export class RuntimeDomainOwner {
       if (
         existing.kind !== kind ||
         existing.hash !== hash ||
-        existing.computerId !== computerId ||
+        existing.workspaceComputerId !== workspaceComputerId ||
         existing.instanceId !== instanceId
       ) {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
@@ -483,7 +492,7 @@ export class RuntimeDomainOwner {
       if (
         completed.kind !== kind ||
         completed.hash !== hash ||
-        completed.computerId !== computerId ||
+        completed.workspaceComputerId !== workspaceComputerId ||
         completed.instanceId !== instanceId
       ) {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
@@ -496,7 +505,7 @@ export class RuntimeDomainOwner {
       if (
         kind !== "delivery" ||
         expired.hash !== hash ||
-        expired.computerId !== computerId ||
+        expired.workspaceComputerId !== workspaceComputerId ||
         expired.instanceId !== instanceId
       ) {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
@@ -525,7 +534,7 @@ export class RuntimeDomainOwner {
     }, this.#options.requestTimeoutMs);
     timer.unref();
     const base = {
-      computerId,
+      workspaceComputerId,
       hash,
       instanceId,
       request,
@@ -546,7 +555,7 @@ export class RuntimeDomainOwner {
             } as PendingDelivery)
           : ({ ...base, kind, request: request as SessionMessageDeliveryRequest } as PendingSessionMessage);
     this.#pending.set(request.requestId, pending);
-    const dispatch = this.#registry.send(computerId, instanceId, request);
+    const dispatch = this.#registry.send(workspaceComputerId, instanceId, request);
     onDispatched?.();
     void dispatch.catch((error: unknown) => {
       if (this.#pending.get(request.requestId) !== pending) return;
@@ -681,10 +690,10 @@ export class RuntimeDomainOwner {
   }
 
   #matchesContext(
-    request: Pick<PendingRequest | ExpiredDelivery, "computerId" | "instanceId">,
+    request: Pick<PendingRequest | ExpiredDelivery, "instanceId" | "workspaceComputerId">,
     context: RuntimeBusinessContext,
   ): boolean {
-    return request.computerId === context.computerId && request.instanceId === context.instanceId;
+    return request.workspaceComputerId === context.workspaceComputerId && request.instanceId === context.instanceId;
   }
 
   #settle(
@@ -699,11 +708,11 @@ export class RuntimeDomainOwner {
   }
 
   #rememberCompleted(
-    request: Pick<PendingRequest | ExpiredDelivery, "computerId" | "hash" | "instanceId" | "kind" | "request">,
+    request: Pick<PendingRequest | ExpiredDelivery, "hash" | "instanceId" | "kind" | "request" | "workspaceComputerId">,
     result: SessionReconcileResult | ImMessageDeliveryResult | SessionMessageDeliveryResult,
   ): void {
     this.#completed.set(request.request.requestId, {
-      computerId: request.computerId,
+      workspaceComputerId: request.workspaceComputerId,
       hash: request.hash,
       instanceId: request.instanceId,
       kind: request.kind,
@@ -718,7 +727,7 @@ export class RuntimeDomainOwner {
 
   #rememberExpiredDelivery(pending: PendingDelivery): void {
     this.#expiredDeliveries.set(pending.request.requestId, {
-      computerId: pending.computerId,
+      workspaceComputerId: pending.workspaceComputerId,
       hash: pending.hash,
       inputHash: pending.inputHash,
       instanceId: pending.instanceId,

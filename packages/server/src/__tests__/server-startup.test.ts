@@ -7,7 +7,7 @@ const state = vi.hoisted(() => ({
   appOptions: undefined as unknown,
   onClose: undefined as (() => Promise<void>) | undefined,
   database: undefined as unknown,
-  selectedAgents: [] as Array<{ computerId: string; runtimeProvider: "codex" | "claude-code" }>,
+  selectedAgents: [] as Array<{ workspaceComputerId: string; runtimeProvider: "codex" | "claude-code" }>,
   sql: { end: vi.fn() },
   parseServerConfig: vi.fn(),
   migrateDatabase: vi.fn(),
@@ -71,6 +71,7 @@ vi.mock("../runtime/connection-registry.js", () => ({
     imCliReadiness(computerId: string) {
       return state.registryImCliReadiness(computerId);
     }
+    closeEnrollment() {}
   },
   RuntimeRegistrySendError: class extends Error {},
 }));
@@ -125,7 +126,10 @@ vi.mock("../services/auth/index.js", () => ({
   OAuthFlowService: class {},
   PostAuthenticationService: class {},
 }));
-vi.mock("../services/computers/index.js", () => ({ ComputerService: class {} }));
+vi.mock("../services/computers/index.js", () => ({
+  ComputerService: class {},
+  MachineAuthService: class {},
+}));
 vi.mock("../services/crypto.js", () => ({ ApplicationCipher: class {} }));
 vi.mock("../services/im/index.js", () => ({
   ImMessageInbox: class {},
@@ -166,7 +170,7 @@ vi.mock("../services/im-bindings/index.js", () => ({
     constructor(_database: unknown, _cipher: unknown, options: unknown) {
       state.imBindingOptions = options;
     }
-    getAgentComputerId(agentId: string) {
+    getAgentWorkspaceComputerId(agentId: string) {
       return state.imBindingGetAgentComputerId(agentId);
     }
     issueRuntimeCredentialGrant(request: unknown, computerId: string) {
@@ -238,7 +242,7 @@ beforeEach(() => {
   state.config = defaultConfig();
   state.appOptions = undefined;
   state.onClose = undefined;
-  state.selectedAgents = [{ computerId: "computer-1", runtimeProvider: "codex" }];
+  state.selectedAgents = [{ workspaceComputerId: "workspace-computer-1", runtimeProvider: "codex" }];
   state.imBindingOptions = undefined;
   state.feishuConnectionOptions = undefined;
   state.feishuSetupOptions = undefined;
@@ -249,13 +253,14 @@ beforeEach(() => {
   state.slackAdapterOptions = undefined;
   state.sql = { end: vi.fn(async () => state.events.push("sql:end")) };
   state.database = {
-    select: vi.fn(() => ({
-      from: vi.fn(() => ({
-        where: vi.fn(() => ({
-          limit: vi.fn(async () => state.selectedAgents),
-        })),
-      })),
-    })),
+    select: vi.fn(() => {
+      const query = {
+        innerJoin: vi.fn(() => query),
+        where: vi.fn(() => query),
+        limit: vi.fn(async () => state.selectedAgents),
+      };
+      return { from: vi.fn(() => query) };
+    }),
   };
   state.parseServerConfig.mockImplementation(() => state.config);
   state.migrateDatabase.mockImplementation(async () => state.events.push("migration:run"));
@@ -403,12 +408,21 @@ describe("Server startup", () => {
           agentId: "agent-1",
           placementGeneration: 3,
         },
-        { computerId: "computer-1", instanceId: "instance-1" },
+        {
+          computerId: "computer-1",
+          workspaceComputerId: "workspace-computer-1",
+          workspaceId: "workspace-1",
+          instanceId: "instance-1",
+        },
       ),
     ).resolves.toMatchObject({ type: "im:credential:result", requestId: "request-1", status: "rejected" });
     expect(state.issueRuntimeCredentialGrant).toHaveBeenCalledWith(
       expect.objectContaining({ type: "im:credential", requestId: "request-1" }),
-      "computer-1",
+      expect.objectContaining({
+        computerId: "computer-1",
+        workspaceComputerId: "workspace-computer-1",
+        workspaceId: "workspace-1",
+      }),
     );
 
     (state.workerOptions as { onDiagnostic(code: string): void }).onDiagnostic("IM_DELIVERY_FAILED");

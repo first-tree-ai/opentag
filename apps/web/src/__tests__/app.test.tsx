@@ -670,6 +670,11 @@ describe("OpenTag Web App Shell", () => {
     expect(within(agentCard as HTMLElement).getByText("Tokens")).toBeTruthy();
     expect(within(agentCard as HTMLElement).getByText("428K")).toBeTruthy();
     expect(within(agentCard as HTMLElement).getByText("Not connected")).toBeTruthy();
+    expect(
+      within(agentCard as HTMLElement)
+        .getByRole("link", { name: "Connect messaging" })
+        .getAttribute("href"),
+    ).toBe(`/agents/${agentId}/settings/messaging`);
     expect(screen.queryByText("Ada's Mac · macOS")).toBeNull();
     expect(screen.queryByText("Mentions only")).toBeNull();
     const workspaceNavigation = screen.getByRole("navigation", { name: "Product" });
@@ -703,7 +708,7 @@ describe("OpenTag Web App Shell", () => {
     expect(within(status as HTMLElement).getByText("Started 8m ago")).toBeTruthy();
   });
 
-  it("keeps an offline reason and reconnect action together in the Agent status", async () => {
+  it("keeps an offline reason and its Computer exit together in the Agent status", async () => {
     installApi("admin", {
       bound: true,
       computerStatus: () => "offline",
@@ -718,9 +723,10 @@ describe("OpenTag Web App Shell", () => {
       .closest(".ds-status");
     expect(status).toBeTruthy();
     expect(within(status as HTMLElement).getByText("Computer offline")).toBeTruthy();
-    const reconnect = within(status as HTMLElement).getByRole("link", { name: "Reconnect" });
-    expect(reconnect.classList.contains("ds-button--inline")).toBe(true);
-    expect(reconnect.classList.contains("ds-button--outline")).toBe(false);
+    const exit = within(status as HTMLElement).getByRole("link", { name: "View Computer" });
+    expect(exit.getAttribute("href")).toBe(`/agents/${agentId}/settings/computer`);
+    expect(exit.classList.contains("ds-button--inline")).toBe(true);
+    expect(exit.classList.contains("ds-button--outline")).toBe(false);
   });
 
   it.each(["/", "/agents"])("redirects unauthenticated protected path %s to login", async (path) => {
@@ -1597,8 +1603,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Connected computer" })).toBeTruthy();
-    expect(await screen.findByText("Ada's Mac · macOS")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Ada's Mac · macOS" })).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Reviewer" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Execution" })).toBeNull();
@@ -1606,16 +1611,63 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText(/Last seen/i)).toBeNull();
   });
 
-  it("shows Computer recovery details only when the assigned Computer is offline", async () => {
+  it("names the machine-level recovery for an offline Computer instead of offering a dead retry", async () => {
     installApi("admin", { bound: true, computerStatus: () => "offline" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
 
-    expect(await screen.findByText("Ada's Mac · macOS")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Ada's Mac · macOS" })).toBeTruthy();
     expect(screen.getByText("Offline")).toBeTruthy();
     expect(screen.getByText(/Last seen/)).toBeTruthy();
-    expect(screen.getByText("New requests can start after this Computer reconnects.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+    expect(
+      screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring this Computer back online."),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
+  });
+
+  it("observes a Computer coming back online from the recovery page itself", async () => {
+    let computerStatus: "online" | "offline" = "offline";
+    installApi("admin", { bound: true, computerStatus: () => computerStatus });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
+    render(<App />);
+
+    expect(await screen.findByText("Offline")).toBeTruthy();
+    expect(
+      screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring this Computer back online."),
+    ).toBeTruthy();
+
+    computerStatus = "online";
+    fireEvent(window, new Event("focus"));
+
+    expect(await screen.findByText("Online")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(/Start it there/)).toBeNull());
+  });
+
+  it("explains an unready Provider on the Computer page instead of the model settings", async () => {
+    installApi("admin", {
+      bound: true,
+      runtimeProvider: "claude-code",
+      computerProviderReadiness: [
+        { provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" },
+        { provider: "claude-code", status: "sign-in", observedAt: "2026-08-20T00:00:00.000Z" },
+      ],
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Ada's Mac · macOS" })).toBeTruthy();
+    expect(screen.getByText("Not ready")).toBeTruthy();
+    expect(screen.getByText("Claude Code is not signed in on Ada's Mac.")).toBeTruthy();
+  });
+
+  it("hides failure exits from viewers who cannot open Agent settings", async () => {
+    installApi("member", { bound: true, computerStatus: () => "offline", handoffReady: true });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+
+    expect(await screen.findByText("Needs attention")).toBeTruthy();
+    expect(screen.getByText("Computer offline")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "View Computer" })).toBeNull();
   });
 
   it("refreshes Agent availability when the page regains focus", async () => {
@@ -1628,7 +1680,7 @@ describe("OpenTag Web App Shell", () => {
     computerStatus = "offline";
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("The assigned Computer is offline, so new requests cannot start.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Review Computer" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View Computer" })).toBeTruthy();
   });
 
   it("keeps Agent cards useful when Computer status cannot be confirmed", async () => {
@@ -1661,6 +1713,9 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByText("Needs attention")).toBeTruthy();
     expect(screen.getByText("Computer not ready")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View Computer" }).getAttribute("href")).toBe(
+      `/agents/${agentId}/settings/computer`,
+    );
     expect(screen.queryByText("Available")).toBeNull();
   });
 
@@ -1670,8 +1725,11 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    // The detail status names the same state as the Agent list, so one failure has one name.
+    expect(screen.getAllByText("Needs attention").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Action required")).toBeNull();
     expect(screen.getByText("Messages cannot currently be handed off to this Agent.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Review messaging" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View messaging" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Current work" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Where to use this Agent" })).toBeTruthy();
     expect(screen.queryByText("Handoff")).toBeNull();

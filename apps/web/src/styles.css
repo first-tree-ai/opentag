@@ -3068,7 +3068,8 @@ textarea:focus {
 
 .agent-runtime-recovery {
   display: grid;
-  max-width: 360px;
+  /* Recovery copy is the page content here, not a side note, so it gets a readable measure. */
+  max-width: 520px;
   justify-items: start;
   gap: 8px;
 }

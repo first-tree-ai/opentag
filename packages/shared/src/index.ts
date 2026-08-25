@@ -201,6 +201,10 @@ export {
   TeamInvitationSchema,
 } from "./invitation.js";
 export {
+  getRuntimeConfigurationOptions,
+  type RuntimeConfigurationOptions,
+} from "./runtime-configuration-options.js";
+export {
   type AgentTraceBatch,
   AgentTraceBatchSchema,
   type AgentTraceEvent,

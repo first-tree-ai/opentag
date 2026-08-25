@@ -275,7 +275,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       },
       configuration: {
         model: "base-model",
-        reasoningEffort: "high",
+        reasoningEffort: "xhigh",
         provider: { personality: "friendly", serviceName: "opentag", summary: "concise" },
       },
     });
@@ -320,7 +320,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
 
     const second = runtime.prompt({ runId: "base-only", input: input("again") });
     await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(2));
-    expect(client.lastCall("turn/start")?.params).toMatchObject({ model: "base-model", effort: "high" });
+    expect(client.lastCall("turn/start")?.params).toMatchObject({ model: "base-model", effort: "xhigh" });
     client.complete({ id: "turn-2", items: [] });
     await second;
     await runtime.close();

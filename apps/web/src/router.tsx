@@ -1478,7 +1478,7 @@ const agentSettingsSections: ReadonlyArray<{
   },
   {
     key: "identity",
-    label: "Name & identity",
+    label: "Name",
     group: "details",
     icon: "user",
   },
@@ -1689,7 +1689,7 @@ function AgentContact({ agent }: { agent: AgentDetailView }) {
             <strong>
               {titleCase(binding.provider)} · @{agent.name}
             </strong>
-            <small>{agentUseInstruction(agent, titleCase(binding.provider))}</small>
+            <small>{agentUseInstruction(agent, binding.provider)}</small>
           </span>
           {agent.viewerCapabilities.canManage ? (
             <Link
@@ -2037,7 +2037,7 @@ function agentSettingsSummary(agent: AgentDetailView, config: AgentAdminConfig, 
         : messagingConnectionLabel(binding, agent.availability.dependencies.handoff.state);
     return `${titleCase(binding.provider)} · @${agent.name} · ${status}`;
   }
-  if (section === "identity") return `${config.displayName} · @${config.name}`;
+  if (section === "identity") return config.displayName;
   if (section === "computer") {
     const state = agent.availability.dependencies.computer.state;
     const status = state === "ready" ? "Online" : state === "action_required" ? "Offline" : "Unconfirmed";
@@ -2067,10 +2067,10 @@ function GeneralConfigForm({
       const updated = await browserApi.updateAgent(config.id, { expectedRevision: config.revision, displayName });
       setConfig(updated);
       setDisplayName(updated.displayName);
-      setMessage("Identity saved.");
+      setMessage("Name saved.");
       onAgentChanged();
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to save identity");
+      setMessage(cause instanceof Error ? cause.message : "Unable to save name");
     } finally {
       setSaving(false);
     }
@@ -2078,8 +2078,8 @@ function GeneralConfigForm({
   return (
     <form className="form-card agent-settings-form" onSubmit={submit}>
       <header className="agent-settings-page-title">
-        <h1>Name &amp; identity</h1>
-        <p>Choose the name teammates see. The handle cannot be changed.</p>
+        <h1>Name</h1>
+        <p>Choose the name teammates see.</p>
       </header>
       <Field htmlFor="agent-display-name" label="Display name">
         <input
@@ -2093,9 +2093,6 @@ function GeneralConfigForm({
             setMessage(undefined);
           }}
         />
-      </Field>
-      <Field hint="The handle cannot be changed." htmlFor="agent-handle" label="Handle">
-        <input className="ds-control" id="agent-handle" readOnly value={`@${config.name}`} />
       </Field>
       {dirty ? (
         <div className="dirty-bar">
@@ -2405,7 +2402,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
       setConfirmation(undefined);
       onAgentChanged();
     } catch (cause) {
-      setConfirmationError(cause instanceof Error ? cause.message : "Unable to disable IM binding");
+      setConfirmationError(cause instanceof Error ? cause.message : "Unable to disconnect messaging");
     } finally {
       setConfirmationBusy(false);
     }
@@ -2420,7 +2417,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
         <h1 ref={messagingHeadingRef} tabIndex={-1}>
           Messaging
         </h1>
-        <p>Choose where teammates send work to {agent.displayName}.</p>
+        <p>Choose how teammates can contact and assign work to {agent.displayName}.</p>
       </header>
       <FeishuSetup
         agentId={agent.id}
@@ -2455,7 +2452,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                           <section className="im-section" aria-labelledby="contact-channel-heading">
                             <div className="im-section-heading">
                               <h3 id="contact-channel-heading">Contact channel</h3>
-                              <p>Where teammates can reach this Agent and whether the connection is available.</p>
+                              <p>See how teammates can reach this agent and check its connection status.</p>
                             </div>
                             <div className="binding-status">
                               <StatusIndicator
@@ -2468,7 +2465,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                               />
                               <small>
                                 {binding.lastConfirmedAt
-                                  ? `Confirmed ${formatDate(binding.lastConfirmedAt)}`
+                                  ? `Last checked ${formatDate(binding.lastConfirmedAt)}`
                                   : "Unable to confirm"}
                               </small>
                             </div>
@@ -2479,7 +2476,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                               </div>
                               <div>
                                 <dt>How to use</dt>
-                                <dd>{agentUseInstruction(agent, titleCase(binding.provider))}</dd>
+                                <dd>{agentUseInstruction(agent, binding.provider)}</dd>
                               </div>
                             </dl>
                             {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
@@ -2509,12 +2506,12 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                     variant="outline"
                                     onClick={() => void connectFeishu("replace")}
                                   >
-                                    Replace Feishu Bot
+                                    Change Feishu Bot
                                   </Button>
                                 ) : null}
                                 {binding.provider === "slack" && binding.bindingState !== "provisioning" ? (
                                   <Button size="compact" variant="outline" onClick={() => void connectSlack("replace")}>
-                                    Replace Slack App
+                                    Change Slack App
                                   </Button>
                                 ) : null}
                                 <Button
@@ -2526,7 +2523,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                     setConfirmation({ bindingId: binding.id, kind: "disable_binding" });
                                   }}
                                 >
-                                  Disable IM binding
+                                  Disconnect {titleCase(binding.provider)}
                                 </Button>
                               </div>
                             ) : (
@@ -2538,25 +2535,18 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                               <h3 id="trigger-rules-heading" ref={triggerRulesHeadingRef} tabIndex={-1}>
                                 Trigger rules
                               </h3>
-                              <p>Which incoming messages can start Agent work.</p>
+                              <p>Choose which incoming messages can start a task.</p>
                             </div>
                             <SettingsList className="agent-message-rules">
-                              <SettingsRow
-                                description="A direct message can always start work."
-                                label="Direct messages"
-                              >
-                                <strong>Always</strong>
+                              <SettingsRow description="Every direct message starts a task." label="Direct messages">
+                                <strong>All messages</strong>
                               </SettingsRow>
                               <SettingsRow
-                                description={
-                                  binding.receiveMode === "mention_only"
-                                    ? `Teammates must mention @${agent.name}.`
-                                    : "Every new conversation message can start work."
-                                }
-                                label={`${titleCase(binding.provider)} conversations`}
+                                description="Choose whether the agent responds only to mentions or to every message."
+                                label={sharedConversationLabel(binding.provider)}
                               >
                                 {agent.viewerCapabilities.canManage ? (
-                                  <fieldset aria-label="Conversation trigger rule" className="segmented-control">
+                                  <fieldset aria-label="Shared conversation trigger rule" className="segmented-control">
                                     {binding.receiveMode === "mention_only" ? (
                                       <>
                                         <span className="active">Mentions only</span>
@@ -2568,7 +2558,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                             setConfirmation({ kind: "all_messages" });
                                           }}
                                         >
-                                          All messages
+                                          Every message
                                         </button>
                                       </>
                                     ) : (
@@ -2576,7 +2566,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                         <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
                                           Mentions only
                                         </button>
-                                        <span className="active">All messages</span>
+                                        <span className="active">Every message</span>
                                       </>
                                     )}
                                   </fieldset>
@@ -2597,10 +2587,10 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                         <section className="im-section" aria-labelledby="contact-channel-heading">
                           <div className="im-section-heading">
                             <h3 id="contact-channel-heading">Contact channel</h3>
-                            <p>Where teammates can reach this Agent.</p>
+                            <p>See how teammates can reach this agent.</p>
                           </div>
                           <EmptyState title="No messaging channel">
-                            Teammates cannot contact this Agent until a supported bot is connected.
+                            Teammates cannot contact this agent until a supported bot is connected.
                           </EmptyState>
                           {agent.viewerCapabilities.canManage ? (
                             <div className="im-actions">
@@ -2632,9 +2622,9 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
       {confirmation?.kind === "all_messages" ? (
         <Dialog
           busy={confirmationBusy}
-          description="Every new conversation message could start Agent work. This can share more conversation content and increase token usage."
+          description="Every new conversation message could start a task. This can share more conversation content and increase token usage."
           returnFocusRef={allMessagesButtonRef}
-          title="Allow all conversation messages?"
+          title="Allow messages without mentions?"
           onClose={closeMessagingConfirmation}
         >
           {confirmationError ? (
@@ -2647,7 +2637,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
               Keep mentions only
             </Button>
             <Button disabled={confirmationBusy} onClick={() => void changeReceiveMode("all_message")}>
-              {confirmationBusy ? "Updating…" : "Allow all messages"}
+              {confirmationBusy ? "Updating…" : "Allow every message"}
             </Button>
           </div>
         </Dialog>
@@ -2655,7 +2645,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
       {confirmation?.kind === "disable_binding" ? (
         <Dialog
           busy={confirmationBusy}
-          description="Teammates will no longer be able to send new work to this Agent until another messaging connection is added."
+          description="Teammates will no longer be able to assign new work to this agent until another messaging connection is added."
           returnFocusRef={disableBindingButtonRef}
           title="Disconnect messaging?"
           onClose={closeMessagingConfirmation}
@@ -2724,7 +2714,7 @@ function messagingConnectionLabel(
   handoffState: AgentAvailability["dependencies"]["handoff"]["state"],
 ): string {
   if (binding.bindingState !== "active") return imBindingStateLabel(binding);
-  if (handoffState === "ready") return "Available";
+  if (handoffState === "ready") return "Connected";
   if (handoffState === "setting_up") return "Setting up";
   if (handoffState === "unconfirmed") return "Unable to confirm";
   return "Needs attention";
@@ -3285,7 +3275,7 @@ function platformLabel(platform: AgentSummary["computer"]["platform"]): string {
 }
 
 function receiveModeLabel(receiveMode: AgentSummary["receiveMode"]): string {
-  return receiveMode === "all_message" ? "All messages" : "Mentions only";
+  return receiveMode === "all_message" ? "Every message" : "Mentions only";
 }
 
 function availabilityTone(state: AgentAvailability["state"]): StatusTone {
@@ -3307,11 +3297,20 @@ function availabilityStateLabel(state: AgentAvailability["state"]): string {
   return labels[state];
 }
 
-function agentUseInstruction(agent: AgentDetailView, channelLabel: string): string {
+function sharedConversationLabel(provider: ImBindingSummary["provider"]): string {
+  return provider === "feishu" ? "Group chats" : "Channels";
+}
+
+function sharedConversationDestination(provider: ImBindingSummary["provider"], plural = false): string {
+  if (provider === "feishu") return plural ? "connected Feishu group chats" : "a Feishu group chat";
+  return plural ? "connected Slack channels" : "a Slack channel";
+}
+
+function agentUseInstruction(agent: AgentDetailView, provider: ImBindingSummary["provider"]): string {
   if (agent.receiveMode === "all_message") {
-    return `Send a direct message to @${agent.name}. In connected ${channelLabel} conversations, it can also receive messages without a mention.`;
+    return `Send @${agent.name} a direct message. It can also receive every message in ${sharedConversationDestination(provider, true)}.`;
   }
-  return `Send a direct message, or mention @${agent.name} in a ${channelLabel} conversation.`;
+  return `Send @${agent.name} a direct message, or mention it in ${sharedConversationDestination(provider)}.`;
 }
 
 function agentAvailabilitySummary(agent: AgentDetailView): string {
@@ -3355,7 +3354,7 @@ function agentRecoveryMessage(agent: AgentDetailView): string {
     computer_offline: "The assigned Computer is offline, so new requests cannot start.",
     runtime_unavailable: "The assigned Computer is not ready to run this Agent.",
     runtime_unconfirmed: "OpenTag could not confirm whether the assigned Computer is ready.",
-    im_not_connected: "Connect Feishu or Slack so teammates can send this Agent work.",
+    im_not_connected: "Connect Feishu or Slack so teammates can assign work to this agent.",
     im_provisioning: "The messaging connection is still being set up.",
     im_reauthorization_required: "The messaging connection needs permission to continue receiving requests.",
     im_error: "The messaging connection needs attention before it can receive requests.",

@@ -37,7 +37,7 @@ function signedRequest(envelope: Record<string, unknown>, signingSecret = bindin
   };
 }
 
-function matchingAuthorizations() {
+function matchingBotAuthorization() {
   return [{ team_id: binding().teamId, user_id: binding().botUserId, is_bot: true }];
 }
 
@@ -120,7 +120,7 @@ describe("Slack Events API ingress", () => {
       type: "event_callback",
       api_app_id: "A1",
       team_id: "T1",
-      authorizations: matchingAuthorizations(),
+      authorizations: matchingBotAuthorization(),
       event_id: "Ev-runtime",
       event: { type: "app_mention", channel: "C1", text: "<@U_BOT> test", ts: "1.0" },
     };
@@ -204,7 +204,7 @@ describe("Slack Events API ingress", () => {
     ["human", [{ team_id: "T1", user_id: "U_BOT", is_bot: false }]],
     ["wrong Team", [{ team_id: "T2", user_id: "U_BOT", is_bot: true }]],
     ["wrong Bot User", [{ team_id: "T1", user_id: "U_OTHER", is_bot: true }]],
-  ])("rejects %s authorizations before every event side effect", async (_label, authorizations) => {
+  ])("rejects %s authorizations before ordinary event side effects", async (_label, authorizations) => {
     const { app, imBindings, inbox, createAdapter } = createServices();
     const response = await app.inject(
       signedRequest({
@@ -234,9 +234,9 @@ describe("Slack Events API ingress", () => {
         type: "event_callback",
         api_app_id: "A1",
         team_id: "T1",
-        authorizations: matchingAuthorizations(),
+        authorizations: matchingBotAuthorization(),
         event_id: "Ev-stale",
-        event: { type: "app_uninstalled" },
+        event: { type: "app_mention", channel: "C1", text: "hello" },
       }),
     );
     expect(response.statusCode).toBe(200);
@@ -247,22 +247,38 @@ describe("Slack Events API ingress", () => {
   });
 
   it("disables an uninstalled binding and fences Slack token revocation", async () => {
-    const { app, imBindings, current } = createServices();
+    const { app, imBindings, createAdapter, current } = createServices();
     const base = {
       type: "event_callback",
       api_app_id: "A1",
       team_id: "T1",
-      authorizations: matchingAuthorizations(),
       event_id: "Ev1",
     };
+    const appUninstalled = {
+      ...base,
+      authorizations: [{ team_id: "T1", user_id: "U_INSTALLER", is_bot: false, is_enterprise_install: false }],
+      event: { type: "app_uninstalled" },
+    };
 
-    await expect(app.inject(signedRequest({ ...base, event: { type: "app_uninstalled" } }))).resolves.toMatchObject({
-      statusCode: 200,
-    });
+    const invalidSignature = await app.inject(signedRequest(appUninstalled, "wrong-secret"));
+    expect(invalidSignature.statusCode).toBe(401);
+    const mismatchedIdentity = await app.inject(signedRequest({ ...appUninstalled, api_app_id: "A_OTHER" }));
+    expect(mismatchedIdentity.statusCode).toBe(401);
+    expect(imBindings.disableFromProvider).not.toHaveBeenCalled();
+
+    await expect(app.inject(signedRequest(appUninstalled))).resolves.toMatchObject({ statusCode: 200 });
     expect(imBindings.disableFromProvider).toHaveBeenCalledWith(current.imBindingId, current.generation);
 
     await app.inject(
       signedRequest({ ...base, event_id: "Ev2", event: { type: "tokens_revoked", tokens: { bot: ["OTHER"] } } }),
+    );
+    expect(imBindings.requireReauthorization).not.toHaveBeenCalled();
+    await app.inject(
+      signedRequest({
+        ...base,
+        event_id: "Ev2-bot-id",
+        event: { type: "tokens_revoked", tokens: { oauth: ["U_OTHER"], bot: [current.botId] } },
+      }),
     );
     expect(imBindings.requireReauthorization).not.toHaveBeenCalled();
 
@@ -278,6 +294,9 @@ describe("Slack Events API ingress", () => {
       current.generation,
       "SLACK_TOKEN_REVOKED",
     );
+    expect(imBindings.recordSlackIdentityClosure).not.toHaveBeenCalled();
+    expect(imBindings.recordSlackObservation).not.toHaveBeenCalled();
+    expect(createAdapter).not.toHaveBeenCalled();
   });
 
   it("ingests every normalized event with the verified binding generation", async () => {
@@ -288,7 +307,7 @@ describe("Slack Events API ingress", () => {
       type: "event_callback",
       api_app_id: "A1",
       team_id: "T1",
-      authorizations: matchingAuthorizations(),
+      authorizations: matchingBotAuthorization(),
       event_id: "Ev1",
       event_time: 1_724_025_600,
       event: { type: "app_mention", channel: "C1", text: "hello" },
@@ -342,7 +361,7 @@ describe("Slack Events API ingress", () => {
           type: "event_callback",
           api_app_id: "A1",
           team_id: "T1",
-          authorizations: matchingAuthorizations(),
+          authorizations: matchingBotAuthorization(),
           event_id: "Ev1",
           event: { type: "app_mention", text: "raw-request-body-detail" },
         }),

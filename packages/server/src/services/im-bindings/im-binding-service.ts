@@ -784,7 +784,13 @@ export class ImBindingService {
     const observedAt = this.#now();
     const updated = await this.#database
       .update(imBindings)
-      .set({ observedAt, observedConnectedAt: observedAt, updatedAt: observedAt })
+      .set({
+        observedAt,
+        observedConnectedAt: sql<Date>`coalesce(
+          ${imBindings.observedConnectedAt},
+          ${sql.param(observedAt, imBindings.observedConnectedAt)}
+        )`,
+      })
       .where(
         and(
           eq(imBindings.id, imBindingId),

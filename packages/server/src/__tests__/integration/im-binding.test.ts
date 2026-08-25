@@ -6000,6 +6000,28 @@ describe("IM binding persistence", () => {
     }
   });
 
+  it("preserves the first Slack identity closure timestamp while refreshing runtime observation", async () => {
+    const value = await fixture();
+    try {
+      const firstClosureAt = new Date("2026-08-19T00:00:00.000Z");
+      const laterObservationAt = new Date("2026-08-25T02:00:00.000Z");
+      const service = new ImBindingService(value.database, value.cipher, { now: () => laterObservationAt });
+
+      await expect(service.recordSlackIdentityClosure(value.imBindingId, 1)).resolves.toBe(true);
+      await expect(
+        value.database.select().from(imBindings).where(eq(imBindings.id, value.imBindingId)),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          observedAt: laterObservationAt,
+          observedConnectedAt: firstClosureAt,
+          updatedAt: firstClosureAt,
+        }),
+      ]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("returns the exact committed Slack generation even if it is mutated immediately after commit", async () => {
     const value = await unboundFixture();
     const service = new SlackConfigurationService({

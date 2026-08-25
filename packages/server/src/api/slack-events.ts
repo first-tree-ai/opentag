@@ -63,16 +63,6 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
     if (envelope.type !== "event_callback" || !envelope.event_id || !envelope.event) {
       return reply.code(400).send({ error: "unsupported_envelope" });
     }
-    const identityClosed = envelope.authorizations?.some(
-      (authorization) =>
-        authorization.is_bot === true &&
-        authorization.team_id === binding.teamId &&
-        authorization.user_id === binding.botUserId,
-    );
-    if (!identityClosed) return reply.code(401).send({ error: "binding_mismatch" });
-    if (!(await options.imBindings.recordSlackIdentityClosure(binding.imBindingId, binding.generation))) {
-      return reply.code(200).send({ ok: true });
-    }
     if (envelope.event.type === "app_uninstalled") {
       await options.imBindings.disableFromProvider(binding.imBindingId, binding.generation);
       return reply.code(200).send({ ok: true });
@@ -81,6 +71,16 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
       if (envelope.event.tokens?.bot?.includes(binding.botUserId)) {
         await options.imBindings.requireReauthorization(binding.imBindingId, binding.generation, "SLACK_TOKEN_REVOKED");
       }
+      return reply.code(200).send({ ok: true });
+    }
+    const identityClosed = envelope.authorizations?.some(
+      (authorization) =>
+        authorization.is_bot === true &&
+        authorization.team_id === binding.teamId &&
+        authorization.user_id === binding.botUserId,
+    );
+    if (!identityClosed) return reply.code(401).send({ error: "binding_mismatch" });
+    if (!(await options.imBindings.recordSlackIdentityClosure(binding.imBindingId, binding.generation))) {
       return reply.code(200).send({ ok: true });
     }
 

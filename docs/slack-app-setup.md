@@ -61,12 +61,15 @@ The Agent-specific Request URL looks up the active binding by Agent ID and verif
 body **before** parsing JSON. The compatibility Events URL may bounded-preparse only App and Team identifiers to locate
 the Signing Secret, then verifies the same raw-body HMAC.
 After a valid signature, every real event envelope's `api_app_id` and `team_id` must match the configured App ID and
-token-derived Team ID. Its `authorizations` must also contain the token-derived Bot User as a bot authorization for that
-Team. This closes the HMAC-authenticated App to the token-derived Bot identity for the exact credential generation. Until
-that closure succeeds, configuration remains durably committed but readiness and runtime credential grants fail closed.
-A mismatch is rejected and never repairs configuration. Slack's official URL-verification payload contains no App,
-Team, or bot authorization fields, so the Agent-specific URL can verify only the bound Signing Secret for that challenge;
-it records no identity closure.
+token-derived Team ID. Ordinary message events must also contain the token-derived Bot User as a bot authorization for
+that Team. This closes the HMAC-authenticated App to the token-derived Bot identity for the exact credential generation.
+Until that closure succeeds, configuration remains durably committed but readiness and runtime credential grants fail
+closed. A mismatch is rejected and never repairs configuration. Slack's app-level
+[`tokens_revoked`](https://docs.slack.dev/reference/events/tokens_revoked/) and
+[`app_uninstalled`](https://docs.slack.dev/reference/events/app_uninstalled/) envelopes do not provide matching bot
+authorization context, so they are handled after HMAC plus exact App/Team verification and before identity closure.
+Slack's official URL-verification payload contains no App, Team, or bot authorization fields, so the Agent-specific URL
+can verify only the bound Signing Secret for that challenge; it records no identity closure.
 
 ## Data and state inventory
 
@@ -80,7 +83,7 @@ it records no identity closure.
 | `grantedCapabilities` | Keep | Actual token scopes reported by Slack. Active/readiness projections require all seven fixed scopes. |
 | `activatedAt`, `disabledAt`, `createdAt`, `updatedAt` | Keep | Durable binding lifecycle timestamps. Configuration submission sets activation; inbound events do not. Public APIs project `activatedAt` as `lastValidatedAt`. |
 | `observedAt` | Keep as runtime observation | Updated after a correctly signed Agent-specific URL challenge, or after a correctly signed real event whose App, Team, and bot authorization match. Public APIs project it as `lastRuntimeObservationAt`. It is not configuration evidence and does not change generation. |
-| `observedConnectedAt` | Keep as generation identity closure | For Slack, records when a signed real event's `authorizations` first closed the configured App/Team to the token-derived Bot User for the current generation. Configuration resets it; URL verification never sets it. Feishu retains its existing connection-observation meaning. |
+| `observedConnectedAt` | Keep as generation identity closure | For Slack, records when a signed real event's `authorizations` first closed the configured App/Team to the token-derived Bot User for the current generation. Later matching events preserve this first timestamp and refresh only `observedAt`. Configuration resets it; URL verification never sets it. Feishu retains its existing connection-observation meaning. |
 | `lastInboundAt` and normalized `ImMessage`/Session state | Keep | Message runtime history and routing state. Only admitted inbound messages update it. URL verification does not. |
 | `lastConfirmedAt` | Delete from public APIs | It mixed configuration time with runtime observation. Use `lastValidatedAt` and `lastRuntimeObservationAt`. |
 | `lastErrorCode` | Keep | Durable recovery cause such as `SLACK_SCOPE_REAUTH_REQUIRED` or `SLACK_TOKEN_REVOKED`; observations do not clear configuration errors. |
@@ -132,13 +135,17 @@ traces.
 - `url_verification`: on the Agent-specific URL, verify the bound Signing Secret, return the challenge, and record a
   runtime observation; the Slack payload has no App/Team identity, and the request does not activate, rotate, or repair
   anything.
-- every real `event_callback`: require a matching bot entry in `authorizations`, then record identity closure and runtime
-  observation under the exact parsed credential generation; a stale generation is acknowledged without side effects.
+- ordinary real `event_callback` messages: require a matching bot entry in `authorizations`, then record identity closure
+  and runtime observation under the exact parsed credential generation; a stale generation is acknowledged without side
+  effects.
 - `app_mention` and message events: normalize and ingest under that exact generation; do not change it.
-- `tokens_revoked`: move only that exact generation to `reauthorization_required` with `SLACK_TOKEN_REVOKED`.
-- `app_uninstalled`: disable only that exact generation and erase its active credential material.
-- missing active binding, invalid signature, App/Team/authorization mismatch: reject with no observation or other side
-  effect; never accept an event as setup progress.
+- `tokens_revoked`: after signature and exact App/Team verification, use the documented revoked Bot User list without
+  requiring `authorizations`; move only that exact generation to `reauthorization_required` with `SLACK_TOKEN_REVOKED`.
+- `app_uninstalled`: after signature and exact App/Team verification, accept the app-level uninstall signal without
+  requiring a bot authorization; disable only that exact generation and erase its active credential material.
+- lifecycle events do not establish identity closure or refresh runtime observation. Missing active binding, invalid
+  signature, App/Team mismatch, or an authorization mismatch on an ordinary event is rejected with no observation or
+  other side effect; no event is accepted as setup progress.
 
 Configuration errors are explicit and leave active data unchanged:
 

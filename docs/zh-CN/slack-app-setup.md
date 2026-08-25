@@ -52,9 +52,12 @@ Slack 不保证 Bot Token 的 `auth.test` 一定返回 `app_id`。因此，提�
 Slack API 已证明身份。每次请求仍有独立证明边界。Agent 专属 Request URL 按 Agent ID 查找 active 绑定，并在解析 JSON
 **之前**对原始请求体验证带时间戳的 HMAC。兼容 Events URL 只能有界预解析 App 与 Team 标识以定位 Signing Secret，然后再
 验证同一原始请求体 HMAC。签名通过后，每个真实事件 envelope 的 `api_app_id` 与 `team_id` 必须分别匹配配置 App ID 和
-token 推导的 Team ID；其 `authorizations` 还必须包含该 Team 下 token 推导 Bot User 对应的 bot authorization。这会在精确
-凭证代际上闭合“HMAC 已认证 App”与“token 推导 Bot”身份。在闭合前，配置已经持久提交，但 readiness 与 runtime credential
-grant 都失败关闭。不匹配就拒绝，且绝不借事件修复配置。Slack 官方 URL-verification payload 不含 App、Team 或 bot
+token 推导的 Team ID；普通消息事件的 `authorizations` 还必须包含该 Team 下 token 推导 Bot User 对应的 bot
+authorization。这会在精确凭证代际上闭合“HMAC 已认证 App”与“token 推导 Bot”身份。在闭合前，配置已经持久提交，但
+readiness 与 runtime credential grant 都失败关闭。不匹配就拒绝，且绝不借事件修复配置。Slack 的 app-level
+[`tokens_revoked`](https://docs.slack.dev/reference/events/tokens_revoked/) 与
+[`app_uninstalled`](https://docs.slack.dev/reference/events/app_uninstalled/) envelope 不提供匹配 bot authorization 上下文，
+因此它们会在 HMAC 加 App/Team 精确校验后、身份闭合前处理。Slack 官方 URL-verification payload 不含 App、Team 或 bot
 authorization 字段，因此 Agent 专属 URL 对 challenge 只能验证该绑定的 Signing Secret；它不会记录身份闭合。
 
 ## 数据与状态清单
@@ -69,7 +72,7 @@ authorization 字段，因此 Agent 专属 URL 对 challenge 只能验证该绑�
 | `grantedCapabilities` | 保留 | Slack 实际返回的 token scopes。active/ready 投影要求完整七项。 |
 | `activatedAt`、`disabledAt`、`createdAt`、`updatedAt` | 保留 | 持久绑定生命周期时间；配置提交设置激活，入站事件不设置。公共 API 将 `activatedAt` 投影为 `lastValidatedAt`。 |
 | `observedAt` | 仅作运行观测保留 | 正确签名的 Agent 专属 URL challenge，或正确签名且 App、Team、bot authorization 都匹配的真实事件会更新。公共 API 将其投影为 `lastRuntimeObservationAt`。不是配置证据，也不改变代际。 |
-| `observedConnectedAt` | 作为代际身份闭合保留 | 对 Slack，记录签名真实事件的 `authorizations` 首次把配置 App/Team 与当前代际 token 推导 Bot User 闭合的时间；每次配置会重置，URL verification 永不设置。Feishu 继续使用其原有连接观测含义。 |
+| `observedConnectedAt` | 作为代际身份闭合保留 | 对 Slack，记录签名真实事件的 `authorizations` 首次把配置 App/Team 与当前代际 token 推导 Bot User 闭合的时间；后续匹配事件保留该首次时间，仅刷新 `observedAt`。每次配置会重置，URL verification 永不设置。Feishu 继续使用其原有连接观测含义。 |
 | `lastInboundAt` 与标准化 `ImMessage`/Session 状态 | 保留 | 消息运行历史和路由状态；只有准入后的真实消息更新，URL verification 不更新。 |
 | `lastConfirmedAt` | 从公共 API 删除 | 它把配置时间与运行观测混在一起。改用 `lastValidatedAt` 与 `lastRuntimeObservationAt`。 |
 | `lastErrorCode` | 保留 | 持久恢复原因，例如 `SLACK_SCOPE_REAUTH_REQUIRED`、`SLACK_TOKEN_REVOKED`；运行观测不清除配置错误。 |
@@ -117,13 +120,15 @@ challenge。Signing Secret 永不进入 runtime grant、诊断、日志或 trace
 
 - `url_verification`：在 Agent 专属 URL 上验证绑定 Signing Secret、返回 challenge 并记录运行观测；Slack payload 不含
   App/Team 身份，而且请求不激活、不轮换、不修复任何配置。
-- 每个真实 `event_callback`：要求 `authorizations` 中存在匹配 bot 项，再按解析时的精确凭证代际记录身份闭合与运行观测；
-  过期代际只返回确认，不产生副作用。
+- 普通真实 `event_callback` 消息：要求 `authorizations` 中存在匹配 bot 项，再按解析时的精确凭证代际记录身份闭合与
+  运行观测；过期代际只返回确认，不产生副作用。
 - `app_mention` 与 message events：在该精确代际下标准化并入站；不改变代际。
-- `tokens_revoked`：只把该精确代际置为 `reauthorization_required`，错误为 `SLACK_TOKEN_REVOKED`。
-- `app_uninstalled`：只禁用该精确代际并清除 active credential material。
-- 缺少 active binding、签名无效或 App/Team/authorization 不匹配：直接拒绝且不记录观测或其他副作用；绝不把事件视为
-  setup 进度。
+- `tokens_revoked`：签名与 App/Team 精确校验后，不要求 `authorizations`，而是使用官方 payload 中被撤销的 Bot User
+  列表；只把该精确代际置为 `reauthorization_required`，错误为 `SLACK_TOKEN_REVOKED`。
+- `app_uninstalled`：签名与 App/Team 精确校验后，不要求 bot authorization，直接接受 app-level 卸载信号；只禁用该
+  精确代际并清除 active credential material。
+- lifecycle 事件不建立身份闭合，也不刷新运行观测。缺少 active binding、签名无效、App/Team 不匹配，或普通事件的
+  authorization 不匹配时，直接拒绝且不记录观测或其他副作用；绝不把任何事件视为 setup 进度。
 
 配置错误必须显式返回，且不改变现有 active 数据：
 

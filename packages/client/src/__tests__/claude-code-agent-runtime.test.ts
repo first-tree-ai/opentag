@@ -92,6 +92,8 @@ describe("ClaudeCodeAgentRuntime", () => {
     expect(processes[0]?.args).toContain("--allowedTools");
     expect(processes[0]?.args).toContain("mcp__opentag__example_tool");
     expect(processes[0]?.args).not.toContain("mcp__opentag__Read");
+    expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("bypassPermissions");
+    expect(processes[0]?.args).not.toContain("--disallowedTools");
     await runtime.close();
   });
 

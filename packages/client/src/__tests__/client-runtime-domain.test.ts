@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { EffectiveRuntimeSnapshot, SessionReconcileRequest, SessionReconcileResult } from "@opentag/shared";
+import type {
+  EffectiveRuntimeSnapshot,
+  SessionMessageDeliveryRequest,
+  SessionReconcileRequest,
+  SessionReconcileResult,
+} from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
 import type { AccessTokenProvider } from "../auth/token-provider.js";
@@ -117,7 +122,76 @@ describe("ClientRuntime domain dispatch", () => {
     );
     expect(JSON.stringify(logs)).not.toContain(sendError.message);
   });
+
+  it("dispatches SessionMessage deliveries and collaboration command results on their separate paths", async () => {
+    const agentId = randomUUID();
+    const delivery = {
+      type: "session:message:deliver" as const,
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      sourceSessionId: randomUUID(),
+      targetSessionId: randomUUID(),
+      agentId,
+      placementGeneration: 1,
+      content: { kind: "text" as const, text: "work" },
+      runtime: { ...snapshot(), agentId, workspace: { ...snapshot().workspace, workspaceId: agentId } },
+    };
+    const commandResult = {
+      type: "session:collaboration:result" as const,
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      status: "accepted" as const,
+    };
+    const connection = new FrameConnection([delivery, commandResult]);
+    const handleSessionMessageDelivery = vi.fn((request: SessionMessageDeliveryRequest) => ({
+      type: "session:message:deliver:result" as const,
+      requestId: request.requestId,
+      messageId: request.messageId,
+      targetSessionId: request.targetSessionId,
+      placementGeneration: request.placementGeneration,
+      status: "accepted" as const,
+    }));
+    const handleSessionCollaborationResult = vi.fn();
+    const runtime = new ClientRuntime(connection as unknown as RuntimeConnection, {
+      handleSessionCollaborationResult,
+      handleSessionMessageDelivery,
+    });
+    await runtime.run();
+    expect(handleSessionMessageDelivery).toHaveBeenCalledWith(delivery);
+    expect(connection.sent).toContainEqual(
+      expect.objectContaining({ type: "session:message:deliver:result", messageId: delivery.messageId }),
+    );
+    expect(handleSessionCollaborationResult).toHaveBeenCalledWith(commandResult);
+  });
 });
+
+class FrameConnection {
+  readonly computerId = randomUUID();
+  readonly sent: unknown[] = [];
+  readonly #frames: readonly Record<string, unknown>[];
+  #listener?: (frame: Record<string, unknown>) => Promise<void> | void;
+
+  constructor(frames: readonly Record<string, unknown>[]) {
+    this.#frames = frames;
+  }
+
+  subscribeBusinessFrames(listener: (frame: Record<string, unknown>) => Promise<void> | void): () => void {
+    this.#listener = listener;
+    return () => {
+      this.#listener = undefined;
+    };
+  }
+
+  async run(): Promise<void> {
+    for (const frame of this.#frames) await this.#listener?.(frame);
+  }
+
+  async send(frame: unknown): Promise<void> {
+    this.sent.push(frame);
+  }
+
+  stop(): void {}
+}
 
 class FailingResultConnection {
   readonly computerId: string;

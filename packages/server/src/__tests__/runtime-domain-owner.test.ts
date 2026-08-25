@@ -4,6 +4,7 @@ import {
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
+  type SessionMessageDeliveryRequest,
   type SessionReconcileRequest,
   type SessionReconcileResult,
   type TurnReportRequest,
@@ -360,6 +361,46 @@ describe("RuntimeDomainOwner", () => {
     await expect(fixture.owner.handle(report, replacement.context)).resolves.toMatchObject({ status: "recorded" });
     expect((await fixture.owner.getTurn(report.turnId))?.instanceId).toBe(replacement.instanceId);
   });
+
+  it("correlates remote SessionMessage delivery and delegates unmatched local acknowledgements", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const instanceId = randomUUID();
+    const userId = randomUUID();
+    const frames: unknown[] = [];
+    await registry.register(
+      { computerId, instanceId, lastHeartbeatAt: 1, socket: socketFixture(frames), userId },
+      async () => undefined,
+    );
+    const onLocal = vi.fn().mockResolvedValue({
+      type: "session:collaboration:result",
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      status: "accepted",
+    });
+    const owner = new RuntimeDomainOwner(registry, new MemoryRuntimeCustodyStore(), {
+      onLocalSessionMessageDeliveryResult: onLocal,
+    });
+    const context = { computerId, instanceId, signal: new AbortController().signal, userId };
+    const delivery = sessionMessageDelivery();
+    const pending = owner.requestSessionMessageDelivery(computerId, instanceId, delivery);
+    await vi.waitFor(() => expect(frames).toContainEqual(delivery));
+    const accepted = {
+      type: "session:message:deliver:result" as const,
+      requestId: delivery.requestId,
+      messageId: delivery.messageId,
+      targetSessionId: delivery.targetSessionId,
+      placementGeneration: delivery.placementGeneration,
+      status: "accepted" as const,
+    };
+    await expect(owner.handle(accepted, context)).resolves.toBeUndefined();
+    await expect(pending).resolves.toEqual(accepted);
+    expect(onLocal).not.toHaveBeenCalled();
+
+    const unmatched = { ...accepted, requestId: randomUUID() };
+    await expect(owner.handle(unmatched, context)).resolves.toMatchObject({ status: "accepted" });
+    expect(onLocal).toHaveBeenCalledWith(unmatched, context);
+  });
 });
 
 async function waitForDeliveryFrame(frames: unknown[], requestId: string): Promise<void> {
@@ -544,6 +585,21 @@ function acceptedResult(request: DirectImMessageDeliveryRequest) {
     placementGeneration: request.placementGeneration,
     status: "accepted" as const,
     turnId: "turn-1",
+  };
+}
+
+function sessionMessageDelivery(): SessionMessageDeliveryRequest {
+  const agentId = randomUUID();
+  return {
+    type: "session:message:deliver",
+    requestId: randomUUID(),
+    messageId: randomUUID(),
+    sourceSessionId: randomUUID(),
+    targetSessionId: randomUUID(),
+    agentId,
+    placementGeneration: 1,
+    content: { kind: "text", text: "hello" },
+    runtime: { ...snapshot(), agentId, workspace: { ...snapshot().workspace, workspaceId: agentId } },
   };
 }
 

@@ -65,24 +65,25 @@ export function assertPromptRequest(request: AgentPromptRequest): void {
 }
 
 export function assertHostedTools(policy: AgentRuntimePolicy, hostedTools: AgentHostedTools | undefined): void {
-  if (policy.tools.mode === "provider-default") {
-    if (hostedTools !== undefined) {
-      throw new AgentRuntimeError("configuration_invalid", "provider-default policy cannot declare hosted tools");
-    }
-    return;
-  }
-  if (!hostedTools || typeof hostedTools.handler !== "function" || !Array.isArray(hostedTools.definitions)) {
+  if (!hostedTools) {
+    if (policy.tools.mode === "provider-default") return;
     throw new AgentRuntimeError(
       "configuration_invalid",
       "allow-list policy requires hosted tool definitions and a handler",
     );
   }
+  if (typeof hostedTools.handler !== "function" || !Array.isArray(hostedTools.definitions)) {
+    throw new AgentRuntimeError("configuration_invalid", "hosted tool definitions and a handler are required");
+  }
 
   const allowed = new Set<string>();
-  for (const name of policy.tools.names) {
-    assertToolName(name, "policy.tools.names");
-    if (allowed.has(name)) throw new AgentRuntimeError("configuration_invalid", "tool allow-list contains duplicates");
-    allowed.add(name);
+  if (policy.tools.mode === "allow-list") {
+    for (const name of policy.tools.names) {
+      assertToolName(name, "policy.tools.names");
+      if (allowed.has(name))
+        throw new AgentRuntimeError("configuration_invalid", "tool allow-list contains duplicates");
+      allowed.add(name);
+    }
   }
 
   const defined = new Set<string>();
@@ -102,7 +103,10 @@ export function assertHostedTools(policy: AgentRuntimePolicy, hostedTools: Agent
     assertToolInputSchema(definition.inputSchema);
   }
 
-  if (allowed.size !== defined.size || [...allowed].some((name) => !defined.has(name))) {
+  if (
+    policy.tools.mode === "allow-list" &&
+    (allowed.size !== defined.size || [...allowed].some((name) => !defined.has(name)))
+  ) {
     throw new AgentRuntimeError(
       "configuration_invalid",
       "hosted tool definitions must exactly match the tool allow-list",

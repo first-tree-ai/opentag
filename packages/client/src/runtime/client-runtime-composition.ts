@@ -35,6 +35,7 @@ import {
 } from "../providers/codex/agent-runtime.js";
 import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
+import { AdmissionController } from "./admission-controller.js";
 import {
   type AgentRuntimeProviderRegistration,
   AgentRuntimeProviderRegistry,
@@ -48,6 +49,8 @@ import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import { SessionBindingStore } from "./session-binding-store.js";
+import { SessionCollaborationClient } from "./session-collaboration-client.js";
+import { SessionMessageInbox } from "./session-message-inbox.js";
 import { SessionReconciler } from "./session-reconciler.js";
 import { SessionRuntimeManager } from "./session-runtime-manager.js";
 import { TurnCustodyOwner } from "./turn-custody-owner.js";
@@ -107,6 +110,8 @@ export class ComposedClientRuntime {
   readonly custody: TurnCustodyOwner;
   readonly credentialEnvironment: ImCredentialEnvironmentManager;
   readonly reconciler: SessionReconciler;
+  readonly collaboration: SessionCollaborationClient;
+  readonly sessionMessageInbox: SessionMessageInbox;
   readonly reportOwner: TurnReportOwner;
   readonly runner: AgentTurnRunner;
   readonly runtimeManager: SessionRuntimeManager;
@@ -126,6 +131,8 @@ export class ComposedClientRuntime {
       custody: TurnCustodyOwner;
       credentialEnvironment: ImCredentialEnvironmentManager;
       reconciler: SessionReconciler;
+      collaboration: SessionCollaborationClient;
+      sessionMessageInbox: SessionMessageInbox;
       reportOwner: TurnReportOwner;
       runner: AgentTurnRunner;
       runtimeManager: SessionRuntimeManager;
@@ -140,6 +147,8 @@ export class ComposedClientRuntime {
     this.custody = components.custody;
     this.credentialEnvironment = components.credentialEnvironment;
     this.reconciler = components.reconciler;
+    this.collaboration = components.collaboration;
+    this.sessionMessageInbox = components.sessionMessageInbox;
     this.reportOwner = components.reportOwner;
     this.runner = components.runner;
     this.runtimeManager = components.runtimeManager;
@@ -157,8 +166,11 @@ export class ComposedClientRuntime {
       this.#stopCapabilityMonitor();
       this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
       await this.#capabilityRefreshInFlight?.catch(() => undefined);
+      this.collaboration.close();
+      this.sessionMessageInbox.stop();
       this.runner.stop();
       await this.runner.settled();
+      await this.sessionMessageInbox.settled();
       try {
         await this.runtimeManager.close();
       } finally {
@@ -173,6 +185,8 @@ export class ComposedClientRuntime {
     this.#stopped = true;
     this.#stopCapabilityMonitor();
     this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
+    this.collaboration.close();
+    this.sessionMessageInbox.stop();
     this.runner.stop();
     void Promise.allSettled([this.runtimeManager.close(), this.credentialEnvironment.close()]);
     this.#runtime.stop();
@@ -404,12 +418,14 @@ export async function createClientRuntime(
     home: options.home,
     logger: moduleLogger("im-credential-environment"),
   });
+  let collaboration: SessionCollaborationClient;
   const runtimeManager = new SessionRuntimeManager({
     bindingStore,
     cleanupProviderEnvironment: (sessionId) => credentialEnvironment.cleanup(sessionId),
     ensureProviderReady,
     providers,
     providerEnvironmentPath: (sessionId) => credentialEnvironment.pathForSession(sessionId),
+    hostedToolsForSession: (binding) => collaboration.hostedToolsForSession(binding),
     workspace,
   });
   const reconciler = new SessionReconciler({
@@ -417,6 +433,13 @@ export async function createClientRuntime(
     preparation: runtimeManager,
     localPolicy: runtimeManager,
   });
+  const admission = new AdmissionController();
+  const sessionMessageInbox = new SessionMessageInbox({
+    admission,
+    reconciler,
+    runtimeManager,
+  });
+  collaboration = new SessionCollaborationClient({ connection, inbox: sessionMessageInbox });
   const resourceFetcher = new ImResourceFetcher({
     computerId: connection.computerId,
     instanceId: connection.instanceId,
@@ -435,6 +458,7 @@ export async function createClientRuntime(
     workspace,
   });
   const custody = new TurnCustodyOwner({
+    admission,
     bindingStore,
     reconciler,
     preflight,
@@ -454,12 +478,16 @@ export async function createClientRuntime(
   const runtime = new ClientRuntime(connection, {
     logger: moduleLogger("client-runtime"),
     reconciler,
+    handleSessionCollaborationResult: collaboration.handleCommandResult.bind(collaboration),
+    handleSessionMessageDelivery: sessionMessageInbox.accept.bind(sessionMessageInbox),
     ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
   });
   return new ComposedClientRuntime(runtime, {
     bindingStore,
     custody,
     credentialEnvironment,
+    collaboration,
+    sessionMessageInbox,
     reconciler,
     reportOwner,
     runner,

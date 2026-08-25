@@ -5,10 +5,13 @@ import {
   ClientRuntimeFrameSchema,
   missingRuntimeCapabilities,
   negotiateRuntimeCapabilities,
+  RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_V1,
   RUNTIME_PROTOCOL_V2,
+  RUNTIME_REQUIRED_CLIENT_CAPABILITIES,
+  RUNTIME_REQUIRED_SERVER_CAPABILITIES,
   RUNTIME_SERVER_CAPABILITY_OFFERS,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   runtimeFrameByteLength,
@@ -137,6 +140,9 @@ describe("runtime protocol", () => {
     expect(negotiated["server.unknownFeature"]).toBeUndefined();
     expect(missingRuntimeCapabilities(["runtime.imDelivery"], negotiated)).toEqual([]);
     expect(missingRuntimeCapabilities(["future.requiredFeature"], negotiated)).toEqual(["future.requiredFeature"]);
+    expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(1);
+    expect(RUNTIME_REQUIRED_CLIENT_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.sessionCollaboration);
+    expect(RUNTIME_REQUIRED_SERVER_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.sessionCollaboration);
   });
 
   it("rejects invalid ranges, unknown protocol versions, and oversized fields", () => {

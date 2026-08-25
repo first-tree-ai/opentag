@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { RuntimeMaxDurationMsSchema, RuntimeModelSchema, RuntimeReasoningEffortSchema } from "./runtime-config.js";
 
 export const SessionKindSchema = z.enum(["channel", "thread", "internal"]);
 
@@ -11,6 +12,9 @@ export const SessionSchema = z
     kind: SessionKindSchema,
     threadKey: z.string().min(1).max(512).nullable(),
     createdBySessionId: z.string().uuid().nullable(),
+    runtimeModel: RuntimeModelSchema.nullable(),
+    runtimeReasoningEffort: RuntimeReasoningEffortSchema.nullable(),
+    runtimeMaxDurationMs: RuntimeMaxDurationMsSchema.nullable(),
     endedAt: z.string().datetime().nullable(),
     revision: z.number().int().min(1),
     createdAt: z.string().datetime(),

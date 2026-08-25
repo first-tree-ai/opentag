@@ -3,6 +3,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
+import { hashTuple } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import {
@@ -342,11 +343,11 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     if (!context || !hostedTools || call.namespace !== null || call.threadId !== this.#threadId) {
       return { success: false, text: "OpenTag tool request is not authorized for this run." };
     }
-    if (
-      call.turnId !== this.#providerTurnId ||
-      this.#policy.tools.mode !== "allow-list" ||
-      !this.#policy.tools.names.includes(call.tool)
-    ) {
+    const toolAllowed =
+      this.#policy.tools.mode === "allow-list"
+        ? this.#policy.tools.names.includes(call.tool)
+        : hostedTools.definitions.some(({ name }) => name === call.tool);
+    if (call.turnId !== this.#providerTurnId || !toolAllowed) {
       return { success: false, text: "OpenTag tool request is not authorized for this run." };
     }
     try {
@@ -887,7 +888,11 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
     const providerConfiguration = parseProviderConfiguration(request.configuration?.provider);
     const binding = mode === "resume" && "binding" in request ? request.binding : undefined;
     if (binding) assertBinding(binding, this.manifest);
-    const expectedThreadId = binding ? parseCodexBinding(binding) : undefined;
+    const parsedBinding = binding ? parseCodexBinding(binding) : undefined;
+    const expectedThreadId = parsedBinding?.threadId;
+    const requestedHostedToolsHash = request.hostedTools ? hostedToolsHash(request.hostedTools.definitions) : undefined;
+    const requiresHostedToolsReplacement =
+      mode === "resume" && parsedBinding?.hostedToolsHash !== requestedHostedToolsHash;
     const client = this.#createClient(request.workspace.cwd, request.workspace.environment);
     try {
       if (request.hostedTools && typeof client.setDynamicToolHandler !== "function") {
@@ -897,10 +902,10 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
         );
       }
       await client.initialize(this.#clientVersion);
-      const method = mode === "create" ? "thread/start" : "thread/resume";
+      const method = mode === "create" || requiresHostedToolsReplacement ? "thread/start" : "thread/resume";
       const response = requireRecord(
         await client.request(method, {
-          ...(expectedThreadId ? { threadId: expectedThreadId } : {}),
+          ...(method === "thread/resume" && expectedThreadId ? { threadId: expectedThreadId } : {}),
           cwd: request.workspace.cwd,
           developerInstructions: request.systemPrompt,
           approvalPolicy: codexApprovalPolicy(request.policy.approvals),
@@ -908,7 +913,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
           ...(request.configuration?.model ? { model: request.configuration.model } : {}),
           ...(providerConfiguration.personality ? { personality: providerConfiguration.personality } : {}),
           serviceName: providerConfiguration.serviceName ?? "OpenTag",
-          ...(mode === "create"
+          ...(method === "thread/start"
             ? {
                 ephemeral: false,
                 ...(request.hostedTools
@@ -921,12 +926,15 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       );
       const thread = requireRecord(response.thread, `${method} returned no thread`);
       const threadId = requireString(thread.id, `${method} returned no thread id`);
-      if (expectedThreadId && threadId !== expectedThreadId)
+      if (method === "thread/resume" && expectedThreadId && threadId !== expectedThreadId)
         throw protocolError("thread/resume restored another thread");
       const runtimeBinding: AgentRuntimeBinding = {
         providerId: CODEX_PROVIDER_ID,
         schemaVersion: CODEX_BINDING_SCHEMA_VERSION,
-        payload: { threadId },
+        payload: {
+          threadId,
+          ...(requestedHostedToolsHash ? { hostedToolsHash: requestedHostedToolsHash } : {}),
+        },
       };
       assertBinding(runtimeBinding, this.manifest);
       await request.eventSink({ type: "binding_changed", binding: runtimeBinding });
@@ -1068,14 +1076,27 @@ function parseProviderConfiguration(value: JsonValue | undefined): CodexProvider
   return result;
 }
 
-function parseCodexBinding(binding: AgentRuntimeBinding): string {
+function parseCodexBinding(binding: AgentRuntimeBinding): { threadId: string; hostedToolsHash?: string } {
   const payload = record(binding.payload);
   if (!payload) throw new AgentRuntimeError("binding_incompatible", "Codex binding payload is invalid");
   const threadId = payload.threadId;
   if (typeof threadId !== "string" || threadId.length === 0 || Buffer.byteLength(threadId, "utf8") > 1024 * 1024) {
     throw new AgentRuntimeError("binding_incompatible", "Codex binding has no valid threadId");
   }
-  return threadId;
+  const hostedToolsHash = payload.hostedToolsHash;
+  if (hostedToolsHash === undefined) return { threadId };
+  if (typeof hostedToolsHash !== "string" || !/^[a-f0-9]{64}$/.test(hostedToolsHash)) {
+    throw new AgentRuntimeError("binding_incompatible", "Codex binding has an invalid hostedToolsHash");
+  }
+  return { threadId, hostedToolsHash };
+}
+
+function hostedToolsHash(definitions: AgentHostedTools["definitions"]): string {
+  return hashTuple([
+    "opentag-codex-hosted-tools",
+    1,
+    [...definitions].sort((left, right) => left.name.localeCompare(right.name)).map(codexDynamicToolDefinition),
+  ]);
 }
 
 function mergeConfiguration(

@@ -63,6 +63,7 @@ export class AdmissionController {
   readonly #limits: AdmissionLimits;
   readonly #sessions = new Map<string, AdmissionReservation>();
   readonly #agents = new Map<string, number>();
+  readonly #releaseWaiters = new Set<() => void>();
 
   constructor(limits: Partial<AdmissionLimits> = {}) {
     this.#limits = { ...DEFAULT_LIMITS, ...limits };
@@ -96,11 +97,32 @@ export class AdmissionController {
     };
   }
 
+  waitForRelease(signal?: AbortSignal): Promise<void> {
+    if (signal?.aborted) return Promise.reject(signal.reason);
+    return new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        this.#releaseWaiters.delete(onRelease);
+        signal?.removeEventListener("abort", onAbort);
+      };
+      const onRelease = () => {
+        cleanup();
+        resolve();
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(signal?.reason);
+      };
+      this.#releaseWaiters.add(onRelease);
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  }
+
   #release(reservation: AdmissionReservation): void {
     if (this.#sessions.get(reservation.sessionId) !== reservation) return;
     this.#sessions.delete(reservation.sessionId);
     const count = this.#agents.get(reservation.agentId) ?? 0;
     if (count <= 1) this.#agents.delete(reservation.agentId);
     else this.#agents.set(reservation.agentId, count - 1);
+    for (const waiter of [...this.#releaseWaiters]) waiter();
   }
 }

@@ -1,10 +1,35 @@
-import type { ImConversationKind, Session, SessionKind, SessionPlacement } from "@opentag/shared";
+import { createHash } from "node:crypto";
+import type {
+  ImConversationKind,
+  InternalSessionRuntimeOverrides,
+  Session,
+  SessionKind,
+  SessionPlacement,
+} from "@opentag/shared";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../../db/schema/index.js";
+import {
+  agents,
+  imBindings,
+  imMessageDeliveries,
+  sessionMessages,
+  sessionPlacements,
+  sessions,
+} from "../../db/schema/index.js";
 
 type SessionRow = typeof sessions.$inferSelect;
 type PlacementRow = typeof sessionPlacements.$inferSelect;
+type SessionMessageRow = typeof sessionMessages.$inferSelect;
+
+interface ActiveSessionAuthority {
+  session: SessionRow;
+  placement: PlacementRow;
+  agentId: string;
+}
+
+function hashSessionMessage(content: string): string {
+  return createHash("sha256").update(content, "utf8").digest("hex");
+}
 
 export interface EnsureChatSessionInTransactionInput {
   imBindingId: string;
@@ -16,6 +41,47 @@ export interface EnsureChatSessionInTransactionInput {
   now: Date;
 }
 
+export interface CreateInternalSessionWithMessageInput {
+  creatorSessionId: string;
+  creatorComputerId: string;
+  creatorPlacementGeneration: number;
+  messageId: string;
+  initialMessage: string;
+  overrides?: InternalSessionRuntimeOverrides;
+}
+
+export interface AuthorizeAndRecordSessionMessageInput {
+  messageId: string;
+  sourceSessionId: string;
+  sourceComputerId: string;
+  sourcePlacementGeneration: number;
+  targetSessionId: string;
+  content: string;
+}
+
+export interface AuthorizedSessionMessageRoute {
+  agentId: string;
+  sourceSessionId: string;
+  targetSessionId: string;
+  targetComputerId: string;
+  targetPlacementGeneration: number;
+  targetSessionKind: SessionKind;
+}
+
+export interface SessionMessageAttempt {
+  route: AuthorizedSessionMessageRoute;
+  message: SessionMessageRow;
+  deduplicated: boolean;
+  attemptCount: number | null;
+}
+
+export interface CreateInternalSessionWithMessageResult extends SessionMessageAttempt {
+  session: Session;
+  placement: SessionPlacement;
+}
+
+export type SessionMessageOutcome = "accepted" | "rejected" | "unknown" | "unreachable";
+
 function toSession(row: SessionRow): Session {
   return {
     id: row.id,
@@ -25,6 +91,9 @@ function toSession(row: SessionRow): Session {
     kind: row.kind,
     threadKey: row.threadKey,
     createdBySessionId: row.createdBySessionId,
+    runtimeModel: row.runtimeModel,
+    runtimeReasoningEffort: row.runtimeReasoningEffort,
+    runtimeMaxDurationMs: row.runtimeMaxDurationMs,
     endedAt: row.endedAt?.toISOString() ?? null,
     revision: row.revision,
     createdAt: row.createdAt.toISOString(),
@@ -115,31 +184,45 @@ export class SessionService {
     return this.#withPlacement(transaction, session, input.computerId, input.now);
   }
 
-  async createInternalSession(creatorSessionId: string): Promise<{ session: Session; placement: SessionPlacement }> {
+  async createInternalSessionWithMessage(
+    input: CreateInternalSessionWithMessageInput,
+  ): Promise<CreateInternalSessionWithMessageResult> {
     return this.#database.transaction(async (transaction) => {
-      const [candidate] = await transaction
-        .select({ agentId: agents.id })
-        .from(sessions)
-        .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-        .innerJoin(agents, eq(agents.id, imBindings.agentId))
-        .where(and(eq(sessions.id, creatorSessionId), isNull(sessions.endedAt)))
-        .limit(1);
-      if (!candidate) throw new SessionServiceError("SESSION_NOT_ACTIVE", "The creator Session is not active");
-      const [agent] = await transaction
-        .select({ id: agents.id })
-        .from(agents)
-        .where(and(eq(agents.id, candidate.agentId), eq(agents.status, "active")))
+      const creator = await this.#activeSource(transaction, {
+        sessionId: input.creatorSessionId,
+        computerId: input.creatorComputerId,
+        placementGeneration: input.creatorPlacementGeneration,
+      });
+      const contentHash = hashSessionMessage(input.initialMessage);
+      const [existing] = await transaction
+        .select()
+        .from(sessionMessages)
+        .where(eq(sessionMessages.id, input.messageId))
         .limit(1)
         .for("update");
-      if (!agent) throw new SessionServiceError("AGENT_NOT_ACTIVE", "The Agent is not active");
-      const [creator] = await transaction
-        .select({ session: sessions, computerId: sessionPlacements.computerId })
-        .from(sessions)
-        .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-        .where(and(eq(sessions.id, creatorSessionId), isNull(sessions.endedAt)))
-        .limit(1)
-        .for("update");
-      if (!creator) throw new SessionServiceError("SESSION_NOT_ACTIVE", "The creator Session is not active");
+      if (existing) {
+        this.#assertMessageIdentity(existing, input.creatorSessionId, existing.targetSessionId, input.initialMessage);
+        const target = await this.#activeTarget(transaction, existing.targetSessionId, creator.session);
+        if (
+          target.session.kind !== "internal" ||
+          target.session.createdBySessionId !== input.creatorSessionId ||
+          target.session.runtimeModel !== (input.overrides?.model ?? null) ||
+          target.session.runtimeReasoningEffort !== (input.overrides?.reasoningEffort ?? null) ||
+          target.session.runtimeMaxDurationMs !== (input.overrides?.maxDurationMs ?? null)
+        ) {
+          throw new SessionServiceError("SESSION_MESSAGE_CONFLICT", "The Session message ID has conflicting input");
+        }
+        const attempt = await this.#beginAttempt(transaction, existing);
+        return {
+          session: toSession(target.session),
+          placement: toPlacement(target.placement),
+          route: this.#route(creator, target),
+          message: attempt.message,
+          deduplicated: attempt.attemptCount === null,
+          attemptCount: attempt.attemptCount,
+        };
+      }
+      const now = this.#now();
       const [created] = await transaction
         .insert(sessions)
         .values({
@@ -148,18 +231,134 @@ export class SessionService {
           conversationKind: creator.session.conversationKind,
           kind: "internal",
           threadKey: creator.session.threadKey,
-          createdBySessionId: creatorSessionId,
-          createdAt: this.#now(),
+          createdBySessionId: input.creatorSessionId,
+          runtimeModel: input.overrides?.model ?? null,
+          runtimeReasoningEffort: input.overrides?.reasoningEffort ?? null,
+          runtimeMaxDurationMs: input.overrides?.maxDurationMs ?? null,
+          createdAt: now,
         })
         .returning();
       if (!created) throw new Error("Internal Session insert did not return a row");
       const [placement] = await transaction
         .insert(sessionPlacements)
-        .values({ sessionId: created.id, computerId: creator.computerId, generation: 1, updatedAt: this.#now() })
+        .values({ sessionId: created.id, computerId: creator.placement.computerId, generation: 1, updatedAt: now })
         .returning();
       if (!placement) throw new Error("Session placement insert did not return a row");
-      return { session: toSession(created), placement: toPlacement(placement) };
+      const [message] = await transaction
+        .insert(sessionMessages)
+        .values({
+          id: input.messageId,
+          sourceSessionId: input.creatorSessionId,
+          targetSessionId: created.id,
+          content: input.initialMessage,
+          contentHash,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (!message) {
+        const [conflicting] = await transaction
+          .select()
+          .from(sessionMessages)
+          .where(eq(sessionMessages.id, input.messageId))
+          .limit(1)
+          .for("update");
+        if (conflicting) {
+          this.#assertMessageIdentity(
+            conflicting,
+            input.creatorSessionId,
+            conflicting.targetSessionId,
+            input.initialMessage,
+          );
+        }
+        throw new SessionServiceError("SESSION_MESSAGE_CONFLICT", "The Session message ID is already in use");
+      }
+      const attempt = await this.#beginAttempt(transaction, message);
+      const target = { session: created, placement };
+      return {
+        session: toSession(created),
+        placement: toPlacement(placement),
+        route: this.#route(creator, target),
+        message: attempt.message,
+        deduplicated: false,
+        attemptCount: attempt.attemptCount,
+      };
     });
+  }
+
+  async authorizeAndRecordMessage(input: AuthorizeAndRecordSessionMessageInput): Promise<SessionMessageAttempt> {
+    return this.#database.transaction(async (transaction) => {
+      const source = await this.#activeSource(transaction, {
+        sessionId: input.sourceSessionId,
+        computerId: input.sourceComputerId,
+        placementGeneration: input.sourcePlacementGeneration,
+      });
+      const target = await this.#activeTarget(transaction, input.targetSessionId, source.session);
+      const [existing] = await transaction
+        .select()
+        .from(sessionMessages)
+        .where(eq(sessionMessages.id, input.messageId))
+        .limit(1)
+        .for("update");
+      let message = existing;
+      if (message) {
+        this.#assertMessageIdentity(message, input.sourceSessionId, input.targetSessionId, input.content);
+      } else {
+        const now = this.#now();
+        [message] = await transaction
+          .insert(sessionMessages)
+          .values({
+            id: input.messageId,
+            sourceSessionId: input.sourceSessionId,
+            targetSessionId: input.targetSessionId,
+            content: input.content,
+            contentHash: hashSessionMessage(input.content),
+            createdAt: now,
+            updatedAt: now,
+          })
+          .onConflictDoNothing()
+          .returning();
+        if (!message) {
+          [message] = await transaction
+            .select()
+            .from(sessionMessages)
+            .where(eq(sessionMessages.id, input.messageId))
+            .limit(1)
+            .for("update");
+          if (message) {
+            this.#assertMessageIdentity(message, input.sourceSessionId, input.targetSessionId, input.content);
+          }
+        }
+      }
+      if (!message) throw new Error("Session message insert did not return a row");
+      const attempt = await this.#beginAttempt(transaction, message);
+      return {
+        route: this.#route(source, target),
+        message: attempt.message,
+        deduplicated: attempt.attemptCount === null,
+        attemptCount: attempt.attemptCount,
+      };
+    });
+  }
+
+  async recordMessageOutcome(input: {
+    messageId: string;
+    attemptCount: number;
+    outcome: SessionMessageOutcome;
+    errorCode?: string;
+  }): Promise<boolean> {
+    const now = this.#now();
+    const [updated] = await this.#database
+      .update(sessionMessages)
+      .set({
+        lastOutcome: input.outcome,
+        lastErrorCode: input.errorCode ?? null,
+        updatedAt: now,
+      })
+      .where(and(eq(sessionMessages.id, input.messageId), eq(sessionMessages.attemptCount, input.attemptCount)))
+      .returning({ id: sessionMessages.id });
+    return updated !== undefined;
   }
 
   async end(sessionId: string): Promise<Session> {
@@ -256,6 +455,110 @@ export class SessionService {
       )
       .limit(1);
     if (!placement) throw new SessionServiceError("SESSION_PLACEMENT_STALE", "The Session placement is stale");
+  }
+
+  async #activeSource(
+    transaction: DatabaseTransaction,
+    input: { sessionId: string; computerId: string; placementGeneration: number },
+  ): Promise<ActiveSessionAuthority> {
+    const [source] = await transaction
+      .select({ session: sessions, placement: sessionPlacements, agentId: agents.id })
+      .from(sessions)
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .where(
+        and(
+          eq(sessions.id, input.sessionId),
+          isNull(sessions.endedAt),
+          eq(imBindings.status, "active"),
+          eq(agents.status, "active"),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    if (!source) throw new SessionServiceError("SESSION_SOURCE_UNAVAILABLE", "The source Session is not active");
+    if (source.placement.computerId !== input.computerId || source.placement.generation !== input.placementGeneration) {
+      throw new SessionServiceError("SESSION_PLACEMENT_STALE", "The source Session placement is stale");
+    }
+    return source;
+  }
+
+  async #activeTarget(
+    transaction: DatabaseTransaction,
+    targetSessionId: string,
+    sourceSession: SessionRow,
+  ): Promise<{ session: SessionRow; placement: PlacementRow }> {
+    const [target] = await transaction
+      .select({ session: sessions, placement: sessionPlacements })
+      .from(sessions)
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .where(and(eq(sessions.id, targetSessionId), isNull(sessions.endedAt)))
+      .limit(1)
+      .for("update");
+    if (!target) throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session is not active");
+    if (
+      target.session.imBindingId !== sourceSession.imBindingId ||
+      target.session.channelId !== sourceSession.channelId ||
+      target.session.conversationKind !== sourceSession.conversationKind ||
+      target.session.threadKey !== sourceSession.threadKey
+    ) {
+      throw new SessionServiceError("SESSION_SCOPE_MISMATCH", "The target Session has a different collaboration scope");
+    }
+    return target;
+  }
+
+  #assertMessageIdentity(
+    message: SessionMessageRow,
+    sourceSessionId: string,
+    targetSessionId: string,
+    content: string,
+  ): void {
+    if (
+      message.sourceSessionId !== sourceSessionId ||
+      message.targetSessionId !== targetSessionId ||
+      message.contentHash !== hashSessionMessage(content) ||
+      message.content !== content
+    ) {
+      throw new SessionServiceError("SESSION_MESSAGE_CONFLICT", "The Session message ID has conflicting input");
+    }
+  }
+
+  async #beginAttempt(
+    transaction: DatabaseTransaction,
+    message: SessionMessageRow,
+  ): Promise<{ message: SessionMessageRow; attemptCount: number | null }> {
+    if (message.lastOutcome === "accepted" || message.lastOutcome === "rejected") {
+      return { message, attemptCount: null };
+    }
+    const now = this.#now();
+    const [updated] = await transaction
+      .update(sessionMessages)
+      .set({
+        attemptCount: message.attemptCount + 1,
+        lastAttemptAt: now,
+        lastOutcome: "unknown",
+        lastErrorCode: null,
+        updatedAt: now,
+      })
+      .where(and(eq(sessionMessages.id, message.id), eq(sessionMessages.attemptCount, message.attemptCount)))
+      .returning();
+    if (!updated) throw new Error("Session message attempt did not acquire its fence");
+    return { message: updated, attemptCount: updated.attemptCount };
+  }
+
+  #route(
+    source: ActiveSessionAuthority,
+    target: { session: SessionRow; placement: PlacementRow },
+  ): AuthorizedSessionMessageRoute {
+    return {
+      agentId: source.agentId,
+      sourceSessionId: source.session.id,
+      targetSessionId: target.session.id,
+      targetComputerId: target.placement.computerId,
+      targetPlacementGeneration: target.placement.generation,
+      targetSessionKind: target.session.kind,
+    };
   }
 
   async #resolveComputer(transaction: DatabaseTransaction, imBindingId: string): Promise<string> {

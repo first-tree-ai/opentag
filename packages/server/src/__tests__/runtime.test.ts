@@ -146,6 +146,7 @@ describe("Computer runtime WebSocket", () => {
 
   it("negotiates v2 capabilities and fences every post-registration frame", async () => {
     const computers = computerService();
+    let businessContext: { negotiatedCapabilities?: Record<string, number> } | undefined;
     const app = createApp({
       authService: authService(),
       computerService: computers as unknown as ComputerService,
@@ -155,7 +156,10 @@ describe("Computer runtime WebSocket", () => {
         business: {
           parse: (value) => businessFrame(value),
           laneKey: (frame) => String(frame.key),
-          handle: (frame) => ({ type: "test:result", requestId: frame.requestId, status: "ok" }),
+          handle: (frame, context) => {
+            businessContext = context;
+            return { type: "test:result", requestId: frame.requestId, status: "ok" };
+          },
           overloadResult: (frame) => ({ type: "test:result", requestId: frame.requestId, status: "busy" }),
           failureResult: (frame) => ({ type: "test:result", requestId: frame.requestId, status: "failed" }),
         },
@@ -244,6 +248,9 @@ describe("Computer runtime WebSocket", () => {
       requestId: businessRequestId,
       status: "ok",
       connectionId,
+    });
+    expect(businessContext?.negotiatedCapabilities).toMatchObject({
+      "runtime.sessionCollaboration": 1,
     });
 
     socket.send(

@@ -26,6 +26,7 @@ export const RUNTIME_CAPABILITY = {
   agentTrace: "runtime.agentTrace",
   imDelivery: "runtime.imDelivery",
   imCredentialGrant: "runtime.imCredentialGrant",
+  sessionCollaboration: "runtime.sessionCollaboration",
   sessionReconcile: "runtime.sessionReconcile",
   turnReport: "runtime.turnReport",
 } as const;
@@ -34,6 +35,7 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.imDelivery]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.imCredentialGrant]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.sessionCollaboration]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 1 },
 } as const;

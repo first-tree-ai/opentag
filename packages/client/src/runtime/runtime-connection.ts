@@ -174,6 +174,7 @@ export class RuntimeConnection {
   #state: RuntimeConnectionState = "stopped";
   #stopped = false;
   #protocolVersion: RuntimeProtocolVersion = RUNTIME_PROTOCOL_VERSION;
+  #negotiatedCapabilities: RuntimeNegotiatedCapabilities = {};
   #verifiedCapabilities: RuntimeClientCapabilities = { imCredentialGrant: 0 };
   #verifiedCapabilitiesExpiresAt = 0;
   readonly #providerReadiness = new Map<
@@ -215,6 +216,10 @@ export class RuntimeConnection {
 
   get instanceId(): string {
     return this.#options.instanceId;
+  }
+
+  supportsCapability(capability: string): boolean {
+    return this.#state === "registered" && this.#negotiatedCapabilities[capability] !== undefined;
   }
 
   setVerifiedCapabilities(
@@ -454,6 +459,7 @@ export class RuntimeConnection {
       this.#options.webSocketFactory?.(socketUrl, socketOptions) ?? new WebSocket(socketUrl, socketOptions);
     this.#active = socket;
     this.#connectionId = undefined;
+    this.#negotiatedCapabilities = {};
     const instanceId = this.#options.instanceId;
     const protocolVersion = this.#protocolVersion;
 
@@ -703,6 +709,7 @@ export class RuntimeConnection {
               return;
             }
             this.#connectionId = frame.connectionId;
+            this.#negotiatedCapabilities = { ...frame.negotiatedCapabilities };
           } else if ("protocolVersion" in frame) {
             failProtocol("The Server returned an invalid legacy registration", "Registration version mismatch");
             return;

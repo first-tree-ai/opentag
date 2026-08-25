@@ -44,6 +44,52 @@ const homes: string[] = [];
 afterEach(async () => Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))));
 
 describe("SessionRuntimeManager", () => {
+  it("adds hosted collaboration tools while omitting IM credential environment from internal Sessions", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-internal-runtime-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const factory = new FakeFactory();
+    const hostedToolsForSession = vi.fn(() => ({
+      definitions: [
+        {
+          name: "send_session_message",
+          description: "Send a Session message",
+          inputSchema: { type: "object", properties: {} },
+        },
+      ],
+      handler: vi.fn(),
+    }));
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      hostedToolsForSession,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const internal = { ...reconcile(computerId, snapshot(1)), sessionKind: "internal" as const };
+    await reconciler.reconcile(internal);
+    await manager.ensureRuntime(internal.sessionId);
+    expect(factory.created[0]?.workspace.environment).toBeUndefined();
+    expect(factory.created[0]?.hostedTools?.definitions.map(({ name }) => name)).toEqual(["send_session_message"]);
+    expect(hostedToolsForSession).toHaveBeenCalledWith({
+      agentId: internal.agentId,
+      sessionId: internal.sessionId,
+      placementGeneration: 1,
+      sessionKind: "internal",
+    });
+
+    const visible = { ...reconcile(computerId, snapshot(1)), requestId: randomUUID(), sessionId: "session-2" };
+    await reconciler.reconcile(visible);
+    await manager.ensureRuntime(visible.sessionId);
+    expect(factory.created[1]?.workspace.environment).toEqual({
+      OPENTAG_PROVIDER_ENV_FILE: "/tmp/provider-env.sh",
+    });
+    await manager.close();
+  });
+
   it("durably creates, reuses, upgrades, resumes, and stops Session-scoped runtimes", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-session-runtime-"));
     homes.push(home);

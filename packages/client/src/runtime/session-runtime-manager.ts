@@ -4,7 +4,7 @@ import type {
   RuntimeSnapshotHashes,
   SessionReconcileRequest,
 } from "@opentag/shared";
-import type { AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
+import type { AgentHostedTools, AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
 import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-registry.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
 import { renderManagedSystemPrompt } from "./managed-instructions.js";
@@ -17,6 +17,8 @@ interface ManagedSessionRuntime {
   readonly effectiveSnapshotHash: string;
   readonly providerId: string;
   readonly snapshot: EffectiveRuntimeSnapshot;
+  readonly sessionKind: "visible" | "internal";
+  readonly placementGeneration: number;
   binding: LocalSessionBinding;
   eventSink?: AgentRuntimeEventSink;
   runtime?: AgentRuntime;
@@ -40,6 +42,12 @@ export interface SessionRuntimeManagerOptions {
   readonly ensureProviderReady: (providerId: string, signal?: AbortSignal) => Promise<void>;
   readonly providers: AgentRuntimeProviderRegistry;
   readonly providerEnvironmentPath: (sessionId: string) => string;
+  readonly hostedToolsForSession?: (binding: {
+    agentId: string;
+    sessionId: string;
+    placementGeneration: number;
+    sessionKind: "visible" | "internal";
+  }) => AgentHostedTools | undefined;
   readonly workspace: AgentWorkspaceManager;
 }
 
@@ -49,6 +57,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   readonly #ensureProviderReady: SessionRuntimeManagerOptions["ensureProviderReady"];
   readonly #providers: AgentRuntimeProviderRegistry;
   readonly #providerEnvironmentPath: SessionRuntimeManagerOptions["providerEnvironmentPath"];
+  readonly #hostedToolsForSession?: SessionRuntimeManagerOptions["hostedToolsForSession"];
   readonly #workspace: AgentWorkspaceManager;
   readonly #sessions = new Map<string, ManagedSessionRuntime>();
   readonly #prepares = new Set<Promise<SessionPreparationResult>>();
@@ -63,6 +72,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     this.#ensureProviderReady = options.ensureProviderReady;
     this.#providers = options.providers;
     this.#providerEnvironmentPath = options.providerEnvironmentPath;
+    this.#hostedToolsForSession = options.hostedToolsForSession;
     this.#workspace = options.workspace;
   }
 
@@ -107,7 +117,9 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     if (
       current &&
       current.effectiveSnapshotHash === hashes.effectiveSnapshotHash &&
-      current.providerId === snapshot.provider
+      current.providerId === snapshot.provider &&
+      current.placementGeneration === request.placementGeneration &&
+      current.sessionKind === (request.sessionKind ?? "visible")
     ) {
       current.binding = prepared.binding;
       if (current.runtime?.state.phase === "closed") current.runtime = undefined;
@@ -132,6 +144,8 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       cwd,
       effectiveSnapshotHash: hashes.effectiveSnapshotHash,
       providerId: snapshot.provider,
+      sessionKind: request.sessionKind ?? "visible",
+      placementGeneration: request.placementGeneration,
       snapshot,
     });
     return prepared;
@@ -179,10 +193,18 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     };
     const common = {
       eventSink,
+      hostedTools: this.#hostedToolsForSession?.({
+        agentId: managed.agentId,
+        sessionId: managed.binding.sessionId,
+        placementGeneration: managed.placementGeneration,
+        sessionKind: managed.sessionKind,
+      }),
       systemPrompt: renderManagedSystemPrompt(managed.snapshot),
       workspace: {
         cwd: managed.cwd,
-        environment: { OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId) },
+        ...(managed.sessionKind === "visible"
+          ? { environment: { OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId) } }
+          : {}),
         writableRoots: [managed.cwd],
       },
       policy: provider.policy(managed.snapshot),
@@ -233,6 +255,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   }
 
   async stopSession(sessionId: string, placementGeneration: number): Promise<void> {
+    const sessionKind = this.#sessions.get(sessionId)?.sessionKind;
     try {
       const current = this.#sessions.get(sessionId);
       if (current) {
@@ -241,7 +264,9 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       }
       await this.#workspace.stopSession(sessionId, placementGeneration);
     } finally {
-      await this.#cleanupProviderEnvironment?.(sessionId);
+      if (sessionKind !== "internal") {
+        await this.#cleanupProviderEnvironment?.(sessionId);
+      }
     }
   }
 

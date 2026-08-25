@@ -39,6 +39,7 @@ import { createImProviderAdapterResolver, ImBindingService } from "./services/im
 import { DefaultSlackApiClient, SlackAdapter, SlackSetupService } from "./services/im-bindings/slack/index.js";
 import { InvitationService } from "./services/invitations/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
+import { SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { TeamMembershipService, TeamSetupService } from "./services/teams/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
 
@@ -77,6 +78,11 @@ export {
 export { AgentService, AgentServiceError } from "./services/agents/index.js";
 export { AuthService, AuthServiceError, AuthTokenService } from "./services/auth/index.js";
 export { ComputerService } from "./services/computers/index.js";
+export {
+  SessionCollaborationService,
+  type SessionCollaborationServiceOptions,
+  SessionService,
+} from "./services/sessions/index.js";
 
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
@@ -143,9 +149,22 @@ export async function startServer(): Promise<void> {
     });
     const teamSetupService = new TeamSetupService(database, teamService, imBindingService);
     const imMessageInbox = new ImMessageInbox(database);
+    const sessionService = new SessionService(database);
+    const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
+    let sessionCollaborationService: SessionCollaborationService;
     const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
       onImCredentialGrant: (request, context) =>
         imBindingService.issueRuntimeCredentialGrant(request, context.computerId),
+      onLocalSessionMessageDeliveryResult: (result, context) =>
+        sessionCollaborationService.handleLocalDeliveryResult(result, context),
+      onSessionCollaborationCommand: (request, context) => sessionCollaborationService.handle(request, context),
+    });
+    sessionCollaborationService = new SessionCollaborationService({
+      assembler: runtimeSnapshotAssembler,
+      domain: domainOwner,
+      onDiagnostic: reportDiagnostic,
+      registry,
+      sessions: sessionService,
     });
     const agentService = new AgentService(database, {
       membershipService: teamService,
@@ -185,7 +204,6 @@ export async function startServer(): Promise<void> {
     });
     const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
     const imResourceService = new ImResourceService(database, resolveImAdapter);
-    const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     const imDeliveryWorker = new ImDeliveryWorker({
       assembler: runtimeSnapshotAssembler,
       database,

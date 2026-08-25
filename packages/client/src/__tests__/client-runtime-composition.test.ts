@@ -478,6 +478,8 @@ describe("createClientRuntime production composition", () => {
       bindingStore: {},
       custody: {},
       credentialEnvironment: { close: vi.fn(async () => undefined) },
+      collaboration: { close: vi.fn() },
+      sessionMessageInbox: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       reconciler: {},
       reportOwner: { stop: vi.fn() },
       runner: { settled: vi.fn(async () => undefined), stop: vi.fn() },

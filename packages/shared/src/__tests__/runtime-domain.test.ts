@@ -10,9 +10,14 @@ import {
   type EffectiveRuntimeSnapshot,
   EffectiveRuntimeSnapshotSchema,
   ImMessageDeliveryResultSchema,
+  InternalSessionCreateRequestSchema,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   runtimeUsageTotalTokens,
   ServerRuntimeBusinessFrameSchema,
+  SessionCollaborationCommandResultSchema,
+  SessionMessageDeliveryRequestSchema,
+  SessionMessageDeliveryResultSchema,
+  SessionMessageSendRequestSchema,
   SessionReconcileRequestSchema,
   SessionReconcileResultSchema,
   type TurnReportRequest,
@@ -242,6 +247,70 @@ describe("runtime domain contract", () => {
         cachedInputTokens: 1,
       }),
     ).toThrow("safe integer range");
+  });
+
+  it("validates strict Session collaboration commands, delivery identity, and byte bounds", () => {
+    const agentId = randomUUID();
+    const runtime = { ...snapshot(), agentId };
+    const create = {
+      type: "session:internal:create" as const,
+      requestId: randomUUID(),
+      sourceSessionId: randomUUID(),
+      sourcePlacementGeneration: 2,
+      initialMessage: { messageId: randomUUID(), text: "Investigate" },
+      overrides: { model: "gpt-5.6-codex", reasoningEffort: "high", maxDurationMs: 60_000 },
+    };
+    expect(InternalSessionCreateRequestSchema.parse(create)).toEqual(create);
+    expect(() => InternalSessionCreateRequestSchema.parse({ ...create, agentId })).toThrow();
+
+    const send = {
+      type: "session:message" as const,
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      sourceSessionId: randomUUID(),
+      sourcePlacementGeneration: 1,
+      targetSessionId: randomUUID(),
+      content: { kind: "text" as const, text: "Done" },
+    };
+    expect(SessionMessageSendRequestSchema.parse(send)).toEqual(send);
+    expect(() =>
+      SessionMessageSendRequestSchema.parse({
+        ...send,
+        content: { kind: "text", text: `${"你".repeat(Math.floor(RUNTIME_DIRECT_TEXT_MAX_BYTES / 3))}你` },
+      }),
+    ).toThrow();
+
+    const delivery = {
+      type: "session:message:deliver" as const,
+      requestId: randomUUID(),
+      messageId: send.messageId,
+      sourceSessionId: send.sourceSessionId,
+      targetSessionId: send.targetSessionId,
+      agentId,
+      placementGeneration: 1,
+      content: send.content,
+      runtime,
+    };
+    expect(SessionMessageDeliveryRequestSchema.parse(delivery)).toEqual(delivery);
+    expect(() => SessionMessageDeliveryRequestSchema.parse({ ...delivery, agentId: randomUUID() })).toThrow();
+    expect(
+      SessionMessageDeliveryResultSchema.parse({
+        type: "session:message:deliver:result",
+        requestId: delivery.requestId,
+        messageId: delivery.messageId,
+        targetSessionId: delivery.targetSessionId,
+        placementGeneration: 1,
+        status: "accepted",
+      }),
+    ).toMatchObject({ status: "accepted" });
+    expect(() =>
+      SessionCollaborationCommandResultSchema.parse({
+        type: "session:collaboration:result",
+        requestId: create.requestId,
+        messageId: create.initialMessage.messageId,
+        status: "local",
+      }),
+    ).toThrow();
   });
 });
 

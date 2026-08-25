@@ -7,6 +7,7 @@ import {
   RUNTIME_PROTOCOL_V2,
   type RuntimeClientCapabilities,
   type RuntimeImCliReadinessCollection,
+  type RuntimeNegotiatedCapabilities,
   type RuntimeProtocolVersion,
   type RuntimeProviderReadinessCollection,
   runtimeFrameByteLength,
@@ -37,6 +38,7 @@ export interface RuntimeConnectionEntry {
   providerReadinessProviders?: readonly AgentRuntimeProvider[];
   imCliReadiness?: RuntimeImCliReadinessCollection;
   imCliReadinessObservedAt?: number;
+  negotiatedCapabilities?: RuntimeNegotiatedCapabilities;
   socket: WebSocket;
   userId: string;
 }
@@ -77,6 +79,15 @@ export class ConnectionRegistry {
   currentInstanceId(computerId: string): string | undefined {
     const current = this.#entries.get(computerId);
     return current?.active === false ? undefined : current?.instanceId;
+  }
+
+  supportsCapability(computerId: string, instanceId: string, capability: string): boolean {
+    const current = this.#entries.get(computerId);
+    return (
+      current?.instanceId === instanceId &&
+      current.active !== false &&
+      current.negotiatedCapabilities?.[capability] !== undefined
+    );
   }
 
   supports(

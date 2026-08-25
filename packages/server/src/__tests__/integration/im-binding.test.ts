@@ -639,6 +639,36 @@ describe("IM binding persistence", () => {
       expect(JSON.stringify(direct)).not.toContain("signing-secret");
       expect(JSON.stringify(direct)).not.toContain("attention");
 
+      const sessionService = new SessionService(value.database);
+      const thread = await sessionService.ensureChatSession(
+        {
+          imBindingId: value.imBindingId,
+          channelId: session.channelId,
+          conversationKind: session.conversationKind,
+        },
+        "thread",
+        "credential-thread",
+      );
+      await expect(
+        value.imBindingService.issueRuntimeCredentialGrant(
+          { ...request, requestId: crypto.randomUUID(), sessionId: thread.session.id },
+          value.computer.id,
+        ),
+      ).resolves.toMatchObject({ status: "succeeded", grant: { provider: "slack" } });
+      const internal = await sessionService.createInternalSessionWithMessage({
+        creatorSessionId: session.id,
+        creatorComputerId: value.computer.id,
+        creatorPlacementGeneration: 1,
+        messageId: crypto.randomUUID(),
+        initialMessage: "Do not expose provider credentials",
+      });
+      const internalGrant = await value.imBindingService.issueRuntimeCredentialGrant(
+        { ...request, requestId: crypto.randomUUID(), sessionId: internal.session.id },
+        value.computer.id,
+      );
+      expect(internalGrant).toMatchObject({ status: "rejected", code: "agent_mismatch" });
+      expect(JSON.stringify(internalGrant)).not.toContain("xoxb-secret");
+
       await expect(
         value.imBindingService.issueRuntimeCredentialGrant(
           { ...request, requestId: crypto.randomUUID(), placementGeneration: 2 },

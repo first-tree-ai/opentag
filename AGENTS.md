@@ -43,11 +43,13 @@ pnpm build
 pnpm typecheck
 pnpm test
 pnpm --filter @opentag/client test:agent-runtime:coverage
-pnpm test:coverage
+pnpm --filter @opentag/server test:integration
 ```
 
 Run directly affected tests during development and all commands above before opening a pull request. Unit tests must not
-depend on the public network, external providers, or a running PostgreSQL instance.
+depend on the public network, external providers, or a running PostgreSQL instance. Run `pnpm test:coverage` when changing
+the root coverage configuration or investigating repository-wide coverage gaps; the scheduled `Unit Coverage` workflow
+owns the recurring baseline measurement.
 
 ## Code and Git conventions
 

@@ -1,7 +1,7 @@
 # OpenTag 开发指南
 
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-08-23
+> Last synced with: 2026-08-25
 
 ## 前置要求
 
@@ -26,20 +26,23 @@ pnpm build
 pnpm typecheck
 pnpm test
 pnpm --filter @opentag/client test:agent-runtime:coverage
-pnpm test:coverage
 pnpm --filter @opentag/server test:integration
 ```
 
 仅检查 lint 可运行 `pnpm lint`；应用 Biome 格式化可运行 `pnpm format`。
 
-`pnpm test:coverage` 会先构建 workspace，再统计 CLI、Web、Shared、Client 和 Server 的离线单测覆盖率。它会纳入
-未被测试 import 的生产源码，但排除根目录 `scripts/`、Server PostgreSQL integration tests 和 Provider E2E。
-统一报告目前用于测量基线、定位缺口和安排优先级，暂不设置全仓或分 workspace 覆盖率阈值。只有在重复运行的
-统计结果稳定后，才应增加回退阈值。Agent Runtime 继续使用 `packages/client/vitest.agent-runtime.config.ts` 中
-独立的 100% 门槛，并由
+独立的 `Unit Coverage` workflow 会在每周一 03:17 UTC 针对 `main` 运行 `pnpm test:coverage`，也支持手动触发。
+该命令会先构建 workspace，再统计 CLI、Web、Shared、Client 和 Server 的离线单测覆盖率，并将统一报告保留
+14 天。修改根 coverage 配置或调查覆盖率缺口时，应在本地运行该命令。统计会纳入未被测试 import 的生产源码，
+但排除根目录 `scripts/`、Server PostgreSQL integration tests 和 Provider E2E。该统计是用于定位缺口和安排
+优先级的测量基线，不属于 Pull Request 必过检查，暂不设置全仓或分 workspace 覆盖率阈值。只有在重复运行的
+统计结果稳定后，才应增加回退阈值。
+
+Pull Request 必过 CI 仍会运行全部离线单测。Agent Runtime 继续使用
+`packages/client/vitest.agent-runtime.config.ts` 中独立的 100% 门槛，并由
 `pnpm --filter @opentag/client test:agent-runtime:coverage` 执行。
 
-Pull Request 的必过检查是稳定的 `CI` fan-in job。它会覆盖上述命令、source/staging CLI tarball 安装、生产容器
+Pull Request 的必过检查是稳定的 `CI` fan-in job。它会覆盖上述必需命令、source/staging CLI tarball 安装、生产容器
 健康检查和受支持的 Node.js 版本。完整验证与发布使用 Node.js 24；兼容 job 会在精确下限 Node.js 22.13.0 和
 最新 Node.js 26 上运行 `pnpm check:node-compat`，完成构建、测试和 CLI tarball 安装。Node.js 23 与 25 已 EOL，
 不在支持范围内。构建后可在本地验证当前 source tarball：

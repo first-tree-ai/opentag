@@ -74,17 +74,12 @@ jobs:
       - name: Enforce Agent Runtime coverage
         run: pnpm --filter @opentag/client test:agent-runtime:coverage
 
-      - name: Measure unit coverage
-        run: pnpm test:coverage
-
       - name: Upload coverage reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: unit-coverage-reports-${{ github.sha }}
-          path: |
-            packages/client/coverage/**
-            coverage/unit/**
+          name: agent-runtime-coverage-report-${{ github.sha }}
+          path: packages/client/coverage/**
           if-no-files-found: warn
           retention-days: 14
 

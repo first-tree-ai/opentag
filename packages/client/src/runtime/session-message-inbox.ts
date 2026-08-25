@@ -27,7 +27,10 @@ export interface SessionMessageInboxOptions {
   maxQueuedPerSession?: number;
   maxQueuedTotal?: number;
   maxRememberedMessages?: number;
-  reconciler: Pick<SessionReconciler, "checkSessionMessageDelivery">;
+  reconciler: Pick<
+    SessionReconciler,
+    "checkSessionMessageDelivery" | "clearActivity" | "setActivity" | "withAgentLock"
+  >;
   runtimeManager: Pick<SessionRuntimeManager, "ensureRuntime">;
 }
 
@@ -118,6 +121,14 @@ export class SessionMessageInbox {
       queue?.shift();
       this.#queuedTotal -= 1;
       reservation.reservation.markActive();
+      const runId = `session-message-${next.request.messageId}`;
+      await this.#reconciler.withAgentLock(next.request.agentId, async () => {
+        this.#reconciler.setActivity(sessionId, {
+          phase: "running",
+          deliveryId: next.request.messageId,
+          turnId: runId,
+        });
+      });
       try {
         const runtime = await this.#runtimeManager.ensureRuntime(sessionId, this.#abort.signal);
         await runtime.waitForIdle();
@@ -129,7 +140,7 @@ export class SessionMessageInbox {
         timer.unref();
         try {
           await runtime.prompt({
-            runId: `session-message-${next.request.messageId}`,
+            runId,
             input: buildSessionMessageInput(next.request),
             signal: AbortSignal.any([this.#abort.signal, timeout.signal]),
           });
@@ -137,7 +148,10 @@ export class SessionMessageInbox {
           clearTimeout(timer);
         }
       } finally {
-        reservation.reservation.release();
+        await this.#reconciler.withAgentLock(next.request.agentId, async () => {
+          this.#reconciler.clearActivity(sessionId, runId);
+          reservation.reservation.release();
+        });
       }
     }
   }

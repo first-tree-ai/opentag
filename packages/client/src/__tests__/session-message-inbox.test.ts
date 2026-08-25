@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { SessionMessageDeliveryRequest } from "@opentag/shared";
+import type { InputRejectReason, SessionMessageDeliveryRequest, SessionReconcileRequest } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { AdmissionController } from "../runtime/admission-controller.js";
 import { buildSessionMessageInput, SessionMessageInbox } from "../runtime/session-message-inbox.js";
+import { SessionReconciler } from "../runtime/session-reconciler.js";
 
 describe("SessionMessageInbox", () => {
   it("accepts immediately, waits for shared admission, and drains one Session in FIFO order", async () => {
@@ -22,7 +23,7 @@ describe("SessionMessageInbox", () => {
     };
     const inbox = new SessionMessageInbox({
       admission,
-      reconciler: { checkSessionMessageDelivery: () => undefined },
+      reconciler: inboxReconciler(),
       runtimeManager: { ensureRuntime: vi.fn(async () => runtime as never) },
     });
     const first = delivery({ targetSessionId, agentId, text: "first" });
@@ -39,7 +40,7 @@ describe("SessionMessageInbox", () => {
   it("deduplicates the same logical payload and rejects a conflicting retry", () => {
     const inbox = new SessionMessageInbox({
       admission: new AdmissionController(),
-      reconciler: { checkSessionMessageDelivery: () => "session_not_ready" },
+      reconciler: inboxReconciler("session_not_ready"),
       runtimeManager: { ensureRuntime: vi.fn() },
     });
     const original = delivery({ text: "same" });
@@ -61,7 +62,7 @@ describe("SessionMessageInbox", () => {
     };
     const inbox = new SessionMessageInbox({
       admission: new AdmissionController(),
-      reconciler: { checkSessionMessageDelivery: () => undefined },
+      reconciler: inboxReconciler(),
       runtimeManager: { ensureRuntime: vi.fn(async () => runtime as never) },
     });
     const original = delivery({ text: "same logical message" });
@@ -85,6 +86,57 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it("keeps capability-changing reconcile busy until an active SessionMessage Run settles", async () => {
+    const computerId = randomUUID();
+    const request = delivery();
+    let capabilityChanged = false;
+    const preparation = {
+      prepareAgent: vi.fn(async () => undefined),
+      prepareSession: vi.fn(async () => undefined),
+      requiresSessionPreparation: vi.fn(() => capabilityChanged),
+      stopSession: vi.fn(async () => undefined),
+    };
+    const reconciler = new SessionReconciler({ computerId, preparation });
+    const reconcile = reconcileFor(computerId, request);
+    await expect(reconciler.reconcile(reconcile)).resolves.toMatchObject({ status: "ready" });
+
+    let finishPrompt!: () => void;
+    const promptGate = new Promise<void>((resolve) => {
+      finishPrompt = resolve;
+    });
+    const promptStarted = vi.fn();
+    const runtime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async ({ runId }: { runId: string }) => {
+        promptStarted();
+        await promptGate;
+        return { runId, status: "completed", output: [] };
+      }),
+    };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      reconciler,
+      runtimeManager: { ensureRuntime: vi.fn(async () => runtime as never) },
+    });
+    expect(inbox.accept(request).status).toBe("accepted");
+    await vi.waitFor(() => expect(promptStarted).toHaveBeenCalledOnce());
+
+    capabilityChanged = true;
+    await expect(reconciler.reconcile({ ...reconcile, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "running",
+      turn: { deliveryId: request.messageId, turnId: `session-message-${request.messageId}` },
+    });
+    expect(preparation.prepareSession).toHaveBeenCalledOnce();
+
+    finishPrompt();
+    await inbox.settled();
+    await expect(reconciler.reconcile({ ...reconcile, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(preparation.prepareSession).toHaveBeenCalledTimes(2);
+    inbox.stop();
+  });
+
   it("builds managed collaboration context without IM provider references", () => {
     const input = buildSessionMessageInput(delivery({ text: "Report the result" }));
     expect(input.items[0]?.text).toContain("final text is not returned automatically");
@@ -105,7 +157,7 @@ describe("SessionMessageInbox", () => {
       admission,
       maxQueuedPerSession: 1,
       maxQueuedTotal: 1,
-      reconciler: { checkSessionMessageDelivery: () => undefined },
+      reconciler: inboxReconciler(),
       runtimeManager,
     });
     expect(inbox.accept(delivery({ targetSessionId, agentId, text: "queued" })).status).toBe("accepted");
@@ -147,5 +199,28 @@ function delivery(
     },
     ...frameOverrides,
     content: { kind: "text", text: text ?? content?.text ?? "work" },
+  };
+}
+
+function reconcileFor(computerId: string, request: SessionMessageDeliveryRequest): SessionReconcileRequest {
+  return {
+    type: "session:reconcile",
+    requestId: randomUUID(),
+    computerId,
+    sessionId: request.targetSessionId,
+    agentId: request.agentId,
+    placementGeneration: request.placementGeneration,
+    desired: "ready",
+    sessionKind: "internal",
+    runtime: request.runtime,
+  };
+}
+
+function inboxReconciler(reason?: InputRejectReason) {
+  return {
+    checkSessionMessageDelivery: () => reason,
+    clearActivity: () => true,
+    setActivity: () => undefined,
+    withAgentLock: async <T>(_agentId: string, task: () => Promise<T>) => task(),
   };
 }

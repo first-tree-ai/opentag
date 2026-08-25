@@ -32,7 +32,7 @@ export const agents = pgTable(
     name: text("name").notNull(),
     displayName: text("display_name").notNull(),
     runtimeProvider: agentRuntimeProvider("runtime_provider").notNull(),
-    receiveMode: agentReceiveMode("receive_mode").notNull().default("mention_only"),
+    receiveMode: agentReceiveMode("receive_mode").notNull().default("all_message"),
     status: agentStatus("status").notNull().default("active"),
     revision: integer("revision").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

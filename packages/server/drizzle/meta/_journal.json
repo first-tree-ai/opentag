@@ -99,6 +99,20 @@
       "when": 1787627212750,
       "tag": "0013_bizarre_gamma_corps",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1787642202735,
+      "tag": "0014_illegal_wolfsbane",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1787642867924,
+      "tag": "0015_spotty_machine_man",
+      "breakpoints": true
     }
   ]
 }

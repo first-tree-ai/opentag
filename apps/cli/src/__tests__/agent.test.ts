@@ -114,16 +114,32 @@ describe("Agent CLI core", () => {
       ready: false,
       agentRuntimeReadiness: "ready",
       providerCliReadiness: "install",
-      credentialGeneration: 1,
+      credentialGeneration: 0,
+      credentialStatus: "invalid",
+      requiredCapabilities: ["im:message"],
+      grantedCapabilities: [],
+      missingCapabilities: ["im:message"],
       reauthorizationRequired: false,
-      pendingReceiveMode: "all_message",
+      slackAppId: null,
+      slackIdentityClosure: null,
       connection: null,
       lastInboundAt: null,
+      lastValidatedAt: null,
+      lastRuntimeObservationAt: null,
       lastErrorCode: null,
     };
     expect(formatImBindingDiagnostics(diagnostics)).toContain("providerCliReadiness\tinstall");
-    expect(formatImBindingDiagnostics(diagnostics)).toContain("pendingReceiveMode\tall_message");
     expect(formatImBindingDiagnostics(diagnostics)).toContain("agentRuntimeReadiness\tready");
+    expect(formatImBindingDiagnostics(diagnostics)).toContain("credentialGeneration\t0");
+    expect(formatImBindingDiagnostics(diagnostics)).toContain("credentialStatus\tinvalid");
+    expect(
+      formatImBindingDiagnostics({
+        ...diagnostics,
+        provider: "slack",
+        slackAppId: { value: "A1", evidence: "configured", ingressMatchRequired: true },
+        slackIdentityClosure: { status: "pending", verifiedAt: null },
+      }),
+    ).toContain("slackIdentityClosure\tpending");
   });
 
   it("resolves one Team automatically and requires an explicit choice for multiple Teams", () => {

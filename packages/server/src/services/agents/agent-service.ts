@@ -657,13 +657,7 @@ export class AgentService {
       if (input.receiveMode !== undefined) {
         const [imBinding] = await transaction
           .select({
-            id: imBindings.id,
             provider: imBindings.provider,
-            status: imBindings.status,
-            lastErrorCode: imBindings.lastErrorCode,
-            setupState: imBindings.setupState,
-            pendingReceiveMode: imBindings.pendingReceiveMode,
-            credentialGeneration: imBindings.credentialGeneration,
             capabilities: imBindings.grantedCapabilities,
           })
           .from(imBindings)
@@ -684,46 +678,6 @@ export class AgentService {
               409,
             );
           }
-        }
-        if (imBinding?.provider === "slack") {
-          const missingHistoryCapabilities = ["channels:history", "groups:history", "mpim:history"].some(
-            (capability) => !imBinding.capabilities.includes(capability),
-          );
-          const scopeUpgradeRequired =
-            input.receiveMode !== scope.agent.receiveMode &&
-            input.receiveMode === "all_message" &&
-            missingHistoryCapabilities &&
-            imBinding.credentialGeneration >= 1;
-          // Compare against the effective target so a no-op receive-mode save never cancels setup.
-          const targetChanged = (imBinding.pendingReceiveMode ?? scope.agent.receiveMode) !== input.receiveMode;
-          const cancelActiveSetup =
-            targetChanged && (imBinding.setupState === "awaiting_user" || imBinding.setupState === "validating");
-          await transaction
-            .update(imBindings)
-            .set({
-              pendingReceiveMode: scopeUpgradeRequired ? input.receiveMode : null,
-              lastErrorCode: scopeUpgradeRequired
-                ? imBinding.status === "active"
-                  ? "IM_BINDING_SCOPE_REAUTH_REQUIRED"
-                  : imBinding.lastErrorCode
-                : cancelActiveSetup
-                  ? "SLACK_SETUP_CANCELED"
-                  : imBinding.lastErrorCode === "IM_BINDING_SCOPE_REAUTH_REQUIRED"
-                    ? null
-                    : imBinding.lastErrorCode,
-              ...(cancelActiveSetup
-                ? {
-                    setupState: "canceled" as const,
-                    setupOwnerInstanceId: null,
-                    setupOwnerHeartbeatAt: null,
-                    encryptedSetupContext: null,
-                    setupExpiresAt: null,
-                  }
-                : {}),
-              updatedAt: now,
-            })
-            .where(eq(imBindings.id, imBinding.id));
-          if (scopeUpgradeRequired) return { scopeReauthorizationRequired: true as const };
         }
       }
       const currentRuntimeConfig = await this.#lockRuntimeConfig(transaction, agentId);
@@ -774,14 +728,6 @@ export class AgentService {
         409,
       );
     });
-    if ("scopeReauthorizationRequired" in result) {
-      throw new AgentServiceError(
-        "IM_BINDING_SCOPE_REAUTH_REQUIRED",
-        "deterministic",
-        "The IM binding must be reauthorized before enabling all-message receive mode",
-        409,
-      );
-    }
     return result.config;
   }
 

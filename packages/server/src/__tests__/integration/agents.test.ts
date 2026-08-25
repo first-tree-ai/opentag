@@ -1,12 +1,9 @@
-import { fileURLToPath } from "node:url";
 import type { TurnReportRequest } from "@opentag/shared";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { and, eq } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
-import { migrateDatabase } from "../../db/migrate.js";
 import {
   agents,
   computers,
@@ -21,31 +18,21 @@ import {
 import { AgentService } from "../../services/agents/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../services/runtime-config/index.js";
 import { TeamMembershipService } from "../../services/teams/index.js";
+import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
-const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
-let container: StartedPostgreSqlContainer;
+let testDatabase: MigratedTestDatabase;
 let databaseUrl: string;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer("postgres:17-alpine").start();
-  databaseUrl = container.getConnectionUri();
+  testDatabase = await startMigratedTestDatabase();
+  databaseUrl = testDatabase.databaseUrl;
 }, 120_000);
 
-afterAll(async () => container.stop());
+afterAll(async () => testDatabase.stop());
 
-beforeEach(async () => {
-  const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
-  try {
-    await sql.unsafe("drop schema if exists public cascade");
-    await sql.unsafe("drop schema if exists drizzle cascade");
-    await sql.unsafe("create schema public");
-  } finally {
-    await sql.end();
-  }
-});
+beforeEach(async () => testDatabase.reset());
 
 async function fixture() {
-  await migrateDatabase(databaseUrl, migrationsFolder);
   const client = createDatabaseClient(databaseUrl);
   const bootstrap = await bootstrapInitialAdmin(client.database, {
     displayName: "Admin",
@@ -106,6 +93,44 @@ function deferred<T>() {
 }
 
 describe("Agent persistence and authorization", () => {
+  it("resets standalone sequences without changing the migration ledger", async () => {
+    const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+    try {
+      const migrationsBefore = await sql<{ createdAt: string; hash: string; id: number }[]>`
+        select id, hash, created_at::text as "createdAt"
+        from drizzle.__drizzle_migrations
+        order by id
+      `;
+      const [sequence] = await sql<{ startValue: string }[]>`
+        select start_value::text as "startValue"
+        from pg_sequences
+        where schemaname = 'public' and sequencename = 'runtime_config_revision_sequence'
+      `;
+      const [first] = await sql<{ value: string }[]>`
+        select nextval('public.runtime_config_revision_sequence')::text as value
+      `;
+      const [second] = await sql<{ value: string }[]>`
+        select nextval('public.runtime_config_revision_sequence')::text as value
+      `;
+      expect(BigInt(second?.value ?? "0")).toBe(BigInt(first?.value ?? "0") + 1n);
+
+      await testDatabase.reset();
+
+      const [afterReset] = await sql<{ value: string }[]>`
+        select nextval('public.runtime_config_revision_sequence')::text as value
+      `;
+      const migrationsAfter = await sql<{ createdAt: string; hash: string; id: number }[]>`
+        select id, hash, created_at::text as "createdAt"
+        from drizzle.__drizzle_migrations
+        order by id
+      `;
+      expect(afterReset?.value).toBe(sequence?.startValue);
+      expect(migrationsAfter).toEqual(migrationsBefore);
+    } finally {
+      await sql.end();
+    }
+  });
+
   it("installs Agent constraints, creation-intent uniqueness, and restrictive foreign keys", async () => {
     const value = await fixture();
     try {

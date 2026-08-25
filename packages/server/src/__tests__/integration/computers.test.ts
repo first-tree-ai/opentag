@@ -1,42 +1,28 @@
-import { fileURLToPath } from "node:url";
 import { ComputerSchema, HTTP_PATHS, PROVIDER_READINESS_V1_HEADER, RUNTIME_PROTOCOL_V2 } from "@opentag/shared";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq } from "drizzle-orm";
-import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { migrateDatabase } from "../../db/migrate.js";
 import { computers, memberships, teams, users } from "../../db/schema/index.js";
 import { AuthService, AuthTokenService } from "../../services/auth/index.js";
 import { ComputerService } from "../../services/computers/index.js";
+import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
-const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 const jwtSecret = "im-binding-test-secret-at-least-32-characters";
-let container: StartedPostgreSqlContainer;
+let testDatabase: MigratedTestDatabase;
 let databaseUrl: string;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer("postgres:17-alpine").start();
-  databaseUrl = container.getConnectionUri();
+  testDatabase = await startMigratedTestDatabase();
+  databaseUrl = testDatabase.databaseUrl;
 }, 120_000);
 
-afterAll(async () => container.stop());
+afterAll(async () => testDatabase.stop());
 
-beforeEach(async () => {
-  const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
-  try {
-    await sql.unsafe("drop schema if exists public cascade");
-    await sql.unsafe("drop schema if exists drizzle cascade");
-    await sql.unsafe("create schema public");
-  } finally {
-    await sql.end();
-  }
-});
+beforeEach(async () => testDatabase.reset());
 
 async function fixture() {
-  await migrateDatabase(databaseUrl, migrationsFolder);
   const client = createDatabaseClient(databaseUrl);
   const bootstrap = await bootstrapInitialAdmin(client.database, {
     displayName: "Admin",

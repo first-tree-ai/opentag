@@ -21,7 +21,7 @@
     "start": "node dist/index.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --maxWorkers=1 --exclude 'src/__tests__/integration/**'",
-    "test:integration": "vitest run src/__tests__/integration --maxWorkers=1"
+    "test:integration": "vitest run src/__tests__/integration --maxWorkers=2"
   },
   "dependencies": {
     "@autotelic/fastify-opentelemetry": "^0.23.0",

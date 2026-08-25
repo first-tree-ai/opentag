@@ -39,6 +39,8 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
   const ExecutionHeading = section === "execution" ? "h1" : "h3";
   const InstructionsHeading = section === "instructions" ? "h1" : "h3";
   const runtimeOptions = getRuntimeConfigurationOptions(config.runtimeProvider);
+  const hasHistoricalReasoningDraft =
+    reasoningDraft !== "" && !runtimeOptions.reasoningEffortAllowedValues.includes(reasoningDraft);
   const runtimeDirty =
     modelDraft !== (config.runtimeConfig.model ?? "") ||
     reasoningDraft !== (config.runtimeConfig.reasoningEffort ?? "");
@@ -183,6 +185,9 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
                   }}
                 >
                   <option value="">Provider default</option>
+                  {hasHistoricalReasoningDraft ? (
+                    <option value={reasoningDraft}>{reasoningDraft} (saved value)</option>
+                  ) : null}
                   {runtimeOptions.reasoningEffortAllowedValues.map((effort) => (
                     <option value={effort} key={effort}>
                       {effort}

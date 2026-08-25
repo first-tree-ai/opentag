@@ -133,7 +133,7 @@ describe("RuntimeConfigurationForm", () => {
       "__custom_model__",
     ]);
     expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("claude-sonnet-5");
-    expect(optionValues("Reasoning level")).toEqual(["", "low", "medium", "high", "xhigh", "max", "ultracode"]);
+    expect(optionValues("Reasoning level")).toEqual(["", "low", "medium", "high", "xhigh", "max"]);
     expect((screen.getByLabelText("Reasoning level") as HTMLSelectElement).value).toBe("max");
   });
 
@@ -157,6 +157,41 @@ describe("RuntimeConfigurationForm", () => {
     expect(save).toHaveBeenCalledWith({
       expectedRevision: 4,
       runtimeConfig: { model: null, reasoningEffort: null },
+    });
+  });
+
+  it("preserves an unknown historical reasoning value during a model-only save", async () => {
+    const historicalConfig: AgentAdminConfig = {
+      ...config,
+      runtimeConfig: { ...config.runtimeConfig, reasoningEffort: "historical-effort" },
+    };
+    const save = vi.fn(async () => ({
+      ...historicalConfig,
+      revision: 5,
+      runtimeConfig: { ...historicalConfig.runtimeConfig, revision: 8, model: "gpt-5.6-sol" },
+    }));
+    render(<RuntimeConfigurationForm initialConfig={historicalConfig} save={save} section="execution" />);
+
+    expect(optionValues("Reasoning level")).toEqual([
+      "",
+      "historical-effort",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
+    expect((screen.getByLabelText("Reasoning level") as HTMLSelectElement).selectedOptions[0]?.textContent).toBe(
+      "historical-effort (saved value)",
+    );
+
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "gpt-5.6-sol" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: { model: "gpt-5.6-sol", reasoningEffort: "historical-effort" },
     });
   });
 
@@ -187,22 +222,36 @@ describe("RuntimeConfigurationForm", () => {
   });
 
   it("reports save failures without losing drafts", async () => {
+    const historicalConfig: AgentAdminConfig = {
+      ...config,
+      runtimeConfig: { ...config.runtimeConfig, reasoningEffort: "historical-effort" },
+    };
     const save = vi.fn(async () => {
       throw new Error("Revision changed");
     });
-    render(<RuntimeConfigurationForm initialConfig={config} save={save} />);
+    render(<RuntimeConfigurationForm initialConfig={historicalConfig} save={save} />);
 
     fireEvent.change(screen.getByLabelText("Model"), { target: { value: "gpt-5.6-sol" } });
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
     expect((await screen.findByRole("alert")).textContent).toBe("Revision changed");
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: { model: "gpt-5.6-sol", reasoningEffort: "historical-effort" },
+    });
     expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("gpt-5.6-sol");
+    expect((screen.getByLabelText("Reasoning level") as HTMLSelectElement).value).toBe("historical-effort");
+    expect(optionValues("Reasoning level")).toContain("historical-effort");
   });
 
   it("discards model and reasoning drafts without saving", () => {
     const initialConfig: AgentAdminConfig = {
       ...config,
-      runtimeConfig: { ...config.runtimeConfig, model: "gpt-historical-private", reasoningEffort: "medium" },
+      runtimeConfig: {
+        ...config.runtimeConfig,
+        model: "gpt-historical-private",
+        reasoningEffort: "historical-effort",
+      },
     };
     const save = vi.fn();
     render(<RuntimeConfigurationForm initialConfig={initialConfig} save={save} section="execution" />);
@@ -213,7 +262,16 @@ describe("RuntimeConfigurationForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
 
     expect((screen.getByLabelText("Custom model ID") as HTMLInputElement).value).toBe("gpt-historical-private");
-    expect((screen.getByLabelText("Reasoning level") as HTMLSelectElement).value).toBe("medium");
+    expect((screen.getByLabelText("Reasoning level") as HTMLSelectElement).value).toBe("historical-effort");
+    expect(optionValues("Reasoning level")).toEqual([
+      "",
+      "historical-effort",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+    ]);
     expect(screen.queryByText("Unsaved changes")).toBeNull();
     expect(save).not.toHaveBeenCalled();
   });

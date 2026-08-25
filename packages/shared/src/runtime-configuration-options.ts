@@ -12,7 +12,7 @@ const RUNTIME_CONFIGURATION_OPTIONS = {
   },
   "claude-code": {
     modelSuggestions: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"],
-    reasoningEffortAllowedValues: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    reasoningEffortAllowedValues: ["low", "medium", "high", "xhigh", "max"],
   },
 } as const satisfies Record<AgentRuntimeProvider, RuntimeConfigurationOptions>;
 

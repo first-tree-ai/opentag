@@ -1,9 +1,9 @@
 import type {
   AgentRuntimeProvider,
   AgentSummary,
-  MeMembership,
-  TeamComputerSummary,
+  MeWorkspace,
   UserProfile,
+  WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type AgentCreationFacts, AgentCreationFlow } from "../agent-creation/agent-creation-flow.js";
@@ -33,7 +33,7 @@ const RUNTIME_POLL_INTERVAL_MS = 5_000;
 const RUNTIME_POLL_LIMIT_MS = 10 * 60 * 1_000;
 /** States that only an action taken outside this page can advance, and that no child polls for. */
 const RUNTIME_WAIT_STATES: readonly OnboardingCurrentState["kind"][] = ["provider", "agent-runtime"];
-/** The application route this page hands the Team over to once setup is complete. */
+/** The application route this page hands the Workspace over to once setup is complete. */
 const AGENTS_ROUTE = "/agents";
 
 function agentGeneralRoute(agentId: string): string {
@@ -52,12 +52,12 @@ type CompletionState =
 
 interface OnboardingSnapshot {
   readonly agents: readonly AgentSummary[];
-  readonly computers: readonly TeamComputerSummary[];
+  readonly computers: readonly WorkspaceComputerSummary[];
   readonly targetAgent: AgentSummary | undefined;
   readonly targetCandidates: readonly AgentSummary[];
   readonly handoff: OnboardingFacts["handoff"];
   readonly runtime: RuntimeFactsResult;
-  /** Team admins a member can ask; empty whenever the viewer manages the Team. */
+  /** Workspace admins a member can ask; empty whenever the viewer manages the Workspace. */
   readonly admins: readonly string[];
 }
 
@@ -82,7 +82,7 @@ interface OnboardingJourneyState {
 }
 
 export interface OnboardingPageProps {
-  readonly membership: MeMembership;
+  readonly membership: MeWorkspace;
   readonly onSetupReady?: (agentId: string) => Promise<void>;
   readonly onTargetAgentChange?: (agentId: string) => void;
   readonly targetAgentId?: string;
@@ -92,7 +92,7 @@ export interface OnboardingPageProps {
 
 /**
  * Owns the whole conditional onboarding page. The page persists no step: each
- * reload starts from authoritative Team, Computer, Agent, runtime and handoff
+ * reload starts from authoritative Workspace, Computer, Agent, runtime and handoff
  * facts, plus only the explicit route/identity choices and replay intent.
  */
 export function OnboardingPage({
@@ -136,7 +136,7 @@ export function OnboardingPage({
   useEffect(() => {
     let active = true;
     setLoadState((current) => (current.kind === "ready" ? current : { kind: "loading" }));
-    void loadSnapshot(membership.teamId, runtimeFacts, membership.role !== "admin", effectiveTargetAgentId).then(
+    void loadSnapshot(membership.id, runtimeFacts, effectiveTargetAgentId).then(
       (snapshot) => {
         if (!active) return;
         refreshInFlight.current = false;
@@ -156,7 +156,7 @@ export function OnboardingPage({
     return () => {
       active = false;
     };
-  }, [effectiveTargetAgentId, membership.teamId, revision, runtimeFacts]);
+  }, [effectiveTargetAgentId, membership.id, revision, runtimeFacts]);
 
   useEffect(() => {
     const refresh = () => attendedReload();
@@ -173,8 +173,8 @@ export function OnboardingPage({
 
   const resolved = useMemo(() => {
     if (loadState.kind !== "ready") return undefined;
-    return resolveSnapshot(membership, loadState.snapshot);
-  }, [loadState, membership]);
+    return resolveSnapshot(loadState.snapshot);
+  }, [loadState]);
 
   useEffect(() => {
     if (loadState.kind !== "ready" || !loadState.snapshot.targetAgent) return;
@@ -193,7 +193,7 @@ export function OnboardingPage({
         completionInFlight.current = undefined;
         setCompletionState({
           kind: "error",
-          error: cause instanceof Error ? cause : new Error("Unable to finish Team setup"),
+          error: cause instanceof Error ? cause : new Error("Unable to finish Workspace setup"),
         });
       });
     },
@@ -207,8 +207,6 @@ export function OnboardingPage({
   const journey = onboardingJourney(
     resolved?.state.currentState,
     loadState.kind === "ready" ? loadState.snapshot : undefined,
-    user.id,
-    resolved?.state.canManage ?? membership.role === "admin",
   );
 
   const waitingForRuntime = resolved !== undefined && RUNTIME_WAIT_STATES.includes(resolved.state.currentState.kind);
@@ -247,7 +245,6 @@ export function OnboardingPage({
                 <OnboardingContent
                   canManage={resolved.state.canManage}
                   completionState={completionState}
-                  ownerUserId={user.id}
                   onChooseAgent={(agentId) => {
                     setSelectedTargetAgentId(agentId);
                     onTargetAgentChange?.(agentId);
@@ -261,7 +258,7 @@ export function OnboardingPage({
                   refreshPending={refreshPending}
                   snapshot={loadState.snapshot}
                   state={resolved.state}
-                  teamId={membership.teamId}
+                  workspaceId={membership.id}
                 />
               ) : null}
             </div>
@@ -278,7 +275,7 @@ function OnboardingJourney({ journey }: { journey: OnboardingJourneyState }) {
       <div className="onboarding-journey-intro">
         <span className="eyebrow">Agent setup</span>
         <h1>Set up OpenTag</h1>
-        <p>Prepare one Agent, then bring it into your team conversation.</p>
+        <p>Prepare one Agent, then bring it into your workspace conversation.</p>
       </div>
       <nav aria-label="Onboarding steps">
         <ol className="onboarding-steps">
@@ -289,7 +286,7 @@ function OnboardingJourney({ journey }: { journey: OnboardingJourneyState }) {
             title="Prepare your Agent"
           />
           <JourneyStep
-            description="Authorize your team bot"
+            description="Authorize your workspace bot"
             number="02"
             status={journey.messaging}
             title="Add to Feishu"
@@ -383,7 +380,7 @@ function OnboardingStageContext({ journey }: { journey: OnboardingJourneyState }
           FS
         </span>
         <span>
-          <small>Team chat</small>
+          <small>Workspace chat</small>
           <strong>Feishu</strong>
         </span>
       </div>
@@ -394,8 +391,6 @@ function OnboardingStageContext({ journey }: { journey: OnboardingJourneyState }
 function onboardingJourney(
   current: OnboardingCurrentState | undefined,
   snapshot: OnboardingSnapshot | undefined,
-  ownerUserId: string,
-  canManage: boolean,
 ): OnboardingJourneyState {
   if (!current) {
     return {
@@ -415,12 +410,11 @@ function onboardingJourney(
   }
 
   if (snapshot && !snapshot.targetAgent) {
-    const ownComputers = snapshot.computers.filter((computer) => computer.ownerUserId === ownerUserId);
-    const relevantComputers = canManage ? ownComputers : snapshot.computers;
+    const relevantComputers = snapshot.computers;
     const onlineComputers = relevantComputers
       .filter((computer) => computer.connectionStatus === "online")
       .sort((left, right) => left.displayName.localeCompare(right.displayName));
-    const computerById = new Map(onlineComputers.map((computer) => [computer.id, computer]));
+    const computerById = new Map(onlineComputers.map((computer) => [computer.computerId, computer]));
     const readyRoute =
       snapshot.runtime.kind === "available"
         ? snapshot.runtime.providers
@@ -439,7 +433,7 @@ function onboardingJourney(
         ? { label: "Computer", status: "current" as const, value: "Not connected" }
         : onlineComputers.length === 0
           ? { label: "Computer", status: "attention" as const, value: "Reconnect" }
-          : journeyComputerRouteFact(onlineComputers[0] as TeamComputerSummary);
+          : journeyComputerRouteFact(onlineComputers[0] as WorkspaceComputerSummary);
     const runtimeFact: JourneyFact = readyRoute
       ? { label: "Runtime", status: "ready", value: providerLabel(readyRoute.provider) }
       : relevantComputers.length === 0 || onlineComputers.length === 0
@@ -481,7 +475,7 @@ function onboardingJourney(
           : undefined));
   const computerFact = journeyComputerFact(current, snapshot);
   const runtimeFact: JourneyFact =
-    current.kind === "team" || current.kind === "computer"
+    current.kind === "workspace" || current.kind === "computer"
       ? { label: "Runtime", status: "waiting", value: "Waiting" }
       : current.kind === "provider"
         ? { label: "Runtime", status: "current", value: "Setup required" }
@@ -505,7 +499,7 @@ function onboardingJourney(
     stageDescription: prepareComplete
       ? setupReady
         ? "Your Agent is ready for the first conversation in Feishu."
-        : "Authorize the bot your team will mention in conversations."
+        : "Authorize the bot your workspace will mention in conversations."
       : "Confirm where your Agent runs, then give it a clear identity.",
     stageStatus: onboardingStageStatus(current),
     stageTitle: prepareComplete
@@ -517,7 +511,7 @@ function onboardingJourney(
 }
 
 function journeyComputerFact(current: OnboardingCurrentState, snapshot: OnboardingSnapshot | undefined): JourneyFact {
-  if (current.kind === "team") return { label: "Computer", status: "current", value: "Checking" };
+  if (current.kind === "workspace") return { label: "Computer", status: "current", value: "Checking" };
   if (current.kind === "computer") {
     if (current.availability === "none") return { label: "Computer", status: "current", value: "Not connected" };
     if (current.availability === "offline") return { label: "Computer", status: "attention", value: "Reconnect" };
@@ -528,11 +522,11 @@ function journeyComputerFact(current: OnboardingCurrentState, snapshot: Onboardi
     return journeyComputerRouteFact(current.computer);
   }
 
-  const boundComputer = snapshot?.computers.find((computer) => computer.id === current.agent.computerId);
+  const boundComputer = snapshot?.computers.find((computer) => computer.computerId === current.agent.computerId);
   if (boundComputer) return journeyComputerRouteFact(boundComputer);
 
   const knownName =
-    snapshot?.targetAgent?.computer.id === current.agent.computerId
+    snapshot?.targetAgent?.computer.computerId === current.agent.computerId
       ? snapshot.targetAgent.computer.displayName
       : undefined;
   return {
@@ -543,7 +537,7 @@ function journeyComputerFact(current: OnboardingCurrentState, snapshot: Onboardi
 }
 
 function journeyComputerRouteFact(
-  computer: Pick<TeamComputerSummary, "connectionStatus" | "displayName">,
+  computer: Pick<WorkspaceComputerSummary, "connectionStatus" | "displayName">,
 ): JourneyFact {
   return computer.connectionStatus === "online"
     ? { label: "Computer", status: "ready", value: computer.displayName }
@@ -551,7 +545,7 @@ function journeyComputerRouteFact(
 }
 
 function onboardingStageStatus(current: OnboardingCurrentState): string {
-  if (current.kind === "team") return "Checking Workspace";
+  if (current.kind === "workspace") return "Checking Workspace";
   if (current.kind === "computer") {
     if (current.availability === "none") return "Computer needed";
     if (current.availability === "offline") return "Computer offline";
@@ -607,11 +601,10 @@ function OnboardingContent({
   onChooseAgent,
   onCompleteSetup,
   onReload,
-  ownerUserId,
   refreshPending,
   snapshot,
   state,
-  teamId,
+  workspaceId,
 }: {
   canManage: boolean;
   completionState: CompletionState;
@@ -619,11 +612,10 @@ function OnboardingContent({
   onChooseAgent: (agentId: string) => void;
   onCompleteSetup: (agentId: string) => void;
   onReload: () => void;
-  ownerUserId: string;
   refreshPending: boolean;
   snapshot: OnboardingSnapshot;
   state: OnboardingState;
-  teamId: string;
+  workspaceId: string;
 }) {
   if (snapshot.targetCandidates.length > 0 && !snapshot.targetAgent) {
     return (
@@ -658,10 +650,10 @@ function OnboardingContent({
     return (
       <section className="onboarding-action">
         <AgentCreationFlow
-          facts={onboardingAgentCreationFacts(snapshot, ownerUserId)}
+          facts={onboardingAgentCreationFacts(snapshot)}
           initialDisplayName="OpenTag"
           refreshing={refreshPending}
-          teamId={teamId}
+          workspaceId={workspaceId}
           onCreated={(agent) => onAgentCreated(agent.id)}
           onRefresh={onReload}
         />
@@ -670,14 +662,14 @@ function OnboardingContent({
   }
 
   const current = state.currentState;
-  if (current.kind === "team") {
+  if (current.kind === "workspace") {
     return <ActionSection title="Preparing OpenTag" description="Setup will continue automatically." pending />;
   }
   if (current.kind === "computer" && current.availability === "none") {
     if (canManage) {
       return (
         <section className="onboarding-action">
-          <ComputerSetup teamId={teamId} onConnected={onReload} />
+          <ComputerSetup workspaceId={workspaceId} onConnected={onReload} />
         </section>
       );
     }
@@ -778,7 +770,7 @@ function OnboardingContent({
       <ActionSection
         readonly={!canManage}
         title={handoffTitle(current)}
-        description="Authorize the Feishu Bot that your team will mention."
+        description="Authorize the Feishu Bot that your workspace will mention."
       >
         {canManage ? (
           <FeishuSetup agentId={current.agent.id} onSuccess={onReload}>
@@ -791,7 +783,7 @@ function OnboardingContent({
     );
   }
   if (completionState.kind === "pending") {
-    return <ActionSection title="Finishing Team setup" description="Saving the verified Agent handoff." pending />;
+    return <ActionSection title="Finishing Workspace setup" description="Saving the verified Agent handoff." pending />;
   }
   if (completionState.kind === "error") {
     return (
@@ -873,7 +865,7 @@ function ReadOnlyCopy({ admins }: { admins: readonly string[] }) {
  * Names people to ask, not people who can act: whether a given admin can finish
  * the current step also depends on facts this page does not decide, such as who
  * owns the Computer the route runs on. At most two names keep the sentence
- * readable in a large Team.
+ * readable in a large Workspace.
  */
 function adminGuidance(admins: readonly string[]): string {
   const [first, second, ...rest] = admins;
@@ -916,55 +908,39 @@ function handoffTitle(current: Extract<OnboardingCurrentState, { kind: "handoff"
 }
 
 async function loadSnapshot(
-  teamId: string,
+  workspaceId: string,
   runtimeFacts: RuntimeFactsAdapter,
-  withAdmins: boolean,
   targetAgentId?: string,
 ): Promise<OnboardingSnapshot> {
-  const [{ computers }, { agents }, admins] = await Promise.all([
-    browserApi.computers(teamId),
-    browserApi.agents(teamId),
-    withAdmins ? loadTeamAdmins(teamId) : Promise.resolve<readonly string[]>([]),
+  const [{ computers }, { agents }] = await Promise.all([
+    browserApi.computers(workspaceId),
+    browserApi.agents(workspaceId),
   ]);
   const targetCandidates = agents.filter((agent) => agent.status === "active");
   const targetAgent =
     targetCandidates.find((agent) => agent.id === targetAgentId) ??
     (targetAgentId === undefined && targetCandidates.length === 1 ? targetCandidates[0] : undefined);
   const [runtime, handoff] = await Promise.all([
-    runtimeFacts.load({ teamId, agents, computers }),
+    runtimeFacts.load({ workspaceId, agents, computers }),
     targetAgent ? browserApi.imBindingHandoff(targetAgent.id) : Promise.resolve(undefined),
   ]);
-  return { agents, computers, targetAgent, targetCandidates, handoff, runtime, admins };
+  return { agents, computers, targetAgent, targetCandidates, handoff, runtime, admins: [] };
 }
 
-/**
- * Names the admins a member can ask. Their absence only costs the member a
- * name, so an unavailable member list degrades to the generic guidance instead
- * of failing the page's authoritative facts.
- */
-async function loadTeamAdmins(teamId: string): Promise<readonly string[]> {
-  try {
-    const { members } = await browserApi.members(teamId);
-    return members.filter((member) => member.role === "admin").map((member) => member.displayName);
-  } catch {
-    return [];
-  }
-}
-
-function resolveSnapshot(membership: MeMembership, snapshot: OnboardingSnapshot): { state: OnboardingState } {
+function resolveSnapshot(snapshot: OnboardingSnapshot): { state: OnboardingState } {
   const providers = snapshot.runtime.kind === "available" ? snapshot.runtime.providers : [];
   const agent: OnboardingAgent | undefined = snapshot.targetAgent
     ? {
         id: snapshot.targetAgent.id,
-        computerId: snapshot.targetAgent.computer.id,
+        computerId: snapshot.targetAgent.computer.computerId,
         runtimeProvider: snapshot.targetAgent.runtimeProvider,
       }
     : undefined;
   return {
     state: deriveOnboardingState({
-      team: { role: membership.role },
-      computers: snapshot.computers.map(({ id, displayName, connectionStatus }) => ({
-        id,
+      workspace: {},
+      computers: snapshot.computers.map(({ computerId, displayName, connectionStatus }) => ({
+        id: computerId,
         displayName,
         connectionStatus,
       })),
@@ -975,8 +951,12 @@ function resolveSnapshot(membership: MeMembership, snapshot: OnboardingSnapshot)
   };
 }
 
-function onboardingAgentCreationFacts(snapshot: OnboardingSnapshot, ownerUserId: string): AgentCreationFacts {
-  const computers = snapshot.computers.filter((computer) => computer.ownerUserId === ownerUserId);
+function onboardingAgentCreationFacts(snapshot: OnboardingSnapshot): AgentCreationFacts {
+  const computers = snapshot.computers.map(({ computerId, displayName, connectionStatus }) => ({
+    id: computerId,
+    displayName,
+    connectionStatus,
+  }));
   const computerIds = new Set(computers.map((computer) => computer.id));
   return {
     computers,

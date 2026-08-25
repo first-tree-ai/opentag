@@ -97,13 +97,13 @@ docker compose down
 实例；上面的 Compose 服务仅用于本地开发。
 
 初始化空安装时，设置必需的 bootstrap 字段并运行一次性管理员命令。该命令会先迁移空数据库，再创建首个
-用户、team、admin membership 和 connect code。
+Account、Workspace、Admin grant 和 Account 登录 code。
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
 export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-export OPENTAG_BOOTSTRAP_TEAM_NAME=example
-export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
+export OPENTAG_BOOTSTRAP_WORKSPACE_NAME=example
+export OPENTAG_BOOTSTRAP_WORKSPACE_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 ./scripts/dev-install.sh
 export PATH="$HOME/.local/bin${PATH:+:$PATH}"
@@ -111,27 +111,33 @@ opentag-dev login --server http://127.0.0.1:8000 -- <connect-code>
 ```
 
 源码 checkout 属于 `dev` channel。`scripts/dev-install.sh` 会构建完整 workspace，将 channel config 指定的 dev
-binary 链接到 `~/.local/bin/opentag-dev`，执行验证，并在已有凭据时修复 daemon service。首次安装没有凭据，
-因此 service 安装会明确延后到独立的 `login`；installer 不消费 connect code，职责与发布 installer 保持一致。
+binary 链接到 `~/.local/bin/opentag-dev`，执行验证，并在已有 machine credential 时修复 daemon service。首次安装
+没有 machine credential，因此 service 安装会明确延后到 `computer connect`；installer 不消费 connect code，
+职责与发布 installer 保持一致。
 同时应把 `~/.local/bin` 放在 `PATH` 最前，避免 service reconciliation 选中旧的 `opentag-dev` shim。dev
 channel 默认使用 `~/.opentag-dev`；staging 与
 production build 分别使用 `opentag-staging` / `~/.opentag-staging` 和 `opentag` / `~/.opentag`。显式设置
 `OPENTAG_HOME` 会覆盖 channel 默认值。
 
-Linux/macOS 上登录会安装并启动用户服务。在另一个终端检查服务和当前用户所有的 Computer：
+Account 登录只保存管理凭据。先从 Web 的 Agents 区域生成 Computer 连接命令，再在执行主机运行；
+`computer connect` 会保存 enrollment 范围的 machine credential，并在 Linux/macOS 上安装或重启用户服务。
+可在另一个终端检查服务：
 
 ```bash
+opentag-dev computer connect --server http://127.0.0.1:8000 -- <computer-connect-code>
 opentag-dev daemon status
 opentag-dev computer list
 ```
 
-daemon 会复用 `${OPENTAG_HOME}/config/computer.json` 中的稳定 Computer ID，每次服务启动创建新的进程
-instance，并连接 `/api/v1/computer/ws`。OpenTag Home 按生命周期组织：
+daemon 会复用 `${OPENTAG_HOME}/config/computer.json` 中的稳定 physical Computer ID，从
+`${OPENTAG_HOME}/config/computer-credentials.json` 加载各 Workspace 独立的 enrollment credential，每次服务启动
+创建新的进程 instance，并为每个 enrollment 建立一条 Runtime 连接。OpenTag Home 按生命周期组织：
 
 ```text
 ${OPENTAG_HOME}/
 ├── config/
 │   ├── credentials.json
+│   ├── computer-credentials.json
 │   ├── computer.json
 │   └── daemon.env
 ├── data/
@@ -150,8 +156,9 @@ ${OPENTAG_HOME}/
 ```
 
 目录权限为私有 `0700`；credentials、identity、runtime recovery record 与 lease 文件均为私有普通文件
-（`0600`）。各目录和文件只在对应 owner 需要时创建。特别地，`login --no-start` 只创建
-`config/credentials.json`；runtime recovery record 和 Workspace 在首次相关 reconcile 时才出现。
+（`0600`）。各目录和文件只在对应 owner 需要时创建。Account `login` 只创建
+`config/credentials.json`；`computer connect --no-start` 保存 `config/computer-credentials.json` 但不安装 daemon；
+runtime recovery record 和 Workspace 在首次相关 reconcile 时才出现。
 
 OpenTag 不会在 Agent Workspace 内维护控制文件。Platform 与 Agent instructions 通过所选 Provider 的原生系统
 提示词接口注入。新 Workspace 直接以根目录作为 Provider cwd。既有 schema v1/v2 Workspace 会执行一次兼容
@@ -168,7 +175,8 @@ Workspace。
 
 ### 本地数据丢失与恢复
 
-重新登录只能恢复连接，不能恢复原有的本地执行连续性。Server 可以重新签发 credentials 并重建 effective
+再次运行 `computer connect` 会轮换所选 enrollment credential 并恢复连接，但不能恢复原有的本地执行连续性。
+Server 可以重新签发 credentials 并重建 effective
 snapshot；Provider Runtime 启动或恢复时会重新注入托管 instructions。重新签发的 credentials 不是原值。如果
 `config/computer.json` 丢失，当前 Client 会创建新的 Computer identity。Server 虽保留旧 Computer 与 placement
 记录，但 Client 不会自动认领旧 identity 或修复旧 binding。
@@ -180,7 +188,8 @@ binding 丢失会破坏 Provider 精确续接，并可能使已 accepted 但尚�
 
 daemon/service owner、lease state 与日志只有在 daemon 已停止且没有 service mutation 时才可视为本机可重新
 生成数据；操作仍在运行时删除 owner 或 lease 证据，会破坏单 daemon 和 service 互斥。备份应重点保护
-`config/computer.json`、本机 `config/daemon.env`、`data/runtime/session-bindings`，以及成对保存的
+`config/computer.json`、`config/computer-credentials.json`、本机 `config/daemon.env`、
+`data/runtime/session-bindings`，以及成对保存的
 `data/runtime/workspace-states` 与 `data/workspaces`。
 
 使用 `daemon install/start/stop/restart/status/uninstall` 管理服务；`uninstall` 会保留 `config/` 与
@@ -193,7 +202,7 @@ dev 服务定义在 Linux 上位于 `~/.config/systemd/user/opentag-dev.service`
 `~/Library/LaunchAgents/opentag-dev.plist`；macOS wrapper 位于
 `${OPENTAG_HOME}/state/service/opentag-dev`。
 staging 与 production 使用各自的 channel `serviceId`（`opentag-staging` 或 `opentag`）替换后缀。如果登录已
-保存凭据但服务安装失败，修复提示的 manager 问题后运行
+保存 machine credential 但服务安装失败，修复提示的 manager 问题后运行
 `opentag-dev daemon install`，不需要申请新的 connect code。
 
 Service mutation 使用两个独立 lease。`${OPENTAG_HOME}/state/service/operation.json` 只序列化当前 Home 的
@@ -204,8 +213,9 @@ Service mutation 使用两个独立 lease。`${OPENTAG_HOME}/state/service/opera
 
 ## 管理 Agent 配置
 
-Agent 属于 Team，并在创建时固定绑定到 manager 自己拥有的一台 Computer。当前用户只有一个 Team 和一台
-Computer 时，两者会自动选择：
+Agent 属于 Workspace，并在创建时不可变地绑定到该 Workspace 的一个 active Computer enrollment。所有 Workspace
+Admin 都可创建和管理 Agent，不受 Computer enrollment 操作者或 Agent 创建者影响。当前 Account 只有一个 Workspace
+和一台可选 Computer 时，两者会自动选择：
 
 ```bash
 pnpm --filter open-tag start agent create \
@@ -215,7 +225,7 @@ pnpm --filter open-tag start agent create \
 pnpm --filter open-tag start agent list
 ```
 
-存在多个选项时，使用 `--team <canonical-name>` 或 `--computer <uuid>`。Computer 离线时仍可选择，因为 online
+存在多个选项时，使用 `--workspace <canonical-name>` 或 `--computer <uuid>`。Computer 离线时仍可选择，因为 online
 presence 不是 Agent 配置状态。可以查看或修改可变的展示名称：
 
 ```bash
@@ -224,15 +234,16 @@ pnpm --filter open-tag start agent update <agent-id> --display-name "Reviewer"
 pnpm --filter open-tag start agent delete <agent-id>
 ```
 
-更新使用 revision compare-and-swap，不会自动覆盖并发变更。删除是 Server 端软删除，对 Agent manager 或 Team
-admin 幂等。`claude-code` 是允许的配置值，但其 runtime adapter 以及所有 Session/Turn delivery 仍属于后续工作。
+更新使用 revision compare-and-swap，不会自动覆盖并发变更；Computer rebind 不是 update 操作。删除是 Server 端
+软删除，对任何 Workspace Admin 幂等。`claude-code` 是允许的配置值，但其 runtime adapter 以及所有 Session/Turn
+delivery 仍属于后续工作。
 
 这四个 `OPENTAG_BOOTSTRAP_*` 值仅作为一次性命令的输入，运行中的 Server 不会读取它们。
-bootstrap email 是账号资料，不是邮箱密码凭据。当前 connect code 流程先解析稳定的 user ID，再进入与 provider
-无关的 token 颁发边界。未来 Google 或 OIDC identity resolver 可以接入这个边界，无需改变 JWT claims 或 team
-权限模型；每次鉴权始终从 PostgreSQL 读取有效 membership。
+bootstrap email 是 Account 资料，不是邮箱密码凭据。Account 登录 code 流程先解析稳定的 user ID，再进入与 provider
+无关的 token 颁发边界。未来 Google 或 OIDC identity resolver 可以接入这个边界，无需改变 JWT claims 或 workspace
+权限模型；每次管理授权始终从 PostgreSQL 读取有效 Admin grant。
 
-## Google 登录、Team membership 与 Web App
+## Google 登录、Workspace 管理与 Web App
 
 创建 Google Web OAuth client，并将 callback 配置为
 `http://127.0.0.1:8000/api/v1/auth/google/callback`，然后设置 `OPENTAG_GOOGLE_CLIENT_ID` 与
@@ -250,7 +261,7 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 
 `OPENTAG_HOST` 与 `OPENTAG_PUBLIC_URL` 都必须保持为 loopback 地址。登录页随后会显示
 `Dev: bypass Google`。callback 会按不区分大小写的 email 精确解析唯一一个已有用户并签发正常浏览器 session；
-它不会创建用户或 Team，且仍会拒绝 suspended 用户或没有 active membership 的用户。email 不存在或有重复匹配时
+它不会创建 Account 或 Workspace，且仍会拒绝 suspended Account 或没有 active Admin grant 的 Account。email 不存在或有重复匹配时
 会 fail closed。Server 会在 `staging` 和 `prod` 环境拒绝这组配置。
 
 `OPENTAG_ENV` 是 OpenTag 唯一的环境与发布 channel 选择器。`dev` 对应本地开发行为与 `opentag-dev` binary，
@@ -258,25 +269,21 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 `NODE_ENV` 仍可设为 `production`，但它不负责选择 OpenTag package，也不决定产品安全行为。Server 启动时会记录
 解析后的环境、public URL、package 和 binary，且绝不从 hostname 推断环境。
 
-打开 `/` 可使用 Team 共享 App Shell。active member 使用同一套导航和 member-safe 只读投影，Team Admin 额外获得管理控件。
-在 **Settings → Computers** 中点击 **Generate connection command** 会签发一个 15 分钟、仅可使用
-一次的 code，并复制由 Server 生成的安装/login 命令。页面会轮询当前用户的 Computer 列表，直到新的 daemon
-握手到达；Web 本身不会选择 npm package、binary 或 Server URL。membership 与邀请变更可使用 CLI；Team Admin
-也可在 **Settings → Members** 创建、复制和轮换当前 bearer 邀请，成功兑换后 Web 会选中刚加入的 Team：
+打开 `/` 可使用管理 shell。顶层导航固定为 **Agents / Tasks / Skills / Integrations**，没有 Settings tab。
+Computer enrollment 与恢复位于 Agents 区域。**Generate connection command** 会签发一个 15 分钟、仅可使用
+一次的 code，并复制由 Server 生成的 `computer connect` 命令；页面会轮询 Workspace enrollment，直到新的 daemon
+握手到达。Admins、Workspace 管理和 Account 操作位于 account menu。只有一个 Workspace 时不显示 selector；多个
+Workspace 时才显示，并结合显式最近选择与 Server 的确定性 fallback。CLI 暴露相同的无角色 Admin 操作：
 
 ```bash
-pnpm --filter open-tag start team member list --team example
-pnpm --filter open-tag start team member role <user-id> --role admin --team example
-pnpm --filter open-tag start team member remove <user-id> --team example
-pnpm --filter open-tag start team member restore <user-id> --role member --team example
-pnpm --filter open-tag start team leave --team example
-pnpm --filter open-tag start team invitation show --team example
-pnpm --filter open-tag start team invitation rotate --team example
+pnpm --filter open-tag start admin list --workspace example
+pnpm --filter open-tag start admin invite --workspace example
+pnpm --filter open-tag start admin revoke <account-id> --workspace example
 ```
 
-邀请明文只在授权的 `show`/`rotate` 响应中恢复；PostgreSQL 保存 SHA-256 查询 hash 和 AES-256-GCM 密文。
-使用 `openssl rand -base64 32` 生成 `OPENTAG_ENCRYPTION_KEY`；若直接更换密钥而不轮换已有邀请，旧邀请会按
-fail-closed 原则拒绝读取。
+Admin invitation 在 30 分钟后过期，且仅可使用一次。PostgreSQL 只保存 SHA-256 查询 hash；明文 URL 仅在创建时
+返回一次，接收者登录后还必须显式接受完整 Workspace Admin 权限。撤销 Admin 时，其未使用 invitation 会在同一事务
+失效。`OPENTAG_ENCRYPTION_KEY` 继续保护 IM provider credential；使用 `openssl rand -base64 32` 生成。
 
 ## Onboarding 端到端检查
 

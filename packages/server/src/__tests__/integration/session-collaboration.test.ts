@@ -64,7 +64,7 @@ describe("Session collaboration authority", () => {
           runtimeReasoningEffort: "high",
           runtimeMaxDurationMs: 60_000,
         },
-        placement: { computerId: fixture.computerId, generation: 1 },
+        placement: { workspaceComputerId: fixture.workspaceComputerId, generation: 1 },
         message: { id: messageId, lastOutcome: "unknown", attemptCount: 1 },
       });
       const recovered = await new SessionService(fixture.database).createInternalSessionWithMessage(input);
@@ -254,22 +254,17 @@ async function createFixture() {
   const bootstrap = await bootstrapInitialAdmin(client.database, {
     displayName: "Admin",
     email: "admin@example.com",
-    teamDisplayName: "Example",
-    teamName: "example",
+    workspaceDisplayName: "Example",
+    workspaceName: "example",
   });
   const computerId = randomUUID();
   await client.database.insert(computers).values({
     id: computerId,
-    ownerUserId: bootstrap.userId,
-    displayName: "workstation",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.1",
   });
   const [workspaceComputer] = await client.database
     .insert(workspaceComputers)
     .values({
-      workspaceId: bootstrap.teamId,
+      workspaceId: bootstrap.workspaceId,
       computerId,
       displayName: "workstation",
       platform: "linux",
@@ -279,7 +274,7 @@ async function createFixture() {
     })
     .returning({ id: workspaceComputers.id });
   if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
-  const agent = await new AgentService(client.database).createForTeam(bootstrap.userId, bootstrap.teamId, {
+  const agent = await new AgentService(client.database).createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",

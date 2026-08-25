@@ -15,7 +15,7 @@ import {
   verifyDatabaseMigrations,
   withMigrationLock,
 } from "../../db/migrate.js";
-import { accountCliLoginCodes, workspaceAdminGrants, workspaces, users } from "../../db/schema/index.js";
+import { accountCliLoginCodes, users, workspaceAdminGrants, workspaces } from "../../db/schema/index.js";
 import {
   AuthService,
   AuthServiceError,
@@ -775,7 +775,10 @@ describe("authentication persistence", () => {
         workspaceName: "  EXAMPLE  ",
       });
       const [storedUser] = await client.database.select().from(users).where(eq(users.id, result.userId));
-      const [storedWorkspace] = await client.database.select().from(workspaces).where(eq(workspaces.id, result.workspaceId));
+      const [storedWorkspace] = await client.database
+        .select()
+        .from(workspaces)
+        .where(eq(workspaces.id, result.workspaceId));
       expect(storedUser).toMatchObject({ displayName: "Admin", email: "admin@example.com" });
       expect(storedWorkspace).toMatchObject({ displayName: "Example", name: "example" });
     } finally {

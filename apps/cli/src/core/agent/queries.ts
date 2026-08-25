@@ -1,15 +1,15 @@
 import type { AgentAdminConfig, ListAgentsResponse } from "@opentag/shared";
-import { selectTeam } from "../selection/team.js";
+import { selectWorkspace } from "../selection/workspace.js";
 import { type AgentCommandDependencies, resolveAgentCommandContext } from "./context.js";
 
 export interface AgentListOptions extends AgentCommandDependencies {
-  teamName?: string;
+  workspaceName?: string;
 }
 
 export async function runAgentList(options: AgentListOptions = {}): Promise<ListAgentsResponse> {
   const { api, accessToken } = await resolveAgentCommandContext(options);
-  const team = selectTeam(await api.me(accessToken), options.teamName);
-  return api.listAgents(accessToken, team.teamId);
+  const workspace = selectWorkspace(await api.me(accessToken), options.workspaceName);
+  return api.listAgents(accessToken, workspace.id);
 }
 
 export async function runAgentShow(agentId: string, options: AgentCommandDependencies = {}): Promise<AgentAdminConfig> {

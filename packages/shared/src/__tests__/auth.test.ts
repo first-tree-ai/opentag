@@ -6,10 +6,10 @@ import {
   ConnectCodeIssueResponseSchema,
   MeResponseSchema,
   RefreshTokenRequestSchema,
-  TeamNameSchema,
   UpdateUserProfileRequestSchema,
   UserDisplayNameSchema,
   UserProfileSchema,
+  WorkspaceNameSchema,
 } from "../auth.js";
 
 describe("auth contracts", () => {
@@ -44,31 +44,33 @@ describe("auth contracts", () => {
   });
 
   it("rejects unexpected fields on every request", () => {
-    expect(() => ConnectCodeExchangeRequestSchema.parse({ code: "1234567890abcdef", teamId: "authority" })).toThrow();
+    expect(() =>
+      ConnectCodeExchangeRequestSchema.parse({ code: "1234567890abcdef", workspaceId: "authority" }),
+    ).toThrow();
     expect(() => RefreshTokenRequestSchema.parse({ refreshToken: "token", role: "admin" })).toThrow();
   });
 
-  it("enforces canonical team names", () => {
-    expect(TeamNameSchema.parse("first-tree-1")).toBe("first-tree-1");
-    for (const invalid of ["", "Example", "example team", "example_team"]) {
-      expect(() => TeamNameSchema.parse(invalid)).toThrow();
+  it("enforces canonical workspace names", () => {
+    expect(WorkspaceNameSchema.parse("first-tree-1")).toBe("first-tree-1");
+    for (const invalid of ["", "Example", "example workspace", "example_workspace"]) {
+      expect(() => WorkspaceNameSchema.parse(invalid)).toThrow();
     }
   });
 
-  it("validates the current user and live memberships response", () => {
+  it("validates the current Account and ordered Workspace response", () => {
     const response = {
       user: {
         id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
         email: "admin@example.com",
         displayName: "Admin",
       },
-      memberships: [
+      workspaces: [
         {
-          teamId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
-          teamName: "example",
-          teamDisplayName: "Example",
-          role: "admin",
+          id: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
+          name: "example",
+          displayName: "Example",
           setupCompletedAt: null,
+          grantedAt: "2026-08-20T00:00:00.000Z",
         },
       ],
     };

@@ -146,7 +146,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     try {
       const identity = await candidate.validateBinding();
       if (identity.externalAppId !== input.appId) throw new FeishuOperationError("FEISHU_APP_IDENTITY_MISMATCH");
-      const grantedScopes = await candidate.listGrantedTeamScopes();
+      const grantedScopes = await candidate.listGrantedWorkspaceScopes();
       if (!hasRequiredFeishuTenantScopes(grantedScopes)) {
         throw new FeishuOperationError("FEISHU_SCOPE_REAUTH_REQUIRED");
       }

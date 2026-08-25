@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { MeMembershipSchema, MembershipRoleSchema } from "./auth.js";
+import { MeWorkspaceSchema } from "./auth.js";
 
 export const InvitationTokenSchema = z
   .string()
@@ -7,26 +7,24 @@ export const InvitationTokenSchema = z
   .max(512)
   .regex(/^[A-Za-z0-9_-]+$/);
 
-export const TeamInvitationSchema = z
+export const AdminInvitationSchema = z
   .object({
     token: InvitationTokenSchema,
     inviteUrl: z.string().url(),
-    role: MembershipRoleSchema,
     expiresAt: z.string().datetime(),
   })
   .strict();
 
 export const InvitationPreviewSchema = z
   .object({
-    teamDisplayName: z.string().min(1),
-    role: MembershipRoleSchema,
+    workspaceDisplayName: z.string().min(1),
     expiresAt: z.string().datetime(),
   })
   .strict();
 
-export const InvitationRedemptionResponseSchema = z.object({ membership: MeMembershipSchema }).strict();
+export const InvitationAcceptanceResponseSchema = z.object({ workspace: MeWorkspaceSchema }).strict();
 
 export type InvitationToken = z.infer<typeof InvitationTokenSchema>;
-export type TeamInvitation = z.infer<typeof TeamInvitationSchema>;
+export type AdminInvitation = z.infer<typeof AdminInvitationSchema>;
 export type InvitationPreview = z.infer<typeof InvitationPreviewSchema>;
-export type InvitationRedemptionResponse = z.infer<typeof InvitationRedemptionResponseSchema>;
+export type InvitationAcceptanceResponse = z.infer<typeof InvitationAcceptanceResponseSchema>;

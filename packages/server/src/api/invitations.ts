@@ -1,10 +1,10 @@
 import {
-  INVITATION_PREVIEW_TEMPLATE,
-  INVITATION_REDEEM_TEMPLATE,
+  ADMIN_INVITATION_ACCEPT_TEMPLATE,
+  ADMIN_INVITATION_PREVIEW_TEMPLATE,
+  AdminInvitationSchema,
+  InvitationAcceptanceResponseSchema,
   InvitationPreviewSchema,
-  InvitationRedemptionResponseSchema,
-  TEAM_INVITATION_TEMPLATE,
-  TeamInvitationSchema,
+  WORKSPACE_ADMIN_INVITATIONS_TEMPLATE,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -13,18 +13,13 @@ import type { UserAuthService } from "../services/auth/index.js";
 import type { InvitationService } from "../services/invitations/index.js";
 import { parseRequest } from "./request-validation.js";
 
-const TeamParamsSchema = z.object({ teamId: z.string().uuid() }).strict();
+const WorkspaceParamsSchema = z.object({ workspaceId: z.string().uuid() }).strict();
 const InvitationParamsSchema = z.object({ token: z.string().min(1).max(512) }).strict();
 
-function userId(request: FastifyRequest): string {
+function accountId(request: FastifyRequest): string {
   const value = request.authContext?.me.user.id;
-  if (!value) throw new Error("Authenticated user context is missing");
+  if (!value) throw new Error("Authenticated Account context is missing");
   return value;
-}
-
-function audit(request: FastifyRequest) {
-  const userAgent = request.headers["user-agent"];
-  return { ip: request.ip.slice(0, 255), ...(userAgent ? { userAgent: userAgent.slice(0, 1024) } : {}) };
 }
 
 export function registerInvitationRoutes(
@@ -35,35 +30,23 @@ export function registerInvitationRoutes(
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
 
-  app.get(TEAM_INVITATION_TEMPLATE, { preHandler }, async (request, reply) => {
-    const { teamId } = parseRequest(TeamParamsSchema, request.params);
-    const invitation = await invitationService.get(userId(request), teamId);
-    return invitation ? reply.code(200).send(TeamInvitationSchema.parse(invitation)) : reply.code(204).send();
+  app.post(WORKSPACE_ADMIN_INVITATIONS_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { workspaceId } = parseRequest(WorkspaceParamsSchema, request.params);
+    return reply
+      .header("Cache-Control", "no-store")
+      .code(201)
+      .send(AdminInvitationSchema.parse(await invitationService.create(accountId(request), workspaceId)));
   });
 
-  app.post(TEAM_INVITATION_TEMPLATE, { preHandler }, async (request, reply) => {
-    const { teamId } = parseRequest(TeamParamsSchema, request.params);
-    return reply.code(201).send(TeamInvitationSchema.parse(await invitationService.create(userId(request), teamId)));
-  });
-
-  app.post(`${TEAM_INVITATION_TEMPLATE}/rotate`, { preHandler }, async (request, reply) => {
-    const { teamId } = parseRequest(TeamParamsSchema, request.params);
-    return reply.code(200).send(TeamInvitationSchema.parse(await invitationService.rotate(userId(request), teamId)));
-  });
-
-  app.get(INVITATION_PREVIEW_TEMPLATE, async (request, reply) => {
+  app.get(ADMIN_INVITATION_PREVIEW_TEMPLATE, async (request, reply) => {
     const { token } = parseRequest(InvitationParamsSchema, request.params);
     return reply.code(200).send(InvitationPreviewSchema.parse(await invitationService.preview(token)));
   });
 
-  app.post(INVITATION_REDEEM_TEMPLATE, { preHandler }, async (request, reply) => {
+  app.post(ADMIN_INVITATION_ACCEPT_TEMPLATE, { preHandler }, async (request, reply) => {
     const { token } = parseRequest(InvitationParamsSchema, request.params);
     return reply
       .code(200)
-      .send(
-        InvitationRedemptionResponseSchema.parse(
-          await invitationService.redeem(userId(request), token, audit(request)),
-        ),
-      );
+      .send(InvitationAcceptanceResponseSchema.parse(await invitationService.accept(accountId(request), token)));
   });
 }

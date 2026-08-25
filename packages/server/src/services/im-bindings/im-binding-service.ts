@@ -264,8 +264,8 @@ export class ImBindingService {
       .innerJoin(
         workspaceComputers,
         and(
-          eq(workspaceComputers.workspaceId, agents.teamId),
-          eq(workspaceComputers.computerId, agents.computerId),
+          eq(workspaceComputers.workspaceId, agents.workspaceId),
+          eq(workspaceComputers.id, agents.workspaceComputerId),
           isNull(workspaceComputers.revokedAt),
         ),
       )
@@ -285,12 +285,12 @@ export class ImBindingService {
         sessionEndedAt: sessions.endedAt,
         binding: imBindings,
         boundAgentId: imBindings.agentId,
-        agentComputerId: agents.computerId,
+        agentWorkspaceComputerId: agents.workspaceComputerId,
         agentStatus: agents.status,
-        placementComputerId: sessionPlacements.computerId,
+        placementComputerId: sessionPlacements.workspaceComputerId,
         placementGeneration: sessionPlacements.generation,
         workspaceComputerId: workspaceComputers.id,
-        workspaceId: agents.teamId,
+        workspaceId: agents.workspaceId,
       })
       .from(sessions)
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
@@ -299,8 +299,8 @@ export class ImBindingService {
       .leftJoin(
         workspaceComputers,
         and(
-          eq(workspaceComputers.workspaceId, agents.teamId),
-          eq(workspaceComputers.computerId, agents.computerId),
+          eq(workspaceComputers.workspaceId, agents.workspaceId),
+          eq(workspaceComputers.id, agents.workspaceComputerId),
           isNull(workspaceComputers.revokedAt),
         ),
       )
@@ -318,7 +318,7 @@ export class ImBindingService {
       !row ||
       row.sessionKind === "internal" ||
       row.boundAgentId !== request.agentId ||
-      row.agentComputerId !== computerAuth.computerId ||
+      row.agentWorkspaceComputerId !== computerAuth.workspaceComputerId ||
       row.workspaceComputerId !== computerAuth.workspaceComputerId ||
       row.workspaceId !== computerAuth.workspaceId ||
       row.agentStatus !== "active"
@@ -327,7 +327,7 @@ export class ImBindingService {
     }
     if (
       row.sessionEndedAt !== null ||
-      row.placementComputerId !== computerAuth.computerId ||
+      row.placementComputerId !== computerAuth.workspaceComputerId ||
       row.placementGeneration !== request.placementGeneration
     ) {
       return rejected("placement_stale");
@@ -405,11 +405,11 @@ export class ImBindingService {
         identityClosure: { status: "pending", verifiedAt: null },
       };
     } catch (error) {
-      // The partial unique index decides concurrent activations of one App/Team; report the loser
+      // The partial unique index decides concurrent activations of one App/Workspace; report the loser
       // with the same typed conflict the in-transaction precheck uses.
-      if (isImBindingUniqueViolation(error, "im_bindings_slack_app_team_current_unique")) {
+      if (isImBindingUniqueViolation(error, "im_bindings_slack_app_workspace_current_unique")) {
         throw new ImBindingServiceError(
-          "SLACK_APP_TEAM_ALREADY_BOUND",
+          "SLACK_APP_WORKSPACE_ALREADY_BOUND",
           409,
           "This Slack App installation is already bound to another Agent",
         );
@@ -1104,7 +1104,7 @@ export class ImBindingService {
           .limit(1);
         if (conflicting) {
           throw new ImBindingServiceError(
-            "SLACK_APP_TEAM_ALREADY_BOUND",
+            "SLACK_APP_WORKSPACE_ALREADY_BOUND",
             409,
             "This Slack App installation is already bound to another Agent",
           );

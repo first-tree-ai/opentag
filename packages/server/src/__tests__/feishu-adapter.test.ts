@@ -11,7 +11,7 @@ import {
   createFeishuHttpCapability,
   createReliableFeishuDispatcher,
   FeishuAdapter,
-  feishuDomainForTeamBrand,
+  feishuDomainForWorkspaceBrand,
   normalizeFeishuMessage,
 } from "../services/im-bindings/feishu/adapter.js";
 
@@ -33,13 +33,13 @@ describe("Feishu adapter", () => {
       threadId: "omt_1",
       replyToMessageId: "om_parent",
       createTime: 1_724_025_600_000,
-      raw: { header: { event_id: "ev_1", tenant_key: "team_1" } },
+      raw: { header: { event_id: "ev_1", tenant_key: "workspace_1" } },
     };
-    const [event] = normalizeFeishuMessage({ appId: "cli_1", teamId: "team_1", message });
+    const [event] = normalizeFeishuMessage({ appId: "cli_1", teamId: "workspace_1", message });
     expect(event).toMatchObject({
       providerEventId: "ev_1",
       externalAppId: "cli_1",
-      externalTeamId: "team_1",
+      externalTeamId: "workspace_1",
       providerContext: {
         provider: "feishu",
         chatType: "group",
@@ -69,9 +69,9 @@ describe("Feishu adapter", () => {
       threadId: "omt_1",
       replyToMessageId: "om_parent",
       createTime: 1_724_025_600_000,
-      raw: { header: { event_id: "ev_2", tenant_key: "team_1" } },
+      raw: { header: { event_id: "ev_2", tenant_key: "workspace_1" } },
     };
-    const [event] = normalizeFeishuMessage({ appId: "cli_1", teamId: "team_1", message });
+    const [event] = normalizeFeishuMessage({ appId: "cli_1", teamId: "workspace_1", message });
     expect(event).toMatchObject({
       providerContext: {
         provider: "feishu",
@@ -84,7 +84,7 @@ describe("Feishu adapter", () => {
     expect(event?.providerContext).not.toHaveProperty("rootId");
   });
 
-  it("uses the external Team authorization response as the capability authority", async () => {
+  it("uses the external Workspace authorization response as the capability authority", async () => {
     const adapter = new FeishuAdapter({
       appId: "cli_1",
       appSecret: "secret",
@@ -102,12 +102,12 @@ describe("Feishu adapter", () => {
       }),
     });
 
-    await expect(adapter.listGrantedTeamScopes()).resolves.toEqual(["im:message:send_as_bot"]);
+    await expect(adapter.listGrantedWorkspaceScopes()).resolves.toEqual(["im:message:send_as_bot"]);
   });
 
-  it("routes international Teams through the Lark API domain", () => {
-    expect(feishuDomainForTeamBrand("lark")).toBe(Domain.Lark);
-    expect(feishuDomainForTeamBrand("feishu")).toBe(Domain.Feishu);
+  it("routes international Workspaces through the Lark API domain", () => {
+    expect(feishuDomainForWorkspaceBrand("lark")).toBe(Domain.Lark);
+    expect(feishuDomainForWorkspaceBrand("feishu")).toBe(Domain.Feishu);
   });
 
   it("uses the HTTP resource capability without constructing or owning an inbound Channel", async () => {
@@ -115,7 +115,7 @@ describe("Feishu adapter", () => {
     const adapter = new FeishuAdapter({
       appId: "cli_http",
       appSecret: "secret",
-      teamId: "team_http",
+      teamId: "workspace_http",
       channel: null,
       http: {
         fetchResource,
@@ -215,9 +215,9 @@ describe("Feishu adapter", () => {
     await dispatcher.invoke(
       {
         schema: "2.0",
-        header: { event_id: "ev-recall", event_type: "im.message.recalled_v1", tenant_key: "team_1" },
+        header: { event_id: "ev-recall", event_type: "im.message.recalled_v1", tenant_key: "workspace_1" },
         event: {
-          tenant_key: "team_1",
+          tenant_key: "workspace_1",
           message_id: "om-recalled",
           chat_id: "oc_1",
           recall_time: "2",
@@ -225,7 +225,7 @@ describe("Feishu adapter", () => {
       },
       { needCheck: false },
     );
-    const [event] = normalizeFeishuMessage({ appId: "cli_1", teamId: "team_1", message: received as never });
+    const [event] = normalizeFeishuMessage({ appId: "cli_1", teamId: "workspace_1", message: received as never });
     expect(event).toMatchObject({
       conversation: { externalId: "oc_1", kind: "unknown" },
       message: { externalId: "om-recalled", operation: "deleted" },
@@ -273,9 +273,9 @@ async function invokePinnedWs(dispatcher: EventDispatcher, body: unknown): Promi
 function rawMessage(eventId: string, messageId: string, createTime: string) {
   return {
     schema: "2.0",
-    header: { event_id: eventId, event_type: "im.message.receive_v1", tenant_key: "team_1" },
+    header: { event_id: eventId, event_type: "im.message.receive_v1", tenant_key: "workspace_1" },
     event: {
-      sender: { sender_id: { open_id: "ou_human" }, sender_type: "user", tenant_key: "team_1" },
+      sender: { sender_id: { open_id: "ou_human" }, sender_type: "user", tenant_key: "workspace_1" },
       message: {
         message_id: messageId,
         create_time: createTime,

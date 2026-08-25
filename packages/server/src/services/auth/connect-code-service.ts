@@ -1,8 +1,7 @@
 import { type ChannelName, getChannelConfig } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { connectCodes, users } from "../../db/schema/index.js";
-import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
+import { accountCliLoginCodes, users } from "../../db/schema/index.js";
 import { AuthServiceError } from "./errors.js";
 import { generateSecret, hashSecret } from "./security.js";
 
@@ -18,7 +17,7 @@ export interface IssuedConnectCode {
 }
 
 export interface ConnectCodeIssuer {
-  issueForTeamAdmin(userId: string, teamId: string): Promise<IssuedConnectCode>;
+  issueForUser(userId: string): Promise<IssuedConnectCode>;
 }
 
 function shellQuote(value: string): string {
@@ -55,10 +54,11 @@ export async function issueConnectCodeInTransaction(
   }
   const code = generateSecret(24);
   const expiresAt = new Date(now.getTime() + expiresIn * 1000);
-  await transaction.insert(connectCodes).values({
-    codeHash: hashSecret(code),
+  await transaction.insert(accountCliLoginCodes).values({
+    tokenHash: hashSecret(code),
     userId: input.userId,
-    issuerUserId: input.issuerUserId,
+    issuedByUserId: input.issuerUserId,
+    createdAt: now,
     expiresAt,
   });
   return { code, expiresAt, expiresIn, issuedAt: now };
@@ -71,15 +71,10 @@ export interface ConnectCodeServiceOptions {
 export class ConnectCodeService implements ConnectCodeIssuer {
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
-  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
-  constructor(
-    database: DatabaseClient,
-    options: ConnectCodeServiceOptions & { workspaceAdmins?: WorkspaceAdminAccess } = {},
-  ) {
+  constructor(database: DatabaseClient, options: ConnectCodeServiceOptions = {}) {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
-    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
   async issueForUser(userId: string): Promise<IssuedConnectCode> {
@@ -94,15 +89,6 @@ export class ConnectCodeService implements ConnectCodeIssuer {
       if (!user || user.suspendedAt) {
         throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
       }
-      await this.#workspaceAdmins.requireAnyAdmin(userId, transaction);
-      return issueConnectCodeInTransaction(transaction, { issuerUserId: userId, userId }, now);
-    });
-  }
-
-  async issueForTeamAdmin(userId: string, teamId: string): Promise<IssuedConnectCode> {
-    const now = this.#now();
-    return this.#database.transaction(async (transaction) => {
-      await this.#workspaceAdmins.requireAdminForMutation(transaction, userId, teamId);
       return issueConnectCodeInTransaction(transaction, { issuerUserId: userId, userId }, now);
     });
   }

@@ -33,7 +33,7 @@ export interface IssuedComputerConnectCode {
 }
 
 export interface MachineConnectCodeIssuer {
-  issueForTeamAdmin(accountId: string, workspaceId: string): Promise<IssuedComputerConnectCode>;
+  issueForWorkspaceAdmin(accountId: string, workspaceId: string): Promise<IssuedComputerConnectCode>;
 }
 
 export interface MachineEnrollmentInput {
@@ -72,7 +72,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
     this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
-  async issueForTeamAdmin(accountId: string, workspaceId: string): Promise<IssuedComputerConnectCode> {
+  async issueForWorkspaceAdmin(accountId: string, workspaceId: string): Promise<IssuedComputerConnectCode> {
     const now = this.#now();
     return this.#database.transaction(async (transaction) => {
       await this.#workspaceAdmins.requireAdminForMutation(transaction, accountId, workspaceId);
@@ -130,14 +130,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         .insert(computers)
         .values({
           id: input.computerId,
-          ownerUserId: connectCode.issuedByUserId,
-          displayName: input.displayName,
-          platform: input.platform,
-          arch: input.arch,
-          clientVersion: input.clientVersion,
-          lastSeenAt: now,
           createdAt: now,
-          updatedAt: now,
         })
         .onConflictDoNothing({ target: computers.id });
 
@@ -178,6 +171,7 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
             clientVersion: input.clientVersion,
             currentInstanceId: null,
             connectedAt: null,
+            lastSeenAt: null,
             updatedAt: now,
           })
           .where(eq(workspaceComputers.id, enrollment.id));

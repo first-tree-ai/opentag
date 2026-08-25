@@ -4,7 +4,7 @@
   font-family: var(--font-sans);
   font-synthesis: none;
 
-  /* Team, agent and member names are frequently Chinese and none of the
+  /* Workspace, agent and member names are frequently Chinese and none of the
      Latin faces carry CJK glyphs. Name the CJK fallback explicitly, ahead
      of the generics, so those runs land on a chosen face instead of
      whatever the platform picks. */
@@ -322,12 +322,12 @@ pre {
   text-decoration: none;
 }
 
-.team-menu,
+.workspace-menu,
 .account-menu {
   position: relative;
 }
 
-.team-switcher {
+.workspace-switcher {
   display: grid;
   width: 100%;
   min-height: 43px;
@@ -348,28 +348,28 @@ pre {
     color 140ms ease;
 }
 
-.team-switcher:hover,
-.team-switcher[aria-expanded="true"] {
+.workspace-switcher:hover,
+.workspace-switcher[aria-expanded="true"] {
   border-color: transparent;
   background: var(--brand-light);
   color: var(--brand-ink);
 }
 
-.team-switcher:active,
-.team-menu-option:active,
+.workspace-switcher:active,
+.workspace-menu-option:active,
 .account-row:active,
 .account-menu-popover button:active {
   transform: none;
 }
 
-.team-menu-chevron {
+.workspace-menu-chevron {
   color: var(--muted);
   font-size: var(--text-meta);
   line-height: 1;
   text-align: right;
 }
 
-.team-avatar,
+.workspace-avatar,
 .account-avatar,
 .agent-avatar {
   display: inline-grid;
@@ -383,7 +383,7 @@ pre {
   letter-spacing: var(--track-tight);
 }
 
-.team-avatar {
+.workspace-avatar {
   width: 24px;
   height: 24px;
   border-radius: 6px;
@@ -399,7 +399,7 @@ pre {
   height: 28px;
 }
 
-.team-menu-popover,
+.workspace-menu-popover,
 .account-menu-popover {
   position: absolute;
   z-index: calc(var(--layer-sidebar) + 1);
@@ -409,7 +409,7 @@ pre {
   box-shadow: 0 16px 36px rgb(43 55 38 / 12%);
 }
 
-.team-menu-popover {
+.workspace-menu-popover {
   top: calc(100% + 6px);
   left: 0;
   display: flex;
@@ -430,12 +430,12 @@ pre {
   text-transform: uppercase;
 }
 
-.team-search {
+.workspace-search {
   display: block;
   padding: 4px 5px 7px;
 }
 
-.team-search input {
+.workspace-search input {
   width: 100%;
   min-height: 36px;
   border: 1px solid var(--border);
@@ -444,7 +444,7 @@ pre {
   padding: 0 10px;
 }
 
-.team-menu-list {
+.workspace-menu-list {
   display: grid;
   min-height: 0;
   max-height: min(352px, 45dvh);
@@ -454,7 +454,7 @@ pre {
   scrollbar-gutter: stable;
 }
 
-.team-menu-option {
+.workspace-menu-option {
   display: grid;
   width: 100%;
   min-height: 44px;
@@ -470,16 +470,16 @@ pre {
   text-align: left;
 }
 
-.team-menu-option:hover,
-.team-menu-option[aria-current="true"] {
+.workspace-menu-option:hover,
+.workspace-menu-option[aria-current="true"] {
   border-color: transparent;
   background: var(--brand-light);
   color: var(--foreground);
 }
 
-.team-option-copy,
-.team-option-copy strong,
-.team-option-copy small {
+.workspace-option-copy,
+.workspace-option-copy strong,
+.workspace-option-copy small {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -487,31 +487,31 @@ pre {
   white-space: nowrap;
 }
 
-.team-option-copy strong {
+.workspace-option-copy strong {
   font-size: var(--text-ui);
   font-weight: var(--fw-semibold);
 }
 
-.team-option-copy small {
+.workspace-option-copy small {
   margin-top: 2px;
   color: var(--muted);
   font-size: var(--text-meta);
 }
 
-.team-option-check {
+.workspace-option-check {
   color: var(--brand-ink);
   font-size: var(--text-ui);
   font-weight: var(--fw-bold);
   text-align: right;
 }
 
-.team-menu-empty {
+.workspace-menu-empty {
   color: var(--muted);
   font-size: var(--text-meta);
   padding: 14px 8px;
 }
 
-.team-menu-actions {
+.workspace-menu-actions {
   display: grid;
   gap: 2px;
   margin-top: 7px;
@@ -519,7 +519,7 @@ pre {
   padding-top: 7px;
 }
 
-.team-menu-action {
+.workspace-menu-action {
   display: flex;
   width: 100%;
   min-height: 39px;
@@ -536,7 +536,7 @@ pre {
   text-decoration: none;
 }
 
-.team-menu-action:hover {
+.workspace-menu-action:hover {
   border-color: transparent;
   background: var(--brand-light);
   color: var(--brand-ink);
@@ -3371,12 +3371,12 @@ textarea:focus {
   line-height: var(--lh-prose);
 }
 
-.team-profile-form {
+.workspace-profile-form {
   background: transparent;
   padding: 0;
 }
 
-.team-profile-fields {
+.workspace-profile-fields {
   display: grid;
   gap: 23px;
   border: 1px solid var(--border);
@@ -3385,25 +3385,25 @@ textarea:focus {
   padding: 23px;
 }
 
-.team-profile-row {
+.workspace-profile-row {
   display: grid;
   grid-template-columns: 210px minmax(0, 1fr);
   gap: 29px;
 }
 
-.team-profile-copy strong {
+.workspace-profile-copy strong {
   display: block;
   margin: 2px 0 5px;
   font-size: var(--text-ui);
 }
 
-.team-profile-copy p {
+.workspace-profile-copy p {
   margin-bottom: 0;
   color: var(--muted);
   font-size: var(--text-meta);
 }
 
-.team-profile-row label {
+.workspace-profile-row label {
   align-content: start;
 }
 
@@ -3458,12 +3458,12 @@ textarea:focus {
   gap: 24px;
 }
 
-.settings-team-stack {
+.settings-workspace-stack {
   display: grid;
   gap: 32px;
 }
 
-.settings-team-stack #members {
+.settings-workspace-stack #members {
   scroll-margin-top: 28px;
 }
 
@@ -4232,7 +4232,7 @@ textarea:focus {
   }
 
   .messaging-contact-facts,
-  .team-profile-row {
+  .workspace-profile-row {
     grid-template-columns: 1fr;
     gap: 12px;
   }

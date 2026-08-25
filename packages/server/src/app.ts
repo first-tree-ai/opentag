@@ -14,7 +14,7 @@ import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
-import { registerTeamRoutes } from "./api/teams.js";
+import { registerWorkspaceRoutes } from "./api/workspaces.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { currentTraceId } from "./observability/index.js";
 import { type AgentService, AgentServiceError } from "./services/agents/index.js";
@@ -25,7 +25,11 @@ import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bind
 import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
 import { type SlackConfigurationService, SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
 import type { InvitationService } from "./services/invitations/index.js";
-import { type TeamMembershipService, type TeamSetupService, TeamSetupServiceError } from "./services/teams/index.js";
+import {
+  type WorkspaceAdminService,
+  type WorkspaceSetupService,
+  WorkspaceSetupServiceError,
+} from "./services/workspaces/index.js";
 import { registerWebApp } from "./web-app.js";
 
 export interface CreateAppOptions {
@@ -53,15 +57,15 @@ export interface CreateAppOptions {
   readiness?: BootstrapReadiness;
   runtime?: RuntimeRoutesOptions;
   slackEvents?: SlackEventsRouteOptions;
-  teamService?: TeamMembershipService;
-  teamSetupService?: TeamSetupService;
+  workspaceService?: WorkspaceAdminService;
+  workspaceSetupService?: WorkspaceSetupService;
 }
 
 export function sanitizeRequestUrl(url: string): string {
   const path = url.split("?", 1)[0] ?? "/";
   return path
     .replace(/^(\/invites\/)[^/]+/, "$1[REDACTED]")
-    .replace(/^(\/api\/v1\/invitations\/)[^/]+/, "$1[REDACTED]");
+    .replace(/^(\/api\/v1\/admin-invitations\/)[^/]+/, "$1[REDACTED]");
 }
 
 export function formatHttpSpanName(request: { method?: string; routeOptions?: { url?: string } }): string {
@@ -181,8 +185,8 @@ export function createApp(options: CreateAppOptions = {}) {
     if (options.agentService) {
       registerAgentRoutes(app, authService, options.agentService, publicOrigin);
     }
-    if (options.teamService) {
-      registerTeamRoutes(app, authService, options.teamService, publicOrigin, options.teamSetupService);
+    if (options.workspaceService) {
+      registerWorkspaceRoutes(app, authService, options.workspaceService, publicOrigin, options.workspaceSetupService);
     }
     if (options.invitationService) {
       registerInvitationRoutes(app, authService, options.invitationService, publicOrigin);
@@ -206,7 +210,6 @@ export function createApp(options: CreateAppOptions = {}) {
       registerComputerRoutes(
         app,
         authService,
-        computerService,
         machineAuthService,
         publicOrigin,
         options.computerConnectCode?.environment,
@@ -252,7 +255,7 @@ export function createApp(options: CreateAppOptions = {}) {
       error instanceof AgentServiceError ||
       error instanceof ImBindingServiceError ||
       error instanceof SlackConfigurationServiceError ||
-      error instanceof TeamSetupServiceError
+      error instanceof WorkspaceSetupServiceError
     ) {
       const envelope = ErrorEnvelopeSchema.parse({
         error: {

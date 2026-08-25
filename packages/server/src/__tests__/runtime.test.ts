@@ -26,13 +26,13 @@ afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
 const workspaceId = randomUUID();
 const me = {
   user: { id: randomUUID(), email: "admin@example.com", displayName: "Admin" },
-  memberships: [
+  workspaces: [
     {
-      teamId: workspaceId,
-      teamName: "example",
-      teamDisplayName: "Example",
-      role: "admin" as const,
+      id: workspaceId,
+      name: "example",
+      displayName: "Example",
       setupCompletedAt: null,
+      grantedAt: "2030-01-01T00:00:00.000Z",
     },
   ],
 };
@@ -128,7 +128,7 @@ describe("Computer runtime WebSocket", () => {
     expect(machineAuth.verifyMachineToken).not.toHaveBeenCalled();
   });
 
-  it("requires auth, registers without Team authority, and heartbeats", async () => {
+  it("requires auth, registers without Workspace authority, and heartbeats", async () => {
     const auth = authService();
     const computers = computerService();
     const registry = new ConnectionRegistry();
@@ -190,7 +190,7 @@ describe("Computer runtime WebSocket", () => {
         observation: { provider: "codex", status: "install" },
       },
     ]);
-    expect(JSON.stringify(register)).not.toContain("team");
+    expect(JSON.stringify(register)).not.toContain("workspace");
 
     const heartbeat = {
       type: "heartbeat",
@@ -510,7 +510,7 @@ describe("Computer runtime WebSocket", () => {
   it("rejects a heartbeat after enrollment authority is revoked", async () => {
     const computers = computerService();
     computers.heartbeat.mockRejectedValueOnce(
-      new AuthServiceError("AUTH_MEMBERSHIP_REQUIRED", "deterministic", "membership required", 403),
+      new AuthServiceError("AUTH_INVALID_TOKEN", "deterministic", "machine credential revoked", 401),
     );
     const app = createRuntimeApp({
       authService: authService(),
@@ -536,8 +536,8 @@ describe("Computer runtime WebSocket", () => {
     );
     await nextFrame(socket);
     socket.send(JSON.stringify({ type: "heartbeat", requestId: randomUUID(), computerId, instanceId }));
-    expect(await nextFrame(socket)).toMatchObject({ type: "error", code: "AUTH_MEMBERSHIP_REQUIRED" });
-    await expect(closeCode(socket)).resolves.toBe(4403);
+    expect(await nextFrame(socket)).toMatchObject({ type: "error", code: "AUTH_INVALID_TOKEN" });
+    await expect(closeCode(socket)).resolves.toBe(4401);
   });
 
   it("serializes concurrent registration persistence and publishes one final winner", async () => {

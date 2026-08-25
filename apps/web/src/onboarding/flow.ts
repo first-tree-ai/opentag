@@ -3,12 +3,9 @@ import type {
   ComputerConnectionStatus,
   ImBindingHandoffStatus,
   ImBindingState,
-  MembershipRole,
 } from "@opentag/shared/browser";
 
-export interface OnboardingTeam {
-  readonly role: MembershipRole;
-}
+export type OnboardingWorkspace = Record<never, never>;
 
 export interface OnboardingComputer {
   readonly id: string;
@@ -38,7 +35,7 @@ type UnusableImBindingState = Exclude<ImBindingState, "active">;
 export type OnboardingHandoff = Readonly<ImBindingHandoffStatus>;
 
 export interface OnboardingFacts {
-  readonly team: OnboardingTeam | undefined;
+  readonly workspace: OnboardingWorkspace | undefined;
   readonly computers: readonly OnboardingComputer[];
   readonly providers: readonly OnboardingProvider[];
   /** A Computer choice made only when facts cannot identify one safe route. */
@@ -60,7 +57,7 @@ export type HandoffProgress =
     };
 
 export type OnboardingCurrentState =
-  | { readonly kind: "team" }
+  | { readonly kind: "workspace" }
   | { readonly kind: "computer"; readonly availability: "none" }
   | {
       readonly kind: "computer";
@@ -102,7 +99,7 @@ export interface OnboardingState {
   readonly runtimeReady: boolean;
   /** Whether the Server says the Agent's IM handoff is currently usable. */
   readonly handoffReady: boolean;
-  /** Members observe the same state without receiving mutation controls. */
+  /** Every authenticated Workspace participant in this surface is an Admin. */
   readonly canManage: boolean;
 }
 
@@ -111,11 +108,11 @@ export interface OnboardingState {
  * retained. Once an Agent exists, earlier prerequisites never pull the flow back.
  */
 export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
-  const canManage = facts.team === undefined || facts.team.role === "admin";
+  const canManage = true;
   const handoffReady = facts.handoff?.handoffReady === true;
 
-  if (!facts.team) {
-    return { currentState: { kind: "team" }, runtimeReady: false, handoffReady, canManage };
+  if (!facts.workspace) {
+    return { currentState: { kind: "workspace" }, runtimeReady: false, handoffReady, canManage };
   }
 
   if (facts.agent) {

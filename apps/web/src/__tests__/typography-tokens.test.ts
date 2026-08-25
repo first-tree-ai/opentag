@@ -50,7 +50,7 @@ const EXCEPTIONS: { property: string; value: string; selectors: Set<string> }[] 
   {
     property: "line-height",
     value: "1",
-    selectors: new Set([".team-menu-chevron", ".account-menu-dots", ".dialog-close"]),
+    selectors: new Set([".workspace-menu-chevron", ".account-menu-dots", ".dialog-close"]),
   },
   { property: "line-height", value: "38px", selectors: new Set([".center-card::before"]) },
   { property: "font", value: "inherit", selectors: new Set(["button", "input", "select", "textarea"]) },

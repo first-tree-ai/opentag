@@ -1,10 +1,10 @@
-import type { CreateTeamResponse } from "@opentag/shared/browser";
+import type { CreateWorkspaceResponse } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
 import { ApiError, browserApi } from "./api.js";
 import { Button, Field } from "./ui/design-system.js";
 
-/** Derives the internal Team handle suggested by a user-facing name. */
-export function toTeamHandle(displayName: string): string {
+/** Derives the internal Workspace handle suggested by a user-facing name. */
+export function toWorkspaceHandle(displayName: string): string {
   return displayName
     .normalize("NFKD")
     .toLowerCase()
@@ -14,7 +14,7 @@ export function toTeamHandle(displayName: string): string {
 }
 
 function handleWithSuffix(handle: string, suffix: string): string {
-  const base = (handle || "team").slice(0, 64 - suffix.length - 1).replace(/-+$/g, "") || "team";
+  const base = (handle || "workspace").slice(0, 64 - suffix.length - 1).replace(/-+$/g, "") || "workspace";
   return `${base}-${suffix}`;
 }
 
@@ -24,16 +24,20 @@ function randomHandleSuffix(): string {
 
 const MAX_HANDLE_ATTEMPTS = 4;
 
-/** Creates a Team without exposing its internal handle, retrying deterministic handle collisions. */
-export async function createTeamWithUniqueHandle(displayName: string): Promise<CreateTeamResponse> {
-  const suggestedHandle = toTeamHandle(displayName);
+/** Creates a Workspace without exposing its internal handle, retrying deterministic handle collisions. */
+export async function createWorkspaceWithUniqueHandle(displayName: string): Promise<CreateWorkspaceResponse> {
+  const suggestedHandle = toWorkspaceHandle(displayName);
   for (let attempt = 0; attempt < MAX_HANDLE_ATTEMPTS; attempt += 1) {
     const name =
       attempt === 0 && suggestedHandle ? suggestedHandle : handleWithSuffix(suggestedHandle, randomHandleSuffix());
     try {
-      return await browserApi.createTeam({ name, displayName });
+      return await browserApi.createWorkspace({ name, displayName });
     } catch (cause) {
-      if (!(cause instanceof ApiError) || cause.code !== "TEAM_NAME_CONFLICT" || attempt === MAX_HANDLE_ATTEMPTS - 1) {
+      if (
+        !(cause instanceof ApiError) ||
+        cause.code !== "WORKSPACE_NAME_CONFLICT" ||
+        attempt === MAX_HANDLE_ATTEMPTS - 1
+      ) {
         throw cause;
       }
     }
@@ -43,15 +47,15 @@ export async function createTeamWithUniqueHandle(displayName: string): Promise<C
 
 /**
  * The single Workspace creation form. It is mounted by the standalone `/workspaces/new` page for both first-run
- * and additional Workspace creation while the backing domain continues to use Team identifiers.
+ * and additional Workspace creation while the backing domain continues to use Workspace identifiers.
  * The caller owns what happens next; this component owns the fields, the derivation and the error surface.
  */
-export function CreateTeamForm({
+export function CreateWorkspaceForm({
   onCreated,
   onUnauthenticated,
   submitLabel = "Create Workspace",
 }: {
-  onCreated: (team: CreateTeamResponse) => void;
+  onCreated: (workspace: CreateWorkspaceResponse) => void;
   onUnauthenticated?: () => void;
   submitLabel?: string;
 }) {
@@ -64,14 +68,14 @@ export function CreateTeamForm({
     setSubmitting(true);
     try {
       setError(undefined);
-      onCreated(await createTeamWithUniqueHandle(displayName));
+      onCreated(await createWorkspaceWithUniqueHandle(displayName));
     } catch (cause) {
       if (cause instanceof ApiError && cause.status === 401 && onUnauthenticated) {
         onUnauthenticated();
         return;
       }
       setError(
-        cause instanceof ApiError && cause.code === "TEAM_NAME_CONFLICT"
+        cause instanceof ApiError && cause.code === "WORKSPACE_NAME_CONFLICT"
           ? "We couldn't create a unique Workspace address. Try again."
           : cause instanceof Error
             ? cause.message

@@ -1,26 +1,26 @@
-import type { Computer } from "@opentag/shared/browser";
+import type { WorkspaceComputerSummary as Computer } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "./api.js";
 import { ComputerSetup } from "./computer-setup.js";
 
-const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
-const bootstrapCommand = "opentag login --server https://opentag.example.com -- connect-code";
+const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
+const bootstrapCommand = "opentag computer connect --server https://opentag.example.com -- connect-code";
 const connectedAt = "2026-08-20T00:00:00.000Z";
 const existingComputer: Computer = {
-  id: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
-  ownerUserId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+  computerId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
   displayName: "Ada's Mac",
   platform: "darwin",
-  arch: "arm64",
-  clientVersion: "0.0.1",
   connectionStatus: "online",
   connectedAt,
   lastSeenAt: "2026-08-20T00:00:01.000Z",
+  observedAt: connectedAt,
+  enrolledAt: connectedAt,
+  agentIds: [],
 };
 const newComputer: Computer = {
   ...existingComputer,
-  id: "95fe9af3-d1c6-472b-b78c-8a7ccf512750",
+  computerId: "63e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
   displayName: "Ada's Linux Computer",
   platform: "linux",
 };
@@ -53,16 +53,16 @@ describe("ComputerSetup", () => {
 
   it("captures the owned-Computer baseline before issuing a connect code", async () => {
     const calls: string[] = [];
-    vi.spyOn(browserApi, "ownComputers").mockImplementation(async () => {
+    vi.spyOn(browserApi, "computers").mockImplementation(async () => {
       calls.push("baseline");
       return { computers: [existingComputer] };
     });
-    vi.spyOn(browserApi, "issueConnectCode").mockImplementation(async () => {
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockImplementation(async () => {
       calls.push("issue");
       return { bootstrapCommand, expiresIn: 900, issuedAt: connectedAt };
     });
 
-    render(<ComputerSetup teamId={teamId} />);
+    render(<ComputerSetup workspaceId={workspaceId} />);
     expect(
       screen.getByRole("button", { name: "Generate connection command" }).classList.contains("connect-command-primary"),
     ).toBe(true);
@@ -78,16 +78,16 @@ describe("ComputerSetup", () => {
     ["refreshed", [{ ...existingComputer, connectedAt: "2026-08-20T00:00:02.000Z" }]],
   ])("detects a %s Computer and cleans up polling on completion", async (_kind, polledComputers) => {
     const onConnected = vi.fn();
-    vi.spyOn(browserApi, "ownComputers")
+    vi.spyOn(browserApi, "computers")
       .mockResolvedValueOnce({ computers: [existingComputer] })
       .mockResolvedValue({ computers: polledComputers });
-    vi.spyOn(browserApi, "issueConnectCode").mockResolvedValue({
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       bootstrapCommand,
       expiresIn: 900,
       issuedAt: connectedAt,
     });
 
-    render(<ComputerSetup teamId={teamId} onConnected={onConnected} />);
+    render(<ComputerSetup workspaceId={workspaceId} onConnected={onConnected} />);
     await clickGenerate();
     expect(vi.getTimerCount()).toBe(2);
 
@@ -102,18 +102,18 @@ describe("ComputerSetup", () => {
 
   it("does not report an existing Computer heartbeat as connected", async () => {
     const onConnected = vi.fn();
-    vi.spyOn(browserApi, "ownComputers")
+    vi.spyOn(browserApi, "computers")
       .mockResolvedValueOnce({ computers: [existingComputer] })
       .mockResolvedValue({
         computers: [{ ...existingComputer, lastSeenAt: "2026-08-20T00:00:10.000Z" }],
       });
-    vi.spyOn(browserApi, "issueConnectCode").mockResolvedValue({
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       bootstrapCommand,
       expiresIn: 900,
       issuedAt: connectedAt,
     });
 
-    render(<ComputerSetup teamId={teamId} onConnected={onConnected} />);
+    render(<ComputerSetup workspaceId={workspaceId} onConnected={onConnected} />);
     await clickGenerate();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3_000);
@@ -125,14 +125,14 @@ describe("ComputerSetup", () => {
   });
 
   it("cleans up polling when unmounted", async () => {
-    vi.spyOn(browserApi, "ownComputers").mockResolvedValue({ computers: [existingComputer] });
-    vi.spyOn(browserApi, "issueConnectCode").mockResolvedValue({
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [existingComputer] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       bootstrapCommand,
       expiresIn: 900,
       issuedAt: connectedAt,
     });
 
-    const view = render(<ComputerSetup teamId={teamId} />);
+    const view = render(<ComputerSetup workspaceId={workspaceId} />);
     await clickGenerate();
     expect(vi.getTimerCount()).toBe(2);
 
@@ -143,14 +143,14 @@ describe("ComputerSetup", () => {
 
   it("stops polling when the connect code expires", async () => {
     const onConnected = vi.fn();
-    vi.spyOn(browserApi, "ownComputers").mockResolvedValue({ computers: [] });
-    vi.spyOn(browserApi, "issueConnectCode").mockResolvedValue({
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       bootstrapCommand,
       expiresIn: 2,
       issuedAt: connectedAt,
     });
 
-    render(<ComputerSetup teamId={teamId} onConnected={onConnected} />);
+    render(<ComputerSetup workspaceId={workspaceId} onConnected={onConnected} />);
     await clickGenerate();
     expect(vi.getTimerCount()).toBe(2);
 
@@ -167,8 +167,8 @@ describe("ComputerSetup", () => {
   });
 
   it("restarts expiry and polling when a replacement command is generated", async () => {
-    vi.spyOn(browserApi, "ownComputers").mockResolvedValue({ computers: [] });
-    vi.spyOn(browserApi, "issueConnectCode")
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
+    vi.spyOn(browserApi, "issueComputerConnectCode")
       .mockResolvedValueOnce({
         bootstrapCommand: "first command",
         expiresIn: 2,
@@ -180,7 +180,7 @@ describe("ComputerSetup", () => {
         issuedAt: "2026-08-20T00:00:01.000Z",
       });
 
-    render(<ComputerSetup teamId={teamId} />);
+    render(<ComputerSetup workspaceId={workspaceId} />);
     await clickGenerate();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
@@ -201,12 +201,12 @@ describe("ComputerSetup", () => {
 
   it("clears an old-cycle error when replacement issuance succeeds", async () => {
     const replacementIssue = deferred<{ bootstrapCommand: string; expiresIn: number; issuedAt: string }>();
-    vi.spyOn(browserApi, "ownComputers").mockResolvedValue({ computers: [] });
-    vi.spyOn(browserApi, "issueConnectCode")
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
+    vi.spyOn(browserApi, "issueComputerConnectCode")
       .mockResolvedValueOnce({ bootstrapCommand: "first command", expiresIn: 2, issuedAt: connectedAt })
       .mockImplementationOnce(() => replacementIssue.promise);
 
-    render(<ComputerSetup teamId={teamId} />);
+    render(<ComputerSetup workspaceId={workspaceId} />);
     await clickGenerate();
     await clickGenerate();
 
@@ -237,15 +237,15 @@ describe("ComputerSetup", () => {
     const replacementIssue = deferred<{ bootstrapCommand: string; expiresIn: number; issuedAt: string }>();
     const onConnected = vi.fn();
     let ownComputersCall = 0;
-    vi.spyOn(browserApi, "ownComputers").mockImplementation(() => {
+    vi.spyOn(browserApi, "computers").mockImplementation(() => {
       ownComputersCall += 1;
       return ownComputersCall === 2 ? oldPoll.promise : Promise.resolve({ computers: [] });
     });
-    vi.spyOn(browserApi, "issueConnectCode")
+    vi.spyOn(browserApi, "issueComputerConnectCode")
       .mockResolvedValueOnce({ bootstrapCommand: "first command", expiresIn: 900, issuedAt: connectedAt })
       .mockImplementationOnce(() => replacementIssue.promise);
 
-    render(<ComputerSetup teamId={teamId} onConnected={onConnected} />);
+    render(<ComputerSetup workspaceId={workspaceId} onConnected={onConnected} />);
     await clickGenerate();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_500);
@@ -271,15 +271,15 @@ describe("ComputerSetup", () => {
 
   it("keeps the current polling cycle when replacement issuance fails", async () => {
     const onConnected = vi.fn();
-    vi.spyOn(browserApi, "ownComputers")
+    vi.spyOn(browserApi, "computers")
       .mockResolvedValueOnce({ computers: [] })
       .mockResolvedValueOnce({ computers: [] })
       .mockResolvedValue({ computers: [newComputer] });
-    vi.spyOn(browserApi, "issueConnectCode")
+    vi.spyOn(browserApi, "issueComputerConnectCode")
       .mockResolvedValueOnce({ bootstrapCommand: "first command", expiresIn: 900, issuedAt: connectedAt })
       .mockRejectedValueOnce(new Error("Replacement command failed"));
 
-    render(<ComputerSetup teamId={teamId} onConnected={onConnected} />);
+    render(<ComputerSetup workspaceId={workspaceId} onConnected={onConnected} />);
     await clickGenerate();
     await clickGenerate();
 
@@ -299,14 +299,14 @@ describe("ComputerSetup", () => {
   it("copies the command and counts down on the existing poll cycle", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-    vi.spyOn(browserApi, "ownComputers").mockResolvedValue({ computers: [] });
-    vi.spyOn(browserApi, "issueConnectCode").mockResolvedValue({
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       bootstrapCommand,
       expiresIn: 900,
       issuedAt: connectedAt,
     });
 
-    render(<ComputerSetup teamId={teamId} />);
+    render(<ComputerSetup workspaceId={workspaceId} />);
     await clickGenerate();
 
     expect(screen.getByText("Expires in 15:00")).toBeTruthy();
@@ -336,14 +336,14 @@ describe("ComputerSetup", () => {
       configurable: true,
       value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
     });
-    vi.spyOn(browserApi, "ownComputers").mockResolvedValue({ computers: [] });
-    vi.spyOn(browserApi, "issueConnectCode").mockResolvedValue({
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       bootstrapCommand,
       expiresIn: 900,
       issuedAt: connectedAt,
     });
 
-    render(<ComputerSetup teamId={teamId} />);
+    render(<ComputerSetup workspaceId={workspaceId} />);
     await clickGenerate();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
@@ -357,16 +357,16 @@ describe("ComputerSetup", () => {
   });
 
   it("stops showing the countdown once the Computer connects", async () => {
-    vi.spyOn(browserApi, "ownComputers")
+    vi.spyOn(browserApi, "computers")
       .mockResolvedValueOnce({ computers: [existingComputer] })
       .mockResolvedValue({ computers: [existingComputer, newComputer] });
-    vi.spyOn(browserApi, "issueConnectCode").mockResolvedValue({
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       bootstrapCommand,
       expiresIn: 900,
       issuedAt: connectedAt,
     });
 
-    render(<ComputerSetup teamId={teamId} />);
+    render(<ComputerSetup workspaceId={workspaceId} />);
     await clickGenerate();
     expect(screen.getByText("Expires in 15:00")).toBeTruthy();
 
@@ -379,10 +379,10 @@ describe("ComputerSetup", () => {
   });
 
   it("normalizes connect-code issuance errors", async () => {
-    vi.spyOn(browserApi, "ownComputers").mockResolvedValue({ computers: [] });
-    vi.spyOn(browserApi, "issueConnectCode").mockRejectedValue("unavailable");
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockRejectedValue("unavailable");
 
-    render(<ComputerSetup teamId={teamId} />);
+    render(<ComputerSetup workspaceId={workspaceId} />);
     await clickGenerate();
 
     expect(screen.getByRole("alert").textContent).toBe("Unable to create a Computer connection command");
@@ -391,17 +391,17 @@ describe("ComputerSetup", () => {
   });
 
   it("normalizes polling errors and keeps waiting", async () => {
-    vi.spyOn(browserApi, "ownComputers")
+    vi.spyOn(browserApi, "computers")
       .mockResolvedValueOnce({ computers: [] })
       .mockRejectedValueOnce("offline")
       .mockResolvedValue({ computers: [] });
-    vi.spyOn(browserApi, "issueConnectCode").mockResolvedValue({
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       bootstrapCommand,
       expiresIn: 900,
       issuedAt: connectedAt,
     });
 
-    render(<ComputerSetup teamId={teamId} />);
+    render(<ComputerSetup workspaceId={workspaceId} />);
     await clickGenerate();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_500);

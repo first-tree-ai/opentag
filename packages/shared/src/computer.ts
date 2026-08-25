@@ -29,7 +29,7 @@ export const ComputerConnectCodeExchangeResponseSchema = z
   })
   .strict();
 
-export const ComputerConnectCodeIssueRequestSchema = z.object({ teamId: z.string().uuid() }).strict();
+export const ComputerConnectCodeIssueRequestSchema = z.object({ workspaceId: z.string().uuid() }).strict();
 
 export const ComputerConnectCodeIssueResponseSchema = z
   .object({
@@ -103,28 +103,6 @@ export const ComputerImCliReadinessCollectionSchema = z
     }
   });
 
-export const ComputerSchema = z
-  .object({
-    id: z.string().uuid(),
-    ownerUserId: z.string().uuid(),
-    displayName: z.string().trim().min(1).max(255),
-    platform: ComputerPlatformSchema,
-    arch: z.string().trim().min(1).max(64),
-    clientVersion: z.string().trim().min(1).max(64),
-    connectionStatus: ComputerConnectionStatusSchema,
-    providerReadiness: ComputerProviderReadinessCollectionSchema.optional(),
-    imCliReadiness: ComputerImCliReadinessCollectionSchema.optional(),
-    connectedAt: z.string().datetime().nullable(),
-    lastSeenAt: z.string().datetime(),
-  })
-  .strict();
-
-export const ListComputersResponseSchema = z
-  .object({
-    computers: z.array(ComputerSchema),
-  })
-  .strict();
-
 export type ComputerPlatform = z.infer<typeof ComputerPlatformSchema>;
 export type ComputerConnectCodeExchangeRequest = z.infer<typeof ComputerConnectCodeExchangeRequestSchema>;
 export type ComputerConnectCodeExchangeResponse = z.infer<typeof ComputerConnectCodeExchangeResponseSchema>;
@@ -138,5 +116,3 @@ export type ComputerProviderReadiness = z.infer<typeof ComputerProviderReadiness
 export type ComputerProviderReadinessCollection = z.infer<typeof ComputerProviderReadinessCollectionSchema>;
 export type ComputerImCliReadiness = z.infer<typeof ComputerImCliReadinessSchema>;
 export type ComputerImCliReadinessCollection = z.infer<typeof ComputerImCliReadinessCollectionSchema>;
-export type Computer = z.infer<typeof ComputerSchema>;
-export type ListComputersResponse = z.infer<typeof ListComputersResponseSchema>;

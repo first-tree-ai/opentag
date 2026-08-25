@@ -79,7 +79,7 @@ describe("IM binding contracts", () => {
     const event = NormalizedInboundImEventSchema.parse({
       providerEventId: "event-1",
       externalAppId: "app-1",
-      externalTeamId: "team-1",
+      externalTeamId: "workspace-1",
       providerContext: { provider: "slack", channelType: "channel" },
       conversation: { externalId: "chat-1", kind: "channel" },
       message: {

@@ -98,13 +98,13 @@ The production server image does not bundle or start PostgreSQL. Set `OPENTAG_DA
 PostgreSQL instance when deploying it; the Compose service above is only a local development convenience.
 
 To bootstrap an empty installation, set the required bootstrap fields and run the one-time admin command. It migrates an
-empty database before creating the initial user, team, admin membership, and connect code.
+empty database before creating the initial Account, Workspace, Admin grant, and Account login code.
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
 export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-export OPENTAG_BOOTSTRAP_TEAM_NAME=example
-export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
+export OPENTAG_BOOTSTRAP_WORKSPACE_NAME=example
+export OPENTAG_BOOTSTRAP_WORKSPACE_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 ./scripts/dev-install.sh
 export PATH="$HOME/.local/bin${PATH:+:$PATH}"
@@ -112,27 +112,32 @@ opentag-dev login --server http://127.0.0.1:8000 -- <connect-code>
 ```
 
 The source checkout is the `dev` channel. `scripts/dev-install.sh` builds the complete workspace, links the configured
-dev binary to `~/.local/bin/opentag-dev`, verifies it, and reconciles an existing credentialed daemon service. A first
-install has no credentials, so service setup is deliberately deferred to the separate `login`; this matches the
+dev binary to `~/.local/bin/opentag-dev`, verifies it, and reconciles an existing machine-credentialed daemon service. A first
+install has no machine credentials, so service setup is deliberately deferred to `computer connect`; this matches the
 published installer boundary without making the installer consume a connect code. Keep `~/.local/bin` first in `PATH`
 so service reconciliation cannot select an older `opentag-dev` shim. The dev channel defaults to
 `~/.opentag-dev`; staging and production builds use `opentag-staging` / `~/.opentag-staging` and `opentag` /
 `~/.opentag`. An explicit `OPENTAG_HOME` overrides the channel default.
 
-Login installs and starts the user service on Linux and macOS. Inspect it and the user-owned Computer from another terminal:
+Account login stores only management credentials. Generate a Computer connection command from the Web's Agents area,
+then run it on the execution host; `computer connect` stores an enrollment-scoped machine credential and installs or
+restarts the user service on Linux and macOS. Inspect it from another terminal:
 
 ```bash
+opentag-dev computer connect --server http://127.0.0.1:8000 -- <computer-connect-code>
 opentag-dev daemon status
 opentag-dev computer list
 ```
 
-The daemon reuses the stable Computer ID stored at `${OPENTAG_HOME}/config/computer.json`, creates a new process instance
-on every service start, and connects to `/api/v1/computer/ws`. OpenTag Home is organized by lifecycle:
+The daemon reuses the stable physical Computer ID in `${OPENTAG_HOME}/config/computer.json`, loads independent Workspace
+enrollment credentials from `${OPENTAG_HOME}/config/computer-credentials.json`, creates a new process instance on every
+service start, and opens one Runtime connection per enrollment. OpenTag Home is organized by lifecycle:
 
 ```text
 ${OPENTAG_HOME}/
 ├── config/
 │   ├── credentials.json
+│   ├── computer-credentials.json
 │   ├── computer.json
 │   └── daemon.env
 ├── data/
@@ -151,8 +156,9 @@ ${OPENTAG_HOME}/
 ```
 
 Directories are private (`0700`); credentials, identity, runtime recovery records, and lease files are private regular
-files (`0600`). Directories and files are created only when their owner needs them. In particular, `login --no-start`
-creates only `config/credentials.json`; runtime recovery records and workspaces appear on the first relevant reconcile.
+files (`0600`). Directories and files are created only when their owner needs them. Account `login` creates only
+`config/credentials.json`; `computer connect --no-start` stores `config/computer-credentials.json` without installing the
+daemon; runtime recovery records and workspaces appear on the first relevant reconcile.
 
 OpenTag does not maintain control files inside an Agent Workspace. Platform and Agent instructions are injected through
 the selected Provider's native system-prompt surface. A new Workspace root is the Provider cwd. For an existing
@@ -170,7 +176,8 @@ otherwise remain unused on disk.
 
 ### Local data loss and recovery
 
-Re-login restores connectivity, not the prior local execution continuity. The Server can reissue credentials and
+Running `computer connect` again rotates the selected enrollment credential and restores connectivity, not the prior
+local execution continuity. The Server can reissue credentials and
 rebuild effective snapshots; managed instructions are injected again when the Provider Runtime starts or resumes.
 Reissued credentials are new values. If `config/computer.json` is lost, the current Client creates a new Computer
 identity; although the Server retains the old Computer and placement records, the Client does not automatically reclaim
@@ -184,7 +191,7 @@ different cwd. Effective snapshots are reproducible and are not a primary backup
 
 Daemon/service owner and lease state plus logs are locally reproducible only while the daemon is stopped and no service
 mutation is running. Deleting owner or lease evidence while operations are live can break single-daemon and service
-mutual exclusion. Backups should prioritize `config/computer.json`, local `config/daemon.env`,
+mutual exclusion. Backups should prioritize `config/computer.json`, `config/computer-credentials.json`, local `config/daemon.env`,
 `data/runtime/session-bindings`, and `data/runtime/workspace-states` together with `data/workspaces`.
 
 Manage the daemon with `daemon install/start/stop/restart/status/uninstall`. `uninstall` preserves `config/` and `data/`.
@@ -198,7 +205,7 @@ The dev service definition is `~/.config/systemd/user/opentag-dev.service` on Li
 `~/Library/LaunchAgents/opentag-dev.plist` on macOS; the macOS wrapper is
 `${OPENTAG_HOME}/state/service/opentag-dev`.
 Staging and production replace the suffix with their channel `serviceId` (`opentag-staging` or `opentag`). If login saves
-credentials but service installation fails, fix the reported manager issue and run
+the machine credential was saved but service installation fails, fix the reported manager issue and run
 `opentag-dev daemon install`; do not request another connect code.
 
 Service mutation has two independent leases. `${OPENTAG_HOME}/state/service/operation.json` serializes operations for
@@ -209,8 +216,9 @@ their target leases do not contend.
 
 ## Manage Agent configurations
 
-An Agent belongs to a Team and is bound at creation time to one Computer owned by its manager. When the current user has
-one Team and one Computer, both are selected automatically:
+An Agent belongs to a Workspace and is bound immutably at creation time to one active Computer enrollment in that
+Workspace. Every Workspace Admin may create and manage Agents regardless of who enrolled the Computer or created the
+Agent. When the current Account has one Workspace and one eligible Computer, both are selected automatically:
 
 ```bash
 pnpm --filter open-tag start agent create \
@@ -220,7 +228,7 @@ pnpm --filter open-tag start agent create \
 pnpm --filter open-tag start agent list
 ```
 
-Use `--team <canonical-name>` or `--computer <uuid>` when more than one choice is available. An offline Computer may be
+Use `--workspace <canonical-name>` or `--computer <uuid>` when more than one choice is available. An offline Computer may be
 selected because online presence is not Agent configuration state. Inspect and change the mutable display name with:
 
 ```bash
@@ -229,16 +237,16 @@ pnpm --filter open-tag start agent update <agent-id> --display-name "Reviewer"
 pnpm --filter open-tag start agent delete <agent-id>
 ```
 
-Updates use revision compare-and-swap and never overwrite a concurrent change automatically. Deletion is a server-side
-soft delete and is idempotent for the Agent manager or a Team admin. `claude-code` is an accepted configuration value,
+Updates use revision compare-and-swap and never overwrite a concurrent change automatically. Computer rebinding is not
+an update operation. Deletion is a server-side soft delete and is idempotent for any Workspace Admin. `claude-code` is an accepted configuration value,
 but its runtime adapter and all Session/Turn delivery remain future work.
 
 The four `OPENTAG_BOOTSTRAP_*` values are inputs to this one-time command only; the running server does not read them.
-The bootstrap email is account profile data, not an email/password credential. The current connect-code flow resolves a
+The bootstrap email is Account profile data, not an email/password credential. The Account login-code flow resolves a
 stable user ID and then uses the provider-neutral token issuer. Future Google or OIDC identity resolvers can join at that
-boundary without changing JWT claims or team authorization; active memberships are always loaded from PostgreSQL.
+boundary without changing JWT claims or Workspace authorization; active Admin grants are always loaded from PostgreSQL.
 
-## Google sign-in, Team membership, and Web App
+## Google sign-in, Workspace administration, and Web App
 
 Create a Google Web OAuth client whose callback is
 `http://127.0.0.1:8000/api/v1/auth/google/callback`, then set `OPENTAG_GOOGLE_CLIENT_ID` and
@@ -257,8 +265,8 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 
 Both `OPENTAG_HOST` and `OPENTAG_PUBLIC_URL` must remain loopback addresses. The login page then shows
 `Dev: bypass Google`. The callback resolves exactly one existing user by case-insensitive email and issues the normal
-browser session; it never creates a user or Team and still rejects suspended users or users without an active
-membership. Missing or duplicate email matches fail closed. The server refuses this configuration in `staging` and
+browser session; it never creates an Account or Workspace and still rejects suspended Accounts or Accounts without an active
+Admin grant. Missing or duplicate email matches fail closed. The server refuses this configuration in `staging` and
 `prod`.
 
 `OPENTAG_ENV` is the only OpenTag environment and release-channel selector. `dev` selects local development behavior and
@@ -267,26 +275,23 @@ the `opentag-dev` binary, `staging` selects `open-tag-staging` / `opentag-stagin
 packages or product security behavior. The server logs the resolved environment, public URL, package, and binary at
 startup; it never infers the environment from the hostname.
 
-Open `/` for the shared Team App Shell. Active members use the same navigation with member-safe read projections; Team
-Admins receive the management controls. On **Settings → Computers**, **Generate connection command** mints a 15-minute, single-use code and copies the
-server-authored install/login command. The page polls the current user's Computer list until the new daemon handshake
-arrives. The Web never selects the npm package, binary, or Server URL itself. Use the CLI for membership and invitation
-mutations. Team Admins can also create, copy, and rotate the current bearer invitation from **Settings → Members**;
-successful redemption selects the joined Team in the Web:
+Open `/` for the management shell. Its top-level navigation is **Agents / Tasks / Skills / Integrations**, with no
+Settings tab. Computer enrollment and recovery live in the Agents area. **Generate connection command** mints a
+15-minute, single-use code and copies the server-authored `computer connect` command; the page polls the Workspace's
+enrollments until the new daemon handshake arrives. Admins, Workspace management, and Account actions live in the account
+menu. A single-Workspace Account sees no selector; multiple Workspaces reveal one, with explicit recent selection and a
+deterministic Server fallback. Use the CLI for the same roleless Admin operations:
 
 ```bash
-pnpm --filter open-tag start team member list --team example
-pnpm --filter open-tag start team member role <user-id> --role admin --team example
-pnpm --filter open-tag start team member remove <user-id> --team example
-pnpm --filter open-tag start team member restore <user-id> --role member --team example
-pnpm --filter open-tag start team leave --team example
-pnpm --filter open-tag start team invitation show --team example
-pnpm --filter open-tag start team invitation rotate --team example
+pnpm --filter open-tag start admin list --workspace example
+pnpm --filter open-tag start admin invite --workspace example
+pnpm --filter open-tag start admin revoke <account-id> --workspace example
 ```
 
-Invitation plaintext is recovered only for an authorized `show`/`rotate` response. PostgreSQL stores its SHA-256 lookup
-hash and AES-256-GCM ciphertext. Generate `OPENTAG_ENCRYPTION_KEY` with `openssl rand -base64 32`; changing the key
-without rotating existing invitations makes them intentionally fail closed.
+An Admin invitation expires after 30 minutes and is single-use. PostgreSQL stores only its SHA-256 lookup hash; the
+plaintext URL is returned once at creation, and the recipient must sign in and explicitly accept full Workspace Admin
+authority. Revoking an Admin invalidates that Admin's unused invitations in the same transaction.
+`OPENTAG_ENCRYPTION_KEY` still protects IM provider credentials; generate it with `openssl rand -base64 32`.
 
 ## Onboarding end-to-end check
 

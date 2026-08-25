@@ -26,7 +26,6 @@ import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agentRuntimeConfigs,
   agents,
-  computers,
   imBindings,
   imMessageDeliveries,
   sessionPlacements,
@@ -47,13 +46,15 @@ type QueryExecutor = Pick<DatabaseClient, "select">;
 interface AgentScope {
   agent: AgentRow;
   canManage: boolean;
+  computerId: string;
 }
 
 interface AgentSafeRow {
   id: string;
-  teamId: string;
-  managerUserId: string;
-  managerDisplayName: string;
+  workspaceId: string;
+  createdByUserId: string;
+  creatorDisplayName: string;
+  workspaceComputerId: string;
   computerId: string;
   computerDisplayName: string;
   computerPlatform: "darwin" | "linux" | "win32";
@@ -116,13 +117,13 @@ function toRuntimeConfig(row: AgentRuntimeConfigRow): AgentRuntimeConfig {
   });
 }
 
-function toAgentAdminConfig(row: AgentRow, runtimeConfig: AgentRuntimeConfigRow): AgentAdminConfig {
+function toAgentAdminConfig(row: AgentRow, runtimeConfig: AgentRuntimeConfigRow, computerId: string): AgentAdminConfig {
   if (row.status === "deleted") throw new Error("Deleted Agent cannot be projected as an admin config");
   return {
     id: row.id,
-    teamId: row.teamId,
-    managerUserId: row.managerUserId,
-    computerId: row.computerId,
+    workspaceId: row.workspaceId,
+    createdByUserId: row.createdByUserId,
+    computerId,
     name: row.name,
     displayName: row.displayName,
     runtimeProvider: row.runtimeProvider,
@@ -139,10 +140,10 @@ function toAgentSummary(row: AgentSafeRow): AgentSummary {
   if (row.status === "deleted") throw new Error("Deleted Agent cannot be projected as a summary");
   return {
     id: row.id,
-    teamId: row.teamId,
-    manager: { userId: row.managerUserId, displayName: row.managerDisplayName },
+    workspaceId: row.workspaceId,
+    createdBy: { userId: row.createdByUserId, displayName: row.creatorDisplayName },
     computer: {
-      id: row.computerId,
+      computerId: row.computerId,
       displayName: row.computerDisplayName,
       platform: row.computerPlatform,
     },
@@ -285,16 +286,25 @@ export class AgentService {
     this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
-  async createForTeam(callerUserId: string, teamId: string, rawInput: CreateAgentRequest): Promise<AgentAdminConfig> {
+  async createForWorkspace(
+    callerUserId: string,
+    workspaceId: string,
+    rawInput: CreateAgentRequest,
+  ): Promise<AgentAdminConfig> {
     const input = CreateAgentRequestSchema.parse(rawInput);
     const runtimeConfig = resolveAgentRuntimeConfig(input.runtimeConfig);
     const intentFingerprint = input.creationIntentId ? creationIntentFingerprint(input) : undefined;
     try {
       return await this.#database.transaction(async (transaction) => {
-        await this.#requireWorkspaceAdminForMutation(transaction, callerUserId, teamId);
+        await this.#requireWorkspaceAdminForMutation(transaction, callerUserId, workspaceId);
         await this.#afterMembershipLocked?.();
         if (input.creationIntentId && intentFingerprint) {
-          const replay = await this.#findCreationIntent(transaction, teamId, input.creationIntentId, intentFingerprint);
+          const replay = await this.#findCreationIntent(
+            transaction,
+            workspaceId,
+            input.creationIntentId,
+            intentFingerprint,
+          );
           if (replay) return replay;
         }
         const [computerEnrollment] = await transaction
@@ -302,7 +312,7 @@ export class AgentService {
           .from(workspaceComputers)
           .where(
             and(
-              eq(workspaceComputers.workspaceId, teamId),
+              eq(workspaceComputers.workspaceId, workspaceId),
               eq(workspaceComputers.computerId, input.computerId),
               isNull(workspaceComputers.revokedAt),
             ),
@@ -322,11 +332,11 @@ export class AgentService {
         const [created] = await transaction
           .insert(agents)
           .values({
-            teamId,
-            managerUserId: callerUserId,
+            workspaceId,
+            createdByUserId: callerUserId,
             creationIntentId: input.creationIntentId,
             creationIntentFingerprint: intentFingerprint,
-            computerId: input.computerId,
+            workspaceComputerId: computerEnrollment.id,
             name: input.name,
             displayName: input.displayName,
             runtimeProvider: input.runtimeProvider,
@@ -340,24 +350,24 @@ export class AgentService {
           .values({ agentId: created.id, ...runtimeConfig, createdAt: now, updatedAt: now })
           .returning();
         if (!createdRuntimeConfig) throw new Error("Agent runtime config insert did not return a row");
-        return toAgentAdminConfig(created, createdRuntimeConfig);
+        return toAgentAdminConfig(created, createdRuntimeConfig, input.computerId);
       });
     } catch (error) {
       const constraintName = uniqueConstraintName(error);
       if (constraintName && input.creationIntentId) {
         const replay = await this.#replayCreationIntent(
           callerUserId,
-          teamId,
+          workspaceId,
           input.creationIntentId,
           creationIntentFingerprint(input),
         );
         if (replay) return replay;
       }
-      if (constraintName === "agents_team_name_active_unique") {
+      if (constraintName === "agents_workspace_name_active_unique") {
         throw new AgentServiceError(
           "AGENT_NAME_CONFLICT",
           "deterministic",
-          "An active Agent with this name already exists in the Team",
+          "An active Agent with this name already exists in the Workspace",
           409,
         );
       }
@@ -367,27 +377,28 @@ export class AgentService {
 
   async #replayCreationIntent(
     callerUserId: string,
-    teamId: string,
+    workspaceId: string,
     creationIntentId: string,
     intentFingerprint: string,
   ): Promise<AgentAdminConfig | undefined> {
     return this.#database.transaction(async (transaction) => {
-      await this.#requireWorkspaceAdminForMutation(transaction, callerUserId, teamId);
-      return this.#findCreationIntent(transaction, teamId, creationIntentId, intentFingerprint);
+      await this.#requireWorkspaceAdminForMutation(transaction, callerUserId, workspaceId);
+      return this.#findCreationIntent(transaction, workspaceId, creationIntentId, intentFingerprint);
     });
   }
 
   async #findCreationIntent(
     executor: QueryExecutor,
-    teamId: string,
+    workspaceId: string,
     creationIntentId: string,
     intentFingerprint: string,
   ): Promise<AgentAdminConfig | undefined> {
     const [row] = await executor
-      .select({ agent: agents, runtimeConfig: agentRuntimeConfigs })
+      .select({ agent: agents, computerId: workspaceComputers.computerId, runtimeConfig: agentRuntimeConfigs })
       .from(agents)
       .leftJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
-      .where(and(eq(agents.teamId, teamId), eq(agents.creationIntentId, creationIntentId)))
+      .innerJoin(workspaceComputers, eq(workspaceComputers.id, agents.workspaceComputerId))
+      .where(and(eq(agents.workspaceId, workspaceId), eq(agents.creationIntentId, creationIntentId)))
       .limit(1);
     if (!row) return undefined;
     if (
@@ -402,21 +413,22 @@ export class AgentService {
         409,
       );
     }
-    return toAgentAdminConfig(row.agent, row.runtimeConfig);
+    return toAgentAdminConfig(row.agent, row.runtimeConfig, row.computerId);
   }
 
-  async listForTeam(callerUserId: string, teamId: string): Promise<ListAgentsResponse> {
-    await this.#requireWorkspaceAdmin(this.#database, callerUserId, teamId);
-    const manager = alias(users, "agent_manager");
+  async listForWorkspace(callerUserId: string, workspaceId: string): Promise<ListAgentsResponse> {
+    await this.#requireWorkspaceAdmin(this.#database, callerUserId, workspaceId);
+    const creator = alias(users, "agent_creator");
     const rows = await this.#database
       .select({
         id: agents.id,
-        teamId: agents.teamId,
-        managerUserId: agents.managerUserId,
-        managerDisplayName: manager.displayName,
-        computerId: agents.computerId,
-        computerDisplayName: computers.displayName,
-        computerPlatform: computers.platform,
+        workspaceId: agents.workspaceId,
+        createdByUserId: agents.createdByUserId,
+        creatorDisplayName: creator.displayName,
+        workspaceComputerId: agents.workspaceComputerId,
+        computerId: workspaceComputers.computerId,
+        computerDisplayName: workspaceComputers.displayName,
+        computerPlatform: workspaceComputers.platform,
         name: agents.name,
         displayName: agents.displayName,
         runtimeProvider: agents.runtimeProvider,
@@ -426,14 +438,20 @@ export class AgentService {
         updatedAt: agents.updatedAt,
       })
       .from(agents)
-      .innerJoin(manager, eq(manager.id, agents.managerUserId))
-      .innerJoin(computers, eq(computers.id, agents.computerId))
-      .where(and(eq(agents.teamId, teamId), ne(agents.status, "deleted")))
+      .innerJoin(creator, eq(creator.id, agents.createdByUserId))
+      .innerJoin(workspaceComputers, eq(workspaceComputers.id, agents.workspaceComputerId))
+      .where(and(eq(agents.workspaceId, workspaceId), ne(agents.status, "deleted")))
       .orderBy(asc(agents.name), asc(agents.id));
     const summaries = rows.flatMap((row) => {
       if (!row.id) return [];
-      if (!row.managerDisplayName || !row.computerId || !row.computerDisplayName || !row.computerPlatform) {
-        throw new Error("Active Agent is missing its manager or Computer");
+      if (
+        !row.creatorDisplayName ||
+        !row.workspaceComputerId ||
+        !row.computerId ||
+        !row.computerDisplayName ||
+        !row.computerPlatform
+      ) {
+        throw new Error("Active Agent is missing its creator audit record or enrolled Computer");
       }
       return [toAgentSummary(row as AgentSafeRow)];
     });
@@ -504,16 +522,17 @@ export class AgentService {
   }
 
   async getById(callerUserId: string, agentId: string): Promise<AgentDetail> {
-    const manager = alias(users, "agent_manager");
+    const creator = alias(users, "agent_creator");
     const [row] = await this.#database
       .select({
         id: agents.id,
-        teamId: agents.teamId,
-        managerUserId: agents.managerUserId,
-        managerDisplayName: manager.displayName,
-        computerId: agents.computerId,
-        computerDisplayName: computers.displayName,
-        computerPlatform: computers.platform,
+        workspaceId: agents.workspaceId,
+        createdByUserId: agents.createdByUserId,
+        creatorDisplayName: creator.displayName,
+        workspaceComputerId: agents.workspaceComputerId,
+        computerId: workspaceComputers.computerId,
+        computerDisplayName: workspaceComputers.displayName,
+        computerPlatform: workspaceComputers.platform,
         name: agents.name,
         displayName: agents.displayName,
         runtimeProvider: agents.runtimeProvider,
@@ -523,12 +542,12 @@ export class AgentService {
         updatedAt: agents.updatedAt,
       })
       .from(agents)
-      .innerJoin(manager, eq(manager.id, agents.managerUserId))
-      .innerJoin(computers, eq(computers.id, agents.computerId))
+      .innerJoin(creator, eq(creator.id, agents.createdByUserId))
+      .innerJoin(workspaceComputers, eq(workspaceComputers.id, agents.workspaceComputerId))
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row) throw resourceNotFound();
-    await this.#requireWorkspaceAdmin(this.#database, callerUserId, row.teamId);
+    await this.#requireWorkspaceAdmin(this.#database, callerUserId, row.workspaceId);
     const activityRows = await this.#database
       .select({
         acceptedAt: imMessageDeliveries.acceptedAt,
@@ -551,7 +570,6 @@ export class AgentService {
     return {
       ...toAgentSummary(row),
       activity: projectActivityByAgent(activityRows).get(agentId) ?? { state: "idle" },
-      viewerCapabilities: { canManage: true },
     };
   }
 
@@ -643,7 +661,7 @@ export class AgentService {
   async getConfigById(callerUserId: string, agentId: string): Promise<AgentAdminConfig> {
     const scope = await this.#resolveAgentDetailScope(this.#database, callerUserId, agentId);
     this.#requireManagePermission(scope);
-    return toAgentAdminConfig(scope.agent, scope.runtimeConfig);
+    return toAgentAdminConfig(scope.agent, scope.runtimeConfig, scope.computerId);
   }
 
   async updateById(callerUserId: string, agentId: string, rawInput: UpdateAgentRequest): Promise<AgentAdminConfig> {
@@ -722,7 +740,7 @@ export class AgentService {
           if (!updatedRuntimeConfig) throw new Error("Agent runtime config update did not return a row");
           runtimeConfig = updatedRuntimeConfig;
         }
-        return { config: toAgentAdminConfig(updated, runtimeConfig) };
+        return { config: toAgentAdminConfig(updated, runtimeConfig, scope.computerId) };
       }
 
       const current = await this.#resolveAgentScope(transaction, callerUserId, agentId);
@@ -751,7 +769,7 @@ export class AgentService {
         .where(and(eq(agents.id, agentId), eq(agents.status, "active")))
         .returning();
       if (!updated) throw this.#lifecycleConflict("The Agent lifecycle changed before suspension");
-      return { config: toAgentAdminConfig(updated, runtimeConfig), targets };
+      return { config: toAgentAdminConfig(updated, runtimeConfig, scope.computerId), targets };
     });
     await this.#stopSessionsBestEffort(result.targets);
     return result.config;
@@ -772,7 +790,7 @@ export class AgentService {
         .where(and(eq(agents.id, agentId), eq(agents.status, "suspended")))
         .returning();
       if (!updated) throw this.#lifecycleConflict("The Agent lifecycle changed before reactivation");
-      return toAgentAdminConfig(updated, runtimeConfig);
+      return toAgentAdminConfig(updated, runtimeConfig, scope.computerId);
     });
   }
 
@@ -811,21 +829,22 @@ export class AgentService {
     agentId: string,
   ): Promise<AgentScope> {
     const [candidate] = await transaction
-      .select({ teamId: agents.teamId })
+      .select({ workspaceId: agents.workspaceId })
       .from(agents)
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!candidate) throw resourceNotFound();
-    await this.#requireWorkspaceAdminForMutation(transaction, callerUserId, candidate.teamId);
-    const [agent] = await transaction
-      .select()
+    await this.#requireWorkspaceAdminForMutation(transaction, callerUserId, candidate.workspaceId);
+    const [row] = await transaction
+      .select({ agent: agents, computerId: workspaceComputers.computerId })
       .from(agents)
+      .innerJoin(workspaceComputers, eq(workspaceComputers.id, agents.workspaceComputerId))
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1)
       .for("update");
-    if (!agent) throw resourceNotFound();
+    if (!row) throw resourceNotFound();
     await this.#afterAgentLocked?.();
-    return { agent, canManage: true };
+    return { agent: row.agent, canManage: true, computerId: row.computerId };
   }
 
   async #lockRuntimeConfig(transaction: DatabaseTransaction, agentId: string): Promise<AgentRuntimeConfigRow> {
@@ -839,9 +858,9 @@ export class AgentService {
     return runtimeConfig;
   }
 
-  async #requireWorkspaceAdmin(executor: QueryExecutor, callerUserId: string, teamId: string): Promise<void> {
+  async #requireWorkspaceAdmin(executor: QueryExecutor, callerUserId: string, workspaceId: string): Promise<void> {
     try {
-      await this.#workspaceAdmins.requireAdmin(callerUserId, teamId, executor);
+      await this.#workspaceAdmins.requireAdmin(callerUserId, workspaceId, executor);
     } catch (error) {
       if (error instanceof AuthServiceError && error.statusCode === 404) throw resourceNotFound();
       throw error;
@@ -851,10 +870,10 @@ export class AgentService {
   async #requireWorkspaceAdminForMutation(
     transaction: DatabaseTransaction,
     callerUserId: string,
-    teamId: string,
+    workspaceId: string,
   ): Promise<void> {
     try {
-      await this.#workspaceAdmins.requireAdminForMutation(transaction, callerUserId, teamId);
+      await this.#workspaceAdmins.requireAdminForMutation(transaction, callerUserId, workspaceId);
     } catch (error) {
       if (error instanceof AuthServiceError && error.statusCode === 404) throw resourceNotFound();
       throw error;
@@ -862,14 +881,15 @@ export class AgentService {
   }
 
   async #resolveAgentScope(executor: QueryExecutor, callerUserId: string, agentId: string): Promise<AgentScope> {
-    const [agent] = await executor
-      .select()
+    const [row] = await executor
+      .select({ agent: agents, computerId: workspaceComputers.computerId })
       .from(agents)
+      .innerJoin(workspaceComputers, eq(workspaceComputers.id, agents.workspaceComputerId))
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
-    if (!agent) throw resourceNotFound();
-    await this.#requireWorkspaceAdmin(executor, callerUserId, agent.teamId);
-    return { agent, canManage: true };
+    if (!row) throw resourceNotFound();
+    await this.#requireWorkspaceAdmin(executor, callerUserId, row.agent.workspaceId);
+    return { agent: row.agent, canManage: true, computerId: row.computerId };
   }
 
   async #resolveAgentDetailScope(
@@ -878,15 +898,17 @@ export class AgentService {
     agentId: string,
   ): Promise<AgentScope & { runtimeConfig: AgentRuntimeConfigRow }> {
     const [row] = await executor
-      .select({ agent: agents, runtimeConfig: agentRuntimeConfigs })
+      .select({ agent: agents, computerId: workspaceComputers.computerId, runtimeConfig: agentRuntimeConfigs })
       .from(agents)
       .innerJoin(agentRuntimeConfigs, eq(agentRuntimeConfigs.agentId, agents.id))
+      .innerJoin(workspaceComputers, eq(workspaceComputers.id, agents.workspaceComputerId))
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row) throw resourceNotFound();
-    await this.#requireWorkspaceAdmin(executor, callerUserId, row.agent.teamId);
+    await this.#requireWorkspaceAdmin(executor, callerUserId, row.agent.workspaceId);
     return {
       agent: row.agent,
+      computerId: row.computerId,
       runtimeConfig: row.runtimeConfig,
       canManage: true,
     };
@@ -902,8 +924,8 @@ export class AgentService {
     return transaction
       .select({
         agentId: imBindings.agentId,
-        computerId: sessionPlacements.computerId,
-        workspaceComputerId: workspaceComputers.id,
+        computerId: workspaceComputers.computerId,
+        workspaceComputerId: sessionPlacements.workspaceComputerId,
         placementGeneration: sessionPlacements.generation,
         sessionId: sessions.id,
       })
@@ -914,8 +936,8 @@ export class AgentService {
       .innerJoin(
         workspaceComputers,
         and(
-          eq(workspaceComputers.workspaceId, agents.teamId),
-          eq(workspaceComputers.computerId, sessionPlacements.computerId),
+          eq(workspaceComputers.workspaceId, agents.workspaceId),
+          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
           isNull(workspaceComputers.revokedAt),
         ),
       )

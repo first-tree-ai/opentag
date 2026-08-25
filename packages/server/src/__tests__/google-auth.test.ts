@@ -111,11 +111,11 @@ describe("GoogleBrowserAuthService", () => {
     expect(exchangeCode).toHaveBeenCalledOnce();
   });
 
-  it("returns the Team selected while redeeming an invitation in the callback transaction", async () => {
+  it("returns the Workspace selected while redeeming an invitation in the callback transaction", async () => {
     const token = "A".repeat(43);
-    const selectedTeamId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
+    const selectedWorkspaceId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
     const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
-    const completeInTransaction = vi.fn().mockResolvedValue({ selectedTeamId, userId });
+    const completeInTransaction = vi.fn().mockResolvedValue({ selectedWorkspaceId, userId });
     const issueTokensForUser = vi.fn().mockResolvedValue({
       accessToken: "access-secret",
       refreshToken: "refresh-secret",
@@ -136,15 +136,15 @@ describe("GoogleBrowserAuthService", () => {
 
     await expect(
       service.callback({ code: "code", state: "state" }, "signed-context", { onVerified: vi.fn() }),
-    ).resolves.toMatchObject({ next: `/invites/${token}`, selectedTeamId });
-    expect(completeInTransaction).toHaveBeenCalledWith(expect.anything(), userId, true, token, {});
+    ).resolves.toMatchObject({ next: `/invites/${token}`, selectedWorkspaceId });
+    expect(completeInTransaction).toHaveBeenCalledWith(expect.anything(), userId, true, token);
     expect(issueTokensForUser).toHaveBeenCalledWith(userId);
   });
 
-  it("returns the personal Team established by a solo OAuth completion", async () => {
-    const selectedTeamId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
+  it("returns the personal Workspace established by a solo OAuth completion", async () => {
+    const selectedWorkspaceId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
     const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
-    const completeInTransaction = vi.fn().mockResolvedValue({ selectedTeamId, userId });
+    const completeInTransaction = vi.fn().mockResolvedValue({ selectedWorkspaceId, userId });
     const service = new GoogleBrowserAuthService({
       database: { transaction: (callback: (transaction: object) => unknown) => callback({}) } as never,
       flow: { verify: vi.fn().mockResolvedValue({ next: "/onboarding", oidcNonce: "oidc-nonce" }) } as never,
@@ -166,8 +166,8 @@ describe("GoogleBrowserAuthService", () => {
 
     await expect(
       service.callback({ code: "code", state: "state" }, "signed-context", { onVerified: vi.fn() }),
-    ).resolves.toMatchObject({ next: "/onboarding", selectedTeamId });
-    expect(completeInTransaction).toHaveBeenCalledWith(expect.anything(), userId, true, undefined, {});
+    ).resolves.toMatchObject({ next: "/onboarding", selectedWorkspaceId });
+    expect(completeInTransaction).toHaveBeenCalledWith(expect.anything(), userId, true, undefined);
   });
 
   it("preserves invalid or expired flow errors before interpreting the provider result", async () => {

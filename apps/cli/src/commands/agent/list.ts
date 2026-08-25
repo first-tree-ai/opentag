@@ -5,8 +5,8 @@ import { runAgentList } from "../../core/agent/queries.js";
 export function registerAgentListCommand(agent: Command): void {
   agent
     .command("list")
-    .option("--team <name>", "Team canonical name")
+    .option("--workspace <name>", "Workspace canonical name")
     .action(async (options) => {
-      process.stdout.write(`${formatAgentList(await runAgentList({ teamName: options.team }))}\n`);
+      process.stdout.write(`${formatAgentList(await runAgentList({ workspaceName: options.workspace }))}\n`);
     });
 }

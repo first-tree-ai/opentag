@@ -189,7 +189,10 @@ vi.mock("../services/im-bindings/slack/index.js", () => ({
 }));
 vi.mock("../services/invitations/index.js", () => ({ InvitationService: class {} }));
 vi.mock("../services/runtime-config/index.js", () => ({ EffectiveRuntimeSnapshotAssembler: class {} }));
-vi.mock("../services/teams/index.js", () => ({ TeamMembershipService: class {}, TeamSetupService: class {} }));
+vi.mock("../services/workspaces/index.js", () => ({
+  WorkspaceAdminService: class {},
+  WorkspaceSetupService: class {},
+}));
 vi.mock("../web-app.js", () => ({ defaultWebAppRoot: "/mock-web" }));
 
 import { startServer } from "../index.js";

@@ -8,7 +8,7 @@ export interface DevBrowserTokenIssuer {
   issueTokensForUser(userId: string): Promise<RefreshTokenResponse>;
 }
 
-/** Resolves an explicitly configured existing user without creating identity or Team records. */
+/** Resolves an explicitly configured existing user without creating identity or Workspace records. */
 export class DevBrowserAuthService {
   readonly #database: DatabaseClient;
   readonly #email: string;

@@ -1,4 +1,6 @@
 import {
+  type AdminInvitation,
+  AdminInvitationSchema,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
@@ -18,13 +20,13 @@ import {
   agentSlackConfigurationPath,
   agentSuspendPath,
   agentUsagePath,
+  type ComputerConnectCodeIssueResponse,
+  ComputerConnectCodeIssueResponseSchema,
   type ConfigureSlackAppRequest,
-  type ConnectCodeIssueResponse,
-  ConnectCodeIssueResponseSchema,
   type CreateAgentRequest,
-  type CreateTeamRequest,
-  type CreateTeamResponse,
-  CreateTeamResponseSchema,
+  type CreateWorkspaceRequest,
+  type CreateWorkspaceResponse,
+  CreateWorkspaceResponseSchema,
   ErrorEnvelopeSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
@@ -38,22 +40,20 @@ import {
   ImBindingHandoffStatusSchema,
   type ImBindingSummary,
   ImBindingSummarySchema,
+  type InvitationAcceptanceResponse,
+  InvitationAcceptanceResponseSchema,
   type InvitationPreview,
   InvitationPreviewSchema,
-  type InvitationRedemptionResponse,
-  InvitationRedemptionResponseSchema,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
+  invitationAcceptPath,
   invitationPreviewPath,
-  invitationRedeemPath,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
-  type ListComputersResponse,
-  ListComputersResponseSchema,
-  type ListTeamComputersResponse,
-  ListTeamComputersResponseSchema,
-  type ListTeamMembersResponse,
-  ListTeamMembersResponseSchema,
+  type ListWorkspaceAdminsResponse,
+  ListWorkspaceAdminsResponseSchema,
+  type ListWorkspaceComputersResponse,
+  ListWorkspaceComputersResponseSchema,
   type MeResponse,
   MeResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
@@ -61,29 +61,24 @@ import {
   SlackAppConfigurationSchema,
   type SlackConfigurationResult,
   SlackConfigurationResultSchema,
-  type TeamInvitation,
-  TeamInvitationSchema,
-  type TeamMemberAdminConfig,
-  TeamMemberAdminConfigSchema,
-  type TeamProfile,
-  TeamProfileSchema,
-  type TeamSetupCompletion,
-  TeamSetupCompletionSchema,
-  teamAgentsPath,
-  teamByIdPath,
-  teamComputersPath,
-  teamInvitationPath,
-  teamInvitationRotatePath,
-  teamMemberPath,
-  teamMembersPath,
-  teamSetupCompletePath,
   type UpdateAgentRequest,
-  type UpdateTeamMemberRequest,
-  type UpdateTeamProfileRequest,
   type UpdateUserProfileRequest,
+  type UpdateWorkspaceProfileRequest,
   type UserProfile,
   UserProfileSchema,
   type ValidationIssue,
+  type WorkspaceProfile,
+  WorkspaceProfileSchema,
+  type WorkspaceSetupCompletion,
+  WorkspaceSetupCompletionSchema,
+  workspaceAdminInvitationsPath,
+  workspaceAdminPath,
+  workspaceAdminsPath,
+  workspaceAgentsPath,
+  workspaceByIdPath,
+  workspaceComputerConnectCodesPath,
+  workspaceComputersPath,
+  workspaceSetupCompletePath,
 } from "@opentag/shared/browser";
 
 interface RuntimeSchema<T> {
@@ -122,44 +117,43 @@ export class BrowserApi {
     return this.request(HTTP_PATHS.authProviders, AuthProvidersResponseSchema, undefined, false);
   }
 
-  members(teamId: string): Promise<ListTeamMembersResponse> {
-    return this.request(teamMembersPath(teamId), ListTeamMembersResponseSchema);
+  admins(workspaceId: string): Promise<ListWorkspaceAdminsResponse> {
+    return this.request(workspaceAdminsPath(workspaceId), ListWorkspaceAdminsResponseSchema);
   }
 
-  createTeam(input: CreateTeamRequest): Promise<CreateTeamResponse> {
-    return this.request(HTTP_PATHS.teams, CreateTeamResponseSchema, {
+  createWorkspace(input: CreateWorkspaceRequest): Promise<CreateWorkspaceResponse> {
+    return this.request(HTTP_PATHS.workspaces, CreateWorkspaceResponseSchema, {
       method: "POST",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }
 
-  updateTeamMember(teamId: string, userId: string, input: UpdateTeamMemberRequest): Promise<TeamMemberAdminConfig> {
-    return this.request(teamMemberPath(teamId, userId), TeamMemberAdminConfigSchema, {
+  revokeWorkspaceAdmin(workspaceId: string, accountId: string): Promise<void> {
+    return this.requestNoContent(workspaceAdminPath(workspaceId, accountId), {
+      method: "DELETE",
+      headers: this.csrfHeaders(),
+    });
+  }
+
+  updateWorkspace(workspaceId: string, input: UpdateWorkspaceProfileRequest): Promise<WorkspaceProfile> {
+    return this.request(workspaceByIdPath(workspaceId), WorkspaceProfileSchema, {
       method: "PATCH",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }
 
-  updateTeam(teamId: string, input: UpdateTeamProfileRequest): Promise<TeamProfile> {
-    return this.request(teamByIdPath(teamId), TeamProfileSchema, {
-      method: "PATCH",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
-  }
-
-  completeTeamSetup(teamId: string, agentId: string): Promise<TeamSetupCompletion> {
-    return this.request(teamSetupCompletePath(teamId), TeamSetupCompletionSchema, {
+  completeWorkspaceSetup(workspaceId: string, agentId: string): Promise<WorkspaceSetupCompletion> {
+    return this.request(workspaceSetupCompletePath(workspaceId), WorkspaceSetupCompletionSchema, {
       method: "POST",
       body: JSON.stringify({ agentId }),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }
 
-  agents(teamId: string): Promise<ListAgentsResponse> {
-    return this.request(teamAgentsPath(teamId), ListAgentsResponseSchema);
+  agents(workspaceId: string): Promise<ListAgentsResponse> {
+    return this.request(workspaceAgentsPath(workspaceId), ListAgentsResponseSchema);
   }
 
   agent(agentId: string): Promise<AgentDetail> {
@@ -174,8 +168,8 @@ export class BrowserApi {
     return this.request(agentConfigPath(agentId), AgentAdminConfigSchema);
   }
 
-  createAgent(teamId: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
-    return this.request(teamAgentsPath(teamId), AgentAdminConfigSchema, {
+  createAgent(workspaceId: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
+    return this.request(workspaceAgentsPath(workspaceId), AgentAdminConfigSchema, {
       method: "POST",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
@@ -261,39 +255,21 @@ export class BrowserApi {
     });
   }
 
-  computers(teamId: string): Promise<ListTeamComputersResponse> {
-    return this.request(teamComputersPath(teamId), ListTeamComputersResponseSchema, {
+  computers(workspaceId: string): Promise<ListWorkspaceComputersResponse> {
+    return this.request(workspaceComputersPath(workspaceId), ListWorkspaceComputersResponseSchema, {
       headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
   }
 
-  ownComputers(): Promise<ListComputersResponse> {
-    return this.request(HTTP_PATHS.meComputers, ListComputersResponseSchema, {
-      headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
-    });
-  }
-
-  issueConnectCode(teamId: string): Promise<ConnectCodeIssueResponse> {
-    return this.request(HTTP_PATHS.meConnectCodes, ConnectCodeIssueResponseSchema, {
-      method: "POST",
-      body: JSON.stringify({ teamId }),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
-  }
-
-  invitation(teamId: string): Promise<TeamInvitation | undefined> {
-    return this.requestOptional(teamInvitationPath(teamId), TeamInvitationSchema);
-  }
-
-  createInvitation(teamId: string): Promise<TeamInvitation> {
-    return this.request(teamInvitationPath(teamId), TeamInvitationSchema, {
+  issueComputerConnectCode(workspaceId: string): Promise<ComputerConnectCodeIssueResponse> {
+    return this.request(workspaceComputerConnectCodesPath(workspaceId), ComputerConnectCodeIssueResponseSchema, {
       method: "POST",
       headers: this.csrfHeaders(),
     });
   }
 
-  rotateInvitation(teamId: string): Promise<TeamInvitation> {
-    return this.request(teamInvitationRotatePath(teamId), TeamInvitationSchema, {
+  createAdminInvitation(workspaceId: string): Promise<AdminInvitation> {
+    return this.request(workspaceAdminInvitationsPath(workspaceId), AdminInvitationSchema, {
       method: "POST",
       headers: this.csrfHeaders(),
     });
@@ -303,8 +279,8 @@ export class BrowserApi {
     return this.request(invitationPreviewPath(token), InvitationPreviewSchema, undefined, false);
   }
 
-  redeemInvitation(token: string): Promise<InvitationRedemptionResponse> {
-    return this.request(invitationRedeemPath(token), InvitationRedemptionResponseSchema, {
+  acceptAdminInvitation(token: string): Promise<InvitationAcceptanceResponse> {
+    return this.request(invitationAcceptPath(token), InvitationAcceptanceResponseSchema, {
       method: "POST",
       headers: this.csrfHeaders(),
     });

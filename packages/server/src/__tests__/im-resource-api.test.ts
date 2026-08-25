@@ -26,7 +26,7 @@ function authService(): UserAuthService {
       tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       me: {
         user: { id: workspaceId, email: "admin@example.com", displayName: "Admin" },
-        memberships: [],
+        workspaces: [],
       },
     }),
   };

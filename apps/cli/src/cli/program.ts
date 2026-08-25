@@ -1,11 +1,11 @@
 import { Command } from "commander";
 import { CLI_VERSION } from "../build-info.js";
+import { registerAdminCommand } from "../commands/admin/index.js";
 import { registerAgentCommand } from "../commands/agent/index.js";
 import { registerComputerCommand } from "../commands/computer/index.js";
 import { registerDaemonCommand } from "../commands/daemon/index.js";
 import { registerDoctorCommand } from "../commands/doctor.js";
 import { registerLoginCommand } from "../commands/login.js";
-import { registerTeamCommand } from "../commands/team/index.js";
 import { channelConfig } from "../core/channel/config.js";
 
 export function createProgram(): Command {
@@ -20,6 +20,6 @@ export function createProgram(): Command {
   registerDaemonCommand(program);
   registerDoctorCommand(program);
   registerLoginCommand(program);
-  registerTeamCommand(program);
+  registerAdminCommand(program);
   return program;
 }

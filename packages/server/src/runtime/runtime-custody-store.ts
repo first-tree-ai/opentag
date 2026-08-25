@@ -175,7 +175,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         .where(
           and(
             eq(sessionPlacements.sessionId, request.sessionId),
-            eq(sessionPlacements.computerId, context.computerId),
+            eq(sessionPlacements.workspaceComputerId, context.workspaceComputerId),
             eq(sessionPlacements.generation, request.placementGeneration),
             isNull(sessions.endedAt),
           ),
@@ -245,8 +245,8 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .innerJoin(
         workspaceComputers,
         and(
-          eq(workspaceComputers.workspaceId, agents.teamId),
-          eq(workspaceComputers.computerId, sessionPlacements.computerId),
+          eq(workspaceComputers.workspaceId, agents.workspaceId),
+          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
           isNull(workspaceComputers.revokedAt),
         ),
       )
@@ -280,8 +280,8 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .innerJoin(
         workspaceComputers,
         and(
-          eq(workspaceComputers.workspaceId, agents.teamId),
-          eq(workspaceComputers.computerId, sessionPlacements.computerId),
+          eq(workspaceComputers.workspaceId, agents.workspaceId),
+          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
           isNull(workspaceComputers.revokedAt),
         ),
       )
@@ -370,8 +370,8 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .innerJoin(
         workspaceComputers,
         and(
-          eq(workspaceComputers.workspaceId, agents.teamId),
-          eq(workspaceComputers.computerId, sessionPlacements.computerId),
+          eq(workspaceComputers.workspaceId, agents.workspaceId),
+          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
           isNull(workspaceComputers.revokedAt),
         ),
       )

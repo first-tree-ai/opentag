@@ -49,7 +49,7 @@ export function formatImBinding(summary: ImBindingAdminDetail | undefined): stri
   if (!summary) return "No IM binding configured";
   const identity =
     summary.identity.provider === "feishu"
-      ? `${summary.identity.appId} · ${summary.identity.teamId ?? "external Team pending first event"}`
+      ? `${summary.identity.appId} · ${summary.identity.teamId ?? "provider Team pending first event"}`
       : `${summary.identity.appId} · ${summary.identity.teamId} · ${summary.identity.botUserId}`;
   return [
     `provider\t${summary.provider}`,

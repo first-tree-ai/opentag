@@ -1,25 +1,25 @@
-import type { TeamSetupCompletion } from "@opentag/shared";
+import type { WorkspaceSetupCompletion } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { agents, teams } from "../../db/schema/index.js";
+import { agents, workspaces } from "../../db/schema/index.js";
 import type { ImBindingService } from "../im-bindings/index.js";
 import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 
-export class TeamSetupServiceError extends Error {
+export class WorkspaceSetupServiceError extends Error {
   readonly category = "deterministic" as const;
 
   constructor(
-    readonly code: "TEAM_SETUP_AGENT_NOT_FOUND" | "TEAM_SETUP_NOT_READY",
+    readonly code: "WORKSPACE_SETUP_AGENT_NOT_FOUND" | "WORKSPACE_SETUP_NOT_READY",
     readonly statusCode: 404 | 409,
     message: string,
   ) {
     super(message);
-    this.name = "TeamSetupServiceError";
+    this.name = "WorkspaceSetupServiceError";
   }
 }
 
 /** Owns the one-way transition from first-time setup into normal operations. */
-export class TeamSetupService {
+export class WorkspaceSetupService {
   readonly #database: DatabaseClient;
   readonly #imBindings: ImBindingService;
   readonly #now: () => Date;
@@ -36,72 +36,72 @@ export class TeamSetupService {
     this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
-  async complete(callerUserId: string, teamId: string, agentId: string): Promise<TeamSetupCompletion> {
-    await this.#workspaceAdmins.requireAdmin(callerUserId, teamId);
+  async complete(callerUserId: string, workspaceId: string, agentId: string): Promise<WorkspaceSetupCompletion> {
+    await this.#workspaceAdmins.requireAdmin(callerUserId, workspaceId);
     const [current] = await this.#database
-      .select({ setupCompletedAt: teams.setupCompletedAt })
-      .from(teams)
-      .where(eq(teams.id, teamId))
+      .select({ setupCompletedAt: workspaces.setupCompletedAt })
+      .from(workspaces)
+      .where(eq(workspaces.id, workspaceId))
       .limit(1);
     if (current?.setupCompletedAt) return this.#projection(current.setupCompletedAt);
 
     const [agent] = await this.#database
       .select({ id: agents.id })
       .from(agents)
-      .where(and(eq(agents.id, agentId), eq(agents.teamId, teamId), eq(agents.status, "active")))
+      .where(and(eq(agents.id, agentId), eq(agents.workspaceId, workspaceId), eq(agents.status, "active")))
       .limit(1);
     if (!agent) {
-      throw new TeamSetupServiceError(
-        "TEAM_SETUP_AGENT_NOT_FOUND",
+      throw new WorkspaceSetupServiceError(
+        "WORKSPACE_SETUP_AGENT_NOT_FOUND",
         404,
-        "The active setup Agent was not found in this Team",
+        "The active setup Agent was not found in this Workspace",
       );
     }
 
     const handoff = await this.#imBindings.getHandoffForAgent(callerUserId, agentId);
     if (!handoff?.handoffReady) {
-      throw new TeamSetupServiceError(
-        "TEAM_SETUP_NOT_READY",
+      throw new WorkspaceSetupServiceError(
+        "WORKSPACE_SETUP_NOT_READY",
         409,
-        "The Agent handoff is not ready to complete Team setup",
+        "The Agent handoff is not ready to complete Workspace setup",
       );
     }
 
     return this.#database.transaction(async (transaction) => {
-      await this.#workspaceAdmins.requireAdminForMutation(transaction, callerUserId, teamId);
-      const [lockedTeam] = await transaction
-        .select({ setupCompletedAt: teams.setupCompletedAt })
-        .from(teams)
-        .where(eq(teams.id, teamId))
+      await this.#workspaceAdmins.requireAdminForMutation(transaction, callerUserId, workspaceId);
+      const [lockedWorkspace] = await transaction
+        .select({ setupCompletedAt: workspaces.setupCompletedAt })
+        .from(workspaces)
+        .where(eq(workspaces.id, workspaceId))
         .limit(1);
-      if (lockedTeam?.setupCompletedAt) return this.#projection(lockedTeam.setupCompletedAt);
+      if (lockedWorkspace?.setupCompletedAt) return this.#projection(lockedWorkspace.setupCompletedAt);
 
       const [lockedAgent] = await transaction
         .select({ id: agents.id })
         .from(agents)
-        .where(and(eq(agents.id, agentId), eq(agents.teamId, teamId), eq(agents.status, "active")))
+        .where(and(eq(agents.id, agentId), eq(agents.workspaceId, workspaceId), eq(agents.status, "active")))
         .limit(1)
         .for("update");
       if (!lockedAgent) {
-        throw new TeamSetupServiceError(
-          "TEAM_SETUP_AGENT_NOT_FOUND",
+        throw new WorkspaceSetupServiceError(
+          "WORKSPACE_SETUP_AGENT_NOT_FOUND",
           404,
-          "The active setup Agent was not found in this Team",
+          "The active setup Agent was not found in this Workspace",
         );
       }
 
       const completedAt = this.#now();
       const [completed] = await transaction
-        .update(teams)
+        .update(workspaces)
         .set({ setupCompletedAt: completedAt, updatedAt: completedAt })
-        .where(eq(teams.id, teamId))
-        .returning({ setupCompletedAt: teams.setupCompletedAt });
-      if (!completed?.setupCompletedAt) throw new Error("Team setup completion did not return a timestamp");
+        .where(eq(workspaces.id, workspaceId))
+        .returning({ setupCompletedAt: workspaces.setupCompletedAt });
+      if (!completed?.setupCompletedAt) throw new Error("Workspace setup completion did not return a timestamp");
       return this.#projection(completed.setupCompletedAt);
     });
   }
 
-  #projection(setupCompletedAt: Date): TeamSetupCompletion {
+  #projection(setupCompletedAt: Date): WorkspaceSetupCompletion {
     return { setupCompletedAt: setupCompletedAt.toISOString() };
   }
 }

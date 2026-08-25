@@ -7,8 +7,8 @@ const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 
 const config: AgentAdminConfig = {
   id: agentId,
-  teamId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
-  managerUserId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+  workspaceId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
+  createdByUserId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
   computerId: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
   name: "reviewer",
   displayName: "Reviewer",
@@ -70,23 +70,23 @@ describe("RuntimeConfigurationForm", () => {
     const save = vi.fn(async () => ({
       ...config,
       revision: 5,
-      runtimeConfig: { ...config.runtimeConfig, revision: 8, model: "team/fine-tuned-model" },
+      runtimeConfig: { ...config.runtimeConfig, revision: 8, model: "workspace/fine-tuned-model" },
     }));
     render(<RuntimeConfigurationForm initialConfig={config} save={save} />);
 
     fireEvent.change(screen.getByLabelText("Model"), { target: { value: "__custom_model__" } });
     const customModel = screen.getByLabelText("Custom model ID") as HTMLInputElement;
     expect(customModel.required).toBe(true);
-    fireEvent.change(customModel, { target: { value: "  team/fine-tuned-model  " } });
+    fireEvent.change(customModel, { target: { value: "  workspace/fine-tuned-model  " } });
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
     expect(save).toHaveBeenCalledWith({
       expectedRevision: 4,
-      runtimeConfig: { model: "team/fine-tuned-model", reasoningEffort: null },
+      runtimeConfig: { model: "workspace/fine-tuned-model", reasoningEffort: null },
     });
     expect((await screen.findByRole("status")).textContent).toBe("Execution settings saved.");
-    expect((screen.getByLabelText("Custom model ID") as HTMLInputElement).value).toBe("team/fine-tuned-model");
+    expect((screen.getByLabelText("Custom model ID") as HTMLInputElement).value).toBe("workspace/fine-tuned-model");
   });
 
   it("shows, edits, and saves an unknown historical model as custom", async () => {

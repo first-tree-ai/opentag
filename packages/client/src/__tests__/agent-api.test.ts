@@ -1,14 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import { OpenTagApi, OpenTagApiError } from "../api.js";
 
-const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
+const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
+const createdByUserId = "bfcdab09-b57a-44ac-a170-09f7c3af20df";
 const creationIntentId = "a3adbe5e-8e8e-4ac2-a013-b026684ab185";
 const agent = {
   id: agentId,
-  teamId,
-  managerUserId: "bfcdab09-b57a-44ac-a170-09f7c3af20df",
+  workspaceId,
+  createdByUserId,
   computerId,
   name: "code-reviewer",
   displayName: "Code Reviewer",
@@ -29,21 +30,25 @@ const agent = {
 const {
   runtimeConfig: _runtimeConfig,
   revision: _revision,
-  managerUserId,
+  createdByUserId: safeCreatedByUserId,
   computerId: safeComputerId,
   ...agentBase
 } = agent;
 const agentSummary = {
   ...agentBase,
-  manager: { userId: managerUserId, displayName: "Manager" },
-  computer: { id: safeComputerId, displayName: "Laptop", platform: "linux" },
+  createdBy: { userId: safeCreatedByUserId, displayName: "Creator" },
+  computer: {
+    computerId: safeComputerId,
+    displayName: "Laptop",
+    platform: "linux",
+  },
 };
 const agentListItem = {
   ...agentSummary,
   activity: { state: "idle" },
   usage: { windowDays: 30, tasks: 12, failed: 1, tokens: 42_000 },
 };
-const agentDetail = { ...agentSummary, activity: { state: "idle" }, viewerCapabilities: { canManage: true } };
+const agentDetail = { ...agentSummary, activity: { state: "idle" } };
 const agentUsage = {
   windowDays: 30,
   startedAt: "2026-07-25T12:00:00.000Z",
@@ -87,7 +92,7 @@ describe("OpenTagApi Agent methods", () => {
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const api = new OpenTagApi("https://opentag.example", fetchImpl);
 
-    await api.createAgent("access", teamId, {
+    await api.createAgent("access", workspaceId, {
       creationIntentId,
       computerId,
       displayName: "Code Reviewer",
@@ -95,7 +100,7 @@ describe("OpenTagApi Agent methods", () => {
       runtimeProvider: "codex",
       runtimeConfig: { instructions: "Custom instructions", maxDurationMs: 60_000 },
     });
-    await api.listAgents("access", teamId);
+    await api.listAgents("access", workspaceId);
     await api.getAgent("access", agentId);
     await api.getAgentUsage("access", agentId, 30);
     await api.getAgentConfig("access", agentId);
@@ -109,8 +114,8 @@ describe("OpenTagApi Agent methods", () => {
     await api.deleteAgent("access", agentId);
 
     expect(fetchImpl.mock.calls.map(([url, init]) => [String(url), init?.method ?? "GET"])).toEqual([
-      [`https://opentag.example/api/v1/teams/${teamId}/agents`, "POST"],
-      [`https://opentag.example/api/v1/teams/${teamId}/agents`, "GET"],
+      [`https://opentag.example/api/v1/workspaces/${workspaceId}/agents`, "POST"],
+      [`https://opentag.example/api/v1/workspaces/${workspaceId}/agents`, "GET"],
       [`https://opentag.example/api/v1/agents/${agentId}`, "GET"],
       [`https://opentag.example/api/v1/agents/${agentId}/usage?days=30`, "GET"],
       [`https://opentag.example/api/v1/agents/${agentId}/config`, "GET"],
@@ -177,7 +182,7 @@ describe("OpenTagApi Agent methods", () => {
       ),
     );
     await expect(
-      typedApi.createAgent("access", teamId, {
+      typedApi.createAgent("access", workspaceId, {
         computerId,
         displayName: "Bestony",
         name: "Bestony",
@@ -202,7 +207,7 @@ describe("OpenTagApi Agent methods", () => {
       ),
     );
     await expect(
-      malformedApi.createAgent("access", teamId, {
+      malformedApi.createAgent("access", workspaceId, {
         computerId,
         displayName: "Bestony",
         name: "Bestony",

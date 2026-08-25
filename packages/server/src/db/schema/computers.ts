@@ -11,7 +11,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { teams, users } from "./auth.js";
+import { users, workspaces } from "./auth.js";
 
 export const computerPlatform = pgEnum("computer_platform", ["darwin", "linux", "win32"]);
 
@@ -19,23 +19,9 @@ export const computers = pgTable(
   "computers",
   {
     id: uuid("id").primaryKey(),
-    ownerUserId: uuid("owner_user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    displayName: text("display_name").notNull(),
-    platform: computerPlatform("platform").notNull(),
-    arch: text("arch").notNull(),
-    clientVersion: text("client_version").notNull(),
-    currentInstanceId: uuid("current_instance_id"),
-    connectedAt: timestamp("connected_at", { withTimezone: true }),
-    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [
-    unique("computers_id_owner_user_id_unique").on(table.id, table.ownerUserId),
-    index("computers_owner_user_id_idx").on(table.ownerUserId),
-  ],
+  () => [],
 );
 
 export const workspaceComputers = pgTable(
@@ -44,7 +30,7 @@ export const workspaceComputers = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     workspaceId: uuid("workspace_id")
       .notNull()
-      .references(() => teams.id, { onDelete: "restrict" }),
+      .references(() => workspaces.id, { onDelete: "restrict" }),
     computerId: uuid("computer_id")
       .notNull()
       .references(() => computers.id, { onDelete: "restrict" }),
@@ -118,7 +104,7 @@ export const computerConnectCodes = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     workspaceId: uuid("workspace_id")
       .notNull()
-      .references(() => teams.id, { onDelete: "restrict" }),
+      .references(() => workspaces.id, { onDelete: "restrict" }),
     tokenHash: text("token_hash").notNull().unique(),
     issuedByUserId: uuid("issued_by_user_id")
       .notNull()

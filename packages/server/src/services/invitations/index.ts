@@ -1,1 +1,1 @@
-export { type InvitationAuditContext, InvitationService } from "./invitation-service.js";
+export { InvitationService } from "./invitation-service.js";

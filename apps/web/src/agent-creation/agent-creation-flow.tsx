@@ -40,7 +40,7 @@ export interface AgentCreationFlowProps {
   readonly onRefresh: () => void;
   readonly onSubmittingChange?: (submitting: boolean) => void;
   readonly refreshing?: boolean;
-  readonly teamId: string;
+  readonly workspaceId: string;
 }
 
 interface ReadyRoute {
@@ -50,19 +50,19 @@ interface ReadyRoute {
 
 interface CreationIntentRecord {
   readonly version: typeof CREATE_INTENT_VERSION;
-  readonly teamId: string;
+  readonly workspaceId: string;
   readonly creationIntentId: string;
   readonly request: Omit<CreateAgentRequest, "creationIntentId">;
 }
 
 interface CreationIntentStore {
   readonly version: typeof CREATE_INTENT_VERSION;
-  readonly teamId: string;
+  readonly workspaceId: string;
   readonly records: readonly CreationIntentRecord[];
 }
 
 const memoryIntentRecords = new Map<string, readonly CreationIntentRecord[]>();
-const memoryIntentFallbackTeams = new Set<string>();
+const memoryIntentFallbackWorkspaces = new Set<string>();
 const fallbackCreationLocks = new Map<string, Promise<void>>();
 const creationRequests = new Map<string, Promise<AgentAdminConfig>>();
 
@@ -86,9 +86,9 @@ export function AgentCreationFlow({
   onRefresh,
   onSubmittingChange,
   refreshing = false,
-  teamId,
+  workspaceId,
 }: AgentCreationFlowProps) {
-  const pendingIntent = useMemo(() => readCreationIntent(teamId), [teamId]);
+  const pendingIntent = useMemo(() => readCreationIntent(workspaceId), [workspaceId]);
   const [displayName, setDisplayName] = useState(() => pendingIntent?.request.displayName ?? initialDisplayName);
   const [name, setName] = useState(() => pendingIntent?.request.name ?? deriveAgentName(initialDisplayName));
   const [nameDirty, setNameDirty] = useState(
@@ -195,21 +195,21 @@ export function AgentCreationFlow({
       setSubmitting(true);
       onSubmittingChange?.(true);
       try {
-        record ??= await getOrCreateCreationIntent(teamId, request);
+        record ??= await getOrCreateCreationIntent(workspaceId, request);
         const created = await createAgentOnce(record);
-        await clearCreationIntent(teamId, record.creationIntentId);
+        await clearCreationIntent(workspaceId, record.creationIntentId);
         onCreated(created);
       } catch (cause) {
         if (cause instanceof ApiError) {
           const issue = cause.issues?.find(({ path }) => path[0] === "name");
           if (issue || cause.code === "AGENT_NAME_CONFLICT") {
-            if (record) await clearCreationIntent(teamId, record.creationIntentId);
+            if (record) await clearCreationIntent(workspaceId, record.creationIntentId);
             setEditingName(true);
             setNameError(issue?.message ?? cause.message);
             return;
           }
           if (record && (cause.category === "validation" || cause.category === "deterministic")) {
-            await clearCreationIntent(teamId, record.creationIntentId);
+            await clearCreationIntent(workspaceId, record.creationIntentId);
           }
         }
         setError(cause instanceof Error ? cause.message : "Agent creation failed");
@@ -219,7 +219,7 @@ export function AgentCreationFlow({
         onSubmittingChange?.(false);
       }
     },
-    [onCreated, onSubmittingChange, teamId],
+    [onCreated, onSubmittingChange, workspaceId],
   );
 
   useEffect(() => {
@@ -337,7 +337,7 @@ export function AgentCreationFlow({
         refreshing={refreshing}
         selectedRoute={selectedRoute}
         submitting={submitting}
-        teamId={teamId}
+        workspaceId={workspaceId}
         onChangeComputer={(computer) => {
           const providers = [...facts.providers]
             .filter((provider) => provider.computerId === computer.id)
@@ -422,7 +422,7 @@ function RuntimeRouteSection({
   refreshing,
   selectedRoute,
   submitting,
-  teamId,
+  workspaceId,
 }: {
   changingComputer: boolean;
   changingRuntime: boolean;
@@ -442,7 +442,7 @@ function RuntimeRouteSection({
   refreshing: boolean;
   selectedRoute: ReadyRoute | undefined;
   submitting: boolean;
-  teamId: string;
+  workspaceId: string;
 }) {
   const onlineComputers = facts.computers.filter((computer) => computer.connectionStatus === "online");
   const attention = providerAttention(facts, displayedComputer, displayedProvider);
@@ -461,7 +461,16 @@ function RuntimeRouteSection({
 
       {facts.computers.length === 0 ? (
         <div className="agent-create-runtime-setup">
-          <ComputerSetup teamId={teamId} onConnected={onConnected} />
+          <ComputerSetup
+            workspaceId={workspaceId}
+            onConnected={(computer) =>
+              onConnected({
+                id: computer.computerId,
+                displayName: computer.displayName,
+                connectionStatus: computer.connectionStatus,
+              })
+            }
+          />
         </div>
       ) : displayedComputer ? (
         <>
@@ -556,7 +565,16 @@ function RuntimeRouteSection({
               </div>
               {connectingComputer ? (
                 <div className="agent-create-runtime-setup" id="new-agent-computer-setup">
-                  <ComputerSetup teamId={teamId} onConnected={onConnected} />
+                  <ComputerSetup
+                    workspaceId={workspaceId}
+                    onConnected={(computer) =>
+                      onConnected({
+                        id: computer.computerId,
+                        displayName: computer.displayName,
+                        connectionStatus: computer.connectionStatus,
+                      })
+                    }
+                  />
                 </div>
               ) : null}
             </div>
@@ -738,7 +756,7 @@ function providerLabel(provider: AgentRuntimeProvider): string {
 function createAgentOnce(record: CreationIntentRecord): Promise<AgentAdminConfig> {
   const existing = creationRequests.get(record.creationIntentId);
   if (existing) return existing;
-  const request = browserApi.createAgent(record.teamId, {
+  const request = browserApi.createAgent(record.workspaceId, {
     ...record.request,
     creationIntentId: record.creationIntentId,
   });
@@ -747,8 +765,8 @@ function createAgentOnce(record: CreationIntentRecord): Promise<AgentAdminConfig
   return request;
 }
 
-async function withCreationLock<T>(teamId: string, task: () => Promise<T> | T): Promise<T> {
-  const lockName = `opentag:create-agent:${teamId}`;
+async function withCreationLock<T>(workspaceId: string, task: () => Promise<T> | T): Promise<T> {
+  const lockName = `opentag:create-agent:${workspaceId}`;
   if (navigator.locks) return navigator.locks.request(lockName, task);
   const prior = fallbackCreationLocks.get(lockName) ?? Promise.resolve();
   let release: () => void = () => undefined;
@@ -767,90 +785,90 @@ async function withCreationLock<T>(teamId: string, task: () => Promise<T> | T): 
 }
 
 async function getOrCreateCreationIntent(
-  teamId: string,
+  workspaceId: string,
   request: Omit<CreateAgentRequest, "creationIntentId">,
 ): Promise<CreationIntentRecord> {
-  return withCreationLock(teamId, () => {
-    const records = readCreationIntents(teamId);
+  return withCreationLock(workspaceId, () => {
+    const records = readCreationIntents(workspaceId);
     const fingerprint = JSON.stringify(request);
     const existing = records.find((record) => JSON.stringify(record.request) === fingerprint);
     if (existing) return existing;
     const next: CreationIntentRecord = {
       version: CREATE_INTENT_VERSION,
-      teamId,
+      workspaceId,
       creationIntentId: crypto.randomUUID(),
       request,
     };
-    writeCreationIntents(teamId, [...records, next]);
+    writeCreationIntents(workspaceId, [...records, next]);
     return next;
   });
 }
 
-function readCreationIntent(teamId: string): CreationIntentRecord | undefined {
-  return readCreationIntents(teamId).at(-1);
+function readCreationIntent(workspaceId: string): CreationIntentRecord | undefined {
+  return readCreationIntents(workspaceId).at(-1);
 }
 
-function readCreationIntents(teamId: string): readonly CreationIntentRecord[] {
+function readCreationIntents(workspaceId: string): readonly CreationIntentRecord[] {
   try {
-    const raw = window.localStorage.getItem(creationIntentKey(teamId));
+    const raw = window.localStorage.getItem(creationIntentKey(workspaceId));
     if (!raw) {
-      if (memoryIntentFallbackTeams.has(teamId)) return memoryIntentRecords.get(teamId) ?? [];
-      memoryIntentRecords.delete(teamId);
+      if (memoryIntentFallbackWorkspaces.has(workspaceId)) return memoryIntentRecords.get(workspaceId) ?? [];
+      memoryIntentRecords.delete(workspaceId);
       return [];
     }
     const value = JSON.parse(raw) as Partial<CreationIntentStore>;
     if (
       value.version !== CREATE_INTENT_VERSION ||
-      value.teamId !== teamId ||
+      value.workspaceId !== workspaceId ||
       !Array.isArray(value.records) ||
-      !value.records.every((record) => validCreationIntentRecord(record, teamId))
+      !value.records.every((record) => validCreationIntentRecord(record, workspaceId))
     ) {
       return [];
     }
     const records = value.records as readonly CreationIntentRecord[];
-    memoryIntentRecords.set(teamId, records);
+    memoryIntentRecords.set(workspaceId, records);
     return records;
   } catch {
-    return memoryIntentRecords.get(teamId) ?? [];
+    return memoryIntentRecords.get(workspaceId) ?? [];
   }
 }
 
-function writeCreationIntents(teamId: string, records: readonly CreationIntentRecord[]): void {
-  memoryIntentRecords.set(teamId, records);
+function writeCreationIntents(workspaceId: string, records: readonly CreationIntentRecord[]): void {
+  memoryIntentRecords.set(workspaceId, records);
   try {
     window.localStorage.setItem(
-      creationIntentKey(teamId),
-      JSON.stringify({ version: CREATE_INTENT_VERSION, teamId, records } satisfies CreationIntentStore),
+      creationIntentKey(workspaceId),
+      JSON.stringify({ version: CREATE_INTENT_VERSION, workspaceId, records } satisfies CreationIntentStore),
     );
-    memoryIntentFallbackTeams.delete(teamId);
+    memoryIntentFallbackWorkspaces.delete(workspaceId);
   } catch {
-    memoryIntentFallbackTeams.add(teamId);
+    memoryIntentFallbackWorkspaces.add(workspaceId);
   }
 }
 
-async function clearCreationIntent(teamId: string, creationIntentId: string): Promise<void> {
-  await withCreationLock(teamId, () => {
-    const records = readCreationIntents(teamId).filter((record) => record.creationIntentId !== creationIntentId);
+async function clearCreationIntent(workspaceId: string, creationIntentId: string): Promise<void> {
+  await withCreationLock(workspaceId, () => {
+    const records = readCreationIntents(workspaceId).filter((record) => record.creationIntentId !== creationIntentId);
     if (records.length > 0) {
-      writeCreationIntents(teamId, records);
+      writeCreationIntents(workspaceId, records);
       return;
     }
-    memoryIntentRecords.delete(teamId);
-    memoryIntentFallbackTeams.delete(teamId);
+    memoryIntentRecords.delete(workspaceId);
+    memoryIntentFallbackWorkspaces.delete(workspaceId);
     try {
-      window.localStorage.removeItem(creationIntentKey(teamId));
+      window.localStorage.removeItem(creationIntentKey(workspaceId));
     } catch {
       // No durable record is available to clear.
     }
   });
 }
 
-function validCreationIntentRecord(value: unknown, teamId: string): value is CreationIntentRecord {
+function validCreationIntentRecord(value: unknown, workspaceId: string): value is CreationIntentRecord {
   if (!value || typeof value !== "object") return false;
   const record = value as Partial<CreationIntentRecord>;
   return (
     record.version === CREATE_INTENT_VERSION &&
-    record.teamId === teamId &&
+    record.workspaceId === workspaceId &&
     typeof record.creationIntentId === "string" &&
     record.request !== undefined &&
     typeof record.request.name === "string" &&
@@ -860,6 +878,6 @@ function validCreationIntentRecord(value: unknown, teamId: string): value is Cre
   );
 }
 
-function creationIntentKey(teamId: string): string {
-  return `opentag.agent-creation.intent:${teamId}`;
+function creationIntentKey(workspaceId: string): string {
+  return `opentag.agent-creation.intent:${workspaceId}`;
 }

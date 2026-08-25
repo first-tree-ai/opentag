@@ -2,7 +2,7 @@ import type { ComputerProviderReadinessCollection } from "@opentag/shared/browse
 import type { OnboardingProvider } from "./flow.js";
 
 export interface OnboardingReadinessComputer {
-  readonly id: string;
+  readonly computerId: string;
   readonly providerReadiness?: ComputerProviderReadinessCollection;
 }
 
@@ -13,7 +13,7 @@ export function normalizeOnboardingProviders(
 })[] {
   return computers.flatMap((computer) =>
     (computer.providerReadiness ?? []).map((observation) => ({
-      computerId: computer.id,
+      computerId: computer.computerId,
       provider: observation.provider,
       runtimeReady: observation.status === "ready",
       status: observation.status,

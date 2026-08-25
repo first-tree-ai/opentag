@@ -72,7 +72,7 @@ describe("RuntimeConnection", () => {
     expect(register).not.toEqual(
       expect.objectContaining({ providerReadiness: expect.arrayContaining([{ provider: "claude-code" }]) }),
     );
-    expect(register).not.toHaveProperty("teamId");
+    expect(register).not.toHaveProperty("workspaceId");
     expect(register?.instanceId).toBe(instanceId);
     expect(frames[2]).toMatchObject({ providerReadiness: [{ provider: "codex", status: "ready" }] });
   });

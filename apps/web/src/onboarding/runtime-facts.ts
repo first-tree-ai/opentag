@@ -1,11 +1,11 @@
-import type { AgentSummary, TeamComputerSummary } from "@opentag/shared/browser";
+import type { AgentSummary, WorkspaceComputerSummary } from "@opentag/shared/browser";
 import type { OnboardingProvider } from "./flow.js";
 import { normalizeOnboardingProviders } from "./provider-readiness.js";
 
 export interface RuntimeFactsInput {
-  readonly teamId: string;
+  readonly workspaceId: string;
   readonly agents: readonly AgentSummary[];
-  readonly computers: readonly TeamComputerSummary[];
+  readonly computers: readonly WorkspaceComputerSummary[];
 }
 
 export type RuntimeProviderStatus = "checking" | "install" | "sign-in" | "ready" | "unavailable";

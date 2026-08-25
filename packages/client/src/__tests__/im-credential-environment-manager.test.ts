@@ -407,7 +407,7 @@ function delivery(attention: "direct" | "ambient"): DirectImMessageDeliveryReque
       providerRef: {
         provider: "slack",
         appId: "app-1",
-        teamId: "team-1",
+        teamId: "workspace-1",
         botUserId: "bot-1",
         channelId: "channel-1",
         messageTs: "1710000000.000001",

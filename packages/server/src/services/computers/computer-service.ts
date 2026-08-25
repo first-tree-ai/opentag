@@ -1,15 +1,9 @@
-import type { Computer, ComputerRegisterFrame, ListComputersResponse, MeResponse } from "@opentag/shared";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import type { ComputerRegisterFrame, MeResponse } from "@opentag/shared";
+import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { teams, workspaceComputerCredentials, workspaceComputers } from "../../db/schema/index.js";
+import { workspaceComputerCredentials, workspaceComputers, workspaces } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
-import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 import type { ComputerAuthContext } from "./machine-auth-service.js";
-import {
-  type ProviderReadinessSource,
-  projectComputerImCliReadiness,
-  projectComputerProviderReadiness,
-} from "./provider-readiness.js";
 
 export interface ActiveUserResolver {
   getActiveUserById(userId: string): Promise<MeResponse>;
@@ -17,24 +11,15 @@ export interface ActiveUserResolver {
 
 export interface ComputerServiceOptions {
   now?: () => Date;
-  presenceTimeoutMs?: number;
-  providerReadiness?: ProviderReadinessSource;
-  workspaceAdmins?: WorkspaceAdminAccess;
 }
 
 export class ComputerService {
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
-  readonly #presenceTimeoutMs: number;
-  readonly #providerReadiness?: ProviderReadinessSource;
-  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
   constructor(database: DatabaseClient, _auth: ActiveUserResolver, options: ComputerServiceOptions = {}) {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
-    this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
-    this.#providerReadiness = options.providerReadiness;
-    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
   async register(context: ComputerAuthContext, frame: ComputerRegisterFrame): Promise<void> {
@@ -109,63 +94,11 @@ export class ComputerService {
     return updated.length === 1;
   }
 
-  async listForUser(userId: string, includeProviderReadiness = false): Promise<ListComputersResponse> {
-    await this.#workspaceAdmins.requireAnyAdmin(userId);
-    const workspaces = await this.#workspaceAdmins.listActiveAdminWorkspaces(userId);
-    const rows = await this.#database
-      .select({ enrollment: workspaceComputers })
-      .from(workspaceComputers)
-      .where(
-        and(
-          inArray(
-            workspaceComputers.workspaceId,
-            workspaces.map(({ teamId }) => teamId),
-          ),
-          isNull(workspaceComputers.revokedAt),
-        ),
-      );
-    const observedAt = this.#now();
-    const freshnessCutoff = observedAt.getTime() - this.#presenceTimeoutMs;
-    return {
-      computers: rows.map(({ enrollment: row }): Computer => {
-        const connectionStatus =
-          row.currentInstanceId !== null && (row.lastSeenAt?.getTime() ?? 0) >= freshnessCutoff ? "online" : "offline";
-        return {
-          id: row.computerId,
-          ownerUserId: row.enrolledByUserId,
-          displayName: row.displayName,
-          platform: row.platform,
-          arch: row.arch,
-          clientVersion: row.clientVersion,
-          connectionStatus,
-          ...(includeProviderReadiness
-            ? {
-                providerReadiness: projectComputerProviderReadiness(
-                  row.id,
-                  connectionStatus,
-                  observedAt,
-                  this.#providerReadiness,
-                ),
-                imCliReadiness: projectComputerImCliReadiness(
-                  row.id,
-                  connectionStatus,
-                  observedAt,
-                  this.#providerReadiness,
-                ),
-              }
-            : {}),
-          connectedAt: row.connectedAt?.toISOString() ?? null,
-          lastSeenAt: (row.lastSeenAt ?? row.enrolledAt).toISOString(),
-        };
-      }),
-    };
-  }
-
   async #lockActiveCredential(transaction: DatabaseTransaction, context: ComputerAuthContext): Promise<void> {
     const [workspace] = await transaction
-      .select({ id: teams.id })
-      .from(teams)
-      .where(eq(teams.id, context.workspaceId))
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(eq(workspaces.id, context.workspaceId))
       .limit(1)
       .for("update");
     if (!workspace) throw unavailableEnrollment();

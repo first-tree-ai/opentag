@@ -75,7 +75,7 @@ export class ImResourceService {
           sessionPlacements,
           and(
             eq(sessionPlacements.sessionId, sessions.id),
-            eq(sessionPlacements.computerId, computerAuth.computerId),
+            eq(sessionPlacements.workspaceComputerId, computerAuth.workspaceComputerId),
             eq(sessionPlacements.generation, runtime.placementGeneration),
           ),
         )
@@ -84,8 +84,8 @@ export class ImResourceService {
           and(
             eq(workspaceComputers.id, computerAuth.workspaceComputerId),
             eq(workspaceComputers.workspaceId, computerAuth.workspaceId),
-            eq(workspaceComputers.workspaceId, agents.teamId),
-            eq(workspaceComputers.computerId, sessionPlacements.computerId),
+            eq(workspaceComputers.workspaceId, agents.workspaceId),
+            eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
             eq(workspaceComputers.currentInstanceId, runtime.instanceId),
             isNull(workspaceComputers.revokedAt),
           ),

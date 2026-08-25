@@ -20,16 +20,17 @@ import {
   agentReactivatePath,
   agentSuspendPath,
   agentUsagePath,
-  TEAM_AGENTS_TEMPLATE,
-  teamAgentsPath,
+  WORKSPACE_AGENTS_TEMPLATE,
+  workspaceAgentsPath,
 } from "../http-paths.js";
 import { OPENTAG_PLATFORM_INSTRUCTIONS, RUNTIME_INSTRUCTIONS_MAX_BYTES } from "../runtime-config.js";
 
+const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const agent = {
   id: "1a63a21e-f6c7-4474-91ea-4dabf0566a24",
-  teamId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
-  managerUserId: "bfcdab09-b57a-44ac-a170-09f7c3af20df",
-  computerId: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+  workspaceId: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
+  createdByUserId: "bfcdab09-b57a-44ac-a170-09f7c3af20df",
+  computerId,
   name: "code-reviewer",
   displayName: "Code Reviewer",
   runtimeProvider: "codex",
@@ -57,7 +58,7 @@ describe("Agent contracts", () => {
         name: " code-reviewer ",
         displayName: " Code Reviewer ",
         runtimeProvider: "claude-code",
-        computerId: agent.computerId,
+        computerId,
         runtimeConfig: { model: "claude-sonnet" },
       }),
     ).toEqual({
@@ -65,7 +66,7 @@ describe("Agent contracts", () => {
       name: "code-reviewer",
       displayName: "Code Reviewer",
       runtimeProvider: "claude-code",
-      computerId: agent.computerId,
+      computerId,
       runtimeConfig: { model: "claude-sonnet" },
     });
     expect(UpdateAgentRequestSchema.parse({ expectedRevision: 1, displayName: " Reviewer " })).toEqual({
@@ -104,7 +105,7 @@ describe("Agent contracts", () => {
     expect(
       CreateAgentRequestSchema.parse({
         creationIntentId,
-        computerId: agent.computerId,
+        computerId,
         displayName: agent.displayName,
         name: agent.name,
         runtimeProvider: agent.runtimeProvider,
@@ -113,7 +114,7 @@ describe("Agent contracts", () => {
     expect(() =>
       CreateAgentRequestSchema.parse({
         creationIntentId: "retry-by-name",
-        computerId: agent.computerId,
+        computerId,
         displayName: agent.displayName,
         name: agent.name,
         runtimeProvider: agent.runtimeProvider,
@@ -122,7 +123,7 @@ describe("Agent contracts", () => {
   });
 
   it("rejects unexpected authority and immutable update fields", () => {
-    expect(() => CreateAgentRequestSchema.parse({ ...agent, managerUserId: agent.managerUserId })).toThrow();
+    expect(() => CreateAgentRequestSchema.parse({ ...agent, createdByUserId: agent.createdByUserId })).toThrow();
     expect(() =>
       UpdateAgentRequestSchema.parse({
         expectedRevision: 1,
@@ -136,11 +137,11 @@ describe("Agent contracts", () => {
 
   it("validates strict Agent response projections", () => {
     expect(AgentAdminConfigSchema.parse(agent)).toEqual(agent);
-    const { runtimeConfig: _, revision: _revision, managerUserId, computerId, ...base } = agent;
+    const { runtimeConfig: _, revision: _revision, createdByUserId, computerId: adminComputerId, ...base } = agent;
     const summary = {
       ...base,
-      manager: { userId: managerUserId, displayName: "Manager" },
-      computer: { id: computerId, displayName: "Laptop", platform: "darwin" },
+      createdBy: { userId: createdByUserId, displayName: "Creator" },
+      computer: { computerId: adminComputerId, displayName: "Laptop", platform: "darwin" },
     };
     expect(AgentSummarySchema.parse(summary)).toEqual(summary);
     const listItem = {
@@ -171,17 +172,13 @@ describe("Agent contracts", () => {
         ],
       }),
     ).toThrow();
-    expect(
-      AgentDetailSchema.parse({ ...summary, activity: { state: "idle" }, viewerCapabilities: { canManage: false } }),
-    ).toMatchObject({
+    expect(AgentDetailSchema.parse({ ...summary, activity: { state: "idle" } })).toMatchObject({
       activity: { state: "idle" },
-      viewerCapabilities: { canManage: false },
     });
     expect(() =>
       AgentDetailSchema.parse({
         ...summary,
         activity: { state: "working", startedAt: agent.updatedAt, summary: "Private conversation content" },
-        viewerCapabilities: { canManage: false },
       }),
     ).toThrow();
     expect(() => AgentAdminConfigSchema.parse({ ...agent, deletedAt: null })).toThrow();
@@ -228,7 +225,7 @@ describe("Agent contracts", () => {
   it("enforces runtime config UTF-8 and duration boundaries", () => {
     expect(() =>
       CreateAgentRequestSchema.parse({
-        computerId: agent.computerId,
+        computerId,
         displayName: agent.displayName,
         name: agent.name,
         runtimeProvider: agent.runtimeProvider,
@@ -255,7 +252,7 @@ describe("Agent contracts", () => {
     const exactAscii = "a".repeat(agentBudget);
     const exactUtf8 = "界".repeat(Math.floor(agentBudget / 3)) + "a".repeat(agentBudget % 3);
     const createInput = {
-      computerId: agent.computerId,
+      computerId,
       displayName: agent.displayName,
       name: agent.name,
       runtimeProvider: agent.runtimeProvider,
@@ -276,9 +273,9 @@ describe("Agent contracts", () => {
   });
 
   it("shares route templates and encoded path builders", () => {
-    expect(TEAM_AGENTS_TEMPLATE).toBe("/api/v1/teams/:teamId/agents");
+    expect(WORKSPACE_AGENTS_TEMPLATE).toBe("/api/v1/workspaces/:workspaceId/agents");
     expect(AGENT_BY_ID_TEMPLATE).toBe("/api/v1/agents/:agentId");
-    expect(teamAgentsPath("team/value")).toBe("/api/v1/teams/team%2Fvalue/agents");
+    expect(workspaceAgentsPath("workspace/value")).toBe("/api/v1/workspaces/workspace%2Fvalue/agents");
     expect(agentByIdPath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue");
     expect(AGENT_SUSPEND_TEMPLATE).toBe("/api/v1/agents/:agentId/suspend");
     expect(agentSuspendPath("agent/value")).toBe("/api/v1/agents/agent%2Fvalue/suspend");

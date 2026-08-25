@@ -24,7 +24,7 @@ export const SessionSchema = z
 export const SessionPlacementSchema = z
   .object({
     sessionId: z.string().uuid(),
-    computerId: z.string().uuid(),
+    workspaceComputerId: z.string().uuid(),
     generation: z.number().int().min(1),
     updatedAt: z.string().datetime(),
   })

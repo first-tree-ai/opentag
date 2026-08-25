@@ -1,8 +1,8 @@
 export const API_V1_PREFIX = "/api/v1";
-export const TEAMS_TEMPLATE = `${API_V1_PREFIX}/teams`;
-export const TEAM_AGENTS_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/agents`;
-export const TEAM_BY_ID_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId`;
-export const TEAM_SETUP_COMPLETE_TEMPLATE = `${TEAM_BY_ID_TEMPLATE}/setup/complete`;
+export const WORKSPACES_TEMPLATE = `${API_V1_PREFIX}/workspaces`;
+export const WORKSPACE_AGENTS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/agents`;
+export const WORKSPACE_BY_ID_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId`;
+export const WORKSPACE_SETUP_COMPLETE_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/setup/complete`;
 export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
 export const AGENT_USAGE_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/usage`;
@@ -19,15 +19,13 @@ export const IM_BINDING_BY_ID_TEMPLATE = `${API_V1_PREFIX}/im-bindings/:imBindin
 export const IM_BINDING_DIAGNOSTICS_TEMPLATE = `${IM_BINDING_BY_ID_TEMPLATE}/diagnostics`;
 export const SLACK_EVENTS_PATH = `${API_V1_PREFIX}/im-bindings/slack/events`;
 export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-messages/:imMessageId/resources/:ordinal`;
-export const TEAM_MEMBERS_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/members`;
-export const TEAM_MEMBERS_CONFIG_TEMPLATE = `${TEAM_MEMBERS_TEMPLATE}/config`;
-export const TEAM_MEMBER_TEMPLATE = `${TEAM_MEMBERS_TEMPLATE}/:userId`;
-export const TEAM_COMPUTERS_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/computers`;
-export const TEAM_COMPUTER_CONNECT_CODES_TEMPLATE = `${TEAM_COMPUTERS_TEMPLATE}/connect-codes`;
-export const TEAM_COMPUTERS_CONFIG_TEMPLATE = `${TEAM_COMPUTERS_TEMPLATE}/config`;
-export const TEAM_INVITATION_TEMPLATE = `${API_V1_PREFIX}/teams/:teamId/invitation`;
-export const INVITATION_PREVIEW_TEMPLATE = `${API_V1_PREFIX}/invitations/:token/preview`;
-export const INVITATION_REDEEM_TEMPLATE = `${API_V1_PREFIX}/invitations/:token/redeem`;
+export const WORKSPACE_ADMINS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/admins`;
+export const WORKSPACE_ADMIN_TEMPLATE = `${WORKSPACE_ADMINS_TEMPLATE}/:accountId`;
+export const WORKSPACE_COMPUTERS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/computers`;
+export const WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/computer-connect-codes`;
+export const WORKSPACE_ADMIN_INVITATIONS_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/admin-invitations`;
+export const ADMIN_INVITATION_PREVIEW_TEMPLATE = `${API_V1_PREFIX}/admin-invitations/:token/preview`;
+export const ADMIN_INVITATION_ACCEPT_TEMPLATE = `${API_V1_PREFIX}/admin-invitations/:token/accept`;
 
 export const HTTP_PATHS = {
   agentById: AGENT_BY_ID_TEMPLATE,
@@ -43,66 +41,49 @@ export const HTTP_PATHS = {
   authRefresh: `${API_V1_PREFIX}/auth/refresh`,
   computerRuntimeWebSocket: `${API_V1_PREFIX}/computer/ws`,
   me: `${API_V1_PREFIX}/me`,
-  meComputers: `${API_V1_PREFIX}/me/computers`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
-  teamAgents: TEAM_AGENTS_TEMPLATE,
-  teams: TEAMS_TEMPLATE,
+  workspaceAgents: WORKSPACE_AGENTS_TEMPLATE,
+  workspaces: WORKSPACES_TEMPLATE,
 } as const;
 
-export function teamMembersPath(teamId: string): string {
-  return `${API_V1_PREFIX}/teams/${encodeURIComponent(teamId)}/members`;
+export function workspaceAdminsPath(workspaceId: string): string {
+  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/admins`;
 }
 
-export function teamByIdPath(teamId: string): string {
-  return `${API_V1_PREFIX}/teams/${encodeURIComponent(teamId)}`;
+export function workspaceByIdPath(workspaceId: string): string {
+  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}`;
 }
 
-export function teamSetupCompletePath(teamId: string): string {
-  return `${teamByIdPath(teamId)}/setup/complete`;
+export function workspaceSetupCompletePath(workspaceId: string): string {
+  return `${workspaceByIdPath(workspaceId)}/setup/complete`;
 }
 
-export function teamMemberPath(teamId: string, userId: string): string {
-  return `${teamMembersPath(teamId)}/${encodeURIComponent(userId)}`;
+export function workspaceAdminPath(workspaceId: string, accountId: string): string {
+  return `${workspaceAdminsPath(workspaceId)}/${encodeURIComponent(accountId)}`;
 }
 
-export function teamMemberRemovePath(teamId: string, userId: string): string {
-  return `${teamMemberPath(teamId, userId)}/remove`;
+export function workspaceComputersPath(workspaceId: string): string {
+  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/computers`;
 }
 
-export function teamMemberRestorePath(teamId: string, userId: string): string {
-  return `${teamMemberPath(teamId, userId)}/restore`;
+export function workspaceComputerConnectCodesPath(workspaceId: string): string {
+  return `${workspaceByIdPath(workspaceId)}/computer-connect-codes`;
 }
 
-export function teamLeavePath(teamId: string): string {
-  return `${API_V1_PREFIX}/teams/${encodeURIComponent(teamId)}/leave`;
-}
-
-export function teamComputersPath(teamId: string): string {
-  return `${API_V1_PREFIX}/teams/${encodeURIComponent(teamId)}/computers`;
-}
-
-export function teamComputerConnectCodesPath(teamId: string): string {
-  return `${teamComputersPath(teamId)}/connect-codes`;
-}
-
-export function teamInvitationPath(teamId: string): string {
-  return `${API_V1_PREFIX}/teams/${encodeURIComponent(teamId)}/invitation`;
-}
-
-export function teamInvitationRotatePath(teamId: string): string {
-  return `${teamInvitationPath(teamId)}/rotate`;
+export function workspaceAdminInvitationsPath(workspaceId: string): string {
+  return `${workspaceByIdPath(workspaceId)}/admin-invitations`;
 }
 
 export function invitationPreviewPath(token: string): string {
-  return `${API_V1_PREFIX}/invitations/${encodeURIComponent(token)}/preview`;
+  return `${API_V1_PREFIX}/admin-invitations/${encodeURIComponent(token)}/preview`;
 }
 
-export function invitationRedeemPath(token: string): string {
-  return `${API_V1_PREFIX}/invitations/${encodeURIComponent(token)}/redeem`;
+export function invitationAcceptPath(token: string): string {
+  return `${API_V1_PREFIX}/admin-invitations/${encodeURIComponent(token)}/accept`;
 }
 
-export function teamAgentsPath(teamId: string): string {
-  return `${API_V1_PREFIX}/teams/${encodeURIComponent(teamId)}/agents`;
+export function workspaceAgentsPath(workspaceId: string): string {
+  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/agents`;
 }
 
 export function agentByIdPath(agentId: string): string {
@@ -136,14 +117,6 @@ export function agentImBindingHandoffPath(agentId: string): string {
 
 export function agentImBindingConfigPath(agentId: string): string {
   return `${agentImBindingPath(agentId)}/config`;
-}
-
-export function teamMembersConfigPath(teamId: string): string {
-  return `${teamMembersPath(teamId)}/config`;
-}
-
-export function teamComputersConfigPath(teamId: string): string {
-  return `${teamComputersPath(teamId)}/config`;
 }
 
 export function agentFeishuSetupAttemptsPath(agentId: string): string {

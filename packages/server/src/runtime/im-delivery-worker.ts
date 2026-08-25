@@ -280,8 +280,8 @@ export class ImDeliveryWorker {
       .innerJoin(
         workspaceComputers,
         and(
-          eq(workspaceComputers.workspaceId, agents.teamId),
-          eq(workspaceComputers.computerId, sessionPlacements.computerId),
+          eq(workspaceComputers.workspaceId, agents.workspaceId),
+          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
           isNull(workspaceComputers.revokedAt),
         ),
       )
@@ -315,7 +315,7 @@ export class ImDeliveryWorker {
         messageId: row.message.id,
         sessionId: row.session.id,
         agentId: row.agent.id,
-        computerId: row.placement.computerId,
+        computerId: row.computer.computerId,
         workspaceComputerId: row.computer.id,
         placementGeneration: row.placement.generation,
         attempt: row.delivery.attemptCount,
@@ -366,7 +366,7 @@ export class ImDeliveryWorker {
           {
             type: "session:reconcile",
             requestId: randomUUID(),
-            computerId: row.placement.computerId,
+            computerId: row.computer.computerId,
             sessionId: row.session.id,
             agentId: row.agent.id,
             placementGeneration: row.placement.generation,
@@ -507,8 +507,8 @@ export class ImDeliveryWorker {
       .innerJoin(
         workspaceComputers,
         and(
-          eq(workspaceComputers.workspaceId, agents.teamId),
-          eq(workspaceComputers.computerId, sessionPlacements.computerId),
+          eq(workspaceComputers.workspaceId, agents.workspaceId),
+          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
           isNull(workspaceComputers.revokedAt),
         ),
       )
@@ -536,7 +536,7 @@ export class ImDeliveryWorker {
         messageId: row.delivery.messageId,
         sessionId: row.session.id,
         agentId: row.agent.id,
-        computerId: row.placement.computerId,
+        computerId: row.computer.computerId,
         workspaceComputerId: row.computer.id,
         placementGeneration: row.placement.generation,
         attempt: row.delivery.attemptCount,
@@ -579,7 +579,7 @@ export class ImDeliveryWorker {
       await this.#domain.requestReconcile(row.computer.id, instanceId, {
         type: "session:reconcile",
         requestId: randomUUID(),
-        computerId: row.placement.computerId,
+        computerId: row.computer.computerId,
         sessionId: row.session.id,
         agentId: row.agent.id,
         placementGeneration: row.placement.generation,

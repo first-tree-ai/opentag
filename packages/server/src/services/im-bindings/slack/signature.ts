@@ -30,7 +30,7 @@ export function preparseSlackRoute(rawBody: Buffer): { appId: string; teamId: st
   try {
     const value = JSON.parse(rawBody.toString("utf8")) as Record<string, unknown>;
     const appId = value.api_app_id;
-    const teamId = value.team_id ?? value.team;
+    const teamId = value.team_id ?? value.workspace;
     if (typeof appId !== "string" || typeof teamId !== "string" || appId.length > 255 || teamId.length > 255) {
       return undefined;
     }

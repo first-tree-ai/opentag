@@ -729,6 +729,27 @@ describe("OpenTag Web App Shell", () => {
     expect(exit.classList.contains("ds-button--outline")).toBe(false);
   });
 
+  it("opens the Agent from the row rather than from a 36px chevron", async () => {
+    installApi("admin");
+    render(<App />);
+
+    const open = await screen.findByRole("link", { name: "Open Reviewer" });
+    expect(open.textContent).toBe("Reviewer");
+    expect(open.getAttribute("href")).toBe(`/agents/${agentId}`);
+    const card = open.closest(".agent-card");
+    expect(card).toBeTruthy();
+    expect((card as HTMLElement).querySelector(".agent-card-action")?.tagName).toBe("SPAN");
+    /*
+     * The failure exit is a second link inside the same row. It has to stay a sibling of the row
+     * link rather than a child of it: nesting would be invalid, and wrapping the row in one anchor
+     * is the shortcut that would produce it.
+     */
+    const exit = within(card as HTMLElement).getByRole("link", { name: "Connect messaging" });
+    expect(open.contains(exit)).toBe(false);
+    expect(exit.getAttribute("href")).toBe(`/agents/${agentId}/settings/messaging`);
+    expect(within(card as HTMLElement).getAllByRole("link")).toEqual([open, exit]);
+  });
+
   it.each(["/", "/agents"])("redirects unauthenticated protected path %s to login", async (path) => {
     installApi("member", { unauthenticated: true });
     window.history.replaceState({}, "", path);

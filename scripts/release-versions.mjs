@@ -53,6 +53,30 @@ export function parseStagingVersion(version, label = "staging version") {
   };
 }
 
+/**
+ * Orders any two published release versions, stable or staging.
+ *
+ * Both channel heads — the npm dist-tag and the portable channel pointer — must only ever move
+ * forward, and they have to agree on what "forward" means or they can drift apart. Staging
+ * prereleases order below the stable release they lead to, matching semver.
+ */
+export function compareReleaseVersions(left, right) {
+  const parse = (value, label) => {
+    if (typeof value === "string" && value.includes("-staging.")) {
+      const parsed = parseStagingVersion(value, label);
+      return [parsed.major, parsed.minor, parsed.patch, 0, parsed.sequence, parsed.attempt];
+    }
+    const parsed = parseStableVersion(value, label);
+    return [parsed.major, parsed.minor, parsed.patch, 1, 0, 0];
+  };
+  const a = parse(left, "left version");
+  const b = parse(right, "right version");
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1;
+  }
+  return 0;
+}
+
 function compareVersionParts(left, right) {
   return left.major - right.major || left.minor - right.minor || left.patch - right.patch;
 }

@@ -7,11 +7,13 @@ import { classifyRegistryLookup } from "../check-npm-version.mjs";
 import { assertCurrentStagingRevision } from "../check-staging-revision.mjs";
 import { prepareCliRelease } from "../prepare-cli-release.mjs";
 import {
+  compareReleaseVersions,
   findLatestStagingVersion,
   formatStagingVersion,
   resolveNextPublishedStagingVersion,
   resolveProductionVersion,
 } from "../release-versions.mjs";
+import { classifyDistTagLookup, resolveDistTag, SUPERSEDED_DIST_TAG } from "../resolve-npm-dist-tag.mjs";
 import { classifyPublishedMetadataLookup, classifyPublishedVersionsLookup } from "../resolve-staging-release.mjs";
 import { generateThirdPartyNotices } from "../third-party-notices.mjs";
 
@@ -225,4 +227,51 @@ test("generates complete notices for bundled CLI dependencies", async () => {
   assert.match(notices, /Copyright \(c\) 2011 Einar Otto Stangvik/);
   assert.match(notices, /Copyright \(c\) 2025 Colin McDonnell/);
   assert.equal((notices.match(/Permission is hereby granted/g) ?? []).length, 12);
+});
+
+test("orders stable and staging release versions on one scale", () => {
+  assert.equal(compareReleaseVersions("1.2.3", "1.2.3"), 0);
+  assert.equal(compareReleaseVersions("1.2.4", "1.2.3"), 1);
+  assert.equal(compareReleaseVersions("1.2.3", "1.3.0"), -1);
+  assert.equal(compareReleaseVersions("2.0.0", "1.99.99"), 1);
+  // A staging prerelease orders below the stable release it leads to, matching semver.
+  assert.equal(compareReleaseVersions("0.0.2-staging.9.1", "0.0.2"), -1);
+  assert.equal(compareReleaseVersions("0.0.2", "0.0.2-staging.9.1"), 1);
+  // Sequence outranks attempt, and both compare numerically rather than lexically.
+  assert.equal(compareReleaseVersions("0.0.2-staging.10.1", "0.0.2-staging.9.1"), 1);
+  assert.equal(compareReleaseVersions("0.0.2-staging.9.2", "0.0.2-staging.9.1"), 1);
+  assert.equal(compareReleaseVersions("0.0.2-staging.9.1", "0.0.2-staging.9.1"), 0);
+  assert.throws(() => compareReleaseVersions("1.2", "1.2.3"), /semantic version/);
+});
+
+test("npm dist-tag only advances latest on a forward move", () => {
+  // A first publish has no channel head to protect.
+  assert.equal(resolveDistTag({ publishedLatest: undefined, version: "1.0.0" }).tag, "latest");
+  assert.equal(resolveDistTag({ publishedLatest: "1.2.0", version: "1.3.0" }).tag, "latest");
+  // Republishing the same coordinate is idempotent, not a regression.
+  assert.equal(resolveDistTag({ publishedLatest: "1.3.0", version: "1.3.0" }).tag, "latest");
+  // An older release still publishes, but must not drag latest backwards: npm and the portable
+  // channel pointer would otherwise advertise different versions.
+  const superseded = resolveDistTag({ publishedLatest: "1.3.0", version: "1.2.0" });
+  assert.equal(superseded.tag, SUPERSEDED_DIST_TAG);
+  assert.match(superseded.reason, /newer than 1\.2\.0/);
+  assert.equal(resolveDistTag({ publishedLatest: "0.0.2", version: "0.0.2-staging.9.1" }).tag, SUPERSEDED_DIST_TAG);
+});
+
+test("classifies npm dist-tag lookups without mistaking absence for failure", () => {
+  assert.deepEqual(classifyDistTagLookup({ status: 0, stdout: '"1.2.3"\n', stderr: "" }), {
+    published: true,
+    version: "1.2.3",
+  });
+  // An unpublished package, and a published package with no latest tag, both mean "no head yet".
+  assert.deepEqual(classifyDistTagLookup({ status: 1, stdout: "", stderr: "npm error code E404" }), {
+    published: false,
+  });
+  assert.deepEqual(classifyDistTagLookup({ status: 0, stdout: "\n", stderr: "" }), { published: false });
+  // A registry error must never be read as absence, which would move latest onto an older release.
+  assert.throws(
+    () => classifyDistTagLookup({ status: 1, stdout: "", stderr: "ETIMEDOUT" }),
+    /npm dist-tag lookup failed/,
+  );
+  assert.throws(() => classifyDistTagLookup({ status: 0, stdout: "{oops", stderr: "" }), /invalid JSON/);
 });

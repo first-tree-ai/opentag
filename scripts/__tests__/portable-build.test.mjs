@@ -12,6 +12,7 @@ import {
   artifactFileName,
   assertBundledCliHasNoRuntimeDependencies,
   buildPortableReleaseMetadata,
+  comparePortableVersions,
   DEFAULT_DOWNLOAD_BASE_URL,
   getPortableChannelConfig,
   hostPlatform,
@@ -248,6 +249,79 @@ test("the installer help documents the supported options", () => {
   assert.match(rejected.stderr, /unknown option: --nope/);
 });
 
+test("portable versions order monotonically across stable and staging coordinates", () => {
+  assert.equal(comparePortableVersions("1.2.3", "1.2.3"), 0);
+  assert.equal(comparePortableVersions("1.2.4", "1.2.3"), 1);
+  assert.equal(comparePortableVersions("1.2.3", "1.3.0"), -1);
+  assert.equal(comparePortableVersions("2.0.0", "1.99.99"), 1);
+  // A staging prerelease orders below the stable release it leads to.
+  assert.equal(comparePortableVersions("0.0.2-staging.9.1", "0.0.2"), -1);
+  assert.equal(comparePortableVersions("0.0.2", "0.0.2-staging.9.1"), 1);
+  // Staging sequence wins over attempt, and both order numerically rather than lexically.
+  assert.equal(comparePortableVersions("0.0.2-staging.10.1", "0.0.2-staging.9.1"), 1);
+  assert.equal(comparePortableVersions("0.0.2-staging.9.2", "0.0.2-staging.9.1"), 1);
+  assert.equal(comparePortableVersions("0.0.2-staging.9.1", "0.0.2-staging.9.1"), 0);
+  assert.throws(() => comparePortableVersions("1.2", "1.2.3"), /semantic version/);
+});
+
+test("the uploader refuses to accept an immutable object it cannot content-check", async () => {
+  const source = await readFile(join(portableDir, "upload-gcs.sh"), "utf8");
+  const check = source.slice(
+    source.indexOf("check_remote_object_matches() {"),
+    source.indexOf("check_remote_immutable_prefix() {"),
+  );
+  assert.ok(check.length > 0);
+  // md5Hash describes the stored bytes; size and the sha256 custom metadata do not, on their own.
+  assert.match(check, /typeof described\.md5Hash !== "string"/);
+  assert.doesNotMatch(
+    check,
+    /typeof described\.md5Hash === "string" &&/,
+    "a missing md5Hash must fail closed rather than skip the content comparison",
+  );
+  // Composite objects carry no md5Hash at all, so they must never be produced in the first place.
+  assert.match(source, /CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED=False/);
+});
+
+test("the public gate hashes every asset and installs the release before pointers move", async () => {
+  const source = await readFile(join(portableDir, "upload-gcs.sh"), "utf8");
+  const verify = source.slice(
+    source.indexOf("verify_remote_versioned_release() {"),
+    source.indexOf("verify_public_installable() {"),
+  );
+  assert.ok(verify.length > 0);
+  assert.match(verify, /file_digest "\$tmp_dir\/asset\.bin" sha256/, "assets must be downloaded and hashed");
+  assert.doesNotMatch(verify, /curl -fsSI/, "a HEAD request does not prove the served bytes");
+  assert.doesNotMatch(verify, /-r 0-0/, "a one-byte range request does not prove the served bytes");
+
+  // The install check is pinned to the immutable version, so it never depends on a channel pointer.
+  assert.match(source, /sh "\$INSTALLER_PATH" \\\n\s+--version "\$VERSION"/);
+
+  const installCheckIndex = source.indexOf("verify_public_installable\n");
+  const pointerIndex = source.indexOf('upload_mutable_object "install.sh"');
+  assert.ok(installCheckIndex > 0 && pointerIndex > installCheckIndex);
+});
+
+test("channel pointers are single-writer, monotonic, and ordered installer-first", async () => {
+  const source = await readFile(join(portableDir, "upload-gcs.sh"), "utf8");
+
+  // latest.json is the commit point, so it is a compare-and-swap against the observed generation.
+  assert.match(source, /args\+=\(--if-generation-match="\$generation"\)/);
+  assert.match(source, /upload_mutable_object "latest\.json" .* "\$REMOTE_LATEST_GENERATION"/);
+  assert.match(source, /read_remote_channel_pointer\n/);
+  assert.match(source, /if channel_pointer_would_regress; then/);
+
+  const installerIndex = source.indexOf('upload_mutable_object "install.sh"');
+  const latestIndex = source.indexOf('upload_mutable_object "latest.json" "$LATEST_PATH"');
+  assert.ok(
+    installerIndex > 0 && latestIndex > installerIndex,
+    "install.sh must be written before latest.json so a partial publish cannot advertise a version through an older installer",
+  );
+
+  const workflow = await readFile(join(scriptsDir, "..", ".github", "workflows", "publish-npm-package.yml"), "utf8");
+  const production = workflow.slice(workflow.indexOf("  production:"));
+  assert.match(production, /concurrency:\n\s+group: npm-publish-production\n\s+cancel-in-progress: false/);
+});
+
 test("the uploader treats the version prefix as immutable and flips channel pointers last", async () => {
   const source = await readFile(join(portableDir, "upload-gcs.sh"), "utf8");
   await access(join(portableDir, "upload-gcs.sh"), constants.X_OK);
@@ -257,23 +331,24 @@ test("the uploader treats the version prefix as immutable and flips channel poin
   assert.match(source, /IMMUTABLE_CACHE_CONTROL="public, max-age=31536000, immutable"/);
   assert.match(source, /MUTABLE_CACHE_CONTROL="no-cache/);
 
-  // The channel pointers are the one thing a release is allowed to overwrite.
+  // The pointer write is conditioned on the generation this run observed, not created blindly and
+  // not restricted to create-only: it has to be able to replace an existing pointer, exactly once.
   const mutableUpload = source.slice(
     source.indexOf("upload_mutable_object() {"),
-    source.indexOf("print_planned_uploads() {"),
+    source.indexOf("compare_portable_versions() {"),
   );
   assert.ok(mutableUpload.length > 0);
-  assert.doesNotMatch(mutableUpload, /--if-generation-match/);
+  assert.doesNotMatch(mutableUpload, /--if-generation-match=0/);
+  assert.match(mutableUpload, /--if-generation-match="\$generation"/);
 
   const verifyIndex = source.indexOf("verify_remote_versioned_release\n");
-  const latestIndex = source.indexOf('upload_mutable_object "latest.json"');
   const installerIndex = source.indexOf('upload_mutable_object "install.sh"');
   const pointerVerifyIndex = source.indexOf("verify_remote_channel_pointers\n");
   assert.ok(
-    verifyIndex > 0 && latestIndex > verifyIndex,
+    verifyIndex > 0 && installerIndex > verifyIndex,
     "channel pointers must not move before the release is public",
   );
-  assert.ok(installerIndex > latestIndex && pointerVerifyIndex > installerIndex);
+  assert.ok(pointerVerifyIndex > installerIndex);
 });
 
 test("the release scripts default to the OpenTag Cloud Storage coordinates", async () => {

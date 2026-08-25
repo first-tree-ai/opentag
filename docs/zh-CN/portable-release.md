@@ -80,8 +80,8 @@ closed，而不是产出一个只在用户运行时才崩溃的 artifact。
 `https://download.opentag.build/releases` 对外提供。
 
 version prefix 下的一切都是不可变的，写入时带 create-only precondition（`--if-generation-match=0`）以及
-`--content-md5` digest，因此 Cloud Storage 会同时拒绝静默覆盖和损坏的上传。只有 `latest.json` 与 `install.sh` 可变，
-并且最后才写入。
+`--content-md5` digest，因此 Cloud Storage 会同时拒绝静默覆盖和损坏的上传。只有 `latest.json` 与 `install.sh` 可变；
+它们最后才写入，且 `latest.json` 带 generation precondition，使两个发布者不可能交错写入。
 
 ## 构建
 
@@ -127,14 +127,24 @@ precondition 冲突。可复现性以 tar flavor 为界；release 构建在使�
 
 1. 校验本地目录树，并检查每个 asset URL 与构建时使用的 download base URL 一致。
 2. 列出远端 version prefix。出现意料之外的对象即判定 release 失败；已存在的对象必须与本地 artifact 的 size、
-   `sha256` metadata 与 `md5Hash` 都一致。
-3. 仅以 create-only 方式上传缺失的不可变对象。
+   `md5Hash` 与 `sha256` metadata 都一致。`md5Hash` 是必需项而非「有则检查」：三者之中只有它描述实际存储的字节，
+   因此缺失即 fail closed。出于同样原因，parallel composite upload 被全程禁用——composite 对象不带 `md5Hash`。
+3. 仅以 create-only 方式上传缺失的不可变对象，每次都附带 `--content-md5` digest。
 4. 重新列举，并要求 version prefix 完整。
-5. 通过**公网**端点获取该 version 的 `manifest.json` 与 `SHA256SUMS` 并逐字节比对，同时确认每个 tarball URL 可读。
-6. 只有到这一步才写入 `latest.json` 与 `install.sh`，并同样进行校验。
+5. 通过**公网**端点：逐字节比对该 version 的 `manifest.json` 与 `SHA256SUMS`，然后完整下载每个 asset 并对
+   manifest 中的 SHA-256 校验。
+6. 从公网端点按精确 version 安装一次该 release，并检查其报告的版本号。这一步在发布主机上运行，因此只覆盖该平台。
+7. 读取 channel 指针以及产生它的 generation。若 channel 已经指向更新的 version，就此停止：不可变对象已发布且可按
+   精确 version 安装，指针保持不动。
+8. 写入 `install.sh`，再以第 7 步的 generation 为前置条件写入 `latest.json`，并对两者校验。
 
-第 5 步正是 release 无法对外宣称一个公网端点实际不提供的 version 的原因。它检查的每个 URL 都来自本地 release
-metadata，而不是任何已经存在于远端的内容。
+第 5、6 步正是 release 无法对外宣称一个公网端点实际不提供的 version 的原因。`HEAD` 或单字节 range 请求只能证明该
+URL 有响应；一个陈旧或路由错误的缓存对象会通过检查，而之后每个真正下载它的 installer 都会因 checksum 不符而拒绝。
+检查所用的每个 URL 都来自本地 release metadata，而不是任何已经存在于远端的内容。
+
+第 7 步让发布单调向前，第 8 步的 generation 前置条件让发布单写者化：并发发布者会触发 precondition 失败，而不是
+交错写出混合状态的 channel。先写 `install.sh` 是因为它与 channel 绑定、与 version 无关，因此两次写入之间失败时，
+留下的 installer 至少与指针一样新。release workflow 还按 channel 做了串行化。
 
 常用参数：`--dry-run` 只打印计划中的操作而不访问 Cloud Storage，`--preflight-only` 在不写入的情况下检查不可变
 prefix 兼容性，`--skip-build` 复用输出目录中已有的 artifact。
@@ -175,4 +185,7 @@ bucket 必须在 download base URL 上公开提供 release prefix。在此之前
   Windows。
 - 激活之后 installer 会运行 `daemon ensure-service`。exit code 3 表示 CLI 把 service 安装推迟到 `login` 创建
   credential 之后，这是首次安装的正常路径，不是失败。
-- release 从不删除旧的 version 目录，因此可以用 `sh install.sh --version <older-version>` 回滚安装。
+- 任何已发布的 version 都可以用 `sh install.sh --version <version>` 直接安装，它读取该 version 的不可变 manifest，
+  完全不查 channel 指针。回滚就是这样做的，release gate 也用同一条路径在对外宣称之前先安装一次。
+- 已存在的 version 目录永不就地改写，因为 `current` 可能经由它解析。强制重装会落到一个新目录，`current` 原子地移到
+  新目录之后，才删除被取代的那份——因此被中断的重装可能留下一个多余目录，但绝不会让 `current` 悬空。

@@ -136,13 +136,16 @@ process.stdout.write(latest.manifestUrl.slice(0, -suffix.length));
 ' "$LATEST_PATH" "$CHANNEL" "$VERSION"
 }
 
+# Streams rather than buffering: release tarballs are tens of megabytes.
 file_digest() {
   node -e '
 const { createHash } = require("node:crypto");
-const { readFileSync } = require("node:fs");
-const bytes = readFileSync(process.argv[1]);
-const encoding = process.argv[2] === "md5" ? "base64" : "hex";
-process.stdout.write(createHash(process.argv[2]).update(bytes).digest(encoding));
+const { createReadStream } = require("node:fs");
+const algorithm = process.argv[2];
+const hash = createHash(algorithm);
+createReadStream(process.argv[1])
+  .on("data", (chunk) => hash.update(chunk))
+  .on("end", () => process.stdout.write(hash.digest(algorithm === "md5" ? "base64" : "hex")));
 ' "$1" "$2"
 }
 
@@ -172,23 +175,50 @@ gcs_uri() {
   printf 'gs://%s/%s' "$BUCKET" "$(object_name "$1")"
 }
 
+# Parallel composite uploads are disabled for every call: a composite object has no md5Hash, and the
+# immutability check refuses to accept an object whose stored content it cannot compare. The override
+# is passed per invocation so it never mutates the caller's gcloud configuration.
 run_gcloud() {
   local args=(storage "$@")
   [[ -n "$PROJECT" ]] && args+=(--project "$PROJECT")
-  gcloud "${args[@]}"
+  CLOUDSDK_STORAGE_PARALLEL_COMPOSITE_UPLOAD_ENABLED=False gcloud "${args[@]}"
 }
 
 download_url() {
   curl -fsSL --retry 3 --retry-delay 2 "$1" -o "$2"
 }
 
-check_asset_url() {
-  local url="$1"
-  if curl -fsSI --retry 3 --retry-delay 2 "$url" >/dev/null; then
-    return 0
-  fi
-  curl -fsSL --retry 3 --retry-delay 2 -r 0-0 "$url" -o /dev/null
+asset_checksums() {
+  local manifest="$1"
+  node -e '
+const fs = require("node:fs");
+const manifest = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+const assets = Array.isArray(manifest.assets) ? manifest.assets : [];
+if (assets.length === 0) process.exit(2);
+for (const asset of assets) {
+  if (typeof asset.fileName !== "string" || typeof asset.url !== "string" || typeof asset.sha256 !== "string") {
+    process.exit(2);
+  }
+  console.log(`${asset.fileName}\t${asset.url}\t${asset.sha256}\t${asset.platform}`);
 }
+' "$manifest"
+}
+
+host_platform() {
+  local os arch
+  case "$(uname -s 2>/dev/null || true)" in
+    Darwin) os="darwin" ;;
+    Linux) os="linux" ;;
+    *) return 1 ;;
+  esac
+  case "$(uname -m 2>/dev/null || true)" in
+    arm64 | aarch64) arch="arm64" ;;
+    x86_64 | amd64) arch="x64" ;;
+    *) return 1 ;;
+  esac
+  printf '%s-%s' "$os" "$arch"
+}
+
 
 verify_public_file_matches() {
   local label="$1"
@@ -218,6 +248,11 @@ validate_local_release_urls() {
   done < <(asset_entries "$MANIFEST_PATH")
 }
 
+# Proves the public endpoint serves the exact release before any channel pointer moves.
+#
+# Every asset is downloaded in full and hashed. A HEAD or single-byte range request only proves that
+# something answers at the URL, so a stale or misrouted cached object would pass while every
+# installer that later fetched it would reject its checksum — after the release had been advertised.
 verify_remote_versioned_release() {
   (
     set -euo pipefail
@@ -228,11 +263,58 @@ verify_remote_versioned_release() {
     verify_public_file_matches "versioned manifest" "$version_base_url/manifest.json" "$MANIFEST_PATH" "$tmp_dir/manifest.json"
     verify_public_file_matches "versioned SHA256SUMS" "$version_base_url/SHA256SUMS" "$VERSION_DIR/SHA256SUMS" "$tmp_dir/SHA256SUMS"
 
-    while IFS=$'\t' read -r file_name url; do
+    while IFS=$'\t' read -r file_name url expected_sha platform; do
       [[ -n "$file_name" ]] || continue
       log "verifying public release asset: $url"
-      check_asset_url "$url" || die "public release asset is not readable: $url"
-    done < <(asset_entries "$MANIFEST_PATH")
+      download_url "$url" "$tmp_dir/asset.bin" || die "public release asset is not readable: $url"
+      actual_sha="$(file_digest "$tmp_dir/asset.bin" sha256)"
+      if [[ "$actual_sha" != "$expected_sha" ]]; then
+        die "public release asset does not match its published checksum ($platform): expected $expected_sha, got $actual_sha at $url"
+      fi
+      rm -f "$tmp_dir/asset.bin"
+    done < <(asset_checksums "$MANIFEST_PATH")
+  )
+}
+
+# Installs the release from the public endpoint the way a user would, pinned to the immutable version
+# so it never depends on a channel pointer. This runs before the pointers move, so a payload that
+# cannot actually be installed on this platform fails the release instead of being advertised first
+# and discovered afterwards.
+verify_public_installable() {
+  local platform
+  if ! platform="$(host_platform)"; then
+    log "skipping the pre-commit install check: this host is not a portable release platform"
+    return 0
+  fi
+  if ! asset_checksums "$MANIFEST_PATH" | cut -f 4 | grep -Fxq -- "$platform"; then
+    log "skipping the pre-commit install check: the release carries no $platform asset"
+    return 0
+  fi
+
+  local bin_name
+  bin_name="$(json_string "$MANIFEST_PATH" "binName")"
+  [[ -n "$bin_name" ]] || die "manifest is missing binName"
+
+  (
+    set -euo pipefail
+    tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/opentag-portable-install-check.XXXXXX")"
+    trap 'rm -rf "$tmp_dir"' EXIT
+
+    log "installing $CHANNEL $VERSION from the public endpoint before committing channel pointers"
+    OPENTAG_PORTABLE_DOWNLOAD_BASE_URL="$DOWNLOAD_BASE_URL" \
+      OPENTAG_PORTABLE_CHANNEL="$CHANNEL" \
+      OPENTAG_HOME="$tmp_dir/home" \
+      sh "$INSTALLER_PATH" \
+      --version "$VERSION" \
+      --prefix "$tmp_dir/prefix" \
+      --bin-dir "$tmp_dir/bin" \
+      --no-path-edit ||
+      die "the published $VERSION release could not be installed from $DOWNLOAD_BASE_URL"
+
+    installed_version="$(OPENTAG_HOME="$tmp_dir/home" "$tmp_dir/bin/$bin_name" --version 2>&1)"
+    [[ "$installed_version" == *"$VERSION"* ]] ||
+      die "the published release reported version \"$installed_version\", expected $VERSION"
+    log "public install check passed for $platform"
   )
 }
 
@@ -315,9 +397,13 @@ validate_no_extra_remote_objects() {
   done <"$remote_keys_path"
 }
 
-# Compares what Cloud Storage actually holds against the local artifact. The size and sha256 checks
-# are mandatory; md5Hash is absent for composite objects, so it strengthens the comparison when the
-# API reports it instead of rejecting an otherwise valid object.
+# Compares what Cloud Storage actually holds against the local artifact.
+#
+# md5Hash is the only field here that describes the stored bytes: size is weak, and the sha256 custom
+# metadata is written by whoever uploaded the object, so an object with different content but a
+# matching size and forged metadata would otherwise be accepted as the preflighted release. It is
+# therefore required rather than opportunistic. A composite object reports no md5Hash at all, so it
+# fails closed with an explicit remedy instead of being silently trusted.
 check_remote_object_matches() {
   local key="$1" expected_size="$2" expected_sha="$3" expected_md5="$4"
   local described
@@ -330,15 +416,20 @@ const problems = [];
 if (String(described.size) !== expectedSize) {
   problems.push(`size ${described.size ?? "missing"} != ${expectedSize}`);
 }
+if (typeof described.md5Hash !== "string") {
+  problems.push(
+    "md5Hash is missing, so the stored content cannot be compared; a composite object cannot be " +
+      "accepted as an immutable release object and has to be removed before the release is retried",
+  );
+} else if (described.md5Hash !== expectedMd5) {
+  problems.push(`md5Hash ${described.md5Hash} != ${expectedMd5}`);
+}
 const remoteSha = described.metadata?.sha256;
 if (remoteSha !== expectedSha) {
   problems.push(`sha256 metadata ${remoteSha ?? "missing"} != ${expectedSha}`);
 }
-if (typeof described.md5Hash === "string" && described.md5Hash !== expectedMd5) {
-  problems.push(`md5Hash ${described.md5Hash} != ${expectedMd5}`);
-}
 if (problems.length > 0) {
-  console.error(`immutable object ${key} already exists with different content: ${problems.join("; ")}`);
+  console.error(`immutable object ${key} does not match the local release artifact: ${problems.join("; ")}`);
   process.exit(1);
 }
 ' "$described" "$key" "$expected_size" "$expected_sha" "$expected_md5" ||
@@ -385,14 +476,82 @@ upload_immutable_object() {
     --if-generation-match=0
 }
 
+# `generation` turns the write into a compare-and-swap against the generation this run observed, so a
+# concurrent publisher causes a failed precondition instead of a silently interleaved channel. Pass 0
+# to require that the object does not exist yet.
 upload_mutable_object() {
-  local label="$1" local_path="$2" content_type="$3" key="$4"
-  log "uploading mutable $label to $(gcs_uri "$key")"
-  run_gcloud cp "$local_path" "$(gcs_uri "$key")" \
-    --cache-control="$MUTABLE_CACHE_CONTROL" \
-    --content-type="$content_type" \
-    --custom-metadata="sha256=$(file_digest "$local_path" sha256)" \
-    --content-md5="$(file_digest "$local_path" md5)"
+  local label="$1" local_path="$2" content_type="$3" key="$4" generation="${5:-}"
+  local args=(cp "$local_path" "$(gcs_uri "$key")"
+    --cache-control="$MUTABLE_CACHE_CONTROL"
+    --content-type="$content_type"
+    --custom-metadata="sha256=$(file_digest "$local_path" sha256)"
+    --content-md5="$(file_digest "$local_path" md5)")
+  if [[ -n "$generation" ]]; then
+    args+=(--if-generation-match="$generation")
+    log "uploading mutable $label to $(gcs_uri "$key") (expecting generation $generation)"
+  else
+    log "uploading mutable $label to $(gcs_uri "$key")"
+  fi
+  run_gcloud "${args[@]}" ||
+    die "failed to write $label; another release may have published concurrently, so the channel was left unchanged"
+}
+
+compare_portable_versions() {
+  node -e '
+const { pathToFileURL } = require("node:url");
+import(pathToFileURL(process.argv[1]).href)
+  .then((module) => process.stdout.write(String(module.comparePortableVersions(process.argv[2], process.argv[3]))))
+  .catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
+' "$SCRIPT_DIR/build-portable.mjs" "$1" "$2"
+}
+
+# Reads the channel pointer together with the generation that produced it, so the later write can be
+# conditioned on exactly the state this decision was made against.
+read_remote_channel_pointer() {
+  REMOTE_LATEST_GENERATION=0
+  REMOTE_LATEST_VERSION=""
+
+  local uri error_path described status=0
+  uri="$(gcs_uri "$CHANNEL/latest.json")"
+  error_path="$(mktemp "${TMPDIR:-/tmp}/opentag-gcs-pointer.XXXXXX")"
+  described="$(run_gcloud objects describe "$uri" --raw --format=json 2>"$error_path")" || status=$?
+  if [[ "$status" -ne 0 ]]; then
+    if grep -qiE "not found|404|does not exist" "$error_path"; then
+      rm -f "$error_path"
+      log "channel pointer does not exist yet; this release will create it"
+      return 0
+    fi
+    cat "$error_path" >&2
+    rm -f "$error_path"
+    die "failed to read the channel pointer at $uri"
+  fi
+  rm -f "$error_path"
+
+  REMOTE_LATEST_GENERATION="$(printf '%s' "$described" | node -e '
+const described = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+if (described.generation === undefined) process.exit(2);
+process.stdout.write(String(described.generation));
+')" || die "the channel pointer at $uri reports no generation"
+
+  REMOTE_LATEST_VERSION="$(run_gcloud cat "${uri}#${REMOTE_LATEST_GENERATION}" | node -e '
+const latest = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+if (typeof latest.version !== "string") process.exit(2);
+process.stdout.write(latest.version);
+')" || die "the channel pointer at $uri could not be read at generation $REMOTE_LATEST_GENERATION"
+}
+
+# Publication is monotonic: a rerun of an older release must not drag the channel backwards. Its
+# immutable objects are still published and installable by exact version, so this is a skip, not a
+# failure.
+channel_pointer_would_regress() {
+  [[ -n "$REMOTE_LATEST_VERSION" ]] || return 1
+  local order
+  order="$(compare_portable_versions "$VERSION" "$REMOTE_LATEST_VERSION")" ||
+    die "cannot compare $VERSION against the published channel version $REMOTE_LATEST_VERSION"
+  [[ "$order" == "-1" ]]
 }
 
 print_planned_uploads() {
@@ -537,9 +696,20 @@ check_remote_immutable_prefix "require-complete" "$EXPECTED_OBJECTS_PATH" "$MISS
 
 log "verifying the public versioned release before updating mutable channel entry points"
 verify_remote_versioned_release
+verify_public_installable
 
-upload_mutable_object "latest.json" "$LATEST_PATH" "application/json" "$CHANNEL/latest.json"
+read_remote_channel_pointer
+if channel_pointer_would_regress; then
+  log "the $CHANNEL channel already points at $REMOTE_LATEST_VERSION, which is newer than $VERSION"
+  log "leaving the channel pointers unchanged; $VERSION is published and installable with --version $VERSION"
+  exit 0
+fi
+
+# install.sh first: it is channel-pinned and version-independent, so a failure between the two writes
+# leaves an installer that is at least as new as the pointer, which still installs correctly. The
+# reverse order could advertise a version through an installer that predates it.
 upload_mutable_object "install.sh" "$INSTALLER_PATH" "text/x-shellscript; charset=utf-8" "$CHANNEL/install.sh"
+upload_mutable_object "latest.json" "$LATEST_PATH" "application/json" "$CHANNEL/latest.json" "$REMOTE_LATEST_GENERATION"
 
 verify_remote_channel_pointers
 log "published $CHANNEL $VERSION to $(gcs_uri "$CHANNEL")/"

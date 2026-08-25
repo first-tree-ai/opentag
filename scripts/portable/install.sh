@@ -395,8 +395,11 @@ ensure_daemon_service() {
 }
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/opentag-portable.XXXXXX")"
+TEMP_VERSION_DIR=""
 cleanup() {
   rm -rf "$WORK_DIR"
+  # An interrupted install must not leave a half-extracted payload under the install root.
+  [ -z "$TEMP_VERSION_DIR" ] || rm -rf "$TEMP_VERSION_DIR"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -460,17 +463,29 @@ if [ "$ACTUAL_SHA" != "$ASSET_SHA" ]; then
   die "checksum mismatch for portable payload: expected $ASSET_SHA, got $ACTUAL_SHA"
 fi
 
-FINAL_VERSION_DIR="$PREFIX/versions/$VERSION"
+CANONICAL_VERSION_DIR="$PREFIX/versions/$VERSION"
 TEMP_VERSION_DIR="$PREFIX/.tmp/${VERSION}.$$"
 rm -rf "$TEMP_VERSION_DIR"
 mkdir -p "$TEMP_VERSION_DIR"
 extract_tarball "$TARBALL" "$TEMP_VERSION_DIR"
 
-if [ -e "$FINAL_VERSION_DIR" ] && [ "$FORCE" -eq 0 ]; then
-  rm -rf "$TEMP_VERSION_DIR"
-  VALIDATION_DIR="$FINAL_VERSION_DIR"
+# A version directory is never written in place once it exists, because `current` may resolve through
+# it: replacing it would leave the link pointing at a half-removed tree, and a crash between the two
+# renames of a swap would strand it permanently. A fresh payload is instead installed under a
+# directory that nothing points at yet, and `current` is moved onto it in one atomic step.
+if [ -e "$CANONICAL_VERSION_DIR" ]; then
+  if [ "$FORCE" -eq 0 ]; then
+    rm -rf "$TEMP_VERSION_DIR"
+    VALIDATION_DIR="$CANONICAL_VERSION_DIR"
+    FINAL_VERSION_DIR="$CANONICAL_VERSION_DIR"
+  else
+    VALIDATION_DIR="$TEMP_VERSION_DIR"
+    FINAL_VERSION_DIR="$PREFIX/versions/${VERSION}+$$"
+    rm -rf "$FINAL_VERSION_DIR"
+  fi
 else
   VALIDATION_DIR="$TEMP_VERSION_DIR"
+  FINAL_VERSION_DIR="$CANONICAL_VERSION_DIR"
 fi
 
 INSTALL_FILE="$VALIDATION_DIR/INSTALL.json"
@@ -500,17 +515,10 @@ if ! "$VALIDATION_DIR/node/bin/node" "$VALIDATION_DIR/$INSTALL_ENTRY" --version 
   die "portable payload failed the pre-commit runtime smoke check"
 fi
 
-# Move a freshly extracted payload into place with two renames rather than a recursive delete, so a
-# reinstall of the version `current` already points at cannot leave the link dangling while files are
-# removed one by one.
+# A single rename into a path nothing occupies. Until `current` moves, the previous install stays
+# whole and reachable; after it moves, the new payload is already complete.
 if [ "$VALIDATION_DIR" = "$TEMP_VERSION_DIR" ]; then
-  REPLACED_VERSION_DIR="$PREFIX/.tmp/${VERSION}.replaced.$$"
-  rm -rf "$REPLACED_VERSION_DIR"
-  if [ -e "$FINAL_VERSION_DIR" ]; then
-    mv "$FINAL_VERSION_DIR" "$REPLACED_VERSION_DIR"
-  fi
   mv "$TEMP_VERSION_DIR" "$FINAL_VERSION_DIR"
-  rm -rf "$REPLACED_VERSION_DIR"
 fi
 
 # Prepare the stable shim while current still names the old version. The current symlink is the final
@@ -519,6 +527,15 @@ write_shim "$BIN_DIR/$BIN_NAME" "$CURRENT_LINK" "$BIN_DIR"
 rm -f "$NEW_LINK"
 ln -s "$FINAL_VERSION_DIR" "$NEW_LINK"
 atomic_replace_current_link "$NEW_LINK" "$CURRENT_LINK"
+
+# Past the commit point. Everything below is best-effort and must not fail the install.
+#
+# A forced reinstall left the superseded copy of this version behind so that `current` never pointed
+# at a directory being rewritten. Now that `current` resolves elsewhere, drop it: leaving it would
+# make the next ordinary install of the same version reuse a stale payload instead of this one.
+if [ "$FINAL_VERSION_DIR" != "$CANONICAL_VERSION_DIR" ] && [ -e "$CANONICAL_VERSION_DIR" ]; then
+  rm -rf "$CANONICAL_VERSION_DIR" || log "Could not remove the superseded payload at $CANONICAL_VERSION_DIR"
+fi
 
 PATH="$BIN_DIR:${PATH:-}"
 export PATH

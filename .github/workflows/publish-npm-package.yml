@@ -164,6 +164,11 @@ jobs:
     name: Publish CLI Production
     if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    # Production releases publish a mutable channel pointer, so they must be single-writer. Queued
+    # rather than cancelled: a cancelled run could stop between the two channel objects.
+    concurrency:
+      group: npm-publish-production
+      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write

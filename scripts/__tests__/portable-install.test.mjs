@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -220,6 +229,62 @@ test("portable installer activates a release and short-circuits when it is alrea
     assert.equal(forced.status, 0, `${forced.stdout}\n${forced.stderr}`);
     assert.match(forced.stdout, /OpenTag 0\.0\.2-staging\.1\.1 installed at/);
     assert.equal(tarballRequests(requests, "0.0.2-staging.1.1"), 2, "--force must reinstall the same version");
+  });
+});
+
+test("portable installer can install an immutable version without a channel pointer", {
+  skip: platform === null,
+}, async () => {
+  await withReleaseServer(async ({ baseUrl, releaseRoot, requests, root }) => {
+    buildRelease({ baseUrl, releaseRoot, version: "0.0.2-staging.1.1" });
+    // The release gate installs by exact version before any pointer exists, so this path must not
+    // depend on latest.json at all.
+    await rm(join(releaseRoot, channel, "latest.json"), { force: true });
+
+    const result = await runInstaller({ args: ["--version", "0.0.2-staging.1.1"], baseUrl, root });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /OpenTag 0\.0\.2-staging\.1\.1 installed at/);
+    assert.ok(
+      !requests.some((url) => url.endsWith("latest.json")),
+      "a version-pinned install must never read the channel pointer",
+    );
+
+    const installed = spawnSync(join(root, "bin", binName), ["--version"], { encoding: "utf8" });
+    assert.equal(installed.stdout.trim(), "0.0.2-staging.1.1");
+  });
+});
+
+test("portable installer never rewrites the payload current points at", { skip: platform === null }, async () => {
+  await withReleaseServer(async ({ baseUrl, releaseRoot, root }) => {
+    buildRelease({ baseUrl, releaseRoot, version: "0.0.2-staging.1.1" });
+    assert.equal((await runInstaller({ baseUrl, root })).status, 0);
+
+    const versionsDir = join(root, "prefix", "versions");
+    const before = readdirSync(versionsDir).sort();
+    assert.deepEqual(before, ["0.0.2-staging.1.1"]);
+    const currentBefore = realpathSync(join(root, "prefix", "current"));
+
+    const forced = await runInstaller({ args: ["--force"], baseUrl, root });
+    assert.equal(forced.status, 0, `${forced.stdout}\n${forced.stderr}`);
+
+    // The reinstall landed somewhere current did not already resolve to, so the link was never
+    // pointing at a directory being replaced.
+    const currentAfter = realpathSync(join(root, "prefix", "current"));
+    assert.notEqual(currentAfter, currentBefore);
+    assert.ok(existsSync(join(currentAfter, "INSTALL.json")));
+
+    // Once current moved, the superseded copy is dropped so the next ordinary install cannot reuse
+    // a stale payload under the canonical version directory.
+    assert.ok(!existsSync(currentBefore), "the superseded payload must not survive the reinstall");
+    assert.equal(readdirSync(join(root, "prefix", ".tmp")).length, 0, "no half-extracted payload may be left behind");
+
+    const installed = spawnSync(join(root, "bin", binName), ["--version"], { encoding: "utf8" });
+    assert.equal(installed.stdout.trim(), "0.0.2-staging.1.1");
+
+    // A later ordinary install of the same version must still converge on a working payload.
+    const again = await runInstaller({ baseUrl, root });
+    assert.equal(again.status, 0, `${again.stdout}\n${again.stderr}`);
+    assert.match(again.stdout, /already installed and up to date/);
   });
 });
 

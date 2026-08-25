@@ -89,24 +89,40 @@ import(pathToFileURL(process.argv[1]).href).then((module) => {
     log "running the public install smoke test from $installer_url"
     curl -fsSL --retry 3 --retry-delay 2 "$installer_url" -o "$installer"
 
+    # This stage validates the channel pointer, so it asserts against whatever the channel actually
+    # advertises. Publication is monotonic: republishing an older release leaves a newer pointer in
+    # place on purpose, and that must not be reported as a broken channel.
+    curl -fsSL --retry 3 --retry-delay 2 "$DOWNLOAD_BASE_URL/$CHANNEL/latest.json" -o "$tmp_dir/latest.json"
+    published_version="$(node -e '
+const latest = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+if (typeof latest.version !== "string") process.exit(2);
+process.stdout.write(latest.version);
+' "$tmp_dir/latest.json")"
+    [[ -n "$published_version" ]] || die "the published channel pointer carries no version"
+    if [[ "$published_version" != "$VERSION" ]]; then
+      log "the $CHANNEL channel advertises $published_version rather than $VERSION; smoking that instead"
+    fi
+
     OPENTAG_PORTABLE_DOWNLOAD_BASE_URL="$DOWNLOAD_BASE_URL" \
       OPENTAG_PORTABLE_CHANNEL="$CHANNEL" \
+      OPENTAG_HOME="$tmp_dir/home" \
       sh "$installer" --prefix "$tmp_dir/prefix" --bin-dir "$tmp_dir/bin" --no-path-edit
 
-    version_output="$("$tmp_dir/bin/$bin_name" --version 2>&1)"
-    [[ "$version_output" == *"$VERSION"* ]] ||
-      die "installed portable CLI reported \"$version_output\", expected $VERSION"
+    version_output="$(OPENTAG_HOME="$tmp_dir/home" "$tmp_dir/bin/$bin_name" --version 2>&1)"
+    [[ "$version_output" == *"$published_version"* ]] ||
+      die "installed portable CLI reported \"$version_output\", expected $published_version"
 
     # A second run must recognize the release it just installed and stop before downloading again.
     repeat_output="$(
       OPENTAG_PORTABLE_DOWNLOAD_BASE_URL="$DOWNLOAD_BASE_URL" \
         OPENTAG_PORTABLE_CHANNEL="$CHANNEL" \
+        OPENTAG_HOME="$tmp_dir/home" \
         sh "$installer" --prefix "$tmp_dir/prefix" --bin-dir "$tmp_dir/bin" --no-path-edit 2>&1
     )"
     [[ "$repeat_output" == *"already installed and up to date"* ]] ||
       die "reinstalling the published release did not short-circuit: $repeat_output"
 
-    log "public install smoke test passed for $CHANNEL $VERSION"
+    log "public install smoke test passed for $CHANNEL $published_version"
   )
 }
 

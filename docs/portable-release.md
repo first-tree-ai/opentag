@@ -83,7 +83,8 @@ Default coordinates are the `opentag-release` bucket under the `releases` prefix
 
 Everything under a version prefix is immutable and written with a create-only precondition
 (`--if-generation-match=0`) plus a `--content-md5` digest, so Cloud Storage rejects both a silent overwrite and a
-corrupted upload. Only `latest.json` and `install.sh` are mutable, and they are written last.
+corrupted upload. Only `latest.json` and `install.sh` are mutable; they are written last, and `latest.json` is written
+under a generation precondition so two publishers can never interleave.
 
 ## Building
 
@@ -131,15 +132,28 @@ a fixed order, and each stage is a gate on the next:
 
 1. Validate the local tree, and check that every asset URL matches the download base URL the build used.
 2. List the remote version prefix. An unexpected object fails the release; an existing object must match the local
-   artifact's size, `sha256` metadata, and `md5Hash`.
-3. Upload only the missing immutable objects, create-only.
+   artifact's size, `md5Hash`, and `sha256` metadata. `md5Hash` is required, not opportunistic: it is the only one of
+   the three that describes the stored bytes, so an object without it fails closed. Parallel composite uploads are
+   disabled for the same reason, because a composite object reports no `md5Hash`.
+3. Upload only the missing immutable objects, create-only, each with a `--content-md5` digest.
 4. Re-list and require the version prefix to be complete.
-5. Fetch the versioned `manifest.json` and `SHA256SUMS` over the **public** endpoint and compare them byte for byte,
-   and confirm every tarball URL is readable.
-6. Only then write `latest.json` and `install.sh`, and verify those too.
+5. Over the **public** endpoint: compare the versioned `manifest.json` and `SHA256SUMS` byte for byte, then download
+   every asset in full and verify its SHA-256 against the manifest.
+6. Install the release from the public endpoint, pinned to the exact version, and check the reported version. This
+   runs on the release host, so it covers that platform only.
+7. Read the channel pointer and the generation that produced it. If the channel already advertises a newer version,
+   stop here: the immutable objects are published and installable by exact version, and the pointer is left alone.
+8. Write `install.sh`, then `latest.json` conditioned on the generation from step 7, and verify both.
 
-Step 5 is why a release cannot advertise a version the public endpoint does not actually serve. Every URL it checks is
-derived from the local release metadata, never from anything already remote.
+Steps 5 and 6 are why a release cannot advertise a version the public endpoint does not actually serve. A `HEAD` or
+single-byte range request would only prove that something answers at the URL; a stale or misrouted cached object would
+pass while every installer that fetched it would reject its checksum. Every URL checked is derived from the local
+release metadata, never from anything already remote.
+
+Step 7 makes publication monotonic, and the generation precondition in step 8 makes it single-writer: a concurrent
+publisher causes a failed precondition rather than an interleaved channel. `install.sh` is written first because it is
+channel-pinned and version-independent, so a failure between the two writes leaves an installer that is at least as new
+as the pointer. Release workflows are additionally serialized per channel.
 
 Useful flags: `--dry-run` prints the planned operations without contacting Cloud Storage, `--preflight-only` checks
 immutable-prefix compatibility without writing, and `--skip-build` reuses artifacts already in the output directory.
@@ -182,5 +196,9 @@ the public verification gate fails and the channel pointers are deliberately lef
   supported; Windows is not.
 - After activation the installer runs `daemon ensure-service`. Exit code 3 means the CLI deferred service setup until
   `login` creates credentials, which is the normal first-install path and not a failure.
-- A release never deletes an old version directory, so an install can be rolled back with
-  `sh install.sh --version <older-version>`.
+- Any released version can be installed directly with `sh install.sh --version <version>`, which reads that version's
+  immutable manifest and never consults the channel pointer. This is how a rollback is performed, and how the release
+  gate installs a release before it is advertised.
+- An existing version directory is never rewritten in place, because `current` may resolve through it. A forced
+  reinstall lands in a new directory, `current` is moved onto it atomically, and only then is the superseded copy
+  removed — so an interrupted reinstall can leave a stray directory but can never leave `current` dangling.

@@ -231,7 +231,7 @@ describe("Agent persistence and authorization", () => {
         teamId: value.bootstrap.teamId,
         managerUserId: value.bootstrap.userId,
         computerId: computer.id,
-        receiveMode: "mention_only",
+        receiveMode: "all_message",
         revision: 1,
         runtimeConfig: DEFAULT_AGENT_RUNTIME_CONFIG,
       });

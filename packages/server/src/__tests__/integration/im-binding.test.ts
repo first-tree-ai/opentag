@@ -171,12 +171,14 @@ async function unboundFixture() {
     })
     .returning();
   if (!computer) throw new Error("Computer fixture was not created");
-  const agent = await new AgentService(client.database).createForTeam(bootstrap.userId, bootstrap.teamId, {
+  const created = await new AgentService(client.database).createForTeam(bootstrap.userId, bootstrap.teamId, {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
     computerId: computer.id,
   });
+  await client.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, created.id));
+  const agent = { ...created, receiveMode: "mention_only" as const };
   const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
   const imBindingService = new ImBindingService(client.database, cipher);
   return { ...client, agent, bootstrap, computer, cipher, imBindingService };
@@ -701,7 +703,7 @@ describe("IM binding persistence", () => {
         .values({ teamId: value.bootstrap.teamId, userId: member.id, role: "member", status: "active" });
 
       const summary = await value.imBindingService.getForAgent(member.id, value.agent.id);
-      expect(summary).toMatchObject({ provider: "slack", bindingState: "active", receiveMode: "mention_only" });
+      expect(summary).toMatchObject({ provider: "slack", bindingState: "active", receiveMode: "all_message" });
       expect(JSON.stringify(summary)).not.toMatch(/credential|identity|appId|botUserId|lastError/i);
       const handoff = await value.imBindingService.getHandoffForAgent(member.id, value.agent.id);
       expect(handoff).toEqual({ bindingState: "active", handoffReady: true });
@@ -1639,6 +1641,7 @@ describe("IM binding persistence", () => {
   it("lazily materializes Slack Thread Sessions from existing, current-direct, or root-direct evidence", async () => {
     const value = await fixture();
     try {
+      await value.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, value.agent.id));
       const inbox = new ImMessageInbox(value.database);
       const directRoot = revisionEvent({
         providerEventId: "lazy-root",
@@ -1821,6 +1824,7 @@ describe("IM binding persistence", () => {
   it("reconciles a Thread reply that commits before its direct root", async () => {
     const value = await fixture();
     try {
+      await value.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, value.agent.id));
       const replyHeld = deferred<void>();
       const releaseReply = deferred<void>();
       const replyInbox = new ImMessageInbox(value.database, {
@@ -2104,6 +2108,7 @@ describe("IM binding persistence", () => {
   it("converges concurrent first Thread admissions on one active Session and placement", async () => {
     const value = await fixture();
     try {
+      await value.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, value.agent.id));
       const inbox = new ImMessageInbox(value.database);
       await inbox.ingest(
         value.imBindingId,
@@ -2338,6 +2343,7 @@ describe("IM binding persistence", () => {
   it("reserves the verified root beyond the rolling Thread history item cap", async () => {
     const value = await fixture();
     try {
+      await value.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, value.agent.id));
       const instanceId = crypto.randomUUID();
       await value.database
         .update(computers)

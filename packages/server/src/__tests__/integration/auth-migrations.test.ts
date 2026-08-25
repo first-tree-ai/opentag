@@ -79,11 +79,12 @@ describe("database migrations", () => {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    expect(journal.entries.slice(-4).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    expect(journal.entries.slice(-5).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 10, tag: "0010_optimal_jazinda" },
       { idx: 11, tag: "0011_staging_team_setup_repair" },
       { idx: 12, tag: "0012_supreme_maddog" },
       { idx: 13, tag: "0013_bizarre_gamma_corps" },
+      { idx: 14, tag: "0014_illegal_wolfsbane" },
     ]);
   });
 
@@ -279,7 +280,9 @@ describe("database migrations", () => {
             deleted_at_exists: boolean;
             setup_completed_at_exists: boolean;
             status_default: string | null;
+            receive_mode_default: string | null;
             statuses: string[];
+            receive_modes: string[];
           }[]
         >`
           select
@@ -300,15 +303,22 @@ describe("database migrations", () => {
               select column_default from information_schema.columns
               where table_schema = 'public' and table_name = 'agents' and column_name = 'status'
             ) as status_default,
-            array(select status::text from agents order by name) as statuses
+            (
+              select column_default from information_schema.columns
+              where table_schema = 'public' and table_name = 'agents' and column_name = 'receive_mode'
+            ) as receive_mode_default,
+            array(select status::text from agents order by name) as statuses,
+            array(select receive_mode::text from agents order by name) as receive_modes
         `;
         expect(lifecycle).toEqual({
-          count: 14,
+          count: 15,
           creation_intents_null: true,
           deleted_at_exists: false,
           setup_completed_at_exists: true,
           status_default: "'active'::agent_status",
+          receive_mode_default: "'all_message'::agent_receive_mode",
           statuses: ["active", "deleted"],
+          receive_modes: ["mention_only", "mention_only"],
         });
         const repairedTeams = await sql<{ completed: boolean; name: string }[]>`
           select name, setup_completed_at is not null as completed
@@ -338,7 +348,7 @@ describe("database migrations", () => {
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(14);
+        expect(rerun?.count).toBe(15);
       } finally {
         await sql.end();
       }

@@ -1,0 +1,1 @@
+ALTER TABLE "agents" ALTER COLUMN "receive_mode" SET DEFAULT 'all_message';

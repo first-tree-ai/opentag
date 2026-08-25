@@ -157,8 +157,14 @@ preflight，使不可变 prefix 冲突在 release 仍可重试时就失败；随
 | `OPENTAG_PORTABLE_DOWNLOAD_BASE_URL` | 公网 base URL（默认 `https://download.opentag.build/releases`） |
 | `OPENTAG_PORTABLE_PLATFORMS` | 可选的构建平台过滤 |
 
-发布使用 workload identity federation，因此仓库中不保存任何 service-account key。该 service account 需要 bucket 的
-object 读取、创建与列举权限；它不应需要 delete 权限，因为 release 从不删除对象。
+发布使用 workload identity federation，因此仓库中不保存任何 service-account key。该 service account 需要 bucket 上的
+`roles/storage.objectUser`：读取、创建与列举覆盖不可变对象，而 `storage.objects.delete` 也是必需的，因为 Cloud Storage
+把覆盖 `latest.json` 与 `install.sh` 视为 replace。version prefix 的不可变性由 create-only 上传 precondition 保证，
+而不是由 IAM 保证。若要在 IAM 层面同样强制，可以用限定在两个 channel 指针路径上的 IAM condition 授予
+`roles/storage.objectUser`，其余路径只授予 `roles/storage.objectCreator` 与 `roles/storage.objectViewer`。
+
+workload identity provider 必须带上把它固定到本仓库的 attribute condition。若不设置，任何地方的 GitHub Actions
+workflow 都能为该 pool 换取 token 并冒充这个 release service account。
 
 bucket 必须在 download base URL 上公开提供 release prefix。在此之前，上传仍会成功，但公网校验闸门会失败，channel
 指针会被刻意保持原样。

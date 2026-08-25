@@ -163,8 +163,15 @@ Required repository variables:
 | `OPENTAG_PORTABLE_PLATFORMS` | Optional platform filter for the build |
 
 Publishing uses workload identity federation, so no service-account key is stored in the repository. The service
-account needs object read, create, and list on the bucket; it must not need delete, because a release never removes an
-object.
+account needs `roles/storage.objectUser` on the bucket: read, create, and list cover the immutable objects, and
+`storage.objects.delete` is additionally required because Cloud Storage treats overwriting `latest.json` and
+`install.sh` as replacing them. The version prefix stays immutable through the create-only upload precondition rather
+than through IAM. To enforce that at the IAM layer as well, grant `roles/storage.objectUser` under an IAM condition
+limited to the two channel pointer paths, and `roles/storage.objectCreator` plus `roles/storage.objectViewer`
+elsewhere.
+
+The workload identity provider must carry an attribute condition that pins it to this repository. Without one, any
+GitHub Actions workflow anywhere can mint a token for the pool and impersonate the release service account.
 
 The bucket must serve the release prefix publicly at the download base URL. Until it does, uploads still succeed but
 the public verification gate fails and the channel pointers are deliberately left untouched.

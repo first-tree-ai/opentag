@@ -891,8 +891,12 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
     const parsedBinding = binding ? parseCodexBinding(binding) : undefined;
     const expectedThreadId = parsedBinding?.threadId;
     const requestedHostedToolsHash = request.hostedTools ? hostedToolsHash(request.hostedTools.definitions) : undefined;
-    const requiresHostedToolsReplacement =
-      mode === "resume" && parsedBinding?.hostedToolsHash !== requestedHostedToolsHash;
+    if (mode === "resume" && parsedBinding?.hostedToolsHash !== requestedHostedToolsHash) {
+      throw new AgentRuntimeError(
+        "binding_incompatible",
+        "Codex binding hosted tools cannot change during exact resume",
+      );
+    }
     const client = this.#createClient(request.workspace.cwd, request.workspace.environment);
     try {
       if (request.hostedTools && typeof client.setDynamicToolHandler !== "function") {
@@ -902,7 +906,7 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
         );
       }
       await client.initialize(this.#clientVersion);
-      const method = mode === "create" || requiresHostedToolsReplacement ? "thread/start" : "thread/resume";
+      const method = mode === "create" ? "thread/start" : "thread/resume";
       const response = requireRecord(
         await client.request(method, {
           ...(method === "thread/resume" && expectedThreadId ? { threadId: expectedThreadId } : {}),
@@ -956,6 +960,16 @@ export class CodexAgentRuntimeFactory implements AgentRuntimeFactory {
       });
     }
   }
+}
+
+export function codexBindingRequiresHostedToolReplacement(
+  binding: AgentRuntimeBinding,
+  hostedTools: AgentHostedTools | undefined,
+): boolean {
+  assertBinding(binding, CODEX_AGENT_RUNTIME_MANIFEST);
+  const current = parseCodexBinding(binding).hostedToolsHash;
+  const requested = hostedTools ? hostedToolsHash(hostedTools.definitions) : undefined;
+  return current !== requested;
 }
 
 export function codexAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {

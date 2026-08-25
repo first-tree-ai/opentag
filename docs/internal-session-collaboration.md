@@ -38,8 +38,10 @@ When a reconnect changes the negotiated hosted-tool set, the Client re-prepares 
 placement and runtime revisions are unchanged. The old provider runtime is closed before the Session resumes with the
 newly negotiated tool surface.
 
-Codex App Server registers dynamic tools only when a thread starts. When a durable Codex binding predates collaboration,
-the Client replaces that provider thread once and records the hosted-tool definition hash in the binding. Later starts
-resume the replacement thread normally; provider-default native tools remain available alongside the hosted tools. If
-collaboration is no longer negotiated, the Client symmetrically replaces a marked provider thread without dynamic tools
-and clears the marker, so an older peer never exposes tools for which it has no handler.
+Codex App Server registers dynamic tools only when a thread starts. When a durable Codex binding does not match the
+negotiated hosted-tool definitions, the Client explicitly chooses provider creation instead of resume and persists the
+new binding only after successful creation. `AgentRuntimeFactory.resume` remains exact and rejects a hosted-tool
+mismatch rather than silently starting another thread. Later starts resume the replacement thread normally;
+provider-default native tools remain available alongside hosted tools. A symmetric replacement removes dynamic tools
+when collaboration is no longer negotiated. The OpenTag Session identity remains stable, but each such capability
+transition intentionally resets the Codex provider transcript.

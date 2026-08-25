@@ -2,6 +2,8 @@ import type { AgentRuntimeProvider, EffectiveRuntimeSnapshot, InputRejectReason 
 import { isAgentRuntimeProviderId } from "../agent-runtime/provider-id.js";
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
+  type AgentHostedTools,
+  type AgentRuntimeBinding,
   type AgentRuntimeFactory,
   type AgentRuntimePolicy,
   type AgentRuntimeProbeResult,
@@ -11,6 +13,10 @@ export interface AgentRuntimeProviderRegistration {
   readonly artifactIdentity: string;
   readonly factory: AgentRuntimeFactory;
   readonly policy: (snapshot: EffectiveRuntimeSnapshot) => AgentRuntimePolicy;
+  readonly requiresBindingReplacement?: (
+    binding: AgentRuntimeBinding,
+    hostedTools: AgentHostedTools | undefined,
+  ) => boolean;
   readonly validate: (snapshot: EffectiveRuntimeSnapshot) => InputRejectReason | undefined;
   readonly verifyArtifact?: (signal?: AbortSignal) => Promise<void>;
 }

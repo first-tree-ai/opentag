@@ -131,10 +131,9 @@ describe("SessionRuntimeManager", () => {
     });
     expect(factory.runtimes[0]?.closed).toBe(true);
     await manager.ensureRuntime(request.sessionId);
-    expect(factory.resumed).toEqual([binding("thread-1")]);
-    expect(factory.resumedRequests[0]?.hostedTools?.definitions.map(({ name }) => name)).toEqual([
-      "send_session_message",
-    ]);
+    expect(factory.resumed).toEqual([]);
+    expect(factory.created[1]?.hostedTools?.definitions.map(({ name }) => name)).toEqual(["send_session_message"]);
+    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-2", true));
 
     collaborationEnabled = false;
     await expect(reconciler.reconcile({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
@@ -142,8 +141,9 @@ describe("SessionRuntimeManager", () => {
     });
     expect(factory.runtimes[1]?.closed).toBe(true);
     await manager.ensureRuntime(request.sessionId);
-    expect(factory.resumed).toEqual([binding("thread-1"), binding("thread-1")]);
-    expect(factory.resumedRequests[1]?.hostedTools).toBeUndefined();
+    expect(factory.resumed).toEqual([]);
+    expect(factory.created[2]?.hostedTools).toBeUndefined();
+    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-3"));
 
     await expect(reconciler.reconcile({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
       status: "ready",
@@ -751,6 +751,9 @@ async function providerRegistry(factory?: AgentRuntimeFactory, ready = true): Pr
             artifactIdentity: "a".repeat(64),
             factory,
             policy: codexRuntimePolicy,
+            requiresBindingReplacement: (runtimeBinding, hostedTools) =>
+              (runtimeBinding.payload as { hostedToolsHash?: string }).hostedToolsHash !==
+              (hostedTools ? "b".repeat(64) : undefined),
             validate: validateCodexRuntimePolicy,
           },
         ]
@@ -769,7 +772,6 @@ class FakeFactory implements AgentRuntimeFactory {
   };
   readonly created: CreateAgentRuntimeRequest[] = [];
   readonly resumed: AgentRuntimeBinding[] = [];
-  readonly resumedRequests: ResumeAgentRuntimeRequest[] = [];
   readonly runtimes: FakeRuntime[] = [];
   readonly #withoutBinding: boolean;
   readonly #closeGate?: Promise<void>;
@@ -797,12 +799,11 @@ class FakeFactory implements AgentRuntimeFactory {
 
   async create(request: CreateAgentRuntimeRequest): Promise<AgentRuntime> {
     this.created.push(request);
-    return this.#open(request, binding(`thread-${this.runtimes.length + 1}`));
+    return this.#open(request, binding(`thread-${this.runtimes.length + 1}`, request.hostedTools !== undefined));
   }
 
   async resume(request: ResumeAgentRuntimeRequest): Promise<AgentRuntime> {
     this.resumed.push(request.binding);
-    this.resumedRequests.push(request);
     return this.#open(request, request.binding);
   }
 
@@ -876,8 +877,12 @@ class FakeRuntime implements AgentRuntime {
   }
 }
 
-function binding(threadId: string): AgentRuntimeBinding {
-  return { providerId: "codex", schemaVersion: 1, payload: { threadId } };
+function binding(threadId: string, hostedTools = false): AgentRuntimeBinding {
+  return {
+    providerId: "codex",
+    schemaVersion: 1,
+    payload: { threadId, ...(hostedTools ? { hostedToolsHash: "b".repeat(64) } : {}) },
+  };
 }
 
 function reconcile(computerId: string, runtime: EffectiveRuntimeSnapshot): SessionReconcileRequest {

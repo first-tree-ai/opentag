@@ -223,9 +223,13 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     let runtime: AgentRuntime | undefined;
     try {
       try {
-        runtime = managed.binding.runtimeBinding
-          ? await provider.factory.resume({ ...common, binding: managed.binding.runtimeBinding })
-          : await provider.factory.create(common);
+        const runtimeBinding = managed.binding.runtimeBinding;
+        const replaceBinding =
+          runtimeBinding && provider.requiresBindingReplacement?.(runtimeBinding, managed.hostedTools) === true;
+        runtime =
+          runtimeBinding && !replaceBinding
+            ? await provider.factory.resume({ ...common, binding: runtimeBinding })
+            : await provider.factory.create(common);
       } catch (error) {
         throw new ClientRuntimeProviderStartError(managed.providerId, { cause: error });
       }

@@ -32,6 +32,7 @@ import {
   CODEX_AGENT_RUNTIME_MANIFEST,
   CodexAgentRuntimeFactory,
   codexAgentRuntimeEnvironment,
+  codexBindingRequiresHostedToolReplacement,
 } from "../providers/codex/agent-runtime.js";
 import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/codex/runtime-policy.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
@@ -603,7 +604,12 @@ function productionProviderRegistration(
     },
   };
   return providerId === "codex"
-    ? { ...common, policy: codexRuntimePolicy, validate: validateCodexRuntimePolicy }
+    ? {
+        ...common,
+        policy: codexRuntimePolicy,
+        requiresBindingReplacement: codexBindingRequiresHostedToolReplacement,
+        validate: validateCodexRuntimePolicy,
+      }
     : { ...common, policy: claudeCodeRuntimePolicy, validate: validateClaudeCodeRuntimePolicy };
 }
 

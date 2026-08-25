@@ -1,9 +1,13 @@
-import type { AgentAdminConfig, UpdateAgentRequest, UpdateAgentRuntimeConfig } from "@opentag/shared/browser";
+import {
+  type AgentAdminConfig,
+  getRuntimeConfigurationOptions,
+  type UpdateAgentRequest,
+  type UpdateAgentRuntimeConfig,
+} from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
 import { Button, Field } from "./ui/design-system.js";
 
-const CODEX_REASONING_EFFORT_SUGGESTIONS = ["minimal", "low", "medium", "high", "xhigh"] as const;
-const CLAUDE_CODE_REASONING_EFFORT_SUGGESTIONS = ["low", "medium", "high", "xhigh", "max", "ultracode"] as const;
+const CUSTOM_MODEL_OPTION = "__custom_model__";
 
 export interface RuntimeConfigurationFormProps {
   readonly initialConfig: AgentAdminConfig;
@@ -16,8 +20,12 @@ export function RuntimeConfigurationForm({ initialConfig, save, section = "all" 
 }
 
 function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: RuntimeConfigurationFormProps) {
+  const initialOptions = getRuntimeConfigurationOptions(initialConfig.runtimeProvider);
   const [config, setConfig] = useState(initialConfig);
   const [modelDraft, setModelDraft] = useState(initialConfig.runtimeConfig.model ?? "");
+  const [modelSelection, setModelSelection] = useState(() =>
+    modelSelectionFor(initialConfig.runtimeConfig.model, initialOptions.modelSuggestions),
+  );
   const [reasoningDraft, setReasoningDraft] = useState(initialConfig.runtimeConfig.reasoningEffort ?? "");
   const [instructionsDraft, setInstructionsDraft] = useState(initialConfig.runtimeConfig.instructions);
   const [message, setMessage] = useState<{
@@ -27,20 +35,19 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
   }>();
   const [saving, setSaving] = useState<"runtime" | "instructions">();
   const fieldId = (name: string) => `runtime-${name}-${config.id}`;
-  const reasoningListId = `reasoning-effort-${config.id}`;
   const providerName = config.runtimeProvider === "codex" ? "Codex" : "Claude Code";
   const ExecutionHeading = section === "execution" ? "h1" : "h3";
   const InstructionsHeading = section === "instructions" ? "h1" : "h3";
-  const reasoningSuggestions =
-    config.runtimeProvider === "codex" ? CODEX_REASONING_EFFORT_SUGGESTIONS : CLAUDE_CODE_REASONING_EFFORT_SUGGESTIONS;
+  const runtimeOptions = getRuntimeConfigurationOptions(config.runtimeProvider);
   const runtimeDirty =
     modelDraft !== (config.runtimeConfig.model ?? "") ||
     reasoningDraft !== (config.runtimeConfig.reasoningEffort ?? "");
+  const customModelInvalid = modelSelection === CUSTOM_MODEL_OPTION && modelDraft.trim().length === 0;
   const instructionsDirty = instructionsDraft !== config.runtimeConfig.instructions;
 
   async function saveRuntime(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (saving) return;
+    if (saving || customModelInvalid) return;
     setSaving("runtime");
     setMessage(undefined);
     try {
@@ -48,6 +55,12 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
       const updated = await save({ expectedRevision: config.revision, runtimeConfig });
       setConfig(updated);
       setModelDraft(updated.runtimeConfig.model ?? "");
+      setModelSelection(
+        modelSelectionFor(
+          updated.runtimeConfig.model,
+          getRuntimeConfigurationOptions(updated.runtimeProvider).modelSuggestions,
+        ),
+      );
       setReasoningDraft(updated.runtimeConfig.reasoningEffort ?? "");
       setMessage({ kind: "success", section: "runtime", text: "Execution settings saved." });
     } catch (cause) {
@@ -105,48 +118,77 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
           <form className="agent-runtime-edit-form" onSubmit={saveRuntime}>
             <div className="agent-runtime-field-grid">
               <Field
-                hint="Leave blank to use the provider default."
+                hint="Choose a common model or enter a custom model ID."
                 hintId={fieldId("model-help")}
                 htmlFor={fieldId("model")}
                 label="Model"
               >
-                <input
+                <select
                   aria-describedby={fieldId("model-help")}
-                  autoComplete="off"
                   id={fieldId("model")}
-                  name="model"
-                  placeholder={`${providerName} default`}
-                  value={modelDraft}
+                  value={modelSelection}
                   onChange={(event) => {
-                    setModelDraft(event.currentTarget.value);
+                    const selection = event.currentTarget.value;
+                    setModelSelection(selection);
+                    if (selection === CUSTOM_MODEL_OPTION) {
+                      if (modelSelection !== CUSTOM_MODEL_OPTION) setModelDraft("");
+                    } else {
+                      setModelDraft(selection);
+                    }
                     setMessage(undefined);
                   }}
-                />
+                >
+                  <option value="">Provider default</option>
+                  {runtimeOptions.modelSuggestions.map((model) => (
+                    <option value={model} key={model}>
+                      {model}
+                    </option>
+                  ))}
+                  <option value={CUSTOM_MODEL_OPTION}>Custom model ID…</option>
+                </select>
+                {modelSelection === CUSTOM_MODEL_OPTION ? (
+                  <div className="agent-runtime-custom-model">
+                    <label className="ds-field__label" htmlFor={fieldId("custom-model")}>
+                      Custom model ID
+                    </label>
+                    <input
+                      aria-describedby={fieldId("model-help")}
+                      autoComplete="off"
+                      id={fieldId("custom-model")}
+                      required
+                      value={modelDraft}
+                      onChange={(event) => {
+                        setModelDraft(event.currentTarget.value);
+                        setMessage(undefined);
+                      }}
+                    />
+                  </div>
+                ) : null}
+                <input name="model" readOnly type="hidden" value={modelDraft} />
               </Field>
               <Field
-                hint="Leave blank to use the provider default."
+                hint="Provider default lets the runtime choose."
                 hintId={fieldId("reasoning-help")}
                 htmlFor={fieldId("reasoning-effort")}
                 label="Reasoning level"
               >
-                <input
+                <select
                   aria-describedby={fieldId("reasoning-help")}
-                  autoComplete="off"
                   id={fieldId("reasoning-effort")}
-                  list={reasoningListId}
                   name="reasoningEffort"
-                  placeholder="Provider default"
                   value={reasoningDraft}
                   onChange={(event) => {
                     setReasoningDraft(event.currentTarget.value);
                     setMessage(undefined);
                   }}
-                />
-                <datalist id={reasoningListId}>
-                  {reasoningSuggestions.map((effort) => (
-                    <option value={effort} key={effort} />
+                >
+                  <option value="">Provider default</option>
+                  {runtimeOptions.reasoningEffortAllowedValues.map((effort) => (
+                    <option value={effort} key={effort}>
+                      {effort}
+                    </option>
                   ))}
-                </datalist>
+                </select>
               </Field>
             </div>
             {runtimeDirty ? (
@@ -158,13 +200,14 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
                     variant="ghost"
                     onClick={() => {
                       setModelDraft(config.runtimeConfig.model ?? "");
+                      setModelSelection(modelSelectionFor(config.runtimeConfig.model, runtimeOptions.modelSuggestions));
                       setReasoningDraft(config.runtimeConfig.reasoningEffort ?? "");
                       setMessage(undefined);
                     }}
                   >
                     Discard
                   </Button>
-                  <Button disabled={Boolean(saving)} type="submit">
+                  <Button disabled={Boolean(saving) || customModelInvalid} type="submit">
                     {saving === "runtime" ? "Saving…" : "Save changes"}
                   </Button>
                 </div>
@@ -234,6 +277,11 @@ function RuntimeConfigurationEditor({ initialConfig, save, section = "all" }: Ru
       ) : null}
     </div>
   );
+}
+
+function modelSelectionFor(model: string | null, suggestions: readonly string[]): string {
+  if (model === null) return "";
+  return suggestions.includes(model) ? model : CUSTOM_MODEL_OPTION;
 }
 
 function SaveMessage({ message }: { message: { kind: "error" | "success"; text: string } }) {

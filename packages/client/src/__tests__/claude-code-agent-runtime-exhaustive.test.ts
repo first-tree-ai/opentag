@@ -745,7 +745,7 @@ function createRequest(eventSink: CreateAgentRuntimeRequest["eventSink"]): Creat
     },
     configuration: {
       model: "claude-test",
-      reasoningEffort: "high",
+      reasoningEffort: "ultracode",
       provider: { maxBudgetUsd: 1.5, maxTurns: 5 },
     },
   };

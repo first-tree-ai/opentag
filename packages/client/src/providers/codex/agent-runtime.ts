@@ -3,6 +3,7 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
+import { getRuntimeConfigurationOptions } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import {
@@ -103,7 +104,6 @@ export const CODEX_AGENT_RUNTIME_APP_SERVER_ARGS = [
   "-c",
   'shell_environment_policy.filters={ PATH = "include", LANG = "include", LC_ALL = "include", OPENTAG_PROVIDER_ENV_FILE = "include" }',
 ] as const;
-const CODEX_REASONING_EFFORTS = new Set(["minimal", "low", "medium", "high", "xhigh"]);
 const TOOL_ITEM_TYPES = new Set([
   "collabToolCall",
   "commandExecution",
@@ -1040,7 +1040,10 @@ function validateConfiguration(configuration: AgentRunConfiguration | undefined)
   if (configuration.model !== undefined && configuration.model.trim().length === 0) {
     throw new AgentRuntimeError("configuration_invalid", "model must be non-empty");
   }
-  if (configuration.reasoningEffort && !CODEX_REASONING_EFFORTS.has(configuration.reasoningEffort)) {
+  if (
+    configuration.reasoningEffort &&
+    !getRuntimeConfigurationOptions("codex").reasoningEffortAllowedValues.includes(configuration.reasoningEffort)
+  ) {
     throw new AgentRuntimeError("configuration_invalid", "Codex reasoning effort is unsupported");
   }
   parseProviderConfiguration(configuration.provider);

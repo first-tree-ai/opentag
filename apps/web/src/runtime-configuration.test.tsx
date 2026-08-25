@@ -27,109 +27,137 @@ const config: AgentAdminConfig = {
   updatedAt: "2026-08-20T00:00:00.000Z",
 };
 
+function optionValues(label: string): string[] {
+  const select = screen.getByLabelText(label) as HTMLSelectElement;
+  return Array.from(select.options, (option) => option.value);
+}
+
 describe("RuntimeConfigurationForm", () => {
-  it("presents concise Execution choices without exposing the request timeout", () => {
+  it("presents model suggestions and the complete Codex reasoning list", () => {
     render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} />);
 
     expect(screen.getByRole("heading", { name: "Execution" })).toBeTruthy();
     expect(screen.getByText("Provider: Codex")).toBeTruthy();
-    expect((screen.getByLabelText("Model") as HTMLInputElement).placeholder).toBe("Codex default");
-    expect((screen.getByLabelText("Reasoning level") as HTMLInputElement).placeholder).toBe("Provider default");
+    expect(optionValues("Model")).toEqual([
+      "",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.3-codex",
+      "__custom_model__",
+    ]);
+    expect(optionValues("Reasoning level")).toEqual(["", "minimal", "low", "medium", "high", "xhigh"]);
+    expect((screen.getByLabelText("Model") as HTMLSelectElement).selectedOptions[0]?.textContent).toBe(
+      "Provider default",
+    );
+    expect((screen.getByLabelText("Reasoning level") as HTMLSelectElement).selectedOptions[0]?.textContent).toBe(
+      "Provider default",
+    );
     expect(screen.getByRole("heading", { name: "Agent instructions" })).toBeTruthy();
     expect(screen.queryByText(/timeout/i)).toBeNull();
-    expect(screen.queryByText("Execution choices")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Edit settings" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
   });
 
-  it("directly edits only the understandable Runtime choices", () => {
+  it("keeps the complete reasoning list after a selection", () => {
     render(<RuntimeConfigurationForm initialConfig={config} save={vi.fn()} />);
 
-    expect((screen.getByLabelText("Model") as HTMLInputElement).placeholder).toBe("Codex default");
-    const effort = screen.getByLabelText("Reasoning level") as HTMLInputElement;
-    expect(effort.placeholder).toBe("Provider default");
-    const suggestions = document.getElementById(effort.getAttribute("list") ?? "");
-    expect(Array.from(suggestions?.querySelectorAll("option") ?? []).map((option) => option.value)).toEqual([
-      "minimal",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-    ]);
-    expect(screen.queryByLabelText(/duration/i)).toBeNull();
+    fireEvent.change(screen.getByLabelText("Reasoning level"), { target: { value: "high" } });
+    expect(optionValues("Reasoning level")).toEqual(["", "minimal", "low", "medium", "high", "xhigh"]);
+    expect((screen.getByLabelText("Reasoning level") as HTMLSelectElement).value).toBe("high");
   });
 
-  it("shows and edits stored Claude Code configuration", async () => {
-    const claudeConfig: AgentAdminConfig = {
-      ...config,
-      runtimeProvider: "claude-code",
-      runtimeConfig: {
-        ...config.runtimeConfig,
-        model: "claude-opus-4-1",
-        reasoningEffort: "max",
-        instructions: "Use the repository guidelines.",
-      },
-    };
-    const save = vi.fn(async () => ({
-      ...claudeConfig,
-      revision: 5,
-      runtimeConfig: { ...claudeConfig.runtimeConfig, revision: 8, instructions: "Updated Claude instructions." },
-    }));
-    render(<RuntimeConfigurationForm initialConfig={claudeConfig} save={save} />);
-
-    expect(screen.getByText("Provider: Claude Code")).toBeTruthy();
-    expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe("claude-opus-4-1");
-    expect((screen.getByLabelText("Reasoning level") as HTMLInputElement).value).toBe("max");
-    expect((screen.getByLabelText("Instructions") as HTMLTextAreaElement).value).toBe("Use the repository guidelines.");
-
-    expect(screen.getAllByText("Leave blank to use the provider default.")).toHaveLength(2);
-    const effort = screen.getByLabelText("Reasoning level") as HTMLInputElement;
-    const suggestions = document.getElementById(effort.getAttribute("list") ?? "");
-    expect(Array.from(suggestions?.querySelectorAll("option") ?? []).map((option) => option.value)).toEqual([
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-      "ultracode",
-    ]);
-
-    fireEvent.change(screen.getByLabelText("Instructions"), { target: { value: "Updated Claude instructions." } });
-    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
-    await waitFor(() => expect(save).toHaveBeenCalledOnce());
-    expect(save).toHaveBeenCalledWith({
-      expectedRevision: 4,
-      runtimeConfig: { instructions: "Updated Claude instructions." },
-    });
-  });
-
-  it("saves Runtime choices without rewriting hidden configuration", async () => {
+  it("accepts and saves a non-empty custom model ID", async () => {
     const save = vi.fn(async () => ({
       ...config,
       revision: 5,
-      runtimeConfig: {
-        ...config.runtimeConfig,
-        revision: 8,
-        model: "gpt-5.6-codex",
-        reasoningEffort: "high",
-      },
+      runtimeConfig: { ...config.runtimeConfig, revision: 8, model: "team/fine-tuned-model" },
     }));
     render(<RuntimeConfigurationForm initialConfig={config} save={save} />);
 
-    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "  gpt-5.6-codex  " } });
-    fireEvent.change(screen.getByLabelText("Reasoning level"), { target: { value: "high" } });
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "__custom_model__" } });
+    const customModel = screen.getByLabelText("Custom model ID") as HTMLInputElement;
+    expect(customModel.required).toBe(true);
+    fireEvent.change(customModel, { target: { value: "  team/fine-tuned-model  " } });
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
     await waitFor(() => expect(save).toHaveBeenCalledOnce());
     expect(save).toHaveBeenCalledWith({
       expectedRevision: 4,
-      runtimeConfig: {
-        model: "gpt-5.6-codex",
-        reasoningEffort: "high",
-      },
+      runtimeConfig: { model: "team/fine-tuned-model", reasoningEffort: null },
     });
     expect((await screen.findByRole("status")).textContent).toBe("Execution settings saved.");
-    expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe("gpt-5.6-codex");
+    expect((screen.getByLabelText("Custom model ID") as HTMLInputElement).value).toBe("team/fine-tuned-model");
+  });
+
+  it("shows, edits, and saves an unknown historical model as custom", async () => {
+    const historicalConfig: AgentAdminConfig = {
+      ...config,
+      runtimeConfig: { ...config.runtimeConfig, model: "gpt-historical-private" },
+    };
+    const save = vi.fn(async () => ({
+      ...historicalConfig,
+      revision: 5,
+      runtimeConfig: { ...historicalConfig.runtimeConfig, revision: 8, model: "gpt-historical-updated" },
+    }));
+    render(<RuntimeConfigurationForm initialConfig={historicalConfig} save={save} section="execution" />);
+
+    expect((screen.getByLabelText("Model") as HTMLSelectElement).selectedOptions[0]?.textContent).toBe(
+      "Custom model ID…",
+    );
+    expect((screen.getByLabelText("Custom model ID") as HTMLInputElement).value).toBe("gpt-historical-private");
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("Custom model ID"), { target: { value: "gpt-historical-updated" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: { model: "gpt-historical-updated", reasoningEffort: null },
+    });
+  });
+
+  it("shows Claude Code model suggestions and the complete strict reasoning list", () => {
+    const claudeConfig: AgentAdminConfig = {
+      ...config,
+      runtimeProvider: "claude-code",
+      runtimeConfig: { ...config.runtimeConfig, model: "claude-sonnet-5", reasoningEffort: "max" },
+    };
+    render(<RuntimeConfigurationForm initialConfig={claudeConfig} save={vi.fn()} />);
+
+    expect(screen.getByText("Provider: Claude Code")).toBeTruthy();
+    expect(optionValues("Model")).toEqual([
+      "",
+      "claude-opus-5",
+      "claude-sonnet-5",
+      "claude-haiku-4-5",
+      "__custom_model__",
+    ]);
+    expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("claude-sonnet-5");
+    expect(optionValues("Reasoning level")).toEqual(["", "low", "medium", "high", "xhigh", "max", "ultracode"]);
+    expect((screen.getByLabelText("Reasoning level") as HTMLSelectElement).value).toBe("max");
+  });
+
+  it("maps Provider default to null while preserving expectedRevision", async () => {
+    const configured: AgentAdminConfig = {
+      ...config,
+      runtimeConfig: { ...config.runtimeConfig, model: "gpt-5.6-sol", reasoningEffort: "high" },
+    };
+    const save = vi.fn(async () => ({
+      ...configured,
+      revision: 5,
+      runtimeConfig: { ...configured.runtimeConfig, revision: 8, model: null, reasoningEffort: null },
+    }));
+    render(<RuntimeConfigurationForm initialConfig={configured} save={save} section="execution" />);
+
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Reasoning level"), { target: { value: "" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledOnce());
+    expect(save).toHaveBeenCalledWith({
+      expectedRevision: 4,
+      runtimeConfig: { model: null, reasoningEffort: null },
+    });
   });
 
   it("saves Agent instructions independently", async () => {
@@ -148,42 +176,44 @@ describe("RuntimeConfigurationForm", () => {
       expectedRevision: 4,
       runtimeConfig: { instructions: "Updated instructions." },
     });
-    expect((await screen.findByRole("status")).textContent).toBe("Agent instructions saved.");
   });
 
-  it("restores provider defaults with blank Runtime values", () => {
+  it("normalizes blank form values to provider defaults", () => {
     const data = new FormData();
     data.set("model", " ");
     data.set("reasoningEffort", "");
 
-    expect(runtimeConfigurationFromForm(data)).toEqual({
-      model: null,
-      reasoningEffort: null,
-    });
+    expect(runtimeConfigurationFromForm(data)).toEqual({ model: null, reasoningEffort: null });
   });
 
-  it("reports save failures without closing the editor", async () => {
+  it("reports save failures without losing drafts", async () => {
     const save = vi.fn(async () => {
       throw new Error("Revision changed");
     });
     render(<RuntimeConfigurationForm initialConfig={config} save={save} />);
 
-    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "gpt-5.6-codex" } });
+    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "gpt-5.6-sol" } });
     fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
     expect((await screen.findByRole("alert")).textContent).toBe("Revision changed");
-    expect(screen.getByLabelText("Model")).toBeTruthy();
+    expect((screen.getByLabelText("Model") as HTMLSelectElement).value).toBe("gpt-5.6-sol");
   });
 
-  it("discards a draft without saving", () => {
+  it("discards model and reasoning drafts without saving", () => {
+    const initialConfig: AgentAdminConfig = {
+      ...config,
+      runtimeConfig: { ...config.runtimeConfig, model: "gpt-historical-private", reasoningEffort: "medium" },
+    };
     const save = vi.fn();
-    render(<RuntimeConfigurationForm initialConfig={config} save={save} section="execution" />);
+    render(<RuntimeConfigurationForm initialConfig={initialConfig} save={save} section="execution" />);
 
-    fireEvent.change(screen.getByLabelText("Model"), { target: { value: "gpt-5.6-codex" } });
+    fireEvent.change(screen.getByLabelText("Custom model ID"), { target: { value: "gpt-historical-updated" } });
+    fireEvent.change(screen.getByLabelText("Reasoning level"), { target: { value: "high" } });
     expect(screen.getByText("Unsaved changes")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Discard" }));
 
-    expect((screen.getByLabelText("Model") as HTMLInputElement).value).toBe("");
+    expect((screen.getByLabelText("Custom model ID") as HTMLInputElement).value).toBe("gpt-historical-private");
+    expect((screen.getByLabelText("Reasoning level") as HTMLSelectElement).value).toBe("medium");
     expect(screen.queryByText("Unsaved changes")).toBeNull();
     expect(save).not.toHaveBeenCalled();
   });

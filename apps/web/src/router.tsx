@@ -464,7 +464,7 @@ export function AppRouter() {
             <Route path="/integrations" element={<IntegrationsPage />} />
             <Route path="/resources" element={<Navigate replace to="/skills" />} />
             <Route path="/usage" element={<Navigate replace to="/agents" />} />
-            <Route path="/admins" element={<AdminsPage />} />
+            <Route path="/admins" element={<Navigate replace to="/workspace" />} />
             <Route path="/account" element={<AccountPage />} />
             <Route path="/workspace" element={<WorkspacePage />} />
           </Route>
@@ -903,26 +903,14 @@ function AppShell() {
                 <div className="account-menu-actions">
                   <NavLink
                     role="menuitem"
-                    to="/admins"
+                    to="/workspace"
                     onClick={() => {
                       setOpenMenu(undefined);
                       setNavigationOpen(false);
                     }}
                   >
-                    Admins
+                    Workspace
                   </NavLink>
-                  {me.workspaces.length > 1 ? (
-                    <NavLink
-                      role="menuitem"
-                      to="/workspace"
-                      onClick={() => {
-                        setOpenMenu(undefined);
-                        setNavigationOpen(false);
-                      }}
-                    >
-                      Workspace management
-                    </NavLink>
-                  ) : null}
                   <NavLink
                     end
                     role="menuitem"
@@ -1786,20 +1774,16 @@ function AccountPage() {
   );
 }
 
+/**
+ * One surface, reachable at any Workspace count. A Workspace is the scope its Admins share, and being
+ * an Admin is the product's only access decision, so who may administer it belongs with what it is
+ * called and how the CLI addresses it. Only the selector above this page is conditional: choosing
+ * between scopes is meaningless with one, while reading and changing your own Workspace is not.
+ */
 function WorkspacePage() {
-  const { me, membership, refreshMe } = useWorkspace();
-  if (me.workspaces.length <= 1) return <Navigate replace to="/admins" />;
-
+  const { membership, refreshMe } = useWorkspace();
   return (
-    <Page
-      action={
-        <Link className={buttonClassName({ variant: "secondary" })} to="/workspaces/new">
-          Create Workspace
-        </Link>
-      }
-      title="Workspace"
-      description="Manage the current Workspace identity."
-    >
+    <Page title="Workspace" description="Who can administer this Workspace, and how it is identified.">
       <WorkspaceSettings membership={membership} refreshMe={refreshMe} />
     </Page>
   );
@@ -1808,14 +1792,26 @@ function WorkspacePage() {
 function WorkspaceSettings({ membership, refreshMe }: { membership: MeWorkspace; refreshMe: () => void }) {
   return (
     <div className="settings-workspace-stack">
+      <WorkspaceAdminSettings membership={membership} />
       <section aria-labelledby="workspace-profile-heading" className="account-workspace-profile">
         <header className="settings-subheader">
           <div>
             <h2 id="workspace-profile-heading">Workspace profile</h2>
-            <p>Manage the name and CLI identity of the current Workspace.</p>
+            <p>The name people see in invitations, and the identifier CLI commands use.</p>
           </div>
         </header>
         <WorkspaceProfileSettings membership={membership} refreshMe={refreshMe} />
+      </section>
+      <section aria-labelledby="workspace-scope-heading" className="account-workspace-profile">
+        <header className="settings-subheader">
+          <div>
+            <h2 id="workspace-scope-heading">Separate scope</h2>
+            <p>Create another Workspace when some Agents must stay invisible to the Admins here.</p>
+          </div>
+          <Link className={buttonClassName({ variant: "secondary" })} to="/workspaces/new">
+            Create Workspace
+          </Link>
+        </header>
       </section>
     </div>
   );
@@ -2910,8 +2906,8 @@ function ComputersPage() {
   );
 }
 
-function AdminsPage() {
-  const { me, membership, refreshMe } = useWorkspace();
+function WorkspaceAdminSettings({ membership }: { membership: MeWorkspace }) {
+  const { me, refreshMe } = useWorkspace();
   const [revision, setRevision] = useState(0);
   const [invitation, setInvitation] = useState<Awaited<ReturnType<typeof browserApi.createAdminInvitation>>>();
   const [busy, setBusy] = useState(false);
@@ -2946,15 +2942,16 @@ function AdminsPage() {
   }
 
   return (
-    <Page
-      title="Admins"
-      description="Every Admin has complete management authority over this Workspace."
-      action={
+    <section aria-labelledby="workspace-admins-heading" className="account-workspace-profile">
+      <header className="settings-subheader">
+        <div>
+          <h2 id="workspace-admins-heading">Admins</h2>
+          <p>Every Admin has complete management authority over this Workspace.</p>
+        </div>
         <Button disabled={busy} onClick={() => void createInvitation()}>
           {busy ? "Creating…" : "Invite Admin"}
         </Button>
-      }
-    >
+      </header>
       {invitation ? (
         <section className="settings-invitation-panel">
           <h2>Single-use invitation</h2>
@@ -2988,7 +2985,7 @@ function AdminsPage() {
           {error}
         </p>
       ) : null}
-    </Page>
+    </section>
   );
 }
 

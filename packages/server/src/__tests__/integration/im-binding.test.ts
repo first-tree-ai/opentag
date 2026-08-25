@@ -3,7 +3,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { Readable } from "node:stream";
-import { fileURLToPath } from "node:url";
 import {
   computeDirectInputHash,
   computeRuntimeSnapshotHashes,
@@ -16,14 +15,11 @@ import {
   type TurnReportRequest,
   type UpdateAgentRequest,
 } from "@opentag/shared";
-import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { and, eq, inArray, isNull } from "drizzle-orm";
-import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { migrateDatabase } from "../../db/migrate.js";
 import {
   agentRuntimeConfigs,
   agents,
@@ -57,29 +53,19 @@ import { SlackSetupService } from "../../services/im-bindings/slack/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../services/runtime-config/index.js";
 import { SessionService } from "../../services/sessions/index.js";
 import { TeamMembershipService, TeamSetupService } from "../../services/teams/index.js";
+import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
-const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
-
-let container: StartedPostgreSqlContainer;
+let testDatabase: MigratedTestDatabase;
 let databaseUrl: string;
 
 beforeAll(async () => {
-  container = await new PostgreSqlContainer("postgres:17-alpine").start();
-  databaseUrl = container.getConnectionUri();
+  testDatabase = await startMigratedTestDatabase();
+  databaseUrl = testDatabase.databaseUrl;
 }, 120_000);
 
-afterAll(async () => container.stop());
+afterAll(async () => testDatabase.stop());
 
-beforeEach(async () => {
-  const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
-  try {
-    await sql.unsafe("drop schema if exists public cascade");
-    await sql.unsafe("drop schema if exists drizzle cascade");
-    await sql.unsafe("create schema public");
-  } finally {
-    await sql.end();
-  }
-});
+beforeEach(async () => testDatabase.reset());
 
 async function validatingFeishuAttempt(
   database: ReturnType<typeof createDatabaseClient>["database"],
@@ -113,7 +99,6 @@ async function validatingFeishuAttempt(
 }
 
 async function fixture() {
-  await migrateDatabase(databaseUrl, migrationsFolder);
   const client = createDatabaseClient(databaseUrl);
   const bootstrap = await bootstrapInitialAdmin(client.database, {
     displayName: "Admin",
@@ -167,7 +152,6 @@ async function fixture() {
 }
 
 async function unboundFixture() {
-  await migrateDatabase(databaseUrl, migrationsFolder);
   const client = createDatabaseClient(databaseUrl);
   const bootstrap = await bootstrapInitialAdmin(client.database, {
     displayName: "Admin",

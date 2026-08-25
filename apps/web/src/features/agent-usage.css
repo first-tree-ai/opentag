@@ -16,7 +16,7 @@
   margin: 0;
   border-top: 1px solid var(--strong-border);
   border-bottom: 1px solid var(--border);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .agent-usage-metrics > div {
@@ -53,7 +53,7 @@
 
 .agent-usage-loading {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 24px;
   border-top: 1px solid var(--strong-border);
   border-bottom: 1px solid var(--border);
@@ -104,8 +104,17 @@
 
 .agent-usage-coverage {
   margin: -12px 0 0;
-  color: var(--muted);
+  border-left: 3px solid var(--warning);
+  background: var(--warning-surface);
+  color: var(--secondary-foreground);
   font-size: var(--text-meta);
+  line-height: var(--lh-prose);
+  padding: 10px 14px;
+}
+
+.agent-usage-coverage strong {
+  color: var(--foreground);
+  font-weight: var(--fw-semibold);
 }
 
 .agent-usage-analysis {

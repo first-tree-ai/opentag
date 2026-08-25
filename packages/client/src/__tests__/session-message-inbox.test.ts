@@ -28,8 +28,8 @@ describe("SessionMessageInbox", () => {
     });
     const first = delivery({ targetSessionId, agentId, text: "first" });
     const second = delivery({ targetSessionId, agentId, text: "second" });
-    expect(inbox.accept(first).status).toBe("accepted");
-    expect(inbox.accept(second).status).toBe("accepted");
+    expect((await inbox.accept(first)).status).toBe("accepted");
+    expect((await inbox.accept(second)).status).toBe("accepted");
     expect(prompts).toEqual([]);
     held.reservation.release();
     await vi.waitFor(() => expect(prompts).toEqual(["first", "second"]));
@@ -37,21 +37,21 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
-  it("deduplicates the same logical payload and rejects a conflicting retry", () => {
+  it("deduplicates the same logical payload and rejects a conflicting retry", async () => {
     const inbox = new SessionMessageInbox({
       admission: new AdmissionController(),
       reconciler: inboxReconciler("session_not_ready"),
       runtimeManager: { ensureRuntime: vi.fn() },
     });
     const original = delivery({ text: "same" });
-    expect(inbox.accept(original)).toMatchObject({ status: "rejected", reason: "session_not_ready" });
-    expect(inbox.accept({ ...original, requestId: randomUUID() })).toMatchObject({
+    await expect(inbox.accept(original)).resolves.toMatchObject({ status: "rejected", reason: "session_not_ready" });
+    await expect(inbox.accept({ ...original, requestId: randomUUID() })).resolves.toMatchObject({
       status: "rejected",
       reason: "session_not_ready",
     });
-    expect(
+    await expect(
       inbox.accept({ ...original, requestId: randomUUID(), content: { kind: "text", text: "different" } }),
-    ).toMatchObject({ status: "rejected", reason: "input_conflict" });
+    ).resolves.toMatchObject({ status: "rejected", reason: "input_conflict" });
     inbox.stop();
   });
 
@@ -66,8 +66,8 @@ describe("SessionMessageInbox", () => {
       runtimeManager: { ensureRuntime: vi.fn(async () => runtime as never) },
     });
     const original = delivery({ text: "same logical message" });
-    expect(inbox.accept(original).status).toBe("accepted");
-    expect(
+    expect((await inbox.accept(original)).status).toBe("accepted");
+    await expect(
       inbox.accept({
         ...original,
         requestId: randomUUID(),
@@ -80,7 +80,7 @@ describe("SessionMessageInbox", () => {
           },
         },
       }),
-    ).toMatchObject({ status: "accepted" });
+    ).resolves.toMatchObject({ status: "accepted" });
     await inbox.settled();
     expect(runtime.prompt).toHaveBeenCalledOnce();
     inbox.stop();
@@ -118,7 +118,7 @@ describe("SessionMessageInbox", () => {
       reconciler,
       runtimeManager: { ensureRuntime: vi.fn(async () => runtime as never) },
     });
-    expect(inbox.accept(request).status).toBe("accepted");
+    expect((await inbox.accept(request)).status).toBe("accepted");
     await vi.waitFor(() => expect(promptStarted).toHaveBeenCalledOnce());
 
     capabilityChanged = true;
@@ -134,6 +134,69 @@ describe("SessionMessageInbox", () => {
       status: "ready",
     });
     expect(preparation.prepareSession).toHaveBeenCalledTimes(2);
+    inbox.stop();
+  });
+
+  it("rejects a delivery when an earlier stop reconcile wins the agent lock", async () => {
+    const computerId = randomUUID();
+    const request = delivery();
+    let stopStarted!: () => void;
+    const stopStart = new Promise<void>((resolve) => {
+      stopStarted = resolve;
+    });
+    let finishStop!: () => void;
+    const stopGate = new Promise<void>((resolve) => {
+      finishStop = resolve;
+    });
+    const preparation = {
+      prepareAgent: vi.fn(async () => undefined),
+      prepareSession: vi.fn(async () => undefined),
+      stopSession: vi.fn(async () => {
+        stopStarted();
+        await stopGate;
+      }),
+    };
+    const reconciler = new SessionReconciler({ computerId, preparation });
+    const reconcile = reconcileFor(computerId, request);
+    await expect(reconciler.reconcile(reconcile)).resolves.toMatchObject({ status: "ready" });
+    const runtime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async ({ runId }: { runId: string }) => ({ runId, status: "completed", output: [] })),
+    };
+    const runtimeManager = { ensureRuntime: vi.fn(async () => runtime as never) };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      reconciler,
+      runtimeManager,
+    });
+
+    const stopping = reconciler.reconcile({
+      ...reconcile,
+      requestId: randomUUID(),
+      desired: "stopped",
+      runtime: undefined,
+    });
+    await stopStart;
+    let acceptSettled = false;
+    const accepting = inbox.accept(request).finally(() => {
+      acceptSettled = true;
+    });
+    await Promise.resolve();
+    expect(acceptSettled).toBe(false);
+
+    finishStop();
+    await expect(stopping).resolves.toMatchObject({ status: "stopped" });
+    await expect(accepting).resolves.toMatchObject({ status: "rejected", reason: "session_not_ready" });
+    expect(runtimeManager.ensureRuntime).not.toHaveBeenCalled();
+
+    const moved = { ...reconcile, requestId: randomUUID(), placementGeneration: 2 };
+    await expect(reconciler.reconcile(moved)).resolves.toMatchObject({ status: "ready" });
+    const retry = { ...request, requestId: randomUUID(), placementGeneration: 2 };
+    await expect(inbox.accept(retry)).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    await expect(inbox.accept({ ...retry, requestId: randomUUID() })).resolves.toMatchObject({ status: "accepted" });
+    expect(runtimeManager.ensureRuntime).toHaveBeenCalledOnce();
+    expect(runtime.prompt).toHaveBeenCalledOnce();
     inbox.stop();
   });
 
@@ -160,13 +223,13 @@ describe("SessionMessageInbox", () => {
       reconciler: inboxReconciler(),
       runtimeManager,
     });
-    expect(inbox.accept(delivery({ targetSessionId, agentId, text: "queued" })).status).toBe("accepted");
-    expect(inbox.accept(delivery({ targetSessionId, agentId, text: "over capacity" }))).toMatchObject({
+    expect((await inbox.accept(delivery({ targetSessionId, agentId, text: "queued" }))).status).toBe("accepted");
+    await expect(inbox.accept(delivery({ targetSessionId, agentId, text: "over capacity" }))).resolves.toMatchObject({
       status: "rejected",
       reason: "client_busy",
     });
     inbox.stop();
-    expect(inbox.accept(delivery({ targetSessionId, agentId, text: "after stop" }))).toMatchObject({
+    await expect(inbox.accept(delivery({ targetSessionId, agentId, text: "after stop" }))).resolves.toMatchObject({
       status: "rejected",
       reason: "client_busy",
     });

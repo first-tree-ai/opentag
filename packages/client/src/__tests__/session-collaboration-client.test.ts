@@ -114,7 +114,12 @@ describe("SessionCollaborationClient", () => {
     };
     const inbox = {
       accept: vi.fn(
-        (delivery: { requestId: string; messageId: string; targetSessionId: string; placementGeneration: number }) => ({
+        async (delivery: {
+          requestId: string;
+          messageId: string;
+          targetSessionId: string;
+          placementGeneration: number;
+        }) => ({
           type: "session:message:deliver:result" as const,
           requestId: delivery.requestId,
           messageId: delivery.messageId,

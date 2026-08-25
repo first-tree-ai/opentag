@@ -112,7 +112,7 @@ export class SessionCollaborationClient {
     if (result.status === "local" && result.delivery) {
       let deliveryResult: SessionMessageDeliveryResult;
       try {
-        const accepted = this.#inbox.accept(result.delivery);
+        const accepted = await this.#inbox.accept(result.delivery);
         deliveryResult = {
           type: "session:message:deliver:result",
           requestId: result.delivery.requestId,

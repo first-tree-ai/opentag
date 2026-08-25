@@ -18,7 +18,7 @@ interface QueuedMessage {
 
 interface RememberedMessage {
   hash: string;
-  status: "accepted" | "rejected";
+  status: "accepted" | "rejected" | "retryable";
   reason?: InputRejectReason;
 }
 
@@ -56,32 +56,38 @@ export class SessionMessageInbox {
     this.#runtimeManager = options.runtimeManager;
   }
 
-  accept(input: SessionMessageDeliveryRequest): SessionMessageDeliveryResult {
+  async accept(input: SessionMessageDeliveryRequest): Promise<SessionMessageDeliveryResult> {
     const request = SessionMessageDeliveryRequestSchema.parse(input);
     const key = `${request.targetSessionId}:${request.messageId}`;
     const hash = hashTuple([request.sourceSessionId, request.targetSessionId, request.agentId, request.content]);
-    const remembered = this.#remembered.get(key);
-    if (remembered) {
-      return remembered.hash === hash
-        ? deliveryResult(request, remembered.status, remembered.reason)
-        : deliveryResult(request, "rejected", "input_conflict");
-    }
-    if (this.#abort.signal.aborted) return deliveryResult(request, "rejected", "client_busy");
-    const reason = this.#reconciler.checkSessionMessageDelivery(request);
-    if (reason) {
-      this.#remember(key, { hash, status: "rejected", reason });
-      return deliveryResult(request, "rejected", reason);
-    }
-    const queue = this.#queues.get(request.targetSessionId) ?? [];
-    if (queue.length >= this.#maxQueuedPerSession || this.#queuedTotal >= this.#maxQueuedTotal) {
-      return deliveryResult(request, "rejected", "client_busy");
-    }
-    queue.push({ request, hash });
-    this.#queues.set(request.targetSessionId, queue);
-    this.#queuedTotal += 1;
-    this.#remember(key, { hash, status: "accepted" });
-    this.#startDrain(request.targetSessionId);
-    return deliveryResult(request, "accepted");
+    return this.#reconciler.withAgentLock(request.agentId, async () => {
+      const remembered = this.#remembered.get(key);
+      if (remembered) {
+        if (remembered.hash !== hash) return deliveryResult(request, "rejected", "input_conflict");
+        if (remembered.status !== "retryable") {
+          return deliveryResult(request, remembered.status, remembered.reason);
+        }
+      }
+      if (this.#abort.signal.aborted) return deliveryResult(request, "rejected", "client_busy");
+      const reason = this.#reconciler.checkSessionMessageDelivery(request);
+      if (reason) {
+        this.#remember(
+          key,
+          retryableAuthorityReason(reason) ? { hash, status: "retryable" } : { hash, status: "rejected", reason },
+        );
+        return deliveryResult(request, "rejected", reason);
+      }
+      const queue = this.#queues.get(request.targetSessionId) ?? [];
+      if (queue.length >= this.#maxQueuedPerSession || this.#queuedTotal >= this.#maxQueuedTotal) {
+        return deliveryResult(request, "rejected", "client_busy");
+      }
+      queue.push({ request, hash });
+      this.#queues.set(request.targetSessionId, queue);
+      this.#queuedTotal += 1;
+      this.#remember(key, { hash, status: "accepted" });
+      this.#startDrain(request.targetSessionId);
+      return deliveryResult(request, "accepted");
+    });
   }
 
   stop(): void {
@@ -164,6 +170,15 @@ export class SessionMessageInbox {
       this.#remembered.delete(oldest);
     }
   }
+}
+
+function retryableAuthorityReason(reason: InputRejectReason): boolean {
+  return (
+    reason === "stale_generation" ||
+    reason === "session_not_ready" ||
+    reason === "stale_configuration" ||
+    reason === "session_recovery_required"
+  );
 }
 
 export function buildSessionMessageInput(request: SessionMessageDeliveryRequest): AgentInput {

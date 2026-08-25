@@ -1,6 +1,6 @@
 {
-  "id": "3c567261-4e41-4500-8ca7-2c14b3653e4b",
-  "prevId": "f744f8d3-dfc9-47e5-8143-615dd93f65f0",
+  "id": "f744f8d3-dfc9-47e5-8143-615dd93f65f0",
+  "prevId": "8a2a15a7-3c78-4e69-9d3d-3a02f7317239",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -311,6 +311,21 @@
           "columnsTo": [
             "team_id",
             "user_id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "agents_manager_computer_owner_fk": {
+          "name": "agents_manager_computer_owner_fk",
+          "tableFrom": "agents",
+          "tableTo": "computers",
+          "columnsFrom": [
+            "computer_id",
+            "manager_user_id"
+          ],
+          "columnsTo": [
+            "id",
+            "owner_user_id"
           ],
           "onDelete": "restrict",
           "onUpdate": "no action"
@@ -1645,13 +1660,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "pending_receive_mode": {
-          "name": "pending_receive_mode",
-          "type": "agent_receive_mode",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": false
-        },
         "replacement_im_binding_id": {
           "name": "replacement_im_binding_id",
           "type": "uuid",
@@ -1833,6 +1841,10 @@
         "im_bindings_connection_owner_shape": {
           "name": "im_bindings_connection_owner_shape",
           "value": "(\"im_bindings\".\"connection_owner_instance_id\" is null and \"im_bindings\".\"connection_lease_expires_at\" is null)\n        or (\"im_bindings\".\"provider\" = 'feishu' and \"im_bindings\".\"connection_owner_instance_id\" is not null and\n        \"im_bindings\".\"connection_lease_expires_at\" is not null)"
+        },
+        "im_bindings_slack_setup_fields_null": {
+          "name": "im_bindings_slack_setup_fields_null",
+          "value": "\"im_bindings\".\"provider\" <> 'slack' or (\n        \"im_bindings\".\"setup_attempt_id\" is null and \"im_bindings\".\"setup_intent\" is null and\n        \"im_bindings\".\"setup_state\" is null and \"im_bindings\".\"setup_owner_instance_id\" is null and\n        \"im_bindings\".\"setup_owner_heartbeat_at\" is null and \"im_bindings\".\"encrypted_setup_context\" is null and\n        \"im_bindings\".\"setup_expires_at\" is null\n      )"
         }
       },
       "isRLSEnabled": false

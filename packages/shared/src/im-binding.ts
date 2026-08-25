@@ -79,6 +79,31 @@ export function hasRequiredFeishuTenantScopes(scopes: readonly string[]): boolea
   return FEISHU_REQUIRED_TENANT_SCOPES.every((scope) => granted.has(scope));
 }
 
+export const SLACK_REQUIRED_BOT_SCOPES = [
+  "app_mentions:read",
+  "channels:history",
+  "chat:write",
+  "files:read",
+  "groups:history",
+  "im:history",
+  "mpim:history",
+] as const;
+
+export const SLACK_SUBSCRIBED_BOT_EVENTS = [
+  "app_mention",
+  "app_uninstalled",
+  "message.channels",
+  "message.groups",
+  "message.im",
+  "message.mpim",
+  "tokens_revoked",
+] as const;
+
+export function hasRequiredSlackBotScopes(scopes: readonly string[]): boolean {
+  const granted = new Set(scopes);
+  return SLACK_REQUIRED_BOT_SCOPES.every((scope) => granted.has(scope));
+}
+
 export const ImBindingIdentitySchema = z.discriminatedUnion("provider", [
   z
     .object({
@@ -98,6 +123,9 @@ export const ImBindingIdentitySchema = z.discriminatedUnion("provider", [
       teamId: z.string().min(1).max(255),
       enterpriseId: z.string().min(1).max(255).nullable(),
       botUserId: z.string().min(1).max(255),
+      // Slack auth.test may omit app_id. The configured value is therefore a routing assertion
+      // that every independently signed real event must match, not an API-attested identity.
+      appIdEvidence: z.literal("configured"),
     })
     .strict(),
 ]);
@@ -115,10 +143,9 @@ export const ImBindingSummarySchema = z
       })
       .strict(),
     receiveMode: ReceiveModeSchema,
-    // A receive-mode target the binding cannot serve until the provider grants more scopes.
-    pendingReceiveMode: ReceiveModeSchema.nullable(),
     lastInboundAt: z.string().datetime().nullable(),
-    lastConfirmedAt: z.string().datetime().nullable(),
+    lastValidatedAt: z.string().datetime().nullable(),
+    lastRuntimeObservationAt: z.string().datetime().nullable(),
   })
   .strict();
 
@@ -169,64 +196,62 @@ export const CreateFeishuSetupAttemptRequestSchema = z
   .object({ intent: FeishuSetupIntentSchema.default("create") })
   .strict();
 
-export const SlackSetupIntentSchema = z.enum(["create", "reauthorize", "replace"]);
-export const SlackSetupStateSchema = z.enum([
-  "awaiting_credentials",
-  "awaiting_verification",
-  "succeeded",
-  "failed",
-  "expired",
-  "canceled",
-]);
+export const SlackAppManifestSchema = z.record(z.string(), z.unknown());
+export const SlackConfigurationIntentSchema = z.enum(["create", "reauthorize", "replace"]);
 
-export const SlackSetupIdentitySchema = z
+export const SlackIdentityClosureSchema = z
   .object({
-    // Slack's auth.test normally omits app_id for a bot token; the signed activation event establishes it.
-    appId: z.string().min(1).max(255).nullable(),
-    teamId: z.string().min(1).max(255),
-    enterpriseId: z.string().min(1).max(255).nullable(),
-    botUserId: z.string().min(1).max(255),
+    status: z.enum(["pending", "verified"]),
+    verifiedAt: z.string().datetime().nullable(),
   })
   .strict();
 
-export const SlackAppManifestSchema = z.record(z.string(), z.unknown());
-
-export const SlackSetupAttemptSchema = z
+export const SlackAppConfigurationSchema = z
   .object({
-    id: z.string().uuid(),
     agentId: z.string().uuid(),
-    intent: SlackSetupIntentSchema,
-    state: SlackSetupStateSchema,
-    // The generated App manifest, both as a copyable JSON object and as a create-new-App link.
     manifest: SlackAppManifestSchema,
     manifestUrl: z.string().url(),
     eventsUrl: z.string().url(),
     requiredBotScopes: z.array(z.string().min(1).max(160)).max(32),
-    // The App currently bound to the Agent, when one exists; reauthorization edits this App in place.
-    currentAppId: z.string().min(1).max(255).nullable(),
-    identity: SlackSetupIdentitySchema.nullable(),
-    // Whether Slack has verified the Events Request URL against the submitted Signing Secret.
-    challengeVerified: z.boolean(),
-    // Non-secret outcome of the most recent signature verification routed to this attempt.
-    lastVerificationErrorCode: z.string().min(1).max(120).nullable(),
-    lastVerificationAt: z.string().datetime().nullable(),
-    expiresAt: z.string().datetime(),
-    errorCode: z.string().min(1).max(120).nullable(),
-    completedAt: z.string().datetime().nullable(),
-    createdAt: z.string().datetime(),
+    subscribedBotEvents: z.array(z.string().min(1).max(160)).max(32),
+    currentBinding: z
+      .object({
+        id: z.string().uuid(),
+        appId: z.string().min(1).max(255),
+        credentialGeneration: z.number().int().min(1),
+      })
+      .strict()
+      .nullable(),
   })
   .strict();
 
-export const CreateSlackSetupAttemptRequestSchema = z
-  .object({ intent: SlackSetupIntentSchema.default("create") })
-  .strict();
-
-export const SubmitSlackSetupCredentialsRequestSchema = z
+export const ConfigureSlackAppRequestSchema = z
   .object({
+    intent: SlackConfigurationIntentSchema,
+    expectedBinding: z
+      .object({ id: z.string().uuid(), credentialGeneration: z.number().int().min(1) })
+      .strict()
+      .nullable(),
+    appId: z.string().min(1).max(255),
     botAccessToken: z.string().min(1).max(4096),
     signingSecret: z.string().min(1).max(512),
   })
   .strict();
+
+export const SlackConfigurationResultSchema = z
+  .object({
+    imBindingId: z.string().uuid(),
+    agentId: z.string().uuid(),
+    appId: z.string().min(1).max(255),
+    teamId: z.string().min(1).max(255),
+    botUserId: z.string().min(1).max(255),
+    credentialGeneration: z.number().int().min(1),
+    bindingState: z.literal("active"),
+    identityClosure: SlackIdentityClosureSchema,
+  })
+  .strict();
+
+export const ImBindingCredentialStatusSchema = z.enum(["valid", "invalid"]);
 
 export const ImBindingDiagnosticsSchema = z
   .object({
@@ -235,9 +260,21 @@ export const ImBindingDiagnosticsSchema = z
     ready: z.boolean(),
     agentRuntimeReadiness: z.enum(["checking", "install", "sign-in", "ready", "unavailable"]),
     providerCliReadiness: z.enum(["checking", "install", "ready", "unavailable"]),
-    credentialGeneration: z.number().int().min(1),
+    credentialGeneration: z.number().int().min(0),
+    credentialStatus: ImBindingCredentialStatusSchema,
+    requiredCapabilities: z.array(z.string().min(1).max(160)).max(128),
+    grantedCapabilities: z.array(z.string().min(1).max(160)).max(128),
+    missingCapabilities: z.array(z.string().min(1).max(160)).max(128),
     reauthorizationRequired: z.boolean(),
-    pendingReceiveMode: ReceiveModeSchema.nullable(),
+    slackAppId: z
+      .object({
+        value: z.string().min(1).max(255),
+        evidence: z.literal("configured"),
+        ingressMatchRequired: z.literal(true),
+      })
+      .strict()
+      .nullable(),
+    slackIdentityClosure: SlackIdentityClosureSchema.nullable(),
     connection: z
       .object({
         state: z.enum(["connected", "disconnected"]),
@@ -245,12 +282,15 @@ export const ImBindingDiagnosticsSchema = z
       })
       .nullable(),
     lastInboundAt: z.string().datetime().nullable(),
+    lastValidatedAt: z.string().datetime().nullable(),
+    lastRuntimeObservationAt: z.string().datetime().nullable(),
     lastErrorCode: z.string().min(1).max(120).nullable(),
   })
   .strict();
 
 export const SlackBindingActivationSchema = z
   .object({
+    intent: SlackConfigurationIntentSchema,
     agentId: z.string().uuid(),
     appId: z.string().min(1).max(255),
     teamId: z.string().min(1).max(255),
@@ -272,11 +312,12 @@ export type ImBindingAdminDetail = z.infer<typeof ImBindingAdminDetailSchema>;
 export type FeishuSetupIntent = z.infer<typeof FeishuSetupIntentSchema>;
 export type FeishuSetupState = z.infer<typeof FeishuSetupStateSchema>;
 export type FeishuSetupAttempt = z.infer<typeof FeishuSetupAttemptSchema>;
-export type SlackSetupIntent = z.infer<typeof SlackSetupIntentSchema>;
-export type SlackSetupState = z.infer<typeof SlackSetupStateSchema>;
-export type SlackSetupIdentity = z.infer<typeof SlackSetupIdentitySchema>;
 export type SlackAppManifest = z.infer<typeof SlackAppManifestSchema>;
-export type SlackSetupAttempt = z.infer<typeof SlackSetupAttemptSchema>;
-export type SubmitSlackSetupCredentialsRequest = z.infer<typeof SubmitSlackSetupCredentialsRequestSchema>;
+export type SlackConfigurationIntent = z.infer<typeof SlackConfigurationIntentSchema>;
+export type SlackIdentityClosure = z.infer<typeof SlackIdentityClosureSchema>;
+export type SlackAppConfiguration = z.infer<typeof SlackAppConfigurationSchema>;
+export type ConfigureSlackAppRequest = z.infer<typeof ConfigureSlackAppRequestSchema>;
+export type SlackConfigurationResult = z.infer<typeof SlackConfigurationResultSchema>;
+export type ImBindingCredentialStatus = z.infer<typeof ImBindingCredentialStatusSchema>;
 export type ImBindingDiagnostics = z.infer<typeof ImBindingDiagnosticsSchema>;
 export type SlackBindingActivation = z.infer<typeof SlackBindingActivationSchema>;

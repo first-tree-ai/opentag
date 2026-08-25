@@ -1,6 +1,6 @@
 {
-  "id": "8a2a15a7-3c78-4e69-9d3d-3a02f7317239",
-  "prevId": "bc597868-00b0-43ad-8a9a-9a1964b15246",
+  "id": "3c567261-4e41-4500-8ca7-2c14b3653e4b",
+  "prevId": "f744f8d3-dfc9-47e5-8143-615dd93f65f0",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -311,21 +311,6 @@
           "columnsTo": [
             "team_id",
             "user_id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "agents_manager_computer_owner_fk": {
-          "name": "agents_manager_computer_owner_fk",
-          "tableFrom": "agents",
-          "tableTo": "computers",
-          "columnsFrom": [
-            "computer_id",
-            "manager_user_id"
-          ],
-          "columnsTo": [
-            "id",
-            "owner_user_id"
           ],
           "onDelete": "restrict",
           "onUpdate": "no action"
@@ -827,6 +812,183 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.computer_connect_codes": {
+      "name": "computer_connect_codes",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issued_by_user_id": {
+          "name": "issued_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "consumed_workspace_computer_id": {
+          "name": "consumed_workspace_computer_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "consumed_at": {
+          "name": "consumed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_by_user_id": {
+          "name": "revoked_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "computer_connect_codes_workspace_created_idx": {
+          "name": "computer_connect_codes_workspace_created_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "computer_connect_codes_workspace_id_teams_id_fk": {
+          "name": "computer_connect_codes_workspace_id_teams_id_fk",
+          "tableFrom": "computer_connect_codes",
+          "tableTo": "teams",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "computer_connect_codes_issued_by_user_id_users_id_fk": {
+          "name": "computer_connect_codes_issued_by_user_id_users_id_fk",
+          "tableFrom": "computer_connect_codes",
+          "tableTo": "users",
+          "columnsFrom": [
+            "issued_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "computer_connect_codes_revoked_by_user_id_users_id_fk": {
+          "name": "computer_connect_codes_revoked_by_user_id_users_id_fk",
+          "tableFrom": "computer_connect_codes",
+          "tableTo": "users",
+          "columnsFrom": [
+            "revoked_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "computer_connect_codes_workspace_enrollment_fk": {
+          "name": "computer_connect_codes_workspace_enrollment_fk",
+          "tableFrom": "computer_connect_codes",
+          "tableTo": "workspace_computers",
+          "columnsFrom": [
+            "workspace_id",
+            "consumed_workspace_computer_id"
+          ],
+          "columnsTo": [
+            "workspace_id",
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "computer_connect_codes_token_hash_unique": {
+          "name": "computer_connect_codes_token_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "token_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "computer_connect_codes_expiry": {
+          "name": "computer_connect_codes_expiry",
+          "value": "\"computer_connect_codes\".\"expires_at\" > \"computer_connect_codes\".\"created_at\""
+        },
+        "computer_connect_codes_consumption_pair": {
+          "name": "computer_connect_codes_consumption_pair",
+          "value": "(\"computer_connect_codes\".\"consumed_workspace_computer_id\" is null) = (\"computer_connect_codes\".\"consumed_at\" is null)"
+        },
+        "computer_connect_codes_revocation_pair": {
+          "name": "computer_connect_codes_revocation_pair",
+          "value": "(\"computer_connect_codes\".\"revoked_by_user_id\" is null) = (\"computer_connect_codes\".\"revoked_at\" is null)"
+        },
+        "computer_connect_codes_terminal_state": {
+          "name": "computer_connect_codes_terminal_state",
+          "value": "not (\"computer_connect_codes\".\"consumed_at\" is not null and \"computer_connect_codes\".\"revoked_at\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.computers": {
       "name": "computers",
       "schema": "",
@@ -947,6 +1109,390 @@
       },
       "policies": {},
       "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.workspace_computer_credentials": {
+      "name": "workspace_computer_credentials",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_computer_id": {
+          "name": "workspace_computer_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "secret_hash": {
+          "name": "secret_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issued_by_user_id": {
+          "name": "issued_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issued_at": {
+          "name": "issued_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "revoked_by_user_id": {
+          "name": "revoked_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "workspace_computer_credentials_active_enrollment_unique": {
+          "name": "workspace_computer_credentials_active_enrollment_unique",
+          "columns": [
+            {
+              "expression": "workspace_computer_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"workspace_computer_credentials\".\"revoked_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workspace_computer_credentials_enrollment_issued_idx": {
+          "name": "workspace_computer_credentials_enrollment_issued_idx",
+          "columns": [
+            {
+              "expression": "workspace_computer_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "issued_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workspace_computer_credentials_workspace_computer_id_workspace_computers_id_fk": {
+          "name": "workspace_computer_credentials_workspace_computer_id_workspace_computers_id_fk",
+          "tableFrom": "workspace_computer_credentials",
+          "tableTo": "workspace_computers",
+          "columnsFrom": [
+            "workspace_computer_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "workspace_computer_credentials_issued_by_user_id_users_id_fk": {
+          "name": "workspace_computer_credentials_issued_by_user_id_users_id_fk",
+          "tableFrom": "workspace_computer_credentials",
+          "tableTo": "users",
+          "columnsFrom": [
+            "issued_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "workspace_computer_credentials_revoked_by_user_id_users_id_fk": {
+          "name": "workspace_computer_credentials_revoked_by_user_id_users_id_fk",
+          "tableFrom": "workspace_computer_credentials",
+          "tableTo": "users",
+          "columnsFrom": [
+            "revoked_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "workspace_computer_credentials_secret_hash_unique": {
+          "name": "workspace_computer_credentials_secret_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "secret_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "workspace_computer_credentials_revocation_pair": {
+          "name": "workspace_computer_credentials_revocation_pair",
+          "value": "(\"workspace_computer_credentials\".\"revoked_by_user_id\" is null) = (\"workspace_computer_credentials\".\"revoked_at\" is null)"
+        },
+        "workspace_computer_credentials_revoked_after_issued": {
+          "name": "workspace_computer_credentials_revoked_after_issued",
+          "value": "\"workspace_computer_credentials\".\"revoked_at\" is null or \"workspace_computer_credentials\".\"revoked_at\" >= \"workspace_computer_credentials\".\"issued_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.workspace_computers": {
+      "name": "workspace_computers",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "computer_id": {
+          "name": "computer_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "platform": {
+          "name": "platform",
+          "type": "computer_platform",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "arch": {
+          "name": "arch",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "client_version": {
+          "name": "client_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "enrolled_by_user_id": {
+          "name": "enrolled_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "enrolled_at": {
+          "name": "enrolled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "revoked_by_user_id": {
+          "name": "revoked_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "current_instance_id": {
+          "name": "current_instance_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "connected_at": {
+          "name": "connected_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_seen_at": {
+          "name": "last_seen_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "workspace_computers_active_workspace_computer_unique": {
+          "name": "workspace_computers_active_workspace_computer_unique",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "computer_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"workspace_computers\".\"revoked_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workspace_computers_active_workspace_idx": {
+          "name": "workspace_computers_active_workspace_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"workspace_computers\".\"revoked_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workspace_computers_computer_id_idx": {
+          "name": "workspace_computers_computer_id_idx",
+          "columns": [
+            {
+              "expression": "computer_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workspace_computers_workspace_id_teams_id_fk": {
+          "name": "workspace_computers_workspace_id_teams_id_fk",
+          "tableFrom": "workspace_computers",
+          "tableTo": "teams",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "workspace_computers_computer_id_computers_id_fk": {
+          "name": "workspace_computers_computer_id_computers_id_fk",
+          "tableFrom": "workspace_computers",
+          "tableTo": "computers",
+          "columnsFrom": [
+            "computer_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "workspace_computers_enrolled_by_user_id_users_id_fk": {
+          "name": "workspace_computers_enrolled_by_user_id_users_id_fk",
+          "tableFrom": "workspace_computers",
+          "tableTo": "users",
+          "columnsFrom": [
+            "enrolled_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "workspace_computers_revoked_by_user_id_users_id_fk": {
+          "name": "workspace_computers_revoked_by_user_id_users_id_fk",
+          "tableFrom": "workspace_computers",
+          "tableTo": "users",
+          "columnsFrom": [
+            "revoked_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "workspace_computers_workspace_id_id_unique": {
+          "name": "workspace_computers_workspace_id_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "workspace_id",
+            "id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "workspace_computers_revocation_pair": {
+          "name": "workspace_computers_revocation_pair",
+          "value": "(\"workspace_computers\".\"revoked_by_user_id\" is null) = (\"workspace_computers\".\"revoked_at\" is null)"
+        },
+        "workspace_computers_revoked_after_enrolled": {
+          "name": "workspace_computers_revoked_after_enrolled",
+          "value": "\"workspace_computers\".\"revoked_at\" is null or \"workspace_computers\".\"revoked_at\" >= \"workspace_computers\".\"enrolled_at\""
+        }
+      },
       "isRLSEnabled": false
     },
     "public.im_bindings": {
@@ -1096,6 +1642,13 @@
         "setup_expires_at": {
           "name": "setup_expires_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "pending_receive_mode": {
+          "name": "pending_receive_mode",
+          "type": "agent_receive_mode",
+          "typeSchema": "public",
           "primaryKey": false,
           "notNull": false
         },
@@ -1280,10 +1833,6 @@
         "im_bindings_connection_owner_shape": {
           "name": "im_bindings_connection_owner_shape",
           "value": "(\"im_bindings\".\"connection_owner_instance_id\" is null and \"im_bindings\".\"connection_lease_expires_at\" is null)\n        or (\"im_bindings\".\"provider\" = 'feishu' and \"im_bindings\".\"connection_owner_instance_id\" is not null and\n        \"im_bindings\".\"connection_lease_expires_at\" is not null)"
-        },
-        "im_bindings_slack_setup_fields_null": {
-          "name": "im_bindings_slack_setup_fields_null",
-          "value": "\"im_bindings\".\"provider\" <> 'slack' or (\n        \"im_bindings\".\"setup_attempt_id\" is null and \"im_bindings\".\"setup_intent\" is null and\n        \"im_bindings\".\"setup_state\" is null and \"im_bindings\".\"setup_owner_instance_id\" is null and\n        \"im_bindings\".\"setup_owner_heartbeat_at\" is null and \"im_bindings\".\"encrypted_setup_context\" is null and\n        \"im_bindings\".\"setup_expires_at\" is null\n      )"
         }
       },
       "isRLSEnabled": false

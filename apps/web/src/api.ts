@@ -15,9 +15,10 @@ import {
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentReactivatePath,
-  agentSlackSetupAttemptsPath,
+  agentSlackConfigurationPath,
   agentSuspendPath,
   agentUsagePath,
+  type ConfigureSlackAppRequest,
   type ConnectCodeIssueResponse,
   ConnectCodeIssueResponseSchema,
   type CreateAgentRequest,
@@ -56,10 +57,10 @@ import {
   type MeResponse,
   MeResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
-  type SlackSetupAttempt,
-  SlackSetupAttemptSchema,
-  type SubmitSlackSetupCredentialsRequest,
-  slackSetupAttemptPath,
+  type SlackAppConfiguration,
+  SlackAppConfigurationSchema,
+  type SlackConfigurationResult,
+  SlackConfigurationResultSchema,
   type TeamInvitation,
   TeamInvitationSchema,
   type TeamMemberAdminConfig,
@@ -237,36 +238,15 @@ export class BrowserApi {
     return this.request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema);
   }
 
-  createSlackSetupAttempt(
-    agentId: string,
-    intent: "create" | "reauthorize" | "replace" = "create",
-  ): Promise<SlackSetupAttempt> {
-    return this.request(agentSlackSetupAttemptsPath(agentId), SlackSetupAttemptSchema, {
-      method: "POST",
-      body: JSON.stringify({ intent }),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+  slackAppConfiguration(agentId: string): Promise<SlackAppConfiguration> {
+    return this.request(agentSlackConfigurationPath(agentId), SlackAppConfigurationSchema);
   }
 
-  submitSlackSetupCredentials(
-    attemptId: string,
-    input: SubmitSlackSetupCredentialsRequest,
-  ): Promise<SlackSetupAttempt> {
-    return this.request(`${slackSetupAttemptPath(attemptId)}/credentials`, SlackSetupAttemptSchema, {
-      method: "POST",
+  configureSlackApp(agentId: string, input: ConfigureSlackAppRequest): Promise<SlackConfigurationResult> {
+    return this.request(agentSlackConfigurationPath(agentId), SlackConfigurationResultSchema, {
+      method: "PUT",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
-  }
-
-  slackSetupAttempt(attemptId: string): Promise<SlackSetupAttempt> {
-    return this.request(slackSetupAttemptPath(attemptId), SlackSetupAttemptSchema);
-  }
-
-  cancelSlackSetupAttempt(attemptId: string): Promise<SlackSetupAttempt> {
-    return this.request(`${slackSetupAttemptPath(attemptId)}/cancel`, SlackSetupAttemptSchema, {
-      method: "POST",
-      headers: this.csrfHeaders(),
     });
   }
 

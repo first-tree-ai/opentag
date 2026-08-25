@@ -180,7 +180,7 @@ vi.mock("../services/im-bindings/index.js", () => ({
 }));
 vi.mock("../services/im-bindings/slack/index.js", () => ({
   DefaultSlackApiClient: class {},
-  SlackSetupService: class {},
+  SlackConfigurationService: class {},
   SlackAdapter: class {
     constructor(options: unknown) {
       state.slackAdapterOptions = options;

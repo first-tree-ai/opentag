@@ -79,9 +79,7 @@ function installApi(
     roleUpdate?: (targetUserId: string, role: "admin" | "member") => Promise<Response> | Response;
     roleUpdateFails?: boolean;
     setupFailureCode?: string;
-    slackSetupState?: "awaiting_credentials" | "awaiting_verification";
     setupCompletedAt?: string | null;
-    scopeReauth?: boolean;
     unauthenticated?: boolean;
     teamless?: boolean;
     teamNameConflict?: boolean;
@@ -485,18 +483,6 @@ function installApi(
       });
     }
     if (path === `/api/v1/agents/${agentId}`) {
-      if (init?.method === "PATCH" && options.scopeReauth) {
-        return json(
-          {
-            error: {
-              code: "IM_BINDING_SCOPE_REAUTH_REQUIRED",
-              category: "deterministic",
-              message: "Additional IM scopes are required",
-            },
-          },
-          409,
-        );
-      }
       if (init?.method === "PATCH") return json(adminConfig());
       if (init?.method === "DELETE") return new Response(null, { status: 204 });
       await options.agentRead?.();
@@ -566,9 +552,9 @@ function installApi(
         bindingState: options.bindingState ?? (options.bindingReauth ? "reauthorization_required" : "active"),
         bot: { displayName: "Reviewer", avatarUrl: null },
         receiveMode: "mention_only",
-        pendingReceiveMode: null,
         lastInboundAt: null,
-        lastConfirmedAt: "2026-08-20T00:00:00.000Z",
+        lastValidatedAt: "2026-08-20T00:00:00.000Z",
+        lastRuntimeObservationAt: null,
       });
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts` && init?.method === "POST") {
@@ -588,39 +574,59 @@ function installApi(
         201,
       );
     }
-    const slackAttemptId = "f645f26d-9184-4f2f-98a1-4ee83ae6a604";
-    const slackAttempt = (intent: "create" | "reauthorize" | "replace", state = options.slackSetupState) => ({
-      id: slackAttemptId,
-      agentId,
-      intent,
-      state: state ?? "awaiting_credentials",
-      manifest: { display_information: { name: "Reviewer - OpenTag" } },
-      manifestUrl: "https://api.slack.com/apps?new_app=1&manifest_json=example",
-      eventsUrl: `https://opentag.example.com/api/v1/agents/${agentId}/im-binding/slack/events`,
-      requiredBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
-      currentAppId: null,
-      identity:
-        state === "awaiting_verification" ? { appId: null, teamId: "T1", enterpriseId: null, botUserId: "U1" } : null,
-      challengeVerified: false,
-      lastVerificationErrorCode: null,
-      lastVerificationAt: null,
-      expiresAt: "2026-08-20T00:30:00.000Z",
-      errorCode: null,
-      completedAt: null,
-      createdAt: "2026-08-20T00:00:00.000Z",
-    });
-    if (path === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST") {
-      const body = JSON.parse(String(init.body)) as { intent: "create" | "reauthorize" | "replace" };
-      return json(slackAttempt(body.intent), 201);
-    }
-    if (path === `/api/v1/im-bindings/slack/setup-attempts/${slackAttemptId}` && (init?.method ?? "GET") === "GET") {
-      return json(slackAttempt("create"));
-    }
-    if (path === `/api/v1/im-bindings/slack/setup-attempts/${slackAttemptId}/cancel` && init?.method === "POST") {
+    if (path === `/api/v1/agents/${agentId}/im-binding/slack/configuration` && (init?.method ?? "GET") === "GET") {
       return json({
-        ...slackAttempt("create", "awaiting_credentials"),
-        state: "canceled",
-        errorCode: "SLACK_SETUP_CANCELED",
+        agentId,
+        manifest: {
+          display_information: { name: "Reviewer - OpenTag" },
+          oauth_config: {
+            scopes: {
+              bot: [
+                "app_mentions:read",
+                "channels:history",
+                "chat:write",
+                "files:read",
+                "groups:history",
+                "im:history",
+                "mpim:history",
+              ],
+            },
+          },
+          settings: {
+            event_subscriptions: {
+              bot_events: [
+                "app_mention",
+                "app_uninstalled",
+                "message.channels",
+                "message.groups",
+                "message.im",
+                "message.mpim",
+                "tokens_revoked",
+              ],
+            },
+          },
+        },
+        manifestUrl: "https://api.slack.com/apps?new_app=1&manifest_json=example",
+        eventsUrl: `https://opentag.example.com/api/v1/agents/${agentId}/im-binding/slack/events`,
+        requiredBotScopes: [
+          "app_mentions:read",
+          "channels:history",
+          "chat:write",
+          "files:read",
+          "groups:history",
+          "im:history",
+          "mpim:history",
+        ],
+        subscribedBotEvents: [
+          "app_mention",
+          "app_uninstalled",
+          "message.channels",
+          "message.groups",
+          "message.im",
+          "message.mpim",
+          "tokens_revoked",
+        ],
+        currentBinding: null,
       });
     }
     if (path === "/api/v1/auth/browser/logout" && init?.method === "POST") return new Response(null, { status: 204 });
@@ -664,6 +670,11 @@ describe("OpenTag Web App Shell", () => {
     expect(within(agentCard as HTMLElement).getByText("Tokens")).toBeTruthy();
     expect(within(agentCard as HTMLElement).getByText("428K")).toBeTruthy();
     expect(within(agentCard as HTMLElement).getByText("Not connected")).toBeTruthy();
+    expect(
+      within(agentCard as HTMLElement)
+        .getByRole("link", { name: "Connect messaging" })
+        .getAttribute("href"),
+    ).toBe(`/agents/${agentId}/settings/messaging`);
     expect(screen.queryByText("Ada's Mac · macOS")).toBeNull();
     expect(screen.queryByText("Mentions only")).toBeNull();
     const workspaceNavigation = screen.getByRole("navigation", { name: "Product" });
@@ -697,7 +708,7 @@ describe("OpenTag Web App Shell", () => {
     expect(within(status as HTMLElement).getByText("Started 8m ago")).toBeTruthy();
   });
 
-  it("keeps an offline reason and reconnect action together in the Agent status", async () => {
+  it("keeps an offline reason and its Computer exit together in the Agent status", async () => {
     installApi("admin", {
       bound: true,
       computerStatus: () => "offline",
@@ -712,9 +723,10 @@ describe("OpenTag Web App Shell", () => {
       .closest(".ds-status");
     expect(status).toBeTruthy();
     expect(within(status as HTMLElement).getByText("Computer offline")).toBeTruthy();
-    const reconnect = within(status as HTMLElement).getByRole("link", { name: "Reconnect" });
-    expect(reconnect.classList.contains("ds-button--inline")).toBe(true);
-    expect(reconnect.classList.contains("ds-button--outline")).toBe(false);
+    const exit = within(status as HTMLElement).getByRole("link", { name: "View Computer" });
+    expect(exit.getAttribute("href")).toBe(`/agents/${agentId}/settings/computer`);
+    expect(exit.classList.contains("ds-button--inline")).toBe(true);
+    expect(exit.classList.contains("ds-button--outline")).toBe(false);
   });
 
   it.each(["/", "/agents"])("redirects unauthenticated protected path %s to login", async (path) => {
@@ -1591,8 +1603,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
 
-    expect(await screen.findByRole("heading", { name: "Connected computer" })).toBeTruthy();
-    expect(await screen.findByText("Ada's Mac · macOS")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Ada's Mac · macOS" })).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Reviewer" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Execution" })).toBeNull();
@@ -1600,16 +1611,63 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText(/Last seen/i)).toBeNull();
   });
 
-  it("shows Computer recovery details only when the assigned Computer is offline", async () => {
+  it("names the machine-level recovery for an offline Computer instead of offering a dead retry", async () => {
     installApi("admin", { bound: true, computerStatus: () => "offline" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
 
-    expect(await screen.findByText("Ada's Mac · macOS")).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Ada's Mac · macOS" })).toBeTruthy();
     expect(screen.getByText("Offline")).toBeTruthy();
     expect(screen.getByText(/Last seen/)).toBeTruthy();
-    expect(screen.getByText("New requests can start after this Computer reconnects.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+    expect(
+      screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring this Computer back online."),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
+  });
+
+  it("observes a Computer coming back online from the recovery page itself", async () => {
+    let computerStatus: "online" | "offline" = "offline";
+    installApi("admin", { bound: true, computerStatus: () => computerStatus });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
+    render(<App />);
+
+    expect(await screen.findByText("Offline")).toBeTruthy();
+    expect(
+      screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring this Computer back online."),
+    ).toBeTruthy();
+
+    computerStatus = "online";
+    fireEvent(window, new Event("focus"));
+
+    expect(await screen.findByText("Online")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(/Start it there/)).toBeNull());
+  });
+
+  it("explains an unready Provider on the Computer page instead of the model settings", async () => {
+    installApi("admin", {
+      bound: true,
+      runtimeProvider: "claude-code",
+      computerProviderReadiness: [
+        { provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" },
+        { provider: "claude-code", status: "sign-in", observedAt: "2026-08-20T00:00:00.000Z" },
+      ],
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Ada's Mac · macOS" })).toBeTruthy();
+    expect(screen.getByText("Not ready")).toBeTruthy();
+    expect(screen.getByText("Claude Code is not signed in on Ada's Mac.")).toBeTruthy();
+  });
+
+  it("hides failure exits from viewers who cannot open Agent settings", async () => {
+    installApi("member", { bound: true, computerStatus: () => "offline", handoffReady: true });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+
+    expect(await screen.findByText("Needs attention")).toBeTruthy();
+    expect(screen.getByText("Computer offline")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "View Computer" })).toBeNull();
   });
 
   it("refreshes Agent availability when the page regains focus", async () => {
@@ -1622,7 +1680,7 @@ describe("OpenTag Web App Shell", () => {
     computerStatus = "offline";
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("The assigned Computer is offline, so new requests cannot start.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Review Computer" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View Computer" })).toBeTruthy();
   });
 
   it("keeps Agent cards useful when Computer status cannot be confirmed", async () => {
@@ -1655,6 +1713,9 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByText("Needs attention")).toBeTruthy();
     expect(screen.getByText("Computer not ready")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View Computer" }).getAttribute("href")).toBe(
+      `/agents/${agentId}/settings/computer`,
+    );
     expect(screen.queryByText("Available")).toBeNull();
   });
 
@@ -1664,8 +1725,11 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    // The detail status names the same state as the Agent list, so one failure has one name.
+    expect(screen.getAllByText("Needs attention").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Action required")).toBeNull();
     expect(screen.getByText("Messages cannot currently be handed off to this Agent.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Review messaging" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View messaging" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Current work" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Where to use this Agent" })).toBeTruthy();
     expect(screen.queryByText("Handoff")).toBeNull();
@@ -1702,7 +1766,7 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Contact channel" })).toBeTruthy();
     expect(screen.getByText(/Feishu · Connected/)).toBeTruthy();
-    expect(screen.getByText(/Last checked/)).toBeTruthy();
+    expect(screen.getByText(/Validated/)).toBeTruthy();
     expect(screen.getByText("@reviewer")).toBeTruthy();
     expect(screen.getByText("Send @reviewer a direct message, or mention it in a Feishu group chat.")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Trigger rules" })).toBeTruthy();
@@ -1789,13 +1853,25 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("refreshes the parent Agent projection after an IM mutation", async () => {
-    installApi("admin", { bound: true });
+  it("changes Slack receive mode locally without opening Slack configuration", async () => {
+    installApi("admin", { bound: true, provider: "slack" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
     const dialog = await screen.findByRole("dialog", { name: "Allow messages without mentions?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Allow every message" }));
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([input, init]) => String(input) === `/api/v1/agents/${agentId}` && init?.method === "PATCH",
+          ),
+      ).toHaveLength(1),
+    );
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes("/im-binding/slack/configuration")),
+    ).toHaveLength(0);
     await waitFor(() =>
       expect(
         vi
@@ -1878,87 +1954,6 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Disconnect messaging?" })).toBeNull());
     expect(screen.queryByText("Unable to disconnect messaging")).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Messaging" })));
-  });
-
-  it("resumes a provisioning Slack setup after a refresh before credentials were submitted", async () => {
-    installApi("admin", { bound: true, provider: "slack", bindingState: "provisioning" });
-    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
-    const view = render(<App />);
-
-    expect(await screen.findByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Change Slack App" })).toBeNull();
-    expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(
-          ([input, init]) =>
-            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
-        ),
-    ).toHaveLength(0);
-
-    fireEvent.click(screen.getByRole("button", { name: "Resume Slack setup" }));
-    expect(await screen.findByLabelText("Bot User OAuth Token")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Cancel setup" })).toBeTruthy();
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(
-          ([input, init]) =>
-            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
-        ),
-    ).toHaveLength(1);
-
-    fireEvent.click(screen.getByRole("button", { name: "Cancel setup" }));
-    expect(await screen.findByText(/State: canceled/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Retry Slack setup" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
-
-    // The binding row remains provisioning after cancellation, but a refresh must not mutate it.
-    view.unmount();
-    vi.mocked(fetch).mockClear();
-    render(<App />);
-    expect(await screen.findByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
-    expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(
-          ([input, init]) =>
-            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
-        ),
-    ).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Resume Slack setup" }));
-    expect(await screen.findByLabelText("Bot User OAuth Token")).toBeTruthy();
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(
-          ([input, init]) =>
-            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
-        ),
-    ).toHaveLength(1);
-  });
-
-  it("resumes a provisioning Slack setup after a refresh while verification is pending", async () => {
-    installApi("admin", {
-      bound: true,
-      provider: "slack",
-      bindingState: "provisioning",
-      slackSetupState: "awaiting_verification",
-    });
-    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
-    render(<App />);
-
-    expect(await screen.findByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
-    expect(screen.queryByText(/Bot Token validated/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Resume Slack setup" }));
-    expect(await screen.findByText(/Bot Token validated/)).toBeTruthy();
-    expect(screen.getByText(/for workspace T1 \(bot user U1\)/)).toBeTruthy();
-    expect(screen.getByText(/Signing Secret not yet verified/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Edit credentials" })).toBeTruthy();
-    expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Change Slack App" })).toBeNull();
   });
 
   it("shows the Tasks demo and opens a Task detail", async () => {
@@ -2480,38 +2475,23 @@ describe("OpenTag Web App Shell", () => {
     });
   });
 
-  it.each([
-    ["feishu", "Reauthorize Feishu"],
-    ["slack", "Reauthorize Slack"],
-  ] as const)("offers provider-correct recovery when %s needs additional scopes", async (provider, recovery) => {
-    installApi("admin", { bound: true, provider, scopeReauth: true });
-    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
-    render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
-    const dialog = await screen.findByRole("dialog", { name: "Allow messages without mentions?" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Allow every message" }));
-    expect(await screen.findByText("Additional IM scopes are required")).toBeTruthy();
-    expect(await screen.findByText(recovery)).toBeTruthy();
-    if (provider === "slack") expect(screen.queryByRole("button", { name: "Reauthorize Feishu" })).toBeNull();
-  });
-
-  it("starts a dedicated customer-owned Slack App setup from the Agent IM tab", async () => {
+  it("opens a stateless customer-owned Slack App configuration from the Agent IM tab", async () => {
     installApi("admin");
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Connect Slack App" }));
 
-    expect(await screen.findByRole("link", { name: /Create a dedicated Slack App/ })).toBeTruthy();
+    expect(await screen.findByRole("link", { name: /Create a Slack App from the complete manifest/ })).toBeTruthy();
+    expect(screen.getByLabelText("Slack App ID")).toBeTruthy();
     expect(screen.getByLabelText("Bot User OAuth Token")).toBeTruthy();
     expect(screen.getByLabelText("Signing Secret")).toBeTruthy();
-    expect(screen.getByText(/files:read/)).toBeTruthy();
-    const request = vi
+    expect(screen.getAllByText(/files:read/)).toHaveLength(2);
+    const requests = vi
       .mocked(fetch)
-      .mock.calls.find(
-        ([input, init]) => String(input).endsWith("/im-binding/slack/setup-attempts") && init?.method === "POST",
-      );
-    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "create" });
+      .mock.calls.filter(([input]) => String(input).endsWith("/im-binding/slack/configuration"));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.[1]?.method ?? "GET").toBe("GET");
   });
 
   it("creates a Computer connection command only after an explicit admin click", async () => {

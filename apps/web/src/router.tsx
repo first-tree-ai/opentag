@@ -9,6 +9,7 @@ import type {
   ImBindingSummary,
   MeMembership,
   MeResponse,
+  ProviderReadinessStatus,
   TeamComputerSummary,
   TeamMemberSummary,
 } from "@opentag/shared/browser";
@@ -46,7 +47,7 @@ import { IntegrationsPage } from "./features/integrations-page.js";
 import { SkillsPage } from "./features/skills-page.js";
 import { TaskDetailPage, TasksPage } from "./features/tasks-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
-import { SlackSetup } from "./im/slack-setup.js";
+import { SlackConfiguration } from "./im/slack-configuration.js";
 import { OnboardingPage } from "./onboarding/page.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import {
@@ -84,6 +85,8 @@ type AgentAvailability = {
   lastConfirmedAt: string | null;
   dependencies: {
     computer: { state: "ready" | "action_required" | "unconfirmed"; lastConfirmedAt: string | null };
+    /** Readiness of the Agent's Provider on its Computer. `runtime_unavailable` is diagnosed from this. */
+    runtime: { provider: AgentSummary["runtimeProvider"]; status: ProviderReadinessStatus | null };
     handoff: {
       state: "ready" | "action_required" | "setting_up" | "not_connected" | "unconfirmed";
       lastConfirmedAt: string | null;
@@ -115,6 +118,9 @@ function projectAgentAvailability(
   handoffEvidenceConfirmed: boolean,
 ): AgentAvailability {
   const computerReady = computer?.connectionStatus === "online";
+  const providerReadiness = computer?.providerReadiness?.find(
+    (observation) => observation.provider === agent.runtimeProvider,
+  );
   const handoffState =
     !bindingEvidenceConfirmed || !handoffEvidenceConfirmed
       ? ("unconfirmed" as const)
@@ -130,7 +136,11 @@ function projectAgentAvailability(
       state: computer ? (computerReady ? "ready" : "action_required") : "unconfirmed",
       lastConfirmedAt: computer?.lastSeenAt ?? null,
     },
-    handoff: { state: handoffState, lastConfirmedAt: binding?.lastConfirmedAt ?? null },
+    runtime: { provider: agent.runtimeProvider, status: providerReadiness?.status ?? null },
+    handoff: {
+      state: handoffState,
+      lastConfirmedAt: binding?.lastRuntimeObservationAt ?? binding?.lastValidatedAt ?? null,
+    },
     channel: {
       state: !bindingEvidenceConfirmed ? "unconfirmed" : binding ? "connected" : "not_connected",
       provider: binding?.provider ?? null,
@@ -151,9 +161,7 @@ function projectAgentAvailability(
       dependencies,
     };
   }
-  const runtimeReadiness = computer.providerReadiness?.find(
-    (observation) => observation.provider === agent.runtimeProvider,
-  );
+  const runtimeReadiness = providerReadiness;
   if (!runtimeReadiness) {
     return { state: "unconfirmed", reason: "runtime_unconfirmed", lastConfirmedAt: null, dependencies };
   }
@@ -168,7 +176,7 @@ function projectAgentAvailability(
     return {
       state: "setting_up",
       reason: "im_provisioning",
-      lastConfirmedAt: binding.lastConfirmedAt,
+      lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
       dependencies,
     };
   }
@@ -176,22 +184,32 @@ function projectAgentAvailability(
     return {
       state: "action_required",
       reason: "im_reauthorization_required",
-      lastConfirmedAt: binding.lastConfirmedAt,
+      lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
       dependencies,
     };
   }
   if (binding.bindingState === "error" || binding.bindingState === "disabled") {
-    return { state: "action_required", reason: "im_error", lastConfirmedAt: binding.lastConfirmedAt, dependencies };
+    return {
+      state: "action_required",
+      reason: "im_error",
+      lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
+      dependencies,
+    };
   }
   if (!handoff?.handoffReady) {
     return {
       state: "action_required",
       reason: "handoff_unavailable",
-      lastConfirmedAt: binding.lastConfirmedAt,
+      lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
       dependencies,
     };
   }
-  return { state: "ready", reason: null, lastConfirmedAt: binding.lastConfirmedAt, dependencies };
+  return {
+    state: "ready",
+    reason: null,
+    lastConfirmedAt: binding.lastRuntimeObservationAt ?? binding.lastValidatedAt,
+    dependencies,
+  };
 }
 
 async function loadAgentList(teamId: string): Promise<{ agents: AgentListItem[] }> {
@@ -1119,12 +1137,19 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
 }
 
 function AgentCard({ agent }: { agent: AgentListItem }) {
+  const { membership } = useTeam();
   const status = agentCardStatus(agent);
+  /**
+   * `AgentSettingsPage` bounces a viewer without `canManage` straight back to the Agent, and the list
+   * response carries no per-Agent capability. Mirror the server rule so a member never gets an exit
+   * that returns them to where they started.
+   */
+  const action = membership.role === "admin" ? status.action : undefined;
   const statusDetail: ReactNode =
     agent.activity.state === "working" && status.label === "Working" ? (
       <>Started {formatElapsedCompact(agent.activity.startedAt)} ago</>
     ) : status.detail ? (
-      status.reconnect ? (
+      action ? (
         <>
           <span className="agent-state-reason">{status.detail}</span>
           <span className="agent-state-separator" aria-hidden="true">
@@ -1132,9 +1157,9 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           </span>
           <Link
             className={buttonClassName({ className: "agent-reconnect", variant: "inline" })}
-            to={`/agents/${agent.id}/settings/computer`}
+            to={`/agents/${agent.id}/settings/${action.section}`}
           >
-            Reconnect
+            {action.label}
           </Link>
         </>
       ) : (
@@ -1182,11 +1207,15 @@ function agentAvatarTone(agentId: string): (typeof agentAvatarTones)[number] {
   return agentAvatarTones[hash % agentAvatarTones.length] ?? "brand";
 }
 
+/**
+ * Every state a viewer can act on carries the Settings section that explains it. A state without an
+ * exit reads as a dead end: the card reports a failure the viewer cannot follow anywhere.
+ */
 function agentCardStatus(agent: AgentListItem): {
+  action?: { label: string; section: AgentSettingsSection };
   detail?: string;
   label: string;
   priority: number;
-  reconnect?: boolean;
   tone: StatusTone;
 } {
   if (agent.status === "suspended") return { label: "Paused", priority: 4, tone: "neutral" };
@@ -1197,17 +1226,18 @@ function agentCardStatus(agent: AgentListItem): {
     return { detail: "Unable to confirm readiness", label: "Unconfirmed", priority: 1, tone: "neutral" };
   }
   if (agent.availability.state === "action_required") {
-    const detail =
+    const { action, detail } =
       agent.availability.reason === "computer_offline"
-        ? "Computer offline"
+        ? { action: { label: "View Computer", section: "computer" as const }, detail: "Computer offline" }
         : agent.availability.reason === "runtime_unavailable"
-          ? "Computer not ready"
-          : "Messaging unavailable";
+          ? // Provider readiness is observed per Computer, so the Computer page is where it is explained.
+            { action: { label: "View Computer", section: "computer" as const }, detail: "Computer not ready" }
+          : { action: { label: "View messaging", section: "messaging" as const }, detail: "Messaging unavailable" };
     return {
+      action,
       detail,
       label: "Needs attention",
       priority: 0,
-      reconnect: agent.availability.reason === "computer_offline",
       tone: "warning",
     };
   }
@@ -1215,7 +1245,13 @@ function agentCardStatus(agent: AgentListItem): {
     return { detail: "Messaging setup in progress", label: "Setting up", priority: 2, tone: "info" };
   }
   if (agent.availability.state === "not_connected") {
-    return { detail: "Messaging not connected", label: "Not connected", priority: 2, tone: "neutral" };
+    return {
+      action: { label: "Connect messaging", section: "messaging" },
+      detail: "Messaging not connected",
+      label: "Not connected",
+      priority: 2,
+      tone: "neutral",
+    };
   }
   if (agent.activity.state === "working") {
     return {
@@ -1766,6 +1802,10 @@ function AgentSettingsPage() {
     initialValue: initialAgent,
     keepPreviousData: true,
     onBackgroundError: markAgentDetailUnconfirmed,
+    // Failure exits land here, so the page has to observe recovery on its own; it is where an
+    // operator waits while a Computer reconnects or a Provider finishes installing.
+    revalidateMs: 30_000,
+    refreshOnFocus: true,
   });
   const selected = section as AgentSettingsSection | undefined;
   if (selected && !agentSettingsSections.some((item) => item.key === selected)) return <NotFoundPage />;
@@ -1891,7 +1931,7 @@ function AgentSettingsContent({
 }) {
   if (!section) return <AgentSettingsOverview agent={agent} />;
   if (section === "messaging") return <ImTab agent={agent} onAgentChanged={onAgentChanged} />;
-  if (section === "computer") return <AgentComputerSettings agent={agent} onAgentChanged={onAgentChanged} />;
+  if (section === "computer") return <AgentComputerSettings agent={agent} />;
   return <AgentConfigSettingsContent agent={agent} section={section} onAgentChanged={onAgentChanged} />;
 }
 
@@ -2119,46 +2159,65 @@ function GeneralConfigForm({
   );
 }
 
-function AgentComputerSettings({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
+/**
+ * Names the machine-level action that resolves the failure. Recovery is stated against the Computer
+ * rather than a person: the Workspace has no authoritative operator field, and issue #125 makes the
+ * Agent creator audit-only while stating that enrollment implies no control of the physical host.
+ */
+function computerRecoveryMessage(agent: AgentDetailView): string {
+  const computerName = agent.computer.displayName;
+  if (agent.availability.reason === "runtime_unavailable") {
+    const { provider, status } = agent.availability.dependencies.runtime;
+    const providerName = provider === "codex" ? "Codex" : "Claude Code";
+    if (status === "install") return `${providerName} is not installed on ${computerName}.`;
+    if (status === "sign-in") return `${providerName} is not signed in on ${computerName}.`;
+    if (status === "checking") return `OpenTag is still checking ${providerName} on ${computerName}.`;
+    return `${providerName} is unavailable on ${computerName}.`;
+  }
+  if (agent.availability.dependencies.computer.state !== "action_required") {
+    return "OpenTag could not confirm this Computer's current connection.";
+  }
+  return `OpenTag is not running on ${computerName}. Start it there to bring this Computer back online.`;
+}
+
+function AgentComputerSettings({ agent }: { agent: AgentDetailView }) {
   const computerState = agent.availability.dependencies.computer;
-  const computerStatus =
-    computerState.state === "ready"
-      ? "Online"
-      : computerState.state === "action_required"
-        ? "Offline"
-        : "Unable to confirm";
-  const computerTone: StatusTone =
-    computerState.state === "ready" ? "success" : computerState.state === "action_required" ? "warning" : "neutral";
+  const runtimeUnavailable = agent.availability.reason === "runtime_unavailable";
+  // A reachable Computer that cannot run this Agent's Provider is not "Online" for this Agent.
+  const ready = computerState.state === "ready" && !runtimeUnavailable;
+  const blocked = computerState.state === "action_required" || runtimeUnavailable;
+  const computerStatus = ready
+    ? "Online"
+    : blocked
+      ? runtimeUnavailable
+        ? "Not ready"
+        : "Offline"
+      : "Unable to confirm";
+  const computerTone: StatusTone = ready ? "success" : blocked ? "warning" : "neutral";
   return (
     <div className="agent-runtime-stack agent-settings-section-page">
       <section aria-labelledby="computer-heading" className="agent-runtime-section agent-runtime-computer">
         <header className="agent-runtime-section__header">
           <div>
-            <h1 id="computer-heading">Connected computer</h1>
-            <p>The computer assigned to run {agent.displayName}.</p>
+            <h1 id="computer-heading">
+              {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
+            </h1>
           </div>
           <StatusIndicator label={computerStatus} tone={computerTone} />
         </header>
-        <div className="agent-runtime-computer__body">
-          <div>
-            <strong>
-              {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
-            </strong>
-          </div>
-          {computerState.state !== "ready" ? (
+        {ready ? null : (
+          <div className="agent-runtime-computer__body">
             <div className="agent-runtime-recovery">
-              {computerState.lastConfirmedAt ? <p>Last seen {formatDate(computerState.lastConfirmedAt)}</p> : null}
-              <p>
-                {computerState.state === "action_required"
-                  ? "New requests can start after this Computer reconnects."
-                  : "OpenTag could not confirm this Computer's current connection."}
-              </p>
-              <Button size="compact" variant="outline" onClick={onAgentChanged}>
-                Check again
-              </Button>
+              {computerState.lastConfirmedAt ? (
+                <p>
+                  Last seen {formatRelativeTime(computerState.lastConfirmedAt)} ·{" "}
+                  {formatDate(computerState.lastConfirmedAt)}
+                </p>
+              ) : null}
+              <p>{computerRecoveryMessage(agent)}</p>
             </div>
-          ) : null}
-        </div>
+          </div>
+        )}
       </section>
     </div>
   );
@@ -2349,7 +2408,6 @@ function AgentManageSettings({
 function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   const [reload, setReload] = useState(0);
   const [error, setError] = useState<string>();
-  const [reauthorizationNeeded, setReauthorizationNeeded] = useState(false);
   const [confirmation, setConfirmation] = useState<
     { kind: "all_messages" } | { bindingId: string; kind: "disable_binding" }
   >();
@@ -2381,9 +2439,6 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
       setConfirmation(undefined);
       onAgentChanged();
     } catch (cause) {
-      if (cause instanceof ApiError && cause.code === "IM_BINDING_SCOPE_REAUTH_REQUIRED") {
-        setReauthorizationNeeded(true);
-      }
       const nextError = cause instanceof Error ? cause.message : "Unable to change receive mode";
       if (confirmation?.kind === "all_messages") setConfirmationError(nextError);
       else setError(nextError);
@@ -2427,21 +2482,21 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
         }}
       >
         {(feishuSetup) => (
-          <SlackSetup
+          <SlackConfiguration
             agentId={agent.id}
             onSuccess={() => {
               setReload((value) => value + 1);
               onAgentChanged();
             }}
           >
-            {(slackSetup) => {
+            {(slackConfiguration) => {
               const connectFeishu = async (intent: "create" | "reauthorize" | "replace" = "create") => {
                 setError(undefined);
-                if (await feishuSetup.start(intent)) setReauthorizationNeeded(false);
+                await feishuSetup.start(intent);
               };
               const connectSlack = async (intent: "create" | "reauthorize" | "replace" = "create") => {
                 setError(undefined);
-                if (await slackSetup.start(intent)) setReauthorizationNeeded(false);
+                await slackConfiguration.open(intent);
               };
               return (
                 <AsyncState state={state}>
@@ -2464,9 +2519,11 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                 tone={messagingConnectionTone(binding, agent.availability.dependencies.handoff.state)}
                               />
                               <small>
-                                {binding.lastConfirmedAt
-                                  ? `Last checked ${formatDate(binding.lastConfirmedAt)}`
-                                  : "Unable to confirm"}
+                                {binding.lastRuntimeObservationAt
+                                  ? `Last observed ${formatDate(binding.lastRuntimeObservationAt)}`
+                                  : binding.lastValidatedAt
+                                    ? `Validated ${formatDate(binding.lastValidatedAt)}`
+                                    : "Not yet observed"}
                               </small>
                             </div>
                             <dl className="messaging-contact-facts">
@@ -2479,24 +2536,19 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                 <dd>{agentUseInstruction(agent, binding.provider)}</dd>
                               </div>
                             </dl>
-                            {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                            {binding.bindingState === "reauthorization_required" &&
                             binding.provider === "feishu" &&
                             agent.viewerCapabilities.canManage ? (
                               <div className="im-actions">
                                 <Button onClick={() => void connectFeishu("reauthorize")}>Reauthorize Feishu</Button>
                               </div>
                             ) : null}
-                            {(binding.bindingState === "reauthorization_required" || reauthorizationNeeded) &&
+                            {binding.bindingState === "reauthorization_required" &&
                             binding.provider === "slack" &&
                             agent.viewerCapabilities.canManage ? (
                               <div className="im-actions">
                                 <Button onClick={() => void connectSlack("reauthorize")}>Reauthorize Slack</Button>
                               </div>
-                            ) : null}
-                            {binding.bindingState === "provisioning" &&
-                            binding.provider === "slack" &&
-                            agent.viewerCapabilities.canManage ? (
-                              <SlackProvisioningActions onResume={() => void connectSlack("create")} />
                             ) : null}
                             {agent.viewerCapabilities.canManage ? (
                               <div className="im-actions messaging-connection-actions">
@@ -2509,7 +2561,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                     Change Feishu Bot
                                   </Button>
                                 ) : null}
-                                {binding.provider === "slack" && binding.bindingState !== "provisioning" ? (
+                                {binding.provider === "slack" ? (
                                   <Button size="compact" variant="outline" onClick={() => void connectSlack("replace")}>
                                     Change Slack App
                                   </Button>
@@ -2575,12 +2627,6 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                 )}
                               </SettingsRow>
                             </SettingsList>
-                            {binding.pendingReceiveMode ? (
-                              <p className="muted">
-                                Scope upgrade pending: {receiveModeLabel(binding.pendingReceiveMode)} takes effect once{" "}
-                                {titleCase(binding.provider)} grants the additional permissions through reauthorization.
-                              </p>
-                            ) : null}
                           </section>
                         </>
                       ) : (
@@ -2605,7 +2651,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                         </section>
                       )}
                       {feishuSetup.feedback}
-                      {slackSetup.feedback}
+                      {slackConfiguration.feedback}
                       {error ? (
                         <div className="notice error" role="alert">
                           {error}
@@ -2616,7 +2662,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                 </AsyncState>
               );
             }}
-          </SlackSetup>
+          </SlackConfiguration>
         )}
       </FeishuSetup>
       {confirmation?.kind === "all_messages" ? (
@@ -2669,18 +2715,6 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
           </div>
         </Dialog>
       ) : null}
-    </div>
-  );
-}
-
-/**
- * A provisioning Slack binding may represent an active or terminal setup attempt. Only an explicit
- * Admin action may reuse the active attempt or create a successor after cancellation.
- */
-function SlackProvisioningActions({ onResume }: { onResume: () => void }) {
-  return (
-    <div className="im-actions">
-      <Button onClick={onResume}>Resume Slack setup</Button>
     </div>
   );
 }
@@ -3288,7 +3322,7 @@ function availabilityTone(state: AgentAvailability["state"]): StatusTone {
 function availabilityStateLabel(state: AgentAvailability["state"]): string {
   const labels = {
     ready: "Ready",
-    action_required: "Action required",
+    action_required: "Needs attention",
     setting_up: "Setting up",
     not_connected: "Not connected",
     suspended: "Suspended",
@@ -3338,13 +3372,13 @@ function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to:
     agent.availability.reason === "im_reauthorization_required" ||
     agent.availability.reason === "im_error"
   ) {
-    return { label: "Review messaging", to: `/agents/${agent.id}/settings/messaging` };
+    return { label: "View messaging", to: `/agents/${agent.id}/settings/messaging` };
   }
   if (agent.availability.reason === "handoff_unavailable") {
-    return { label: "Review messaging", to: `/agents/${agent.id}/settings/messaging` };
+    return { label: "View messaging", to: `/agents/${agent.id}/settings/messaging` };
   }
   if (agent.availability.state === "unconfirmed") return undefined;
-  return { label: "Review Computer", to: `/agents/${agent.id}/settings/computer` };
+  return { label: "View Computer", to: `/agents/${agent.id}/settings/computer` };
 }
 
 function agentRecoveryMessage(agent: AgentDetailView): string {
@@ -3384,7 +3418,9 @@ function formatRelativeTime(value: string): string {
   const elapsedMinutes = Math.floor(elapsedSeconds / 60);
   if (elapsedMinutes < 60) return `${elapsedMinutes} ${elapsedMinutes === 1 ? "minute" : "minutes"} ago`;
   const elapsedHours = Math.floor(elapsedMinutes / 60);
-  return `${elapsedHours} ${elapsedHours === 1 ? "hour" : "hours"} ago`;
+  if (elapsedHours < 24) return `${elapsedHours} ${elapsedHours === 1 ? "hour" : "hours"} ago`;
+  const elapsedDays = Math.floor(elapsedHours / 24);
+  return `${elapsedDays} ${elapsedDays === 1 ? "day" : "days"} ago`;
 }
 
 function formatInviteExpiry(value: string) {

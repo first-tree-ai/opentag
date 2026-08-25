@@ -1,5 +1,5 @@
 {
-  "id": "f744f8d3-dfc9-47e5-8143-615dd93f65f0",
+  "id": "43db9b5d-8997-4ff8-83f5-1f43980fd5e9",
   "prevId": "8a2a15a7-3c78-4e69-9d3d-3a02f7317239",
   "version": "7",
   "dialect": "postgresql",
@@ -102,14 +102,14 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "team_id": {
-          "name": "team_id",
+        "workspace_id": {
+          "name": "workspace_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "manager_user_id": {
-          "name": "manager_user_id",
+        "created_by_user_id": {
+          "name": "created_by_user_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -126,8 +126,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "computer_id": {
-          "name": "computer_id",
+        "workspace_computer_id": {
+          "name": "workspace_computer_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -190,11 +190,11 @@
         }
       },
       "indexes": {
-        "agents_team_name_active_unique": {
-          "name": "agents_team_name_active_unique",
+        "agents_workspace_name_active_unique": {
+          "name": "agents_workspace_name_active_unique",
           "columns": [
             {
-              "expression": "team_id",
+              "expression": "workspace_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -216,13 +216,7 @@
           "name": "agents_creation_intent_unique",
           "columns": [
             {
-              "expression": "team_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "manager_user_id",
+              "expression": "workspace_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -240,11 +234,11 @@
           "method": "btree",
           "with": {}
         },
-        "agents_team_id_idx": {
-          "name": "agents_team_id_idx",
+        "agents_workspace_id_idx": {
+          "name": "agents_workspace_id_idx",
           "columns": [
             {
-              "expression": "team_id",
+              "expression": "workspace_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -255,11 +249,11 @@
           "method": "btree",
           "with": {}
         },
-        "agents_manager_user_id_idx": {
-          "name": "agents_manager_user_id_idx",
+        "agents_created_by_user_id_idx": {
+          "name": "agents_created_by_user_id_idx",
           "columns": [
             {
-              "expression": "manager_user_id",
+              "expression": "created_by_user_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -270,11 +264,11 @@
           "method": "btree",
           "with": {}
         },
-        "agents_computer_id_idx": {
-          "name": "agents_computer_id_idx",
+        "agents_workspace_computer_id_idx": {
+          "name": "agents_workspace_computer_id_idx",
           "columns": [
             {
-              "expression": "computer_id",
+              "expression": "workspace_computer_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -287,12 +281,12 @@
         }
       },
       "foreignKeys": {
-        "agents_team_id_teams_id_fk": {
-          "name": "agents_team_id_teams_id_fk",
+        "agents_workspace_id_workspaces_id_fk": {
+          "name": "agents_workspace_id_workspaces_id_fk",
           "tableFrom": "agents",
-          "tableTo": "teams",
+          "tableTo": "workspaces",
           "columnsFrom": [
-            "team_id"
+            "workspace_id"
           ],
           "columnsTo": [
             "id"
@@ -300,32 +294,30 @@
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "agents_manager_membership_fk": {
-          "name": "agents_manager_membership_fk",
+        "agents_created_by_user_id_users_id_fk": {
+          "name": "agents_created_by_user_id_users_id_fk",
           "tableFrom": "agents",
-          "tableTo": "memberships",
+          "tableTo": "users",
           "columnsFrom": [
-            "team_id",
-            "manager_user_id"
+            "created_by_user_id"
           ],
           "columnsTo": [
-            "team_id",
-            "user_id"
+            "id"
           ],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "agents_manager_computer_owner_fk": {
-          "name": "agents_manager_computer_owner_fk",
+        "agents_workspace_enrollment_fk": {
+          "name": "agents_workspace_enrollment_fk",
           "tableFrom": "agents",
-          "tableTo": "computers",
+          "tableTo": "workspace_computers",
           "columnsFrom": [
-            "computer_id",
-            "manager_user_id"
+            "workspace_id",
+            "workspace_computer_id"
           ],
           "columnsTo": [
-            "id",
-            "owner_user_id"
+            "workspace_id",
+            "id"
           ],
           "onDelete": "restrict",
           "onUpdate": "no action"
@@ -346,8 +338,8 @@
       },
       "isRLSEnabled": false
     },
-    "public.connect_codes": {
-      "name": "connect_codes",
+    "public.account_cli_login_codes": {
+      "name": "account_cli_login_codes",
       "schema": "",
       "columns": {
         "id": {
@@ -357,8 +349,8 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "code_hash": {
-          "name": "code_hash",
+        "token_hash": {
+          "name": "token_hash",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -369,11 +361,18 @@
           "primaryKey": false,
           "notNull": true
         },
-        "issuer_user_id": {
-          "name": "issuer_user_id",
+        "issued_by_user_id": {
+          "name": "issued_by_user_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
         },
         "expires_at": {
           "name": "expires_at",
@@ -386,21 +385,20 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
         }
       },
       "indexes": {
-        "connect_codes_user_id_idx": {
-          "name": "connect_codes_user_id_idx",
+        "account_cli_login_codes_user_created_idx": {
+          "name": "account_cli_login_codes_user_created_idx",
           "columns": [
             {
               "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -413,9 +411,9 @@
         }
       },
       "foreignKeys": {
-        "connect_codes_user_id_users_id_fk": {
-          "name": "connect_codes_user_id_users_id_fk",
-          "tableFrom": "connect_codes",
+        "account_cli_login_codes_user_id_users_id_fk": {
+          "name": "account_cli_login_codes_user_id_users_id_fk",
+          "tableFrom": "account_cli_login_codes",
           "tableTo": "users",
           "columnsFrom": [
             "user_id"
@@ -423,15 +421,15 @@
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "connect_codes_issuer_user_id_users_id_fk": {
-          "name": "connect_codes_issuer_user_id_users_id_fk",
-          "tableFrom": "connect_codes",
+        "account_cli_login_codes_issued_by_user_id_users_id_fk": {
+          "name": "account_cli_login_codes_issued_by_user_id_users_id_fk",
+          "tableFrom": "account_cli_login_codes",
           "tableTo": "users",
           "columnsFrom": [
-            "issuer_user_id"
+            "issued_by_user_id"
           ],
           "columnsTo": [
             "id"
@@ -442,189 +440,21 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "connect_codes_code_hash_unique": {
-          "name": "connect_codes_code_hash_unique",
+        "account_cli_login_codes_token_hash_unique": {
+          "name": "account_cli_login_codes_token_hash_unique",
           "nullsNotDistinct": false,
           "columns": [
-            "code_hash"
+            "token_hash"
           ]
         }
       },
       "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.memberships": {
-      "name": "memberships",
-      "schema": "",
-      "columns": {
-        "team_id": {
-          "name": "team_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "role": {
-          "name": "role",
-          "type": "membership_role",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "membership_status",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'active'"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
+      "checkConstraints": {
+        "account_cli_login_codes_expiry": {
+          "name": "account_cli_login_codes_expiry",
+          "value": "\"account_cli_login_codes\".\"expires_at\" > \"account_cli_login_codes\".\"created_at\""
         }
       },
-      "indexes": {
-        "memberships_user_id_idx": {
-          "name": "memberships_user_id_idx",
-          "columns": [
-            {
-              "expression": "user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "memberships_team_id_teams_id_fk": {
-          "name": "memberships_team_id_teams_id_fk",
-          "tableFrom": "memberships",
-          "tableTo": "teams",
-          "columnsFrom": [
-            "team_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "memberships_user_id_users_id_fk": {
-          "name": "memberships_user_id_users_id_fk",
-          "tableFrom": "memberships",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "memberships_team_user_pk": {
-          "name": "memberships_team_user_pk",
-          "columns": [
-            "team_id",
-            "user_id"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.teams": {
-      "name": "teams",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "display_name": {
-          "name": "display_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "setup_completed_at": {
-          "name": "setup_completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "teams_name_unique": {
-          "name": "teams_name_unique",
-          "columns": [
-            {
-              "expression": "lower(\"name\")",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.users": {
@@ -672,6 +502,259 @@
         }
       },
       "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.workspace_admin_grants": {
+      "name": "workspace_admin_grants",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workspace_id": {
+          "name": "workspace_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "granted_by_user_id": {
+          "name": "granted_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "granted_at": {
+          "name": "granted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "revoked_by_user_id": {
+          "name": "revoked_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "workspace_admin_grants_active_workspace_user_unique": {
+          "name": "workspace_admin_grants_active_workspace_user_unique",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"workspace_admin_grants\".\"revoked_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workspace_admin_grants_active_user_workspace_idx": {
+          "name": "workspace_admin_grants_active_user_workspace_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"workspace_admin_grants\".\"revoked_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workspace_admin_grants_workspace_granted_idx": {
+          "name": "workspace_admin_grants_workspace_granted_idx",
+          "columns": [
+            {
+              "expression": "workspace_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "granted_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workspace_admin_grants_workspace_id_workspaces_id_fk": {
+          "name": "workspace_admin_grants_workspace_id_workspaces_id_fk",
+          "tableFrom": "workspace_admin_grants",
+          "tableTo": "workspaces",
+          "columnsFrom": [
+            "workspace_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "workspace_admin_grants_user_id_users_id_fk": {
+          "name": "workspace_admin_grants_user_id_users_id_fk",
+          "tableFrom": "workspace_admin_grants",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "workspace_admin_grants_granted_by_user_id_users_id_fk": {
+          "name": "workspace_admin_grants_granted_by_user_id_users_id_fk",
+          "tableFrom": "workspace_admin_grants",
+          "tableTo": "users",
+          "columnsFrom": [
+            "granted_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "workspace_admin_grants_revoked_by_user_id_users_id_fk": {
+          "name": "workspace_admin_grants_revoked_by_user_id_users_id_fk",
+          "tableFrom": "workspace_admin_grants",
+          "tableTo": "users",
+          "columnsFrom": [
+            "revoked_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "workspace_admin_grants_revocation_pair": {
+          "name": "workspace_admin_grants_revocation_pair",
+          "value": "(\"workspace_admin_grants\".\"revoked_by_user_id\" is null) = (\"workspace_admin_grants\".\"revoked_at\" is null)"
+        },
+        "workspace_admin_grants_revoked_after_granted": {
+          "name": "workspace_admin_grants_revoked_after_granted",
+          "value": "\"workspace_admin_grants\".\"revoked_at\" is null or \"workspace_admin_grants\".\"revoked_at\" >= \"workspace_admin_grants\".\"granted_at\""
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.workspaces": {
+      "name": "workspaces",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "setup_completed_at": {
+          "name": "setup_completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "workspaces_name_unique": {
+          "name": "workspaces_name_unique",
+          "columns": [
+            {
+              "expression": "lower(\"name\")",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -918,10 +1001,10 @@
         }
       },
       "foreignKeys": {
-        "computer_connect_codes_workspace_id_teams_id_fk": {
-          "name": "computer_connect_codes_workspace_id_teams_id_fk",
+        "computer_connect_codes_workspace_id_workspaces_id_fk": {
+          "name": "computer_connect_codes_workspace_id_workspaces_id_fk",
           "tableFrom": "computer_connect_codes",
-          "tableTo": "teams",
+          "tableTo": "workspaces",
           "columnsFrom": [
             "workspace_id"
           ],
@@ -1014,114 +1097,18 @@
           "primaryKey": true,
           "notNull": true
         },
-        "owner_user_id": {
-          "name": "owner_user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "display_name": {
-          "name": "display_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "platform": {
-          "name": "platform",
-          "type": "computer_platform",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "arch": {
-          "name": "arch",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "client_version": {
-          "name": "client_version",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "current_instance_id": {
-          "name": "current_instance_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "connected_at": {
-          "name": "connected_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_seen_at": {
-          "name": "last_seen_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
         }
       },
-      "indexes": {
-        "computers_owner_user_id_idx": {
-          "name": "computers_owner_user_id_idx",
-          "columns": [
-            {
-              "expression": "owner_user_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "computers_owner_user_id_users_id_fk": {
-          "name": "computers_owner_user_id_users_id_fk",
-          "tableFrom": "computers",
-          "tableTo": "users",
-          "columnsFrom": [
-            "owner_user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "indexes": {},
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "computers_id_owner_user_id_unique": {
-          "name": "computers_id_owner_user_id_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "id",
-            "owner_user_id"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
@@ -1433,10 +1420,10 @@
         }
       },
       "foreignKeys": {
-        "workspace_computers_workspace_id_teams_id_fk": {
-          "name": "workspace_computers_workspace_id_teams_id_fk",
+        "workspace_computers_workspace_id_workspaces_id_fk": {
+          "name": "workspace_computers_workspace_id_workspaces_id_fk",
           "tableFrom": "workspace_computers",
-          "tableTo": "teams",
+          "tableTo": "workspaces",
           "columnsFrom": [
             "workspace_id"
           ],
@@ -2365,8 +2352,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.invitation_redemptions": {
-      "name": "invitation_redemptions",
+    "public.admin_invitations": {
+      "name": "admin_invitations",
       "schema": "",
       "columns": {
         "id": {
@@ -2376,102 +2363,8 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "invitation_id": {
-          "name": "invitation_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "redeemed_at": {
-          "name": "redeemed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "ip": {
-          "name": "ip",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "user_agent": {
-          "name": "user_agent",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        }
-      },
-      "indexes": {
-        "invitation_redemptions_invitation_id_idx": {
-          "name": "invitation_redemptions_invitation_id_idx",
-          "columns": [
-            {
-              "expression": "invitation_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "invitation_redemptions_invitation_id_invitations_id_fk": {
-          "name": "invitation_redemptions_invitation_id_invitations_id_fk",
-          "tableFrom": "invitation_redemptions",
-          "tableTo": "invitations",
-          "columnsFrom": [
-            "invitation_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "invitation_redemptions_user_id_users_id_fk": {
-          "name": "invitation_redemptions_user_id_users_id_fk",
-          "tableFrom": "invitation_redemptions",
-          "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.invitations": {
-      "name": "invitations",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "team_id": {
-          "name": "team_id",
+        "workspace_id": {
+          "name": "workspace_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -2482,34 +2375,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "token_ciphertext": {
-          "name": "token_ciphertext",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "role": {
-          "name": "role",
-          "type": "membership_role",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'member'"
-        },
-        "expires_at": {
-          "name": "expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "revoked_at": {
-          "name": "revoked_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_by": {
-          "name": "created_by",
+        "created_by_user_id": {
+          "name": "created_by_user_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -2520,30 +2387,50 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "accepted_by_user_id": {
+          "name": "accepted_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "accepted_at": {
+          "name": "accepted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_by_user_id": {
+          "name": "revoked_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "revoked_at": {
+          "name": "revoked_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {
-        "invitations_team_active_unique": {
-          "name": "invitations_team_active_unique",
+        "admin_invitations_workspace_created_idx": {
+          "name": "admin_invitations_workspace_created_idx",
           "columns": [
             {
-              "expression": "team_id",
+              "expression": "workspace_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"invitations\".\"revoked_at\" is null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "invitations_team_id_idx": {
-          "name": "invitations_team_id_idx",
-          "columns": [
+            },
             {
-              "expression": "team_id",
+              "expression": "created_at",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2556,25 +2443,51 @@
         }
       },
       "foreignKeys": {
-        "invitations_team_id_teams_id_fk": {
-          "name": "invitations_team_id_teams_id_fk",
-          "tableFrom": "invitations",
-          "tableTo": "teams",
+        "admin_invitations_workspace_id_workspaces_id_fk": {
+          "name": "admin_invitations_workspace_id_workspaces_id_fk",
+          "tableFrom": "admin_invitations",
+          "tableTo": "workspaces",
           "columnsFrom": [
-            "team_id"
+            "workspace_id"
           ],
           "columnsTo": [
             "id"
           ],
-          "onDelete": "cascade",
+          "onDelete": "restrict",
           "onUpdate": "no action"
         },
-        "invitations_created_by_users_id_fk": {
-          "name": "invitations_created_by_users_id_fk",
-          "tableFrom": "invitations",
+        "admin_invitations_created_by_user_id_users_id_fk": {
+          "name": "admin_invitations_created_by_user_id_users_id_fk",
+          "tableFrom": "admin_invitations",
           "tableTo": "users",
           "columnsFrom": [
-            "created_by"
+            "created_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "admin_invitations_accepted_by_user_id_users_id_fk": {
+          "name": "admin_invitations_accepted_by_user_id_users_id_fk",
+          "tableFrom": "admin_invitations",
+          "tableTo": "users",
+          "columnsFrom": [
+            "accepted_by_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
+        },
+        "admin_invitations_revoked_by_user_id_users_id_fk": {
+          "name": "admin_invitations_revoked_by_user_id_users_id_fk",
+          "tableFrom": "admin_invitations",
+          "tableTo": "users",
+          "columnsFrom": [
+            "revoked_by_user_id"
           ],
           "columnsTo": [
             "id"
@@ -2585,8 +2498,8 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {
-        "invitations_token_hash_unique": {
-          "name": "invitations_token_hash_unique",
+        "admin_invitations_token_hash_unique": {
+          "name": "admin_invitations_token_hash_unique",
           "nullsNotDistinct": false,
           "columns": [
             "token_hash"
@@ -2594,7 +2507,24 @@
         }
       },
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "admin_invitations_expiry": {
+          "name": "admin_invitations_expiry",
+          "value": "\"admin_invitations\".\"expires_at\" > \"admin_invitations\".\"created_at\""
+        },
+        "admin_invitations_acceptance_pair": {
+          "name": "admin_invitations_acceptance_pair",
+          "value": "(\"admin_invitations\".\"accepted_by_user_id\" is null) = (\"admin_invitations\".\"accepted_at\" is null)"
+        },
+        "admin_invitations_revocation_pair": {
+          "name": "admin_invitations_revocation_pair",
+          "value": "(\"admin_invitations\".\"revoked_by_user_id\" is null) = (\"admin_invitations\".\"revoked_at\" is null)"
+        },
+        "admin_invitations_terminal_state": {
+          "name": "admin_invitations_terminal_state",
+          "value": "not (\"admin_invitations\".\"accepted_at\" is not null and \"admin_invitations\".\"revoked_at\" is not null)"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.session_messages": {
@@ -2794,8 +2724,8 @@
           "primaryKey": true,
           "notNull": true
         },
-        "computer_id": {
-          "name": "computer_id",
+        "workspace_computer_id": {
+          "name": "workspace_computer_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -2815,11 +2745,11 @@
         }
       },
       "indexes": {
-        "session_placements_computer_id_idx": {
-          "name": "session_placements_computer_id_idx",
+        "session_placements_workspace_computer_id_idx": {
+          "name": "session_placements_workspace_computer_id_idx",
           "columns": [
             {
-              "expression": "computer_id",
+              "expression": "workspace_computer_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -2845,12 +2775,12 @@
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
-        "session_placements_computer_id_computers_id_fk": {
-          "name": "session_placements_computer_id_computers_id_fk",
+        "session_placements_workspace_computer_id_workspace_computers_id_fk": {
+          "name": "session_placements_workspace_computer_id_workspace_computers_id_fk",
           "tableFrom": "session_placements",
-          "tableTo": "computers",
+          "tableTo": "workspace_computers",
           "columnsFrom": [
-            "computer_id"
+            "workspace_computer_id"
           ],
           "columnsTo": [
             "id"
@@ -3117,23 +3047,6 @@
         "active",
         "suspended",
         "deleted"
-      ]
-    },
-    "public.membership_role": {
-      "name": "membership_role",
-      "schema": "public",
-      "values": [
-        "admin",
-        "member"
-      ]
-    },
-    "public.membership_status": {
-      "name": "membership_status",
-      "schema": "public",
-      "values": [
-        "active",
-        "left",
-        "removed"
       ]
     },
     "public.computer_platform": {

@@ -1488,8 +1488,8 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
     expect(await screen.findByRole("img", { name: /428K Tokens used during the last 30 days/ })).toBeTruthy();
-    expect(screen.getByText("Tokens recorded")).toBeTruthy();
-    expect(screen.getByText("Failed Tasks")).toBeTruthy();
+    expect(screen.getByText("Tokens")).toBeTruthy();
+    expect(screen.queryByText("Failed Tasks")).toBeNull();
     expect(screen.queryByText("Average per measured Task")).toBeNull();
     expect(screen.getByText("Partial data.")).toBeTruthy();
     expect(screen.getByRole("status").textContent).toBe(

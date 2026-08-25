@@ -103,9 +103,8 @@ function UsageSummaryState({ state, compact = false }: { state: UsageState; comp
 function UsageMetrics({ usage }: { usage: AgentUsageDetail }) {
   return (
     <dl className="agent-usage-metrics" aria-label={`Agent usage for the last ${usage.windowDays} days`}>
-      <Metric label="Tokens recorded" value={formatUsageNumber(usage.tokens)} primary />
+      <Metric label="Tokens" value={formatUsageNumber(usage.tokens)} primary />
       <Metric label="Tasks" value={formatUsageNumber(usage.tasks)} />
-      <Metric label="Failed Tasks" value={formatUsageNumber(usage.failed)} />
     </dl>
   );
 }

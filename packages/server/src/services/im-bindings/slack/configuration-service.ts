@@ -6,6 +6,7 @@ import {
   SLACK_SUBSCRIBED_BOT_EVENTS,
   type SlackAppConfiguration,
   type SlackBindingActivation,
+  type SlackConfigurationResult,
 } from "@opentag/shared";
 import { and, eq, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../../db/client.js";
@@ -28,6 +29,7 @@ export class SlackConfigurationServiceError extends Error {
 
 export class SlackConfigurationService {
   readonly #api: SlackApiClient;
+  readonly #afterConfigurationTransaction?: () => Promise<void>;
   readonly #beforeConfigurationTransaction?: () => Promise<void>;
   readonly #database: DatabaseClient;
   readonly #imBindings: ImBindingService;
@@ -40,9 +42,11 @@ export class SlackConfigurationService {
     imBindings: ImBindingService;
     publicOrigin: string;
     now?: () => Date;
+    afterConfigurationTransaction?: () => Promise<void>;
     beforeConfigurationTransaction?: () => Promise<void>;
   }) {
     this.#api = input.api;
+    this.#afterConfigurationTransaction = input.afterConfigurationTransaction;
     this.#beforeConfigurationTransaction = input.beforeConfigurationTransaction;
     this.#database = input.database;
     this.#imBindings = input.imBindings;
@@ -63,13 +67,17 @@ export class SlackConfigurationService {
     return this.#configuration(agentId, agent.displayName, current);
   }
 
-  async configure(callerUserId: string, agentId: string, input: ConfigureSlackAppRequest): Promise<string> {
+  async configure(
+    callerUserId: string,
+    agentId: string,
+    input: ConfigureSlackAppRequest,
+  ): Promise<SlackConfigurationResult> {
     await this.#imBindings.assertCanManage(callerUserId, agentId);
     const installation = await this.#inspect(input.botAccessToken);
     this.#validateInstallation(input.appId, installation);
     await this.#beforeConfigurationTransaction?.();
 
-    return this.#database.transaction(async (transaction) => {
+    const configured = await this.#database.transaction(async (transaction) => {
       // Token inspection is external. Reacquire live Team authority and serialize the Agent's
       // binding immediately before committing the inspected credential snapshot.
       await this.#imBindings.assertCanManageForMutation(callerUserId, agentId, transaction);
@@ -100,8 +108,10 @@ export class SlackConfigurationService {
           "The Slack binding changed since the configuration was read",
         );
       }
+      this.#validateIntent(input, installation, configuredCurrent);
 
       const activation: SlackBindingActivation = {
+        intent: input.intent,
         agentId,
         appId: input.appId,
         teamId: installation.teamId,
@@ -114,6 +124,8 @@ export class SlackConfigurationService {
       };
       return this.#imBindings.activateSlack(activation, installation.botId, transaction);
     });
+    await this.#afterConfigurationTransaction?.();
+    return configured;
   }
 
   async #inspect(token: string): Promise<SlackInstallationInspection> {
@@ -129,11 +141,65 @@ export class SlackConfigurationService {
           "credential",
         );
       }
+      if (code === "SLACK_AUTH_IDENTITY_INCOMPLETE") {
+        throw new SlackConfigurationServiceError(
+          "SLACK_AUTH_IDENTITY_INCOMPLETE",
+          400,
+          "Slack did not identify this token as an installed Bot User OAuth Token",
+          "credential",
+        );
+      }
       throw new SlackConfigurationServiceError(
         "SLACK_UPSTREAM_UNAVAILABLE",
         502,
         "Slack did not return a usable installation identity",
         "transient",
+      );
+    }
+  }
+
+  #validateIntent(
+    input: ConfigureSlackAppRequest,
+    installation: SlackInstallationInspection,
+    current: typeof imBindings.$inferSelect | undefined,
+  ): void {
+    if (input.intent === "create") {
+      if (current) {
+        throw new SlackConfigurationServiceError(
+          "SLACK_CONFIGURATION_CONFLICT",
+          409,
+          "Create cannot replace an existing Slack binding",
+        );
+      }
+      return;
+    }
+    if (!current?.externalAppId || !current.externalTeamId || !current.externalBotId) {
+      throw new SlackConfigurationServiceError(
+        "SLACK_CONFIGURATION_CONFLICT",
+        409,
+        `Slack ${input.intent} requires a current configured binding`,
+      );
+    }
+    if (input.intent === "replace") {
+      if (input.appId === current.externalAppId) {
+        throw new SlackConfigurationServiceError(
+          "SLACK_CONFIGURATION_CONFLICT",
+          409,
+          "Change App requires a different Slack App ID",
+        );
+      }
+      return;
+    }
+    if (
+      input.appId !== current.externalAppId ||
+      installation.teamId !== current.externalTeamId ||
+      installation.botUserId !== current.externalBotId
+    ) {
+      throw new SlackConfigurationServiceError(
+        "SLACK_BINDING_IDENTITY_MISMATCH",
+        409,
+        "Reauthorization must preserve the current Slack App, Team, and Bot identity",
+        "credential",
       );
     }
   }

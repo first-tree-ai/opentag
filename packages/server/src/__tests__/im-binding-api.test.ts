@@ -70,6 +70,17 @@ const slackDetail = {
   lastErrorCode: null,
 };
 
+const slackConfigurationResult = {
+  imBindingId,
+  agentId,
+  appId: "A1",
+  teamId: "T1",
+  botUserId: "U1",
+  credentialGeneration: 1,
+  bindingState: "active" as const,
+  identityClosure: { status: "pending" as const, verifiedAt: null },
+};
+
 const apps: ReturnType<typeof createApp>[] = [];
 
 afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
@@ -109,6 +120,7 @@ function services() {
       missingCapabilities: [],
       reauthorizationRequired: false,
       slackAppId: null,
+      slackIdentityClosure: null,
       connection: null,
       lastInboundAt: null,
       lastValidatedAt: null,
@@ -123,7 +135,7 @@ function services() {
   };
   const slack = {
     get: vi.fn().mockResolvedValue(slackConfiguration),
-    configure: vi.fn().mockResolvedValue(imBindingId),
+    configure: vi.fn().mockResolvedValue(slackConfigurationResult),
   };
   return { imBindings, feishu, slack };
 }
@@ -177,6 +189,7 @@ describe("ImBinding HTTP API", () => {
     expect(guide.json()).toEqual(slackConfiguration);
 
     const input = {
+      intent: "create",
       expectedBinding: null,
       appId: "A1",
       botAccessToken: "xoxb-secret-token",
@@ -189,8 +202,9 @@ describe("ImBinding HTTP API", () => {
       payload: input,
     });
     expect(configured.statusCode).toBe(200);
-    expect(configured.json()).toEqual(slackDetail);
+    expect(configured.json()).toEqual(slackConfigurationResult);
     expect(service.slack.configure).toHaveBeenCalledWith(userId, agentId, input);
+    expect(service.imBindings.getConfigForAgent).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(configured.json())).not.toMatch(/xoxb|signing-secret/);
 
     expect(
@@ -242,6 +256,7 @@ describe("ImBinding HTTP API", () => {
       url: agentSlackConfigurationPath(agentId),
       headers: authorization,
       payload: {
+        intent: "create",
         expectedBinding: null,
         appId: "A1",
         botAccessToken: "xoxb-invalid",
@@ -251,5 +266,32 @@ describe("ImBinding HTTP API", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json().error).toMatchObject({ code: "SLACK_AUTH_INVALID", category: "credential" });
     expect(JSON.stringify(response.json())).not.toMatch(/xoxb-invalid|signing-secret|stack/);
+
+    service.slack.configure.mockRejectedValueOnce(
+      new SlackConfigurationServiceError(
+        "SLACK_AUTH_IDENTITY_INCOMPLETE",
+        400,
+        "Slack token has no Bot identity",
+        "credential",
+      ),
+    );
+    const userToken = await app.inject({
+      method: "PUT",
+      url: agentSlackConfigurationPath(agentId),
+      headers: authorization,
+      payload: {
+        intent: "create",
+        expectedBinding: null,
+        appId: "A1",
+        botAccessToken: "xoxp-user-token",
+        signingSecret: "signing-secret",
+      },
+    });
+    expect(userToken.statusCode).toBe(400);
+    expect(userToken.json().error).toMatchObject({
+      code: "SLACK_AUTH_IDENTITY_INCOMPLETE",
+      category: "credential",
+    });
+    expect(JSON.stringify(userToken.json())).not.toMatch(/xoxp-user-token|signing-secret|stack/);
   });
 });

@@ -159,24 +159,25 @@ describe("database migrations", () => {
           insert into im_bindings (
             agent_id, provider, status, external_app_id, external_team_id, external_bot_id,
             credential_schema_version, credential_generation, encrypted_credential, granted_capabilities,
-            activated_at, last_error_code, pending_receive_mode
+            activated_at, observed_connected_at, last_error_code, pending_receive_mode
           ) values (
             ${slackCompleteAgentId}, 'slack', 'reauthorization_required', 'A_COMPLETE', 'T1', 'U2',
             1, 3, 'encrypted-complete',
             array[
               'app_mentions:read', 'channels:history', 'chat:write', 'files:read',
               'groups:history', 'im:history', 'mpim:history'
-            ]::text[], now(), 'IM_BINDING_SCOPE_REAUTH_REQUIRED', 'all_message'
+            ]::text[], now(), now(), 'IM_BINDING_SCOPE_REAUTH_REQUIRED', 'all_message'
           )
         `;
         const [feishuSetup] = await sql<{ attempt_id: string }[]>`
           insert into im_bindings (
             agent_id, provider, status, setup_attempt_id, setup_intent, setup_state,
             setup_owner_instance_id, setup_owner_heartbeat_at, encrypted_setup_context, setup_expires_at,
+            observed_connected_at,
             pending_receive_mode
           ) values (
             ${feishuAgentId}, 'feishu', 'provisioning', gen_random_uuid(), 'create', 'awaiting_user',
-            gen_random_uuid(), now(), 'encrypted-feishu-setup', now() + interval '15 minutes', null
+            gen_random_uuid(), now(), 'encrypted-feishu-setup', now() + interval '15 minutes', now(), null
           ) returning setup_attempt_id::text as attempt_id
         `;
 
@@ -188,12 +189,13 @@ describe("database migrations", () => {
             encrypted_credential: string | null;
             encrypted_setup_context: string | null;
             last_error_code: string | null;
+            observed_connected_at: Date | null;
             setup_attempt_id: string | null;
             status: string;
           }[]
         >`
           select agent_id::text, status, encrypted_credential, setup_attempt_id::text,
-                 encrypted_setup_context, last_error_code
+                 encrypted_setup_context, observed_connected_at, last_error_code
           from im_bindings
           order by agent_id
         `;
@@ -204,6 +206,7 @@ describe("database migrations", () => {
             encrypted_credential: null,
             setup_attempt_id: null,
             encrypted_setup_context: null,
+            observed_connected_at: null,
             last_error_code: "SLACK_CONFIGURATION_REQUIRED",
           },
           {
@@ -212,6 +215,7 @@ describe("database migrations", () => {
             encrypted_credential: "encrypted-incomplete",
             setup_attempt_id: null,
             encrypted_setup_context: null,
+            observed_connected_at: null,
             last_error_code: "SLACK_SCOPE_REAUTH_REQUIRED",
           },
           {
@@ -220,6 +224,7 @@ describe("database migrations", () => {
             encrypted_credential: "encrypted-complete",
             setup_attempt_id: null,
             encrypted_setup_context: null,
+            observed_connected_at: null,
             last_error_code: null,
           },
           {
@@ -228,6 +233,7 @@ describe("database migrations", () => {
             encrypted_credential: null,
             setup_attempt_id: feishuSetup?.attempt_id ?? null,
             encrypted_setup_context: "encrypted-feishu-setup",
+            observed_connected_at: expect.any(Date),
             last_error_code: null,
           },
         ]);

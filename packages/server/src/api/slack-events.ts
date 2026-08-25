@@ -12,6 +12,7 @@ interface SlackEnvelopeBase {
   event_id?: string;
   event_time?: number;
   challenge?: string;
+  authorizations?: Array<{ team_id?: string; user_id?: string; is_bot?: boolean }>;
   event?: { type?: string; tokens?: { oauth?: string[]; bot?: string[] } } & Record<string, unknown>;
 }
 
@@ -62,13 +63,23 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
     if (envelope.type !== "event_callback" || !envelope.event_id || !envelope.event) {
       return reply.code(400).send({ error: "unsupported_envelope" });
     }
+    const identityClosed = envelope.authorizations?.some(
+      (authorization) =>
+        authorization.is_bot === true &&
+        authorization.team_id === binding.teamId &&
+        authorization.user_id === binding.botUserId,
+    );
+    if (!identityClosed) return reply.code(401).send({ error: "binding_mismatch" });
+    if (!(await options.imBindings.recordSlackIdentityClosure(binding.imBindingId, binding.generation))) {
+      return reply.code(200).send({ ok: true });
+    }
     if (envelope.event.type === "app_uninstalled") {
-      await options.imBindings.disableFromProvider(binding.imBindingId);
+      await options.imBindings.disableFromProvider(binding.imBindingId, binding.generation);
       return reply.code(200).send({ ok: true });
     }
     if (envelope.event.type === "tokens_revoked") {
       if (envelope.event.tokens?.bot?.includes(binding.botUserId)) {
-        await options.imBindings.requireReauthorization(binding.imBindingId, "SLACK_TOKEN_REVOKED");
+        await options.imBindings.requireReauthorization(binding.imBindingId, binding.generation, "SLACK_TOKEN_REVOKED");
       }
       return reply.code(200).send({ ok: true });
     }
@@ -116,14 +127,13 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
       if (typeof envelope.challenge !== "string") return reply.code(400).send({ error: "invalid_challenge" });
       // Slack's URL-verification protocol omits App and Team identity. The Agent-specific URL
       // supplies only the lookup key; a valid HMAC records an observation but never changes config.
-      await options.imBindings.recordSlackObservation(binding.imBindingId);
+      await options.imBindings.recordSlackObservation(binding.imBindingId, binding.generation);
       return reply.code(200).send({ challenge: envelope.challenge });
     }
     if (!envelope.api_app_id || !envelope.team_id) return reply.code(400).send({ error: "invalid_route" });
     if (envelope.api_app_id !== binding.appId || envelope.team_id !== binding.teamId) {
       return reply.code(401).send({ error: "binding_mismatch" });
     }
-    await options.imBindings.recordSlackObservation(binding.imBindingId);
     return processEnvelope(binding, envelope, reply);
   });
 
@@ -152,8 +162,8 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
     if (envelope.api_app_id !== binding.appId || envelope.team_id !== binding.teamId) {
       return reply.code(401).send({ error: "binding_mismatch" });
     }
-    await options.imBindings.recordSlackObservation(binding.imBindingId);
     if (envelope.type === "url_verification") {
+      await options.imBindings.recordSlackObservation(binding.imBindingId, binding.generation);
       return typeof envelope.challenge === "string"
         ? reply.code(200).send({ challenge: envelope.challenge })
         : reply.code(400).send({ error: "invalid_challenge" });

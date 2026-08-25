@@ -128,8 +128,9 @@ async function fixture() {
   const imBindingService = new ImBindingService(client.database, cipher, {
     now: () => new Date("2026-08-19T00:00:00.000Z"),
   });
-  const imBindingId = await imBindingService.activateSlack(
+  const activated = await imBindingService.activateSlack(
     {
+      intent: "create",
       agentId: agent.id,
       appId: "A1",
       teamId: "T1",
@@ -149,6 +150,8 @@ async function fixture() {
     },
     "B_BOT",
   );
+  const imBindingId = activated.imBindingId;
+  await imBindingService.recordSlackIdentityClosure(imBindingId, activated.credentialGeneration);
   return { ...client, agent, bootstrap, computer, cipher, imBindingId, imBindingService };
 }
 
@@ -562,6 +565,20 @@ describe("IM binding persistence", () => {
         placementGeneration: 1,
       };
 
+      await value.database
+        .update(imBindings)
+        .set({ observedConnectedAt: null })
+        .where(eq(imBindings.id, value.imBindingId));
+      await expect(value.imBindingService.findSlackIngressBinding("A1", "T1")).resolves.toMatchObject({
+        imBindingId: value.imBindingId,
+        generation: 1,
+      });
+      await expect(value.imBindingService.getSlackConnectionMaterial(value.imBindingId)).resolves.toBeUndefined();
+      await expect(
+        value.imBindingService.issueRuntimeCredentialGrant(request, value.computer.id),
+      ).resolves.toMatchObject({ status: "rejected", code: "binding_inactive" });
+      await value.imBindingService.recordSlackIdentityClosure(value.imBindingId, 1);
+
       const direct = await value.imBindingService.issueRuntimeCredentialGrant(request, value.computer.id);
       const ambient = await value.imBindingService.issueRuntimeCredentialGrant(
         { ...request, requestId: crypto.randomUUID() },
@@ -709,7 +726,7 @@ describe("IM binding persistence", () => {
       const summary = await value.imBindingService.getForAgent(value.bootstrap.userId, value.agent.id);
       expect(summary).toMatchObject({
         lastValidatedAt: "2026-08-19T00:00:00.000Z",
-        lastRuntimeObservationAt: null,
+        lastRuntimeObservationAt: "2026-08-19T00:00:00.000Z",
         lastInboundAt: null,
       });
       expect(JSON.stringify(summary)).not.toContain("lastConfirmedAt");
@@ -721,7 +738,8 @@ describe("IM binding persistence", () => {
         requiredCapabilities: [...SLACK_REQUIRED_BOT_SCOPES],
         missingCapabilities: [],
         lastValidatedAt: "2026-08-19T00:00:00.000Z",
-        lastRuntimeObservationAt: null,
+        lastRuntimeObservationAt: "2026-08-19T00:00:00.000Z",
+        slackIdentityClosure: { status: "verified", verifiedAt: "2026-08-19T00:00:00.000Z" },
       });
       expect(diagnostics.grantedCapabilities).toEqual([...SLACK_REQUIRED_BOT_SCOPES]);
 
@@ -1799,27 +1817,30 @@ describe("IM binding persistence", () => {
           computerId: value.computer.id,
         },
       );
-      const otherBindingId = await value.imBindingService.activateSlack(
-        {
-          agentId: otherAgent.id,
-          appId: "A2",
-          teamId: "T2",
-          botUserId: "U_OTHER_BOT",
-          grantedBotScopes: [
-            "chat:write",
-            "app_mentions:read",
-            "files:read",
-            "im:history",
-            "channels:history",
-            "groups:history",
-            "mpim:history",
-          ],
-          botAccessToken: "xoxb-other",
-          signingSecret: "other-signing-secret",
-          installedAt: new Date("2026-08-19T00:00:00.000Z"),
-        },
-        "B_OTHER_BOT",
-      );
+      const otherBindingId = (
+        await value.imBindingService.activateSlack(
+          {
+            intent: "create",
+            agentId: otherAgent.id,
+            appId: "A2",
+            teamId: "T2",
+            botUserId: "U_OTHER_BOT",
+            grantedBotScopes: [
+              "chat:write",
+              "app_mentions:read",
+              "files:read",
+              "im:history",
+              "channels:history",
+              "groups:history",
+              "mpim:history",
+            ],
+            botAccessToken: "xoxb-other",
+            signingSecret: "other-signing-secret",
+            installedAt: new Date("2026-08-19T00:00:00.000Z"),
+          },
+          "B_OTHER_BOT",
+        )
+      ).imBindingId;
       const otherBindingRoot = revisionEvent({
         providerEventId: "other-binding-root",
         externalMessageId: "3600.100",
@@ -4550,27 +4571,30 @@ describe("IM binding persistence", () => {
         code: "SESSION_PLACEMENT_STALE",
       });
 
-      const replacementImBindingId = await value.imBindingService.activateSlack(
-        {
-          agentId: value.agent.id,
-          appId: "A2",
-          teamId: "T1",
-          botUserId: "U_BOT_2",
-          grantedBotScopes: [
-            "chat:write",
-            "app_mentions:read",
-            "files:read",
-            "im:history",
-            "channels:history",
-            "groups:history",
-            "mpim:history",
-          ],
-          botAccessToken: "xoxb-replacement",
-          signingSecret: "replacement-secret",
-          installedAt: new Date(),
-        },
-        "B_BOT_2",
-      );
+      const replacementImBindingId = (
+        await value.imBindingService.activateSlack(
+          {
+            intent: "replace",
+            agentId: value.agent.id,
+            appId: "A2",
+            teamId: "T1",
+            botUserId: "U_BOT_2",
+            grantedBotScopes: [
+              "chat:write",
+              "app_mentions:read",
+              "files:read",
+              "im:history",
+              "channels:history",
+              "groups:history",
+              "mpim:history",
+            ],
+            botAccessToken: "xoxb-replacement",
+            signingSecret: "replacement-secret",
+            installedAt: new Date(),
+          },
+          "B_BOT_2",
+        )
+      ).imBindingId;
       expect(
         (await value.database.select().from(sessions).where(eq(sessions.id, session.id)))[0]?.endedAt,
       ).not.toBeNull();
@@ -5625,11 +5649,20 @@ describe("IM binding persistence", () => {
         },
       });
 
-      const imBindingId = await service.configure(value.bootstrap.userId, value.agent.id, {
+      const configuredResult = await service.configure(value.bootstrap.userId, value.agent.id, {
+        intent: "create",
         expectedBinding: null,
         appId: "A_CONFIGURED",
         botAccessToken: "xoxb-configured",
         signingSecret: "configured-secret",
+      });
+      const imBindingId = configuredResult.imBindingId;
+      expect(configuredResult).toMatchObject({
+        appId: "A_CONFIGURED",
+        teamId: "T_CONFIG",
+        botUserId: "U_CONFIG",
+        credentialGeneration: 1,
+        identityClosure: { status: "pending", verifiedAt: null },
       });
       const [configured] = await value.database.select().from(imBindings).where(eq(imBindings.id, imBindingId));
       expect(configured).toMatchObject({
@@ -5650,6 +5683,24 @@ describe("IM binding persistence", () => {
       ).resolves.toMatchObject({
         identity: { provider: "slack", appId: "A_CONFIGURED", appIdEvidence: "configured" },
         reauthorizationRequired: false,
+      });
+      await expect(value.imBindingService.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toEqual({
+        bindingState: "active",
+        handoffReady: false,
+      });
+      await expect(value.imBindingService.diagnostics(value.bootstrap.userId, imBindingId)).resolves.toMatchObject({
+        ready: false,
+        credentialStatus: "valid",
+        slackIdentityClosure: { status: "pending", verifiedAt: null },
+      });
+      await value.imBindingService.recordSlackIdentityClosure(imBindingId, 1);
+      await expect(value.imBindingService.getHandoffForAgent(value.bootstrap.userId, value.agent.id)).resolves.toEqual({
+        bindingState: "active",
+        handoffReady: true,
+      });
+      await expect(value.imBindingService.diagnostics(value.bootstrap.userId, imBindingId)).resolves.toMatchObject({
+        ready: true,
+        slackIdentityClosure: { status: "verified", verifiedAt: expect.any(String) },
       });
 
       const agentService = new AgentService(value.database);
@@ -5694,6 +5745,7 @@ describe("IM binding persistence", () => {
     try {
       await expect(
         service.configure(value.bootstrap.userId, value.agent.id, {
+          intent: "create",
           expectedBinding: null,
           appId: "A_CONFIGURED",
           botAccessToken: "xoxb-missing-scope",
@@ -5702,6 +5754,7 @@ describe("IM binding persistence", () => {
       ).rejects.toMatchObject({ code: "SLACK_SCOPE_REAUTH_REQUIRED", category: "credential" });
       await expect(
         service.configure(value.bootstrap.userId, value.agent.id, {
+          intent: "create",
           expectedBinding: null,
           appId: "A_CONFIGURED",
           botAccessToken: "xoxb-wrong-app",
@@ -5740,6 +5793,7 @@ describe("IM binding persistence", () => {
     try {
       await expect(
         service.configure(value.bootstrap.userId, value.agent.id, {
+          intent: "create",
           expectedBinding: null,
           appId: "A_AUTHORITY",
           botAccessToken: "xoxb-authority",
@@ -5759,7 +5813,8 @@ describe("IM binding persistence", () => {
       teamId: "T_CONFIG",
       enterpriseId: null,
       botUserId: token === "xoxb-replacement" ? "U_REPLACEMENT" : "U_CONFIG",
-      botId: token === "xoxb-replacement" ? "B_REPLACEMENT" : "B_CONFIG",
+      botId:
+        token === "xoxb-replacement" ? "B_REPLACEMENT" : token === "xoxb-different-bot-id" ? "B_OTHER" : "B_CONFIG",
       grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
     }));
     const service = new SlackConfigurationService({
@@ -5769,16 +5824,58 @@ describe("IM binding persistence", () => {
       publicOrigin: "https://opentag.example.com",
     });
     try {
-      const firstId = await service.configure(value.bootstrap.userId, value.agent.id, {
-        expectedBinding: null,
-        appId: "A_CONFIG",
-        botAccessToken: "xoxb-first",
-        signingSecret: "first-secret",
-      });
+      const firstId = await service
+        .configure(value.bootstrap.userId, value.agent.id, {
+          intent: "create",
+          expectedBinding: null,
+          appId: "A_CONFIG",
+          botAccessToken: "xoxb-first",
+          signingSecret: "first-secret",
+        })
+        .then((result) => result.imBindingId);
       const firstGuide = await service.get(value.bootstrap.userId, value.agent.id);
       if (!firstGuide.currentBinding) throw new Error("Configured Slack binding was not projected");
+      const firstEvent = inbound("Ev-configured-session");
+      firstEvent.externalAppId = "A_CONFIG";
+      firstEvent.externalTeamId = "T_CONFIG";
+      firstEvent.mentions = [{ externalId: "U_CONFIG", displayName: "Assistant" }];
+      await new ImMessageInbox(value.database).ingest(firstId, 1, firstEvent);
+      const [session] = await value.database.select().from(sessions).where(eq(sessions.imBindingId, firstId)).limit(1);
+      if (!session) throw new Error("Configured Slack Session was not created");
+
       await expect(
         service.configure(value.bootstrap.userId, value.agent.id, {
+          intent: "reauthorize",
+          expectedBinding: {
+            id: firstGuide.currentBinding.id,
+            credentialGeneration: firstGuide.currentBinding.credentialGeneration,
+          },
+          appId: "A_CONFIG_TYPO",
+          botAccessToken: "xoxb-second",
+          signingSecret: "typo-secret",
+        }),
+      ).rejects.toMatchObject({ code: "SLACK_BINDING_IDENTITY_MISMATCH" });
+      await expect(value.database.select().from(imBindings).where(eq(imBindings.id, firstId))).resolves.toEqual([
+        expect.objectContaining({ status: "active", credentialGeneration: 1, replacementImBindingId: null }),
+      ]);
+      expect((await value.database.select().from(sessions).where(eq(sessions.id, session.id)))[0]?.endedAt).toBeNull();
+
+      await expect(
+        service.configure(value.bootstrap.userId, value.agent.id, {
+          intent: "reauthorize",
+          expectedBinding: {
+            id: firstGuide.currentBinding.id,
+            credentialGeneration: firstGuide.currentBinding.credentialGeneration,
+          },
+          appId: "A_CONFIG",
+          botAccessToken: "xoxb-different-bot-id",
+          signingSecret: "different-bot-secret",
+        }),
+      ).rejects.toMatchObject({ code: "SLACK_BINDING_IDENTITY_MISMATCH" });
+
+      await expect(
+        service.configure(value.bootstrap.userId, value.agent.id, {
+          intent: "reauthorize",
           expectedBinding: {
             id: firstGuide.currentBinding.id,
             credentialGeneration: firstGuide.currentBinding.credentialGeneration,
@@ -5787,9 +5884,10 @@ describe("IM binding persistence", () => {
           botAccessToken: "xoxb-second",
           signingSecret: "second-secret",
         }),
-      ).resolves.toBe(firstId);
+      ).resolves.toMatchObject({ imBindingId: firstId, credentialGeneration: 2 });
       await expect(
         service.configure(value.bootstrap.userId, value.agent.id, {
+          intent: "reauthorize",
           expectedBinding: {
             id: firstGuide.currentBinding.id,
             credentialGeneration: firstGuide.currentBinding.credentialGeneration,
@@ -5802,16 +5900,35 @@ describe("IM binding persistence", () => {
 
       const currentGuide = await service.get(value.bootstrap.userId, value.agent.id);
       if (!currentGuide.currentBinding) throw new Error("Reauthorized Slack binding was not projected");
-      const replacementId = await service.configure(value.bootstrap.userId, value.agent.id, {
-        expectedBinding: {
-          id: currentGuide.currentBinding.id,
-          credentialGeneration: currentGuide.currentBinding.credentialGeneration,
-        },
-        appId: "A_REPLACEMENT",
-        botAccessToken: "xoxb-replacement",
-        signingSecret: "replacement-secret",
-      });
+      expect((await value.database.select().from(sessions).where(eq(sessions.id, session.id)))[0]?.endedAt).toBeNull();
+      await expect(
+        service.configure(value.bootstrap.userId, value.agent.id, {
+          intent: "replace",
+          expectedBinding: {
+            id: currentGuide.currentBinding.id,
+            credentialGeneration: currentGuide.currentBinding.credentialGeneration,
+          },
+          appId: "A_CONFIG",
+          botAccessToken: "xoxb-second",
+          signingSecret: "same-app-secret",
+        }),
+      ).rejects.toMatchObject({ code: "SLACK_CONFIGURATION_CONFLICT" });
+      const replacementId = await service
+        .configure(value.bootstrap.userId, value.agent.id, {
+          intent: "replace",
+          expectedBinding: {
+            id: currentGuide.currentBinding.id,
+            credentialGeneration: currentGuide.currentBinding.credentialGeneration,
+          },
+          appId: "A_REPLACEMENT",
+          botAccessToken: "xoxb-replacement",
+          signingSecret: "replacement-secret",
+        })
+        .then((result) => result.imBindingId);
       expect(replacementId).not.toBe(firstId);
+      expect(
+        (await value.database.select().from(sessions).where(eq(sessions.id, session.id)))[0]?.endedAt,
+      ).not.toBeNull();
       const rows = await value.database
         .select()
         .from(imBindings)
@@ -5827,6 +5944,138 @@ describe("IM binding persistence", () => {
         externalAppId: "A_REPLACEMENT",
         externalBotId: "U_REPLACEMENT",
       });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("fences every Slack event mutation to the exact credential generation", async () => {
+    const value = await fixture();
+    try {
+      const reauthorized = await value.imBindingService.activateSlack(
+        {
+          intent: "reauthorize",
+          agentId: value.agent.id,
+          appId: "A1",
+          teamId: "T1",
+          botUserId: "U_BOT",
+          grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+          botAccessToken: "xoxb-generation-2",
+          signingSecret: "generation-2-secret",
+          installedAt: new Date("2026-08-25T01:00:00.000Z"),
+        },
+        "B_BOT",
+      );
+      expect(reauthorized).toMatchObject({ imBindingId: value.imBindingId, credentialGeneration: 2 });
+
+      await expect(value.imBindingService.recordSlackObservation(value.imBindingId, 1)).resolves.toBe(false);
+      await expect(value.imBindingService.recordSlackIdentityClosure(value.imBindingId, 1)).resolves.toBe(false);
+      await expect(
+        value.imBindingService.requireReauthorization(value.imBindingId, 1, "SLACK_TOKEN_REVOKED"),
+      ).resolves.toBe(false);
+      await expect(value.imBindingService.disableFromProvider(value.imBindingId, 1)).resolves.toBe(false);
+      await expect(
+        value.database.select().from(imBindings).where(eq(imBindings.id, value.imBindingId)),
+      ).resolves.toEqual([
+        expect.objectContaining({
+          status: "active",
+          credentialGeneration: 2,
+          observedAt: null,
+          observedConnectedAt: null,
+          lastErrorCode: null,
+        }),
+      ]);
+
+      await expect(value.imBindingService.recordSlackObservation(value.imBindingId, 2)).resolves.toBe(true);
+      await expect(value.imBindingService.recordSlackIdentityClosure(value.imBindingId, 2)).resolves.toBe(true);
+      await expect(
+        value.imBindingService.requireReauthorization(value.imBindingId, 2, "SLACK_TOKEN_REVOKED"),
+      ).resolves.toBe(true);
+      await expect(value.imBindingService.disableFromProvider(value.imBindingId, 2)).resolves.toBe(true);
+      await expect(
+        value.database.select().from(imBindings).where(eq(imBindings.id, value.imBindingId)),
+      ).resolves.toEqual([expect.objectContaining({ status: "disabled", credentialGeneration: 2 })]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("returns the exact committed Slack generation even if it is mutated immediately after commit", async () => {
+    const value = await unboundFixture();
+    const service = new SlackConfigurationService({
+      api: {
+        inspectInstallation: vi.fn().mockResolvedValue({
+          appId: null,
+          teamId: "T_SNAPSHOT",
+          enterpriseId: null,
+          botUserId: "U_SNAPSHOT",
+          botId: "B_SNAPSHOT",
+          grantedBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+        }),
+      } as never,
+      database: value.database,
+      imBindings: value.imBindingService,
+      publicOrigin: "https://opentag.example.com",
+      afterConfigurationTransaction: async () => {
+        await value.database
+          .update(memberships)
+          .set({ role: "member" })
+          .where(and(eq(memberships.teamId, value.bootstrap.teamId), eq(memberships.userId, value.bootstrap.userId)));
+        const [committed] = await value.database
+          .select({ id: imBindings.id, generation: imBindings.credentialGeneration })
+          .from(imBindings)
+          .where(eq(imBindings.agentId, value.agent.id));
+        if (!committed) throw new Error("Committed Slack binding was not found by the concurrency hook");
+        await value.imBindingService.disableFromProvider(committed.id, committed.generation);
+      },
+    });
+    try {
+      await expect(
+        service.configure(value.bootstrap.userId, value.agent.id, {
+          intent: "create",
+          expectedBinding: null,
+          appId: "A_SNAPSHOT",
+          botAccessToken: "xoxb-snapshot",
+          signingSecret: "snapshot-secret",
+        }),
+      ).resolves.toMatchObject({
+        agentId: value.agent.id,
+        appId: "A_SNAPSHOT",
+        credentialGeneration: 1,
+        bindingState: "active",
+        identityClosure: { status: "pending", verifiedAt: null },
+      });
+      await expect(value.database.select().from(imBindings)).resolves.toEqual([
+        expect.objectContaining({ status: "disabled", credentialGeneration: 1, encryptedCredential: null }),
+      ]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("maps a Slack user token without Bot identity to a deterministic 4xx without persistence", async () => {
+    const value = await unboundFixture();
+    const service = new SlackConfigurationService({
+      api: { inspectInstallation: vi.fn().mockRejectedValue(new Error("SLACK_AUTH_IDENTITY_INCOMPLETE")) } as never,
+      database: value.database,
+      imBindings: value.imBindingService,
+      publicOrigin: "https://opentag.example.com",
+    });
+    try {
+      await expect(
+        service.configure(value.bootstrap.userId, value.agent.id, {
+          intent: "create",
+          expectedBinding: null,
+          appId: "A_USER_TOKEN",
+          botAccessToken: "xoxp-user-token",
+          signingSecret: "user-token-secret",
+        }),
+      ).rejects.toMatchObject({
+        code: "SLACK_AUTH_IDENTITY_INCOMPLETE",
+        statusCode: 400,
+        category: "credential",
+      });
+      await expect(value.database.select().from(imBindings)).resolves.toEqual([]);
     } finally {
       await value.sql.end();
     }

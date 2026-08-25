@@ -11,8 +11,11 @@ const SLACK_CONFIGURATION_MESSAGES: Record<string, string> = {
     "This Agent is connected to a different IM provider. Disable that binding before connecting Slack.",
   SLACK_APP_TEAM_ALREADY_BOUND:
     "This Slack App installation is already connected to another Agent. Create a separate App for this Agent.",
+  SLACK_AUTH_IDENTITY_INCOMPLETE:
+    "Slack accepted this token but did not identify an installed Bot. Copy the Bot User OAuth Token, not a User Token.",
   SLACK_AUTH_INVALID: "Slack rejected the Bot User OAuth Token. Copy the Bot Token from OAuth & Permissions.",
-  SLACK_BINDING_IDENTITY_MISMATCH: "The configured Slack App ID does not match the App reported for this Bot Token.",
+  SLACK_BINDING_IDENTITY_MISMATCH:
+    "The Slack App, Team, or Bot identity does not match this operation. Reauthorize the current App or explicitly choose Change App.",
   SLACK_CONFIGURATION_CONFLICT: "The Slack binding changed while this form was open. Reopen it and try again.",
   SLACK_SCOPE_REAUTH_REQUIRED:
     "The installed App is missing required bot scopes. Apply the complete manifest, reinstall the App, and retry.",
@@ -77,8 +80,9 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
         ) : null}
         {saved ? (
           <div className="notice success" role="status">
-            Slack configuration is active. Request URL verification and future inbound events are runtime checks; no
-            test message is required to activate this generation.
+            Slack configuration is active. A future signed event will verify the App-to-Bot identity before runtime
+            access becomes ready; Request URL verification remains observation-only, and no test message is required to
+            save this generation.
           </div>
         ) : null}
         {error ? (
@@ -117,6 +121,7 @@ function SlackConfigurationForm({
     onError(undefined);
     try {
       await browserApi.configureSlackApp(configuration.agentId, {
+        intent,
         expectedBinding: configuration.currentBinding
           ? {
               id: configuration.currentBinding.id,
@@ -150,14 +155,16 @@ function SlackConfigurationForm({
             autoComplete="off"
             name="slackAppId"
             onChange={(event) => setAppId(event.target.value)}
+            readOnly={intent === "reauthorize"}
             required
             value={appId}
           />
         </label>
         <p className="muted">
           Slack auth.test may omit the App ID for a Bot Token. OpenTag stores this explicitly configured value and
-          requires every signed real event to match both it and the token-derived Team ID; the value is not presented as
-          Slack API-attested identity. Slack's identity-less URL challenge authenticates only the Signing Secret.
+          requires a signed real event to close the App, Team, and token-derived Bot identity before runtime access is
+          ready; the value is not presented as Slack API-attested identity. Slack's identity-less URL challenge
+          authenticates only the Signing Secret.
         </p>
         <label>
           Bot User OAuth Token

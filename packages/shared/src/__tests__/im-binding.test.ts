@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  ConfigureSlackAppRequestSchema,
   FEISHU_REQUIRED_TENANT_SCOPES,
   FeishuSetupAttemptSchema,
   hasRequiredFeishuTenantScopes,
@@ -12,6 +13,7 @@ import {
   SLACK_SUBSCRIBED_BOT_EVENTS,
   SlackAppConfigurationSchema,
   SlackBindingActivationSchema,
+  SlackConfigurationResultSchema,
 } from "../im-binding.js";
 import { ImContentV1Schema, NormalizedInboundImEventSchema } from "../im-message.js";
 
@@ -112,6 +114,7 @@ describe("IM binding contracts", () => {
     ).toThrow();
     expect(
       SlackBindingActivationSchema.parse({
+        intent: "create",
         agentId: crypto.randomUUID(),
         appId: "A1",
         teamId: "T1",
@@ -153,6 +156,29 @@ describe("IM binding contracts", () => {
     };
     expect(SlackAppConfigurationSchema.parse(configuration)).toEqual(configuration);
     expect(() => SlackAppConfigurationSchema.parse({ ...configuration, signingSecret: "secret" })).toThrow();
+    const request = {
+      intent: "create" as const,
+      expectedBinding: null,
+      appId: "A1",
+      botAccessToken: "xoxb-secret",
+      signingSecret: "signing-secret",
+    };
+    expect(ConfigureSlackAppRequestSchema.parse(request)).toEqual(request);
+    expect(() => ConfigureSlackAppRequestSchema.parse({ ...request, intent: "setup" })).toThrow();
+    const { intent: _intent, ...missingIntent } = request;
+    expect(() => ConfigureSlackAppRequestSchema.parse(missingIntent)).toThrow();
+    expect(
+      SlackConfigurationResultSchema.parse({
+        imBindingId: crypto.randomUUID(),
+        agentId: configuration.agentId,
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U1",
+        credentialGeneration: 1,
+        bindingState: "active",
+        identityClosure: { status: "pending", verifiedAt: null },
+      }).identityClosure,
+    ).toEqual({ status: "pending", verifiedAt: null });
   });
 
   it("defines a strict handoff projection without changing the strict summary contract", () => {
@@ -202,6 +228,7 @@ describe("IM binding contracts", () => {
       missingCapabilities: [...SLACK_REQUIRED_BOT_SCOPES],
       reauthorizationRequired: false,
       slackAppId: null,
+      slackIdentityClosure: null,
       connection: null,
       lastInboundAt: null,
       lastValidatedAt: null,

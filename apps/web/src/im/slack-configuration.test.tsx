@@ -84,20 +84,45 @@ describe("SlackConfiguration", () => {
     render(<Harness onSuccess={onSuccess} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Reauthorize" }));
-    expect(((await screen.findByLabelText("Slack App ID")) as HTMLInputElement).value).toBe("A123");
+    expect(await screen.findByLabelText("Slack App ID")).toMatchObject({ value: "A123", readOnly: true });
     fillAndSubmit();
 
     await waitFor(() => expect(configure).toHaveBeenCalledTimes(1));
     expect(configure).toHaveBeenCalledWith(agentId, {
+      intent: "reauthorize",
       expectedBinding: { id: bindingId, credentialGeneration: 4 },
       appId: "A123",
       botAccessToken: "xoxb-token",
       signingSecret: "signing-secret",
     });
-    expect(await screen.findByText(/no test message is required to activate this generation/)).toBeTruthy();
+    expect(await screen.findByText(/no test message is required to save this generation/)).toBeTruthy();
     expect(onSuccess).toHaveBeenCalledTimes(1);
     expect(document.body.textContent).not.toContain("xoxb-token");
     expect(document.body.textContent).not.toContain("signing-secret");
+  });
+
+  it.each([
+    ["Create", "create", null],
+    ["Replace", "replace", { id: bindingId, appId: "A_CURRENT", credentialGeneration: 4 }],
+  ] as const)("sends the explicit %s intent", async (button, intent, currentBinding) => {
+    vi.spyOn(browserApi, "slackAppConfiguration").mockResolvedValue(configuration(currentBinding));
+    const configure = vi.spyOn(browserApi, "configureSlackApp").mockResolvedValue({} as never);
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: button }));
+    await screen.findByLabelText("Slack App ID");
+    fillAndSubmit();
+
+    await waitFor(() => expect(configure).toHaveBeenCalledTimes(1));
+    expect(configure).toHaveBeenCalledWith(
+      agentId,
+      expect.objectContaining({
+        intent,
+        expectedBinding: currentBinding
+          ? { id: currentBinding.id, credentialGeneration: currentBinding.credentialGeneration }
+          : null,
+      }),
+    );
   });
 
   it("labels App ID as configured evidence and maps validation errors", async () => {

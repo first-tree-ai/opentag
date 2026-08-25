@@ -47,10 +47,13 @@ reauthorization, retry the Request URL, or send a test message.
    Enterprise when present, and actual `x-oauth-scopes`, and requires all seven scopes. If Slack returns an App ID, it
    must match the submitted App ID.
 5. OpenTag locks the Agent's current binding, rechecks Team authority and the expected binding generation, and atomically
-   writes the active identity, encrypted credentials, complete grants, and new generation. Validation failure or a stale
-   expected generation leaves the current binding unchanged.
+   enforces the submitted intent. **Reauthorize** must preserve the current App, Team, and Bot User even when `auth.test`
+   omits `app_id`; only **Change Slack App** may replace the binding and end its Sessions. OpenTag then atomically writes
+   the active identity, encrypted credentials, complete grants, and new generation. Validation failure, identity drift,
+   or a stale expected generation leaves the current binding unchanged.
 6. After the write succeeds, set or retry the generated Request URL in Slack if necessary. A real message is not part of
-   configuration acceptance.
+   configuration acceptance. The PUT response is the sanitized snapshot of the exact generation committed by that
+   transaction; it is not a later mutable Agent read.
 
 Slack does not guarantee `app_id` in `auth.test` for a Bot Token. The submitted App ID is therefore stored and projected
 as **configured evidence**, not as Slack API-attested identity. Every request still has an independent proof boundary.
@@ -58,9 +61,12 @@ The Agent-specific Request URL looks up the active binding by Agent ID and verif
 body **before** parsing JSON. The compatibility Events URL may bounded-preparse only App and Team identifiers to locate
 the Signing Secret, then verifies the same raw-body HMAC.
 After a valid signature, every real event envelope's `api_app_id` and `team_id` must match the configured App ID and
-token-derived Team ID. A mismatch is rejected and never repairs configuration. Slack's official URL-verification payload
-contains no App or Team fields, so the Agent-specific URL can verify only the bound Signing Secret for that challenge;
-it records no identity proof.
+token-derived Team ID. Its `authorizations` must also contain the token-derived Bot User as a bot authorization for that
+Team. This closes the HMAC-authenticated App to the token-derived Bot identity for the exact credential generation. Until
+that closure succeeds, configuration remains durably committed but readiness and runtime credential grants fail closed.
+A mismatch is rejected and never repairs configuration. Slack's official URL-verification payload contains no App,
+Team, or bot authorization fields, so the Agent-specific URL can verify only the bound Signing Secret for that challenge;
+it records no identity closure.
 
 ## Data and state inventory
 
@@ -73,7 +79,8 @@ it records no identity proof.
 | `credentialGeneration` and credential schema version | Keep | Monotonic same-binding credential revision. Same-identity reauthorization increments it; App/Team replacement creates a new binding identity and disables the old one. |
 | `grantedCapabilities` | Keep | Actual token scopes reported by Slack. Active/readiness projections require all seven fixed scopes. |
 | `activatedAt`, `disabledAt`, `createdAt`, `updatedAt` | Keep | Durable binding lifecycle timestamps. Configuration submission sets activation; inbound events do not. Public APIs project `activatedAt` as `lastValidatedAt`. |
-| `observedAt` | Keep as runtime observation | Updated after a correctly signed Agent-specific URL challenge, or after a correctly signed App/Team-matching real event. Public APIs project it as `lastRuntimeObservationAt`. It is not configuration evidence and does not change generation. |
+| `observedAt` | Keep as runtime observation | Updated after a correctly signed Agent-specific URL challenge, or after a correctly signed real event whose App, Team, and bot authorization match. Public APIs project it as `lastRuntimeObservationAt`. It is not configuration evidence and does not change generation. |
+| `observedConnectedAt` | Keep as generation identity closure | For Slack, records when a signed real event's `authorizations` first closed the configured App/Team to the token-derived Bot User for the current generation. Configuration resets it; URL verification never sets it. Feishu retains its existing connection-observation meaning. |
 | `lastInboundAt` and normalized `ImMessage`/Session state | Keep | Message runtime history and routing state. Only admitted inbound messages update it. URL verification does not. |
 | `lastConfirmedAt` | Delete from public APIs | It mixed configuration time with runtime observation. Use `lastValidatedAt` and `lastRuntimeObservationAt`. |
 | `lastErrorCode` | Keep | Durable recovery cause such as `SLACK_SCOPE_REAUTH_REQUIRED` or `SLACK_TOKEN_REVOKED`; observations do not clear configuration errors. |
@@ -89,6 +96,8 @@ Derived values are not new durable states:
 - binding health is derived from status plus currently readable, schema-valid, identity-consistent, and scope-complete credential material;
 - unreadable, schema-invalid, identity-inconsistent, or scope-inconsistent current credentials fail closed: they are never projected as ready, and Slack ingress lookups return unavailable instead of throwing raw credential errors;
 - `reauthorizationRequired` is derived from binding status, missing fixed scopes, or invalid current credential material;
+- Slack `identityClosure` is `pending` or `verified` from the current generation's `observedConnectedAt`; pending closure
+  keeps `ready` and `handoffReady` false and prevents runtime Bot Token grants without making the committed credential invalid;
 - diagnostics report the exact `credentialGeneration` (including `0`), `credentialStatus` `valid` or `invalid`, and required/granted/missing capabilities;
 - a structurally invalid credential with no more specific stored failure projects `IM_BINDING_CREDENTIAL_INVALID`; an
   actual fixed-scope gap continues to project `SLACK_SCOPE_REAUTH_REQUIRED`;
@@ -100,14 +109,14 @@ Derived values are not new durable states:
 | State | Slack meaning after migration | Allowed transition source |
 | --- | --- | --- |
 | `provisioning` | Not a normal Slack state. An incomplete legacy Slack row is disabled by migration; new configuration writes `active` directly. | Feishu setup only. |
-| `active` | A credential generation was committed. Public state may still derive `reauthorization_required` when the current material is unreadable, structurally inconsistent, or missing a fixed scope. | Successful validated configuration or same-identity reauthorization. |
+| `active` | A credential generation was committed. Slack readiness remains false until a matching signed event closes App/Team/Bot identity for that generation. Public state may still derive `reauthorization_required` when the current material is unreadable, structurally inconsistent, or missing a fixed scope. | Successful validated configuration or same-identity reauthorization. |
 | `reauthorization_required` | The current installation must be replaced or reauthorized. Existing material is never reported healthy when the scope contract or credential inspection fails. | Scope migration, `tokens_revoked`, or an explicit recovery write. |
 | `error` | Generic retained state for non-Slack setup/runtime failures; Slack configuration validation errors are returned without mutating the current row. | Non-Slack provider workflows or existing generic recovery code. |
 | `disabled` | Terminal for that binding identity. Active credential and setup secrets are erased, Sessions are ended, and a later configuration creates or selects another current binding. | Admin disable, `app_uninstalled`, incomplete legacy Slack cleanup, or identity replacement cutover. |
 
 `bindingState`, `ready`, `handoffReady`, `reauthorizationRequired`, `credentialStatus`, and missing capabilities are
-projections, not additional database states. URL verification and signed inbound traffic can update only runtime
-observations and message/routing records. `receiveMode` changes only Agent policy. A same-identity credential commit
+projections, not additional binding states. URL verification updates only runtime observation. A matching signed real
+event may additionally set the current generation's identity-closure timestamp before message/routing work. `receiveMode` changes only Agent policy. A same-identity credential commit
 increments `credentialGeneration`; an App/Team identity replacement starts generation `1` on the new binding and
 records the replacement link on the disabled old binding.
 
@@ -123,14 +132,19 @@ traces.
 - `url_verification`: on the Agent-specific URL, verify the bound Signing Secret, return the challenge, and record a
   runtime observation; the Slack payload has no App/Team identity, and the request does not activate, rotate, or repair
   anything.
-- `app_mention` and message events: normalize and ingest under the verified binding generation; do not change it.
-- `tokens_revoked`: move the affected current binding to `reauthorization_required` with `SLACK_TOKEN_REVOKED`.
-- `app_uninstalled`: disable the binding and erase its active credential material.
-- missing active binding, invalid signature, or App/Team mismatch: reject; never accept an event as setup progress.
+- every real `event_callback`: require a matching bot entry in `authorizations`, then record identity closure and runtime
+  observation under the exact parsed credential generation; a stale generation is acknowledged without side effects.
+- `app_mention` and message events: normalize and ingest under that exact generation; do not change it.
+- `tokens_revoked`: move only that exact generation to `reauthorization_required` with `SLACK_TOKEN_REVOKED`.
+- `app_uninstalled`: disable only that exact generation and erase its active credential material.
+- missing active binding, invalid signature, App/Team/authorization mismatch: reject with no observation or other side
+  effect; never accept an event as setup progress.
 
 Configuration errors are explicit and leave active data unchanged:
 
 - `SLACK_AUTH_INVALID`: Slack rejected the Bot Token.
+- `SLACK_AUTH_IDENTITY_INCOMPLETE`: Slack accepted the submitted token but did not return an installed Bot identity (for
+  example, a User Token); this is a deterministic 400 credential input error.
 - `SLACK_UPSTREAM_UNAVAILABLE`: token inspection did not return usable installation facts.
 - `SLACK_BINDING_IDENTITY_MISMATCH`: Slack returned an App ID different from the configured value.
 - `SLACK_SCOPE_REAUTH_REQUIRED`: the token is missing one or more fixed scopes.
@@ -142,6 +156,8 @@ Configuration errors are explicit and leave active data unchanged:
 The migration is scoped to Slack rows:
 
 - clear every Slack setup-attempt and encrypted setup-context field;
+- clear Slack `observedConnectedAt` so no historical generic value can impersonate the new per-generation App/Bot
+  identity closure; leave Feishu connection observations intact;
 - disable incomplete Slack provisioning rows that never had an active credential generation, erase any credential and
   connection ownership material, and record `SLACK_CONFIGURATION_REQUIRED`;
 - mark configured Slack bindings missing any of the seven scopes as `reauthorization_required` and never project them as
@@ -151,10 +167,12 @@ The migration is scoped to Slack rows:
 - add a Slack-only database check that generic setup fields remain null;
 - leave Feishu setup fields and behavior intact.
 
-Reauthorization validates the proposed credential before touching the current binding. Same-identity success advances
-the generation atomically. A different App/Team installation creates the replacement and disables the previous binding
-only at cutover; its sessions are then stopped. Concurrent configuration is fenced by the expected binding ID and
-generation plus database uniqueness constraints.
+Reauthorization validates the proposed credential and locked current App/Team/Bot identity before touching the current
+binding. An App ID typo therefore cannot become an implicit replacement when `auth.test` omits `app_id`. Same-identity
+success advances the generation atomically. Only explicit Change App intent can create the replacement, disable the
+previous binding at cutover, and stop its Sessions. Concurrent configuration is fenced by the expected binding ID and
+generation plus database uniqueness constraints. Runtime observations, identity closure, provider revocation, and
+provider disable are independently fenced to the event's exact credential generation.
 
 ## Future distributed App adapter
 

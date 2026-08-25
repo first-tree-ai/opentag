@@ -43,15 +43,19 @@ manifest、轮换凭证代际、要求重新安装或授权、重试 Request URL
 4. 一次提交三个值。OpenTag 调用 Slack `auth.test`，获取 token 对应的 Team、Bot User、Bot 身份、存在时的 Enterprise，
    以及实际 `x-oauth-scopes`，并要求完整七项 scopes。若 Slack 返回 App ID，也必须与提交值相同。
 5. OpenTag 锁定 Agent 当前绑定，重新核验 Team 权限与预期绑定代际，再原子写入激活身份、加密凭证、完整授权和新代际。
-   验证失败或预期代际过期时，当前绑定不变。
-6. 写入成功后，如有需要，再到 Slack 设置或重试生成的 Request URL。真实测试消息不属于配置验收步骤。
+   同时强制执行提交的意图：**Reauthorize** 必须保持当前 App、Team、Bot User，即使 `auth.test` 不返回 `app_id`；只有
+   **Change Slack App** 才能替换绑定并结束其 Sessions。验证失败、身份漂移或预期代际过期时，当前绑定不变。
+6. 写入成功后，如有需要，再到 Slack 设置或重试生成的 Request URL。真实测试消息不属于配置验收步骤。PUT 返回的是该事务
+   精确提交代际的脱敏快照，不会在事务外再次读取可变 Agent 状态。
 
 Slack 不保证 Bot Token 的 `auth.test` 一定返回 `app_id`。因此，提交的 App ID 会以**配置证据**存储和投影，而不是冒充
 Slack API 已证明身份。每次请求仍有独立证明边界。Agent 专属 Request URL 按 Agent ID 查找 active 绑定，并在解析 JSON
 **之前**对原始请求体验证带时间戳的 HMAC。兼容 Events URL 只能有界预解析 App 与 Team 标识以定位 Signing Secret，然后再
 验证同一原始请求体 HMAC。签名通过后，每个真实事件 envelope 的 `api_app_id` 与 `team_id` 必须分别匹配配置 App ID 和
-token 推导的 Team ID。不匹配就拒绝，且绝不借事件修复配置。Slack 官方 URL-verification payload 不含 App 或 Team 字段，
-因此 Agent 专属 URL 对 challenge 只能验证该绑定的 Signing Secret；它不会记录身份已证明。
+token 推导的 Team ID；其 `authorizations` 还必须包含该 Team 下 token 推导 Bot User 对应的 bot authorization。这会在精确
+凭证代际上闭合“HMAC 已认证 App”与“token 推导 Bot”身份。在闭合前，配置已经持久提交，但 readiness 与 runtime credential
+grant 都失败关闭。不匹配就拒绝，且绝不借事件修复配置。Slack 官方 URL-verification payload 不含 App、Team 或 bot
+authorization 字段，因此 Agent 专属 URL 对 challenge 只能验证该绑定的 Signing Secret；它不会记录身份闭合。
 
 ## 数据与状态清单
 
@@ -64,7 +68,8 @@ token 推导的 Team ID。不匹配就拒绝，且绝不借事件修复配置。
 | `credentialGeneration` 与 credential schema version | 保留 | 同一绑定的单调凭证修订；同身份重新授权递增，App/Team 替换则创建新绑定身份并禁用旧绑定。 |
 | `grantedCapabilities` | 保留 | Slack 实际返回的 token scopes。active/ready 投影要求完整七项。 |
 | `activatedAt`、`disabledAt`、`createdAt`、`updatedAt` | 保留 | 持久绑定生命周期时间；配置提交设置激活，入站事件不设置。公共 API 将 `activatedAt` 投影为 `lastValidatedAt`。 |
-| `observedAt` | 仅作运行观测保留 | 正确签名的 Agent 专属 URL challenge，或正确签名且 App/Team 匹配的真实事件会更新。公共 API 将其投影为 `lastRuntimeObservationAt`。不是配置证据，也不改变代际。 |
+| `observedAt` | 仅作运行观测保留 | 正确签名的 Agent 专属 URL challenge，或正确签名且 App、Team、bot authorization 都匹配的真实事件会更新。公共 API 将其投影为 `lastRuntimeObservationAt`。不是配置证据，也不改变代际。 |
+| `observedConnectedAt` | 作为代际身份闭合保留 | 对 Slack，记录签名真实事件的 `authorizations` 首次把配置 App/Team 与当前代际 token 推导 Bot User 闭合的时间；每次配置会重置，URL verification 永不设置。Feishu 继续使用其原有连接观测含义。 |
 | `lastInboundAt` 与标准化 `ImMessage`/Session 状态 | 保留 | 消息运行历史和路由状态；只有准入后的真实消息更新，URL verification 不更新。 |
 | `lastConfirmedAt` | 从公共 API 删除 | 它把配置时间与运行观测混在一起。改用 `lastValidatedAt` 与 `lastRuntimeObservationAt`。 |
 | `lastErrorCode` | 保留 | 持久恢复原因，例如 `SLACK_SCOPE_REAUTH_REQUIRED`、`SLACK_TOKEN_REVOKED`；运行观测不清除配置错误。 |
@@ -80,6 +85,8 @@ token 推导的 Team ID。不匹配就拒绝，且绝不借事件修复配置。
 - binding health 由 status 以及当前可读、schema 合法、身份一致且 scopes 完整的凭证材料派生；
 - 不可读、schema 非法、身份不一致或 scopes 不一致的当前凭证必须失败关闭：不得投影为 ready，Slack ingress 查找返回不可用而不是抛出原始凭证错误；
 - `reauthorizationRequired` 由绑定状态、缺少固定 scopes 或当前凭证材料无效派生；
+- Slack `identityClosure` 根据当前代际的 `observedConnectedAt` 派生为 `pending` 或 `verified`；pending 会让 `ready`、
+  `handoffReady` 为 false，并拒绝 runtime Bot Token grant，但不会把已提交凭证误标为无效；
 - 诊断返回精确的 `credentialGeneration`（包括 `0`）、`credentialStatus` 的 `valid` 或 `invalid`，以及 required/granted/missing capabilities；
 - 结构无效且没有更具体持久错误的凭证投影 `IM_BINDING_CREDENTIAL_INVALID`；真正缺少固定 scopes 时仍投影
   `SLACK_SCOPE_REAUTH_REQUIRED`；
@@ -91,14 +98,14 @@ token 推导的 Team ID。不匹配就拒绝，且绝不借事件修复配置。
 | 状态 | 迁移后的 Slack 含义 | 允许的转换来源 |
 | --- | --- | --- |
 | `provisioning` | 不再是 Slack 正常状态；不完整 legacy Slack 行由迁移禁用，新配置直接写入 `active`。 | 仅 Feishu setup。 |
-| `active` | 已提交一个凭证代际。若当前材料不可读、结构不一致或缺少固定 scope，公共状态仍会派生为 `reauthorization_required`。 | 成功的已验证配置或同身份重新授权。 |
+| `active` | 已提交一个凭证代际。Slack 在当前代际收到匹配签名事件、闭合 App/Team/Bot 身份前仍不 ready。若当前材料不可读、结构不一致或缺少固定 scope，公共状态仍会派生为 `reauthorization_required`。 | 成功的已验证配置或同身份重新授权。 |
 | `reauthorization_required` | 当前安装必须替换或重新授权；scope 契约或凭证检查失败时，绝不把既有材料报告为健康。 | scope 迁移、`tokens_revoked` 或显式恢复写入。 |
 | `error` | 为非 Slack setup/runtime 失败保留的通用状态；Slack 配置验证错误直接返回，不修改当前行。 | 非 Slack provider 工作流或既有通用恢复代码。 |
 | `disabled` | 该绑定身份的终态；active credential 与 setup secret 被清除，Sessions 结束，后续配置会创建或选择另一个当前绑定。 | 管理员禁用、`app_uninstalled`、不完整 legacy Slack 清理或身份替换切换。 |
 
 `bindingState`、`ready`、`handoffReady`、`reauthorizationRequired`、`credentialStatus` 与 missing capabilities
-都是投影，不是额外数据库状态。URL verification 与签名入站只能更新运行观测和消息/路由记录；`receiveMode` 只改变
-Agent 策略。同身份凭证提交递增 `credentialGeneration`；App/Team 身份替换在新绑定上从 generation `1` 开始，并在已
+都是投影，不是额外 binding 状态。URL verification 只更新运行观测；匹配的签名真实事件还可在消息/路由工作前设置当前代际
+身份闭合时间。`receiveMode` 只改变 Agent 策略。同身份凭证提交递增 `credentialGeneration`；App/Team 身份替换在新绑定上从 generation `1` 开始，并在已
 禁用旧绑定上记录 replacement link。
 
 ## 入口、事件与错误
@@ -110,14 +117,19 @@ challenge。Signing Secret 永不进入 runtime grant、诊断、日志或 trace
 
 - `url_verification`：在 Agent 专属 URL 上验证绑定 Signing Secret、返回 challenge 并记录运行观测；Slack payload 不含
   App/Team 身份，而且请求不激活、不轮换、不修复任何配置。
-- `app_mention` 与 message events：在已验证绑定代际下标准化并入站；不改变代际。
-- `tokens_revoked`：当前 bot token 受影响时进入 `reauthorization_required`，错误为 `SLACK_TOKEN_REVOKED`。
-- `app_uninstalled`：禁用绑定并清除 active credential material。
-- 缺少 active binding、签名无效或 App/Team 不匹配：直接拒绝；绝不把事件视为 setup 进度。
+- 每个真实 `event_callback`：要求 `authorizations` 中存在匹配 bot 项，再按解析时的精确凭证代际记录身份闭合与运行观测；
+  过期代际只返回确认，不产生副作用。
+- `app_mention` 与 message events：在该精确代际下标准化并入站；不改变代际。
+- `tokens_revoked`：只把该精确代际置为 `reauthorization_required`，错误为 `SLACK_TOKEN_REVOKED`。
+- `app_uninstalled`：只禁用该精确代际并清除 active credential material。
+- 缺少 active binding、签名无效或 App/Team/authorization 不匹配：直接拒绝且不记录观测或其他副作用；绝不把事件视为
+  setup 进度。
 
 配置错误必须显式返回，且不改变现有 active 数据：
 
 - `SLACK_AUTH_INVALID`：Slack 拒绝 Bot Token。
+- `SLACK_AUTH_IDENTITY_INCOMPLETE`：Slack 接受了提交 token，但未返回已安装 Bot 身份（例如提交了 User Token）；这是
+  确定性的 400 credential 输入错误。
 - `SLACK_UPSTREAM_UNAVAILABLE`：token 检查未返回可用安装事实。
 - `SLACK_BINDING_IDENTITY_MISMATCH`：Slack 返回的 App ID 与配置值不同。
 - `SLACK_SCOPE_REAUTH_REQUIRED`：token 缺少至少一个固定 scope。
@@ -129,6 +141,7 @@ challenge。Signing Secret 永不进入 runtime grant、诊断、日志或 trace
 迁移只对 Slack 行执行以下处理：
 
 - 清空全部 Slack setup-attempt 与加密 setup-context 字段；
+- 清空 Slack `observedConnectedAt`，防止任何历史通用值冒充新的当前代际 App/Bot 身份闭合；Feishu 连接观测保持不变；
 - 对从未拥有 active credential generation 的不完整 Slack provisioning 行，清除凭证与连接所有权、禁用，并记录
   `SLACK_CONFIGURATION_REQUIRED`；
 - 缺少七项 scopes 中任何一项的既有已配置绑定进入 `reauthorization_required`，绝不投影为健康；
@@ -137,8 +150,10 @@ challenge。Signing Secret 永不进入 runtime grant、诊断、日志或 trace
 - 增加仅针对 Slack 的数据库检查，保证通用 setup 字段保持为空；
 - 不改变 Feishu setup 字段和行为。
 
-重新授权会先验证新凭证，再接触当前绑定。同身份成功时原子推进代际；不同 App/Team 安装只在 cutover 时创建 replacement、
-禁用旧绑定并停止旧绑定会话。并发配置同时受预期 binding ID/generation 与数据库唯一约束保护。
+重新授权会先验证新凭证，并核对锁定的当前 App/Team/Bot 身份，再接触当前绑定。因此，当 `auth.test` 不返回 `app_id` 时，
+App ID typo 也不能变成隐式 replacement。同身份成功时原子推进代际；只有显式 Change App 意图才能在 cutover 时创建
+replacement、禁用旧绑定并停止旧绑定 Sessions。并发配置同时受预期 binding ID/generation 与数据库唯一约束保护；运行
+观测、身份闭合、provider 撤销与 provider 禁用还分别受事件解析时精确 credential generation 的栅栏保护。
 
 ## 未来的分布式 App 适配器
 

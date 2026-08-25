@@ -15,6 +15,7 @@ import {
   ImBindingHandoffStatusSchema,
   ImBindingSummarySchema,
   SlackAppConfigurationSchema,
+  SlackConfigurationResultSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -96,10 +97,8 @@ export function registerImBindingRoutes(
     app.put(AGENT_SLACK_CONFIGURATION_TEMPLATE, { preHandler }, async (request, reply) => {
       const { agentId } = parseRequest(AgentParamsSchema, request.params);
       const input = parseRequest(ConfigureSlackAppRequestSchema, request.body);
-      await slack.configure(authenticatedUserId(request), agentId, input);
-      const configured = await imBindings.getConfigForAgent(authenticatedUserId(request), agentId);
-      if (!configured) throw new Error("Configured Slack binding was not readable after activation");
-      return reply.code(200).send(ImBindingAdminDetailSchema.parse(configured));
+      const configured = await slack.configure(authenticatedUserId(request), agentId, input);
+      return reply.code(200).send(SlackConfigurationResultSchema.parse(configured));
     });
   }
 

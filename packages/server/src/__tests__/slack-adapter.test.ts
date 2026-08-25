@@ -60,6 +60,22 @@ describe("Slack installed-binding adapter", () => {
     });
   });
 
+  it("rejects a successful user-token auth.test response that has no Bot identity", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          team_id: "T1",
+          user_id: "U_HUMAN",
+        }),
+        { status: 200, headers: { "x-oauth-scopes": "chat:write" } },
+      ),
+    );
+    const api = new DefaultSlackApiClient(undefined, fetchImpl);
+
+    await expect(api.inspectInstallation("xoxp-user-token")).rejects.toThrow("SLACK_AUTH_IDENTITY_INCOMPLETE");
+  });
+
   it("bounds auth.test with a timeout and reports upstream unavailability without credential detail", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new DOMException("The operation was aborted", "TimeoutError"));
     const api = new DefaultSlackApiClient(undefined, fetchImpl);
@@ -234,7 +250,7 @@ describe("Slack installed-binding adapter", () => {
             botAccessToken: "xoxb",
             signingSecret: "secret",
           }),
-          recordSlackObservation: vi.fn().mockResolvedValue(undefined),
+          recordSlackObservation: vi.fn().mockResolvedValue(true),
         } as never,
         inbox: {} as never,
         createAdapter: vi.fn() as never,

@@ -9,6 +9,8 @@ import type {
   RuntimeImCredentialGrantRequest,
   RuntimeImCredentialGrantResult,
   SlackBindingActivation,
+  SlackConfigurationIntent,
+  SlackConfigurationResult,
 } from "@opentag/shared";
 import {
   FEISHU_REQUIRED_TENANT_SCOPES,
@@ -121,12 +123,23 @@ interface ImBindingReadiness {
   connection: { state: "connected" | "disconnected"; observedAt: string } | null;
 }
 
+interface ActivatedBinding {
+  id: string;
+  agentId: string;
+  provider: "feishu" | "slack";
+  appId: string;
+  teamId: string | null;
+  botId: string;
+  credentialGeneration: number;
+}
+
 export async function disableImBindingInTransaction(
   transaction: DatabaseTransaction,
   imBindingId: string,
   now: Date,
-): Promise<void> {
-  await transaction
+  expectedGeneration?: number,
+): Promise<boolean> {
+  const disabled = await transaction
     .update(imBindings)
     .set({
       status: "disabled",
@@ -140,11 +153,20 @@ export async function disableImBindingInTransaction(
       disabledAt: now,
       updatedAt: now,
     })
-    .where(and(eq(imBindings.id, imBindingId), ne(imBindings.status, "disabled")));
+    .where(
+      and(
+        eq(imBindings.id, imBindingId),
+        ne(imBindings.status, "disabled"),
+        ...(expectedGeneration === undefined ? [] : [eq(imBindings.credentialGeneration, expectedGeneration)]),
+      ),
+    )
+    .returning({ id: imBindings.id });
+  if (disabled.length === 0) return false;
   await transaction
     .update(sessions)
     .set({ endedAt: now, revision: sql`${sessions.revision} + 1` })
     .where(and(eq(sessions.imBindingId, imBindingId), isNull(sessions.endedAt)));
+  return true;
 }
 
 export class ImBindingServiceError extends Error {
@@ -312,6 +334,7 @@ export class ImBindingService {
         },
       };
     }
+    if (!binding.observedConnectedAt) return rejected("binding_inactive");
     const credential = this.#decodeSlackCredential(binding.encryptedCredential);
     if (!credential || !hasRequiredSlackBotScopes(credential.grantedScopes)) return rejected("credential_stale");
     return {
@@ -327,7 +350,7 @@ export class ImBindingService {
     input: SlackBindingActivation,
     verifiedBotId: string,
     transaction?: DatabaseTransaction,
-  ): Promise<string> {
+  ): Promise<SlackConfigurationResult> {
     const credential = SlackCredentialSchema.parse({
       botId: verifiedBotId,
       botAccessToken: input.botAccessToken,
@@ -335,10 +358,11 @@ export class ImBindingService {
       grantedScopes: [...new Set(input.grantedBotScopes)].sort(),
     });
     try {
-      return await this.#activate(
+      const activated = await this.#activate(
         {
           agentId: input.agentId,
           provider: "slack",
+          intent: input.intent,
           identity: {
             appId: input.appId,
             teamId: input.teamId,
@@ -350,6 +374,17 @@ export class ImBindingService {
         },
         transaction,
       );
+      if (!activated.teamId) throw new Error("Activated Slack binding did not contain a Team ID");
+      return {
+        imBindingId: activated.id,
+        agentId: activated.agentId,
+        appId: activated.appId,
+        teamId: activated.teamId,
+        botUserId: activated.botId,
+        credentialGeneration: activated.credentialGeneration,
+        bindingState: "active",
+        identityClosure: { status: "pending", verifiedAt: null },
+      };
     } catch (error) {
       // The partial unique index decides concurrent activations of one App/Team; report the loser
       // with the same typed conflict the in-transaction precheck uses.
@@ -371,21 +406,23 @@ export class ImBindingService {
       grantedScopes: [...new Set(input.grantedScopes)].sort(),
     });
     try {
-      return await this.#activate(
-        {
-          agentId: input.agentId,
-          provider: "feishu",
-          identity: {
-            appId: input.appId,
-            teamId: input.teamId,
-            enterpriseId: null,
-            botId: input.botOpenId,
-            teamBrand: input.teamBrand ?? null,
+      return (
+        await this.#activate(
+          {
+            agentId: input.agentId,
+            provider: "feishu",
+            identity: {
+              appId: input.appId,
+              teamId: input.teamId,
+              enterpriseId: null,
+              botId: input.botOpenId,
+              teamBrand: input.teamBrand ?? null,
+            },
+            credential,
           },
-          credential,
-        },
-        transaction,
-      );
+          transaction,
+        )
+      ).id;
     } catch (error) {
       if (isImBindingUniqueViolation(error, "im_bindings_feishu_app_current_unique")) {
         throw new ImBindingServiceError(
@@ -437,7 +474,7 @@ export class ImBindingService {
 
   async getSlackConnectionMaterial(imBindingId: string): Promise<SlackConnectionMaterial | undefined> {
     const imBinding = await this.#activeMaterial(imBindingId, "slack");
-    if (!imBinding?.externalAppId || !imBinding.externalTeamId) return undefined;
+    if (!imBinding?.externalAppId || !imBinding.externalTeamId || !imBinding.observedConnectedAt) return undefined;
     const ingress = this.#slackIngressFromRow(imBinding, imBinding.externalAppId, imBinding.externalTeamId);
     if (!ingress) return undefined;
     const credential = this.#decodeSlackCredential(imBinding.encryptedCredential);
@@ -689,6 +726,13 @@ export class ImBindingService {
         imBinding.provider === "slack" && imBinding.externalAppId
           ? { value: imBinding.externalAppId, evidence: "configured", ingressMatchRequired: true }
           : null,
+      slackIdentityClosure:
+        imBinding.provider === "slack"
+          ? {
+              status: imBinding.observedConnectedAt ? "verified" : "pending",
+              verifiedAt: imBinding.observedConnectedAt?.toISOString() ?? null,
+            }
+          : null,
       connection: readiness.connection,
       ...activity,
       lastValidatedAt: imBinding.activatedAt?.toISOString() ?? null,
@@ -704,22 +748,57 @@ export class ImBindingService {
     };
   }
 
-  async requireReauthorization(imBindingId: string, errorCode: string): Promise<void> {
-    await this.#database
+  async requireReauthorization(imBindingId: string, generation: number, errorCode: string): Promise<boolean> {
+    const updated = await this.#database
       .update(imBindings)
       .set({ status: "reauthorization_required", lastErrorCode: errorCode.slice(0, 120), updatedAt: this.#now() })
-      .where(and(eq(imBindings.id, imBindingId), ne(imBindings.status, "disabled")));
+      .where(
+        and(
+          eq(imBindings.id, imBindingId),
+          eq(imBindings.provider, "slack"),
+          eq(imBindings.status, "active"),
+          eq(imBindings.credentialGeneration, generation),
+        ),
+      )
+      .returning({ id: imBindings.id });
+    return updated.length === 1;
   }
 
-  async recordSlackObservation(imBindingId: string): Promise<void> {
-    await this.#database
+  async recordSlackObservation(imBindingId: string, generation: number): Promise<boolean> {
+    const updated = await this.#database
       .update(imBindings)
       .set({ observedAt: this.#now() })
-      .where(and(eq(imBindings.id, imBindingId), eq(imBindings.provider, "slack"), eq(imBindings.status, "active")));
+      .where(
+        and(
+          eq(imBindings.id, imBindingId),
+          eq(imBindings.provider, "slack"),
+          eq(imBindings.status, "active"),
+          eq(imBindings.credentialGeneration, generation),
+        ),
+      )
+      .returning({ id: imBindings.id });
+    return updated.length === 1;
   }
 
-  async disableFromProvider(imBindingId: string): Promise<void> {
-    await this.#disable(imBindingId);
+  async recordSlackIdentityClosure(imBindingId: string, generation: number): Promise<boolean> {
+    const observedAt = this.#now();
+    const updated = await this.#database
+      .update(imBindings)
+      .set({ observedAt, observedConnectedAt: observedAt, updatedAt: observedAt })
+      .where(
+        and(
+          eq(imBindings.id, imBindingId),
+          eq(imBindings.provider, "slack"),
+          eq(imBindings.status, "active"),
+          eq(imBindings.credentialGeneration, generation),
+        ),
+      )
+      .returning({ id: imBindings.id });
+    return updated.length === 1;
+  }
+
+  async disableFromProvider(imBindingId: string, generation: number): Promise<boolean> {
+    return this.#disable(imBindingId, generation);
   }
 
   async assertCanManage(
@@ -824,7 +903,8 @@ export class ImBindingService {
             observedAt: imBinding.observedAt.toISOString(),
           }
         : null;
-    const connectionReady = imBinding.provider === "slack" || connection?.state === "connected";
+    const connectionReady =
+      imBinding.provider === "slack" ? imBinding.observedConnectedAt !== null : connection?.state === "connected";
     const handoff: ImBindingHandoffStatus =
       bindingState !== "active"
         ? { bindingState, handoffReady: false }
@@ -966,6 +1046,7 @@ export class ImBindingService {
     input: {
       agentId: string;
       provider: "feishu" | "slack";
+      intent?: SlackConfigurationIntent;
       identity: {
         appId: string;
         teamId: string | null;
@@ -976,9 +1057,9 @@ export class ImBindingService {
       credential: z.infer<typeof FeishuCredentialSchema> | z.infer<typeof SlackCredentialSchema>;
     },
     existingTransaction?: DatabaseTransaction,
-  ): Promise<string> {
+  ): Promise<ActivatedBinding> {
     const encryptedCredential = this.#cipher.encrypt(JSON.stringify(input.credential));
-    const activate = async (transaction: DatabaseTransaction): Promise<string> => {
+    const activate = async (transaction: DatabaseTransaction): Promise<ActivatedBinding> => {
       const [agent] = await transaction
         .select({ id: agents.id })
         .from(agents)
@@ -1081,6 +1162,56 @@ export class ImBindingService {
           : sameProviderApp &&
             current?.externalTeamId === activationInput.identity.teamId &&
             current.externalBotId === activationInput.identity.botId;
+      if (input.provider === "slack") {
+        const proposedSlackCredential = SlackCredentialSchema.parse(input.credential);
+        const configuredCurrent = current?.status === "provisioning" ? undefined : current;
+        const currentSlackCredential = configuredCurrent
+          ? this.#decodeSlackCredential(configuredCurrent.encryptedCredential)
+          : undefined;
+        if (!input.intent) throw new Error("Slack activation intent is missing");
+        if (input.intent === "create" && configuredCurrent) {
+          throw new ImBindingServiceError(
+            "SLACK_CONFIGURATION_CONFLICT",
+            409,
+            "Create cannot replace an existing Slack binding",
+          );
+        }
+        if (input.intent !== "create" && !configuredCurrent) {
+          throw new ImBindingServiceError(
+            "SLACK_CONFIGURATION_CONFLICT",
+            409,
+            `Slack ${input.intent} requires a current configured binding`,
+          );
+        }
+        if (
+          input.intent === "reauthorize" &&
+          (!sameIdentity ||
+            (currentSlackCredential?.botId !== undefined &&
+              currentSlackCredential.botId !== proposedSlackCredential.botId))
+        ) {
+          throw new ImBindingServiceError(
+            "SLACK_BINDING_IDENTITY_MISMATCH",
+            409,
+            "Reauthorization must preserve the current Slack App, Team, and Bot identity",
+          );
+        }
+        if (input.intent === "replace" && sameProviderApp) {
+          throw new ImBindingServiceError(
+            "SLACK_CONFIGURATION_CONFLICT",
+            409,
+            "Change App requires a different Slack App ID",
+          );
+        }
+      }
+      const activated = (id: string, credentialGeneration: number): ActivatedBinding => ({
+        id,
+        agentId: activationInput.agentId,
+        provider: activationInput.provider,
+        appId: activationInput.identity.appId,
+        teamId: activationInput.identity.teamId,
+        botId: activationInput.identity.botId,
+        credentialGeneration,
+      });
       if (current && current.status !== "provisioning" && !sameIdentity) {
         await disableImBindingInTransaction(transaction, current.id, now);
         const [created] = await transaction
@@ -1092,13 +1223,14 @@ export class ImBindingService {
           .update(imBindings)
           .set({ replacementImBindingId: created.id })
           .where(eq(imBindings.id, current.id));
-        return created.id;
+        return activated(created.id, 1);
       }
       if (current) {
-        await transaction
+        const nextGeneration = current.credentialGeneration + 1;
+        const [updated] = await transaction
           .update(imBindings)
           .set({
-            ...this.#activeValues(activationInput, encryptedCredential, current.credentialGeneration + 1, now),
+            ...this.#activeValues(activationInput, encryptedCredential, nextGeneration, now),
             ...(input.provider === "feishu"
               ? {
                   setupAttemptId: current.setupAttemptId,
@@ -1119,15 +1251,17 @@ export class ImBindingService {
                   setupExpiresAt: null,
                 }),
           })
-          .where(eq(imBindings.id, current.id));
-        return current.id;
+          .where(eq(imBindings.id, current.id))
+          .returning({ id: imBindings.id });
+        if (!updated) throw new Error("IM binding activation update did not return an id");
+        return activated(updated.id, nextGeneration);
       }
       const [created] = await transaction
         .insert(imBindings)
         .values(this.#activeValues(activationInput, encryptedCredential, 1, now))
         .returning({ id: imBindings.id });
       if (!created) throw new Error("IM binding insert did not return an id");
-      return created.id;
+      return activated(created.id, 1);
     };
     return existingTransaction ? activate(existingTransaction) : this.#database.transaction(activate);
   }
@@ -1163,6 +1297,7 @@ export class ImBindingService {
       encryptedCredential,
       grantedCapabilities: input.credential.grantedScopes,
       activatedAt: now,
+      ...(input.provider === "slack" ? { observedAt: null, observedConnectedAt: null } : {}),
       disabledAt: null,
       lastErrorCode: null,
       updatedAt: now,
@@ -1191,9 +1326,9 @@ export class ImBindingService {
     return row?.imBinding;
   }
 
-  async #disable(imBindingId: string): Promise<void> {
-    await this.#database.transaction(async (transaction) => {
-      await disableImBindingInTransaction(transaction, imBindingId, this.#now());
+  async #disable(imBindingId: string, expectedGeneration?: number): Promise<boolean> {
+    return this.#database.transaction(async (transaction) => {
+      return disableImBindingInTransaction(transaction, imBindingId, this.#now(), expectedGeneration);
     });
   }
 

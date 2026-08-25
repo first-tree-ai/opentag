@@ -252,6 +252,7 @@ describe("OpenTagApi Agent methods", () => {
           missingCapabilities: [],
           reauthorizationRequired: false,
           slackAppId: null,
+          slackIdentityClosure: null,
           connection: null,
           lastInboundAt: null,
           lastValidatedAt: null,
@@ -332,6 +333,7 @@ describe("OpenTagApi Agent methods", () => {
       lastErrorCode: null,
     };
     const input = {
+      intent: "create" as const,
       expectedBinding: null,
       appId: "A1",
       botAccessToken: "xoxb-secret",
@@ -340,11 +342,26 @@ describe("OpenTagApi Agent methods", () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockResolvedValueOnce(jsonResponse(configuration))
-      .mockResolvedValueOnce(jsonResponse(detail));
+      .mockResolvedValueOnce(
+        jsonResponse({
+          imBindingId: detail.id,
+          agentId,
+          appId: "A1",
+          teamId: "T1",
+          botUserId: "U1",
+          credentialGeneration: 1,
+          bindingState: "active",
+          identityClosure: { status: "pending", verifiedAt: null },
+        }),
+      );
     const api = new OpenTagApi("https://opentag.example", fetchImpl);
 
     await expect(api.getSlackAppConfiguration("access", agentId)).resolves.toEqual(configuration);
-    await expect(api.configureSlackApp("access", agentId, input)).resolves.toEqual(detail);
+    await expect(api.configureSlackApp("access", agentId, input)).resolves.toMatchObject({
+      imBindingId: detail.id,
+      credentialGeneration: 1,
+      identityClosure: { status: "pending", verifiedAt: null },
+    });
     expect(fetchImpl.mock.calls.map(([url, init]) => [new URL(url).pathname, init?.method ?? "GET"])).toEqual([
       [`/api/v1/agents/${agentId}/im-binding/slack/configuration`, "GET"],
       [`/api/v1/agents/${agentId}/im-binding/slack/configuration`, "PUT"],

@@ -83,6 +83,7 @@ export function formatImBindingDiagnostics(value: ImBindingDiagnostics): string 
     `missingCapabilities\t${value.missingCapabilities.join(",") || "-"}`,
     `reauthorizationRequired\t${value.reauthorizationRequired}`,
     `slackAppIdEvidence\t${value.slackAppId ? `${value.slackAppId.value} (${value.slackAppId.evidence}; ingress match required)` : "-"}`,
+    `slackIdentityClosure\t${value.slackIdentityClosure ? `${value.slackIdentityClosure.status}${value.slackIdentityClosure.verifiedAt ? ` (${value.slackIdentityClosure.verifiedAt})` : ""}` : "-"}`,
     `agentRuntimeReadiness\t${value.agentRuntimeReadiness}`,
     `providerCliReadiness\t${value.providerCliReadiness}`,
     `connection\t${value.connection ? `${value.connection.state} (observed ${value.connection.observedAt})` : "not applicable"}`,

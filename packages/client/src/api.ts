@@ -55,6 +55,8 @@ import {
   runtimeImResourcePath,
   type SlackAppConfiguration,
   SlackAppConfigurationSchema,
+  type SlackConfigurationResult,
+  SlackConfigurationResultSchema,
   type TeamInvitation,
   TeamInvitationSchema,
   type TeamMemberAdminConfig,
@@ -333,8 +335,8 @@ export class OpenTagApi {
     accessToken: string,
     agentId: string,
     input: ConfigureSlackAppRequest,
-  ): Promise<ImBindingAdminDetail> {
-    return this.#request(agentSlackConfigurationPath(agentId), ImBindingAdminDetailSchema, {
+  ): Promise<SlackConfigurationResult> {
+    return this.#request(agentSlackConfigurationPath(agentId), SlackConfigurationResultSchema, {
       method: "PUT",
       body: JSON.stringify(input),
       headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },

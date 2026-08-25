@@ -28,6 +28,7 @@ SET
   "setup_owner_heartbeat_at" = NULL,
   "encrypted_setup_context" = NULL,
   "setup_expires_at" = NULL,
+  "observed_connected_at" = NULL,
   "updated_at" = NOW()
 WHERE "provider" = 'slack';
 --> statement-breakpoint

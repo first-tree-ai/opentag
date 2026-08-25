@@ -59,6 +59,8 @@ import {
   PROVIDER_READINESS_V1_HEADER,
   type SlackAppConfiguration,
   SlackAppConfigurationSchema,
+  type SlackConfigurationResult,
+  SlackConfigurationResultSchema,
   type TeamInvitation,
   TeamInvitationSchema,
   type TeamMemberAdminConfig,
@@ -240,8 +242,8 @@ export class BrowserApi {
     return this.request(agentSlackConfigurationPath(agentId), SlackAppConfigurationSchema);
   }
 
-  configureSlackApp(agentId: string, input: ConfigureSlackAppRequest): Promise<ImBindingAdminDetail> {
-    return this.request(agentSlackConfigurationPath(agentId), ImBindingAdminDetailSchema, {
+  configureSlackApp(agentId: string, input: ConfigureSlackAppRequest): Promise<SlackConfigurationResult> {
+    return this.request(agentSlackConfigurationPath(agentId), SlackConfigurationResultSchema, {
       method: "PUT",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },

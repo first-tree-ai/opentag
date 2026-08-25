@@ -1274,7 +1274,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("heading", { name: "Current work" })).toBeTruthy();
     expect(screen.getByText("No active work")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Where to use this Agent" })).toBeTruthy();
-    expect(screen.getByText("Send a direct message, or mention @reviewer in a Feishu conversation.")).toBeTruthy();
+    expect(screen.getByText("Send @reviewer a direct message, or mention it in a Feishu group chat.")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe(`/agents/${agentId}/settings`);
     expect(screen.getByRole("link", { name: "Usage" }).getAttribute("href")).toBe(`/agents/${agentId}/usage`);
     expect(screen.queryByLabelText("More Agent actions")).toBeNull();
@@ -1642,7 +1642,7 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Contact channel" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "No messaging channel" })).toBeTruthy();
-    expect(screen.getByText(/cannot contact this Agent/)).toBeTruthy();
+    expect(screen.getByText(/cannot contact this agent/)).toBeTruthy();
   });
 
   it("separates a connected contact channel from its trigger rules", async () => {
@@ -1651,13 +1651,16 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Contact channel" })).toBeTruthy();
-    expect(screen.getByText(/Feishu · Available/)).toBeTruthy();
+    expect(screen.getByText(/Feishu · Connected/)).toBeTruthy();
+    expect(screen.getByText(/Last checked/)).toBeTruthy();
     expect(screen.getByText("@reviewer")).toBeTruthy();
-    expect(screen.getByText("Send a direct message, or mention @reviewer in a Feishu conversation.")).toBeTruthy();
+    expect(screen.getByText("Send @reviewer a direct message, or mention it in a Feishu group chat.")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Trigger rules" })).toBeTruthy();
-    expect(screen.getByText("A direct message can always start work.")).toBeTruthy();
-    expect(screen.getByRole("group", { name: "Conversation trigger rule" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Replace Feishu Bot" })).toBeTruthy();
+    expect(screen.getByText("Every direct message starts a task.")).toBeTruthy();
+    expect(screen.getByText("Group chats")).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Shared conversation trigger rule" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Change Feishu Bot" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Disconnect Feishu" })).toBeTruthy();
   });
 
   it("keeps the contact summary readable and Settings unavailable to regular members", async () => {
@@ -1666,7 +1669,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Where to use this Agent" })).toBeTruthy();
-    expect(screen.getByText("Send a direct message, or mention @reviewer in a Feishu conversation.")).toBeTruthy();
+    expect(screen.getByText("Send @reviewer a direct message, or mention it in a Feishu group chat.")).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Manage" })).toBeNull();
   });
@@ -1740,9 +1743,9 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin", { bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "All messages" }));
-    const dialog = await screen.findByRole("dialog", { name: "Allow all conversation messages?" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Allow all messages" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
+    const dialog = await screen.findByRole("dialog", { name: "Allow messages without mentions?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Allow every message" }));
     await waitFor(() =>
       expect(
         vi
@@ -1778,13 +1781,13 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "All messages" }));
-    const dialog = await screen.findByRole("dialog", { name: "Allow all conversation messages?" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Allow all messages" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
+    const dialog = await screen.findByRole("dialog", { name: "Allow messages without mentions?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Allow every message" }));
     expect((await within(dialog).findByRole("alert")).textContent).toContain("Unable to update message access");
 
-    fireEvent.click(within(dialog).getByRole("button", { name: "Allow all messages" }));
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Allow all conversation messages?" })).toBeNull());
+    fireEvent.click(within(dialog).getByRole("button", { name: "Allow every message" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Allow messages without mentions?" })).toBeNull());
     expect(screen.queryByText("Unable to update message access")).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Trigger rules" })));
   });
@@ -1816,7 +1819,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Disable IM binding" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Disconnect Feishu" }));
     const dialog = await screen.findByRole("dialog", { name: "Disconnect messaging?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
     expect((await within(dialog).findByRole("alert")).textContent).toContain("Unable to disconnect messaging");
@@ -1833,7 +1836,7 @@ describe("OpenTag Web App Shell", () => {
     const view = render(<App />);
 
     expect(await screen.findByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Replace Slack App" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change Slack App" })).toBeNull();
     expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
     expect(
       vi
@@ -1905,7 +1908,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText(/Signing Secret not yet verified/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Edit credentials" })).toBeTruthy();
     expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Replace Slack App" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change Slack App" })).toBeNull();
   });
 
   it("shows the Tasks demo and opens a Task detail", async () => {
@@ -2384,7 +2387,7 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByText(/Permissions update required/)).toBeTruthy();
     expect(screen.queryByText(/Online/)).toBeNull();
     expect(screen.getByRole("button", { name: "Reauthorize Feishu" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Replace Feishu Bot" }));
+    fireEvent.click(screen.getByRole("button", { name: "Change Feishu Bot" }));
     expect(await screen.findByText(/Choose an existing Feishu Bot or create a new one/)).toBeTruthy();
     const request = vi
       .mocked(fetch)
@@ -2407,7 +2410,7 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin", { bound: true, setupFailureCode: "FEISHU_APP_ALREADY_BOUND" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Replace Feishu Bot" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Change Feishu Bot" }));
     const setupNotice = (await screen.findByText("Feishu setup started")).parentElement;
     expect(setupNotice?.textContent).toContain(
       "This Feishu Bot is already connected to another Agent. Choose a different Bot or disable its current binding first.",
@@ -2434,9 +2437,9 @@ describe("OpenTag Web App Shell", () => {
     installApi("admin", { bound: true, provider, scopeReauth: true });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "All messages" }));
-    const dialog = await screen.findByRole("dialog", { name: "Allow all conversation messages?" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Allow all messages" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
+    const dialog = await screen.findByRole("dialog", { name: "Allow messages without mentions?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Allow every message" }));
     expect(await screen.findByText("Additional IM scopes are required")).toBeTruthy();
     expect(await screen.findByText(recovery)).toBeTruthy();
     if (provider === "slack") expect(screen.queryByRole("button", { name: "Reauthorize Feishu" })).toBeNull();

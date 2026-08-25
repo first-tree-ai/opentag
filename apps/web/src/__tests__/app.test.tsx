@@ -1625,6 +1625,24 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
   });
 
+  it("observes a Computer coming back online from the recovery page itself", async () => {
+    let computerStatus: "online" | "offline" = "offline";
+    installApi("admin", { bound: true, computerStatus: () => computerStatus });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
+    render(<App />);
+
+    expect(await screen.findByText("Offline")).toBeTruthy();
+    expect(
+      screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring this Computer back online."),
+    ).toBeTruthy();
+
+    computerStatus = "online";
+    fireEvent(window, new Event("focus"));
+
+    expect(await screen.findByText("Online")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText(/Start it there/)).toBeNull());
+  });
+
   it("explains an unready Provider on the Computer page instead of the model settings", async () => {
     installApi("admin", {
       bound: true,

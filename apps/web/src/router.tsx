@@ -1802,6 +1802,10 @@ function AgentSettingsPage() {
     initialValue: initialAgent,
     keepPreviousData: true,
     onBackgroundError: markAgentDetailUnconfirmed,
+    // Failure exits land here, so the page has to observe recovery on its own; it is where an
+    // operator waits while a Computer reconnects or a Provider finishes installing.
+    revalidateMs: 30_000,
+    refreshOnFocus: true,
   });
   const selected = section as AgentSettingsSection | undefined;
   if (selected && !agentSettingsSections.some((item) => item.key === selected)) return <NotFoundPage />;

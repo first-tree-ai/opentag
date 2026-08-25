@@ -114,16 +114,23 @@ describe("Agent CLI core", () => {
       ready: false,
       agentRuntimeReadiness: "ready",
       providerCliReadiness: "install",
-      credentialGeneration: 1,
+      credentialGeneration: 0,
+      credentialStatus: "invalid",
+      requiredCapabilities: ["im:message"],
+      grantedCapabilities: [],
+      missingCapabilities: ["im:message"],
       reauthorizationRequired: false,
-      pendingReceiveMode: "all_message",
+      slackAppId: null,
       connection: null,
       lastInboundAt: null,
+      lastValidatedAt: null,
+      lastRuntimeObservationAt: null,
       lastErrorCode: null,
     };
     expect(formatImBindingDiagnostics(diagnostics)).toContain("providerCliReadiness\tinstall");
-    expect(formatImBindingDiagnostics(diagnostics)).toContain("pendingReceiveMode\tall_message");
     expect(formatImBindingDiagnostics(diagnostics)).toContain("agentRuntimeReadiness\tready");
+    expect(formatImBindingDiagnostics(diagnostics)).toContain("credentialGeneration\t0");
+    expect(formatImBindingDiagnostics(diagnostics)).toContain("credentialStatus\tinvalid");
   });
 
   it("resolves one Team automatically and requires an explicit choice for multiple Teams", () => {

@@ -3,18 +3,19 @@ import {
   agentImBindingConfigPath,
   agentImBindingHandoffPath,
   agentImBindingPath,
-  agentSlackSetupAttemptsPath,
+  agentSlackConfigurationPath,
   feishuSetupAttemptPath,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
-  slackSetupAttemptPath,
+  SLACK_REQUIRED_BOT_SCOPES,
+  SLACK_SUBSCRIBED_BOT_EVENTS,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { FeishuOperationError, type FeishuSetupService } from "../services/im-bindings/feishu/index.js";
 import type { ImBindingService } from "../services/im-bindings/index.js";
-import { type SlackSetupService, SlackSetupServiceError } from "../services/im-bindings/slack/index.js";
+import { type SlackConfigurationService, SlackConfigurationServiceError } from "../services/im-bindings/slack/index.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
@@ -23,7 +24,7 @@ const imBindingId = "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0";
 const attemptId = "f645f26d-9184-4f2f-98a1-4ee83ae6a603";
 const authorization = { authorization: "Bearer access" };
 
-const attempt = {
+const feishuAttempt = {
   id: attemptId,
   agentId,
   intent: "create" as const,
@@ -35,24 +36,38 @@ const attempt = {
   createdAt: "2026-08-19T00:00:00.000Z",
 };
 
-const slackAttempt = {
-  id: "f645f26d-9184-4f2f-98a1-4ee83ae6a604",
+const slackConfiguration = {
   agentId,
-  intent: "create" as const,
-  state: "awaiting_credentials" as const,
   manifest: { display_information: { name: "Assistant - OpenTag" } },
   manifestUrl: "https://api.slack.com/apps?new_app=1&manifest_json=example",
   eventsUrl: `https://opentag.example.com/api/v1/agents/${agentId}/im-binding/slack/events`,
-  requiredBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
-  currentAppId: null,
-  identity: null,
-  challengeVerified: false,
-  lastVerificationErrorCode: null,
-  lastVerificationAt: null,
-  expiresAt: "2026-08-19T01:00:00.000Z",
-  errorCode: null,
-  completedAt: null,
-  createdAt: "2026-08-19T00:00:00.000Z",
+  requiredBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+  subscribedBotEvents: [...SLACK_SUBSCRIBED_BOT_EVENTS],
+  currentBinding: null,
+};
+
+const slackDetail = {
+  id: imBindingId,
+  agentId,
+  provider: "slack" as const,
+  bindingState: "active" as const,
+  bot: { displayName: null, avatarUrl: null },
+  receiveMode: "mention_only" as const,
+  lastInboundAt: null,
+  lastValidatedAt: "2026-08-19T00:00:00.000Z",
+  lastRuntimeObservationAt: null,
+  identity: {
+    provider: "slack" as const,
+    appId: "A1",
+    teamId: "T1",
+    enterpriseId: null,
+    botUserId: "U1",
+    appIdEvidence: "configured" as const,
+  },
+  credentialGeneration: 1,
+  grantedCapabilities: [...SLACK_REQUIRED_BOT_SCOPES],
+  reauthorizationRequired: false,
+  lastErrorCode: null,
 };
 
 const apps: ReturnType<typeof createApp>[] = [];
@@ -79,7 +94,7 @@ function services() {
   const imBindings = {
     getForAgent: vi.fn().mockResolvedValue(undefined),
     getHandoffForAgent: vi.fn().mockResolvedValue({ bindingState: "active", handoffReady: false }),
-    getConfigForAgent: vi.fn().mockResolvedValue(undefined),
+    getConfigForAgent: vi.fn().mockResolvedValue(slackDetail),
     disable: vi.fn().mockResolvedValue(undefined),
     diagnostics: vi.fn().mockResolvedValue({
       imBindingId,
@@ -88,41 +103,43 @@ function services() {
       agentRuntimeReadiness: "ready",
       providerCliReadiness: "install",
       credentialGeneration: 1,
+      credentialStatus: "valid",
+      requiredCapabilities: [],
+      grantedCapabilities: [],
+      missingCapabilities: [],
       reauthorizationRequired: false,
-      pendingReceiveMode: null,
+      slackAppId: null,
       connection: null,
       lastInboundAt: null,
+      lastValidatedAt: null,
+      lastRuntimeObservationAt: null,
       lastErrorCode: null,
     }),
   };
   const feishu = {
-    createOrReuse: vi.fn().mockResolvedValue(attempt),
-    get: vi.fn().mockResolvedValue(attempt),
-    cancel: vi.fn().mockResolvedValue({ ...attempt, state: "canceled", errorCode: "FEISHU_SETUP_CANCELED" }),
+    createOrReuse: vi.fn().mockResolvedValue(feishuAttempt),
+    get: vi.fn().mockResolvedValue(feishuAttempt),
+    cancel: vi.fn().mockResolvedValue({ ...feishuAttempt, state: "canceled", errorCode: "FEISHU_SETUP_CANCELED" }),
   };
   const slack = {
-    createOrReuse: vi.fn().mockResolvedValue(slackAttempt),
-    get: vi.fn().mockResolvedValue(slackAttempt),
-    submitCredentials: vi.fn().mockResolvedValue({
-      ...slackAttempt,
-      state: "awaiting_verification",
-      identity: { appId: "A1", teamId: "T1", enterpriseId: null, botUserId: "U1" },
-    }),
-    cancel: vi.fn().mockResolvedValue({ ...slackAttempt, state: "canceled", errorCode: "SLACK_SETUP_CANCELED" }),
+    get: vi.fn().mockResolvedValue(slackConfiguration),
+    configure: vi.fn().mockResolvedValue(imBindingId),
   };
   return { imBindings, feishu, slack };
 }
 
 describe("ImBinding HTTP API", () => {
-  it("serves the Feishu setup lifecycle and generic diagnostics without exposing credentials", async () => {
+  it("serves Feishu setup, generic diagnostics, and one stateless Slack configuration endpoint", async () => {
     const service = services();
+    service.imBindings.getConfigForAgent.mockResolvedValueOnce(undefined);
     const app = createApp({
       authService: authService(),
       imBindingService: service.imBindings as unknown as ImBindingService,
       feishuSetupService: service.feishu as unknown as FeishuSetupService,
-      slackSetupService: service.slack as unknown as SlackSetupService,
+      slackConfigurationService: service.slack as unknown as SlackConfigurationService,
     });
     apps.push(app);
+
     expect(
       (await app.inject({ method: "GET", url: agentImBindingPath(agentId), headers: authorization })).statusCode,
     ).toBe(204);
@@ -134,56 +151,52 @@ describe("ImBinding HTTP API", () => {
       url: agentImBindingHandoffPath(agentId),
       headers: authorization,
     });
-    expect(handoff.statusCode).toBe(200);
     expect(handoff.json()).toEqual({ bindingState: "active", handoffReady: false });
-    expect(service.imBindings.getHandoffForAgent).toHaveBeenCalledWith(userId, agentId);
-    const create = await app.inject({
+
+    const createFeishu = await app.inject({
       method: "POST",
       url: agentFeishuSetupAttemptsPath(agentId),
       headers: authorization,
       payload: { intent: "create" },
     });
-    expect(create.statusCode).toBe(201);
-    expect(create.json()).toEqual(attempt);
-    expect(service.feishu.createOrReuse).toHaveBeenCalledWith(userId, agentId, "create");
+    expect(createFeishu.statusCode).toBe(201);
+    expect(createFeishu.json()).toEqual(feishuAttempt);
     expect(
       (await app.inject({ method: "GET", url: feishuSetupAttemptPath(attemptId), headers: authorization })).json(),
-    ).toEqual(attempt);
+    ).toEqual(feishuAttempt);
     expect(
       (await app.inject({ method: "GET", url: imBindingDiagnosticsPath(imBindingId), headers: authorization })).json(),
-    ).toMatchObject({ provider: "feishu", ready: false, connection: null });
+    ).toMatchObject({ provider: "feishu", ready: false, slackAppId: null });
+
+    const guide = await app.inject({
+      method: "GET",
+      url: agentSlackConfigurationPath(agentId),
+      headers: authorization,
+    });
+    expect(guide.statusCode).toBe(200);
+    expect(guide.json()).toEqual(slackConfiguration);
+
+    const input = {
+      expectedBinding: null,
+      appId: "A1",
+      botAccessToken: "xoxb-secret-token",
+      signingSecret: "signing-secret",
+    };
+    const configured = await app.inject({
+      method: "PUT",
+      url: agentSlackConfigurationPath(agentId),
+      headers: authorization,
+      payload: input,
+    });
+    expect(configured.statusCode).toBe(200);
+    expect(configured.json()).toEqual(slackDetail);
+    expect(service.slack.configure).toHaveBeenCalledWith(userId, agentId, input);
+    expect(JSON.stringify(configured.json())).not.toMatch(/xoxb|signing-secret/);
+
     expect(
       (await app.inject({ method: "POST", url: imBindingDisablePath(imBindingId), headers: authorization })).statusCode,
     ).toBe(204);
     expect(service.imBindings.disable).toHaveBeenCalledWith(userId, imBindingId);
-    expect(JSON.stringify(handoff.json())).not.toMatch(/credential|identity|error|connection|secret/i);
-    expect(JSON.stringify(create.json())).not.toContain("secret");
-
-    const createSlack = await app.inject({
-      method: "POST",
-      url: agentSlackSetupAttemptsPath(agentId),
-      headers: authorization,
-      payload: { intent: "create" },
-    });
-    expect(createSlack.statusCode).toBe(201);
-    expect(createSlack.json()).toEqual(slackAttempt);
-    expect(service.slack.createOrReuse).toHaveBeenCalledWith(userId, agentId, "create");
-    const credentials = await app.inject({
-      method: "POST",
-      url: `${slackSetupAttemptPath(slackAttempt.id)}/credentials`,
-      headers: authorization,
-      payload: { botAccessToken: "xoxb-secret-token", signingSecret: "signing-secret" },
-    });
-    expect(credentials.statusCode).toBe(200);
-    expect(credentials.json()).toMatchObject({
-      state: "awaiting_verification",
-      identity: { appId: "A1", teamId: "T1", botUserId: "U1" },
-    });
-    expect(service.slack.submitCredentials).toHaveBeenCalledWith(userId, slackAttempt.id, {
-      botAccessToken: "xoxb-secret-token",
-      signingSecret: "signing-secret",
-    });
-    expect(JSON.stringify(credentials.json())).not.toMatch(/xoxb|signing-secret/);
   });
 
   it.each([
@@ -205,33 +218,36 @@ describe("ImBinding HTTP API", () => {
       headers: authorization,
       payload: { intent: "create" },
     });
-
     expect(response.statusCode).toBe(statusCode);
     expect(response.json().error).toMatchObject({ code, category });
     expect(JSON.stringify(response.json())).not.toContain("stack");
   });
 
-  it("returns Slack setup failures through the public typed error contract", async () => {
+  it("returns Slack configuration failures through the public typed error contract", async () => {
     const service = services();
-    service.slack.submitCredentials = vi
+    service.slack.configure = vi
       .fn()
       .mockRejectedValue(
-        new SlackSetupServiceError("SLACK_AUTH_INVALID", 400, "Slack rejected the token", "credential"),
+        new SlackConfigurationServiceError("SLACK_AUTH_INVALID", 400, "Slack rejected the token", "credential"),
       );
     const app = createApp({
       authService: authService(),
       imBindingService: service.imBindings as unknown as ImBindingService,
-      slackSetupService: service.slack as unknown as SlackSetupService,
+      slackConfigurationService: service.slack as unknown as SlackConfigurationService,
     });
     apps.push(app);
 
     const response = await app.inject({
-      method: "POST",
-      url: `${slackSetupAttemptPath(slackAttempt.id)}/credentials`,
+      method: "PUT",
+      url: agentSlackConfigurationPath(agentId),
       headers: authorization,
-      payload: { botAccessToken: "xoxb-invalid", signingSecret: "signing-secret" },
+      payload: {
+        expectedBinding: null,
+        appId: "A1",
+        botAccessToken: "xoxb-invalid",
+        signingSecret: "signing-secret",
+      },
     });
-
     expect(response.statusCode).toBe(400);
     expect(response.json().error).toMatchObject({ code: "SLACK_AUTH_INVALID", category: "credential" });
     expect(JSON.stringify(response.json())).not.toMatch(/xoxb-invalid|signing-secret|stack/);

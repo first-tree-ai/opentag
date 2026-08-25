@@ -24,6 +24,7 @@ export function verifySlackSignature(input: {
   return actualBuffer.byteLength === expectedBuffer.byteLength && timingSafeEqual(actualBuffer, expectedBuffer);
 }
 
+/** Reads only bounded App/Team identifiers so the global Events URL can look up a Signing Secret. */
 export function preparseSlackRoute(rawBody: Buffer): { appId: string; teamId: string } | undefined {
   if (rawBody.byteLength > MAX_SLACK_BODY_BYTES) return undefined;
   try {

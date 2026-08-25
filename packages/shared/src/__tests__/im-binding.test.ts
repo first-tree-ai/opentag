@@ -4,10 +4,14 @@ import {
   FEISHU_REQUIRED_TENANT_SCOPES,
   FeishuSetupAttemptSchema,
   hasRequiredFeishuTenantScopes,
+  hasRequiredSlackBotScopes,
+  ImBindingDiagnosticsSchema,
   ImBindingHandoffStatusSchema,
   ImBindingSummarySchema,
+  SLACK_REQUIRED_BOT_SCOPES,
+  SLACK_SUBSCRIBED_BOT_EVENTS,
+  SlackAppConfigurationSchema,
   SlackBindingActivationSchema,
-  SlackSetupIdentitySchema,
 } from "../im-binding.js";
 import { ImContentV1Schema, NormalizedInboundImEventSchema } from "../im-message.js";
 
@@ -27,6 +31,29 @@ describe("IM binding contracts", () => {
     expect(FEISHU_REQUIRED_TENANT_SCOPES).toContain("task:attachment:write");
     expect(hasRequiredFeishuTenantScopes(FEISHU_REQUIRED_TENANT_SCOPES)).toBe(true);
     expect(hasRequiredFeishuTenantScopes(FEISHU_REQUIRED_TENANT_SCOPES.slice(1))).toBe(false);
+  });
+
+  it("defines one fixed, duplicate-free Slack capability contract", () => {
+    expect(SLACK_REQUIRED_BOT_SCOPES).toEqual([
+      "app_mentions:read",
+      "channels:history",
+      "chat:write",
+      "files:read",
+      "groups:history",
+      "im:history",
+      "mpim:history",
+    ]);
+    expect(SLACK_SUBSCRIBED_BOT_EVENTS).toEqual([
+      "app_mention",
+      "app_uninstalled",
+      "message.channels",
+      "message.groups",
+      "message.im",
+      "message.mpim",
+      "tokens_revoked",
+    ]);
+    expect(hasRequiredSlackBotScopes(SLACK_REQUIRED_BOT_SCOPES)).toBe(true);
+    expect(hasRequiredSlackBotScopes(SLACK_REQUIRED_BOT_SCOPES.slice(1))).toBe(false);
   });
 
   it("accepts only bounded canonical content", () => {
@@ -105,19 +132,27 @@ describe("IM binding contracts", () => {
       bindingState: "active",
       bot: { displayName: "Reviewer", avatarUrl: null },
       receiveMode: "mention_only",
-      pendingReceiveMode: null,
       lastInboundAt: null,
-      lastConfirmedAt: "2026-08-19T00:00:00.000Z",
+      lastValidatedAt: "2026-08-19T00:00:00.000Z",
+      lastRuntimeObservationAt: null,
     };
     expect(ImBindingSummarySchema.parse(base)).toEqual(base);
     expect(() => ImBindingSummarySchema.parse({ ...base, credentialGeneration: 1 })).toThrow();
+    expect(() => ImBindingSummarySchema.parse({ ...base, lastConfirmedAt: base.lastValidatedAt })).toThrow();
   });
 
-  it("projects a validated Slack installation without requiring an App ID", () => {
-    const identity = { appId: null, teamId: "T1", enterpriseId: null, botUserId: "U1" };
-    expect(SlackSetupIdentitySchema.parse(identity)).toEqual(identity);
-    expect(SlackSetupIdentitySchema.parse({ ...identity, appId: "A1" })).toEqual({ ...identity, appId: "A1" });
-    expect(() => SlackSetupIdentitySchema.parse({ ...identity, teamId: null })).toThrow();
+  it("keeps Slack configuration stateless and secrets out of the response", () => {
+    const configuration = {
+      agentId: crypto.randomUUID(),
+      manifest: { display_information: { name: "Reviewer" } },
+      manifestUrl: "https://api.slack.com/apps?new_app=1",
+      eventsUrl: "https://opentag.example/api/v1/agents/agent/im-binding/slack/events",
+      requiredBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
+      subscribedBotEvents: [...SLACK_SUBSCRIBED_BOT_EVENTS],
+      currentBinding: null,
+    };
+    expect(SlackAppConfigurationSchema.parse(configuration)).toEqual(configuration);
+    expect(() => SlackAppConfigurationSchema.parse({ ...configuration, signingSecret: "secret" })).toThrow();
   });
 
   it("defines a strict handoff projection without changing the strict summary contract", () => {
@@ -146,9 +181,34 @@ describe("IM binding contracts", () => {
         receiveMode: "mention_only",
         lastInboundAt: null,
         lastOutboundAt: null,
-        lastConfirmedAt: null,
+        lastValidatedAt: null,
+        lastRuntimeObservationAt: null,
         handoffReady: true,
       }),
     ).toThrow();
+  });
+
+  it("reports exact credential generation zero and capability gaps in diagnostics", () => {
+    const diagnostics = {
+      imBindingId: crypto.randomUUID(),
+      provider: "slack" as const,
+      ready: false,
+      agentRuntimeReadiness: "ready" as const,
+      providerCliReadiness: "ready" as const,
+      credentialGeneration: 0,
+      credentialStatus: "invalid" as const,
+      requiredCapabilities: [...SLACK_REQUIRED_BOT_SCOPES],
+      grantedCapabilities: [],
+      missingCapabilities: [...SLACK_REQUIRED_BOT_SCOPES],
+      reauthorizationRequired: false,
+      slackAppId: null,
+      connection: null,
+      lastInboundAt: null,
+      lastValidatedAt: null,
+      lastRuntimeObservationAt: null,
+      lastErrorCode: null,
+    };
+    expect(ImBindingDiagnosticsSchema.parse(diagnostics)).toEqual(diagnostics);
+    expect(() => ImBindingDiagnosticsSchema.parse({ ...diagnostics, credentialGeneration: -1 })).toThrow();
   });
 });

@@ -10,7 +10,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { agentReceiveMode, agents } from "./agents.js";
+import { agents } from "./agents.js";
 
 export const imProvider = pgEnum("im_provider", ["feishu", "slack"]);
 export const imBindingStatus = pgEnum("im_binding_status", [
@@ -62,7 +62,6 @@ export const imBindings = pgTable(
     setupOwnerHeartbeatAt: timestamp("setup_owner_heartbeat_at", { withTimezone: true }),
     encryptedSetupContext: text("encrypted_setup_context"),
     setupExpiresAt: timestamp("setup_expires_at", { withTimezone: true }),
-    pendingReceiveMode: agentReceiveMode("pending_receive_mode"),
     replacementImBindingId: uuid("replacement_im_binding_id").references((): AnyPgColumn => imBindings.id, {
       onDelete: "set null",
     }),
@@ -121,6 +120,15 @@ export const imBindings = pgTable(
       sql`(${table.connectionOwnerInstanceId} is null and ${table.connectionLeaseExpiresAt} is null)
         or (${table.provider} = 'feishu' and ${table.connectionOwnerInstanceId} is not null and
         ${table.connectionLeaseExpiresAt} is not null)`,
+    ),
+    check(
+      "im_bindings_slack_setup_fields_null",
+      sql`${table.provider} <> 'slack' or (
+        ${table.setupAttemptId} is null and ${table.setupIntent} is null and
+        ${table.setupState} is null and ${table.setupOwnerInstanceId} is null and
+        ${table.setupOwnerHeartbeatAt} is null and ${table.encryptedSetupContext} is null and
+        ${table.setupExpiresAt} is null
+      )`,
     ),
   ],
 );

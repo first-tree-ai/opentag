@@ -3,9 +3,9 @@ import {
   AGENT_IM_BINDING_CONFIG_TEMPLATE,
   AGENT_IM_BINDING_HANDOFF_TEMPLATE,
   AGENT_IM_BINDING_TEMPLATE,
-  AGENT_SLACK_SETUP_ATTEMPTS_TEMPLATE,
+  AGENT_SLACK_CONFIGURATION_TEMPLATE,
+  ConfigureSlackAppRequestSchema,
   CreateFeishuSetupAttemptRequestSchema,
-  CreateSlackSetupAttemptRequestSchema,
   FEISHU_SETUP_ATTEMPT_TEMPLATE,
   FeishuSetupAttemptSchema,
   IM_BINDING_BY_ID_TEMPLATE,
@@ -14,9 +14,7 @@ import {
   ImBindingDiagnosticsSchema,
   ImBindingHandoffStatusSchema,
   ImBindingSummarySchema,
-  SLACK_SETUP_ATTEMPT_TEMPLATE,
-  SlackSetupAttemptSchema,
-  SubmitSlackSetupCredentialsRequestSchema,
+  SlackAppConfigurationSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -24,7 +22,7 @@ import { createUserAuthPreHandler } from "../plugins/user-auth.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import type { FeishuSetupService } from "../services/im-bindings/feishu/index.js";
 import type { ImBindingService } from "../services/im-bindings/index.js";
-import type { SlackSetupService } from "../services/im-bindings/slack/index.js";
+import type { SlackConfigurationService } from "../services/im-bindings/slack/index.js";
 import { parseRequest } from "./request-validation.js";
 
 const AgentParamsSchema = z.object({ agentId: z.string().uuid() }).strict();
@@ -42,7 +40,7 @@ export function registerImBindingRoutes(
   authService: UserAuthService,
   imBindings: ImBindingService,
   feishu: FeishuSetupService | undefined,
-  slack: SlackSetupService | undefined,
+  slack: SlackConfigurationService | undefined,
   publicOrigin?: string,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
@@ -89,35 +87,19 @@ export function registerImBindingRoutes(
   }
 
   if (slack) {
-    app.post(AGENT_SLACK_SETUP_ATTEMPTS_TEMPLATE, { preHandler }, async (request, reply) => {
+    app.get(AGENT_SLACK_CONFIGURATION_TEMPLATE, { preHandler }, async (request, reply) => {
       const { agentId } = parseRequest(AgentParamsSchema, request.params);
-      const input = parseRequest(CreateSlackSetupAttemptRequestSchema, request.body ?? {});
-      const attempt = await slack.createOrReuse(authenticatedUserId(request), agentId, input.intent);
-      return reply.code(201).send(SlackSetupAttemptSchema.parse(attempt));
+      const configuration = await slack.get(authenticatedUserId(request), agentId);
+      return reply.code(200).send(SlackAppConfigurationSchema.parse(configuration));
     });
 
-    app.get(SLACK_SETUP_ATTEMPT_TEMPLATE, { preHandler }, async (request, reply) => {
-      const { attemptId } = parseRequest(AttemptParamsSchema, request.params);
-      return reply
-        .code(200)
-        .send(SlackSetupAttemptSchema.parse(await slack.get(authenticatedUserId(request), attemptId)));
-    });
-
-    app.post(`${SLACK_SETUP_ATTEMPT_TEMPLATE}/credentials`, { preHandler }, async (request, reply) => {
-      const { attemptId } = parseRequest(AttemptParamsSchema, request.params);
-      const input = parseRequest(SubmitSlackSetupCredentialsRequestSchema, request.body);
-      return reply
-        .code(200)
-        .send(
-          SlackSetupAttemptSchema.parse(await slack.submitCredentials(authenticatedUserId(request), attemptId, input)),
-        );
-    });
-
-    app.post(`${SLACK_SETUP_ATTEMPT_TEMPLATE}/cancel`, { preHandler }, async (request, reply) => {
-      const { attemptId } = parseRequest(AttemptParamsSchema, request.params);
-      return reply
-        .code(200)
-        .send(SlackSetupAttemptSchema.parse(await slack.cancel(authenticatedUserId(request), attemptId)));
+    app.put(AGENT_SLACK_CONFIGURATION_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { agentId } = parseRequest(AgentParamsSchema, request.params);
+      const input = parseRequest(ConfigureSlackAppRequestSchema, request.body);
+      await slack.configure(authenticatedUserId(request), agentId, input);
+      const configured = await imBindings.getConfigForAgent(authenticatedUserId(request), agentId);
+      if (!configured) throw new Error("Configured Slack binding was not readable after activation");
+      return reply.code(200).send(ImBindingAdminDetailSchema.parse(configured));
     });
   }
 

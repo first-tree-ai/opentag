@@ -1,134 +1,156 @@
-# Slack App 接入
+# Slack App 配置
 
 [English](../slack-app-setup.md)
 
-OpenTag 为每个 Agent 接入一个由客户持有的 Slack App。本流程不支持多个 Agent 共用 OpenTag 托管的 App：即使多个
-Agent 加入同一个 Slack 工作区或频道，每个 Agent 仍保持独立的机器人身份、凭证代际、消息边界和恢复生命周期。
+OpenTag 为每个 Agent 支持一个由客户持有的 Slack App 安装。配置是一次经过验证的写入，不是临时 setup 工作流。
+URL verification 与真实入站消息只属于运行观测；两者都不能创建、完成或激活凭证代际。
 
-## 产品契约
+## 固定的 Slack 能力契约
 
-一个 Agent 最多只有一个当前 IM 绑定。Slack setup attempt 必须声明一个明确意图：
+首次连接以及后续重新授权、替换时，生成的 manifest 始终请求完整能力集。`mention_only` 与 `all_message` 共用同一份
+Slack 安装。
 
-- `create` 创建首个 Slack 绑定。
-- `reauthorize` 为当前 App、Team 和 Bot User 身份轮换凭证或补充 scopes。在新凭证通过验证之前，当前绑定继续可用。
-- `replace` 切换到另一个 Slack App 安装。激活时结束由旧绑定持有的会话。
-
-OpenTag 为 Agent 生成专属的 Slack App manifest 和 Events API Request URL。manifest 只请求 Agent 当前接收模式或
-Server 已记录的待生效接收模式所需的 bot scopes 和事件；同时启用可写的 App Home Messages 标签页，让用户可以发起
-与 Agent 的私聊。
-
-## 管理员流程
-
-1. 在 Agent 的 **IM** 页面选择 **Connect Slack App**、**Reauthorize Slack** 或 **Replace Slack App**。处于 provisioning
-   的绑定（例如刷新页面前已经开始的 setup）会改为显示 **Resume Slack setup**。仅打开或刷新页面绝不会调用会改变状态的 setup
-   endpoint；管理员必须显式选择 **Resume Slack setup**。如果 attempt 仍在进行中则返回原 attempt，只有旧 attempt 已进入终态时
-   才创建后继 attempt。
-2. 按所选意图准备 App。OpenTag 同时以「创建新 App 链接」和「可复制的 JSON」两种形式展示生成的 manifest：
-   - **Connect** 与 **Replace** 从 manifest 创建一个专属的新 App，并安装到目标工作区。
-   - **Reauthorize** 保持同一个 App、工作区和 bot user：打开现有 App 的 **App Manifest** 页面，用生成的 JSON 替换 manifest
-     并保存，然后在 **OAuth & Permissions** 中选择 **Reinstall to Workspace**，让 Slack 授予新增的 scopes。重新安装后
-     Bot User OAuth Token 可能改变，Signing Secret 通常不变。整个过程中现有绑定持续接收消息。
-3. 从 **OAuth & Permissions** 复制 **Bot User OAuth Token**，从 **Basic Information** 复制 **Signing Secret**，
-   提交给 OpenTag。
-4. OpenTag 调用 Slack `auth.test`，推导 Team ID、存在时的 Enterprise ID、Bot User ID、Bot ID，以及 token 实际返回的
-   `x-oauth-scopes`。Slack 对有效 bot token 的 `auth.test` 可能省略 `app_id`，因此「已验证安装」面板以工作区和 bot user
-   标识安装，只有在 App ID 已知后才显示它；浏览器提交的 App ID 或 scopes 列表从不作为权威事实。该调用带超时限制，
-   Slack 无响应时报告为 `SLACK_UPSTREAM_UNAVAILABLE`。
-5. 回到 **Event Subscriptions**，重试生成的 Request URL。OpenTag 先验证 Slack 带时间戳的 HMAC 签名，再返回
-   URL verification challenge。IM 页面区分两种证明：`auth.test` 成功后 Bot Token 即视为已验证（显示推导出的 App、工作区
-   和 bot user），而 Signing Secret 在 Slack 的 URL 验证成功之前保持未验证状态。
-6. 将机器人邀请到测试频道并 @mention。OpenTag 会重新解析已通过签名验证的原始事件；只有 envelope 的 App、Team
-   分别匹配路由 App 与 token 推导的 Team，且其中一项 bot authorization 匹配 token 推导的 Team 与 Bot User 时，
-   才从 `api_app_id` 建立 App ID 并激活绑定。如果 `auth.test` 确实返回了 App ID，它也必须一致。该事件随后通过
-   已激活绑定进入系统。
-
-Slack 可能在 manifest 创建后立即尝试 URL 验证，此时 OpenTag 尚未拿到 Signing Secret，首次失败属于预期行为；提交凭证后
-重新验证即可。
-
-Slack 只在 Request URL 被设置或修改、或管理员在 **Event Subscriptions** 中点击 **Retry** 时才发送 `url_verification`。
-通过 `apps.manifest.update` 更新事件订阅不会触发它，OpenTag 也无法代替管理员触发：点击 **Retry** 是受支持的步骤。在此之前，
-attempt 会一直显示「Signing Secret not yet verified」。重新授权的事件继续通过当前激活绑定；首次接入且没有激活绑定时，
-正确签名的事件会以 `200`（pending）确认，但不会激活或写入消息。
-
-### 恢复进行中的 attempt
-
-- 错误的 Signing Secret 不会让 attempt 失败。失败的 URL 验证会作为非机密诊断记录在 attempt 上
-  （`SLACK_SIGNING_SECRET_INVALID` 及其时间），IM 页面会显示。选择 **Edit credentials** 向同一个 attempt 提交修正后的
-  token 和 secret：OpenTag 重新调用 `auth.test`，原子替换两个 secret，并重新开始 URL 验证。提交的 secret 永不回显。
-- **Cancel setup** 可随时结束一个 attempt，且取消状态会跨导航和刷新保持；只有显式选择 **Resume Slack setup** 或重试操作才会
-  创建后继 attempt。attempt 活动期间不能开始另一种意图（`SLACK_SETUP_INTENT_CONFLICT`），需要先取消当前的。再次开始相同意图
-  会返回进行中的 attempt。
-- attempt 在开始 30 分钟后过期。截止后提交的凭证或收到的 URL 验证都以 `SLACK_SETUP_EXPIRED` 拒绝，不会写入已失效的
-  attempt。
-- URL 验证写入会比较其实际验证的精确加密凭证/证明快照。同一 attempt 并发替换凭证时，旧 challenge 以
-  `SLACK_SETUP_CONFLICT` 失败，不能恢复先前的 token 或 Signing Secret。
-- IM 页面轮询 attempt 时对瞬时失败采用指数退避，并在得到确定性答案（例如 attempt 已不存在）时停止；**Refresh status**
-  会重新开始轮询。
-
-## 所需 bot scopes 与事件
-
-两种接收模式都要求：
+必需 bot scopes：
 
 - `app_mentions:read`
+- `channels:history`
 - `chat:write`
 - `files:read`
+- `groups:history`
 - `im:history`
+- `mpim:history`
 
-它们订阅 `app_mention`、`message.im`、`app_uninstalled` 和 `tokens_revoked`。
+订阅 bot events：
 
-`all_message` 模式还要求 `channels:history`、`groups:history` 和 `mpim:history`，并订阅对应的
-`message.channels`、`message.groups` 与 `message.mpim`。从仅 mention 切换到全量消息时，在 Slack 确认全部新增 scopes
-之前，OpenTag 会在 Server 记录目标模式、失败关闭并要求重新授权。重新授权期间当前仅 mention 策略仍然有效，生成的
-manifest 则请求目标 scopes；只有激活成功时才会原子应用目标模式。待生效目标以 `pendingReceiveMode` 投影到绑定摘要、
-管理员详情和诊断中；真实存储的错误码（例如 `SLACK_TOKEN_REVOKED`）不会被 scope 升级提示掩盖。以相同接收模式保存不会
-取消进行中的 setup attempt；改变实际目标才会取消，并记录 `SLACK_SETUP_CANCELED`。
+- `app_mention`
+- `app_uninstalled`
+- `message.channels`
+- `message.groups`
+- `message.im`
+- `message.mpim`
+- `tokens_revoked`
 
-`mention_only` 不承诺自动提供 mention 前后的频道消息。任务需要更多 provider 原生上下文时，Agent 可以通过官方
-Slack CLI 主动查询；实际范围受已安装 Bot Token 的 scopes 和 conversation membership 限制。
+manifest 同时启用可写的 App Home Messages 标签页。修改 Agent 的 `receiveMode` 只更新 OpenTag 本地准入策略；不会修改
+manifest、轮换凭证代际、要求重新安装或授权、重试 Request URL，也不会发送测试消息。
 
-## 安全与恢复
+## 管理员配置流程
 
-- Bot Token、Signing Secret 和待完成 setup context 在写入数据库前加密，管理员 API 与诊断 API 均不返回这些内容。
-  Signing Secret 绝不投影到 Agent runtime。
-- OpenTag 对自动持久化和投递实施 Session 隔离，但不把投影给 Runtime 的 Bot Token 收窄到当前 channel 或 thread。
-  在有效且 Agent 可见的 IM Turn 中，Agent 可以在 Bot Token scopes 与 Slack membership 允许的范围内使用官方 CLI。
-  查询结果只进入 runtime context，不会自动成为 OpenTag `ImMessage` 历史，也不会自动投递给另一个 Session。
-- Slack 签名验证使用原始请求体、五分钟重放窗口和常量时间比较。
-- URL verification challenge 能证明 Signing Secret，但不携带 App、Team 或 bot authorization 身份。因此激活必须
-  等待后续签名事件，由其原始 envelope 建立 App，并将 Team 与 bot authorization 关联到 token 推导的 Team 和
-  Bot User；浏览器身份从不参与该证明。
-- 运行期凭证校验在后续 `auth.test` 省略 `app_id` 时保留由签名事件建立的 App ID；如果 Slack 返回了不一致的 App ID，
-  或 Team、Bot User、Bot ID 发生漂移，仍会拒绝绑定。
-- 一个 Slack App 安装最多只能当前绑定一个 Agent；冲突失败且不改变任一绑定。事务内检查与并发唯一索引竞争都报告
-  `SLACK_APP_TEAM_ALREADY_BOUND`。
-- 重新授权在新凭证代际就绪前保留当前绑定。由于 Signing Secret 通常不变，正常事件也会匹配待完成的 attempt；OpenTag
-  绝不因缺少 URL 验证而拒绝它们。尚未证明 Request URL 的 attempt 会报告为等待 challenge，入口回落到当前激活绑定；
-  首次接入且没有任何激活绑定时，事件以无操作的 `200` 确认（不写入任何消息），让 Slack 保持订阅。替换只在激活时创建
-  新绑定身份并禁用旧绑定。
-- 事件激活会锁定并重新核验当前 setup attempt 的精确 ID、活动状态、过期时间、签名、重新解析的原始 envelope，以及
-  token/event 身份关联，再在同一事务中推进 credential、应用待生效接收模式并完成 setup slot。已过期、已取消或
-  已替换 attempt 的旧事件不能激活。
-- 当前 bot token 出现在 `tokens_revoked` 时，绑定进入需要重新授权状态。
-- `app_uninstalled` 会禁用绑定。管理员可以重试过期或失败的 setup、重新授权、替换或显式禁用绑定。
+1. 打开 **Connect Slack App**、**Reauthorize Slack** 或 **Change Slack App**。OpenTag 返回无状态指南，其中包含固定 manifest
+   与 Agent 专属 Events API Request URL。读取或关闭指南都不写入数据。
+2. 用完整 manifest 创建或更新客户持有的 App，并安装或重新安装到目标 Slack 工作区。
+3. 从 **Basic Information** 复制 **App ID** 和 **Signing Secret**，从 **OAuth & Permissions** 复制
+   **Bot User OAuth Token**。
+4. 一次提交三个值。OpenTag 调用 Slack `auth.test`，获取 token 对应的 Team、Bot User、Bot 身份、存在时的 Enterprise，
+   以及实际 `x-oauth-scopes`，并要求完整七项 scopes。若 Slack 返回 App ID，也必须与提交值相同。
+5. OpenTag 锁定 Agent 当前绑定，重新核验 Team 权限与预期绑定代际，再原子写入激活身份、加密凭证、完整授权和新代际。
+   验证失败或预期代际过期时，当前绑定不变。
+6. 写入成功后，如有需要，再到 Slack 设置或重试生成的 Request URL。真实测试消息不属于配置验收步骤。
 
-Slack setup 遵循与其他 IM provider 相同的 runtime readiness 边界。已配置不等于可交接；只有 Agent runtime 和官方
-Slack CLI 能力都 ready 时才可 handoff。Slack 出站发送保持 provider-native，OpenTag 不声称拥有 provider 的最终投递事实。
+Slack 不保证 Bot Token 的 `auth.test` 一定返回 `app_id`。因此，提交的 App ID 会以**配置证据**存储和投影，而不是冒充
+Slack API 已证明身份。每次请求仍有独立证明边界。Agent 专属 Request URL 按 Agent ID 查找 active 绑定，并在解析 JSON
+**之前**对原始请求体验证带时间戳的 HMAC。兼容 Events URL 只能有界预解析 App 与 Team 标识以定位 Signing Secret，然后再
+验证同一原始请求体 HMAC。签名通过后，每个真实事件 envelope 的 `api_app_id` 与 `team_id` 必须分别匹配配置 App ID 和
+token 推导的 Team ID。不匹配就拒绝，且绝不借事件修复配置。Slack 官方 URL-verification payload 不含 App 或 Team 字段，
+因此 Agent 专属 URL 对 challenge 只能验证该绑定的 Signing Secret；它不会记录身份已证明。
 
-## 验收覆盖
+## 数据与状态清单
 
-支持流程必须覆盖：
+| 项目 | 处理 | 权威来源与含义 |
+| --- | --- | --- |
+| 绑定 `id`、Agent、Team、provider、status | 保留 | 每个 Agent 最多一个未禁用的当前 IM 绑定；每个 Slack App/Team 安装最多一个当前 Agent 绑定。 |
+| App、Team、Enterprise、Bot User/Bot 身份 | 保留 | App ID 是显式配置证据；Team 与 bot 身份来自 token 检查；Enterprise 可为空。 |
+| Team 与 Bot 展示元数据 | 作为可选展示数据保留 | Team 名称、Bot 展示名称和头像可显示给管理员，但绝不参与配置、入口或 runtime 授权。 |
+| Bot Token 与 Signing Secret | 加密保留 | 一起存入 active credential envelope；管理员、诊断、runtime-config API 都不返回。Signing Secret 永不投影给 runtime。 |
+| `credentialGeneration` 与 credential schema version | 保留 | 同一绑定的单调凭证修订；同身份重新授权递增，App/Team 替换则创建新绑定身份并禁用旧绑定。 |
+| `grantedCapabilities` | 保留 | Slack 实际返回的 token scopes。active/ready 投影要求完整七项。 |
+| `activatedAt`、`disabledAt`、`createdAt`、`updatedAt` | 保留 | 持久绑定生命周期时间；配置提交设置激活，入站事件不设置。公共 API 将 `activatedAt` 投影为 `lastValidatedAt`。 |
+| `observedAt` | 仅作运行观测保留 | 正确签名的 Agent 专属 URL challenge，或正确签名且 App/Team 匹配的真实事件会更新。公共 API 将其投影为 `lastRuntimeObservationAt`。不是配置证据，也不改变代际。 |
+| `lastInboundAt` 与标准化 `ImMessage`/Session 状态 | 保留 | 消息运行历史和路由状态；只有准入后的真实消息更新，URL verification 不更新。 |
+| `lastConfirmedAt` | 从公共 API 删除 | 它把配置时间与运行观测混在一起。改用 `lastValidatedAt` 与 `lastRuntimeObservationAt`。 |
+| `lastErrorCode` | 保留 | 持久恢复原因，例如 `SLACK_SCOPE_REAUTH_REQUIRED`、`SLACK_TOKEN_REVOKED`；运行观测不清除配置错误。 |
+| Agent 上的 `receiveMode` | 保留 | 本地 `mention_only`/`all_message` 策略，与 Slack 授权和凭证代际无关。 |
+| `replacementImBindingId` | 作为切换溯源保留 | App/Team 身份变化时，将已禁用绑定指向原子创建的 replacement；它不是 setup 进度，Slack 与 Feishu replacement 流程都会使用。 |
+| connection owner、lease 与 fencing 字段 | 通用保留 | 仅 Feishu 使用连接所有权；Slack 没有受管连接 lease，这些字段保持为空。 |
+| 通用 setup attempt/context 字段 | 为 Feishu 保留 | setup attempt ID、意图/状态/owner/heartbeat/expiry 与加密 setup context 继续服务 Feishu；Slack 行由数据库检查约束保证这些 setup 字段为空。 |
+| Slack setup attempt、加密临时 context、challenge proof、验证错误/时间、轮询/过期/取消状态 | 删除 | token 验证与激活之间不再存在 Slack 配置阶段。 |
+| `pendingReceiveMode` / `pending_receive_mode` | 删除 | 不再存在依赖 Slack 的接收模式目标。 |
 
-- 无效 Bot Token 与 Slack API 不可用；
-- 两种接收模式下的 scopes 缺失；
-- 生成的 manifest 始终为私聊启用可写的 App Home Messages 标签页；
-- 无效、过期或重放的 Slack 签名；
-- token 推导的 Team/Bot 身份与签名事件的 App/Team/bot authorization 关联不一致；
-- App/Team 安装重复绑定冲突；
-- 创建、同身份重新授权、显式替换、禁用、卸载与 token 撤销恢复；
-- 通过重新提交凭证恢复错误 secret、取消、意图冲突，以及刷新页面后恢复；
-- 同 secret 重新授权仍在等待 URL 验证期间的正常入口消息；
-- 并发 setup/激活不产生部分切换；
-- API 响应、诊断、日志和 trace 中的 secret 脱敏。
+以下值只做派生，不新增持久状态：
+
+- binding health 由 status 以及当前可读、schema 合法、身份一致且 scopes 完整的凭证材料派生；
+- 不可读、schema 非法、身份不一致或 scopes 不一致的当前凭证必须失败关闭：不得投影为 ready，Slack ingress 查找返回不可用而不是抛出原始凭证错误；
+- `reauthorizationRequired` 由绑定状态、缺少固定 scopes 或当前凭证材料无效派生；
+- 诊断返回精确的 `credentialGeneration`（包括 `0`）、`credentialStatus` 的 `valid` 或 `invalid`，以及 required/granted/missing capabilities；
+- 结构无效且没有更具体持久错误的凭证投影 `IM_BINDING_CREDENTIAL_INVALID`；真正缺少固定 scopes 时仍投影
+  `SLACK_SCOPE_REAUTH_REQUIRED`；
+- `lastValidatedAt` 是当前凭证验证/激活时间；`lastRuntimeObservationAt` 是最近一次已签名的 provider 运行观测；`lastInboundAt` 仍是消息历史；
+- App ID evidence 始终标记为 `configured`，并明确要求签名入口匹配。
+
+### 持久状态与派生状态矩阵
+
+| 状态 | 迁移后的 Slack 含义 | 允许的转换来源 |
+| --- | --- | --- |
+| `provisioning` | 不再是 Slack 正常状态；不完整 legacy Slack 行由迁移禁用，新配置直接写入 `active`。 | 仅 Feishu setup。 |
+| `active` | 已提交一个凭证代际。若当前材料不可读、结构不一致或缺少固定 scope，公共状态仍会派生为 `reauthorization_required`。 | 成功的已验证配置或同身份重新授权。 |
+| `reauthorization_required` | 当前安装必须替换或重新授权；scope 契约或凭证检查失败时，绝不把既有材料报告为健康。 | scope 迁移、`tokens_revoked` 或显式恢复写入。 |
+| `error` | 为非 Slack setup/runtime 失败保留的通用状态；Slack 配置验证错误直接返回，不修改当前行。 | 非 Slack provider 工作流或既有通用恢复代码。 |
+| `disabled` | 该绑定身份的终态；active credential 与 setup secret 被清除，Sessions 结束，后续配置会创建或选择另一个当前绑定。 | 管理员禁用、`app_uninstalled`、不完整 legacy Slack 清理或身份替换切换。 |
+
+`bindingState`、`ready`、`handoffReady`、`reauthorizationRequired`、`credentialStatus` 与 missing capabilities
+都是投影，不是额外数据库状态。URL verification 与签名入站只能更新运行观测和消息/路由记录；`receiveMode` 只改变
+Agent 策略。同身份凭证提交递增 `credentialGeneration`；App/Team 身份替换在新绑定上从 generation `1` 开始，并在已
+禁用旧绑定上记录 replacement link。
+
+## 入口、事件与错误
+
+生成的 Agent 专属 Request URL 与兼容 Slack Events URL 都只接受已经 active、scopes 完整、且当前凭证材料可读且有效的绑定。
+Agent 专属 URL 在解析 JSON 之前验证原始请求体签名。兼容 URL 只能有界预解析 App/Team 以查找 secret。随后两者都要求真实
+事件的 App ID 与 Team ID 匹配，才记录 `observedAt` 或处理事件。只有 Agent 专属 URL 能路由 Slack 不带身份字段的 URL
+challenge。Signing Secret 永不进入 runtime grant、诊断、日志或 traces。
+
+- `url_verification`：在 Agent 专属 URL 上验证绑定 Signing Secret、返回 challenge 并记录运行观测；Slack payload 不含
+  App/Team 身份，而且请求不激活、不轮换、不修复任何配置。
+- `app_mention` 与 message events：在已验证绑定代际下标准化并入站；不改变代际。
+- `tokens_revoked`：当前 bot token 受影响时进入 `reauthorization_required`，错误为 `SLACK_TOKEN_REVOKED`。
+- `app_uninstalled`：禁用绑定并清除 active credential material。
+- 缺少 active binding、签名无效或 App/Team 不匹配：直接拒绝；绝不把事件视为 setup 进度。
+
+配置错误必须显式返回，且不改变现有 active 数据：
+
+- `SLACK_AUTH_INVALID`：Slack 拒绝 Bot Token。
+- `SLACK_UPSTREAM_UNAVAILABLE`：token 检查未返回可用安装事实。
+- `SLACK_BINDING_IDENTITY_MISMATCH`：Slack 返回的 App ID 与配置值不同。
+- `SLACK_SCOPE_REAUTH_REQUIRED`：token 缺少至少一个固定 scope。
+- `SLACK_CONFIGURATION_CONFLICT`：打开表单后绑定或代际发生变化。
+- `SLACK_APP_TEAM_ALREADY_BOUND`：该 App/Team 安装已被另一个 Agent 当前绑定。
+
+## 迁移与恢复
+
+迁移只对 Slack 行执行以下处理：
+
+- 清空全部 Slack setup-attempt 与加密 setup-context 字段；
+- 对从未拥有 active credential generation 的不完整 Slack provisioning 行，清除凭证与连接所有权、禁用，并记录
+  `SLACK_CONFIGURATION_REQUIRED`；
+- 缺少七项 scopes 中任何一项的既有已配置绑定进入 `reauthorization_required`，绝不投影为健康；
+- legacy 仅因 scopes 标记需要重授权、但已实际具备完整固定 scopes 的行恢复 active；
+- 删除 `pending_receive_mode`；
+- 增加仅针对 Slack 的数据库检查，保证通用 setup 字段保持为空；
+- 不改变 Feishu setup 字段和行为。
+
+重新授权会先验证新凭证，再接触当前绑定。同身份成功时原子推进代际；不同 App/Team 安装只在 cutover 时创建 replacement、
+禁用旧绑定并停止旧绑定会话。并发配置同时受预期 binding ID/generation 与数据库唯一约束保护。
+
+## 未来的分布式 App 适配器
+
+当前产品模式是每个 Agent 一个由客户持有的 Slack App。以后若引入 OpenTag 托管的分布式 App，它必须作为同一 verified
+Integration 激活边界后的独立适配器。该适配器目前只存在于文档：本版本不增加 OAuth setup 状态、占位表或 token 交换持久化。
+
+若引入该适配器，OAuth state 必须签名，并绑定一次性 nonce、浏览器 session、Admin、Agent、Team 与配置意图。installation
+store 与 token rotation 属于该适配器，不属于 active binding。实际 Slack 返回的 scopes 仍然决定能否激活。在此之前，管理
+员一次提交 App ID、Bot Token 与 Signing Secret。
+
+一个分布式 App 安装只产生一组 Team/Bot 身份。因此，若同一 Slack workspace 需要支持多个 OpenTag Agent，必须引入独立的
+workspace-installation aggregate 与显式 Agent 路由；不能静默复用当前 App/Team 到 Agent 的唯一绑定约束。
 
 Slack 协议参考：[App manifests](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/)、
 [`auth.test`](https://docs.slack.dev/reference/methods/auth.test/)、

@@ -36,7 +36,7 @@ import {
   FeishuSetupService,
 } from "./services/im-bindings/feishu/index.js";
 import { createImProviderAdapterResolver, ImBindingService } from "./services/im-bindings/index.js";
-import { DefaultSlackApiClient, SlackAdapter, SlackSetupService } from "./services/im-bindings/slack/index.js";
+import { DefaultSlackApiClient, SlackAdapter, SlackConfigurationService } from "./services/im-bindings/slack/index.js";
 import { InvitationService } from "./services/invitations/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCollaborationService, SessionService } from "./services/sessions/index.js";
@@ -194,12 +194,10 @@ export async function startServer(): Promise<void> {
       onDiagnostic: reportDiagnostic,
     });
     const slackApi = new DefaultSlackApiClient();
-    const slackSetupService = new SlackSetupService({
+    const slackConfigurationService = new SlackConfigurationService({
       api: slackApi,
-      cipher: applicationCipher,
       database,
       imBindings: imBindingService,
-      instanceId,
       publicOrigin: config.publicUrl,
     });
     const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
@@ -245,14 +243,13 @@ export async function startServer(): Promise<void> {
       invitationService,
       imBindingService,
       feishuSetupService,
-      slackSetupService,
+      slackConfigurationService,
       imResourceService,
       readiness,
       runtime: { registry, domainOwner },
       slackEvents: {
         imBindings: imBindingService,
         inbox: imMessageInbox,
-        setup: slackSetupService,
         createAdapter: (binding) =>
           new SlackAdapter({
             api: slackApi,

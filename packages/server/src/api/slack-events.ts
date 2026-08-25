@@ -3,7 +3,6 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ImMessageInbox } from "../services/im/index.js";
 import type { ImBindingService, SlackIngressBinding } from "../services/im-bindings/index.js";
 import type { SlackAdapter } from "../services/im-bindings/slack/adapter.js";
-import type { SlackSetupService } from "../services/im-bindings/slack/setup-service.js";
 import { preparseSlackRoute, verifySlackSignature } from "../services/im-bindings/slack/signature.js";
 
 interface SlackEnvelopeBase {
@@ -29,7 +28,6 @@ export interface SlackEventsRouteOptions {
   imBindings: ImBindingService;
   inbox: ImMessageInbox;
   createAdapter(binding: SlackIngressBinding): SlackAdapter;
-  setup?: SlackSetupService;
   now?: () => Date;
 }
 
@@ -97,40 +95,12 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
 
   app.post(AGENT_SLACK_EVENTS_TEMPLATE, async (request, reply) => {
     if (!Buffer.isBuffer(request.body)) return reply.code(400).send({ error: "invalid_body" });
-    const envelope = parseEnvelope(request.body);
-    if (!envelope) return reply.code(400).send({ error: "invalid_json" });
     const agentId = (request.params as { agentId?: unknown }).agentId;
     if (typeof agentId !== "string") return reply.code(400).send({ error: "invalid_route" });
+    const binding = await options.imBindings.findSlackIngressBindingForAgent(agentId);
+    if (!binding) return reply.code(404).send({ error: "binding_not_found" });
     const requestHeaders = headers(request);
-    if (envelope.type === "url_verification") {
-      if (!options.setup) return reply.code(404).send({ error: "setup_unavailable" });
-      const challenge = await options.setup.verifyChallenge({
-        agentId,
-        rawBody: request.body,
-        ...requestHeaders,
-      });
-      return reply.code(200).send({ challenge });
-    }
-    if (!envelope.api_app_id || !envelope.team_id) return reply.code(400).send({ error: "invalid_route" });
-    const outcome = (await options.setup?.tryActivateFromEvent({
-      agentId,
-      appId: envelope.api_app_id,
-      teamId: envelope.team_id,
-      rawBody: request.body,
-      ...requestHeaders,
-    })) ?? { status: "unmatched" };
-    const activated = outcome.status === "activated" ? outcome.binding : undefined;
-    const binding = activated ?? (await options.imBindings.findSlackIngressBindingForAgent(agentId));
-    if (!binding) {
-      // A signed event for an attempt that still awaits URL verification is not a delivery failure:
-      // acknowledge it so Slack keeps the subscription alive, but ingest nothing before activation.
-      if (outcome.status === "awaiting_challenge") {
-        return reply.code(200).send({ ok: true, pending: "url_verification" });
-      }
-      return reply.code(404).send({ error: "binding_not_found" });
-    }
     if (
-      !activated &&
       !verifySlackSignature({
         rawBody: request.body,
         ...requestHeaders,
@@ -140,14 +110,27 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
     ) {
       return reply.code(401).send({ error: "invalid_signature" });
     }
+    const envelope = parseEnvelope(request.body);
+    if (!envelope) return reply.code(400).send({ error: "invalid_json" });
+    if (envelope.type === "url_verification") {
+      if (typeof envelope.challenge !== "string") return reply.code(400).send({ error: "invalid_challenge" });
+      // Slack's URL-verification protocol omits App and Team identity. The Agent-specific URL
+      // supplies only the lookup key; a valid HMAC records an observation but never changes config.
+      await options.imBindings.recordSlackObservation(binding.imBindingId);
+      return reply.code(200).send({ challenge: envelope.challenge });
+    }
+    if (!envelope.api_app_id || !envelope.team_id) return reply.code(400).send({ error: "invalid_route" });
     if (envelope.api_app_id !== binding.appId || envelope.team_id !== binding.teamId) {
       return reply.code(401).send({ error: "binding_mismatch" });
     }
+    await options.imBindings.recordSlackObservation(binding.imBindingId);
     return processEnvelope(binding, envelope, reply);
   });
 
   app.post(SLACK_EVENTS_PATH, async (request, reply) => {
     if (!Buffer.isBuffer(request.body)) return reply.code(400).send({ error: "invalid_body" });
+    // Bounded App/Team fields are used only to locate the Signing Secret. The raw body is not
+    // trusted until the HMAC below succeeds.
     const route = preparseSlackRoute(request.body);
     if (!route) return reply.code(400).send({ error: "invalid_route" });
     const binding = await options.imBindings.findSlackIngressBinding(route.appId, route.teamId);
@@ -169,6 +152,7 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
     if (envelope.api_app_id !== binding.appId || envelope.team_id !== binding.teamId) {
       return reply.code(401).send({ error: "binding_mismatch" });
     }
+    await options.imBindings.recordSlackObservation(binding.imBindingId);
     if (envelope.type === "url_verification") {
       return typeof envelope.challenge === "string"
         ? reply.code(200).send({ challenge: envelope.challenge })

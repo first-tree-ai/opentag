@@ -55,10 +55,10 @@ export function formatImBinding(summary: ImBindingAdminDetail | undefined): stri
     `provider\t${summary.provider}`,
     `identity\t${identity}`,
     `receiveMode\t${summary.receiveMode}`,
-    `pendingReceiveMode\t${summary.pendingReceiveMode ?? "-"}`,
     `credentialGeneration\t${summary.credentialGeneration}`,
     `reauthorizationRequired\t${summary.reauthorizationRequired}`,
-    `lastConfirmedAt\t${summary.lastConfirmedAt ?? "-"}`,
+    `lastValidatedAt\t${summary.lastValidatedAt ?? "-"}`,
+    `lastRuntimeObservationAt\t${summary.lastRuntimeObservationAt ?? "-"}`,
   ].join("\n");
 }
 
@@ -77,12 +77,18 @@ export function formatImBindingDiagnostics(value: ImBindingDiagnostics): string 
     `provider\t${value.provider}`,
     `ready\t${value.ready}`,
     `credentialGeneration\t${value.credentialGeneration}`,
+    `credentialStatus\t${value.credentialStatus}`,
+    `requiredCapabilities\t${value.requiredCapabilities.join(",") || "-"}`,
+    `grantedCapabilities\t${value.grantedCapabilities.join(",") || "-"}`,
+    `missingCapabilities\t${value.missingCapabilities.join(",") || "-"}`,
     `reauthorizationRequired\t${value.reauthorizationRequired}`,
-    `pendingReceiveMode\t${value.pendingReceiveMode ?? "-"}`,
+    `slackAppIdEvidence\t${value.slackAppId ? `${value.slackAppId.value} (${value.slackAppId.evidence}; ingress match required)` : "-"}`,
     `agentRuntimeReadiness\t${value.agentRuntimeReadiness}`,
     `providerCliReadiness\t${value.providerCliReadiness}`,
     `connection\t${value.connection ? `${value.connection.state} (observed ${value.connection.observedAt})` : "not applicable"}`,
     `lastInboundAt\t${value.lastInboundAt ?? "-"}`,
+    `lastValidatedAt\t${value.lastValidatedAt ?? "-"}`,
+    `lastRuntimeObservationAt\t${value.lastRuntimeObservationAt ?? "-"}`,
     `lastErrorCode\t${value.lastErrorCode ?? "-"}`,
   ].join("\n");
 }

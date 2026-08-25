@@ -79,9 +79,7 @@ function installApi(
     roleUpdate?: (targetUserId: string, role: "admin" | "member") => Promise<Response> | Response;
     roleUpdateFails?: boolean;
     setupFailureCode?: string;
-    slackSetupState?: "awaiting_credentials" | "awaiting_verification";
     setupCompletedAt?: string | null;
-    scopeReauth?: boolean;
     unauthenticated?: boolean;
     teamless?: boolean;
     teamNameConflict?: boolean;
@@ -485,18 +483,6 @@ function installApi(
       });
     }
     if (path === `/api/v1/agents/${agentId}`) {
-      if (init?.method === "PATCH" && options.scopeReauth) {
-        return json(
-          {
-            error: {
-              code: "IM_BINDING_SCOPE_REAUTH_REQUIRED",
-              category: "deterministic",
-              message: "Additional IM scopes are required",
-            },
-          },
-          409,
-        );
-      }
       if (init?.method === "PATCH") return json(adminConfig());
       if (init?.method === "DELETE") return new Response(null, { status: 204 });
       await options.agentRead?.();
@@ -566,9 +552,9 @@ function installApi(
         bindingState: options.bindingState ?? (options.bindingReauth ? "reauthorization_required" : "active"),
         bot: { displayName: "Reviewer", avatarUrl: null },
         receiveMode: "mention_only",
-        pendingReceiveMode: null,
         lastInboundAt: null,
-        lastConfirmedAt: "2026-08-20T00:00:00.000Z",
+        lastValidatedAt: "2026-08-20T00:00:00.000Z",
+        lastRuntimeObservationAt: null,
       });
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts` && init?.method === "POST") {
@@ -588,39 +574,59 @@ function installApi(
         201,
       );
     }
-    const slackAttemptId = "f645f26d-9184-4f2f-98a1-4ee83ae6a604";
-    const slackAttempt = (intent: "create" | "reauthorize" | "replace", state = options.slackSetupState) => ({
-      id: slackAttemptId,
-      agentId,
-      intent,
-      state: state ?? "awaiting_credentials",
-      manifest: { display_information: { name: "Reviewer - OpenTag" } },
-      manifestUrl: "https://api.slack.com/apps?new_app=1&manifest_json=example",
-      eventsUrl: `https://opentag.example.com/api/v1/agents/${agentId}/im-binding/slack/events`,
-      requiredBotScopes: ["app_mentions:read", "chat:write", "files:read", "im:history"],
-      currentAppId: null,
-      identity:
-        state === "awaiting_verification" ? { appId: null, teamId: "T1", enterpriseId: null, botUserId: "U1" } : null,
-      challengeVerified: false,
-      lastVerificationErrorCode: null,
-      lastVerificationAt: null,
-      expiresAt: "2026-08-20T00:30:00.000Z",
-      errorCode: null,
-      completedAt: null,
-      createdAt: "2026-08-20T00:00:00.000Z",
-    });
-    if (path === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST") {
-      const body = JSON.parse(String(init.body)) as { intent: "create" | "reauthorize" | "replace" };
-      return json(slackAttempt(body.intent), 201);
-    }
-    if (path === `/api/v1/im-bindings/slack/setup-attempts/${slackAttemptId}` && (init?.method ?? "GET") === "GET") {
-      return json(slackAttempt("create"));
-    }
-    if (path === `/api/v1/im-bindings/slack/setup-attempts/${slackAttemptId}/cancel` && init?.method === "POST") {
+    if (path === `/api/v1/agents/${agentId}/im-binding/slack/configuration` && (init?.method ?? "GET") === "GET") {
       return json({
-        ...slackAttempt("create", "awaiting_credentials"),
-        state: "canceled",
-        errorCode: "SLACK_SETUP_CANCELED",
+        agentId,
+        manifest: {
+          display_information: { name: "Reviewer - OpenTag" },
+          oauth_config: {
+            scopes: {
+              bot: [
+                "app_mentions:read",
+                "channels:history",
+                "chat:write",
+                "files:read",
+                "groups:history",
+                "im:history",
+                "mpim:history",
+              ],
+            },
+          },
+          settings: {
+            event_subscriptions: {
+              bot_events: [
+                "app_mention",
+                "app_uninstalled",
+                "message.channels",
+                "message.groups",
+                "message.im",
+                "message.mpim",
+                "tokens_revoked",
+              ],
+            },
+          },
+        },
+        manifestUrl: "https://api.slack.com/apps?new_app=1&manifest_json=example",
+        eventsUrl: `https://opentag.example.com/api/v1/agents/${agentId}/im-binding/slack/events`,
+        requiredBotScopes: [
+          "app_mentions:read",
+          "channels:history",
+          "chat:write",
+          "files:read",
+          "groups:history",
+          "im:history",
+          "mpim:history",
+        ],
+        subscribedBotEvents: [
+          "app_mention",
+          "app_uninstalled",
+          "message.channels",
+          "message.groups",
+          "message.im",
+          "message.mpim",
+          "tokens_revoked",
+        ],
+        currentBinding: null,
       });
     }
     if (path === "/api/v1/auth/browser/logout" && init?.method === "POST") return new Response(null, { status: 204 });
@@ -1702,7 +1708,7 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Contact channel" })).toBeTruthy();
     expect(screen.getByText(/Feishu · Connected/)).toBeTruthy();
-    expect(screen.getByText(/Last checked/)).toBeTruthy();
+    expect(screen.getByText(/Validated/)).toBeTruthy();
     expect(screen.getByText("@reviewer")).toBeTruthy();
     expect(screen.getByText("Send @reviewer a direct message, or mention it in a Feishu group chat.")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Trigger rules" })).toBeTruthy();
@@ -1789,13 +1795,25 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("refreshes the parent Agent projection after an IM mutation", async () => {
-    installApi("admin", { bound: true });
+  it("changes Slack receive mode locally without opening Slack configuration", async () => {
+    installApi("admin", { bound: true, provider: "slack" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
     const dialog = await screen.findByRole("dialog", { name: "Allow messages without mentions?" });
     fireEvent.click(within(dialog).getByRole("button", { name: "Allow every message" }));
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([input, init]) => String(input) === `/api/v1/agents/${agentId}` && init?.method === "PATCH",
+          ),
+      ).toHaveLength(1),
+    );
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes("/im-binding/slack/configuration")),
+    ).toHaveLength(0);
     await waitFor(() =>
       expect(
         vi
@@ -1878,87 +1896,6 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Disconnect messaging?" })).toBeNull());
     expect(screen.queryByText("Unable to disconnect messaging")).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Messaging" })));
-  });
-
-  it("resumes a provisioning Slack setup after a refresh before credentials were submitted", async () => {
-    installApi("admin", { bound: true, provider: "slack", bindingState: "provisioning" });
-    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
-    const view = render(<App />);
-
-    expect(await screen.findByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Change Slack App" })).toBeNull();
-    expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(
-          ([input, init]) =>
-            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
-        ),
-    ).toHaveLength(0);
-
-    fireEvent.click(screen.getByRole("button", { name: "Resume Slack setup" }));
-    expect(await screen.findByLabelText("Bot User OAuth Token")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Cancel setup" })).toBeTruthy();
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(
-          ([input, init]) =>
-            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
-        ),
-    ).toHaveLength(1);
-
-    fireEvent.click(screen.getByRole("button", { name: "Cancel setup" }));
-    expect(await screen.findByText(/State: canceled/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Retry Slack setup" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
-
-    // The binding row remains provisioning after cancellation, but a refresh must not mutate it.
-    view.unmount();
-    vi.mocked(fetch).mockClear();
-    render(<App />);
-    expect(await screen.findByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
-    expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(
-          ([input, init]) =>
-            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
-        ),
-    ).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Resume Slack setup" }));
-    expect(await screen.findByLabelText("Bot User OAuth Token")).toBeTruthy();
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(
-          ([input, init]) =>
-            String(input) === `/api/v1/agents/${agentId}/im-binding/slack/setup-attempts` && init?.method === "POST",
-        ),
-    ).toHaveLength(1);
-  });
-
-  it("resumes a provisioning Slack setup after a refresh while verification is pending", async () => {
-    installApi("admin", {
-      bound: true,
-      provider: "slack",
-      bindingState: "provisioning",
-      slackSetupState: "awaiting_verification",
-    });
-    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
-    render(<App />);
-
-    expect(await screen.findByRole("button", { name: "Resume Slack setup" })).toBeTruthy();
-    expect(screen.queryByText(/Bot Token validated/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Resume Slack setup" }));
-    expect(await screen.findByText(/Bot Token validated/)).toBeTruthy();
-    expect(screen.getByText(/for workspace T1 \(bot user U1\)/)).toBeTruthy();
-    expect(screen.getByText(/Signing Secret not yet verified/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Edit credentials" })).toBeTruthy();
-    expect(screen.queryByLabelText("Bot User OAuth Token")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Change Slack App" })).toBeNull();
   });
 
   it("shows the Tasks demo and opens a Task detail", async () => {
@@ -2480,38 +2417,23 @@ describe("OpenTag Web App Shell", () => {
     });
   });
 
-  it.each([
-    ["feishu", "Reauthorize Feishu"],
-    ["slack", "Reauthorize Slack"],
-  ] as const)("offers provider-correct recovery when %s needs additional scopes", async (provider, recovery) => {
-    installApi("admin", { bound: true, provider, scopeReauth: true });
-    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
-    render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Every message" }));
-    const dialog = await screen.findByRole("dialog", { name: "Allow messages without mentions?" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Allow every message" }));
-    expect(await screen.findByText("Additional IM scopes are required")).toBeTruthy();
-    expect(await screen.findByText(recovery)).toBeTruthy();
-    if (provider === "slack") expect(screen.queryByRole("button", { name: "Reauthorize Feishu" })).toBeNull();
-  });
-
-  it("starts a dedicated customer-owned Slack App setup from the Agent IM tab", async () => {
+  it("opens a stateless customer-owned Slack App configuration from the Agent IM tab", async () => {
     installApi("admin");
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Connect Slack App" }));
 
-    expect(await screen.findByRole("link", { name: /Create a dedicated Slack App/ })).toBeTruthy();
+    expect(await screen.findByRole("link", { name: /Create a Slack App from the complete manifest/ })).toBeTruthy();
+    expect(screen.getByLabelText("Slack App ID")).toBeTruthy();
     expect(screen.getByLabelText("Bot User OAuth Token")).toBeTruthy();
     expect(screen.getByLabelText("Signing Secret")).toBeTruthy();
-    expect(screen.getByText(/files:read/)).toBeTruthy();
-    const request = vi
+    expect(screen.getAllByText(/files:read/)).toHaveLength(2);
+    const requests = vi
       .mocked(fetch)
-      .mock.calls.find(
-        ([input, init]) => String(input).endsWith("/im-binding/slack/setup-attempts") && init?.method === "POST",
-      );
-    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "create" });
+      .mock.calls.filter(([input]) => String(input).endsWith("/im-binding/slack/configuration"));
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.[1]?.method ?? "GET").toBe("GET");
   });
 
   it("creates a Computer connection command only after an explicit admin click", async () => {

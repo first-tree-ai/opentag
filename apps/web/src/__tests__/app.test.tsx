@@ -1488,6 +1488,13 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Usage" })).toBeTruthy();
     expect(await screen.findByRole("img", { name: /428K Tokens used during the last 30 days/ })).toBeTruthy();
+    expect(screen.getByText("Tokens recorded")).toBeTruthy();
+    expect(screen.getByText("Failed Tasks")).toBeTruthy();
+    expect(screen.queryByText("Average per measured Task")).toBeNull();
+    expect(screen.getByText("Partial data.")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe(
+      "Partial data. Token data is available for 31 of 32 tasks. Totals and charts are partial.",
+    );
     expect(screen.getByRole("heading", { name: "Token usage over time" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Token breakdown" })).toBeTruthy();
     expect(screen.getAllByText(/0 Tokens$/).length).toBeGreaterThan(0);

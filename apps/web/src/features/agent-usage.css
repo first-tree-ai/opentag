@@ -104,8 +104,17 @@
 
 .agent-usage-coverage {
   margin: -12px 0 0;
-  color: var(--muted);
+  border-left: 3px solid var(--warning);
+  background: var(--warning-surface);
+  color: var(--secondary-foreground);
   font-size: var(--text-meta);
+  line-height: var(--lh-prose);
+  padding: 10px 14px;
+}
+
+.agent-usage-coverage strong {
+  color: var(--foreground);
+  font-weight: var(--fw-semibold);
 }
 
 .agent-usage-analysis {

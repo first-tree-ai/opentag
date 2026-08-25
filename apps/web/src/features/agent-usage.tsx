@@ -101,12 +101,11 @@ function UsageSummaryState({ state, compact = false }: { state: UsageState; comp
 }
 
 function UsageMetrics({ usage }: { usage: AgentUsageDetail }) {
-  const average = usage.measuredTasks > 0 ? formatUsageNumber(usage.tokens / usage.measuredTasks) : "—";
   return (
     <dl className="agent-usage-metrics" aria-label={`Agent usage for the last ${usage.windowDays} days`}>
-      <Metric label="Tokens" value={formatUsageNumber(usage.tokens)} primary />
+      <Metric label="Tokens recorded" value={formatUsageNumber(usage.tokens)} primary />
       <Metric label="Tasks" value={formatUsageNumber(usage.tasks)} />
-      <Metric label="Average per measured Task" value={average} />
+      <Metric label="Failed Tasks" value={formatUsageNumber(usage.failed)} />
     </dl>
   );
 }
@@ -115,9 +114,10 @@ function UsageCoverage({ usage }: { usage: AgentUsageDetail }) {
   if (usage.tasks === usage.measuredTasks) return null;
   return (
     <p className="agent-usage-coverage" role="status">
+      <strong>{usage.measuredTasks === 0 ? "Token data unavailable." : "Partial data."}</strong>{" "}
       {usage.measuredTasks === 0
-        ? `Token totals are unavailable for ${usage.tasks.toLocaleString()} Tasks.`
-        : `Token totals are available for ${usage.measuredTasks.toLocaleString()} of ${usage.tasks.toLocaleString()} Tasks.`}
+        ? `None of the ${usage.tasks.toLocaleString()} tasks reported token usage. Totals and charts may be empty.`
+        : `Token data is available for ${usage.measuredTasks.toLocaleString()} of ${usage.tasks.toLocaleString()} tasks. Totals and charts are partial.`}
     </p>
   );
 }

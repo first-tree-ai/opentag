@@ -1195,14 +1195,26 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Ada")).toBeTruthy();
   });
 
-  it("hides Workspace management in the single-Workspace shell", async () => {
+  it("keeps Workspace identity and its Admins reachable in the single-Workspace shell", async () => {
     installApi();
     window.history.replaceState({}, "", "/workspace");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Admins" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/admins");
-    expect(screen.queryByLabelText("Workspace name")).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Workspace" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/workspace");
+    expect(screen.getByRole("heading", { name: "Admins" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Invite Admin" })).toBeTruthy();
+    // The name reaches every invitation recipient and the identifier is required by the CLI, so a
+    // solo Admin has to be able to read and change them.
+    expect(screen.getByLabelText("Workspace name")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Save account profile" })).toBeNull();
+  });
+
+  it("redirects the retired Admins route onto the Workspace surface", async () => {
+    installApi();
+    window.history.replaceState({}, "", "/admins");
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Workspace" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/workspace");
   });
 
   it("keeps the Agent home focused on status, current work, and contact", async () => {
@@ -1975,7 +1987,7 @@ describe("OpenTag Web App Shell", () => {
     installApi();
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText } });
-    window.history.replaceState({}, "", "/admins");
+    window.history.replaceState({}, "", "/workspace");
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Admins" })).toBeTruthy();
@@ -1987,15 +1999,16 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(link.value));
   });
 
-  it("hides Workspace selection and management for a single Workspace", async () => {
+  it("hides only the selector for a single Workspace, not the Workspace itself", async () => {
     installApi();
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
 
+    // Choosing between scopes is meaningless with one; reading your own Workspace is not.
     expect(screen.queryByRole("group", { name: "Workspaces" })).toBeNull();
-    expect(screen.queryByRole("menuitem", { name: "Workspace management" })).toBeNull();
-    expect(screen.getByRole("menuitem", { name: "Admins" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Workspace" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Account" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Admins" })).toBeNull();
   });
 
   it("does not create an IM setup attempt while rendering Agent detail", async () => {
@@ -2544,17 +2557,17 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     const trigger = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.click(trigger);
-    const admins = screen.getByRole("menuitem", { name: "Admins" });
+    const workspace = screen.getByRole("menuitem", { name: "Workspace" });
     const account = screen.getByRole("menuitem", { name: "Account" });
     const signOut = screen.getByRole("menuitem", { name: "Sign out" });
-    expect(document.activeElement).toBe(admins);
-    fireEvent.keyDown(admins, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(workspace);
+    fireEvent.keyDown(workspace, { key: "ArrowDown" });
     expect(document.activeElement).toBe(account);
     fireEvent.keyDown(account, { key: "ArrowDown" });
     expect(document.activeElement).toBe(signOut);
     fireEvent.keyDown(signOut, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(admins);
-    fireEvent.keyDown(admins, { key: "End" });
+    expect(document.activeElement).toBe(workspace);
+    fireEvent.keyDown(workspace, { key: "End" });
     expect(document.activeElement).toBe(signOut);
     fireEvent.keyDown(signOut, { key: "Escape" });
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();

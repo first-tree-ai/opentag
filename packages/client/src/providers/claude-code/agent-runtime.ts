@@ -2,6 +2,7 @@ import { type ChildProcessWithoutNullStreams, execFile } from "node:child_proces
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { promisify } from "node:util";
+import { getRuntimeConfigurationOptions } from "@opentag/shared";
 import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import {
@@ -40,7 +41,6 @@ import {
 const execFileAsync = promisify(execFile);
 const CLAUDE_CODE_BINDING_SCHEMA_VERSION = 1;
 const CLAUDE_CODE_PROVIDER_ID = "claude-code";
-const CLAUDE_CODE_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultracode"]);
 
 export const CLAUDE_CODE_AGENT_RUNTIME_MANIFEST: AgentRuntimeManifest = Object.freeze({
   providerId: CLAUDE_CODE_PROVIDER_ID,
@@ -831,7 +831,10 @@ function validateConfiguration(configuration: AgentRunConfiguration | undefined)
   if (configuration.model !== undefined && configuration.model.trim().length === 0) {
     throw new AgentRuntimeError("configuration_invalid", "model must be non-empty");
   }
-  if (configuration.reasoningEffort && !CLAUDE_CODE_EFFORTS.has(configuration.reasoningEffort)) {
+  if (
+    configuration.reasoningEffort &&
+    !getRuntimeConfigurationOptions("claude-code").reasoningEffortAllowedValues.includes(configuration.reasoningEffort)
+  ) {
     throw new AgentRuntimeError("configuration_invalid", "Claude Code reasoning effort is unsupported");
   }
   parseProviderConfiguration(configuration.provider);

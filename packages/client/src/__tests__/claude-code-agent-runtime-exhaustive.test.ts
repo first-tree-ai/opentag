@@ -2,6 +2,7 @@ import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { getRuntimeConfigurationOptions } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentRunConfiguration,
@@ -475,6 +476,27 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     }
   });
 
+  it("forwards every supported Claude Code effort to the controlled process", async () => {
+    const supportedEfforts = ["low", "medium", "high", "xhigh", "max"] as const;
+    expect(getRuntimeConfigurationOptions("claude-code").reasoningEffortAllowedValues).toEqual(supportedEfforts);
+
+    for (const reasoningEffort of supportedEfforts) {
+      const process = new ManualClaudeCodeProcess([successResult()]);
+      const runtime = await factory(process).create(withConfiguration({ reasoningEffort }));
+
+      await runtime.prompt({ runId: `effort-${reasoningEffort}`, input: input("args") });
+
+      expect(argumentAfter(process.args, "--effort")).toBe(reasoningEffort);
+      await runtime.close();
+    }
+
+    const rejectedProcess = new ManualClaudeCodeProcess([successResult()]);
+    await expect(factory(rejectedProcess).create(withConfiguration({ reasoningEffort: "ultracode" }))).rejects.toThrow(
+      "reasoning effort",
+    );
+    expect(rejectedProcess.args).toEqual([]);
+  });
+
   it.each([
     {
       scenario: "foreign-init",
@@ -745,7 +767,7 @@ function createRequest(eventSink: CreateAgentRuntimeRequest["eventSink"]): Creat
     },
     configuration: {
       model: "claude-test",
-      reasoningEffort: "high",
+      reasoningEffort: "max",
       provider: { maxBudgetUsd: 1.5, maxTurns: 5 },
     },
   };

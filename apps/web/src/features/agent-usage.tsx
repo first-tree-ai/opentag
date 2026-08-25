@@ -79,7 +79,6 @@ function UsageSummaryState({ state, compact = false }: { state: UsageState; comp
       <div aria-label="Loading Agent usage" className="agent-usage-loading" role="status">
         <span />
         <span />
-        <span />
       </div>
     );
   }
@@ -109,14 +108,15 @@ function UsageMetrics({ usage }: { usage: AgentUsageDetail }) {
   );
 }
 
-function UsageCoverage({ usage }: { usage: AgentUsageDetail }) {
+function UsageCoverage({ usage, includesCharts = false }: { usage: AgentUsageDetail; includesCharts?: boolean }) {
   if (usage.tasks === usage.measuredTasks) return null;
+  const affectedContent = includesCharts ? "Token totals and charts" : "Token totals";
   return (
     <p className="agent-usage-coverage" role="status">
       <strong>{usage.measuredTasks === 0 ? "Token data unavailable." : "Partial data."}</strong>{" "}
       {usage.measuredTasks === 0
-        ? `None of the ${usage.tasks.toLocaleString()} tasks reported token usage. Totals and charts may be empty.`
-        : `Token data is available for ${usage.measuredTasks.toLocaleString()} of ${usage.tasks.toLocaleString()} tasks. Totals and charts are partial.`}
+        ? `None of the ${usage.tasks.toLocaleString()} tasks reported token usage. ${affectedContent} may be empty.`
+        : `Token data is available for ${usage.measuredTasks.toLocaleString()} of ${usage.tasks.toLocaleString()} tasks. ${affectedContent} are partial.`}
     </p>
   );
 }
@@ -134,7 +134,7 @@ function AgentUsageDetailContent({ usage }: { usage: AgentUsageDetail }) {
   return (
     <>
       <UsageMetrics usage={usage} />
-      <UsageCoverage usage={usage} />
+      <UsageCoverage usage={usage} includesCharts />
       <div className="agent-usage-analysis">
         <section aria-labelledby="agent-usage-trend-heading">
           <header className="agent-usage-subheading">

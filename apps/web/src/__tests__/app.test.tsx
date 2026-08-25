@@ -1493,7 +1493,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText("Average per measured Task")).toBeNull();
     expect(screen.getByText("Partial data.")).toBeTruthy();
     expect(screen.getByRole("status").textContent).toBe(
-      "Partial data. Token data is available for 31 of 32 tasks. Totals and charts are partial.",
+      "Partial data. Token data is available for 31 of 32 tasks. Token totals and charts are partial.",
     );
     expect(screen.getByRole("heading", { name: "Token usage over time" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Token breakdown" })).toBeTruthy();
@@ -1510,6 +1510,48 @@ describe("OpenTag Web App Shell", () => {
       ).toBe(true),
     );
     expect(await screen.findByRole("img", { name: /428K Tokens used during the last 7 days/ })).toBeTruthy();
+  });
+
+  it("explains when no Tasks report Token usage", async () => {
+    installApi("admin", {
+      agentUsage: {
+        tasks: 4,
+        measuredTasks: 0,
+        failed: 0,
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        tokens: 0,
+        daily: [],
+      },
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/usage`);
+    render(<App />);
+
+    expect((await screen.findByText("Token data unavailable.")).closest("[role='status']")?.textContent).toBe(
+      "Token data unavailable. None of the 4 tasks reported token usage. Token totals and charts may be empty.",
+    );
+  });
+
+  it("keeps the Usage loading skeleton aligned with the two summary metrics", async () => {
+    installApi("admin");
+    const baseFetch = vi.mocked(fetch).getMockImplementation();
+    let releaseUsage = () => {};
+    const pendingUsage = new Promise<void>((resolve) => {
+      releaseUsage = resolve;
+    });
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).startsWith(`/api/v1/agents/${agentId}/usage?`)) await pendingUsage;
+      if (!baseFetch) throw new Error("Expected the base fetch implementation");
+      return baseFetch(input, init);
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/usage`);
+    render(<App />);
+
+    const loading = await screen.findByLabelText("Loading Agent usage");
+    expect(loading.children).toHaveLength(2);
+    releaseUsage();
+    expect(await screen.findByText("Partial data.")).toBeTruthy();
   });
 
   it("redirects legacy Agent URLs without keeping the old UI", async () => {

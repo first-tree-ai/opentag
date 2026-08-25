@@ -165,8 +165,12 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
       throw new Error("CLI daemon help exposes an internal or removed runtime command");
     }
     const loginHelp = run(binaryPath, ["login", "--help"]);
-    if (!loginHelp.stdout.includes("--no-start")) {
-      throw new Error("CLI login help is missing --no-start");
+    if (loginHelp.stdout.includes("--no-start")) {
+      throw new Error("CLI login help still exposes the removed daemon start option");
+    }
+    const computerConnectHelp = run(binaryPath, ["computer", "connect", "--help"]);
+    if (!computerConnectHelp.stdout.includes("--no-start")) {
+      throw new Error("CLI Computer connect help is missing --no-start");
     }
     const doctor = run(binaryPath, ["doctor", "--server-url", "http://127.0.0.1:1"], { expectedStatus: 1 });
     if (!doctor.stderr.includes("Network error:")) {

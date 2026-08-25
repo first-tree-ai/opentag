@@ -292,6 +292,7 @@ jobs:
             }
             process.stdout.write(result.connectCode);
           ' "$bootstrap")
+          team_id=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).teamId)' "$bootstrap")
 
           runtime_home=$(mktemp -d)
           daemon_log="$runtime_home/daemon.log"
@@ -303,12 +304,30 @@ jobs:
           }
           trap cleanup_runtime EXIT
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs \
-            login --server http://127.0.0.1:18000 --no-start -- "$connect_code"
+            login --server http://127.0.0.1:18000 -- "$connect_code"
           test -f "$runtime_home/config/credentials.json"
           test ! -e "$runtime_home/config/computer.json"
+          test ! -e "$runtime_home/config/computer-credentials.json"
           test ! -e "$runtime_home/data/computer.json"
           test ! -e "$runtime_home/credentials.json"
           test ! -e "$runtime_home/computer.json"
+          machine_connect_code=$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const credentials = JSON.parse(readFileSync(process.argv[1], "utf8"));
+            const response = await fetch(
+              `http://127.0.0.1:18000/api/v1/teams/${process.argv[2]}/computers/connect-codes`,
+              { method: "POST", headers: { authorization: `Bearer ${credentials.accessToken}` } },
+            );
+            if (!response.ok) throw new Error(`Computer connect-code issue failed: ${response.status}`);
+            const { bootstrapCommand } = await response.json();
+            const match = bootstrapCommand.match(/ -- ([A-Za-z0-9_-]+)$/u);
+            if (!match) throw new Error("Computer connect bootstrap command did not contain a code");
+            process.stdout.write(match[1]);
+          ' "$runtime_home/config/credentials.json" "$team_id")
+          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer connect \
+            --server http://127.0.0.1:18000 --no-start -- "$machine_connect_code"
+          test -f "$runtime_home/config/computer.json"
+          test -f "$runtime_home/config/computer-credentials.json"
           OPENTAG_HOME="$runtime_home" OPENTAG_SERVICE_MODE=1 node apps/cli/dist/cli/index.mjs daemon service-run \
             >"$daemon_log" 2>&1 &
           daemon_pid=$!

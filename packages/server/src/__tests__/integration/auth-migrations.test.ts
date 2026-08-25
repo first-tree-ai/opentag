@@ -79,13 +79,14 @@ describe("database migrations", () => {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    expect(journal.entries.slice(-6).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    expect(journal.entries.slice(-7).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 10, tag: "0010_optimal_jazinda" },
       { idx: 11, tag: "0011_staging_team_setup_repair" },
       { idx: 12, tag: "0012_supreme_maddog" },
       { idx: 13, tag: "0013_bizarre_gamma_corps" },
       { idx: 14, tag: "0014_illegal_wolfsbane" },
       { idx: 15, tag: "0015_red_sway" },
+      { idx: 16, tag: "0016_thin_flatman" },
     ]);
   });
 
@@ -319,6 +320,7 @@ describe("database migrations", () => {
             workspace_enrollments: number;
             machine_credentials: number;
             enrollment_presence_offline: boolean;
+            creator_owner_constraint_removed: boolean;
           }[]
         >`
           select
@@ -353,10 +355,14 @@ describe("database migrations", () => {
             not exists(
               select 1 from workspace_computers
               where current_instance_id is not null or connected_at is not null
-            ) as enrollment_presence_offline
+            ) as enrollment_presence_offline,
+            not exists(
+              select 1 from pg_constraint
+              where conrelid = 'agents'::regclass and conname = 'agents_manager_computer_owner_fk'
+            ) as creator_owner_constraint_removed
         `;
         expect(lifecycle).toEqual({
-          count: 16,
+          count: 17,
           creation_intents_null: true,
           deleted_at_exists: false,
           setup_completed_at_exists: true,
@@ -367,6 +373,7 @@ describe("database migrations", () => {
           workspace_enrollments: 4,
           machine_credentials: 0,
           enrollment_presence_offline: true,
+          creator_owner_constraint_removed: true,
         });
         const enrollmentStates = await sql<
           {
@@ -435,7 +442,7 @@ describe("database migrations", () => {
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(16);
+        expect(rerun?.count).toBe(17);
       } finally {
         await sql.end();
       }

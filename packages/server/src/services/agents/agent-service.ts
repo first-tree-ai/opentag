@@ -294,12 +294,19 @@ export class AgentService {
       return await this.#database.transaction(async (transaction) => {
         await this.#requireTeamMembershipForMutation(transaction, callerUserId, teamId, "admin");
         await this.#afterMembershipLocked?.();
-        const [computer] = await transaction
-          .select({ id: computers.id })
-          .from(computers)
-          .where(and(eq(computers.id, input.computerId), eq(computers.ownerUserId, callerUserId)))
-          .limit(1);
-        if (!computer) {
+        const [computerEnrollment] = await transaction
+          .select({ id: workspaceComputers.id })
+          .from(workspaceComputers)
+          .where(
+            and(
+              eq(workspaceComputers.workspaceId, teamId),
+              eq(workspaceComputers.computerId, input.computerId),
+              isNull(workspaceComputers.revokedAt),
+            ),
+          )
+          .limit(1)
+          .for("update");
+        if (!computerEnrollment) {
           throw new AgentServiceError(
             "COMPUTER_NOT_FOUND",
             "deterministic",

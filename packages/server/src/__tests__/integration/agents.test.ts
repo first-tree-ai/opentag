@@ -14,6 +14,7 @@ import {
   sessions,
   teams,
   users,
+  workspaceComputers,
 } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../services/runtime-config/index.js";
@@ -55,7 +56,7 @@ async function createUser(
   return user;
 }
 
-async function createComputer(database: DatabaseClient, ownerUserId: string) {
+async function createComputer(database: DatabaseClient, ownerUserId: string, workspaceId: string) {
   const [computer] = await database
     .insert(computers)
     .values({
@@ -68,6 +69,15 @@ async function createComputer(database: DatabaseClient, ownerUserId: string) {
     })
     .returning();
   if (!computer) throw new Error("Computer fixture was not created");
+  await database.insert(workspaceComputers).values({
+    workspaceId,
+    computerId: computer.id,
+    displayName: computer.displayName,
+    platform: computer.platform,
+    arch: computer.arch,
+    clientVersion: computer.clientVersion,
+    enrolledByUserId: ownerUserId,
+  });
   return computer;
 }
 
@@ -169,12 +179,11 @@ describe("Agent persistence and authorization", () => {
             conname: "agents_manager_membership_fk",
             definition: expect.stringContaining("ON DELETE RESTRICT"),
           }),
-          expect.objectContaining({
-            conname: "agents_manager_computer_owner_fk",
-            definition: expect.stringContaining("ON DELETE RESTRICT"),
-          }),
           expect.objectContaining({ conname: "agents_creation_intent_pair" }),
         ]),
+      );
+      expect(constraints).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ conname: "agents_manager_computer_owner_fk" })]),
       );
 
       const [activeNameIndex] = await value.sql<{ indexdef: string }[]>`
@@ -221,7 +230,7 @@ describe("Agent persistence and authorization", () => {
       await expect(value.service.listForTeam(value.bootstrap.userId, value.bootstrap.teamId)).resolves.toEqual({
         agents: [],
       });
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       const created = await value.service.createForTeam(
         value.bootstrap.userId,
         value.bootstrap.teamId,
@@ -264,7 +273,7 @@ describe("Agent persistence and authorization", () => {
     const value = await fixture();
     try {
       const now = new Date("2026-08-24T12:00:00.000Z");
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       const created = await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, {
         ...createInput(computer.id),
         runtimeProvider,
@@ -461,7 +470,7 @@ describe("Agent persistence and authorization", () => {
   it("replays one creation intent without creating a second Agent", async () => {
     const value = await fixture();
     try {
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       const input = {
         ...createInput(computer.id),
         creationIntentId: "a3adbe5e-8e8e-4ac2-a013-b026684ab185",
@@ -482,7 +491,7 @@ describe("Agent persistence and authorization", () => {
   it("serializes concurrent submissions of one creation intent", async () => {
     const value = await fixture();
     try {
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       const input = {
         ...createInput(computer.id),
         creationIntentId: "a3adbe5e-8e8e-4ac2-a013-b026684ab185",
@@ -503,7 +512,7 @@ describe("Agent persistence and authorization", () => {
   it("replays the original intent after the Agent changes", async () => {
     const value = await fixture();
     try {
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       const input = {
         ...createInput(computer.id),
         creationIntentId: "a3adbe5e-8e8e-4ac2-a013-b026684ab185",
@@ -528,7 +537,7 @@ describe("Agent persistence and authorization", () => {
   it("rejects replay after the Agent is deleted", async () => {
     const value = await fixture();
     try {
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       const input = {
         ...createInput(computer.id),
         creationIntentId: "a3adbe5e-8e8e-4ac2-a013-b026684ab185",
@@ -552,7 +561,7 @@ describe("Agent persistence and authorization", () => {
     const lockHeld = deferred<void>();
     const releaseUpdate = deferred<void>();
     try {
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       const input = {
         ...createInput(computer.id),
         creationIntentId: "a3adbe5e-8e8e-4ac2-a013-b026684ab185",
@@ -604,7 +613,7 @@ describe("Agent persistence and authorization", () => {
   it("rejects reuse of a creation intent for different Agent inputs", async () => {
     const value = await fixture();
     try {
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       const creationIntentId = "a3adbe5e-8e8e-4ac2-a013-b026684ab185";
       await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, {
         ...createInput(computer.id),
@@ -624,7 +633,7 @@ describe("Agent persistence and authorization", () => {
   it("keeps ordinary same-name creation conflicts distinct from intent replay", async () => {
     const value = await fixture();
     try {
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, {
         ...createInput(computer.id),
         creationIntentId: "a3adbe5e-8e8e-4ac2-a013-b026684ab185",
@@ -653,7 +662,7 @@ describe("Agent persistence and authorization", () => {
       markTableLocked = resolve;
     });
     try {
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, createInput(computer.id));
 
       const blockingTransaction = blocker.begin(async (transaction) => {
@@ -694,14 +703,14 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
-  it("rejects another user's Computer without exposing its ownership", async () => {
+  it("allows an Admin to use another Account's active Workspace Computer enrollment", async () => {
     const value = await fixture();
     try {
-      const other = await createUser(value.database, value.bootstrap.teamId, "other@example.com");
-      const computer = await createComputer(value.database, other.id);
+      const other = await createUser(value.database, value.bootstrap.teamId, "other@example.com", "admin");
+      const computer = await createComputer(value.database, other.id, value.bootstrap.teamId);
       await expect(
         value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, createInput(computer.id)),
-      ).rejects.toMatchObject({ code: "COMPUTER_NOT_FOUND", statusCode: 404 });
+      ).resolves.toMatchObject({ computerId: computer.id, managerUserId: value.bootstrap.userId });
     } finally {
       await value.sql.end();
     }
@@ -712,7 +721,7 @@ describe("Agent persistence and authorization", () => {
     try {
       const manager = await createUser(value.database, value.bootstrap.teamId, "manager@example.com", "admin");
       const member = await createUser(value.database, value.bootstrap.teamId, "member@example.com");
-      const managerComputer = await createComputer(value.database, manager.id);
+      const managerComputer = await createComputer(value.database, manager.id, value.bootstrap.teamId);
       const created = await value.service.createForTeam(
         manager.id,
         value.bootstrap.teamId,
@@ -753,7 +762,7 @@ describe("Agent persistence and authorization", () => {
         .returning();
       if (!otherTeam) throw new Error("Other Team fixture was not created");
       const outsider = await createUser(value.database, otherTeam.id, "outsider@example.com");
-      const outsiderComputer = await createComputer(value.database, outsider.id);
+      const outsiderComputer = await createComputer(value.database, outsider.id, value.bootstrap.teamId);
       await expect(value.service.getById(outsider.id, created.id)).rejects.toMatchObject({
         code: "RESOURCE_NOT_FOUND",
         statusCode: 404,
@@ -805,7 +814,7 @@ describe("Agent persistence and authorization", () => {
   it("uses revision compare-and-swap without overwriting a newer display name", async () => {
     const value = await fixture();
     try {
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       const created = await value.service.createForTeam(
         value.bootstrap.userId,
         value.bootstrap.teamId,
@@ -835,7 +844,7 @@ describe("Agent persistence and authorization", () => {
   it("updates runtime config atomically and advances only semantic runtime revisions", async () => {
     const value = await fixture();
     try {
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       const created = await value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, {
         ...createInput(computer.id),
         runtimeConfig: {
@@ -886,7 +895,7 @@ describe("Agent persistence and authorization", () => {
     const value = await fixture();
     try {
       const member = await createUser(value.database, value.bootstrap.teamId, "member-lifecycle@example.com");
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       const created = await value.service.createForTeam(
         value.bootstrap.userId,
         value.bootstrap.teamId,
@@ -936,7 +945,7 @@ describe("Agent persistence and authorization", () => {
         "lifecycle-admin@example.com",
         "admin",
       );
-      const computer = await createComputer(value.database, secondAdmin.id);
+      const computer = await createComputer(value.database, secondAdmin.id, value.bootstrap.teamId);
       const created = await value.service.createForTeam(
         secondAdmin.id,
         value.bootstrap.teamId,
@@ -977,7 +986,7 @@ describe("Agent persistence and authorization", () => {
   it("deletes only from suspended and permits active name reuse without reviving the old UUID", async () => {
     const value = await fixture();
     try {
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       const created = await value.service.createForTeam(
         value.bootstrap.userId,
         value.bootstrap.teamId,
@@ -1011,7 +1020,7 @@ describe("Agent persistence and authorization", () => {
   it("lets the partial unique index choose exactly one concurrent Team/name winner", async () => {
     const value = await fixture();
     try {
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       const settled = await Promise.allSettled([
         value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, createInput(computer.id)),
         value.service.createForTeam(value.bootstrap.userId, value.bootstrap.teamId, createInput(computer.id)),
@@ -1028,7 +1037,7 @@ describe("Agent persistence and authorization", () => {
   it("allows the same name in another Team and stores claude-code as configuration only", async () => {
     const value = await fixture();
     try {
-      const computer = await createComputer(value.database, value.bootstrap.userId);
+      const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.teamId);
       await value.service.createForTeam(
         value.bootstrap.userId,
         value.bootstrap.teamId,
@@ -1044,6 +1053,21 @@ describe("Agent persistence and authorization", () => {
         role: "admin",
         teamId: otherTeam.id,
         userId: value.bootstrap.userId,
+      });
+      await expect(
+        value.service.createForTeam(value.bootstrap.userId, otherTeam.id, {
+          ...createInput(computer.id, "assistant"),
+          runtimeProvider: "claude-code",
+        }),
+      ).rejects.toMatchObject({ code: "COMPUTER_NOT_FOUND", statusCode: 404 });
+      await value.database.insert(workspaceComputers).values({
+        workspaceId: otherTeam.id,
+        computerId: computer.id,
+        displayName: computer.displayName,
+        platform: computer.platform,
+        arch: computer.arch,
+        clientVersion: computer.clientVersion,
+        enrolledByUserId: value.bootstrap.userId,
       });
       const created = await value.service.createForTeam(value.bootstrap.userId, otherTeam.id, {
         ...createInput(computer.id, "assistant"),

@@ -53,11 +53,6 @@ export const agents = pgTable(
       foreignColumns: [memberships.teamId, memberships.userId],
       name: "agents_manager_membership_fk",
     }).onDelete("restrict"),
-    foreignKey({
-      columns: [table.computerId, table.managerUserId],
-      foreignColumns: [computers.id, computers.ownerUserId],
-      name: "agents_manager_computer_owner_fk",
-    }).onDelete("restrict"),
     check(
       "agents_creation_intent_pair",
       sql`(${table.creationIntentId} is null) = (${table.creationIntentFingerprint} is null)`,

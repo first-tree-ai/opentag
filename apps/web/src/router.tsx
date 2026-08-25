@@ -9,6 +9,7 @@ import type {
   ImBindingSummary,
   MeMembership,
   MeResponse,
+  ProviderReadinessStatus,
   TeamComputerSummary,
   TeamMemberSummary,
 } from "@opentag/shared/browser";
@@ -84,6 +85,8 @@ type AgentAvailability = {
   lastConfirmedAt: string | null;
   dependencies: {
     computer: { state: "ready" | "action_required" | "unconfirmed"; lastConfirmedAt: string | null };
+    /** Readiness of the Agent's Provider on its Computer. `runtime_unavailable` is diagnosed from this. */
+    runtime: { provider: AgentSummary["runtimeProvider"]; status: ProviderReadinessStatus | null };
     handoff: {
       state: "ready" | "action_required" | "setting_up" | "not_connected" | "unconfirmed";
       lastConfirmedAt: string | null;
@@ -115,6 +118,9 @@ function projectAgentAvailability(
   handoffEvidenceConfirmed: boolean,
 ): AgentAvailability {
   const computerReady = computer?.connectionStatus === "online";
+  const providerReadiness = computer?.providerReadiness?.find(
+    (observation) => observation.provider === agent.runtimeProvider,
+  );
   const handoffState =
     !bindingEvidenceConfirmed || !handoffEvidenceConfirmed
       ? ("unconfirmed" as const)
@@ -130,6 +136,7 @@ function projectAgentAvailability(
       state: computer ? (computerReady ? "ready" : "action_required") : "unconfirmed",
       lastConfirmedAt: computer?.lastSeenAt ?? null,
     },
+    runtime: { provider: agent.runtimeProvider, status: providerReadiness?.status ?? null },
     handoff: { state: handoffState, lastConfirmedAt: binding?.lastConfirmedAt ?? null },
     channel: {
       state: !bindingEvidenceConfirmed ? "unconfirmed" : binding ? "connected" : "not_connected",
@@ -151,9 +158,7 @@ function projectAgentAvailability(
       dependencies,
     };
   }
-  const runtimeReadiness = computer.providerReadiness?.find(
-    (observation) => observation.provider === agent.runtimeProvider,
-  );
+  const runtimeReadiness = providerReadiness;
   if (!runtimeReadiness) {
     return { state: "unconfirmed", reason: "runtime_unconfirmed", lastConfirmedAt: null, dependencies };
   }
@@ -1119,12 +1124,19 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
 }
 
 function AgentCard({ agent }: { agent: AgentListItem }) {
+  const { membership } = useTeam();
   const status = agentCardStatus(agent);
+  /**
+   * `AgentSettingsPage` bounces a viewer without `canManage` straight back to the Agent, and the list
+   * response carries no per-Agent capability. Mirror the server rule so a member never gets an exit
+   * that returns them to where they started.
+   */
+  const action = membership.role === "admin" ? status.action : undefined;
   const statusDetail: ReactNode =
     agent.activity.state === "working" && status.label === "Working" ? (
       <>Started {formatElapsedCompact(agent.activity.startedAt)} ago</>
     ) : status.detail ? (
-      status.action ? (
+      action ? (
         <>
           <span className="agent-state-reason">{status.detail}</span>
           <span className="agent-state-separator" aria-hidden="true">
@@ -1132,9 +1144,9 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           </span>
           <Link
             className={buttonClassName({ className: "agent-reconnect", variant: "inline" })}
-            to={`/agents/${agent.id}/settings/${status.action.section}`}
+            to={`/agents/${agent.id}/settings/${action.section}`}
           >
-            {status.action.label}
+            {action.label}
           </Link>
         </>
       ) : (
@@ -1205,7 +1217,8 @@ function agentCardStatus(agent: AgentListItem): {
       agent.availability.reason === "computer_offline"
         ? { action: { label: "View Computer", section: "computer" as const }, detail: "Computer offline" }
         : agent.availability.reason === "runtime_unavailable"
-          ? { action: { label: "View runtime", section: "execution" as const }, detail: "Computer not ready" }
+          ? // Provider readiness is observed per Computer, so the Computer page is where it is explained.
+            { action: { label: "View Computer", section: "computer" as const }, detail: "Computer not ready" }
           : { action: { label: "View messaging", section: "messaging" as const }, detail: "Messaging unavailable" };
     return {
       action,
@@ -2129,19 +2142,41 @@ function GeneralConfigForm({
   );
 }
 
+/**
+ * Names the machine-level action that resolves the failure. Recovery is stated against the Computer
+ * rather than a person: the Workspace has no authoritative operator field, and issue #125 makes the
+ * Agent creator audit-only while stating that enrollment implies no control of the physical host.
+ */
+function computerRecoveryMessage(agent: AgentDetailView): string {
+  const computerName = agent.computer.displayName;
+  if (agent.availability.reason === "runtime_unavailable") {
+    const { provider, status } = agent.availability.dependencies.runtime;
+    const providerName = provider === "codex" ? "Codex" : "Claude Code";
+    if (status === "install") return `${providerName} is not installed on ${computerName}.`;
+    if (status === "sign-in") return `${providerName} is not signed in on ${computerName}.`;
+    if (status === "checking") return `OpenTag is still checking ${providerName} on ${computerName}.`;
+    return `${providerName} is unavailable on ${computerName}.`;
+  }
+  if (agent.availability.dependencies.computer.state !== "action_required") {
+    return "OpenTag could not confirm this Computer's current connection.";
+  }
+  return `OpenTag is not running on ${computerName}. Start it there to bring this Computer back online.`;
+}
+
 function AgentComputerSettings({ agent }: { agent: AgentDetailView }) {
-  const { me } = useTeam();
   const computerState = agent.availability.dependencies.computer;
-  const ready = computerState.state === "ready";
-  const offline = computerState.state === "action_required";
-  const computerStatus = ready ? "Online" : offline ? "Offline" : "Unable to confirm";
-  const computerTone: StatusTone = ready ? "success" : offline ? "warning" : "neutral";
-  /**
-   * `agents_manager_computer_owner_fk` makes the Agent manager the owner of the bound Computer, so the
-   * manager is the person who can physically bring it back. Issue #125 drops that foreign key; once
-   * Workspace Computer enrollments carry an operator, read the contact from the enrollment instead.
-   */
-  const viewerOwnsComputer = agent.manager.userId === me.user.id;
+  const runtimeUnavailable = agent.availability.reason === "runtime_unavailable";
+  // A reachable Computer that cannot run this Agent's Provider is not "Online" for this Agent.
+  const ready = computerState.state === "ready" && !runtimeUnavailable;
+  const blocked = computerState.state === "action_required" || runtimeUnavailable;
+  const computerStatus = ready
+    ? "Online"
+    : blocked
+      ? runtimeUnavailable
+        ? "Not ready"
+        : "Offline"
+      : "Unable to confirm";
+  const computerTone: StatusTone = ready ? "success" : blocked ? "warning" : "neutral";
   return (
     <div className="agent-runtime-stack agent-settings-section-page">
       <section aria-labelledby="computer-heading" className="agent-runtime-section agent-runtime-computer">
@@ -2150,8 +2185,6 @@ function AgentComputerSettings({ agent }: { agent: AgentDetailView }) {
             <h1 id="computer-heading">
               {agent.computer.displayName} · {platformLabel(agent.computer.platform)}
             </h1>
-            {/* Carries the immutable assignment in every state, so a missing "move it" control reads as a rule. */}
-            <p>{agent.displayName} runs only on this Computer.</p>
           </div>
           <StatusIndicator label={computerStatus} tone={computerTone} />
         </header>
@@ -2164,13 +2197,7 @@ function AgentComputerSettings({ agent }: { agent: AgentDetailView }) {
                   {formatDate(computerState.lastConfirmedAt)}
                 </p>
               ) : null}
-              <p>
-                {offline
-                  ? viewerOwnsComputer
-                    ? `Open OpenTag on ${agent.computer.displayName} to bring it back online.`
-                    : `Ask ${agent.manager.displayName} to bring it back online.`
-                  : "OpenTag could not confirm this Computer's current connection."}
-              </p>
+              <p>{computerRecoveryMessage(agent)}</p>
             </div>
           </div>
         )}
@@ -3303,7 +3330,7 @@ function availabilityTone(state: AgentAvailability["state"]): StatusTone {
 function availabilityStateLabel(state: AgentAvailability["state"]): string {
   const labels = {
     ready: "Ready",
-    action_required: "Action required",
+    action_required: "Needs attention",
     setting_up: "Setting up",
     not_connected: "Not connected",
     suspended: "Suspended",
@@ -3353,13 +3380,13 @@ function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to:
     agent.availability.reason === "im_reauthorization_required" ||
     agent.availability.reason === "im_error"
   ) {
-    return { label: "Review messaging", to: `/agents/${agent.id}/settings/messaging` };
+    return { label: "View messaging", to: `/agents/${agent.id}/settings/messaging` };
   }
   if (agent.availability.reason === "handoff_unavailable") {
-    return { label: "Review messaging", to: `/agents/${agent.id}/settings/messaging` };
+    return { label: "View messaging", to: `/agents/${agent.id}/settings/messaging` };
   }
   if (agent.availability.state === "unconfirmed") return undefined;
-  return { label: "Review Computer", to: `/agents/${agent.id}/settings/computer` };
+  return { label: "View Computer", to: `/agents/${agent.id}/settings/computer` };
 }
 
 function agentRecoveryMessage(agent: AgentDetailView): string {

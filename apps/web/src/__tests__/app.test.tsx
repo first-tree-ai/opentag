@@ -1605,7 +1605,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByText(/Last seen/i)).toBeNull();
   });
 
-  it("names who can recover an offline Computer instead of offering a dead retry", async () => {
+  it("names the machine-level recovery for an offline Computer instead of offering a dead retry", async () => {
     installApi("admin", { bound: true, computerStatus: () => "offline" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
@@ -1613,9 +1613,37 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Ada's Mac · macOS" })).toBeTruthy();
     expect(screen.getByText("Offline")).toBeTruthy();
     expect(screen.getByText(/Last seen/)).toBeTruthy();
-    expect(screen.getByText("Open OpenTag on Ada's Mac to bring it back online.")).toBeTruthy();
-    expect(screen.getByText("Reviewer runs only on this Computer.")).toBeTruthy();
+    expect(
+      screen.getByText("OpenTag is not running on Ada's Mac. Start it there to bring this Computer back online."),
+    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
+  });
+
+  it("explains an unready Provider on the Computer page instead of the model settings", async () => {
+    installApi("admin", {
+      bound: true,
+      runtimeProvider: "claude-code",
+      computerProviderReadiness: [
+        { provider: "codex", status: "ready", observedAt: "2026-08-20T00:00:00.000Z" },
+        { provider: "claude-code", status: "sign-in", observedAt: "2026-08-20T00:00:00.000Z" },
+      ],
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Ada's Mac · macOS" })).toBeTruthy();
+    expect(screen.getByText("Not ready")).toBeTruthy();
+    expect(screen.getByText("Claude Code is not signed in on Ada's Mac.")).toBeTruthy();
+  });
+
+  it("hides failure exits from viewers who cannot open Agent settings", async () => {
+    installApi("member", { bound: true, computerStatus: () => "offline", handoffReady: true });
+    window.history.replaceState({}, "", "/agents");
+    render(<App />);
+
+    expect(await screen.findByText("Needs attention")).toBeTruthy();
+    expect(screen.getByText("Computer offline")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "View Computer" })).toBeNull();
   });
 
   it("refreshes Agent availability when the page regains focus", async () => {
@@ -1628,7 +1656,7 @@ describe("OpenTag Web App Shell", () => {
     computerStatus = "offline";
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("The assigned Computer is offline, so new requests cannot start.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Review Computer" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View Computer" })).toBeTruthy();
   });
 
   it("keeps Agent cards useful when Computer status cannot be confirmed", async () => {
@@ -1661,8 +1689,8 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByText("Needs attention")).toBeTruthy();
     expect(screen.getByText("Computer not ready")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "View runtime" }).getAttribute("href")).toBe(
-      `/agents/${agentId}/settings/execution`,
+    expect(screen.getByRole("link", { name: "View Computer" }).getAttribute("href")).toBe(
+      `/agents/${agentId}/settings/computer`,
     );
     expect(screen.queryByText("Available")).toBeNull();
   });
@@ -1673,8 +1701,11 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
+    // The detail status names the same state as the Agent list, so one failure has one name.
+    expect(screen.getAllByText("Needs attention").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Action required")).toBeNull();
     expect(screen.getByText("Messages cannot currently be handed off to this Agent.")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Review messaging" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View messaging" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Current work" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Where to use this Agent" })).toBeTruthy();
     expect(screen.queryByText("Handoff")).toBeNull();

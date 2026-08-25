@@ -90,6 +90,68 @@ describe("SessionRuntimeManager", () => {
     await manager.close();
   });
 
+  it("re-prepares an existing runtime when negotiated collaboration tools are enabled or disabled", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-runtime-capability-change-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const factory = new FakeFactory();
+    let collaborationEnabled = false;
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      hostedToolsForSession: () =>
+        collaborationEnabled
+          ? {
+              definitions: [
+                {
+                  name: "send_session_message",
+                  description: "Send a Session message",
+                  inputSchema: { type: "object", properties: {} },
+                },
+              ],
+              handler: vi.fn(),
+            }
+          : undefined,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const request = reconcile(computerId, snapshot(1));
+
+    expect(manager.requiresSessionPreparation(request)).toBe(false);
+    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime(request.sessionId);
+    expect(factory.created[0]?.hostedTools).toBeUndefined();
+
+    collaborationEnabled = true;
+    await expect(reconciler.reconcile({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(factory.runtimes[0]?.closed).toBe(true);
+    await manager.ensureRuntime(request.sessionId);
+    expect(factory.resumed).toEqual([binding("thread-1")]);
+    expect(factory.resumedRequests[0]?.hostedTools?.definitions.map(({ name }) => name)).toEqual([
+      "send_session_message",
+    ]);
+
+    collaborationEnabled = false;
+    await expect(reconciler.reconcile({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(factory.runtimes[1]?.closed).toBe(true);
+    await manager.ensureRuntime(request.sessionId);
+    expect(factory.resumed).toEqual([binding("thread-1"), binding("thread-1")]);
+    expect(factory.resumedRequests[1]?.hostedTools).toBeUndefined();
+
+    await expect(reconciler.reconcile({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(factory.runtimes).toHaveLength(3);
+    await manager.close();
+  });
+
   it("durably creates, reuses, upgrades, resumes, and stops Session-scoped runtimes", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-session-runtime-"));
     homes.push(home);
@@ -707,6 +769,7 @@ class FakeFactory implements AgentRuntimeFactory {
   };
   readonly created: CreateAgentRuntimeRequest[] = [];
   readonly resumed: AgentRuntimeBinding[] = [];
+  readonly resumedRequests: ResumeAgentRuntimeRequest[] = [];
   readonly runtimes: FakeRuntime[] = [];
   readonly #withoutBinding: boolean;
   readonly #closeGate?: Promise<void>;
@@ -739,6 +802,7 @@ class FakeFactory implements AgentRuntimeFactory {
 
   async resume(request: ResumeAgentRuntimeRequest): Promise<AgentRuntime> {
     this.resumed.push(request.binding);
+    this.resumedRequests.push(request);
     return this.#open(request, request.binding);
   }
 

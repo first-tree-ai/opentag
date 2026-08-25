@@ -18,6 +18,8 @@ interface ManagedSessionRuntime {
   readonly providerId: string;
   readonly snapshot: EffectiveRuntimeSnapshot;
   readonly sessionKind: "visible" | "internal";
+  readonly hostedTools?: AgentHostedTools;
+  readonly hostedToolsFingerprint?: string;
   readonly placementGeneration: number;
   binding: LocalSessionBinding;
   eventSink?: AgentRuntimeEventSink;
@@ -92,6 +94,12 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     return this.#workspace.verifyAgent(snapshot, hashes);
   }
 
+  requiresSessionPreparation(request: SessionReconcileRequest): boolean {
+    const current = this.#sessions.get(request.sessionId);
+    if (!current) return false;
+    return current.hostedToolsFingerprint !== this.#hostedTools(request).fingerprint;
+  }
+
   prepareSession(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): Promise<SessionPreparationResult> {
     this.#assertOpen();
     const operation = this.#prepareSession(request, hashes);
@@ -112,6 +120,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     if (!this.#providers.registration(snapshot.provider)) {
       throw new Error(`Agent Runtime provider is not registered: ${snapshot.provider}`);
     }
+    const hostedTools = this.#hostedTools(request);
 
     const current = this.#sessions.get(request.sessionId);
     if (
@@ -119,7 +128,8 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       current.effectiveSnapshotHash === hashes.effectiveSnapshotHash &&
       current.providerId === snapshot.provider &&
       current.placementGeneration === request.placementGeneration &&
-      current.sessionKind === (request.sessionKind ?? "visible")
+      current.sessionKind === (request.sessionKind ?? "visible") &&
+      current.hostedToolsFingerprint === hostedTools.fingerprint
     ) {
       current.binding = prepared.binding;
       if (current.runtime?.state.phase === "closed") current.runtime = undefined;
@@ -143,6 +153,8 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       binding: prepared.binding,
       cwd,
       effectiveSnapshotHash: hashes.effectiveSnapshotHash,
+      hostedTools: hostedTools.tools,
+      hostedToolsFingerprint: hostedTools.fingerprint,
       providerId: snapshot.provider,
       sessionKind: request.sessionKind ?? "visible",
       placementGeneration: request.placementGeneration,
@@ -193,12 +205,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     };
     const common = {
       eventSink,
-      hostedTools: this.#hostedToolsForSession?.({
-        agentId: managed.agentId,
-        sessionId: managed.binding.sessionId,
-        placementGeneration: managed.placementGeneration,
-        sessionKind: managed.sessionKind,
-      }),
+      hostedTools: managed.hostedTools,
       systemPrompt: renderManagedSystemPrompt(managed.snapshot),
       workspace: {
         cwd: managed.cwd,
@@ -252,6 +259,19 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       }
       throw error;
     }
+  }
+
+  #hostedTools(request: SessionReconcileRequest): {
+    tools: AgentHostedTools | undefined;
+    fingerprint: string | undefined;
+  } {
+    const tools = this.#hostedToolsForSession?.({
+      agentId: request.agentId,
+      sessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      sessionKind: request.sessionKind ?? "visible",
+    });
+    return { tools, fingerprint: tools ? JSON.stringify(tools.definitions) : undefined };
   }
 
   async stopSession(sessionId: string, placementGeneration: number): Promise<void> {

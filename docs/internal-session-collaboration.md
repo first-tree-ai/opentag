@@ -34,6 +34,9 @@ a message fact is created.
 The Client and Server expose collaboration only when runtime protocol v2 negotiates the optional
 `runtime.sessionCollaboration` capability. Existing v1 connections and v2 peers without that capability continue to use
 the existing IM and Agent Runtime paths without seeing collaboration tools or internal-Session reconcile fields.
+When a reconnect changes the negotiated hosted-tool set, the Client re-prepares existing idle Sessions even when their
+placement and runtime revisions are unchanged. The old provider runtime is closed before the Session resumes with the
+newly negotiated tool surface.
 
 Codex App Server registers dynamic tools only when a thread starts. When a durable Codex binding predates collaboration,
 the Client replaces that provider thread once and records the hosted-tool definition hash in the binding. Later starts

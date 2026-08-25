@@ -25,6 +25,7 @@ export interface SessionActivity extends SessionTurnIdentity {
 export interface RuntimePreparation {
   prepareAgent(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void>;
   verifyAgent?(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void>;
+  requiresSessionPreparation?(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): boolean;
   prepareSession(
     request: SessionReconcileRequest,
     hashes: RuntimeSnapshotHashes,
@@ -344,7 +345,8 @@ export class SessionReconciler {
       !existingSession ||
       request.placementGeneration > existingSession.placementGeneration ||
       snapshot.revision.session.sequence > existingSession.revisionSequence ||
-      existingSession.status === "stopped";
+      existingSession.status === "stopped" ||
+      this.#preparation.requiresSessionPreparation?.(request, hashes) === true;
     if (shouldPrepareAgent) await this.#preparation.prepareAgent(snapshot, hashes);
     else await this.#preparation.verifyAgent?.(snapshot, hashes);
     const preparedSession = shouldPrepareSession ? await this.#preparation.prepareSession(request, hashes) : undefined;

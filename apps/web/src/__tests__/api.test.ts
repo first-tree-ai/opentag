@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, BrowserApi } from "../api.js";
 
-const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
+const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 
 function setDocumentCookie(value: string): void {
@@ -39,9 +39,9 @@ describe("BrowserApi", () => {
     const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
     const config = {
       id: agentId,
-      teamId,
-      managerUserId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
-      computerId: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
+      workspaceId,
+      createdByUserId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e",
+      computerId: "98db056b-730c-4263-9d3d-8ec079833dba",
       name: "reviewer",
       displayName: "Reviewer",
       runtimeProvider: "codex",
@@ -70,56 +70,42 @@ describe("BrowserApi", () => {
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 
-  it("updates a Team member role with the browser mutation contract", async () => {
+  it("revokes a Workspace Admin with the browser mutation contract", async () => {
     setDocumentCookie("opentag_csrf=member-csrf; Path=/");
-    const updatedMember = {
-      teamId,
-      userId,
-      email: "ada@example.com",
-      displayName: "Ada",
-      role: "member" as const,
-      status: "active" as const,
-      createdAt: "2030-01-01T00:00:00.000Z",
-      updatedAt: "2030-01-01T00:01:00.000Z",
-    };
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
-      expect(String(input)).toBe(`/api/v1/teams/${teamId}/members/${userId}`);
-      expect(init?.method).toBe("PATCH");
-      expect(init?.body).toBe(JSON.stringify({ role: "member" }));
-      expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
+      expect(String(input)).toBe(`/api/v1/workspaces/${workspaceId}/admins/${userId}`);
+      expect(init?.method).toBe("DELETE");
       expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("member-csrf");
-      return new Response(JSON.stringify(updatedMember), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+      return new Response(null, { status: 204 });
     });
 
-    await expect(new BrowserApi(fetchImpl).updateTeamMember(teamId, userId, { role: "member" })).resolves.toEqual(
-      updatedMember,
-    );
+    await expect(new BrowserApi(fetchImpl).revokeWorkspaceAdmin(workspaceId, userId)).resolves.toBeUndefined();
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 
-  it("updates Team profile fields with the browser mutation contract", async () => {
-    setDocumentCookie("opentag_csrf=team-csrf; Path=/");
+  it("updates Workspace profile fields with the browser mutation contract", async () => {
+    setDocumentCookie("opentag_csrf=workspace-csrf; Path=/");
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
-      expect(String(input)).toBe(`/api/v1/teams/${teamId}`);
+      expect(String(input)).toBe(`/api/v1/workspaces/${workspaceId}`);
       expect(init?.method).toBe("PATCH");
-      expect(init?.body).toBe(JSON.stringify({ name: "renamed-team", displayName: "Renamed Team" }));
-      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("team-csrf");
+      expect(init?.body).toBe(JSON.stringify({ name: "renamed-workspace", displayName: "Renamed Workspace" }));
+      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("workspace-csrf");
       return new Response(
         JSON.stringify({
-          id: teamId,
-          name: "renamed-team",
-          displayName: "Renamed Team",
+          id: workspaceId,
+          name: "renamed-workspace",
+          displayName: "Renamed Workspace",
           updatedAt: "2030-01-01T00:00:00.000Z",
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
     });
     await expect(
-      new BrowserApi(fetchImpl).updateTeam(teamId, { name: "renamed-team", displayName: "Renamed Team" }),
-    ).resolves.toMatchObject({ id: teamId, name: "renamed-team" });
+      new BrowserApi(fetchImpl).updateWorkspace(workspaceId, {
+        name: "renamed-workspace",
+        displayName: "Renamed Workspace",
+      }),
+    ).resolves.toMatchObject({ id: workspaceId, name: "renamed-workspace" });
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 
@@ -165,7 +151,7 @@ describe("BrowserApi", () => {
               email: "admin@example.com",
               displayName: "Admin",
             },
-            memberships: [],
+            workspaces: [],
           }),
           { status: 200, headers: { "content-type": "application/json" } },
         ),
@@ -182,7 +168,7 @@ describe("BrowserApi", () => {
       const url = String(input);
       const headers = new Headers(init?.headers);
       if (fetchImpl.mock.calls.length === 1) {
-        expect(url).toContain("/redeem");
+        expect(url).toContain("/accept");
         expect(headers.get("X-OpenTag-CSRF")).toBe("old-token");
         return new Response(null, { status: 401 });
       }
@@ -191,45 +177,49 @@ describe("BrowserApi", () => {
         setDocumentCookie("opentag_csrf=new-token; Path=/");
         return new Response(null, { status: 204 });
       }
-      expect(url).toContain("/redeem");
+      expect(url).toContain("/accept");
       expect(headers.get("X-OpenTag-CSRF")).toBe("new-token");
       return new Response(
         JSON.stringify({
-          membership: { teamId, teamName: "example", teamDisplayName: "Example", role: "member" },
+          workspace: {
+            id: workspaceId,
+            name: "example",
+            displayName: "Example",
+            setupCompletedAt: null,
+            grantedAt: "2030-01-01T00:00:00.000Z",
+          },
         }),
         { status: 200, headers: { "content-type": "application/json" } },
       );
     });
 
-    await expect(new BrowserApi(fetchImpl).redeemInvitation("A".repeat(32))).resolves.toMatchObject({
-      membership: { teamId },
+    await expect(new BrowserApi(fetchImpl).acceptAdminInvitation("A".repeat(32))).resolves.toMatchObject({
+      workspace: { id: workspaceId },
     });
     expect(fetchImpl).toHaveBeenCalledTimes(3);
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 
-  it("creates and rotates Team invitation links through explicit CSRF-protected mutations", async () => {
+  it("creates a single-use Admin invitation through an explicit CSRF-protected mutation", async () => {
     setDocumentCookie("opentag_csrf=invite-csrf; Path=/");
     const invitation = {
       token: "A".repeat(43),
       inviteUrl: `https://opentag.example.com/invites/${"A".repeat(43)}`,
-      role: "member" as const,
       expiresAt: "2030-01-01T00:00:00.000Z",
     };
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       expect(init?.method).toBe("POST");
       expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("invite-csrf");
       const path = String(input);
-      expect([`/api/v1/teams/${teamId}/invitation`, `/api/v1/teams/${teamId}/invitation/rotate`]).toContain(path);
+      expect(path).toBe(`/api/v1/workspaces/${workspaceId}/admin-invitations`);
       return new Response(JSON.stringify(invitation), {
-        status: path.endsWith("/rotate") ? 200 : 201,
+        status: 201,
         headers: { "content-type": "application/json" },
       });
     });
     const api = new BrowserApi(fetchImpl);
-    await expect(api.createInvitation(teamId)).resolves.toEqual(invitation);
-    await expect(api.rotateInvitation(teamId)).resolves.toEqual(invitation);
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    await expect(api.createAdminInvitation(workspaceId)).resolves.toEqual(invitation);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 
@@ -318,15 +308,12 @@ describe("BrowserApi", () => {
     expect(untypedError.issues).toBeUndefined();
   });
 
-  it("mints a connect command with CSRF and lists only the current user's Computers", async () => {
+  it("mints a connect command with CSRF and lists the Workspace enrollments", async () => {
     setDocumentCookie("opentag_csrf=connect-csrf; Path=/");
     const computer = {
-      id: "85fe9af3-d1c6-472b-b78c-8a7ccf512750",
-      ownerUserId: userId,
+      computerId: userId,
       displayName: "workstation",
       platform: "linux",
-      arch: "x64",
-      clientVersion: "0.0.1",
       connectionStatus: "online",
       providerReadiness: [
         {
@@ -337,22 +324,25 @@ describe("BrowserApi", () => {
       ],
       connectedAt: "2030-01-01T00:00:00.000Z",
       lastSeenAt: "2030-01-01T00:00:01.000Z",
+      observedAt: "2030-01-01T00:00:01.000Z",
+      enrolledAt: "2030-01-01T00:00:00.000Z",
+      agentIds: [],
     };
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
-      if (String(input) === "/api/v1/me/computers") {
+      if (String(input) === `/api/v1/workspaces/${workspaceId}/computers`) {
         expect(new Headers(init?.headers).get("x-opentag-provider-readiness")).toBe("1");
         return new Response(JSON.stringify({ computers: [computer] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
       }
-      expect(String(input)).toBe("/api/v1/me/connect-codes");
+      expect(String(input)).toBe(`/api/v1/workspaces/${workspaceId}/computer-connect-codes`);
       expect(init?.method).toBe("POST");
       expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("connect-csrf");
-      expect(init?.body).toBe(JSON.stringify({ teamId }));
+      expect(init?.body).toBeUndefined();
       return new Response(
         JSON.stringify({
-          bootstrapCommand: `./scripts/dev-install.sh && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/opentag-dev" login --server http://127.0.0.1:8000 -- code`,
+          bootstrapCommand: `opentag computer connect --server http://127.0.0.1:8000 -- code`,
           expiresIn: 900,
           issuedAt: "2030-01-01T00:00:00.000Z",
         }),
@@ -360,8 +350,8 @@ describe("BrowserApi", () => {
       );
     });
     const api = new BrowserApi(fetchImpl);
-    await expect(api.ownComputers()).resolves.toEqual({ computers: [computer] });
-    await expect(api.issueConnectCode(teamId)).resolves.toMatchObject({ expiresIn: 900 });
+    await expect(api.computers(workspaceId)).resolves.toEqual({ computers: [computer] });
+    await expect(api.issueComputerConnectCode(workspaceId)).resolves.toMatchObject({ expiresIn: 900 });
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 });

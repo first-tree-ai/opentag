@@ -4,22 +4,19 @@ import type {
   AgentListItem as AgentListApiItem,
   AgentSummary,
   AuthProvidersResponse,
-  Computer,
   ImBindingHandoffStatus,
   ImBindingSummary,
-  MeMembership,
   MeResponse,
+  MeWorkspace,
   ProviderReadinessStatus,
-  TeamComputerSummary,
-  TeamMemberSummary,
+  WorkspaceAdminSummary,
+  WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
-import { MembershipRoleSchema } from "@opentag/shared/browser";
 import {
   createContext,
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
-  useCallback,
   useContext,
   useEffect,
   useRef,
@@ -41,7 +38,8 @@ import { type AgentCreationFacts, AgentCreationFlow } from "./agent-creation/age
 import { ApiError, browserApi } from "./api.js";
 // Google-provided, pre-approved button asset: https://developers.google.com/identity/branding-guidelines
 import googleSignInButton from "./assets/google-sign-in-light@2x.png";
-import { CreateTeamForm } from "./create-team-form.js";
+import { ComputerSetup } from "./computer-setup.js";
+import { CreateWorkspaceForm } from "./create-workspace-form.js";
 import { orderAgentIds } from "./features/agent-list-order.js";
 import { AgentUsageTab } from "./features/agent-usage.js";
 import { IntegrationsPage } from "./features/integrations-page.js";
@@ -112,7 +110,7 @@ type AgentDetailView = AgentDetail & {
 
 function projectAgentAvailability(
   agent: AgentSummary,
-  computer: TeamComputerSummary | undefined,
+  computer: WorkspaceComputerSummary | undefined,
   binding: ImBindingSummary | undefined,
   handoff: ImBindingHandoffStatus | undefined,
   bindingEvidenceConfirmed: boolean,
@@ -213,10 +211,10 @@ function projectAgentAvailability(
   };
 }
 
-async function loadAgentList(teamId: string): Promise<{ agents: AgentListItem[] }> {
+async function loadAgentList(workspaceId: string): Promise<{ agents: AgentListItem[] }> {
   const [{ agents }, computersResult] = await Promise.all([
-    browserApi.agents(teamId),
-    browserApi.computers(teamId).then(
+    browserApi.agents(workspaceId),
+    browserApi.computers(workspaceId).then(
       (value) => ({ kind: "ready" as const, value }),
       () => ({ kind: "unconfirmed" as const }),
     ),
@@ -239,7 +237,7 @@ async function loadAgentList(teamId: string): Promise<{ agents: AgentListItem[] 
       ]);
       return projectAgentAvailability(
         agent,
-        computers.find((computer) => computer.id === agent.computer.id),
+        computers.find((computer) => computer.computerId === agent.computer.computerId),
         bindingResult.status === "fulfilled" ? bindingResult.value : undefined,
         handoffResult.status === "fulfilled" ? handoffResult.value : undefined,
         bindingResult.status === "fulfilled",
@@ -260,7 +258,7 @@ async function loadAgentList(teamId: string): Promise<{ agents: AgentListItem[] 
 async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
   const agent = await browserApi.agent(agentId);
   const [computersResult, bindingResult, handoffResult] = await Promise.allSettled([
-    browserApi.computers(agent.teamId),
+    browserApi.computers(agent.workspaceId),
     browserApi.imBinding(agent.id),
     browserApi.imBindingHandoff(agent.id),
   ]);
@@ -273,7 +271,7 @@ async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
       bindingResult.status === "fulfilled" ? { kind: "ready", value: bindingResult.value } : { kind: "unconfirmed" },
     availability: projectAgentAvailability(
       agent,
-      computers.find((computer) => computer.id === agent.computer.id),
+      computers.find((computer) => computer.computerId === agent.computer.computerId),
       binding,
       handoff,
       bindingResult.status === "fulfilled",
@@ -425,19 +423,19 @@ function AsyncState<T>({
   return children(state.value);
 }
 
-interface TeamSession {
+interface WorkspaceSession {
   me: MeResponse;
-  membership: MeMembership;
+  membership: MeWorkspace;
   refreshMe: () => void;
-  selectTeam: (teamId: string) => void;
+  selectWorkspace: (workspaceId: string) => void;
 }
 
-const teamContext = createContext<TeamSession | undefined>(undefined);
-const TeamContext = teamContext.Provider;
+const workspaceContext = createContext<WorkspaceSession | undefined>(undefined);
+const WorkspaceContext = workspaceContext.Provider;
 
-function useTeam(): TeamSession {
-  const value = useContext(teamContext);
-  if (!value) throw new Error("Team context is missing");
+function useWorkspace(): WorkspaceSession {
+  const value = useContext(workspaceContext);
+  if (!value) throw new Error("Workspace context is missing");
   return value;
 }
 
@@ -446,42 +444,29 @@ export function AppRouter() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/invites/:token" element={<InvitePage />} />
-      <Route path="/teams/new" element={<Navigate replace to="/workspaces/new" />} />
-      <Route path="/workspaces/new" element={<NewTeamPage />} />
-      <Route element={<AuthenticatedTeamGate />}>
-        <Route element={<TeamSetupGate />}>
-          <Route path="/onboarding" element={<OnboardingRoute />} />
-          <Route element={<AppShell />}>
+      <Route path="/workspaces/new" element={<NewWorkspacePage />} />
+      <Route element={<AuthenticatedWorkspaceGate />}>
+        <Route element={<AppShell />}>
+          <Route element={<WorkspaceSetupGate />}>
+            <Route path="/onboarding" element={<OnboardingRoute />} />
             <Route index element={<Navigate replace to="/agents" />} />
             <Route path="/agents" element={<AgentsPage />} />
+            <Route path="/agents/computers" element={<ComputersPage />} />
             <Route path="/agents/new" element={<NewAgentPage />} />
             <Route path="/agents/:agentId" element={<AgentDetailPage />} />
-            <Route path="/agents/:agentId/access" element={<LegacyAgentAccessRedirect />} />
             <Route path="/agents/:agentId/usage" element={<AgentUsagePage />} />
             <Route path="/agents/:agentId/settings" element={<AgentSettingsPage />} />
             <Route path="/agents/:agentId/settings/:section" element={<AgentSettingsPage />} />
             <Route path="/agents/:agentId/:legacySection" element={<LegacyAgentSectionRedirect />} />
             <Route path="/tasks" element={<TasksPage />} />
             <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
-            <Route path="/integrations" element={<IntegrationsPage />} />
             <Route path="/skills" element={<SkillsPage />} />
+            <Route path="/integrations" element={<IntegrationsPage />} />
             <Route path="/resources" element={<Navigate replace to="/skills" />} />
             <Route path="/usage" element={<Navigate replace to="/agents" />} />
-            <Route path="/members" element={<Navigate replace to="/workspace#members" />} />
+            <Route path="/admins" element={<AdminsPage />} />
             <Route path="/account" element={<AccountPage />} />
             <Route path="/workspace" element={<WorkspacePage />} />
-            <Route path="/account/workspace" element={<Navigate replace to="/workspace" />} />
-            <Route path="/settings" element={<Navigate replace to="/workspace" />} />
-            <Route path="/settings/account" element={<Navigate replace to="/account" />} />
-            <Route path="/settings/team" element={<Navigate replace to="/workspace" />} />
-            <Route path="/settings/members" element={<Navigate replace to="/workspace#members" />} />
-            <Route path="/settings/access" element={<Navigate replace to="/workspace#members" />} />
-            <Route path="/settings/security" element={<Navigate replace to="/workspace#members" />} />
-            <Route path="/settings/computers" element={<Navigate replace to="/agents/new" />} />
-            <Route path="/settings/resources" element={<Navigate replace to="/skills" />} />
-            <Route path="/settings/integrations" element={<Navigate replace to="/integrations" />} />
-            <Route path="/settings/usage" element={<Navigate replace to="/agents" />} />
-            <Route path="/settings/:section" element={<Navigate replace to="/workspace" />} />
           </Route>
         </Route>
       </Route>
@@ -576,58 +561,25 @@ function LoginProviderLink({ next, provider }: { next: string; provider: AuthPro
 
 function InvitePage() {
   const { token = "" } = useParams();
-  const location = useLocation();
   const navigate = useNavigate();
-  const selectedTeamHint = new URLSearchParams(location.search).get("joinedTeamId") ?? undefined;
   const preview = useResource(() => browserApi.invitationPreview(token), token);
   const [error, setError] = useState<string>();
   const [joining, setJoining] = useState(false);
-  const joinInFlight = useRef(false);
-  const completeJoin = useCallback(
-    async (serverSelectedTeamId?: string) => {
-      if (joinInFlight.current) return;
-      joinInFlight.current = true;
-      setJoining(true);
-      try {
-        if (serverSelectedTeamId) {
-          const me = await browserApi.me();
-          if (me.memberships.some((membership: MeMembership) => membership.teamId === serverSelectedTeamId)) {
-            clearPendingInvitation(token);
-            rememberTeamPreference(serverSelectedTeamId);
-            navigate("/agents", { replace: true });
-            return;
-          }
-        }
-        const redemption = await browserApi.redeemInvitation(token);
-        const me = await browserApi.me();
-        if (!me.memberships.some((membership: MeMembership) => membership.teamId === redemption.membership.teamId)) {
-          throw new Error("The invited Workspace is not available to the signed-in account");
-        }
-        clearPendingInvitation(token);
-        rememberTeamPreference(redemption.membership.teamId);
-        navigate("/agents", { replace: true });
-      } catch (cause) {
-        if (cause instanceof ApiError && cause.status === 401) {
-          rememberPendingInvitation(token);
-          navigate(`/login?next=${encodeURIComponent(`/invites/${token}`)}`);
-        } else {
-          if (!serverSelectedTeamId) clearPendingInvitation(token);
-          setError(cause instanceof Error ? cause.message : "The invitation could not be redeemed");
-        }
-      } finally {
-        joinInFlight.current = false;
-        setJoining(false);
-      }
-    },
-    [navigate, token],
-  );
-  useEffect(() => {
-    if (readPendingInvitation() === token) void completeJoin(selectedTeamHint);
-  }, [completeJoin, selectedTeamHint, token]);
-  function join() {
+  async function join() {
     setError(undefined);
-    rememberPendingInvitation(token);
-    void completeJoin(selectedTeamHint);
+    setJoining(true);
+    try {
+      await browserApi.acceptAdminInvitation(token);
+      navigate("/agents", { replace: true });
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 401) {
+        navigate(`/login?next=${encodeURIComponent(`/invites/${token}`)}`);
+      } else {
+        setError(cause instanceof Error ? cause.message : "The invitation could not be accepted");
+      }
+    } finally {
+      setJoining(false);
+    }
   }
   return (
     <main className="center-card decorative-page">
@@ -635,12 +587,10 @@ function InvitePage() {
         {(value) => (
           <>
             <span className="eyebrow">Workspace invitation</span>
-            <h1>Join {value.teamDisplayName}</h1>
-            <p>
-              This invitation grants the {value.role} role and expires {formatDate(value.expiresAt)}.
-            </p>
-            <Button disabled={joining} onClick={join}>
-              {joining ? "Joining…" : "Join Workspace"}
+            <h1>Join {value.workspaceDisplayName}</h1>
+            <p>This invitation grants complete Workspace Admin access and expires {formatDate(value.expiresAt)}.</p>
+            <Button disabled={joining} onClick={() => void join()}>
+              {joining ? "Accepting…" : "Accept full Workspace Admin access"}
             </Button>
           </>
         )}
@@ -654,59 +604,31 @@ function InvitePage() {
   );
 }
 
-const SELECTED_TEAM_STORAGE_KEY = "opentag.selectedTeamId";
-const PENDING_INVITATION_STORAGE_KEY = "opentag.pendingInvitationToken";
-let memoryTeamPreference: string | undefined;
-let memoryTeamPreferenceFallback = false;
+const SELECTED_WORKSPACE_STORAGE_KEY = "opentag.lastExplicitWorkspaceId.v1";
+let memoryWorkspacePreference: string | undefined;
+let memoryWorkspacePreferenceFallback = false;
 
-function readPendingInvitation(): string | undefined {
-  try {
-    return window.sessionStorage.getItem(PENDING_INVITATION_STORAGE_KEY) ?? undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function rememberPendingInvitation(token: string): void {
-  try {
-    window.sessionStorage.setItem(PENDING_INVITATION_STORAGE_KEY, token);
-  } catch {
-    // The explicit Join action can still continue when browser storage is unavailable.
-  }
-}
-
-function clearPendingInvitation(token: string): void {
-  try {
-    if (window.sessionStorage.getItem(PENDING_INVITATION_STORAGE_KEY) === token) {
-      window.sessionStorage.removeItem(PENDING_INVITATION_STORAGE_KEY);
-    }
-  } catch {
-    // There is no pending browser state to clean up when storage is unavailable.
-  }
-}
-
-function NewTeamPage() {
+function NewWorkspacePage() {
   const navigate = useNavigate();
   return (
     <main className="center-card decorative-page">
       <span className="eyebrow">OpenTag</span>
       <h1>Create your Workspace</h1>
       <p>You can invite people and add Agents next.</p>
-      <CreateTeamForm
-        onCreated={(created) => {
-          rememberTeamPreference(created.id);
+      <CreateWorkspaceForm
+        onCreated={() => {
           navigate("/agents");
         }}
-        onUnauthenticated={() => navigate(`/login?next=${encodeURIComponent("/teams/new")}`)}
+        onUnauthenticated={() => navigate(`/login?next=${encodeURIComponent("/workspaces/new")}`)}
       />
     </main>
   );
 }
 
-function AuthenticatedTeamGate() {
+function AuthenticatedWorkspaceGate() {
   const location = useLocation();
   const [meRevision, setMeRevision] = useState(0);
-  const [selectedTeamId, setSelectedTeamId] = useState(readTeamPreference);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(readWorkspacePreference);
   const state = useResource(() => browserApi.me(), `me:${meRevision}`);
   if (state.kind === "error" && state.error instanceof ApiError && state.error.status === 401) {
     const requested = location.pathname === "/" ? "/agents" : `${location.pathname}${location.search}`;
@@ -716,41 +638,46 @@ function AuthenticatedTeamGate() {
     <AsyncState state={state}>
       {(me) => {
         const membership =
-          me.memberships.find((item: MeMembership) => item.teamId === selectedTeamId) ?? me.memberships[0];
+          me.workspaces.find((item: MeWorkspace) => item.id === selectedWorkspaceId) ?? me.workspaces[0];
         if (!membership) {
-          return <WorkspaceSetupIncomplete onRetry={() => setMeRevision((value) => value + 1)} />;
+          return <NoWorkspaceAccess onRetry={() => setMeRevision((value) => value + 1)} />;
         }
-        const selectTeam = (teamId: string) => {
-          if (!me.memberships.some((item: MeMembership) => item.teamId === teamId)) return;
-          rememberTeamPreference(teamId);
-          setSelectedTeamId(teamId);
+        const selectWorkspace = (workspaceId: string) => {
+          if (!me.workspaces.some((item: MeWorkspace) => item.id === workspaceId)) return;
+          rememberWorkspacePreference(workspaceId);
+          setSelectedWorkspaceId(workspaceId);
         };
         return (
-          <TeamContext value={{ me, membership, refreshMe: () => setMeRevision((value) => value + 1), selectTeam }}>
+          <WorkspaceContext
+            value={{ me, membership, refreshMe: () => setMeRevision((value) => value + 1), selectWorkspace }}
+          >
             <Outlet />
-          </TeamContext>
+          </WorkspaceContext>
         );
       }}
     </AsyncState>
   );
 }
 
-function WorkspaceSetupIncomplete({ onRetry }: { onRetry: () => void }) {
+function NoWorkspaceAccess({ onRetry }: { onRetry: () => void }) {
   return (
     <main className="center-card decorative-page">
-      <span className="eyebrow">Workspace setup</span>
-      <h1>Workspace setup incomplete</h1>
-      <p>OpenTag could not find a Workspace membership for this account.</p>
-      <div className="notice error" role="alert">
-        The server must finish Workspace setup before the Web app can continue.
+      <span className="eyebrow">Workspace access</span>
+      <h1>No Workspace administration access</h1>
+      <p>You no longer have Workspace administration access.</p>
+      <div className="notice" role="status">
+        A current Workspace Admin can restore access by sending you a new Admin invitation.
       </div>
+      <Link className={buttonClassName({ variant: "secondary" })} to="/workspaces/new">
+        Create a Workspace
+      </Link>
       <Button onClick={onRetry}>Check again</Button>
     </main>
   );
 }
 
 function OnboardingRoute() {
-  const { me, membership, refreshMe } = useTeam();
+  const { me, membership, refreshMe } = useWorkspace();
   const [searchParams, setSearchParams] = useSearchParams();
   const targetAgentId = searchParams.get("agentId") ?? undefined;
   return (
@@ -759,7 +686,7 @@ function OnboardingRoute() {
       targetAgentId={targetAgentId}
       user={me.user}
       onSetupReady={async (agentId) => {
-        await browserApi.completeTeamSetup(membership.teamId, agentId);
+        await browserApi.completeWorkspaceSetup(membership.id, agentId);
         refreshMe();
       }}
       onTargetAgentChange={(agentId) => {
@@ -771,42 +698,41 @@ function OnboardingRoute() {
   );
 }
 
-function TeamSetupGate() {
-  const { membership } = useTeam();
+function WorkspaceSetupGate() {
+  const { membership } = useWorkspace();
   const location = useLocation();
   const onboarding = location.pathname === "/onboarding";
   if (membership.setupCompletedAt) return onboarding ? <Navigate replace to="/agents" /> : <Outlet />;
-  if (membership.role === "admin") return onboarding ? <Outlet /> : <Navigate replace to="/onboarding" />;
-  return onboarding ? <Navigate replace to="/agents" /> : <Outlet />;
+  return onboarding ? <Outlet /> : <Navigate replace to="/onboarding" />;
 }
 
-function readTeamPreference(): string | undefined {
-  if (memoryTeamPreferenceFallback) return memoryTeamPreference;
+function readWorkspacePreference(): string | undefined {
+  if (memoryWorkspacePreferenceFallback) return memoryWorkspacePreference;
   try {
-    const value = window.localStorage.getItem(SELECTED_TEAM_STORAGE_KEY);
+    const value = window.localStorage.getItem(SELECTED_WORKSPACE_STORAGE_KEY);
     if (value && value.length <= 64) {
-      memoryTeamPreference = value;
+      memoryWorkspacePreference = value;
       return value;
     }
     return undefined;
   } catch {
-    return memoryTeamPreference;
+    return memoryWorkspacePreference;
   }
 }
 
-function rememberTeamPreference(teamId: string): void {
-  memoryTeamPreference = teamId;
+function rememberWorkspacePreference(workspaceId: string): void {
+  memoryWorkspacePreference = workspaceId;
   try {
-    window.localStorage.setItem(SELECTED_TEAM_STORAGE_KEY, teamId);
-    memoryTeamPreferenceFallback = false;
+    window.localStorage.setItem(SELECTED_WORKSPACE_STORAGE_KEY, workspaceId);
+    memoryWorkspacePreferenceFallback = false;
   } catch {
-    memoryTeamPreferenceFallback = true;
-    // The authoritative membership still determines the available Team.
+    memoryWorkspacePreferenceFallback = true;
+    // The authoritative membership still determines the available Workspace.
   }
 }
 
 function AppShell() {
-  const { me, membership, selectTeam } = useTeam();
+  const { me, membership, selectWorkspace } = useWorkspace();
   const navigate = useNavigate();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [openMenu, setOpenMenu] = useState<"account">();
@@ -891,13 +817,13 @@ function AppShell() {
               <WorkspaceNavIcon name="tasks" />
               Tasks
             </NavLink>
-            <NavLink to="/integrations" onClick={() => setNavigationOpen(false)}>
-              <WorkspaceNavIcon name="integrations" />
-              Integrations
-            </NavLink>
             <NavLink to="/skills" onClick={() => setNavigationOpen(false)}>
               <WorkspaceNavIcon name="skills" />
               Skills
+            </NavLink>
+            <NavLink to="/integrations" onClick={() => setNavigationOpen(false)}>
+              <WorkspaceNavIcon name="integrations" />
+              Integrations
             </NavLink>
           </nav>
         </div>
@@ -931,62 +857,72 @@ function AppShell() {
                 role="menu"
                 onKeyDown={handleAccountMenuKeyDown}
               >
-                <fieldset className="account-workspace-group">
-                  <legend className="menu-label">Workspaces</legend>
-                  {me.memberships.map((item: MeMembership) => {
-                    const current = item.teamId === membership.teamId;
-                    const content = (
-                      <>
-                        <span className="team-avatar" aria-hidden="true">
-                          {initials(item.teamDisplayName)}
-                        </span>
-                        <span className="team-option-copy">
-                          <strong>{item.teamDisplayName}</strong>
-                          <small>{titleCase(item.role)}</small>
-                        </span>
-                        {current ? (
-                          <span className="team-option-check" aria-hidden="true">
-                            <Icon name="check" />
+                {me.workspaces.length > 1 ? (
+                  <fieldset className="account-workspace-group">
+                    <legend className="menu-label">Workspaces</legend>
+                    {me.workspaces.map((item: MeWorkspace) => {
+                      const current = item.id === membership.id;
+                      const content = (
+                        <>
+                          <span className="workspace-avatar" aria-hidden="true">
+                            {initials(item.displayName)}
                           </span>
-                        ) : null}
-                      </>
-                    );
-                    return me.memberships.length > 1 ? (
-                      <button
-                        aria-current={current ? "true" : undefined}
-                        className="account-workspace-option"
-                        key={item.teamId}
-                        role="menuitem"
-                        type="button"
-                        onClick={() => {
-                          setOpenMenu(undefined);
-                          setNavigationOpen(false);
-                          if (!current) {
-                            navigate("/agents");
-                            selectTeam(item.teamId);
-                          }
-                        }}
-                      >
-                        {content}
-                      </button>
-                    ) : (
-                      <div aria-current="true" className="account-workspace-option is-static" key={item.teamId}>
-                        {content}
-                      </div>
-                    );
-                  })}
-                </fieldset>
+                          <span className="workspace-option-copy">
+                            <strong>{item.displayName}</strong>
+                            <small>Workspace Admin</small>
+                          </span>
+                          {current ? (
+                            <span className="workspace-option-check" aria-hidden="true">
+                              <Icon name="check" />
+                            </span>
+                          ) : null}
+                        </>
+                      );
+                      return (
+                        <button
+                          aria-current={current ? "true" : undefined}
+                          className="account-workspace-option"
+                          key={item.id}
+                          role="menuitem"
+                          type="button"
+                          onClick={() => {
+                            setOpenMenu(undefined);
+                            setNavigationOpen(false);
+                            if (!current) {
+                              navigate("/agents");
+                              selectWorkspace(item.id);
+                            }
+                          }}
+                        >
+                          {content}
+                        </button>
+                      );
+                    })}
+                  </fieldset>
+                ) : null}
                 <div className="account-menu-actions">
                   <NavLink
                     role="menuitem"
-                    to="/workspace"
+                    to="/admins"
                     onClick={() => {
                       setOpenMenu(undefined);
                       setNavigationOpen(false);
                     }}
                   >
-                    Workspace settings
+                    Admins
                   </NavLink>
+                  {me.workspaces.length > 1 ? (
+                    <NavLink
+                      role="menuitem"
+                      to="/workspace"
+                      onClick={() => {
+                        setOpenMenu(undefined);
+                        setNavigationOpen(false);
+                      }}
+                    >
+                      Workspace management
+                    </NavLink>
+                  ) : null}
                   <NavLink
                     end
                     role="menuitem"
@@ -996,7 +932,7 @@ function AppShell() {
                       setNavigationOpen(false);
                     }}
                   >
-                    Account settings
+                    Account
                   </NavLink>
                   <button
                     className="account-signout"
@@ -1078,10 +1014,10 @@ function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "skills"
 }
 
 function AgentsPage() {
-  const { membership } = useTeam();
+  const { membership } = useWorkspace();
   const [createOpen, setCreateOpen] = useState(false);
   const createTriggerRef = useRef<HTMLButtonElement>(null);
-  const state = useResource(() => loadAgentList(membership.teamId), membership.teamId, {
+  const state = useResource(() => loadAgentList(membership.id), membership.id, {
     onBackgroundError: markAgentListUnconfirmed,
     revalidateMs: 30_000,
     refreshOnFocus: true,
@@ -1090,23 +1026,14 @@ function AgentsPage() {
     <>
       <Page
         title="Agents"
-        description="Monitor availability and 30-day usage across your AI teammates."
+        description="Monitor availability and 30-day usage across your AI workspacemates."
         action={
-          membership.role === "admin" ? (
-            <Button ref={createTriggerRef} size="compact" variant="outline" onClick={() => setCreateOpen(true)}>
-              New Agent <Icon name="plus" />
-            </Button>
-          ) : undefined
+          <Button ref={createTriggerRef} size="compact" variant="outline" onClick={() => setCreateOpen(true)}>
+            New Agent <Icon name="plus" />
+          </Button>
         }
       >
-        {!membership.setupCompletedAt && membership.role !== "admin" ? (
-          <div className="notice" role="status">
-            Team setup is not complete. An administrator needs to prepare the first Agent.
-          </div>
-        ) : null}
-        <AsyncState state={state}>
-          {(value) => <AgentsContent agents={value.agents} canCreate={membership.role === "admin"} />}
-        </AsyncState>
+        <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} canCreate />}</AsyncState>
       </Page>
       {createOpen ? <NewAgentDialog returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} /> : null}
     </>
@@ -1117,7 +1044,7 @@ function AgentsContent({ agents, canCreate }: { agents: AgentListItem[]; canCrea
   if (agents.length > 0) return <AgentList agents={agents} />;
   return (
     <EmptyState title="No Agents yet">
-      {canCreate ? "Create the first shared AI teammate with New Agent." : "An Admin can create the first Agent."}
+      {canCreate ? "Create the first shared AI workspacemate with New Agent." : "An Admin can create the first Agent."}
     </EmptyState>
   );
 }
@@ -1151,14 +1078,8 @@ function AgentList({ agents }: { agents: AgentListItem[] }) {
 }
 
 function AgentCard({ agent }: { agent: AgentListItem }) {
-  const { membership } = useTeam();
   const status = agentCardStatus(agent);
-  /**
-   * `AgentSettingsPage` bounces a viewer without `canManage` straight back to the Agent, and the list
-   * response carries no per-Agent capability. Mirror the server rule so a member never gets an exit
-   * that returns them to where they started.
-   */
-  const action = membership.role === "admin" ? status.action : undefined;
+  const action = status.action;
   const statusDetail: ReactNode =
     agent.activity.state === "working" && status.label === "Working" ? (
       <>Started {formatElapsedCompact(agent.activity.startedAt)} ago</>
@@ -1297,8 +1218,8 @@ function formatUsageNumber(value: number): string {
   }).format(value);
 }
 
-function useOwnComputersResource(teamId: string, refreshVersion = 0) {
-  return useResource(() => browserApi.ownComputers(), `${teamId}:${refreshVersion}`, {
+function useOwnComputersResource(workspaceId: string, refreshVersion = 0) {
+  return useResource(() => browserApi.computers(workspaceId), `${workspaceId}:${refreshVersion}`, {
     onBackgroundError: markOwnComputersUnconfirmed,
     revalidateMs: 30_000,
     refreshOnFocus: true,
@@ -1306,12 +1227,11 @@ function useOwnComputersResource(teamId: string, refreshVersion = 0) {
 }
 
 function NewAgentPage() {
-  const { membership } = useTeam();
+  const { membership } = useWorkspace();
   const navigate = useNavigate();
   const [computerRefreshVersion, setComputerRefreshVersion] = useState(0);
   const [created, setCreated] = useState<AgentAdminConfig>();
-  const computers = useOwnComputersResource(membership.teamId, computerRefreshVersion);
-  if (membership.role !== "admin") return <UnavailablePage title="Admin access required" />;
+  const computers = useOwnComputersResource(membership.id, computerRefreshVersion);
   return (
     <Page
       title={created ? "Agent created" : "Create Agent"}
@@ -1326,7 +1246,7 @@ function NewAgentPage() {
       ) : (
         <AgentCreationContent
           computers={computers}
-          teamId={membership.teamId}
+          workspaceId={membership.id}
           onCreated={setCreated}
           onRefresh={() => setComputerRefreshVersion((current) => current + 1)}
         />
@@ -1342,10 +1262,10 @@ function NewAgentDialog({
   onClose: () => void;
   returnFocusRef: { current: HTMLButtonElement | null };
 }) {
-  const { membership } = useTeam();
+  const { membership } = useWorkspace();
   const navigate = useNavigate();
   const [computerRefreshVersion, setComputerRefreshVersion] = useState(0);
-  const computers = useOwnComputersResource(membership.teamId, computerRefreshVersion);
+  const computers = useOwnComputersResource(membership.id, computerRefreshVersion);
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<AgentAdminConfig>();
   const finish = () => {
@@ -1370,7 +1290,7 @@ function NewAgentDialog({
       ) : (
         <AgentCreationContent
           computers={computers}
-          teamId={membership.teamId}
+          workspaceId={membership.id}
           onCancel={onClose}
           onCreated={setCreated}
           onRefresh={() => setComputerRefreshVersion((current) => current + 1)}
@@ -1387,14 +1307,14 @@ function AgentCreationContent({
   onCreated,
   onRefresh,
   onSubmittingChange,
-  teamId,
+  workspaceId,
 }: {
-  computers: LoadState<{ computers: Computer[] }>;
+  computers: LoadState<{ computers: WorkspaceComputerSummary[] }>;
   onCancel?: () => void;
   onCreated: (agent: AgentAdminConfig) => void;
   onRefresh: () => void;
   onSubmittingChange?: (submitting: boolean) => void;
-  teamId: string;
+  workspaceId: string;
 }) {
   const current = computers.kind === "ready" ? computers.value : undefined;
   const [retained, setRetained] = useState(current);
@@ -1445,7 +1365,7 @@ function AgentCreationContent({
       <AgentCreationFlow
         facts={agentCreationFactsFromOwnComputers(value.computers)}
         refreshing={computers.kind === "loading"}
-        teamId={teamId}
+        workspaceId={workspaceId}
         onCancel={onCancel}
         onComputerRefreshFocus={() => {
           setComputerRefreshFocusActive(true);
@@ -1467,7 +1387,7 @@ function NewAgentMessagingStep({ agent, onFinish }: { agent: AgentAdminConfig; o
           <div>
             <span className="eyebrow">Agent created</span>
             <h2 id="agent-created-heading">Connect messaging</h2>
-            <p>Connect a Feishu Bot so teammates can mention {agent.displayName}.</p>
+            <p>Connect a Feishu Bot so workspacemates can mention {agent.displayName}.</p>
           </div>
           <div className="agent-create-actions">
             <Button onClick={() => void setup.start()}>Connect Feishu</Button>
@@ -1482,12 +1402,16 @@ function NewAgentMessagingStep({ agent, onFinish }: { agent: AgentAdminConfig; o
   );
 }
 
-function agentCreationFactsFromOwnComputers(computers: readonly Computer[]): AgentCreationFacts {
+function agentCreationFactsFromOwnComputers(computers: readonly WorkspaceComputerSummary[]): AgentCreationFacts {
   return {
-    computers,
+    computers: computers.map((computer) => ({
+      id: computer.computerId,
+      displayName: computer.displayName,
+      connectionStatus: computer.connectionStatus,
+    })),
     providers: computers.flatMap((computer) =>
       (computer.providerReadiness ?? []).map((readiness) => ({
-        computerId: computer.id,
+        computerId: computer.computerId,
         provider: readiness.provider,
         runtimeReady: readiness.status === "ready",
         status: readiness.status,
@@ -1498,7 +1422,9 @@ function agentCreationFactsFromOwnComputers(computers: readonly Computer[]): Age
   };
 }
 
-function markOwnComputersUnconfirmed(value: { computers: Computer[] }): { computers: Computer[] } {
+function markOwnComputersUnconfirmed(value: { computers: WorkspaceComputerSummary[] }): {
+  computers: WorkspaceComputerSummary[];
+} {
   return {
     computers: value.computers.map(({ providerReadiness: _providerReadiness, ...computer }) => computer),
   };
@@ -1555,10 +1481,6 @@ const agentSettingsGroups = [
   { key: "contact", label: "Where it receives work" },
   { key: "details", label: "Agent details" },
 ] as const;
-
-function LegacyAgentAccessRedirect() {
-  return <Navigate replace to="/workspace#members" />;
-}
 
 function LegacyAgentSectionRedirect() {
   const { agentId = "", legacySection = "" } = useParams();
@@ -1633,8 +1555,8 @@ function AgentDetailPage() {
 }
 
 function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; backToSettings?: boolean }) {
-  const { me } = useTeam();
-  const showManager = agent.manager.userId !== me.user.id;
+  const { me } = useWorkspace();
+  const showCreator = agent.createdBy.userId !== me.user.id;
   return (
     <header className="object-header">
       <Link className="breadcrumb" to={backToSettings ? `/agents/${agent.id}` : "/agents"}>
@@ -1653,7 +1575,7 @@ function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; 
             </div>
             <p>
               <span>@{agent.name}</span>
-              {showManager ? <span>Managed by {agent.manager.displayName}</span> : null}
+              {showCreator ? <span>Created by {agent.createdBy.displayName}</span> : null}
             </p>
           </div>
         </div>
@@ -1663,7 +1585,7 @@ function AgentObjectHeader({ agent, backToSettings }: { agent: AgentDetailView; 
               Usage
             </Link>
           ) : null}
-          {agent.viewerCapabilities.canManage && !backToSettings ? (
+          {true && !backToSettings ? (
             <Link
               className={buttonClassName({ variant: "secondary" })}
               state={{ agent }}
@@ -1746,15 +1668,13 @@ function AgentContact({ agent }: { agent: AgentDetailView }) {
             </strong>
             <small>{agentUseInstruction(agent, binding.provider)}</small>
           </span>
-          {agent.viewerCapabilities.canManage ? (
-            <Link
-              className={buttonClassName({ size: "compact", variant: "outline" })}
-              state={{ agent, returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
-              to={`/agents/${agent.id}/settings/messaging`}
-            >
-              Manage
-            </Link>
-          ) : null}
+          <Link
+            className={buttonClassName({ size: "compact", variant: "outline" })}
+            state={{ agent, returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
+            to={`/agents/${agent.id}/settings/messaging`}
+          >
+            Manage
+          </Link>
         </div>
       ) : (
         <div className="agent-contact-row is-empty">
@@ -1765,15 +1685,13 @@ function AgentContact({ agent }: { agent: AgentDetailView }) {
             <strong>No messaging connected</strong>
             <small>Connect Feishu or Slack to start sending work</small>
           </span>
-          {agent.viewerCapabilities.canManage ? (
-            <Link
-              className={buttonClassName({ size: "compact", variant: "outline" })}
-              state={{ returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
-              to={`/agents/${agent.id}/settings/messaging`}
-            >
-              Connect
-            </Link>
-          ) : null}
+          <Link
+            className={buttonClassName({ size: "compact", variant: "outline" })}
+            state={{ returnLabel: agent.displayName, returnTo: `/agents/${agent.id}` }}
+            to={`/agents/${agent.id}/settings/messaging`}
+          >
+            Connect
+          </Link>
         </div>
       )}
     </section>
@@ -1831,7 +1749,6 @@ function AgentSettingsPage() {
   return (
     <AsyncState state={state}>
       {(agent) => {
-        if (!agent.viewerCapabilities.canManage) return <Navigate replace to={`/agents/${agent.id}`} />;
         const backTo = selected ? (routeState?.returnTo ?? `/agents/${agent.id}/settings`) : `/agents/${agent.id}`;
         const backLabel = selected ? (routeState?.returnLabel ?? "Agent settings") : agent.displayName;
         return (
@@ -1857,7 +1774,7 @@ function AgentSettingsPage() {
 }
 
 function AccountPage() {
-  const { me, refreshMe } = useTeam();
+  const { me, refreshMe } = useWorkspace();
   const location = useLocation();
   if (location.hash === "#workspace-management") {
     return <Navigate replace to="/workspace" />;
@@ -1870,13 +1787,8 @@ function AccountPage() {
 }
 
 function WorkspacePage() {
-  const { me, membership, refreshMe } = useTeam();
-  const location = useLocation();
-
-  useEffect(() => {
-    if (location.hash !== "#members") return;
-    document.getElementById("members")?.scrollIntoView({ block: "start" });
-  }, [location.hash]);
+  const { me, membership, refreshMe } = useWorkspace();
+  if (me.workspaces.length <= 1) return <Navigate replace to="/admins" />;
 
   return (
     <Page
@@ -1886,42 +1798,25 @@ function WorkspacePage() {
         </Link>
       }
       title="Workspace"
-      description="Manage the current Workspace, its members, and access."
+      description="Manage the current Workspace identity."
     >
-      <WorkspaceSettings currentUserId={me.user.id} membership={membership} refreshMe={refreshMe} />
+      <WorkspaceSettings membership={membership} refreshMe={refreshMe} />
     </Page>
   );
 }
 
-function WorkspaceSettings({
-  currentUserId,
-  membership,
-  refreshMe,
-}: {
-  currentUserId: string;
-  membership: MeMembership;
-  refreshMe: () => void;
-}) {
+function WorkspaceSettings({ membership, refreshMe }: { membership: MeWorkspace; refreshMe: () => void }) {
   return (
-    <div className="settings-team-stack">
+    <div className="settings-workspace-stack">
       <section aria-labelledby="workspace-profile-heading" className="account-workspace-profile">
         <header className="settings-subheader">
           <div>
             <h2 id="workspace-profile-heading">Workspace profile</h2>
             <p>Manage the name and CLI identity of the current Workspace.</p>
           </div>
-          {membership.role !== "admin" ? (
-            <span className="settings-role-badge">Your role: {titleCase(membership.role)}</span>
-          ) : null}
         </header>
-        <TeamProfileSettings membership={membership} refreshMe={refreshMe} />
+        <WorkspaceProfileSettings membership={membership} refreshMe={refreshMe} />
       </section>
-      <MembersSettings
-        canManage={membership.role === "admin"}
-        currentUserId={currentUserId}
-        refreshMe={refreshMe}
-        teamId={membership.teamId}
-      />
     </div>
   );
 }
@@ -2138,7 +2033,7 @@ function GeneralConfigForm({
     <form className="form-card agent-settings-form" onSubmit={submit}>
       <header className="agent-settings-page-title">
         <h1>Name</h1>
-        <p>Choose the name teammates see.</p>
+        <p>Choose the name workspacemates see.</p>
       </header>
       <Field htmlFor="agent-display-name" label="Display name">
         <input
@@ -2491,7 +2386,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
         <h1 ref={messagingHeadingRef} tabIndex={-1}>
           Messaging
         </h1>
-        <p>Choose how teammates can contact and assign work to {agent.displayName}.</p>
+        <p>Choose how workspacemates can contact and assign work to {agent.displayName}.</p>
       </header>
       <FeishuSetup
         agentId={agent.id}
@@ -2526,7 +2421,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                           <section className="im-section" aria-labelledby="contact-channel-heading">
                             <div className="im-section-heading">
                               <h3 id="contact-channel-heading">Contact channel</h3>
-                              <p>See how teammates can reach this agent and check its connection status.</p>
+                              <p>See how workspacemates can reach this agent and check its connection status.</p>
                             </div>
                             <div className="binding-status">
                               <StatusIndicator
@@ -2555,51 +2450,39 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                 <dd>{agentUseInstruction(agent, binding.provider)}</dd>
                               </div>
                             </dl>
-                            {binding.bindingState === "reauthorization_required" &&
-                            binding.provider === "feishu" &&
-                            agent.viewerCapabilities.canManage ? (
+                            {binding.bindingState === "reauthorization_required" && binding.provider === "feishu" ? (
                               <div className="im-actions">
                                 <Button onClick={() => void connectFeishu("reauthorize")}>Reauthorize Feishu</Button>
                               </div>
                             ) : null}
-                            {binding.bindingState === "reauthorization_required" &&
-                            binding.provider === "slack" &&
-                            agent.viewerCapabilities.canManage ? (
+                            {binding.bindingState === "reauthorization_required" && binding.provider === "slack" ? (
                               <div className="im-actions">
                                 <Button onClick={() => void connectSlack("reauthorize")}>Reauthorize Slack</Button>
                               </div>
                             ) : null}
-                            {agent.viewerCapabilities.canManage ? (
-                              <div className="im-actions messaging-connection-actions">
-                                {binding.provider === "feishu" ? (
-                                  <Button
-                                    size="compact"
-                                    variant="outline"
-                                    onClick={() => void connectFeishu("replace")}
-                                  >
-                                    Change Feishu Bot
-                                  </Button>
-                                ) : null}
-                                {binding.provider === "slack" ? (
-                                  <Button size="compact" variant="outline" onClick={() => void connectSlack("replace")}>
-                                    Change Slack App
-                                  </Button>
-                                ) : null}
-                                <Button
-                                  ref={disableBindingButtonRef}
-                                  size="compact"
-                                  variant="danger"
-                                  onClick={() => {
-                                    setConfirmationError(undefined);
-                                    setConfirmation({ bindingId: binding.id, kind: "disable_binding" });
-                                  }}
-                                >
-                                  Disconnect {titleCase(binding.provider)}
+                            <div className="im-actions messaging-connection-actions">
+                              {binding.provider === "feishu" ? (
+                                <Button size="compact" variant="outline" onClick={() => void connectFeishu("replace")}>
+                                  Change Feishu Bot
                                 </Button>
-                              </div>
-                            ) : (
-                              <p className="muted">Workspace admins manage this contact channel.</p>
-                            )}
+                              ) : null}
+                              {binding.provider === "slack" ? (
+                                <Button size="compact" variant="outline" onClick={() => void connectSlack("replace")}>
+                                  Change Slack App
+                                </Button>
+                              ) : null}
+                              <Button
+                                ref={disableBindingButtonRef}
+                                size="compact"
+                                variant="danger"
+                                onClick={() => {
+                                  setConfirmationError(undefined);
+                                  setConfirmation({ bindingId: binding.id, kind: "disable_binding" });
+                                }}
+                              >
+                                Disconnect {titleCase(binding.provider)}
+                              </Button>
+                            </div>
                           </section>
                           <section className="im-section" aria-labelledby="trigger-rules-heading">
                             <div className="im-section-heading">
@@ -2616,34 +2499,30 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                 description="Choose whether the agent responds only to mentions or to every message."
                                 label={sharedConversationLabel(binding.provider)}
                               >
-                                {agent.viewerCapabilities.canManage ? (
-                                  <fieldset aria-label="Shared conversation trigger rule" className="segmented-control">
-                                    {binding.receiveMode === "mention_only" ? (
-                                      <>
-                                        <span className="active">Mentions only</span>
-                                        <button
-                                          ref={allMessagesButtonRef}
-                                          type="button"
-                                          onClick={() => {
-                                            setConfirmationError(undefined);
-                                            setConfirmation({ kind: "all_messages" });
-                                          }}
-                                        >
-                                          Every message
-                                        </button>
-                                      </>
-                                    ) : (
-                                      <>
-                                        <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
-                                          Mentions only
-                                        </button>
-                                        <span className="active">Every message</span>
-                                      </>
-                                    )}
-                                  </fieldset>
-                                ) : (
-                                  <strong>{receiveModeLabel(binding.receiveMode)}</strong>
-                                )}
+                                <fieldset aria-label="Shared conversation trigger rule" className="segmented-control">
+                                  {binding.receiveMode === "mention_only" ? (
+                                    <>
+                                      <span className="active">Mentions only</span>
+                                      <button
+                                        ref={allMessagesButtonRef}
+                                        type="button"
+                                        onClick={() => {
+                                          setConfirmationError(undefined);
+                                          setConfirmation({ kind: "all_messages" });
+                                        }}
+                                      >
+                                        Every message
+                                      </button>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <button type="button" onClick={() => void changeReceiveMode("mention_only")}>
+                                        Mentions only
+                                      </button>
+                                      <span className="active">Every message</span>
+                                    </>
+                                  )}
+                                </fieldset>
                               </SettingsRow>
                             </SettingsList>
                           </section>
@@ -2652,21 +2531,17 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                         <section className="im-section" aria-labelledby="contact-channel-heading">
                           <div className="im-section-heading">
                             <h3 id="contact-channel-heading">Contact channel</h3>
-                            <p>See how teammates can reach this agent.</p>
+                            <p>See how workspacemates can reach this agent.</p>
                           </div>
                           <EmptyState title="No messaging channel">
-                            Teammates cannot contact this agent until a supported bot is connected.
+                            Workspacemates cannot contact this agent until a supported bot is connected.
                           </EmptyState>
-                          {agent.viewerCapabilities.canManage ? (
-                            <div className="im-actions">
-                              <Button onClick={() => void connectFeishu()}>Connect a Feishu Bot</Button>
-                              <Button variant="secondary" onClick={() => void connectSlack()}>
-                                Connect Slack App
-                              </Button>
-                            </div>
-                          ) : (
-                            <p className="muted">Workspace admins manage messaging setup.</p>
-                          )}
+                          <div className="im-actions">
+                            <Button onClick={() => void connectFeishu()}>Connect a Feishu Bot</Button>
+                            <Button variant="secondary" onClick={() => void connectSlack()}>
+                              Connect Slack App
+                            </Button>
+                          </div>
                         </section>
                       )}
                       {feishuSetup.feedback}
@@ -2710,7 +2585,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
       {confirmation?.kind === "disable_binding" ? (
         <Dialog
           busy={confirmationBusy}
-          description="Teammates will no longer be able to assign new work to this agent until another messaging connection is added."
+          description="Workspacemates will no longer be able to assign new work to this agent until another messaging connection is added."
           returnFocusRef={disableBindingButtonRef}
           title="Disconnect messaging?"
           onClose={closeMessagingConfirmation}
@@ -2897,37 +2772,25 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
   );
 }
 
-function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembership; refreshMe: () => void }) {
+function WorkspaceProfileSettings({ membership, refreshMe }: { membership: MeWorkspace; refreshMe: () => void }) {
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
   const [saving, setSaving] = useState(false);
-  const [teamDisplayName, setTeamDisplayName] = useState(membership.teamDisplayName);
-  const dirty = teamDisplayName !== membership.teamDisplayName;
+  const [workspaceDisplayName, setWorkspaceDisplayName] = useState(membership.displayName);
+  const dirty = workspaceDisplayName !== membership.displayName;
 
   useEffect(() => {
-    setTeamDisplayName(membership.teamDisplayName);
-  }, [membership.teamDisplayName]);
+    setWorkspaceDisplayName(membership.displayName);
+  }, [membership.displayName]);
 
-  if (membership.role !== "admin") {
-    return (
-      <div className="settings-readonly-panel">
-        <DefinitionList
-          rows={[
-            ["Workspace name", membership.teamDisplayName],
-            ["CLI identifier", membership.teamName],
-          ]}
-        />
-      </div>
-    );
-  }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSaving(true);
     try {
       setMessage(undefined);
       setError(undefined);
-      await browserApi.updateTeam(membership.teamId, {
-        displayName: teamDisplayName,
+      await browserApi.updateWorkspace(membership.id, {
+        displayName: workspaceDisplayName,
       });
       refreshMe();
       setMessage("Workspace profile saved.");
@@ -2947,9 +2810,9 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
               id="workspace-profile-name"
               name="displayName"
               required
-              value={teamDisplayName}
+              value={workspaceDisplayName}
               onChange={(event) => {
-                setTeamDisplayName(event.currentTarget.value);
+                setWorkspaceDisplayName(event.currentTarget.value);
                 setMessage(undefined);
                 setError(undefined);
               }}
@@ -2964,14 +2827,14 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
             <div>
               <dt className="visually-hidden">CLI identifier</dt>
               <dd>
-                <code>{membership.teamName}</code>
+                <code>{membership.name}</code>
               </dd>
             </div>
             <div>
               <dt className="visually-hidden">CLI command</dt>
               <dd>
                 <small>
-                  <code>--team {membership.teamName}</code>
+                  <code>--workspace {membership.name}</code>
                 </small>
               </dd>
             </div>
@@ -2986,7 +2849,7 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
               disabled={saving}
               variant="ghost"
               onClick={() => {
-                setTeamDisplayName(membership.teamDisplayName);
+                setWorkspaceDisplayName(membership.displayName);
                 setMessage(undefined);
                 setError(undefined);
               }}
@@ -3013,224 +2876,119 @@ function TeamProfileSettings({ membership, refreshMe }: { membership: MeMembersh
   );
 }
 
-function MembersSettings({
-  canManage,
-  currentUserId,
-  refreshMe,
-  teamId,
-}: {
-  canManage: boolean;
-  currentUserId: string;
-  refreshMe: () => void;
-  teamId: string;
-}) {
-  const [revision, setRevision] = useState(0);
-  const state = useResource(() => browserApi.members(teamId), `${teamId}:${revision}`);
-  const pendingUserIdsRef = useRef(new Set<string>());
-  const [pendingUserIds, setPendingUserIds] = useState<ReadonlySet<string>>(() => new Set());
-  const [error, setError] = useState<string>();
-
-  async function changeRole(member: TeamMemberSummary, value: string) {
-    if (value === member.role || pendingUserIdsRef.current.has(member.userId)) return;
-    pendingUserIdsRef.current.add(member.userId);
-    setPendingUserIds(new Set(pendingUserIdsRef.current));
-    setError(undefined);
-    try {
-      const role = MembershipRoleSchema.parse(value);
-      await browserApi.updateTeamMember(teamId, member.userId, { role });
-      setRevision((current) => current + 1);
-      if (member.userId === currentUserId) refreshMe();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to update the member role");
-    } finally {
-      pendingUserIdsRef.current.delete(member.userId);
-      setPendingUserIds(new Set(pendingUserIdsRef.current));
-    }
-  }
-
+function ComputersPage() {
+  const { membership } = useWorkspace();
+  const state = useResource(() => browserApi.computers(membership.id), membership.id);
   return (
-    <section className="settings-list-section settings-members-section" id="members">
-      <header className="settings-subheader">
-        <div>
-          <h2>Members &amp; access</h2>
-          <p>Review members, manage roles, and invite people to this Workspace.</p>
-        </div>
-      </header>
+    <Page title="Computers" description="Enroll and recover the Computers used by this Workspace's Agents.">
       <AsyncState state={state}>
-        {(value) => {
-          const adminCount = value.members.filter((member: TeamMemberSummary) => member.role === "admin").length;
-          const members = [...value.members].sort((left, right) => {
-            if (left.userId === currentUserId) return -1;
-            if (right.userId === currentUserId) return 1;
-            return left.displayName.localeCompare(right.displayName) || left.userId.localeCompare(right.userId);
-          });
-          return (
-            <div className="settings-member-list">
-              <div className="settings-member-summary">
-                <p>
-                  {value.members.length} {value.members.length === 1 ? "member" : "members"} · {adminCount}{" "}
-                  {adminCount === 1 ? "admin" : "admins"}
-                </p>
-                {!canManage ? <span className="settings-role-badge">Read only</span> : null}
-              </div>
-              <table className="settings-member-table" aria-label="Members">
-                <thead>
-                  <tr className="settings-table-header">
-                    <th scope="col">Member</th>
-                    <th scope="col">Role</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {members.map((member: TeamMemberSummary) => (
-                    <tr className="settings-member-row" key={member.userId}>
-                      <th className="settings-member-identity" scope="row">
-                        <span className="settings-member-avatar" aria-hidden="true">
-                          {initials(member.displayName)}
-                        </span>
-                        <span>
-                          <strong>{member.displayName}</strong>
-                          {member.userId === currentUserId ? <small>You</small> : null}
-                        </span>
-                      </th>
-                      <td data-label="Role">
-                        {canManage ? (
-                          <select
-                            aria-label={`Role for ${member.displayName}`}
-                            className="ds-control ds-control--compact"
-                            disabled={pendingUserIds.has(member.userId)}
-                            value={member.role}
-                            onChange={(event) => void changeRole(member, event.currentTarget.value)}
-                          >
-                            {MembershipRoleSchema.options.map((role) => (
-                              <option value={role} key={role}>
-                                {titleCase(role)}
-                              </option>
-                            ))}
-                          </select>
-                        ) : (
-                          <span className="settings-value-badge">{titleCase(member.role)}</span>
-                        )}
-                      </td>
-                    </tr>
+        {(value) => (
+          <div className="settings-workspace-stack">
+            <section className="settings-list-section">
+              <h2>Enrolled Computers</h2>
+              {value.computers.length === 0 ? (
+                <p className="muted">No Computers are enrolled yet.</p>
+              ) : (
+                <ul className="settings-member-list">
+                  {value.computers.map((computer) => (
+                    <li key={computer.computerId}>
+                      <strong>{computer.displayName}</strong>{" "}
+                      <StatusIndicator
+                        label={computer.connectionStatus === "online" ? "Online" : "Offline"}
+                        tone={computer.connectionStatus === "online" ? "success" : "warning"}
+                      />
+                    </li>
                   ))}
-                </tbody>
-              </table>
-            </div>
-          );
-        }}
+                </ul>
+              )}
+            </section>
+            <ComputerSetup workspaceId={membership.id} />
+          </div>
+        )}
       </AsyncState>
-      {error ? (
-        <p className="notice error" role="alert">
-          {error}
-        </p>
-      ) : null}
-      {canManage ? <InvitationSettings teamId={teamId} /> : null}
-    </section>
+    </Page>
   );
 }
 
-function InvitationSettings({
-  onMutationPendingChange = () => undefined,
-  presentation = "panel",
-  teamId,
-}: {
-  onMutationPendingChange?: (pending: boolean) => void;
-  presentation?: "dialog" | "panel";
-  teamId: string;
-}) {
-  const state = useResource(() => browserApi.invitation(teamId), teamId);
-  const [current, setCurrent] = useState<Awaited<ReturnType<typeof browserApi.invitation>>>();
+function AdminsPage() {
+  const { me, membership, refreshMe } = useWorkspace();
+  const [revision, setRevision] = useState(0);
+  const [invitation, setInvitation] = useState<Awaited<ReturnType<typeof browserApi.createAdminInvitation>>>();
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
+  const state = useResource(() => browserApi.admins(membership.id), `${membership.id}:${revision}`);
 
   async function createInvitation() {
-    await mutateInvitation(() => browserApi.createInvitation(teamId), "Invite link created.");
-  }
-
-  async function rotateInvitation() {
-    if (!window.confirm("Replace this invite link? The current link will stop working immediately.")) return;
-    await mutateInvitation(() => browserApi.rotateInvitation(teamId), "Invite link replaced.");
-  }
-
-  async function mutateInvitation(action: () => Promise<NonNullable<typeof current>>, successMessage: string) {
     setBusy(true);
-    onMutationPendingChange(true);
     setError(undefined);
-    setMessage(undefined);
     try {
-      setCurrent(await action());
-      setMessage(successMessage);
+      setInvitation(await browserApi.createAdminInvitation(membership.id));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to update the invite link");
+      setError(cause instanceof Error ? cause.message : "Unable to create the Admin invitation");
     } finally {
       setBusy(false);
-      onMutationPendingChange(false);
     }
   }
 
-  async function copyInvitation(inviteUrl: string) {
+  async function revoke(admin: WorkspaceAdminSummary) {
+    if (!window.confirm(`Revoke Workspace Admin access for ${admin.displayName}?`)) return;
+    setBusy(true);
     setError(undefined);
-    setMessage(undefined);
     try {
-      if (!window.navigator.clipboard) throw new Error("Clipboard access is unavailable in this browser");
-      await window.navigator.clipboard.writeText(inviteUrl);
-      setMessage("Invite link copied.");
+      await browserApi.revokeWorkspaceAdmin(membership.id, admin.userId);
+      setRevision((value) => value + 1);
+      if (admin.userId === me.user.id) refreshMe();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to copy the invite link");
+      setError(cause instanceof Error ? cause.message : "Unable to revoke Workspace Admin access");
+    } finally {
+      setBusy(false);
     }
   }
 
   return (
-    <section
-      aria-labelledby={presentation === "panel" ? "invite-members-heading" : undefined}
-      className={presentation === "dialog" ? "invitation-dialog-content" : "settings-invitation-panel"}
+    <Page
+      title="Admins"
+      description="Every Admin has complete management authority over this Workspace."
+      action={
+        <Button disabled={busy} onClick={() => void createInvitation()}>
+          {busy ? "Creating…" : "Invite Admin"}
+        </Button>
+      }
     >
-      {presentation === "panel" ? (
-        <>
-          <h3 id="invite-members-heading">Invite members</h3>
-          <p>This link lets anyone join as a member until it expires.</p>
-        </>
+      {invitation ? (
+        <section className="settings-invitation-panel">
+          <h2>Single-use invitation</h2>
+          <p>Share this link with the intended Admin. It expires {formatInviteExpiry(invitation.expiresAt)}.</p>
+          <label className="invite-link">
+            Invitation link
+            <input aria-label="Invitation link" className="ds-control" readOnly value={invitation.inviteUrl} />
+          </label>
+          <Button onClick={() => void window.navigator.clipboard?.writeText(invitation.inviteUrl)}>Copy link</Button>
+        </section>
       ) : null}
       <AsyncState state={state}>
-        {(loaded) => {
-          const invitation = current ?? loaded;
-          return invitation ? (
-            <>
-              <label className="invite-link">
-                Invite link
-                <input
-                  className="ds-control"
-                  aria-label="Invite link"
-                  readOnly
-                  type="url"
-                  value={invitation.inviteUrl}
-                />
-              </label>
-              <p className="muted">Expires {formatInviteExpiry(invitation.expiresAt)}.</p>
-              <div className={presentation === "dialog" ? "actions dialog-actions" : "actions"}>
-                <Button onClick={() => void copyInvitation(invitation.inviteUrl)}>Copy link</Button>
-                <Button disabled={busy} variant="secondary" onClick={() => void rotateInvitation()}>
-                  {busy ? "Replacing…" : "Replace link"}
+        {(value) => (
+          <ul className="settings-member-list" aria-label="Workspace Admins">
+            {value.admins.map((admin) => (
+              <li className="settings-member-row" key={admin.userId}>
+                <span>
+                  <strong>{admin.displayName}</strong>
+                  {admin.userId === me.user.id ? " (you)" : ""}
+                </span>
+                <Button disabled={busy} size="compact" variant="secondary" onClick={() => void revoke(admin)}>
+                  Revoke
                 </Button>
-              </div>
-            </>
-          ) : (
-            <div className="actions settings-invitation-create">
-              <Button disabled={busy} onClick={() => void createInvitation()}>
-                {busy ? "Creating…" : "Create invite link"}
-              </Button>
-            </div>
-          );
-        }}
+              </li>
+            ))}
+          </ul>
+        )}
       </AsyncState>
-      {message ? <p className="notice success">{message}</p> : null}
       {error ? (
         <p className="notice error" role="alert">
           {error}
         </p>
       ) : null}
-    </section>
+    </Page>
   );
 }
 
@@ -3262,34 +3020,11 @@ function Page({
   );
 }
 
-function DefinitionList({ rows }: { rows: [string, string][] }) {
-  return (
-    <dl className="definition-list">
-      {rows.map(([term, value]) => (
-        <div key={term}>
-          <dt>{term}</dt>
-          <dd>{value}</dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
-
 function EmptyState({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="empty-state">
       <h2>{title}</h2>
       <p>{children}</p>
-    </section>
-  );
-}
-
-function UnavailablePage({ title }: { title: string }) {
-  return (
-    <section className="center-card">
-      <h1>{title}</h1>
-      <p>This capability is not available in the current release.</p>
-      <Link to="/agents">Back to Agents</Link>
     </section>
   );
 }
@@ -3325,10 +3060,6 @@ function platformLabel(platform: AgentSummary["computer"]["platform"]): string {
   if (platform === "darwin") return "macOS";
   if (platform === "win32") return "Windows";
   return "Linux";
-}
-
-function receiveModeLabel(receiveMode: AgentSummary["receiveMode"]): string {
-  return receiveMode === "all_message" ? "Every message" : "Mentions only";
 }
 
 function availabilityTone(state: AgentAvailability["state"]): StatusTone {
@@ -3381,7 +3112,7 @@ function agentAvailabilitySummary(agent: AgentDetailView): string {
 }
 
 function agentAvailabilityRecovery(agent: AgentDetailView): { label: string; to: string } | undefined {
-  if (!agent.viewerCapabilities.canManage || agent.availability.state === "ready") return undefined;
+  if (!true || agent.availability.state === "ready") return undefined;
   if (agent.availability.reason === "agent_suspended") {
     return { label: "Manage Agent", to: `/agents/${agent.id}/settings/manage` };
   }
@@ -3407,7 +3138,7 @@ function agentRecoveryMessage(agent: AgentDetailView): string {
     computer_offline: "The assigned Computer is offline, so new requests cannot start.",
     runtime_unavailable: "The assigned Computer is not ready to run this Agent.",
     runtime_unconfirmed: "OpenTag could not confirm whether the assigned Computer is ready.",
-    im_not_connected: "Connect Feishu or Slack so teammates can assign work to this agent.",
+    im_not_connected: "Connect Feishu or Slack so workspacemates can assign work to this agent.",
     im_provisioning: "The messaging connection is still being set up.",
     im_reauthorization_required: "The messaging connection needs permission to continue receiving requests.",
     im_error: "The messaging connection needs attention before it can receive requests.",

@@ -25,14 +25,13 @@ import {
   agents,
   imBindings,
   imMessages,
-  memberships,
   sessionPlacements,
   sessions,
-  users,
+  workspaceComputers,
 } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
 import type { ApplicationCipher } from "../crypto.js";
-import { TeamMembershipService } from "../teams/index.js";
+import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
@@ -230,46 +229,54 @@ export class ImBindingService {
   readonly #afterMutationAuthorityLocked: (() => Promise<void> | void) | undefined;
   readonly #cipher: ApplicationCipher;
   readonly #database: DatabaseClient;
-  readonly #membershipService: TeamMembershipService;
   readonly #now: () => Date;
   readonly #agentRuntimeReadiness: (agentId: string) => Promise<ProviderReadinessStatus>;
   readonly #imCliReadiness: (agentId: string, provider: "feishu" | "slack") => Promise<ImCliReadinessStatus>;
+  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
   constructor(
     database: DatabaseClient,
     cipher: ApplicationCipher,
     options: {
       afterMutationAuthorityLocked?: () => Promise<void> | void;
-      membershipService?: TeamMembershipService;
       now?: () => Date;
       agentRuntimeReadiness?: (agentId: string) => Promise<ProviderReadinessStatus> | ProviderReadinessStatus;
       imCliReadiness?: (
         agentId: string,
         provider: "feishu" | "slack",
       ) => Promise<ImCliReadinessStatus> | ImCliReadinessStatus;
+      workspaceAdmins?: WorkspaceAdminAccess;
     } = {},
   ) {
     this.#database = database;
     this.#afterMutationAuthorityLocked = options.afterMutationAuthorityLocked;
-    this.#membershipService = options.membershipService ?? new TeamMembershipService(database);
     this.#cipher = cipher;
     this.#now = options.now ?? (() => new Date());
     this.#agentRuntimeReadiness = async (agentId) => (await options.agentRuntimeReadiness?.(agentId)) ?? "ready";
     this.#imCliReadiness = async (agentId, provider) => (await options.imCliReadiness?.(agentId, provider)) ?? "ready";
+    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
-  async getAgentComputerId(agentId: string): Promise<string | undefined> {
+  async getAgentWorkspaceComputerId(agentId: string): Promise<string | undefined> {
     const [agent] = await this.#database
-      .select({ computerId: agents.computerId })
+      .select({ workspaceComputerId: workspaceComputers.id })
       .from(agents)
+      .innerJoin(
+        workspaceComputers,
+        and(
+          eq(workspaceComputers.workspaceId, agents.workspaceId),
+          eq(workspaceComputers.id, agents.workspaceComputerId),
+          isNull(workspaceComputers.revokedAt),
+        ),
+      )
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
-    return agent?.computerId;
+    return agent?.workspaceComputerId;
   }
 
   async issueRuntimeCredentialGrant(
     request: RuntimeImCredentialGrantRequest,
-    authenticatedComputerId: string,
+    computerAuth: { computerId: string; workspaceComputerId: string; workspaceId: string },
   ): Promise<RuntimeImCredentialGrantResult> {
     const [row] = await this.#database
       .select({
@@ -278,15 +285,25 @@ export class ImBindingService {
         sessionEndedAt: sessions.endedAt,
         binding: imBindings,
         boundAgentId: imBindings.agentId,
-        agentComputerId: agents.computerId,
+        agentWorkspaceComputerId: agents.workspaceComputerId,
         agentStatus: agents.status,
-        placementComputerId: sessionPlacements.computerId,
+        placementComputerId: sessionPlacements.workspaceComputerId,
         placementGeneration: sessionPlacements.generation,
+        workspaceComputerId: workspaceComputers.id,
+        workspaceId: agents.workspaceId,
       })
       .from(sessions)
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .leftJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .leftJoin(
+        workspaceComputers,
+        and(
+          eq(workspaceComputers.workspaceId, agents.workspaceId),
+          eq(workspaceComputers.id, agents.workspaceComputerId),
+          isNull(workspaceComputers.revokedAt),
+        ),
+      )
       .where(eq(sessions.id, request.sessionId))
       .limit(1);
     const rejected = (
@@ -301,14 +318,16 @@ export class ImBindingService {
       !row ||
       row.sessionKind === "internal" ||
       row.boundAgentId !== request.agentId ||
-      row.agentComputerId !== authenticatedComputerId ||
+      row.agentWorkspaceComputerId !== computerAuth.workspaceComputerId ||
+      row.workspaceComputerId !== computerAuth.workspaceComputerId ||
+      row.workspaceId !== computerAuth.workspaceId ||
       row.agentStatus !== "active"
     ) {
       return rejected("agent_mismatch");
     }
     if (
       row.sessionEndedAt !== null ||
-      row.placementComputerId !== authenticatedComputerId ||
+      row.placementComputerId !== computerAuth.workspaceComputerId ||
       row.placementGeneration !== request.placementGeneration
     ) {
       return rejected("placement_stale");
@@ -386,11 +405,11 @@ export class ImBindingService {
         identityClosure: { status: "pending", verifiedAt: null },
       };
     } catch (error) {
-      // The partial unique index decides concurrent activations of one App/Team; report the loser
+      // The partial unique index decides concurrent activations of one App/Workspace; report the loser
       // with the same typed conflict the in-transaction precheck uses.
-      if (isImBindingUniqueViolation(error, "im_bindings_slack_app_team_current_unique")) {
+      if (isImBindingUniqueViolation(error, "im_bindings_slack_app_workspace_current_unique")) {
         throw new ImBindingServiceError(
-          "SLACK_APP_TEAM_ALREADY_BOUND",
+          "SLACK_APP_WORKSPACE_ALREADY_BOUND",
           409,
           "This Slack App installation is already bound to another Agent",
         );
@@ -812,23 +831,13 @@ export class ImBindingService {
     agentId: string,
     executor: QueryExecutor = this.#database,
   ): Promise<void> {
-    const [scope] = await executor
-      .select({ role: memberships.role })
-      .from(agents)
-      .innerJoin(
-        memberships,
-        and(
-          eq(memberships.teamId, agents.teamId),
-          eq(memberships.userId, callerUserId),
-          eq(memberships.status, "active"),
-        ),
-      )
-      .innerJoin(users, and(eq(users.id, memberships.userId), isNull(users.suspendedAt)))
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
-      .limit(1);
-    if (!scope) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
-    if (scope.role !== "admin") {
-      throw new ImBindingServiceError("IM_BINDING_FORBIDDEN", 403, "The caller cannot manage this IM binding");
+    try {
+      await this.#workspaceAdmins.requireAdminForAgent(callerUserId, agentId, executor);
+    } catch (error) {
+      if (error instanceof AuthServiceError && error.statusCode === 404) {
+        throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
+      }
+      throw error;
     }
   }
 
@@ -837,23 +846,9 @@ export class ImBindingService {
     agentId: string,
     transaction: DatabaseTransaction,
   ): Promise<void> {
-    const [candidate] = await transaction
-      .select({ teamId: agents.teamId })
-      .from(agents)
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
-      .limit(1);
-    if (!candidate) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
     try {
-      await this.#membershipService.requireActiveMembershipForMutation(
-        transaction,
-        callerUserId,
-        candidate.teamId,
-        "admin",
-      );
+      await this.#workspaceAdmins.requireAdminForAgentMutation(transaction, callerUserId, agentId);
     } catch (error) {
-      if (error instanceof AuthServiceError && error.statusCode === 403) {
-        throw new ImBindingServiceError("IM_BINDING_FORBIDDEN", 403, "The caller cannot manage this IM binding");
-      }
       if (error instanceof AuthServiceError && error.statusCode === 404) {
         throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
       }
@@ -862,7 +857,7 @@ export class ImBindingService {
     const [agent] = await transaction
       .select({ id: agents.id })
       .from(agents)
-      .where(and(eq(agents.id, agentId), eq(agents.teamId, candidate.teamId), ne(agents.status, "deleted")))
+      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1)
       .for("update");
     if (!agent) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
@@ -870,21 +865,7 @@ export class ImBindingService {
   }
 
   async #assertCanRead(callerUserId: string, agentId: string): Promise<void> {
-    const [scope] = await this.#database
-      .select({ agentId: agents.id })
-      .from(agents)
-      .innerJoin(
-        memberships,
-        and(
-          eq(memberships.teamId, agents.teamId),
-          eq(memberships.userId, callerUserId),
-          eq(memberships.status, "active"),
-        ),
-      )
-      .innerJoin(users, and(eq(users.id, memberships.userId), isNull(users.suspendedAt)))
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
-      .limit(1);
-    if (!scope) throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent was not found");
+    await this.assertCanManage(callerUserId, agentId);
   }
 
   async #readiness(imBinding: ImBindingReadinessInput): Promise<ImBindingReadiness> {
@@ -1123,7 +1104,7 @@ export class ImBindingService {
           .limit(1);
         if (conflicting) {
           throw new ImBindingServiceError(
-            "SLACK_APP_TEAM_ALREADY_BOUND",
+            "SLACK_APP_WORKSPACE_ALREADY_BOUND",
             409,
             "This Slack App installation is already bound to another Agent",
           );

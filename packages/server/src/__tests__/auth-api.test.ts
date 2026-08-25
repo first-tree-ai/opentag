@@ -4,7 +4,7 @@ import { createApp } from "../app.js";
 import type { ConnectCodeIssuer, UserAuthService } from "../services/auth/index.js";
 
 const apps: ReturnType<typeof createApp>[] = [];
-const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
+const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 
 afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
@@ -32,12 +32,13 @@ function createAuthService(): UserAuthService {
           email: "admin@example.com",
           displayName: "Admin",
         },
-        memberships: [
+        workspaces: [
           {
-            teamId,
-            teamName: "example",
-            teamDisplayName: "Example",
-            role: "admin",
+            id: workspaceId,
+            name: "example",
+            displayName: "Example",
+            setupCompletedAt: null,
+            grantedAt: "2026-08-20T00:00:00.000Z",
           },
         ],
       },
@@ -75,7 +76,7 @@ describe("auth HTTP API", () => {
     const response = await app.inject({
       method: "POST",
       url: HTTP_PATHS.authConnectExchange,
-      payload: { code: "1234567890abcdef", teamId: "caller-authority" },
+      payload: { code: "1234567890abcdef", workspaceId: "caller-authority" },
     });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: { code: "VALIDATION_ERROR", category: "validation" } });
@@ -113,7 +114,7 @@ describe("auth HTTP API", () => {
     expect(response.json()).toMatchObject({ error: { code: "INTERNAL_ERROR", category: "transient" } });
   });
 
-  it("authenticates /api/v1/me and returns live membership data", async () => {
+  it("authenticates /api/v1/me and returns ordered Workspace data", async () => {
     const authService = createAuthService();
     const app = createApp({ authService });
     apps.push(app);
@@ -127,7 +128,7 @@ describe("auth HTTP API", () => {
       headers: { authorization: "Bearer access" },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ memberships: [{ teamName: "example", role: "admin" }] });
+    expect(response.json()).toMatchObject({ workspaces: [{ name: "example", displayName: "Example" }] });
     expect(authService.getAuthenticatedUser).toHaveBeenCalledWith("access");
   });
 
@@ -200,7 +201,7 @@ describe("auth HTTP API", () => {
   it("issues a server-authored connect command only for the authenticated user", async () => {
     const authService = createAuthService();
     const issuer: ConnectCodeIssuer = {
-      issueForTeamAdmin: vi.fn().mockResolvedValue({
+      issueForUser: vi.fn().mockResolvedValue({
         code: "short_lived_code",
         expiresAt: new Date("2030-01-01T00:15:00.000Z"),
         expiresIn: 900,
@@ -217,7 +218,6 @@ describe("auth HTTP API", () => {
       method: "POST",
       url: HTTP_PATHS.meConnectCodes,
       headers: { authorization: "Bearer access" },
-      payload: { teamId },
     });
     expect(response.statusCode).toBe(201);
     expect(response.headers["cache-control"]).toBe("no-store");
@@ -227,13 +227,13 @@ describe("auth HTTP API", () => {
       expiresIn: 900,
       issuedAt: "2030-01-01T00:00:00.000Z",
     });
-    expect(issuer.issueForTeamAdmin).toHaveBeenCalledWith("53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", teamId);
+    expect(issuer.issueForUser).toHaveBeenCalledWith("53e2babe-e4ac-4e2c-b7d1-d092d5a4568e");
   });
 
   it("requires same-origin CSRF for browser connect-code issuance", async () => {
     const authService = createAuthService();
     const issuer: ConnectCodeIssuer = {
-      issueForTeamAdmin: vi.fn().mockResolvedValue({
+      issueForUser: vi.fn().mockResolvedValue({
         code: "short_lived_code",
         expiresAt: new Date("2030-01-01T00:15:00.000Z"),
         expiresIn: 900,
@@ -257,7 +257,7 @@ describe("auth HTTP API", () => {
       headers: { cookie: "opentag_access=access; opentag_csrf=csrf" },
     });
     expect(rejected.statusCode).toBe(403);
-    expect(issuer.issueForTeamAdmin).not.toHaveBeenCalled();
+    expect(issuer.issueForUser).not.toHaveBeenCalled();
 
     const accepted = await app.inject({
       method: "POST",
@@ -267,9 +267,8 @@ describe("auth HTTP API", () => {
         origin: "https://dev.example.com",
         "x-opentag-csrf": "csrf",
       },
-      payload: { teamId },
     });
     expect(accepted.statusCode).toBe(201);
-    expect(issuer.issueForTeamAdmin).toHaveBeenCalledOnce();
+    expect(issuer.issueForUser).toHaveBeenCalledOnce();
   });
 });

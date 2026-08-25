@@ -11,7 +11,7 @@ export interface AgentApiClient
     | "suspendAgent"
     | "reactivateAgent"
     | "deleteAgent"
-    | "listComputers"
+    | "listWorkspaceComputers"
     | "me"
     | "getAgentImBinding"
     | "getAgentImBindingConfig"

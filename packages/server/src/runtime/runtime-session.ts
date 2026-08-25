@@ -33,8 +33,8 @@ import {
   startRuntimeConnectionSpan,
   startRuntimeFrameSpan,
 } from "../observability/index.js";
-import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
-import type { ComputerService } from "../services/computers/index.js";
+import { AuthServiceError } from "../services/auth/index.js";
+import type { ComputerAuthContext, ComputerAuthVerifier, ComputerService } from "../services/computers/index.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
 import { KeyedTaskScheduler } from "./keyed-task-scheduler.js";
 
@@ -44,11 +44,12 @@ export type RuntimeServerBusinessFrame = Readonly<Record<string, unknown>> & { r
 
 export interface RuntimeBusinessContext {
   computerId: string;
+  workspaceComputerId: string;
+  workspaceId: string;
   connectionId?: string;
   instanceId: string;
   negotiatedCapabilities?: RuntimeNegotiatedCapabilities;
   signal: AbortSignal;
-  userId: string;
 }
 
 export interface RuntimeBusinessOptions {
@@ -73,7 +74,7 @@ export interface RuntimeSessionOptions {
 }
 
 export class RuntimeSession {
-  readonly #auth: UserAuthService;
+  readonly #auth: ComputerAuthVerifier;
   readonly #computers: ComputerService;
   readonly #registry: ConnectionRegistry;
   readonly #socket: WebSocket;
@@ -85,11 +86,12 @@ export class RuntimeSession {
   readonly #businessScheduler?: KeyedTaskScheduler;
   #state: "await-auth" | "await-register" | "registered" | "closing" | "closed" = "await-auth";
   #timer?: ReturnType<typeof setTimeout>;
-  #tokenTimer?: ReturnType<typeof setTimeout>;
   #handshakeInFlight = false;
   #heartbeatInFlight = false;
-  #userId?: string;
+  #authContext?: ComputerAuthContext;
   #computerId?: string;
+  #workspaceComputerId?: string;
+  #workspaceId?: string;
   #connectionId?: string;
   #instanceId?: string;
   #protocolVersion?: RuntimeProtocolVersion;
@@ -97,7 +99,7 @@ export class RuntimeSession {
 
   constructor(
     socket: WebSocket,
-    auth: UserAuthService,
+    auth: ComputerAuthVerifier,
     computers: ComputerService,
     registry: ConnectionRegistry,
     options: RuntimeSessionOptions = {},
@@ -171,6 +173,15 @@ export class RuntimeSession {
           "PROTOCOL_VERSION_UNSUPPORTED",
           "The runtime protocol version is unsupported",
           4400,
+          envelope.data.requestId,
+        );
+        return;
+      }
+      if (isLegacyAccountAuthFrame(decoded)) {
+        this.#fail(
+          "AUTH_INVALID_TOKEN",
+          "Account credentials cannot authenticate a Computer runtime",
+          4401,
           envelope.data.requestId,
         );
         return;
@@ -255,17 +266,18 @@ export class RuntimeSession {
 
   async #authenticate(frame: AuthFrame): Promise<void> {
     try {
-      const authenticated = await this.#auth.getAuthenticatedUser(frame.accessToken);
+      const authenticated = await this.#auth.verifyMachineToken(frame.machineToken);
       if (this.#isClosing()) return;
-      this.#userId = authenticated.me.user.id;
+      this.#authContext = authenticated;
       this.#state = "await-register";
       this.#armTimeout(this.#options.registerTimeoutMs, "RUNTIME_REGISTER_TIMEOUT", "Computer registration timed out");
       this.#send({
         type: "auth:result",
         requestId: frame.requestId,
         ok: true,
-        userId: this.#userId,
-        tokenExpiresAt: authenticated.tokenExpiresAt.toISOString(),
+        workspaceComputerId: authenticated.workspaceComputerId,
+        workspaceId: authenticated.workspaceId,
+        computerId: authenticated.computerId,
       });
       this.#send(
         this.#protocolVersion === RUNTIME_PROTOCOL_V2
@@ -292,19 +304,24 @@ export class RuntimeSession {
                 : {}),
             },
       );
-      const untilExpiry = authenticated.tokenExpiresAt.getTime() - this.#options.now().getTime();
-      this.#tokenTimer = setTimeout(
-        () => this.#fail("AUTH_INVALID_TOKEN", "The access token expired", 4401),
-        Math.max(1, untilExpiry),
-      );
     } catch (error) {
       this.#handleRequestError(error, frame.requestId);
     }
   }
 
   async #register(frame: ComputerRegisterFrame): Promise<void> {
-    if (!this.#userId) {
-      this.#fail("PROTOCOL_ERROR", "Missing authenticated runtime user", 4400, frame.requestId);
+    const authContext = this.#authContext;
+    if (!authContext) {
+      this.#fail("PROTOCOL_ERROR", "Missing authenticated Computer enrollment", 4400, frame.requestId);
+      return;
+    }
+    if (frame.computerId !== authContext.computerId) {
+      this.#fail(
+        "COMPUTER_IDENTITY_CONFLICT",
+        "The Computer identity does not match the machine credential",
+        4409,
+        frame.requestId,
+      );
       return;
     }
     if (!this.#acceptsProviderReadiness(frame.providerReadiness)) {
@@ -338,13 +355,14 @@ export class RuntimeSession {
         }
         connectionId = randomUUID();
       }
-      const userId = this.#userId;
       await this.#registry.register(
         {
           active: false,
           capabilities: frame.capabilities,
           capabilitiesUpdatedAt: this.#options.now().getTime(),
           computerId: frame.computerId,
+          workspaceComputerId: authContext.workspaceComputerId,
+          workspaceId: authContext.workspaceId,
           connectionId,
           instanceId: frame.instanceId,
           lastHeartbeatAt: this.#options.now().getTime(),
@@ -358,12 +376,13 @@ export class RuntimeSession {
           imCliReadinessObservedAt: frame.imCliReadiness?.length ? this.#options.now().getTime() : undefined,
           negotiatedCapabilities,
           socket: this.#socket,
-          userId,
         },
-        () => this.#computers.register(userId, frame),
+        () => this.#computers.register(authContext, frame),
         () => {
           if (this.#isClosing()) return;
           this.#computerId = frame.computerId;
+          this.#workspaceComputerId = authContext.workspaceComputerId;
+          this.#workspaceId = authContext.workspaceId;
           this.#connectionId = connectionId;
           this.#instanceId = frame.instanceId;
           this.#negotiatedCapabilities = negotiatedCapabilities ?? {};
@@ -390,14 +409,14 @@ export class RuntimeSession {
                 }
               : { type: "computer:register:result", requestId: frame.requestId, ok: true },
           );
-          if (!this.#registry.activate(frame.computerId, frame.instanceId, this.#socket)) {
+          if (!this.#registry.activate(authContext.workspaceComputerId, frame.instanceId, this.#socket)) {
             this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced during registration", 4409);
           }
         },
       );
       if (this.#isClosing()) {
-        if (this.#registry.remove(frame.computerId, frame.instanceId, this.#socket)) {
-          await this.#computers.disconnect(frame.computerId, frame.instanceId).catch(() => undefined);
+        if (this.#registry.remove(authContext.workspaceComputerId, frame.instanceId, this.#socket)) {
+          await this.#computers.disconnect(authContext.workspaceComputerId, frame.instanceId).catch(() => undefined);
         }
         return;
       }
@@ -409,7 +428,8 @@ export class RuntimeSession {
   async #heartbeat(frame: HeartbeatFrame): Promise<void> {
     const { requestId, computerId, instanceId, capabilities, providerReadiness, imCliReadiness } = frame;
     try {
-      if (!this.#userId || computerId !== this.#computerId || instanceId !== this.#instanceId) {
+      const authContext = this.#authContext;
+      if (!authContext || computerId !== this.#computerId || instanceId !== this.#instanceId) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance is not registered", 4409, requestId);
         return;
       }
@@ -417,17 +437,17 @@ export class RuntimeSession {
         this.#fail("PROTOCOL_ERROR", "Provider readiness was not negotiated", 4400, requestId);
         return;
       }
-      if (!this.#registry.isCurrent(computerId, instanceId, this.#socket)) {
+      if (!this.#registry.isCurrent(authContext.workspaceComputerId, instanceId, this.#socket)) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, requestId);
         return;
       }
-      if (!(await this.#computers.heartbeat(this.#userId, computerId, instanceId))) {
+      if (!(await this.#computers.heartbeat(authContext, instanceId))) {
         this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, requestId);
         return;
       }
       if (
         !this.#registry.touch(
-          computerId,
+          authContext.workspaceComputerId,
           instanceId,
           this.#socket,
           this.#options.now().getTime(),
@@ -467,7 +487,16 @@ export class RuntimeSession {
   #scheduleBusinessFrame(decoded: unknown, requestId?: string): void {
     const business = this.#options.business;
     const scheduler = this.#businessScheduler;
-    if (!business || !scheduler || !this.#userId || !this.#computerId || !this.#instanceId) {
+    const authContext = this.#authContext;
+    if (
+      !business ||
+      !scheduler ||
+      !authContext ||
+      !this.#computerId ||
+      !this.#workspaceComputerId ||
+      !this.#workspaceId ||
+      !this.#instanceId
+    ) {
       this.#fail("PROTOCOL_ERROR", "The runtime business frame type is unknown", 4400, requestId);
       return;
     }
@@ -485,11 +514,12 @@ export class RuntimeSession {
     }
     const context: RuntimeBusinessContext = {
       computerId: this.#computerId,
+      workspaceComputerId: this.#workspaceComputerId,
+      workspaceId: this.#workspaceId,
       connectionId: this.#connectionId,
       instanceId: this.#instanceId,
       negotiatedCapabilities: { ...this.#negotiatedCapabilities },
       signal: this.#abort.signal,
-      userId: this.#userId,
     };
     const frameTrace = startRuntimeFrameSpan(this.#socket, frame.type, runtimeBusinessFrameAttrs(frame, context));
     const accepted = scheduler.enqueue(
@@ -497,6 +527,14 @@ export class RuntimeSession {
       async () => {
         let outcome = "failed";
         let errorCode: string | undefined = "RUNTIME_FRAME_FAILED";
+        try {
+          await this.#computers.assertActiveCredential(authContext);
+        } catch {
+          if (this.#canSendBusiness(context)) {
+            this.#fail("AUTH_INVALID_TOKEN", "The machine credential is no longer active", 4401, requestId);
+          }
+          return;
+        }
         try {
           if (!this.#canSendBusiness(context)) {
             outcome = "stale_connection";
@@ -531,7 +569,7 @@ export class RuntimeSession {
       !context.signal.aborted &&
       this.#state === "registered" &&
       context.connectionId === this.#connectionId &&
-      this.#registry.isCurrent(context.computerId, context.instanceId, this.#socket)
+      this.#registry.isCurrent(context.workspaceComputerId, context.instanceId, this.#socket)
     );
   }
 
@@ -551,13 +589,12 @@ export class RuntimeSession {
     this.#abort.abort();
     this.#businessScheduler?.close();
     this.#clearHandshakeTimer();
-    if (this.#tokenTimer) clearTimeout(this.#tokenTimer);
     if (
-      this.#computerId &&
+      this.#workspaceComputerId &&
       this.#instanceId &&
-      this.#registry.remove(this.#computerId, this.#instanceId, this.#socket)
+      this.#registry.remove(this.#workspaceComputerId, this.#instanceId, this.#socket)
     ) {
-      await this.#computers.disconnect(this.#computerId, this.#instanceId).catch(() => undefined);
+      await this.#computers.disconnect(this.#workspaceComputerId, this.#instanceId).catch(() => undefined);
     }
   }
 
@@ -620,7 +657,6 @@ export class RuntimeSession {
     this.#abort.abort();
     this.#businessScheduler?.close();
     this.#clearHandshakeTimer();
-    if (this.#tokenTimer) clearTimeout(this.#tokenTimer);
     this.#send({ type: "error", code, message, ...(requestId ? { requestId } : {}) } satisfies ServerRuntimeFrame);
     endRuntimeConnectionSpan(this.#socket, closeCode);
     this.#socket.close(closeCode, message.slice(0, 120));
@@ -653,6 +689,7 @@ function runtimeBusinessFrameAttrs(
     sessionId: stringField(frame, "sessionId"),
     agentId: stringField(frame, "agentId"),
     computerId: runtime.computerId,
+    workspaceComputerId: runtime.workspaceComputerId,
     instanceId: runtime.instanceId,
     placementGeneration: numberField(frame, "placementGeneration"),
   });
@@ -684,6 +721,12 @@ function safeJson(value: string): unknown {
   } catch {
     return undefined;
   }
+}
+
+function isLegacyAccountAuthFrame(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const frame = value as Record<string, unknown>;
+  return frame.type === "auth" && typeof frame.accessToken === "string" && frame.machineToken === undefined;
 }
 
 function withoutConnectionId(value: unknown): unknown {

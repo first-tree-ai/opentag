@@ -12,7 +12,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { computers } from "./computers.js";
+import { workspaceComputers } from "./computers.js";
 import { imBindings, imConversationKind } from "./im-bindings.js";
 
 export const sessionKind = pgEnum("session_kind", ["channel", "thread", "internal"]);
@@ -74,14 +74,14 @@ export const sessionPlacements = pgTable(
     sessionId: uuid("session_id")
       .primaryKey()
       .references(() => sessions.id, { onDelete: "cascade" }),
-    computerId: uuid("computer_id")
+    workspaceComputerId: uuid("workspace_computer_id")
       .notNull()
-      .references(() => computers.id, { onDelete: "restrict" }),
+      .references(() => workspaceComputers.id, { onDelete: "restrict" }),
     generation: bigint("generation", { mode: "number" }).notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
-    index("session_placements_computer_id_idx").on(table.computerId),
+    index("session_placements_workspace_computer_id_idx").on(table.workspaceComputerId),
     check("session_placements_generation_positive", sql`${table.generation} >= 1`),
   ],
 );

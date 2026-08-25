@@ -1,13 +1,10 @@
 import { relations, sql } from "drizzle-orm";
-import { index, pgEnum, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 };
-
-export const membershipRole = pgEnum("membership_role", ["admin", "member"]);
-export const membershipStatus = pgEnum("membership_status", ["active", "left", "removed"]);
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -17,8 +14,8 @@ export const users = pgTable("users", {
   ...timestamps,
 });
 
-export const teams = pgTable(
-  "teams",
+export const workspaces = pgTable(
+  "workspaces",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     name: text("name").notNull(),
@@ -26,53 +23,75 @@ export const teams = pgTable(
     setupCompletedAt: timestamp("setup_completed_at", { withTimezone: true }),
     ...timestamps,
   },
-  (table) => [uniqueIndex("teams_name_unique").on(sql`lower(${table.name})`)],
+  (table) => [uniqueIndex("workspaces_name_unique").on(sql`lower(${table.name})`)],
 );
 
-export const memberships = pgTable(
-  "memberships",
+export const workspaceAdminGrants = pgTable(
+  "workspace_admin_grants",
   {
-    teamId: uuid("team_id")
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
       .notNull()
-      .references(() => teams.id, { onDelete: "cascade" }),
+      .references(() => workspaces.id, { onDelete: "restrict" }),
     userId: uuid("user_id")
       .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    role: membershipRole("role").notNull(),
-    status: membershipStatus("status").notNull().default("active"),
-    ...timestamps,
+      .references(() => users.id, { onDelete: "restrict" }),
+    grantedByUserId: uuid("granted_by_user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    grantedAt: timestamp("granted_at", { withTimezone: true }).notNull().defaultNow(),
+    revokedByUserId: uuid("revoked_by_user_id").references(() => users.id, { onDelete: "restrict" }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
   },
   (table) => [
-    primaryKey({ columns: [table.teamId, table.userId], name: "memberships_team_user_pk" }),
-    index("memberships_user_id_idx").on(table.userId),
+    uniqueIndex("workspace_admin_grants_active_workspace_user_unique")
+      .on(table.workspaceId, table.userId)
+      .where(sql`${table.revokedAt} is null`),
+    index("workspace_admin_grants_active_user_workspace_idx")
+      .on(table.userId, table.workspaceId)
+      .where(sql`${table.revokedAt} is null`),
+    index("workspace_admin_grants_workspace_granted_idx").on(table.workspaceId, table.grantedAt),
+    check(
+      "workspace_admin_grants_revocation_pair",
+      sql`(${table.revokedByUserId} is null) = (${table.revokedAt} is null)`,
+    ),
+    check(
+      "workspace_admin_grants_revoked_after_granted",
+      sql`${table.revokedAt} is null or ${table.revokedAt} >= ${table.grantedAt}`,
+    ),
   ],
 );
 
-export const connectCodes = pgTable(
-  "connect_codes",
+export const accountCliLoginCodes = pgTable(
+  "account_cli_login_codes",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    codeHash: text("code_hash").notNull().unique(),
+    tokenHash: text("token_hash").notNull().unique(),
     userId: uuid("user_id")
       .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    issuerUserId: uuid("issuer_user_id")
+      .references(() => users.id, { onDelete: "restrict" }),
+    issuedByUserId: uuid("issued_by_user_id")
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     consumedAt: timestamp("consumed_at", { withTimezone: true }),
-    createdAt: timestamps.createdAt,
   },
-  (table) => [index("connect_codes_user_id_idx").on(table.userId)],
+  (table) => [
+    index("account_cli_login_codes_user_created_idx").on(table.userId, table.createdAt),
+    check("account_cli_login_codes_expiry", sql`${table.expiresAt} > ${table.createdAt}`),
+  ],
 );
 
 export const usersRelations = relations(users, ({ many }) => ({
-  memberships: many(memberships),
+  workspaceAdminGrants: many(workspaceAdminGrants),
 }));
 
-export const teamsRelations = relations(teams, ({ many }) => ({ memberships: many(memberships) }));
+export const workspacesRelations = relations(workspaces, ({ many }) => ({
+  adminGrants: many(workspaceAdminGrants),
+}));
 
-export const membershipsRelations = relations(memberships, ({ one }) => ({
-  team: one(teams, { fields: [memberships.teamId], references: [teams.id] }),
-  user: one(users, { fields: [memberships.userId], references: [users.id] }),
+export const workspaceAdminGrantsRelations = relations(workspaceAdminGrants, ({ one }) => ({
+  workspace: one(workspaces, { fields: [workspaceAdminGrants.workspaceId], references: [workspaces.id] }),
+  user: one(users, { fields: [workspaceAdminGrants.userId], references: [users.id] }),
 }));

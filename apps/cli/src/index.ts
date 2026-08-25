@@ -1,5 +1,12 @@
 export { CHANNEL, CLI_PACKAGE_NAME, CLI_VERSION } from "./build-info.js";
 export { createProgram } from "./cli/program.js";
+export { formatAdminInvitation, formatWorkspaceAdmins } from "./core/admin/formatting.js";
+export {
+  type AdminSelectionOptions,
+  runAdminInvite,
+  runAdminList,
+  runAdminRevoke,
+} from "./core/admin/operations.js";
 export { formatAgent, formatAgentCreated, formatAgentList } from "./core/agent/formatting.js";
 export {
   runAgentCreate,
@@ -13,15 +20,4 @@ export { channelConfig } from "./core/channel/config.js";
 export { formatComputerList } from "./core/computer/formatting.js";
 export { listComputers } from "./core/computer/queries.js";
 export { type DoctorOptions, type DoctorResult, resolveServerUrl, runDoctor } from "./core/diagnostics/doctor.js";
-export { selectTeam } from "./core/selection/team.js";
-export { formatTeamInvitation, formatTeamMember, formatTeamMembers } from "./core/team/formatting.js";
-export {
-  runTeamInvitationRotate,
-  runTeamInvitationShow,
-  runTeamLeave,
-  runTeamMemberList,
-  runTeamMemberRemove,
-  runTeamMemberRestore,
-  runTeamMemberRole,
-  type TeamSelectionOptions,
-} from "./core/team/operations.js";
+export { selectWorkspace } from "./core/selection/workspace.js";

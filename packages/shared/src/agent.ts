@@ -70,7 +70,7 @@ export const UpdateAgentRuntimeConfigSchema = z
 const AgentIdentitySchema = z
   .object({
     id: z.string().uuid(),
-    teamId: z.string().uuid(),
+    workspaceId: z.string().uuid(),
     name: AgentNameSchema,
     displayName: AgentDisplayNameSchema,
     runtimeProvider: AgentRuntimeProviderSchema,
@@ -82,7 +82,7 @@ const AgentIdentitySchema = z
   .strict();
 
 export const AgentSummarySchema = AgentIdentitySchema.extend({
-  manager: z
+  createdBy: z
     .object({
       userId: z.string().uuid(),
       displayName: z.string().min(1),
@@ -90,7 +90,7 @@ export const AgentSummarySchema = AgentIdentitySchema.extend({
     .strict(),
   computer: z
     .object({
-      id: z.string().uuid(),
+      computerId: z.string().uuid(),
       displayName: z.string().min(1),
       platform: z.enum(["darwin", "linux", "win32"]),
     })
@@ -117,7 +117,6 @@ export const AgentListActivitySchema = z.discriminatedUnion("state", [
 
 export const AgentDetailSchema = AgentSummarySchema.extend({
   activity: AgentListActivitySchema,
-  viewerCapabilities: z.object({ canManage: z.boolean() }).strict(),
 }).strict();
 
 export const AgentUsageSummarySchema = z
@@ -207,7 +206,7 @@ export const AgentListItemSchema = AgentSummarySchema.extend({
 }).strict();
 
 export const AgentAdminConfigSchema = AgentIdentitySchema.extend({
-  managerUserId: z.string().uuid(),
+  createdByUserId: z.string().uuid(),
   computerId: z.string().uuid(),
   revision: z.number().int().min(1),
   runtimeConfig: AgentRuntimeConfigSchema,

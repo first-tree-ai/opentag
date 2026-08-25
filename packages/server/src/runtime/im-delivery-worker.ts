@@ -16,12 +16,12 @@ import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
   agents,
-  computers,
   imBindings,
   imMessageDeliveries,
   imMessages,
   sessionPlacements,
   sessions,
+  workspaceComputers,
 } from "../db/schema/index.js";
 import {
   imAttrs,
@@ -269,7 +269,7 @@ export class ImDeliveryWorker {
         placement: sessionPlacements,
         imBinding: imBindings,
         agent: agents,
-        computer: computers,
+        computer: workspaceComputers,
       })
       .from(imMessageDeliveries)
       .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
@@ -277,7 +277,14 @@ export class ImDeliveryWorker {
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+      .innerJoin(
+        workspaceComputers,
+        and(
+          eq(workspaceComputers.workspaceId, agents.workspaceId),
+          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
+          isNull(workspaceComputers.revokedAt),
+        ),
+      )
       .where(
         and(
           eq(imMessageDeliveries.id, deliveryId),
@@ -308,7 +315,8 @@ export class ImDeliveryWorker {
         messageId: row.message.id,
         sessionId: row.session.id,
         agentId: row.agent.id,
-        computerId: row.placement.computerId,
+        computerId: row.computer.computerId,
+        workspaceComputerId: row.computer.id,
         placementGeneration: row.placement.generation,
         attempt: row.delivery.attemptCount,
       }),
@@ -317,7 +325,7 @@ export class ImDeliveryWorker {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_PLACEMENT_STALE", claimToken);
       return;
     }
-    const instanceId = this.#registry.currentInstanceId(row.placement.computerId);
+    const instanceId = this.#registry.currentInstanceId(row.computer.id);
     if (!instanceId || row.computer.currentInstanceId !== instanceId) {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_UNAVAILABLE", claimToken);
       return;
@@ -353,12 +361,12 @@ export class ImDeliveryWorker {
     try {
       const admittedReconcile = await this.#withActiveAgentAdmission(row.agent.id, (onDispatched) =>
         this.#domain.requestReconcile(
-          row.placement.computerId,
+          row.computer.id,
           instanceId,
           {
             type: "session:reconcile",
             requestId: randomUUID(),
-            computerId: row.placement.computerId,
+            computerId: row.computer.computerId,
             sessionId: row.session.id,
             agentId: row.agent.id,
             placementGeneration: row.placement.generation,
@@ -460,7 +468,7 @@ export class ImDeliveryWorker {
       if (!(await lease.assertOwned())) return;
       await this.#beforeDeliveryAdmission?.();
       const admittedDelivery = await this.#withActiveAgentAdmission(row.agent.id, (onDispatched) =>
-        this.#domain.requestDelivery(row.placement.computerId, instanceId, request, onDispatched),
+        this.#domain.requestDelivery(row.computer.id, instanceId, request, onDispatched),
       );
       if (!admittedDelivery.admitted) {
         await this.#recordFailure(deliveryId, "IM_DELIVERY_AGENT_NOT_ACTIVE", claimToken);
@@ -489,14 +497,21 @@ export class ImDeliveryWorker {
         placement: sessionPlacements,
         imBinding: imBindings,
         agent: agents,
-        computer: computers,
+        computer: workspaceComputers,
       })
       .from(imMessageDeliveries)
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
       .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+      .innerJoin(
+        workspaceComputers,
+        and(
+          eq(workspaceComputers.workspaceId, agents.workspaceId),
+          eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
+          isNull(workspaceComputers.revokedAt),
+        ),
+      )
       .where(
         and(
           eq(imMessageDeliveries.id, deliveryId),
@@ -521,7 +536,8 @@ export class ImDeliveryWorker {
         messageId: row.delivery.messageId,
         sessionId: row.session.id,
         agentId: row.agent.id,
-        computerId: row.placement.computerId,
+        computerId: row.computer.computerId,
+        workspaceComputerId: row.computer.id,
         placementGeneration: row.placement.generation,
         attempt: row.delivery.attemptCount,
       }),
@@ -530,7 +546,7 @@ export class ImDeliveryWorker {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_PLACEMENT_STALE");
       return;
     }
-    const instanceId = this.#registry.currentInstanceId(row.placement.computerId);
+    const instanceId = this.#registry.currentInstanceId(row.computer.id);
     if (!instanceId || row.computer.currentInstanceId !== instanceId) {
       await this.#recordFailure(deliveryId, "IM_DELIVERY_RUNTIME_UNAVAILABLE");
       return;
@@ -560,10 +576,10 @@ export class ImDeliveryWorker {
     }
     if (row.agent.status === "active" && !runtime) return;
     try {
-      await this.#domain.requestReconcile(row.placement.computerId, instanceId, {
+      await this.#domain.requestReconcile(row.computer.id, instanceId, {
         type: "session:reconcile",
         requestId: randomUUID(),
-        computerId: row.placement.computerId,
+        computerId: row.computer.computerId,
         sessionId: row.session.id,
         agentId: row.agent.id,
         placementGeneration: row.placement.generation,

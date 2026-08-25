@@ -514,7 +514,7 @@ describe("background and WebSocket tracing", () => {
             disconnect: vi.fn().mockResolvedValue(undefined),
           },
           validateBinding: vi.fn(() => validation),
-          listGrantedTeamScopes: vi.fn().mockResolvedValue([...FEISHU_REQUIRED_TENANT_SCOPES]),
+          listGrantedWorkspaceScopes: vi.fn().mockResolvedValue([...FEISHU_REQUIRED_TENANT_SCOPES]),
           normalizeInbound,
         }) as never,
     });
@@ -529,7 +529,7 @@ describe("background and WebSocket tracing", () => {
     await vi.waitFor(() => expect(messageHandler).toBeTypeOf("function"));
     if (!messageHandler) throw new Error("Feishu callback was not attached");
     await expect(messageHandler({} as never)).rejects.toMatchObject({ code: "FEISHU_ADMISSION_NOT_READY" });
-    releaseValidation?.({ externalAppId: "cli-test", externalTeamId: "team-test", externalBotId: "bot-test" });
+    releaseValidation?.({ externalAppId: "cli-test", externalTeamId: "workspace-test", externalBotId: "bot-test" });
     await expect(activation).resolves.toMatchObject({ agentId, appId: "cli-test" });
     await expect(messageHandler({} as never)).rejects.toBe(normalizeFailure);
     await expect(messageHandler({} as never)).rejects.toBeInstanceOf(ImInboundPersistenceError);
@@ -580,8 +580,15 @@ describe("background and WebSocket tracing", () => {
     const slowStarted = new Promise<void>((resolve) => {
       markSlowStarted = resolve;
     });
+    const machine = {
+      credentialId: randomUUID(),
+      workspaceComputerId: randomUUID(),
+      workspaceId: randomUUID(),
+      computerId: randomUUID(),
+    };
     const app = createApp({
       authService: runtimeAuthService() as never,
+      machineAuthService: { verifyMachineToken: vi.fn().mockResolvedValue(machine) } as never,
       computerService: runtimeComputerService() as never,
       runtime: {
         registry: new ConnectionRegistry(),
@@ -612,13 +619,13 @@ describe("background and WebSocket tracing", () => {
     const socket = new WebSocket(`${address.replace("http", "ws")}${HTTP_PATHS.computerRuntimeWebSocket}`);
     const frames = websocketFrames(socket);
     await websocketOpened(socket);
-    socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), protocolVersion: 1, accessToken: "token" }));
+    socket.send(JSON.stringify({ type: "auth", requestId: randomUUID(), protocolVersion: 1, machineToken: "token" }));
     expect(await frames.next()).toMatchObject({ type: "auth:result", ok: true });
     expect(await frames.next()).toMatchObject({ type: "server:welcome" });
     const registration = {
       type: "computer:register",
       requestId: randomUUID(),
-      computerId: randomUUID(),
+      computerId: machine.computerId,
       instanceId: randomUUID(),
       displayName: "test",
       platform: "linux",
@@ -680,15 +687,16 @@ describe("background and WebSocket tracing", () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();
     const instanceId = randomUUID();
-    const userId = randomUUID();
+    const workspaceId = randomUUID();
     const frames: unknown[] = [];
     await registry.register(
       {
         computerId,
+        workspaceComputerId: computerId,
+        workspaceId,
         instanceId,
         lastHeartbeatAt: 1,
         socket: runtimeDomainSocket(frames),
-        userId,
       },
       async () => undefined,
     );
@@ -702,7 +710,13 @@ describe("background and WebSocket tracing", () => {
       recordTurn: vi.fn().mockResolvedValue("recorded"),
     };
     const owner = new RuntimeDomainOwner(registry, custody as never, { requestTimeoutMs: 1_000 });
-    const context = { computerId, instanceId, signal: new AbortController().signal, userId };
+    const context = {
+      computerId,
+      workspaceComputerId: computerId,
+      workspaceId,
+      instanceId,
+      signal: new AbortController().signal,
+    };
 
     const acceptedRequest = runtimeDeliveryRequest();
     const accepted = owner.requestDelivery(computerId, instanceId, acceptedRequest);
@@ -790,10 +804,11 @@ describe("background and WebSocket tracing", () => {
     await failingRegistry.register(
       {
         computerId: failingComputerId,
+        workspaceComputerId: failingComputerId,
+        workspaceId,
         instanceId: failingInstanceId,
         lastHeartbeatAt: 1,
         socket: runtimeDomainSocket([], new Error("plain Runtime send payload with private prompt")),
-        userId,
       },
       async () => undefined,
     );
@@ -894,6 +909,50 @@ describe("HTTP tracing", () => {
     expect(JSON.stringify(httpSpans[0]?.attributes)).not.toContain("query-secret");
   });
 
+  it("redacts Admin invitation bearer tokens from real preview and accept route spans", async () => {
+    const accountId = randomUUID();
+    const app = createApp({
+      authService: {
+        getAuthenticatedUser: vi.fn().mockResolvedValue({
+          me: { user: { id: accountId }, workspaces: [] },
+          tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
+        }),
+      } as never,
+      invitationService: {
+        preview: vi.fn().mockResolvedValue({
+          workspaceDisplayName: "Example",
+          expiresAt: "2030-01-01T00:00:00.000Z",
+        }),
+        accept: vi.fn().mockResolvedValue({
+          workspace: {
+            id: randomUUID(),
+            name: "example",
+            displayName: "Example",
+            setupCompletedAt: null,
+            grantedAt: "2026-08-25T00:00:00.000Z",
+          },
+        }),
+      } as never,
+    });
+    const previewToken = "P".repeat(43);
+    const acceptToken = "A".repeat(43);
+    await app.inject({ method: "GET", url: `/api/v1/admin-invitations/${previewToken}/preview` });
+    await app.inject({
+      method: "POST",
+      url: `/api/v1/admin-invitations/${acceptToken}/accept`,
+      headers: { authorization: "Bearer account-token" },
+    });
+    await app.close();
+
+    const spans = exporter.getFinishedSpans().filter((span) => span.name.includes("/api/v1/admin-invitations/:token/"));
+    expect(spans).toHaveLength(2);
+    const exported = JSON.stringify(spans.map((span) => span.attributes));
+    expect(exported).not.toContain(previewToken);
+    expect(exported).not.toContain(acceptToken);
+    expect(exported).toContain("/api/v1/admin-invitations/[REDACTED]/preview");
+    expect(exported).toContain("/api/v1/admin-invitations/[REDACTED]/accept");
+  });
+
   it("does not trace health or readiness probes", async () => {
     const app = createApp();
     await app.inject({ method: "GET", url: "/healthz" });
@@ -907,7 +966,7 @@ function normalizedInboundEvent() {
   return {
     providerEventId: "event-1",
     externalAppId: "app-1",
-    externalTeamId: "team-1",
+    externalTeamId: "workspace-1",
     providerContext: { provider: "slack" as const, channelType: "channel" },
     conversation: { externalId: "channel-1", kind: "channel" as const },
     message: {
@@ -954,7 +1013,7 @@ function runtimeAuthService() {
     getAuthenticatedUser: vi.fn().mockResolvedValue({
       me: {
         user: { id: randomUUID(), email: "admin@example.com", displayName: "Admin" },
-        memberships: [],
+        workspaces: [],
       },
       tokenExpiresAt: new Date(Date.now() + 60_000),
     }),
@@ -963,6 +1022,7 @@ function runtimeAuthService() {
 
 function runtimeComputerService() {
   return {
+    assertActiveCredential: vi.fn().mockResolvedValue(undefined),
     register: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(true),
     heartbeat: vi.fn().mockResolvedValue(true),
@@ -1018,7 +1078,7 @@ function runtimeDeliveryRequest(): DirectImMessageDeliveryRequest {
       providerRef: {
         provider: "slack",
         appId: "app-1",
-        teamId: "team-1",
+        teamId: "workspace-1",
         botUserId: "bot-1",
         channelId: "channel-1",
         messageTs: "1710000000.000001",

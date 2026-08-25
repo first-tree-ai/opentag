@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { ProviderReadinessStatus } from "@opentag/shared";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
-import { agents } from "./db/schema/index.js";
+import { agents, workspaceComputers } from "./db/schema/index.js";
 import { createServerDiagnosticReporter, initTelemetry, shutdownTelemetry } from "./observability/index.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
@@ -27,7 +27,7 @@ import {
   OAuthFlowService,
   PostAuthenticationService,
 } from "./services/auth/index.js";
-import { ComputerService } from "./services/computers/index.js";
+import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
 import {
@@ -40,7 +40,8 @@ import { DefaultSlackApiClient, SlackAdapter, SlackConfigurationService } from "
 import { InvitationService } from "./services/invitations/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCollaborationService, SessionService } from "./services/sessions/index.js";
-import { TeamMembershipService, TeamSetupService } from "./services/teams/index.js";
+import { WorkspaceAdminAccess } from "./services/workspace-admin-access/index.js";
+import { WorkspaceAdminService, WorkspaceSetupService } from "./services/workspaces/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
 
 export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
@@ -110,27 +111,45 @@ export async function startServer(): Promise<void> {
     readiness.complete("migration");
 
     const { database, sql } = createDatabaseClient(config.databaseUrl);
+    const workspaceAdmins = new WorkspaceAdminAccess(database);
     const authService = new AuthService(
       database,
       new AuthTokenService(config.jwtSecret, config.accessTokenTtlSeconds, config.refreshTokenTtlSeconds),
+      { workspaceAdmins },
     );
     const connectCodeService = new ConnectCodeService(database);
     const registry = new ConnectionRegistry();
-    const computerService = new ComputerService(database, authService, { providerReadiness: registry });
-    const teamService = new TeamMembershipService(database, { providerReadiness: registry });
+    const machineAuthService = new MachineAuthService(database, {
+      onCredentialRotated: async (workspaceComputerId) => {
+        await registry.closeEnrollment(workspaceComputerId);
+      },
+      workspaceAdmins,
+    });
+    const computerService = new ComputerService(database, authService);
+    const workspaceService = new WorkspaceAdminService(database, { providerReadiness: registry, workspaceAdmins });
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
-    const invitationService = new InvitationService(database, teamService, applicationCipher, config.publicUrl);
+    const invitationService = new InvitationService(database, config.publicUrl, {
+      workspaceAdmins,
+    });
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database
-        .select({ computerId: agents.computerId, runtimeProvider: agents.runtimeProvider })
+        .select({ workspaceComputerId: workspaceComputers.id, runtimeProvider: agents.runtimeProvider })
         .from(agents)
+        .innerJoin(
+          workspaceComputers,
+          and(
+            eq(workspaceComputers.workspaceId, agents.workspaceId),
+            eq(workspaceComputers.id, agents.workspaceComputerId),
+            isNull(workspaceComputers.revokedAt),
+          ),
+        )
         .where(eq(agents.id, agentId))
         .limit(1);
-      const currentInstanceId = agent ? registry.currentInstanceId(agent.computerId) : undefined;
+      const currentInstanceId = agent ? registry.currentInstanceId(agent.workspaceComputerId) : undefined;
       if (!agent || !currentInstanceId) return "unavailable";
       return (
         registry
-          .providerReadiness(agent.computerId)
+          .providerReadiness(agent.workspaceComputerId)
           .find(({ observation }) => observation.provider === agent.runtimeProvider)?.observation.status ?? "checking"
       );
     };
@@ -139,22 +158,22 @@ export async function startServer(): Promise<void> {
     const imBindingService = new ImBindingService(database, applicationCipher, {
       agentRuntimeReadiness: agentRuntimeReadinessForAgent,
       imCliReadiness: async (agentId, provider) => {
-        const computerId = await imBindingService.getAgentComputerId(agentId);
-        if (!computerId) return "unavailable";
-        const observations = registry.imCliReadiness(computerId);
+        const workspaceComputerId = await imBindingService.getAgentWorkspaceComputerId(agentId);
+        if (!workspaceComputerId) return "unavailable";
+        const observations = registry.imCliReadiness(workspaceComputerId);
         return (
           observations.find(({ observation }) => observation.provider === provider)?.observation.status ?? "checking"
         );
       },
+      workspaceAdmins,
     });
-    const teamSetupService = new TeamSetupService(database, teamService, imBindingService);
+    const workspaceSetupService = new WorkspaceSetupService(database, imBindingService, { workspaceAdmins });
     const imMessageInbox = new ImMessageInbox(database);
     const sessionService = new SessionService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     let sessionCollaborationService: SessionCollaborationService;
     const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
-      onImCredentialGrant: (request, context) =>
-        imBindingService.issueRuntimeCredentialGrant(request, context.computerId),
+      onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
       onLocalSessionMessageDeliveryResult: (result, context) =>
         sessionCollaborationService.handleLocalDeliveryResult(result, context),
       onSessionCollaborationCommand: (request, context) => sessionCollaborationService.handle(request, context),
@@ -167,14 +186,14 @@ export async function startServer(): Promise<void> {
       sessions: sessionService,
     });
     const agentService = new AgentService(database, {
-      membershipService: teamService,
       onDiagnostic: (code) => app?.log.error({ code }, "Agent lifecycle diagnostic"),
       stopSessions: (targets) =>
         stopAgentSessions(database, targets, {
-          currentInstanceId: (computerId) => registry.currentInstanceId(computerId),
-          requestReconcile: (computerId, instanceId, request, onDispatched) =>
-            domainOwner.requestReconcile(computerId, instanceId, request, onDispatched),
+          currentInstanceId: (workspaceComputerId) => registry.currentInstanceId(workspaceComputerId),
+          requestReconcile: (workspaceComputerId, instanceId, request, onDispatched) =>
+            domainOwner.requestReconcile(workspaceComputerId, instanceId, request, onDispatched),
         }),
+      workspaceAdmins,
     });
     const feishuConnections = new FeishuConnectionManager({
       database,
@@ -210,7 +229,7 @@ export async function startServer(): Promise<void> {
       onDiagnostic: reportDiagnostic,
     });
     const identityService = new AuthIdentityService(database);
-    const postAuthentication = new PostAuthenticationService(database, invitationService, teamService);
+    const postAuthentication = new PostAuthenticationService(database, workspaceAdmins);
     const google = config.google
       ? new GoogleBrowserAuthService({
           database,
@@ -239,7 +258,12 @@ export async function startServer(): Promise<void> {
         issuer: connectCodeService,
         publicUrl: config.publicUrl,
       },
+      computerConnectCode: {
+        environment: config.environment,
+        publicUrl: config.publicUrl,
+      },
       computerService,
+      machineAuthService,
       invitationService,
       imBindingService,
       feishuSetupService,
@@ -260,8 +284,8 @@ export async function startServer(): Promise<void> {
             botId: binding.botId,
           }),
       },
-      teamService,
-      teamSetupService,
+      workspaceService,
+      workspaceSetupService,
     });
     feishuSetupService.start();
     feishuConnections.start();

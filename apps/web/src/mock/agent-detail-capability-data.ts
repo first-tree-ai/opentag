@@ -36,7 +36,7 @@ export type AgentSkillPreview = {
 export const agentSkillPreviews: readonly AgentSkillPreview[] = [
   {
     name: "Release notes writer",
-    description: "Turns merged changes into concise release notes for teammates and customers.",
+    description: "Turns merged changes into concise release notes for workspacemates and customers.",
     source: "Workspace",
     assignment: "Assigned",
   },

@@ -6,9 +6,9 @@ import { agents } from "../db/schema/index.js";
 import type { AgentSessionStopTarget } from "../services/agents/index.js";
 
 interface AgentSessionStopDependencies {
-  currentInstanceId(computerId: string): string | undefined;
+  currentInstanceId(workspaceComputerId: string): string | undefined;
   requestReconcile(
-    computerId: string,
+    workspaceComputerId: string,
     instanceId: string,
     request: {
       type: "session:reconcile";
@@ -40,14 +40,14 @@ export async function stopAgentSessions(
     if (!agent || agent.status === "active") return [];
 
     const dispatched = targets.flatMap((target) => {
-      const currentInstanceId = dependencies.currentInstanceId(target.computerId);
+      const currentInstanceId = dependencies.currentInstanceId(target.workspaceComputerId);
       if (!currentInstanceId) return [];
       let markDispatched: () => void = () => undefined;
       const dispatch = new Promise<void>((resolve) => {
         markDispatched = resolve;
       });
       const result = dependencies.requestReconcile(
-        target.computerId,
+        target.workspaceComputerId,
         currentInstanceId,
         {
           type: "session:reconcile",

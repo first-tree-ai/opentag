@@ -8,7 +8,8 @@ import {
 } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { connectCodes, memberships, teams, users } from "../../db/schema/index.js";
+import { accountCliLoginCodes, users } from "../../db/schema/index.js";
+import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 import { AuthServiceError, invalidCredential } from "./errors.js";
 import { hashSecret } from "./security.js";
 import type { AuthTokenProvider } from "./tokens.js";
@@ -42,11 +43,17 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
   readonly #authTokens: AuthTokenProvider;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
+  readonly #workspaceAdmins: WorkspaceAdminAccess;
 
-  constructor(database: DatabaseClient, authTokens: AuthTokenProvider, options: AuthServiceOptions = {}) {
+  constructor(
+    database: DatabaseClient,
+    authTokens: AuthTokenProvider,
+    options: AuthServiceOptions & { workspaceAdmins?: WorkspaceAdminAccess } = {},
+  ) {
     this.#database = database;
     this.#authTokens = authTokens;
     this.#now = options.now ?? (() => new Date());
+    this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
   }
 
   async exchangeConnectCode(code: string, expectedUserId?: string): Promise<ConnectCodeExchangeResponse> {
@@ -55,8 +62,8 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
     return this.#database.transaction(async (transaction) => {
       const [connectCode] = await transaction
         .select()
-        .from(connectCodes)
-        .where(eq(connectCodes.codeHash, codeHash))
+        .from(accountCliLoginCodes)
+        .where(eq(accountCliLoginCodes.tokenHash, codeHash))
         .for("update");
       if (!connectCode) {
         throw invalidCredential("AUTH_INVALID_CODE", "The connect code is invalid");
@@ -69,7 +76,7 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
       }
 
       const [user] = await transaction.select().from(users).where(eq(users.id, connectCode.userId)).limit(1);
-      const [issuer] = await transaction.select().from(users).where(eq(users.id, connectCode.issuerUserId)).limit(1);
+      const [issuer] = await transaction.select().from(users).where(eq(users.id, connectCode.issuedByUserId)).limit(1);
       if (!user || !issuer) {
         throw invalidCredential("AUTH_INVALID_CODE", "The connect code is invalid");
       }
@@ -85,26 +92,12 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
         );
       }
 
-      const [membership] = await transaction
-        .select({ teamId: memberships.teamId })
-        .from(memberships)
-        .where(and(eq(memberships.userId, user.id), eq(memberships.status, "active")))
-        .limit(1);
-      if (!membership) {
-        throw new AuthServiceError(
-          "AUTH_MEMBERSHIP_REQUIRED",
-          "deterministic",
-          "An active team membership is required",
-          403,
-        );
-      }
-
       const tokenPair = await this.#authTokens.issuePairForUser(user.id);
       const [consumed] = await transaction
-        .update(connectCodes)
+        .update(accountCliLoginCodes)
         .set({ consumedAt: now })
-        .where(and(eq(connectCodes.id, connectCode.id), isNull(connectCodes.consumedAt)))
-        .returning({ id: connectCodes.id });
+        .where(and(eq(accountCliLoginCodes.id, connectCode.id), isNull(accountCliLoginCodes.consumedAt)))
+        .returning({ id: accountCliLoginCodes.id });
       if (!consumed) {
         throw invalidCredential("AUTH_CODE_CONSUMED", "The connect code has already been used");
       }
@@ -153,27 +146,20 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
     }
 
     /**
-     * A session may legitimately hold no membership: creating or joining a Team is the first onboarding
-     * step, so the user must be able to authenticate before any Team exists. Team-scoped authority is
+     * A session may legitimately hold no membership: creating or joining a Workspace is the first onboarding
+     * step, so the user must be able to authenticate before any Workspace exists. Workspace-scoped authority is
      * always re-checked per resource, never inferred from holding a session.
      */
-    const activeMemberships = await this.#database
-      .select({
-        role: memberships.role,
-        teamDisplayName: teams.displayName,
-        teamId: teams.id,
-        teamName: teams.name,
-        setupCompletedAt: teams.setupCompletedAt,
-      })
-      .from(memberships)
-      .innerJoin(teams, eq(memberships.teamId, teams.id))
-      .where(and(eq(memberships.userId, userId), eq(memberships.status, "active")));
+    const activeWorkspaces = await this.#workspaceAdmins.listActiveAdminWorkspaces(userId);
 
     return {
       user: { id: user.id, email: user.email, displayName: user.displayName },
-      memberships: activeMemberships.map((membership) => ({
-        ...membership,
-        setupCompletedAt: membership.setupCompletedAt?.toISOString() ?? null,
+      workspaces: activeWorkspaces.map((workspace) => ({
+        id: workspace.workspaceId,
+        name: workspace.workspaceName,
+        displayName: workspace.workspaceDisplayName,
+        setupCompletedAt: workspace.setupCompletedAt?.toISOString() ?? null,
+        grantedAt: workspace.grantedAt.toISOString(),
       })),
     };
   }

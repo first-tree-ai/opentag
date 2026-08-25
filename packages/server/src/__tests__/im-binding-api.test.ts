@@ -18,7 +18,7 @@ import type { ImBindingService } from "../services/im-bindings/index.js";
 import { type SlackConfigurationService, SlackConfigurationServiceError } from "../services/im-bindings/slack/index.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
-const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
+const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const imBindingId = "6d93de68-ec32-4ac9-a41e-e96ed2d7dac0";
 const attemptId = "f645f26d-9184-4f2f-98a1-4ee83ae6a603";
@@ -95,7 +95,15 @@ function authService(): UserAuthService {
       tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       me: {
         user: { id: userId, email: "admin@example.com", displayName: "Admin" },
-        memberships: [{ teamId, teamName: "example", teamDisplayName: "Example", role: "admin" }],
+        workspaces: [
+          {
+            id: workspaceId,
+            name: "example",
+            displayName: "Example",
+            setupCompletedAt: null,
+            grantedAt: "2030-01-01T00:00:00.000Z",
+          },
+        ],
       },
     }),
   };

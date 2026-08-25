@@ -12,14 +12,14 @@ OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与
 - 带健康、就绪、REST 与 Computer WebSocket 端点的 Fastify Server；
 - 会校验 schema 的 Client 健康检查；
 - 与 provider 无关的账号身份、Google 浏览器登录和 PostgreSQL migration；
-- 使用滑动续期无状态 refresh JWT 的一次性 connect code 登录；
-- 显式 Team membership、角色、离开/移除/恢复和七天邀请链接生命周期；
-- 用户所有的 Computer 注册与在线状态；
-- Team 所有的 Agent Registry、不可变 Computer/provider 绑定与 revision fencing；
+- 使用滑动续期无状态 refresh JWT 的一次性 Account 登录 code；
+- 等权、无角色的 Workspace Admin grant 与短时、单次 Admin invitation；
+- 独立认证的 Computer enrollment 与在线状态；
+- Workspace 所有的 Agent Registry、不可变 Computer/provider 绑定与 revision fencing；
 - 持久化 Agent Runtime 执行、delivery custody、上报与恢复；
 - 飞书和 Slack 入站标准化、持久化及 Channel/Thread Session 路由；
 - 供 Agent 自主回复和 Reaction 的 provider CLI 凭证交接；
-- 同源只读 Admin Web，以及 `doctor`、`login`、`team`、`agent`、`computer` 和 daemon 服务管理命令。
+- 同源 Admin Web，以及 `doctor`、`login`、`admin`、`agent`、`computer` 和 daemon 服务管理命令。
 
 这些 Runtime 与消息路径已经实现，但仍处于 pre-alpha 阶段；安装、管理和端到端产品工作流仍在完善。
 
@@ -39,26 +39,26 @@ pnpm build
 pnpm --filter @opentag/server start
 ```
 
-在另一个终端中执行一次 bootstrap 与登录。Linux/macOS 上，登录会安装并启动当前用户的 daemon 服务：
+在另一个终端中 bootstrap 首个 Account 与 Workspace，再兑换输出的 Account 登录 code：
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
 export OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin
-export OPENTAG_BOOTSTRAP_TEAM_NAME=example
-export OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example
+export OPENTAG_BOOTSTRAP_WORKSPACE_NAME=example
+export OPENTAG_BOOTSTRAP_WORKSPACE_DISPLAY_NAME=Example
 pnpm --filter @opentag/server bootstrap:admin
 ./scripts/dev-install.sh
 export PATH="$HOME/.local/bin${PATH:+:$PATH}"
 opentag-dev login --server http://127.0.0.1:8000 -- <connect-code>
-opentag-dev daemon status
 ```
 
-dev installer 会构建并链接 CLI；已有凭据时还会安装、启动或修复 daemon service。首次安装没有凭据时，service
-安装会安全地延后到独立的 `login`，由 `login` 创建凭据并安装 service。将 `~/.local/bin` 放在 `PATH` 最前，
-还能保证 service definition 使用当前 checkout 刚构建的 CLI，而非旧 shim。运行 `opentag-dev computer list`
-可以看到 Computer 为 online。使用 `daemon stop`、`start`、
-`restart`、`status` 与 `uninstall` 管理生命周期。只需保存凭据时使用 `login --no-start`。v0.1 不支持
-Windows daemon 服务。
+Account credential 只用于管理面，不会启动 daemon。打开 Web，从 Agents 区域生成 15 分钟有效的 Computer
+连接命令，再在执行主机运行其中的 `opentag-dev computer connect --server ... <code>`。该命令保存 enrollment
+范围的 machine credential，并在 Linux/macOS 上安装或重启当前用户的 daemon service。将 `~/.local/bin` 放在
+`PATH` 最前，可保证 service definition 使用当前 checkout 刚构建的 CLI，而非旧 shim。运行
+`opentag-dev computer list` 可看到已 enrollment 的 Computer 为 online。使用 `daemon stop`、`start`、
+`restart`、`status` 与 `uninstall` 管理生命周期；只保存 machine credential 时使用
+`computer connect --no-start`。v0.1 不支持 Windows daemon 服务。
 
 daemon 注册后，可以创建并查看 Agent 配置：
 
@@ -72,27 +72,25 @@ pnpm --filter open-tag start agent list
 
 这会记录 Agent identity 和 Computer binding。Agent 收到已准入工作后，Agent Runtime turn 才会启动。
 
-Team Admin 可在 Codex Agent 的 **Runtime** 页面或对应的 `agent update` 参数中管理 model、reasoning effort 和单个
+Workspace Admin 可在 Codex Agent 的 **Runtime** 页面或对应的 `agent update` 参数中管理 model、reasoning effort 和单个
 Turn 的最长执行时间。model 或 reasoning 留空表示交由 Codex 管理；duration 留空则使用 OpenTag 的 30 分钟默认值。
 显式填写的 Codex-native 值会在绑定 Computer 准备 Runtime 时校验，OpenTag 不会静默替换。Claude Code 的
 Effective Runtime Snapshot 目前尚未支持。
 
 配置 `OPENTAG_GOOGLE_CLIENT_ID` 和 `OPENTAG_GOOGLE_CLIENT_SECRET` 后即可启用 Google 登录，然后打开
-`http://127.0.0.1:8000/`。active Team member 使用同一套 App Shell 和 member-safe 视图；Team Admin 额外管理
-Agent、runtime 配置、IM binding 与 Local Computer setup。Computer setup 归属于 Agent：Admin 可在创建 Agent 时
-通过短期有效的安装/login 命令连接另一台 Computer，随后从该 Agent 的页面查看已绑定的 Computer。**Workspace
-settings** 将 Workspace profile 与 member role 集中管理，Team Admin 可在其中创建、复制和轮换 bearer
-邀请链接；受邀者可在登录前预览邀请，兑换后 Web 会选中刚加入的 Team。membership role 与 lifecycle 变更仍通过
-显式 CLI 操作完成：
+`http://127.0.0.1:8000/`。Workspace Admin 管理 Agents、Tasks、Skills 与 Integrations；Computer enrollment
+和诊断从 Agents 区域进入。Admin invitation 与 Workspace 管理位于 account menu；默认 shell 没有 Settings tab，
+且只有一个 Workspace 时隐藏 Workspace selector。Invitation 在 30 分钟后过期、仅可使用一次，接收者必须显式接受完整
+Workspace Admin 权限。CLI 暴露相同的无角色管理模型：
 
 若 loopback 开发环境没有 Google 凭据，可设置 `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true`，并将
 `OPENTAG_DEV_AUTH_EMAIL` 设为已有 bootstrap 用户的唯一 email。该 bypass 在 `dev` 以外的环境会被拒绝，
-且不会创建账号或 Team 角色。
+且不会创建 Account 或 Admin grant。
 
 ```bash
-pnpm --filter open-tag start team member list
-pnpm --filter open-tag start team invitation show
-pnpm --filter open-tag start team invitation rotate
+pnpm --filter open-tag start admin list
+pnpm --filter open-tag start admin invite
+pnpm --filter open-tag start admin revoke <account-id>
 ```
 
 完整本地工作流请参阅 [DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)。

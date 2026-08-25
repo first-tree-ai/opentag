@@ -2,15 +2,14 @@ import { EventEmitter } from "node:events";
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setImmediate as waitImmediate } from "node:timers/promises";
 import type { ClientLogBindings, ClientLogger } from "@opentag/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const clientMocks = vi.hoisted(() => ({
   configureClientLoggerForService: vi.fn(),
   createClientRuntime: vi.fn(),
-  getAccessTokenLease: vi.fn(),
-  me: vi.fn(),
-  readCredentials: vi.fn(),
+  readMachineCredentials: vi.fn(),
   resolveComputerIdentity: vi.fn(),
 }));
 const ownershipMocks = vi.hoisted(() => ({
@@ -21,15 +20,10 @@ vi.mock("@opentag/client", async (importOriginal) => {
   const original = await importOriginal<typeof import("@opentag/client")>();
   return {
     ...original,
-    AccessTokenProvider: class {
-      getAccessTokenLease = clientMocks.getAccessTokenLease;
-    },
     configureClientLoggerForService: clientMocks.configureClientLoggerForService,
-    OpenTagApi: class {
-      me = clientMocks.me;
-    },
+    OpenTagApi: class {},
     createClientRuntime: clientMocks.createClientRuntime,
-    readCredentials: clientMocks.readCredentials,
+    readMachineCredentials: clientMocks.readMachineCredentials,
     resolveComputerIdentity: clientMocks.resolveComputerIdentity,
   };
 });
@@ -56,9 +50,9 @@ describe("daemon service runtime", () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-daemon-log-"));
     directories.push(home);
     process.env.OPENTAG_SERVICE_MODE = "1";
-    clientMocks.readCredentials.mockResolvedValue(undefined);
+    clientMocks.readMachineCredentials.mockResolvedValue(undefined);
 
-    await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow("not logged in");
+    await expect(runDaemonService({ home, logger: noopLogger() })).rejects.toThrow("not enrolled");
 
     expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledOnce();
     expect(clientMocks.configureClientLoggerForService).toHaveBeenCalledWith(join(home, "logs"));
@@ -116,30 +110,24 @@ describe("daemon service runtime", () => {
     expect(signals.listenerCount("SIGTERM")).toBe(0);
   });
 
-  it("stops actual daemon startup when a signal arrives during token refresh", async () => {
+  it("stops actual daemon startup when a signal arrives while machine credentials are loading", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-daemon-run-"));
     directories.push(home);
     const signals = new EventEmitter();
-    let finishRefresh: ((lease: { accessToken: string; expiresAt: string }) => void) | undefined;
-    clientMocks.readCredentials.mockResolvedValue({
-      accessToken: "old-access",
-      accessTokenExpiresAt: new Date(Date.now() - 1_000).toISOString(),
-      refreshToken: "refresh",
-      serverUrl: "http://127.0.0.1:3000",
-    });
-    clientMocks.getAccessTokenLease.mockReturnValue(
+    let finishCredentials: ((credentials: ReturnType<typeof machineCredentials>) => void) | undefined;
+    clientMocks.readMachineCredentials.mockReturnValue(
       new Promise((resolve) => {
-        finishRefresh = resolve;
+        finishCredentials = resolve;
       }),
     );
 
     const daemon = runDaemonService({ home, signals: signals as unknown as NodeJS.Process });
-    await vi.waitFor(() => expect(clientMocks.getAccessTokenLease).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(clientMocks.readMachineCredentials).toHaveBeenCalledOnce());
     signals.emit("SIGINT");
-    finishRefresh?.({ accessToken: "new-access", expiresAt: new Date(Date.now() + 60_000).toISOString() });
+    finishCredentials?.(machineCredentials());
     await daemon;
 
-    expect(clientMocks.me).not.toHaveBeenCalled();
+    expect(clientMocks.createClientRuntime).not.toHaveBeenCalled();
     await expect(access(resolveDaemonPaths(home).daemonOwner)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -149,23 +137,8 @@ describe("daemon service runtime", () => {
     const signals = new EventEmitter();
     const run = vi.fn(async () => undefined);
     const stop = vi.fn();
-    clientMocks.readCredentials.mockResolvedValue({
-      accessToken: "access",
-      accessTokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-      refreshToken: "refresh",
-      serverUrl: "http://127.0.0.1:3000",
-    });
-    clientMocks.getAccessTokenLease.mockResolvedValue({
-      accessToken: "access",
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    });
-    clientMocks.me.mockResolvedValue({ user: { id: "user-1" }, memberships: [] });
-    clientMocks.resolveComputerIdentity.mockResolvedValue({
-      version: 1,
-      computerId: "00000000-0000-4000-8000-000000000001",
-      serverUrl: "http://127.0.0.1:3000",
-      userId: "user-1",
-    });
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
     clientMocks.createClientRuntime.mockResolvedValue({ run, stop });
 
     await runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process });
@@ -177,6 +150,89 @@ describe("daemon service runtime", () => {
     expect(stop).not.toHaveBeenCalled();
   });
 
+  it("starts one independent Runtime per Workspace enrollment", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-multi-enrollment-"));
+    directories.push(home);
+    const signals = new EventEmitter();
+    const credentials = machineCredentials();
+    const firstEnrollment = credentials.enrollments[0];
+    if (!firstEnrollment) throw new Error("expected a machine enrollment fixture");
+    credentials.enrollments.push({
+      ...firstEnrollment,
+      workspaceComputerId: "00000000-0000-4000-8000-000000000004",
+      workspaceId: "00000000-0000-4000-8000-000000000005",
+      machineToken: `otmc_${"b".repeat(64)}`,
+    });
+    clientMocks.readMachineCredentials.mockResolvedValue(credentials);
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
+    const run = [vi.fn(async () => undefined), vi.fn(async () => undefined)];
+    clientMocks.createClientRuntime
+      .mockResolvedValueOnce({ run: run[0], stop: vi.fn() })
+      .mockResolvedValueOnce({ run: run[1], stop: vi.fn() });
+
+    await runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process });
+
+    expect(clientMocks.createClientRuntime).toHaveBeenCalledTimes(2);
+    expect(clientMocks.createClientRuntime.mock.calls.map((call) => call[1].machineToken).sort()).toEqual(
+      credentials.enrollments.map(({ machineToken }) => machineToken).sort(),
+    );
+    expect(run[0]).toHaveBeenCalledOnce();
+    expect(run[1]).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a healthy Workspace runtime alive after another enrollment fails", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-daemon-isolated-enrollment-"));
+    directories.push(home);
+    const signals = new EventEmitter();
+    const credentials = machineCredentials();
+    const firstEnrollment = credentials.enrollments[0];
+    if (!firstEnrollment) throw new Error("expected a machine enrollment fixture");
+    credentials.enrollments.push({
+      ...firstEnrollment,
+      workspaceComputerId: "00000000-0000-4000-8000-000000000004",
+      workspaceId: "00000000-0000-4000-8000-000000000005",
+      machineToken: `otmc_${"b".repeat(64)}`,
+    });
+    clientMocks.readMachineCredentials.mockResolvedValue(credentials);
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
+    let finishHealthy: (() => void) | undefined;
+    const healthyRun = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishHealthy = resolve;
+        }),
+    );
+    const failedStop = vi.fn();
+    const healthyStop = vi.fn(() => finishHealthy?.());
+    clientMocks.createClientRuntime
+      .mockResolvedValueOnce({
+        run: vi.fn(async () => Promise.reject(new Error("credential revoked"))),
+        stop: failedStop,
+      })
+      .mockResolvedValueOnce({ run: healthyRun, stop: healthyStop });
+
+    const daemon = runDaemonService({ home, logger: noopLogger(), signals: signals as unknown as NodeJS.Process });
+    let settled = false;
+    void daemon.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.waitFor(() => expect(healthyRun).toHaveBeenCalledOnce());
+    await waitImmediate();
+
+    expect(settled).toBe(false);
+    expect(failedStop).not.toHaveBeenCalled();
+    expect(healthyStop).not.toHaveBeenCalled();
+
+    signals.emit("SIGTERM");
+    await daemon;
+    expect(healthyStop).toHaveBeenCalledOnce();
+  });
+
   it("logs ownership release failures safely and returns a failed service exit", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-daemon-release-"));
     directories.push(home);
@@ -186,23 +242,8 @@ describe("daemon service runtime", () => {
       throw new Error("sensitive release failure");
     });
     ownershipMocks.acquireDaemonOwner.mockResolvedValueOnce({ release });
-    clientMocks.readCredentials.mockResolvedValue({
-      accessToken: "access",
-      accessTokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-      refreshToken: "refresh",
-      serverUrl: "http://127.0.0.1:3000",
-    });
-    clientMocks.getAccessTokenLease.mockResolvedValue({
-      accessToken: "access",
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    });
-    clientMocks.me.mockResolvedValue({ user: { id: "user-1" }, memberships: [] });
-    clientMocks.resolveComputerIdentity.mockResolvedValue({
-      version: 1,
-      computerId: "00000000-0000-4000-8000-000000000001",
-      serverUrl: "http://127.0.0.1:3000",
-      userId: "user-1",
-    });
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
     clientMocks.createClientRuntime.mockResolvedValue({
       run: vi.fn(async () => undefined),
       stop: vi.fn(),
@@ -239,9 +280,9 @@ describe("daemon service runtime", () => {
         throw new Error("sensitive release failure");
       }),
     });
-    clientMocks.readCredentials.mockResolvedValue(undefined);
+    clientMocks.readMachineCredentials.mockResolvedValue(undefined);
 
-    await expect(runDaemonService({ home, logger: recordingLogger(entries) })).rejects.toThrow("not logged in");
+    await expect(runDaemonService({ home, logger: recordingLogger(entries) })).rejects.toThrow("not enrolled");
 
     expect(entries).toContainEqual(
       expect.objectContaining({ fields: expect.objectContaining({ category: "configuration" }) }),
@@ -266,7 +307,7 @@ describe("daemon service runtime", () => {
         entriesAtRelease = entries.length;
       }),
     });
-    clientMocks.readCredentials.mockResolvedValue(undefined);
+    clientMocks.readMachineCredentials.mockResolvedValue(undefined);
 
     await expect(
       runDaemonService({
@@ -274,7 +315,7 @@ describe("daemon service runtime", () => {
         logger: recordingLogger(entries),
         signals: signals as unknown as NodeJS.Process,
       }),
-    ).rejects.toThrow("not logged in");
+    ).rejects.toThrow("not enrolled");
 
     expect(entriesAtRelease).toBeGreaterThan(0);
     expect(entries).toHaveLength(entriesAtRelease);
@@ -287,23 +328,8 @@ describe("daemon service runtime", () => {
     const signals = new EventEmitter();
     const entries: Array<{ fields: ClientLogBindings; message: string }> = [];
     let delayedLogger: ClientLogger | undefined;
-    clientMocks.readCredentials.mockResolvedValue({
-      accessToken: "access",
-      accessTokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-      refreshToken: "refresh",
-      serverUrl: "http://127.0.0.1:3000",
-    });
-    clientMocks.getAccessTokenLease.mockResolvedValue({
-      accessToken: "access",
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    });
-    clientMocks.me.mockResolvedValue({ user: { id: "user-1" }, memberships: [] });
-    clientMocks.resolveComputerIdentity.mockResolvedValue({
-      version: 1,
-      computerId: "00000000-0000-4000-8000-000000000001",
-      serverUrl: "http://127.0.0.1:3000",
-      userId: "user-1",
-    });
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
     clientMocks.createClientRuntime.mockImplementation(async (_connection, options) => {
       delayedLogger = options.logger.child({ module: "report-recovery" });
       return { run: vi.fn(async () => undefined), stop: vi.fn() };
@@ -326,23 +352,8 @@ describe("daemon service runtime", () => {
     directories.push(home);
     const signals = new EventEmitter();
     const entries: Array<{ fields: ClientLogBindings; message: string }> = [];
-    clientMocks.readCredentials.mockResolvedValue({
-      accessToken: "access",
-      accessTokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
-      refreshToken: "refresh",
-      serverUrl: "http://127.0.0.1:3000",
-    });
-    clientMocks.getAccessTokenLease.mockResolvedValue({
-      accessToken: "access",
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    });
-    clientMocks.me.mockResolvedValue({ user: { id: "user-1" }, memberships: [] });
-    clientMocks.resolveComputerIdentity.mockResolvedValue({
-      version: 1,
-      computerId: "00000000-0000-4000-8000-000000000001",
-      serverUrl: "http://127.0.0.1:3000",
-      userId: "user-1",
-    });
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
     clientMocks.createClientRuntime.mockResolvedValue({
       run: vi.fn(async () => {
         throw new Error("sensitive provider failure");
@@ -371,6 +382,29 @@ describe("daemon service runtime", () => {
     expect(JSON.stringify(entries)).not.toContain("sensitive provider failure");
   });
 });
+
+function computerIdentity() {
+  return {
+    version: 2 as const,
+    computerId: "00000000-0000-4000-8000-000000000001",
+    serverUrl: "http://127.0.0.1:3000",
+  };
+}
+
+function machineCredentials() {
+  return {
+    version: 1 as const,
+    enrollments: [
+      {
+        workspaceComputerId: "00000000-0000-4000-8000-000000000002",
+        workspaceId: "00000000-0000-4000-8000-000000000003",
+        computerId: computerIdentity().computerId,
+        machineToken: `otmc_${"a".repeat(64)}`,
+        serverUrl: computerIdentity().serverUrl,
+      },
+    ],
+  };
+}
 
 function noopLogger(): ClientLogger {
   return {

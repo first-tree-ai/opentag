@@ -20,7 +20,7 @@ function authService(): UserAuthService {
       tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       me: {
         user: { id: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e", email: "admin@example.com", displayName: "Admin" },
-        memberships: [],
+        workspaces: [],
       },
     }),
     refresh: vi.fn().mockResolvedValue({
@@ -32,7 +32,7 @@ function authService(): UserAuthService {
   };
 }
 
-function google(result: { next?: string; selectedTeamId?: string } = {}) {
+function google(result: { next?: string; selectedWorkspaceId?: string } = {}) {
   return {
     start: vi
       .fn()
@@ -41,7 +41,7 @@ function google(result: { next?: string; selectedTeamId?: string } = {}) {
       options.onVerified();
       return {
         next: result.next ?? "/agents",
-        ...(result.selectedTeamId ? { selectedTeamId: result.selectedTeamId } : {}),
+        ...(result.selectedWorkspaceId ? { selectedWorkspaceId: result.selectedWorkspaceId } : {}),
         tokens: {
           accessToken: "access-secret",
           refreshToken: "refresh-secret",
@@ -179,14 +179,14 @@ describe("browser authentication routes", () => {
     expect(googleService?.callback).toHaveBeenCalledWith(
       { code: "code", state: "state" },
       "signed-context",
-      expect.objectContaining({ audit: expect.any(Object), onVerified: expect.any(Function) }),
+      expect.objectContaining({ onVerified: expect.any(Function) }),
     );
   });
 
-  it("hands the Team selected during invitation sign-in back as a navigation hint", async () => {
-    const selectedTeamId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
+  it("hands the Workspace selected during invitation sign-in back as a navigation hint", async () => {
+    const selectedWorkspaceId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
     const token = "A".repeat(43);
-    const googleService = google({ next: `/invites/${token}`, selectedTeamId });
+    const googleService = google({ next: `/invites/${token}`, selectedWorkspaceId });
     const { app } = createBrowserApp({ googleService });
     const response = await app.inject({
       method: "GET",
@@ -195,7 +195,7 @@ describe("browser authentication routes", () => {
     });
 
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe(`/invites/${token}?joinedTeamId=${selectedTeamId}`);
+    expect(response.headers.location).toBe(`/invites/${token}?joinedWorkspaceId=${selectedWorkspaceId}`);
   });
 
   it("accepts provider-owned callback fields but passes only supported values to the Google service", async () => {
@@ -211,7 +211,7 @@ describe("browser authentication routes", () => {
     expect(googleService?.callback).toHaveBeenCalledWith(
       { code: "code", state: "state" },
       "signed-context",
-      expect.objectContaining({ audit: expect.any(Object), onVerified: expect.any(Function) }),
+      expect.objectContaining({ onVerified: expect.any(Function) }),
     );
   });
 
@@ -258,7 +258,7 @@ describe("browser authentication routes", () => {
     expect(googleService.callback).toHaveBeenCalledWith(
       { error: "access_denied", state: "state" },
       "signed-context",
-      expect.objectContaining({ audit: expect.any(Object), onVerified: expect.any(Function) }),
+      expect.objectContaining({ onVerified: expect.any(Function) }),
     );
   });
 

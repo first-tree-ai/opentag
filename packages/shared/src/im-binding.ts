@@ -109,7 +109,7 @@ export const ImBindingIdentitySchema = z.discriminatedUnion("provider", [
     .object({
       provider: z.literal("feishu"),
       appId: z.string().min(1).max(255),
-      // Feishu exposes the external Team identifier only after the first verified event.
+      // Feishu exposes the external Workspace identifier only after the first verified event.
       // OpenTag fills it from that verified event envelope.
       teamId: z.string().min(1).max(255).nullable(),
       botOpenId: z.string().min(1).max(255),

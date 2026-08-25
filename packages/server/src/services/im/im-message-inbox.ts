@@ -166,7 +166,10 @@ export class ImMessageInbox {
               );
             }
             if (scope.imBinding.externalTeamId !== null && scope.imBinding.externalTeamId !== event.externalTeamId) {
-              throw new ImInboundPersistenceError("IM_INBOUND_IDENTITY_MISMATCH", "IM_BINDING_TEAM_IDENTITY_MISMATCH");
+              throw new ImInboundPersistenceError(
+                "IM_INBOUND_IDENTITY_MISMATCH",
+                "IM_BINDING_WORKSPACE_IDENTITY_MISMATCH",
+              );
             }
             const isSelf =
               event.message.author.isSelf === true ||
@@ -367,7 +370,7 @@ export class ImMessageInbox {
                       conversationKind,
                       kind: "thread",
                       threadKey,
-                      computerId: scope.agent.computerId,
+                      workspaceComputerId: scope.agent.workspaceComputerId,
                       now,
                     }));
                   deliveries.push({ sessionId: thread.id, attention: "direct", generation: thread.generation });
@@ -378,7 +381,7 @@ export class ImMessageInbox {
                     channelId: event.conversation.externalId,
                     conversationKind,
                     kind: "channel",
-                    computerId: scope.agent.computerId,
+                    workspaceComputerId: scope.agent.workspaceComputerId,
                     now,
                   });
                   deliveries.push({ sessionId: channel.id, attention: "ambient", generation: channel.generation });
@@ -389,7 +392,7 @@ export class ImMessageInbox {
                   channelId: event.conversation.externalId,
                   conversationKind,
                   kind: "channel",
-                  computerId: scope.agent.computerId,
+                  workspaceComputerId: scope.agent.workspaceComputerId,
                   now,
                 });
                 deliveries.push({
@@ -462,7 +465,7 @@ export class ImMessageInbox {
                   conversationKind,
                   kind: "thread",
                   threadKey: pending.threadKey,
-                  computerId: scope.agent.computerId,
+                  workspaceComputerId: scope.agent.workspaceComputerId,
                   now,
                 });
                 await transaction
@@ -570,7 +573,7 @@ export class ImMessageInbox {
       conversationKind: "channel" | "dm" | "group_dm";
       kind: "channel" | "thread";
       threadKey?: string;
-      computerId: string;
+      workspaceComputerId: string;
       now: Date;
     },
   ): Promise<{ id: string; generation: number }> {

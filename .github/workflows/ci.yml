@@ -282,16 +282,17 @@ jobs:
           bootstrap=$(docker exec \
             --env OPENTAG_BOOTSTRAP_EMAIL=admin@example.com \
             --env OPENTAG_BOOTSTRAP_DISPLAY_NAME=Admin \
-            --env OPENTAG_BOOTSTRAP_TEAM_NAME=example \
-            --env OPENTAG_BOOTSTRAP_TEAM_DISPLAY_NAME=Example \
+            --env OPENTAG_BOOTSTRAP_WORKSPACE_NAME=example \
+            --env OPENTAG_BOOTSTRAP_WORKSPACE_DISPLAY_NAME=Example \
             opentag-server-ci node packages/server/dist/admin/bootstrap-cli.mjs)
           connect_code=$(node -e '
             const result = JSON.parse(process.argv[1]);
-            if (!result.userId || !result.teamId || !result.connectCode || !result.expiresAt) {
+            if (!result.userId || !result.workspaceId || !result.connectCode || !result.expiresAt) {
               throw new Error("Bootstrap output is incomplete");
             }
             process.stdout.write(result.connectCode);
           ' "$bootstrap")
+          workspace_id=$(node -e 'process.stdout.write(JSON.parse(process.argv[1]).workspaceId)' "$bootstrap")
 
           runtime_home=$(mktemp -d)
           daemon_log="$runtime_home/daemon.log"
@@ -303,12 +304,30 @@ jobs:
           }
           trap cleanup_runtime EXIT
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs \
-            login --server http://127.0.0.1:18000 --no-start -- "$connect_code"
+            login --server http://127.0.0.1:18000 -- "$connect_code"
           test -f "$runtime_home/config/credentials.json"
           test ! -e "$runtime_home/config/computer.json"
+          test ! -e "$runtime_home/config/computer-credentials.json"
           test ! -e "$runtime_home/data/computer.json"
           test ! -e "$runtime_home/credentials.json"
           test ! -e "$runtime_home/computer.json"
+          machine_connect_code=$(node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const credentials = JSON.parse(readFileSync(process.argv[1], "utf8"));
+            const response = await fetch(
+              `http://127.0.0.1:18000/api/v1/workspaces/${process.argv[2]}/computer-connect-codes`,
+              { method: "POST", headers: { authorization: `Bearer ${credentials.accessToken}` } },
+            );
+            if (!response.ok) throw new Error(`Computer connect-code issue failed: ${response.status}`);
+            const { bootstrapCommand } = await response.json();
+            const match = bootstrapCommand.match(/ -- ([A-Za-z0-9_-]+)$/u);
+            if (!match) throw new Error("Computer connect bootstrap command did not contain a code");
+            process.stdout.write(match[1]);
+          ' "$runtime_home/config/credentials.json" "$workspace_id")
+          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs computer connect \
+            --server http://127.0.0.1:18000 --no-start -- "$machine_connect_code"
+          test -f "$runtime_home/config/computer.json"
+          test -f "$runtime_home/config/computer-credentials.json"
           OPENTAG_HOME="$runtime_home" OPENTAG_SERVICE_MODE=1 node apps/cli/dist/cli/index.mjs daemon service-run \
             >"$daemon_log" 2>&1 &
           daemon_pid=$!
@@ -335,21 +354,21 @@ jobs:
           test ! -e "$runtime_home/computer.json"
 
           agent_create=$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent create \
-            --team example \
+            --workspace example \
             --name ci-agent \
             --display-name "CI Agent" \
             --provider codex \
             --computer "$computer_id")
           agent_id=$(printf '%s\n' "$agent_create" | awk '{print $3}')
           test -n "$agent_id"
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent list --team example | grep -q "$agent_id"
+          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent list --workspace example | grep -q "$agent_id"
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent show "$agent_id" | grep -q $'revision\t1'
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent update "$agent_id" \
             --display-name "Updated CI Agent" | grep -q $'revision\t2'
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent suspend "$agent_id" | \
             grep -q $'status\tsuspended'
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent delete "$agent_id" | grep -q "$agent_id"
-          test "$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent list --team example)" = \
+          test "$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent list --workspace example)" = \
             "No Agents registered"
 
           kill -INT "$daemon_pid"

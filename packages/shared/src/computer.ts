@@ -9,6 +9,36 @@ export const IM_CLI_PROVIDERS = ["feishu", "slack"] as const;
 export const ImCliProviderSchema = z.enum(IM_CLI_PROVIDERS);
 export const PROVIDER_READINESS_V1_HEADER = "x-opentag-provider-readiness";
 
+export const ComputerConnectCodeExchangeRequestSchema = z
+  .object({
+    code: z.string().trim().min(16).max(512),
+    computerId: z.string().uuid(),
+    displayName: z.string().trim().min(1).max(255),
+    platform: ComputerPlatformSchema,
+    arch: z.string().trim().min(1).max(64),
+    clientVersion: z.string().trim().min(1).max(64),
+  })
+  .strict();
+
+export const ComputerConnectCodeExchangeResponseSchema = z
+  .object({
+    workspaceComputerId: z.string().uuid(),
+    workspaceId: z.string().uuid(),
+    computerId: z.string().uuid(),
+    machineToken: z.string().min(1).max(4096),
+  })
+  .strict();
+
+export const ComputerConnectCodeIssueRequestSchema = z.object({ workspaceId: z.string().uuid() }).strict();
+
+export const ComputerConnectCodeIssueResponseSchema = z
+  .object({
+    bootstrapCommand: z.string().min(1),
+    expiresIn: z.number().int().positive(),
+    issuedAt: z.string().datetime(),
+  })
+  .strict();
+
 export const ComputerProviderReadinessSchema = z
   .object({
     provider: AgentRuntimeProviderSchema,
@@ -73,29 +103,11 @@ export const ComputerImCliReadinessCollectionSchema = z
     }
   });
 
-export const ComputerSchema = z
-  .object({
-    id: z.string().uuid(),
-    ownerUserId: z.string().uuid(),
-    displayName: z.string().trim().min(1).max(255),
-    platform: ComputerPlatformSchema,
-    arch: z.string().trim().min(1).max(64),
-    clientVersion: z.string().trim().min(1).max(64),
-    connectionStatus: ComputerConnectionStatusSchema,
-    providerReadiness: ComputerProviderReadinessCollectionSchema.optional(),
-    imCliReadiness: ComputerImCliReadinessCollectionSchema.optional(),
-    connectedAt: z.string().datetime().nullable(),
-    lastSeenAt: z.string().datetime(),
-  })
-  .strict();
-
-export const ListComputersResponseSchema = z
-  .object({
-    computers: z.array(ComputerSchema),
-  })
-  .strict();
-
 export type ComputerPlatform = z.infer<typeof ComputerPlatformSchema>;
+export type ComputerConnectCodeExchangeRequest = z.infer<typeof ComputerConnectCodeExchangeRequestSchema>;
+export type ComputerConnectCodeExchangeResponse = z.infer<typeof ComputerConnectCodeExchangeResponseSchema>;
+export type ComputerConnectCodeIssueRequest = z.infer<typeof ComputerConnectCodeIssueRequestSchema>;
+export type ComputerConnectCodeIssueResponse = z.infer<typeof ComputerConnectCodeIssueResponseSchema>;
 export type ComputerConnectionStatus = z.infer<typeof ComputerConnectionStatusSchema>;
 export type ProviderReadinessStatus = z.infer<typeof ProviderReadinessStatusSchema>;
 export type ImCliReadinessStatus = z.infer<typeof ImCliReadinessStatusSchema>;
@@ -104,5 +116,3 @@ export type ComputerProviderReadiness = z.infer<typeof ComputerProviderReadiness
 export type ComputerProviderReadinessCollection = z.infer<typeof ComputerProviderReadinessCollectionSchema>;
 export type ComputerImCliReadiness = z.infer<typeof ComputerImCliReadinessSchema>;
 export type ComputerImCliReadinessCollection = z.infer<typeof ComputerImCliReadinessCollectionSchema>;
-export type Computer = z.infer<typeof ComputerSchema>;
-export type ListComputersResponse = z.infer<typeof ListComputersResponseSchema>;

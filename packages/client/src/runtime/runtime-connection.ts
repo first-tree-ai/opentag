@@ -30,7 +30,6 @@ import {
 } from "@opentag/shared";
 import WebSocket, { type ClientOptions, type RawData } from "ws";
 import { OpenTagApiError } from "../api.js";
-import type { AccessTokenProvider } from "../auth/token-provider.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { RuntimeStorageError } from "../storage/durable-file.js";
 import type { ComputerIdentity } from "./computer-identity.js";
@@ -113,12 +112,12 @@ export interface RuntimeConnectionOptions {
   instanceId: string;
   jitter?: () => number;
   logger?: ClientLogger;
+  machineToken: string;
   now?: () => number;
   parseBusinessFrame?: (value: unknown) => RuntimeBusinessFrame | undefined;
   platform: "darwin" | "linux" | "win32";
   queueLimits?: Partial<RuntimeQueueLimits>;
   scheduler?: RuntimeScheduler;
-  tokenProvider: Pick<AccessTokenProvider, "getAccessTokenLease">;
   waitForRetry?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   webSocketFactory?: (url: string, options: ClientOptions) => WebSocket;
 }
@@ -167,7 +166,6 @@ export class RuntimeConnection {
   readonly #lifecycleAbort = new AbortController();
   #active?: WebSocket;
   #connectionId?: string;
-  #forceRefresh = false;
   #hasRun = false;
   #running = false;
   #sendInFlight?: QueuedFrame;
@@ -373,14 +371,14 @@ export class RuntimeConnection {
               { attempt: attempt + 1, category: error.category, state: this.#state },
               "Runtime authentication failed",
             );
-            throw new RuntimeConnectionError(`${error.message}; run login again`, true);
+            throw new RuntimeConnectionError(`${error.message}; run computer connect again`, true);
           }
           if (error instanceof Error && error.message.includes("not logged in")) {
             this.#logger.error(
               { attempt: attempt + 1, category: "credential", state: this.#state },
               "Runtime authentication failed",
             );
-            throw new RuntimeConnectionError(`${error.message}; run login first`, true);
+            throw new RuntimeConnectionError(`${error.message}; run computer connect first`, true);
           }
           attempt += 1;
           const maximum = Math.min(30_000, 1_000 * 2 ** Math.min(attempt - 1, 5));
@@ -447,8 +445,6 @@ export class RuntimeConnection {
 
   async #connectOnce(onRegistered: () => void): Promise<void> {
     const signal = this.#lifecycleAbort.signal;
-    const lease = await raceWithAbort(this.#options.tokenProvider.getAccessTokenLease(this.#forceRefresh), signal);
-    this.#forceRefresh = false;
     signal.throwIfAborted();
     const socketOptions: ClientOptions = {
       headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
@@ -473,13 +469,11 @@ export class RuntimeConnection {
       let heartbeatResultTimer: ReturnType<typeof setTimeout> | undefined;
       let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
       let silenceTimer: ReturnType<typeof setTimeout> | undefined;
-      let tokenTimer: ReturnType<typeof setTimeout> | undefined;
-      let serverTokenExpiresAt: string | undefined;
       let settled = false;
       let established = false;
 
       const clearTimers = () => {
-        for (const timer of [heartbeatTimer, heartbeatResultTimer, handshakeTimer, silenceTimer, tokenTimer]) {
+        for (const timer of [heartbeatTimer, heartbeatResultTimer, handshakeTimer, silenceTimer]) {
           if (timer) this.#scheduler.clearTimeout(timer);
         }
       };
@@ -554,13 +548,13 @@ export class RuntimeConnection {
                 requestId: authRequestId,
                 protocolVersion: RUNTIME_PROTOCOL_V2,
                 supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
-                accessToken: lease.accessToken,
+                machineToken: this.#options.machineToken,
               }
             : {
                 type: "auth",
                 requestId: authRequestId,
                 protocolVersion: RUNTIME_PROTOCOL_V1,
-                accessToken: lease.accessToken,
+                machineToken: this.#options.machineToken,
               },
         ).catch((error: unknown) => finish(asError(error)));
       });
@@ -629,7 +623,6 @@ export class RuntimeConnection {
             finish(new RuntimeConnectionError(`Runtime authentication failed: ${frame.errorCode}`, true));
             return;
           }
-          serverTokenExpiresAt = frame.tokenExpiresAt;
           this.#setState("welcoming");
           return;
         }
@@ -722,14 +715,6 @@ export class RuntimeConnection {
           this.#logger.info({ state: "registered" }, "Runtime connection registered");
           armSilence();
           scheduleHeartbeat();
-          const remaining = Date.parse(serverTokenExpiresAt ?? lease.expiresAt) - this.#now();
-          tokenTimer = this.#scheduler.setTimeout(
-            () => {
-              this.#forceRefresh = true;
-              socket.close(4000, "Refreshing access token");
-            },
-            Math.max(1, Math.floor(remaining * 0.8)),
-          );
           return;
         }
         if (this.#state === "registered" && frame.type === "heartbeat:result") {
@@ -766,12 +751,6 @@ export class RuntimeConnection {
           ) {
             socket.close(4400, "Retrying runtime protocol v1");
             finish(new RuntimeProtocolFallbackError());
-            return;
-          }
-          if (this.#state === "registered" && frame.code === "AUTH_INVALID_TOKEN") {
-            this.#forceRefresh = true;
-            socket.close(4000, "Refreshing access token");
-            finish();
             return;
           }
           const fatal = frame.code !== "INTERNAL_ERROR" && frame.code !== "SERVICE_UNAVAILABLE";

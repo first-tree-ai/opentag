@@ -3,13 +3,14 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import {
   agents,
-  computers,
   imBindings,
   imMessageDeliveries,
   imMessages,
   sessionPlacements,
   sessions,
+  workspaceComputers,
 } from "../../db/schema/index.js";
+import type { ComputerAuthContext } from "../computers/index.js";
 import type { ImProviderAdapter, ReadableResource } from "../im-bindings/index.js";
 import { ImBindingServiceError } from "../im-bindings/index.js";
 import { ProviderAdapterResolutionError } from "../im-bindings/provider-adapter-resolver.js";
@@ -33,8 +34,8 @@ export class ImResourceService {
   }
 
   async open(
-    userId: string,
-    runtime: { sessionId: string; computerId: string; instanceId: string; placementGeneration: number },
+    computerAuth: ComputerAuthContext,
+    runtime: { sessionId: string; instanceId: string; placementGeneration: number },
     imMessageId: string,
     ordinal: number,
   ): Promise<AuthorizedImResource> {
@@ -74,16 +75,19 @@ export class ImResourceService {
           sessionPlacements,
           and(
             eq(sessionPlacements.sessionId, sessions.id),
-            eq(sessionPlacements.computerId, runtime.computerId),
+            eq(sessionPlacements.workspaceComputerId, computerAuth.workspaceComputerId),
             eq(sessionPlacements.generation, runtime.placementGeneration),
           ),
         )
         .innerJoin(
-          computers,
+          workspaceComputers,
           and(
-            eq(computers.id, sessionPlacements.computerId),
-            eq(computers.ownerUserId, userId),
-            eq(computers.currentInstanceId, runtime.instanceId),
+            eq(workspaceComputers.id, computerAuth.workspaceComputerId),
+            eq(workspaceComputers.workspaceId, computerAuth.workspaceId),
+            eq(workspaceComputers.workspaceId, agents.workspaceId),
+            eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
+            eq(workspaceComputers.currentInstanceId, runtime.instanceId),
+            isNull(workspaceComputers.revokedAt),
           ),
         )
         .where(and(eq(imMessages.id, imMessageId), eq(imBindings.status, "active"), eq(agents.status, "active")))

@@ -221,7 +221,7 @@ describe("runtime domain contract", () => {
       effectiveSnapshotHash: "647fac0b2c511e583846e9daf95e2fabe2f028e95de699f5d6d03df25ba4623f",
     });
     expect(computeDirectInputHash(directDelivery(runtime))).toBe(
-      "8d3349d6a28f7f5b2ffd0dff52df4fdeefbe4d019c3f186914f34556a535eef6",
+      "f0526b059b61ae051ea15a8a45b28f6ea2f8a7296fbb4421611cbb5e0d58c487",
     );
     expect(turnReport().resultHash).toBe("1531ebd9cb35b71727fd8913be9afad9f44e24fb3299ced53716085642e460c9");
   });
@@ -347,7 +347,7 @@ function directDelivery(runtime: EffectiveRuntimeSnapshot) {
       providerRef: {
         provider: "slack" as const,
         appId: "app-1",
-        teamId: "team-1",
+        teamId: "workspace-1",
         botUserId: "bot-1",
         channelId: "channel-1",
         messageTs: "1710000000.000001",

@@ -42,8 +42,8 @@ export function registerMeRoutes(
     app.post(HTTP_PATHS.meConnectCodes, { preHandler }, async (request, reply) => {
       const userId = request.authContext?.me.user.id;
       if (!userId) throw new Error("Authenticated user context is missing");
-      const { teamId } = parseRequest(ConnectCodeIssueRequestSchema, request.body);
-      const issued = await connectCodeIssuer.issueForTeamAdmin(userId, teamId);
+      parseRequest(ConnectCodeIssueRequestSchema, request.body ?? {});
+      const issued = await connectCodeIssuer.issueForUser(userId);
       return reply
         .header("Cache-Control", "no-store")
         .code(201)

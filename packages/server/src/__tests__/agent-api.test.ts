@@ -6,7 +6,7 @@ import {
   agentUsagePath,
   OPENTAG_PLATFORM_INSTRUCTIONS,
   RUNTIME_INSTRUCTIONS_MAX_BYTES,
-  teamAgentsPath,
+  workspaceAgentsPath,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
@@ -15,14 +15,14 @@ import { AgentServiceError } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
-const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
+const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const creationIntentId = "a3adbe5e-8e8e-4ac2-a013-b026684ab185";
 const agent = {
   id: agentId,
-  teamId,
-  managerUserId: userId,
+  workspaceId,
+  createdByUserId: userId,
   computerId,
   name: "code-reviewer",
   displayName: "Code Reviewer",
@@ -43,21 +43,21 @@ const agent = {
 const {
   runtimeConfig: _runtimeConfig,
   revision: _revision,
-  managerUserId,
-  computerId: safeComputerId,
+  createdByUserId,
+  computerId: agentComputerId,
   ...agentBase
 } = agent;
 const agentSummary = {
   ...agentBase,
-  manager: { userId: managerUserId, displayName: "Admin" },
-  computer: { id: safeComputerId, displayName: "Laptop", platform: "linux" as const },
+  createdBy: { userId: createdByUserId, displayName: "Admin" },
+  computer: { computerId: agentComputerId, displayName: "Laptop", platform: "linux" as const },
 };
 const agentListItem = {
   ...agentSummary,
   activity: { state: "idle" as const },
   usage: { windowDays: 30 as const, tasks: 0, failed: 0, tokens: 0 },
 };
-const agentDetail = { ...agentSummary, activity: { state: "idle" as const }, viewerCapabilities: { canManage: true } };
+const agentDetail = { ...agentSummary, activity: { state: "idle" as const } };
 const agentUsage = {
   windowDays: 30 as const,
   startedAt: "2026-07-25T12:00:00.000Z",
@@ -98,7 +98,15 @@ function authService(): UserAuthService {
       tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       me: {
         user: { id: userId, email: "admin@example.com", displayName: "Admin" },
-        memberships: [{ teamId, teamName: "example", teamDisplayName: "Example", role: "admin" }],
+        workspaces: [
+          {
+            id: workspaceId,
+            name: "example",
+            displayName: "Example",
+            setupCompletedAt: null,
+            grantedAt: "2026-08-20T00:00:00.000Z",
+          },
+        ],
       },
     }),
   };
@@ -106,8 +114,8 @@ function authService(): UserAuthService {
 
 function agentService() {
   return {
-    createForTeam: vi.fn().mockResolvedValue(agent),
-    listForTeam: vi.fn().mockResolvedValue({ agents: [agentListItem] }),
+    createForWorkspace: vi.fn().mockResolvedValue(agent),
+    listForWorkspace: vi.fn().mockResolvedValue({ agents: [agentListItem] }),
     getById: vi.fn().mockResolvedValue(agentDetail),
     getUsageById: vi.fn().mockResolvedValue(agentUsage),
     getConfigById: vi.fn().mockResolvedValue(agent),
@@ -127,11 +135,11 @@ function appWith(service = agentService()) {
 const authorization = { authorization: "Bearer access" };
 
 describe("Agent HTTP API", () => {
-  it("creates and lists Team Agents through strict contracts", async () => {
+  it("creates and lists Workspace Agents through strict contracts", async () => {
     const { app, service } = appWith();
     const create = await app.inject({
       method: "POST",
-      url: teamAgentsPath(teamId),
+      url: workspaceAgentsPath(workspaceId),
       headers: authorization,
       payload: {
         creationIntentId,
@@ -144,7 +152,7 @@ describe("Agent HTTP API", () => {
     });
     expect(create.statusCode).toBe(201);
     expect(create.json()).toEqual(agent);
-    expect(service.createForTeam).toHaveBeenCalledWith(userId, teamId, {
+    expect(service.createForWorkspace).toHaveBeenCalledWith(userId, workspaceId, {
       creationIntentId,
       name: "code-reviewer",
       displayName: "Code Reviewer",
@@ -153,10 +161,10 @@ describe("Agent HTTP API", () => {
       runtimeConfig: { model: "gpt-5.6" },
     });
 
-    const list = await app.inject({ method: "GET", url: teamAgentsPath(teamId), headers: authorization });
+    const list = await app.inject({ method: "GET", url: workspaceAgentsPath(workspaceId), headers: authorization });
     expect(list.statusCode).toBe(200);
     expect(list.json()).toEqual({ agents: [agentListItem] });
-    expect(service.listForTeam).toHaveBeenCalledWith(userId, teamId);
+    expect(service.listForWorkspace).toHaveBeenCalledWith(userId, workspaceId);
   });
 
   it("gets, CAS-updates, suspends, reactivates, and deletes an Agent", async () => {
@@ -211,8 +219,12 @@ describe("Agent HTTP API", () => {
 
   it("rejects missing credentials, invalid params, and immutable authority fields", async () => {
     const { app, service } = appWith();
-    expect((await app.inject({ method: "GET", url: teamAgentsPath(teamId) })).statusCode).toBe(401);
-    const invalidParam = await app.inject({ method: "GET", url: teamAgentsPath("not-a-uuid"), headers: authorization });
+    expect((await app.inject({ method: "GET", url: workspaceAgentsPath(workspaceId) })).statusCode).toBe(401);
+    const invalidParam = await app.inject({
+      method: "GET",
+      url: workspaceAgentsPath("not-a-uuid"),
+      headers: authorization,
+    });
     expect(invalidParam.statusCode).toBe(400);
     const immutable = await app.inject({
       method: "PATCH",
@@ -228,7 +240,7 @@ describe("Agent HTTP API", () => {
     const { app, service } = appWith();
     const response = await app.inject({
       method: "POST",
-      url: teamAgentsPath(teamId),
+      url: workspaceAgentsPath(workspaceId),
       headers: authorization,
       payload: {
         name: "Bestony",
@@ -253,7 +265,7 @@ describe("Agent HTTP API", () => {
         ],
       },
     });
-    expect(service.createForTeam).not.toHaveBeenCalled();
+    expect(service.createForWorkspace).not.toHaveBeenCalled();
   });
 
   it("rejects instructions that cannot fit beside the required platform policy", async () => {
@@ -262,7 +274,7 @@ describe("Agent HTTP API", () => {
     const tooLarge = `${"界".repeat(Math.floor((RUNTIME_INSTRUCTIONS_MAX_BYTES - platformBytes) / 3))}aaaa`;
     const create = await app.inject({
       method: "POST",
-      url: teamAgentsPath(teamId),
+      url: workspaceAgentsPath(workspaceId),
       headers: authorization,
       payload: {
         computerId,
@@ -273,7 +285,7 @@ describe("Agent HTTP API", () => {
       },
     });
     expect(create.statusCode).toBe(400);
-    expect(service.createForTeam).not.toHaveBeenCalled();
+    expect(service.createForWorkspace).not.toHaveBeenCalled();
 
     const update = await app.inject({
       method: "PATCH",
@@ -308,7 +320,7 @@ describe("Agent HTTP API", () => {
     const { app } = appWith();
     const response = await app.inject({
       method: "POST",
-      url: teamAgentsPath(teamId),
+      url: workspaceAgentsPath(workspaceId),
       headers: { ...authorization, "content-type": "application/json" },
       payload: "{",
     });

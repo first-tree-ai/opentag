@@ -29,6 +29,8 @@ export interface RuntimeConnectionEntry {
   capabilities?: RuntimeClientCapabilities;
   capabilitiesUpdatedAt?: number;
   computerId: string;
+  workspaceComputerId: string;
+  workspaceId: string;
   connectionId?: string;
   instanceId: string;
   lastHeartbeatAt: number;
@@ -40,7 +42,6 @@ export interface RuntimeConnectionEntry {
   imCliReadinessObservedAt?: number;
   negotiatedCapabilities?: RuntimeNegotiatedCapabilities;
   socket: WebSocket;
-  userId: string;
 }
 
 export class ConnectionRegistry {
@@ -48,41 +49,41 @@ export class ConnectionRegistry {
   readonly #registrationTails = new Map<string, Promise<void>>();
 
   async register(entry: RuntimeConnectionEntry, persist: () => Promise<void>, publish?: () => void): Promise<void> {
-    const previousRegistration = this.#registrationTails.get(entry.computerId) ?? Promise.resolve();
+    const previousRegistration = this.#registrationTails.get(entry.workspaceComputerId) ?? Promise.resolve();
     let releaseRegistration: (() => void) | undefined;
     const currentRegistration = new Promise<void>((resolve) => {
       releaseRegistration = resolve;
     });
-    this.#registrationTails.set(entry.computerId, currentRegistration);
+    this.#registrationTails.set(entry.workspaceComputerId, currentRegistration);
     await previousRegistration;
     try {
       await persist();
-      const previous = this.#entries.get(entry.computerId);
-      this.#entries.set(entry.computerId, entry);
+      const previous = this.#entries.get(entry.workspaceComputerId);
+      this.#entries.set(entry.workspaceComputerId, entry);
       if (previous && previous.socket !== entry.socket) {
         previous.socket.close(4001, "Replaced by a newer daemon instance");
       }
       publish?.();
     } finally {
       releaseRegistration?.();
-      if (this.#registrationTails.get(entry.computerId) === currentRegistration) {
-        this.#registrationTails.delete(entry.computerId);
+      if (this.#registrationTails.get(entry.workspaceComputerId) === currentRegistration) {
+        this.#registrationTails.delete(entry.workspaceComputerId);
       }
     }
   }
 
-  isCurrent(computerId: string, instanceId: string, socket: WebSocket): boolean {
-    const current = this.#entries.get(computerId);
+  isCurrent(workspaceComputerId: string, instanceId: string, socket: WebSocket): boolean {
+    const current = this.#entries.get(workspaceComputerId);
     return current?.instanceId === instanceId && current.socket === socket;
   }
 
-  currentInstanceId(computerId: string): string | undefined {
-    const current = this.#entries.get(computerId);
+  currentInstanceId(workspaceComputerId: string): string | undefined {
+    const current = this.#entries.get(workspaceComputerId);
     return current?.active === false ? undefined : current?.instanceId;
   }
 
-  supportsCapability(computerId: string, instanceId: string, capability: string): boolean {
-    const current = this.#entries.get(computerId);
+  supportsCapability(workspaceComputerId: string, instanceId: string, capability: string): boolean {
+    const current = this.#entries.get(workspaceComputerId);
     return (
       current?.instanceId === instanceId &&
       current.active !== false &&
@@ -91,12 +92,12 @@ export class ConnectionRegistry {
   }
 
   supports(
-    computerId: string,
+    workspaceComputerId: string,
     instanceId: string,
     capability: keyof RuntimeClientCapabilities,
     now = Date.now(),
   ): boolean {
-    const current = this.#entries.get(computerId);
+    const current = this.#entries.get(workspaceComputerId);
     return (
       current?.instanceId === instanceId &&
       current.active !== false &&
@@ -106,10 +107,10 @@ export class ConnectionRegistry {
   }
 
   providerReadiness(
-    computerId: string,
+    workspaceComputerId: string,
     now = Date.now(),
   ): readonly { observation: RuntimeProviderReadinessCollection[number]; observedAt: number }[] {
-    const current = this.#entries.get(computerId);
+    const current = this.#entries.get(workspaceComputerId);
     if (current?.active === false) return [];
     const observedAt = current?.providerReadinessObservedAt;
     if (current?.providerReadinessProviders) {
@@ -125,21 +126,26 @@ export class ConnectionRegistry {
     return [];
   }
 
-  supportsProvider(computerId: string, instanceId: string, provider: AgentRuntimeProvider, now = Date.now()): boolean {
-    const current = this.#entries.get(computerId);
+  supportsProvider(
+    workspaceComputerId: string,
+    instanceId: string,
+    provider: AgentRuntimeProvider,
+    now = Date.now(),
+  ): boolean {
+    const current = this.#entries.get(workspaceComputerId);
     if (!current || current.instanceId !== instanceId || current.active === false) return false;
     if (!current.providerReadinessProviders) return false;
     if (!current.providerReadinessProviders.includes(provider)) return false;
-    return this.providerReadiness(computerId, now).some(
+    return this.providerReadiness(workspaceComputerId, now).some(
       ({ observation }) => observation.provider === provider && observation.status === "ready",
     );
   }
 
   imCliReadiness(
-    computerId: string,
+    workspaceComputerId: string,
     now = Date.now(),
   ): readonly { observation: RuntimeImCliReadinessCollection[number]; observedAt: number }[] {
-    const current = this.#entries.get(computerId);
+    const current = this.#entries.get(workspaceComputerId);
     const observedAt = current?.imCliReadinessObservedAt;
     if (
       !current ||
@@ -153,14 +159,14 @@ export class ConnectionRegistry {
     return current.imCliReadiness.map((observation) => ({ observation: { ...observation }, observedAt }));
   }
 
-  supportsImCli(computerId: string, provider: ImCliProvider, now = Date.now()): boolean {
-    return this.imCliReadiness(computerId, now).some(
+  supportsImCli(workspaceComputerId: string, provider: ImCliProvider, now = Date.now()): boolean {
+    return this.imCliReadiness(workspaceComputerId, now).some(
       ({ observation }) => observation.provider === provider && observation.status === "ready",
     );
   }
 
-  async send(computerId: string, instanceId: string, frame: unknown): Promise<void> {
-    const current = this.#entries.get(computerId);
+  async send(workspaceComputerId: string, instanceId: string, frame: unknown): Promise<void> {
+    const current = this.#entries.get(workspaceComputerId);
     if (!current || current.instanceId !== instanceId) {
       throw new RuntimeRegistrySendError("instance_replaced", "The Computer instance is not current");
     }
@@ -194,7 +200,7 @@ export class ConnectionRegistry {
           reject(new RuntimeRegistrySendError("unavailable", "The runtime frame could not be sent"));
           return;
         }
-        if (!this.isCurrent(computerId, instanceId, socket)) {
+        if (!this.isCurrent(workspaceComputerId, instanceId, socket)) {
           reject(new RuntimeRegistrySendError("instance_replaced", "The Computer instance was replaced during send"));
           return;
         }
@@ -204,7 +210,7 @@ export class ConnectionRegistry {
   }
 
   touch(
-    computerId: string,
+    workspaceComputerId: string,
     instanceId: string,
     socket: WebSocket,
     now = Date.now(),
@@ -212,7 +218,7 @@ export class ConnectionRegistry {
     providerReadiness?: RuntimeProviderReadinessCollection,
     imCliReadiness?: RuntimeImCliReadinessCollection,
   ): boolean {
-    const current = this.#entries.get(computerId);
+    const current = this.#entries.get(workspaceComputerId);
     if (!current || current.instanceId !== instanceId || current.socket !== socket || current.active === false) {
       return false;
     }
@@ -242,18 +248,18 @@ export class ConnectionRegistry {
     return true;
   }
 
-  activate(computerId: string, instanceId: string, socket: WebSocket): boolean {
-    const current = this.#entries.get(computerId);
+  activate(workspaceComputerId: string, instanceId: string, socket: WebSocket): boolean {
+    const current = this.#entries.get(workspaceComputerId);
     if (!current || current.instanceId !== instanceId || current.socket !== socket) return false;
     current.active = true;
     return true;
   }
 
-  remove(computerId: string, instanceId: string, socket: WebSocket): boolean {
-    if (!this.isCurrent(computerId, instanceId, socket)) {
+  remove(workspaceComputerId: string, instanceId: string, socket: WebSocket): boolean {
+    if (!this.isCurrent(workspaceComputerId, instanceId, socket)) {
       return false;
     }
-    return this.#entries.delete(computerId);
+    return this.#entries.delete(workspaceComputerId);
   }
 
   terminateStale(cutoff: number): void {
@@ -262,6 +268,15 @@ export class ConnectionRegistry {
         entry.socket.terminate();
       }
     }
+  }
+
+  async closeEnrollment(workspaceComputerId: string): Promise<boolean> {
+    await (this.#registrationTails.get(workspaceComputerId) ?? Promise.resolve());
+    const entry = this.#entries.get(workspaceComputerId);
+    if (!entry) return false;
+    this.#entries.delete(workspaceComputerId);
+    entry.socket.close(4002, "Machine credential rotated or revoked");
+    return true;
   }
 
   closeAll(): void {

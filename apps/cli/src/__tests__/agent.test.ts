@@ -15,30 +15,27 @@ import {
   selectComputer,
 } from "../core/agent/mutations.js";
 import { runAgentList, runAgentShow } from "../core/agent/queries.js";
-import { selectTeam } from "../core/selection/team.js";
+import { selectWorkspace } from "../core/selection/workspace.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
-const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
+const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
-const membership = {
-  teamId,
-  teamName: "example",
-  teamDisplayName: "Example",
-  role: "admin" as const,
+const workspace = {
+  id: workspaceId,
+  name: "example",
+  displayName: "Example",
   setupCompletedAt: null,
+  grantedAt: "2026-08-19T00:00:00.000Z",
 };
 const me = {
   user: { id: userId, email: "admin@example.com", displayName: "Admin" },
-  memberships: [membership],
+  workspaces: [workspace],
 };
 const computer = {
-  id: computerId,
-  ownerUserId: userId,
+  computerId,
   displayName: "workstation",
   platform: "linux" as const,
-  arch: "x64",
-  clientVersion: "0.0.1",
   connectionStatus: "online" as const,
   providerReadiness: [
     {
@@ -49,11 +46,14 @@ const computer = {
   ],
   connectedAt: "2026-08-19T00:00:00.000Z",
   lastSeenAt: "2026-08-19T00:00:01.000Z",
+  observedAt: "2026-08-19T00:00:01.000Z",
+  enrolledAt: "2026-08-19T00:00:00.000Z",
+  agentIds: [],
 };
 const agent: AgentAdminConfig = {
   id: agentId,
-  teamId,
-  managerUserId: userId,
+  workspaceId,
+  createdByUserId: userId,
   computerId,
   name: "code-reviewer",
   displayName: "Code Reviewer",
@@ -74,20 +74,24 @@ const agent: AgentAdminConfig = {
 const {
   runtimeConfig: _runtimeConfig,
   revision: _revision,
-  managerUserId,
-  computerId: safeComputerId,
+  createdByUserId,
+  computerId: agentComputerId,
   ...agentBase
 } = agent;
 const agentSummary = {
   ...agentBase,
-  manager: { userId: managerUserId, displayName: "Admin" },
-  computer: { id: safeComputerId, displayName: computer.displayName, platform: computer.platform },
+  createdBy: { userId: createdByUserId, displayName: "Admin" },
+  computer: {
+    computerId: agentComputerId,
+    displayName: computer.displayName,
+    platform: computer.platform,
+  },
 };
 
 function api() {
   return {
     me: vi.fn().mockResolvedValue(me),
-    listComputers: vi.fn().mockResolvedValue({ computers: [computer] }),
+    listWorkspaceComputers: vi.fn().mockResolvedValue({ computers: [computer] }),
     createAgent: vi.fn().mockResolvedValue(agent),
     listAgents: vi.fn().mockResolvedValue({ agents: [agentSummary] }),
     getAgent: vi.fn().mockResolvedValue(agent),
@@ -142,30 +146,39 @@ describe("Agent CLI core", () => {
     ).toContain("slackIdentityClosure\tpending");
   });
 
-  it("resolves one Team automatically and requires an explicit choice for multiple Teams", () => {
-    expect(selectTeam(me)).toEqual(membership);
-    expect(() => selectTeam({ ...me, memberships: [] })).toThrow("No active Team membership");
+  it("resolves one Workspace automatically and requires an explicit choice for multiple Workspaces", () => {
+    expect(selectWorkspace(me)).toEqual(workspace);
+    expect(() => selectWorkspace({ ...me, workspaces: [] })).toThrow("No Workspace administration access is available");
     const multiple = {
       ...me,
-      memberships: [membership, { ...membership, teamId: crypto.randomUUID(), teamName: "second" }],
+      workspaces: [workspace, { ...workspace, id: crypto.randomUUID(), name: "second" }],
     };
-    expect(() => selectTeam(multiple)).toThrow("Available Teams: example, second");
-    expect(selectTeam(multiple, "second").teamName).toBe("second");
-    expect(() => selectTeam(multiple, "missing")).toThrow("is not available");
+    expect(() => selectWorkspace(multiple)).toThrow("Available Workspaces: example, second");
+    expect(selectWorkspace(multiple, "second").name).toBe("second");
+    expect(() => selectWorkspace(multiple, "missing")).toThrow("is not available");
   });
 
-  it("resolves an owned Computer and rejects ambiguous or unknown choices", () => {
+  it("resolves an enrolled Computer and rejects ambiguous or unknown choices", () => {
     expect(selectComputer({ computers: [computer] })).toEqual(computer);
     expect(() => selectComputer({ computers: [] })).toThrow("start the daemon first");
-    expect(() => selectComputer({ computers: [computer, { ...computer, id: crypto.randomUUID() }] })).toThrow(
-      "use --computer",
+    expect(() =>
+      selectComputer({
+        computers: [{ ...computer }, { ...computer, computerId: crypto.randomUUID() }],
+      }),
+    ).toThrow("use --computer");
+    expect(() => selectComputer({ computers: [computer] }, crypto.randomUUID())).toThrow(
+      "is not enrolled in the selected Workspace",
     );
-    expect(() => selectComputer({ computers: [computer] }, crypto.randomUUID())).toThrow("is not owned");
+    expect(() => selectComputer({ computers: [computer] }, "75fe9af3-d1c6-472b-b78c-8a7ccf512750")).toThrow(
+      "is not enrolled in the selected Workspace",
+    );
   });
 
-  it("creates on the selected Team and preserves an offline warning", async () => {
+  it("creates on the selected Workspace and preserves an offline warning", async () => {
     const client = api();
-    client.listComputers.mockResolvedValue({ computers: [{ ...computer, connectionStatus: "offline" as const }] });
+    client.listWorkspaceComputers.mockResolvedValue({
+      computers: [{ ...computer, connectionStatus: "offline" as const }],
+    });
     const result = await runAgentCreate({
       accessToken: "access",
       api: client,
@@ -173,7 +186,7 @@ describe("Agent CLI core", () => {
       displayName: " Code Reviewer ",
       runtimeProvider: "codex",
     });
-    expect(client.createAgent).toHaveBeenCalledWith("access", teamId, {
+    expect(client.createAgent).toHaveBeenCalledWith("access", workspaceId, {
       computerId,
       displayName: "Code Reviewer",
       name: "code-reviewer",
@@ -200,7 +213,7 @@ describe("Agent CLI core", () => {
         instructionsFile,
         maxDurationMs: "30000",
       });
-      expect(client.createAgent).toHaveBeenCalledWith("access", teamId, {
+      expect(client.createAgent).toHaveBeenCalledWith("access", workspaceId, {
         computerId,
         displayName: "Code Reviewer",
         name: "code-reviewer",
@@ -220,7 +233,7 @@ describe("Agent CLI core", () => {
   it("lists and formats deterministic Agent projections", async () => {
     const client = api();
     const response = await runAgentList({ accessToken: "access", api: client });
-    expect(client.listAgents).toHaveBeenCalledWith("access", teamId);
+    expect(client.listAgents).toHaveBeenCalledWith("access", workspaceId);
     expect(formatAgentList(response)).toContain("code-reviewer\t");
     expect(formatAgent(agent)).toContain(`revision\t1`);
     expect(formatAgent(agent)).toContain(`runtimeConfig.model\t`);
@@ -341,6 +354,9 @@ describe("Agent CLI core", () => {
       ]),
     );
     expect(update?.options.find((option) => option.long === "--display-name")?.mandatory).toBe(false);
+    expect(create?.options.find((option) => option.long === "--computer")?.description).toBe(
+      "Computer enrolled in the selected Workspace",
+    );
     expect(update?.options.find((option) => option.long === "--model")?.description).toContain("Codex only");
     expect(update?.options.find((option) => option.long === "--clear-model")?.description).toContain("Codex manage");
     expect(update?.options.find((option) => option.long === "--clear-max-duration")?.description).toContain(

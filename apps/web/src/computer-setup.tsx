@@ -1,4 +1,4 @@
-import type { Computer } from "@opentag/shared/browser";
+import type { WorkspaceComputerSummary } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { browserApi } from "./api.js";
 import { Button } from "./ui/design-system.js";
@@ -9,8 +9,8 @@ const CONNECT_CODE_EXPIRED_MESSAGE = "This Computer connection command expired. 
 const COPY_FALLBACK_HINT = "Copying is unavailable here. The command is selected; press Ctrl or Cmd + C.";
 
 export interface ComputerSetupProps {
-  teamId: string;
-  onConnected?: (computer: Computer) => void;
+  workspaceId: string;
+  onConnected?: (computer: WorkspaceComputerSummary) => void;
 }
 
 function errorMessage(cause: unknown, fallback: string): string {
@@ -33,11 +33,11 @@ function formatRemaining(remainingMs: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-export function ComputerSetup({ teamId, onConnected }: ComputerSetupProps) {
-  return <ComputerSetupLifecycle key={teamId} teamId={teamId} onConnected={onConnected} />;
+export function ComputerSetup({ workspaceId, onConnected }: ComputerSetupProps) {
+  return <ComputerSetupLifecycle key={workspaceId} workspaceId={workspaceId} onConnected={onConnected} />;
 }
 
-function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
+function ComputerSetupLifecycle({ workspaceId, onConnected }: ComputerSetupProps) {
   const [bootstrapCommand, setBootstrapCommand] = useState<string>();
   const [error, setError] = useState<string>();
   const [waitingForComputer, setWaitingForComputer] = useState(false);
@@ -90,10 +90,13 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
     setError(undefined);
     try {
       const baseline = new Map(
-        (await browserApi.ownComputers()).computers.map((computer: Computer) => [computer.id, computer.connectedAt]),
+        (await browserApi.computers(workspaceId)).computers.map((computer) => [
+          computer.computerId,
+          computer.connectedAt,
+        ]),
       );
       if (!mounted.current || connectAttempt.current !== attempt) return;
-      const issued = await browserApi.issueConnectCode(teamId);
+      const issued = await browserApi.issueComputerConnectCode(workspaceId);
       if (!mounted.current || connectAttempt.current !== attempt) return;
       const cycle = activePollCycle.current + 1;
       activePollCycle.current = cycle;
@@ -135,16 +138,16 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
     pollTimer = window.setInterval(() => {
       // The existing poll cycle also drives the countdown, so the command needs no timer of its own.
       setRemainingMs(Math.max(0, expiresAt - Date.now()));
-      void browserApi.ownComputers().then(
+      void browserApi.computers(workspaceId).then(
         (value) => {
           if (!active || completed || activePollCycle.current !== pollCycle) return;
           const connected = value.computers.find(
-            (computer: Computer) =>
+            (computer) =>
               computer.connectionStatus === "online" &&
-              ((!baseline.has(computer.id) && computer.connectedAt !== null) ||
-                (baseline.has(computer.id) &&
+              ((!baseline.has(computer.computerId) && computer.connectedAt !== null) ||
+                (baseline.has(computer.computerId) &&
                   computer.connectedAt !== null &&
-                  baseline.get(computer.id) !== computer.connectedAt)),
+                  baseline.get(computer.computerId) !== computer.connectedAt)),
           );
           if (!connected) return;
           completed = true;
@@ -167,7 +170,7 @@ function ComputerSetupLifecycle({ teamId, onConnected }: ComputerSetupProps) {
       window.clearInterval(pollTimer);
       window.clearTimeout(expiryTimer);
     };
-  }, [pollCycle, waitingForComputer]);
+  }, [pollCycle, waitingForComputer, workspaceId]);
 
   return (
     <section className="panel">

@@ -34,7 +34,7 @@ const agent: OnboardingAgent = {
 
 function facts(overrides: Partial<OnboardingFacts> = {}): OnboardingFacts {
   return {
-    team: { role: "admin" },
+    workspace: {},
     computers: [computerA],
     providers: [codex],
     agent: undefined,
@@ -44,9 +44,9 @@ function facts(overrides: Partial<OnboardingFacts> = {}): OnboardingFacts {
 }
 
 describe("deriveOnboardingState", () => {
-  it("starts with Team creation when no Team exists", () => {
-    expect(deriveOnboardingState(facts({ team: undefined }))).toEqual({
-      currentState: { kind: "team" },
+  it("starts with Workspace creation when no Workspace exists", () => {
+    expect(deriveOnboardingState(facts({ workspace: undefined }))).toEqual({
+      currentState: { kind: "workspace" },
       runtimeReady: false,
       handoffReady: false,
       canManage: true,
@@ -282,11 +282,8 @@ describe("deriveOnboardingState", () => {
     });
   });
 
-  it("derives identical progress with read-only controls for members", () => {
-    const admin = deriveOnboardingState(facts({ agent }));
-    const member = deriveOnboardingState(facts({ team: { role: "member" }, agent }));
-    expect(member.currentState).toEqual(admin.currentState);
-    expect(member.canManage).toBe(false);
-    expect(admin.canManage).toBe(true);
+  it("gives every authenticated Workspace participant complete Admin controls", () => {
+    const state = deriveOnboardingState(facts({ agent }));
+    expect(state.canManage).toBe(true);
   });
 });

@@ -109,7 +109,7 @@ const REDACTING_SDK_LOGGER = {
   trace: () => undefined,
 };
 
-export function feishuDomainForTeamBrand(teamBrand?: "feishu" | "lark" | null): Domain {
+export function feishuDomainForWorkspaceBrand(teamBrand?: "feishu" | "lark" | null): Domain {
   return teamBrand === "lark" ? Domain.Lark : Domain.Feishu;
 }
 
@@ -396,7 +396,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   }) {
     this.#appId = input.appId;
     this.#teamId = input.teamId;
-    const domain = feishuDomainForTeamBrand(input.teamBrand);
+    const domain = feishuDomainForWorkspaceBrand(input.teamBrand);
     this.#client = new Client({
       appId: input.appId,
       appSecret: input.appSecret,
@@ -425,7 +425,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
     return { externalAppId: this.#appId, externalTeamId: this.#teamId ?? this.#appId, externalBotId: bot.openId };
   }
 
-  async listGrantedTeamScopes(): Promise<string[]> {
+  async listGrantedWorkspaceScopes(): Promise<string[]> {
     const response = await this.#scopeList();
     if (response.code !== undefined && response.code !== 0) {
       throw new Error("FEISHU_SCOPE_VALIDATION_FAILED");

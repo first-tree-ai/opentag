@@ -6,6 +6,88 @@ import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { projectComputerProviderReadiness } from "../services/computers/provider-readiness.js";
 
 describe("ConnectionRegistry", () => {
+  it("keeps two Workspace enrollments for one physical Computer independently online", async () => {
+    const registry = new ConnectionRegistry();
+    const computerId = randomUUID();
+    const firstWorkspaceComputerId = randomUUID();
+    const secondWorkspaceComputerId = randomUUID();
+    const firstSocket = socket();
+    const secondSocket = socket();
+    const firstInstanceId = randomUUID();
+    const secondInstanceId = randomUUID();
+
+    await registry.register(
+      {
+        computerId,
+        workspaceComputerId: firstWorkspaceComputerId,
+        workspaceId: randomUUID(),
+        instanceId: firstInstanceId,
+        lastHeartbeatAt: 1,
+        socket: firstSocket,
+      },
+      async () => undefined,
+    );
+    await registry.register(
+      {
+        computerId,
+        workspaceComputerId: secondWorkspaceComputerId,
+        workspaceId: randomUUID(),
+        instanceId: secondInstanceId,
+        lastHeartbeatAt: 1,
+        socket: secondSocket,
+      },
+      async () => undefined,
+    );
+
+    expect(firstSocket.close).not.toHaveBeenCalled();
+    expect(secondSocket.close).not.toHaveBeenCalled();
+    expect(registry.currentInstanceId(firstWorkspaceComputerId)).toBe(firstInstanceId);
+    expect(registry.currentInstanceId(secondWorkspaceComputerId)).toBe(secondInstanceId);
+  });
+
+  it("waits for an in-flight registration before closing a rotated enrollment", async () => {
+    const registry = new ConnectionRegistry();
+    const workspaceComputerId = randomUUID();
+    const runtimeSocket = socket();
+    let finishPersist: (() => void) | undefined;
+    let persistStarted: (() => void) | undefined;
+    const started = new Promise<void>((resolve) => {
+      persistStarted = resolve;
+    });
+    const persisted = new Promise<void>((resolve) => {
+      finishPersist = resolve;
+    });
+    const registration = registry.register(
+      {
+        computerId: randomUUID(),
+        workspaceComputerId,
+        workspaceId: randomUUID(),
+        instanceId: randomUUID(),
+        lastHeartbeatAt: 1,
+        socket: runtimeSocket,
+      },
+      async () => {
+        persistStarted?.();
+        await persisted;
+      },
+    );
+    await started;
+
+    let closed = false;
+    const closing = registry.closeEnrollment(workspaceComputerId).then((result) => {
+      closed = true;
+      return result;
+    });
+    await Promise.resolve();
+    expect(closed).toBe(false);
+
+    finishPersist?.();
+    await registration;
+    await expect(closing).resolves.toBe(true);
+    expect(runtimeSocket.close).toHaveBeenCalledWith(4002, "Machine credential rotated or revoked");
+    expect(registry.currentInstanceId(workspaceComputerId)).toBeUndefined();
+  });
+
   it("fences replacement close, heartbeat, and stale-instance cleanup by exact socket", async () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();
@@ -19,7 +101,8 @@ describe("ConnectionRegistry", () => {
         instanceId: firstInstance,
         lastHeartbeatAt: 1,
         socket: first,
-        userId: randomUUID(),
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
       },
       async () => undefined,
     );
@@ -29,7 +112,8 @@ describe("ConnectionRegistry", () => {
         instanceId: secondInstance,
         lastHeartbeatAt: 2,
         socket: second,
-        userId: randomUUID(),
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
       },
       async () => undefined,
     );
@@ -45,23 +129,27 @@ describe("ConnectionRegistry", () => {
     const registry = new ConnectionRegistry();
     const stale = socket();
     const fresh = socket();
+    const staleComputerId = randomUUID();
+    const freshComputerId = randomUUID();
     await registry.register(
       {
-        computerId: randomUUID(),
+        computerId: staleComputerId,
         instanceId: randomUUID(),
         lastHeartbeatAt: 10,
         socket: stale,
-        userId: randomUUID(),
+        workspaceComputerId: staleComputerId,
+        workspaceId: randomUUID(),
       },
       async () => undefined,
     );
     await registry.register(
       {
-        computerId: randomUUID(),
+        computerId: freshComputerId,
         instanceId: randomUUID(),
         lastHeartbeatAt: 20,
         socket: fresh,
-        userId: randomUUID(),
+        workspaceComputerId: freshComputerId,
+        workspaceId: randomUUID(),
       },
       async () => undefined,
     );
@@ -85,7 +173,8 @@ describe("ConnectionRegistry", () => {
         instanceId: firstInstanceId,
         lastHeartbeatAt: 1,
         socket: socket(),
-        userId: randomUUID(),
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
       },
       async () => undefined,
     );
@@ -105,7 +194,8 @@ describe("ConnectionRegistry", () => {
         providerReadinessObservedAt: 2,
         providerReadinessProviders: ["codex"],
         socket: verifiedSocket,
-        userId: randomUUID(),
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
       },
       async () => undefined,
     );
@@ -153,7 +243,8 @@ describe("ConnectionRegistry", () => {
         providerReadiness: [{ provider: "codex", status: "ready" }],
         providerReadinessObservedAt: 1,
         providerReadinessProviders: ["codex"],
-        userId: randomUUID(),
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
       },
       async () => undefined,
     );
@@ -187,7 +278,8 @@ describe("ConnectionRegistry", () => {
         providerReadinessObservedAt: 1,
         providerReadinessProviders: ["codex"],
         socket: currentSocket,
-        userId: randomUUID(),
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
       },
       async () => undefined,
     );
@@ -251,7 +343,8 @@ describe("ConnectionRegistry", () => {
         providerReadinessObservedAt: 1,
         providerReadinessProviders: ["codex"],
         socket: oldSocket,
-        userId: randomUUID(),
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
       },
       async () => undefined,
     );
@@ -267,7 +360,8 @@ describe("ConnectionRegistry", () => {
         providerReadiness: [],
         providerReadinessProviders: ["codex"],
         socket: socket(),
-        userId: randomUUID(),
+        workspaceComputerId: computerId,
+        workspaceId: randomUUID(),
       },
       async () => undefined,
     );

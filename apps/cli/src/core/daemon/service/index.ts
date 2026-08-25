@@ -1,6 +1,6 @@
 import { homedir, userInfo } from "node:os";
 import { resolve } from "node:path";
-import { readCredentials, resolveOpenTagHome } from "@opentag/client";
+import { readMachineCredentials, resolveOpenTagHome } from "@opentag/client";
 import { getChannelConfig } from "@opentag/shared";
 import { CHANNEL } from "../../../build-info.js";
 import { channelConfig } from "../../channel/config.js";
@@ -108,16 +108,18 @@ export async function createDaemonServiceManager(
     preflight,
     async installAndStart() {
       await preflight();
-      let credentials: Awaited<ReturnType<typeof readCredentials>>;
+      let credentials: Awaited<ReturnType<typeof readMachineCredentials>>;
       try {
-        credentials = await readCredentials(home);
+        credentials = await readMachineCredentials(home);
       } catch (error) {
-        throw new DaemonServiceError("CONFIGURATION", "OpenTag credentials are invalid; run login again", {
-          cause: error,
-        });
+        throw new DaemonServiceError(
+          "CONFIGURATION",
+          "OpenTag Computer credentials are invalid; run computer connect again",
+          { cause: error },
+        );
       }
-      if (!credentials) {
-        throw new DaemonServiceError("CONFIGURATION", "OpenTag is not logged in; run login first");
+      if (!credentials?.enrollments.length) {
+        throw new DaemonServiceError("CONFIGURATION", "This Computer is not enrolled; run computer connect first");
       }
       return mutate("install", () => backend.installAndStart());
     },

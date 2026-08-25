@@ -131,10 +131,11 @@ describe("RuntimeDomainOwner", () => {
     await fixture.registry.register(
       {
         computerId: fixture.computerId,
+        workspaceComputerId: fixture.context.workspaceComputerId,
+        workspaceId: fixture.context.workspaceId,
         instanceId: nextInstanceId,
         lastHeartbeatAt: 2,
         socket: nextSocket,
-        userId: fixture.context.userId,
       },
       async () => undefined,
     );
@@ -366,10 +367,17 @@ describe("RuntimeDomainOwner", () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();
     const instanceId = randomUUID();
-    const userId = randomUUID();
+    const workspaceId = randomUUID();
     const frames: unknown[] = [];
     await registry.register(
-      { computerId, instanceId, lastHeartbeatAt: 1, socket: socketFixture(frames), userId },
+      {
+        computerId,
+        workspaceComputerId: computerId,
+        workspaceId,
+        instanceId,
+        lastHeartbeatAt: 1,
+        socket: socketFixture(frames),
+      },
       async () => undefined,
     );
     const onLocal = vi.fn().mockResolvedValue({
@@ -381,7 +389,13 @@ describe("RuntimeDomainOwner", () => {
     const owner = new RuntimeDomainOwner(registry, new MemoryRuntimeCustodyStore(), {
       onLocalSessionMessageDeliveryResult: onLocal,
     });
-    const context = { computerId, instanceId, signal: new AbortController().signal, userId };
+    const context = {
+      computerId,
+      workspaceComputerId: computerId,
+      workspaceId,
+      instanceId,
+      signal: new AbortController().signal,
+    };
     const delivery = sessionMessageDelivery();
     const pending = owner.requestSessionMessageDelivery(computerId, instanceId, delivery);
     await vi.waitFor(() => expect(frames).toContainEqual(delivery));
@@ -413,24 +427,26 @@ async function ownerFixture(requestTimeoutMs = 1_000) {
   const registry = new ConnectionRegistry();
   const computerId = randomUUID();
   const instanceId = randomUUID();
-  const userId = randomUUID();
+  const workspaceId = randomUUID();
   const frames: unknown[] = [];
   await registry.register(
     {
       computerId,
+      workspaceComputerId: computerId,
+      workspaceId,
       instanceId,
       lastHeartbeatAt: 1,
       socket: socketFixture(frames),
-      userId,
     },
     async () => undefined,
   );
   const owner = new RuntimeDomainOwner(registry, new MemoryRuntimeCustodyStore(), { requestTimeoutMs });
   const context: RuntimeBusinessContext = {
     computerId,
+    workspaceComputerId: computerId,
+    workspaceId,
     instanceId,
     signal: new AbortController().signal,
-    userId,
   };
   return { computerId, context, frames, instanceId, owner, registry };
 }
@@ -441,10 +457,11 @@ async function replaceRuntimeInstance(fixture: Awaited<ReturnType<typeof ownerFi
   await fixture.registry.register(
     {
       computerId: fixture.computerId,
+      workspaceComputerId: fixture.context.workspaceComputerId,
+      workspaceId: fixture.context.workspaceId,
       instanceId,
       lastHeartbeatAt: 2,
       socket: socketFixture(frames),
-      userId: fixture.context.userId,
     },
     async () => undefined,
   );
@@ -566,7 +583,7 @@ function deliveryRequest(): DirectImMessageDeliveryRequest {
       providerRef: {
         provider: "slack",
         appId: "app-1",
-        teamId: "team-1",
+        teamId: "workspace-1",
         botUserId: "bot-1",
         channelId: "channel-1",
         messageTs: "1710000000.000001",
@@ -651,7 +668,7 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
     }
     this.#deliveries.set(request.deliveryId, {
       agentId: request.agentId,
-      computerId: context.computerId,
+      workspaceComputerId: context.workspaceComputerId,
       deliveryId: request.deliveryId,
       inputHash,
       instanceId: context.instanceId,
@@ -680,14 +697,14 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
       }
       this.#deliveries.set(claim.deliveryId, {
         ...delivery,
-        computerId: context.computerId,
+        workspaceComputerId: context.workspaceComputerId,
         instanceId: context.instanceId,
       });
       const turn = this.#turns.get(claim.turnId);
       if (turn && turn.resultHash === claim.resultHash) {
         this.#turns.set(claim.turnId, {
           ...turn,
-          computerId: context.computerId,
+          workspaceComputerId: context.workspaceComputerId,
           instanceId: context.instanceId,
         });
       }
@@ -724,11 +741,13 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
       return "conflict";
     }
     if (delivery.placementGeneration !== report.placementGeneration) return "stale_generation";
-    if (delivery.computerId !== context.computerId || delivery.instanceId !== context.instanceId) return undefined;
+    if (delivery.workspaceComputerId !== context.workspaceComputerId || delivery.instanceId !== context.instanceId) {
+      return undefined;
+    }
     const expectedHash = this.#expectedResultHashes.get(report.turnId);
     if (expectedHash && expectedHash !== report.resultHash) return "conflict";
     this.#turns.set(report.turnId, {
-      computerId: context.computerId,
+      workspaceComputerId: context.workspaceComputerId,
       instanceId: context.instanceId,
       report,
       resultHash: report.resultHash,

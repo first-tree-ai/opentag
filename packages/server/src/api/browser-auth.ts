@@ -1,6 +1,6 @@
 import { isIP } from "node:net";
 import { AuthProvidersResponseSchema, HTTP_PATHS } from "@opentag/shared";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import {
   BROWSER_COOKIE_NAMES,
@@ -77,15 +77,14 @@ class RouteRateLimiter {
   }
 }
 
-function audit(request: FastifyRequest) {
-  const userAgent = request.headers["user-agent"];
-  return { ip: request.ip.slice(0, 255), ...(userAgent ? { userAgent: userAgent.slice(0, 1024) } : {}) };
-}
-
-function withSelectedTeamHint(next: string, selectedTeamId: string | undefined, publicOrigin: string): string {
-  if (!selectedTeamId) return next;
+function withSelectedWorkspaceHint(
+  next: string,
+  selectedWorkspaceId: string | undefined,
+  publicOrigin: string,
+): string {
+  if (!selectedWorkspaceId) return next;
   const destination = new URL(next, publicOrigin);
-  destination.searchParams.set("joinedTeamId", selectedTeamId);
+  destination.searchParams.set("joinedWorkspaceId", selectedWorkspaceId);
   return `${destination.pathname}${destination.search}${destination.hash}`;
 }
 
@@ -170,7 +169,6 @@ export function registerBrowserAuthRoutes(
       },
       context,
       {
-        audit: audit(request),
         onVerified: () => clearOAuthContextCookie(reply, options.secureCookies),
       },
     );
@@ -178,7 +176,10 @@ export function registerBrowserAuthRoutes(
       refreshTtlSeconds: options.refreshTokenTtlSeconds,
       secure: options.secureCookies,
     });
-    return reply.redirect(withSelectedTeamHint(result.next, result.selectedTeamId, options.publicOrigin), 302);
+    return reply.redirect(
+      withSelectedWorkspaceHint(result.next, result.selectedWorkspaceId, options.publicOrigin),
+      302,
+    );
   });
 
   app.post(HTTP_PATHS.authBrowserRefresh, async (request, reply) => {

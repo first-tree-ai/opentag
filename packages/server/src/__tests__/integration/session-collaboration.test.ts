@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
-import { computers, imBindings, sessionMessages, sessions } from "../../db/schema/index.js";
+import { computers, imBindings, sessionMessages, sessions, workspaceComputers } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { SessionService } from "../../services/sessions/index.js";
 
@@ -46,6 +46,7 @@ describe("Session collaboration authority", () => {
       const input = {
         creatorSessionId: creator.session.id,
         creatorComputerId: fixture.computerId,
+        creatorWorkspaceComputerId: fixture.workspaceComputerId,
         creatorPlacementGeneration: creator.placement.generation,
         messageId,
         initialMessage: "Investigate the deployment failure",
@@ -63,7 +64,7 @@ describe("Session collaboration authority", () => {
           runtimeReasoningEffort: "high",
           runtimeMaxDurationMs: 60_000,
         },
-        placement: { computerId: fixture.computerId, generation: 1 },
+        placement: { workspaceComputerId: fixture.workspaceComputerId, generation: 1 },
         message: { id: messageId, lastOutcome: "unknown", attemptCount: 1 },
       });
       const recovered = await new SessionService(fixture.database).createInternalSessionWithMessage(input);
@@ -108,6 +109,7 @@ describe("Session collaboration authority", () => {
       const child = await fixture.sessions.createInternalSessionWithMessage({
         creatorSessionId: creator.session.id,
         creatorComputerId: fixture.computerId,
+        creatorWorkspaceComputerId: fixture.workspaceComputerId,
         creatorPlacementGeneration: 1,
         messageId: randomUUID(),
         initialMessage: "Start",
@@ -117,6 +119,7 @@ describe("Session collaboration authority", () => {
         messageId,
         sourceSessionId: child.session.id,
         sourceComputerId: fixture.computerId,
+        sourceWorkspaceComputerId: fixture.workspaceComputerId,
         sourcePlacementGeneration: 1,
         targetSessionId: creator.session.id,
         content: "Progress",
@@ -167,6 +170,7 @@ describe("Session collaboration authority", () => {
           messageId: staleId,
           sourceSessionId: source.session.id,
           sourceComputerId: fixture.computerId,
+          sourceWorkspaceComputerId: fixture.workspaceComputerId,
           sourcePlacementGeneration: 2,
           targetSessionId: source.session.id,
           content: "stale",
@@ -178,6 +182,7 @@ describe("Session collaboration authority", () => {
           messageId: crossScopeId,
           sourceSessionId: source.session.id,
           sourceComputerId: fixture.computerId,
+          sourceWorkspaceComputerId: fixture.workspaceComputerId,
           sourcePlacementGeneration: 1,
           targetSessionId: otherScope.session.id,
           content: "cross scope",
@@ -190,6 +195,7 @@ describe("Session collaboration authority", () => {
           messageId: endedId,
           sourceSessionId: source.session.id,
           sourceComputerId: fixture.computerId,
+          sourceWorkspaceComputerId: fixture.workspaceComputerId,
           sourcePlacementGeneration: 1,
           targetSessionId: otherScope.session.id,
           content: "ended",
@@ -216,6 +222,7 @@ describe("Session collaboration authority", () => {
       const child = await fixture.sessions.createInternalSessionWithMessage({
         creatorSessionId: thread.session.id,
         creatorComputerId: fixture.computerId,
+        creatorWorkspaceComputerId: fixture.workspaceComputerId,
         creatorPlacementGeneration: 1,
         messageId: randomUUID(),
         initialMessage: "Child",
@@ -223,6 +230,7 @@ describe("Session collaboration authority", () => {
       const grandchild = await fixture.sessions.createInternalSessionWithMessage({
         creatorSessionId: child.session.id,
         creatorComputerId: fixture.computerId,
+        creatorWorkspaceComputerId: fixture.workspaceComputerId,
         creatorPlacementGeneration: 1,
         messageId: randomUUID(),
         initialMessage: "Grandchild",
@@ -246,19 +254,27 @@ async function createFixture() {
   const bootstrap = await bootstrapInitialAdmin(client.database, {
     displayName: "Admin",
     email: "admin@example.com",
-    teamDisplayName: "Example",
-    teamName: "example",
+    workspaceDisplayName: "Example",
+    workspaceName: "example",
   });
   const computerId = randomUUID();
   await client.database.insert(computers).values({
     id: computerId,
-    ownerUserId: bootstrap.userId,
-    displayName: "workstation",
-    platform: "linux",
-    arch: "x64",
-    clientVersion: "0.0.1",
   });
-  const agent = await new AgentService(client.database).createForTeam(bootstrap.userId, bootstrap.teamId, {
+  const [workspaceComputer] = await client.database
+    .insert(workspaceComputers)
+    .values({
+      workspaceId: bootstrap.workspaceId,
+      computerId,
+      displayName: "workstation",
+      platform: "linux",
+      arch: "x64",
+      clientVersion: "0.0.1",
+      enrolledByUserId: bootstrap.userId,
+    })
+    .returning({ id: workspaceComputers.id });
+  if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
+  const agent = await new AgentService(client.database).createForWorkspace(bootstrap.userId, bootstrap.workspaceId, {
     name: "assistant",
     displayName: "Assistant",
     runtimeProvider: "codex",
@@ -280,5 +296,11 @@ async function createFixture() {
     })
     .returning({ id: imBindings.id });
   if (!binding) throw new Error("Binding fixture was not created");
-  return { ...client, computerId, imBindingId: binding.id, sessions: new SessionService(client.database) };
+  return {
+    ...client,
+    computerId,
+    workspaceComputerId: workspaceComputer.id,
+    imBindingId: binding.id,
+    sessions: new SessionService(client.database),
+  };
 }

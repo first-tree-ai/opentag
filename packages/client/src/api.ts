@@ -1,4 +1,6 @@
 import {
+  type AdminInvitation,
+  AdminInvitationSchema,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
@@ -15,10 +17,18 @@ import {
   agentSlackConfigurationPath,
   agentSuspendPath,
   agentUsagePath,
+  type ComputerConnectCodeExchangeRequest,
+  type ComputerConnectCodeExchangeResponse,
+  ComputerConnectCodeExchangeResponseSchema,
+  type ComputerConnectCodeIssueResponse,
+  ComputerConnectCodeIssueResponseSchema,
   type ConfigureSlackAppRequest,
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
   type CreateAgentRequest,
+  type CreateWorkspaceRequest,
+  type CreateWorkspaceResponse,
+  CreateWorkspaceResponseSchema,
   type ErrorCategory,
   type ErrorCode,
   ErrorEnvelopeSchema,
@@ -32,53 +42,42 @@ import {
   ImBindingDiagnosticsSchema,
   type ImBindingSummary,
   ImBindingSummarySchema,
+  type InvitationAcceptanceResponse,
+  InvitationAcceptanceResponseSchema,
+  type InvitationPreview,
+  InvitationPreviewSchema,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
+  invitationAcceptPath,
+  invitationPreviewPath,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
-  type ListComputersResponse,
-  ListComputersResponseSchema,
-  type ListTeamComputersConfigResponse,
-  ListTeamComputersConfigResponseSchema,
-  type ListTeamComputersResponse,
-  ListTeamComputersResponseSchema,
-  type ListTeamMembersConfigResponse,
-  ListTeamMembersConfigResponseSchema,
-  type ListTeamMembersResponse,
-  ListTeamMembersResponseSchema,
+  type ListWorkspaceAdminsResponse,
+  ListWorkspaceAdminsResponseSchema,
+  type ListWorkspaceComputersResponse,
+  ListWorkspaceComputersResponseSchema,
   type MeResponse,
   MeResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
-  type RestoreTeamMemberRequest,
   runtimeImResourcePath,
   type SlackAppConfiguration,
   SlackAppConfigurationSchema,
   type SlackConfigurationResult,
   SlackConfigurationResultSchema,
-  type TeamInvitation,
-  TeamInvitationSchema,
-  type TeamMemberAdminConfig,
-  TeamMemberAdminConfigSchema,
-  type TeamProfile,
-  TeamProfileSchema,
-  teamAgentsPath,
-  teamByIdPath,
-  teamComputersConfigPath,
-  teamComputersPath,
-  teamInvitationPath,
-  teamInvitationRotatePath,
-  teamLeavePath,
-  teamMemberPath,
-  teamMemberRemovePath,
-  teamMemberRestorePath,
-  teamMembersConfigPath,
-  teamMembersPath,
   type UpdateAgentRequest,
-  type UpdateTeamMemberRequest,
-  type UpdateTeamProfileRequest,
+  type UpdateWorkspaceProfileRequest,
   type ValidationIssue,
+  type WorkspaceProfile,
+  WorkspaceProfileSchema,
+  workspaceAdminInvitationsPath,
+  workspaceAdminPath,
+  workspaceAdminsPath,
+  workspaceAgentsPath,
+  workspaceByIdPath,
+  workspaceComputerConnectCodesPath,
+  workspaceComputersPath,
 } from "@opentag/shared";
 
 interface RuntimeSchema<T> {
@@ -115,6 +114,14 @@ export class OpenTagApi {
     });
   }
 
+  exchangeComputerConnectCode(input: ComputerConnectCodeExchangeRequest): Promise<ComputerConnectCodeExchangeResponse> {
+    return this.#request(HTTP_PATHS.computerConnectExchange, ComputerConnectCodeExchangeResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json" },
+    });
+  }
+
   refresh(refreshToken: string): Promise<RefreshTokenResponse> {
     return this.#request(HTTP_PATHS.authRefresh, RefreshTokenResponseSchema, {
       method: "POST",
@@ -129,114 +136,86 @@ export class OpenTagApi {
     });
   }
 
-  updateTeam(accessToken: string, teamId: string, input: UpdateTeamProfileRequest): Promise<TeamProfile> {
-    return this.#request(teamByIdPath(teamId), TeamProfileSchema, {
+  createWorkspace(accessToken: string, input: CreateWorkspaceRequest): Promise<CreateWorkspaceResponse> {
+    return this.#request(HTTP_PATHS.workspaces, CreateWorkspaceResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+    });
+  }
+
+  getWorkspace(accessToken: string, workspaceId: string): Promise<WorkspaceProfile> {
+    return this.#request(workspaceByIdPath(workspaceId), WorkspaceProfileSchema, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+  }
+
+  updateWorkspace(
+    accessToken: string,
+    workspaceId: string,
+    input: UpdateWorkspaceProfileRequest,
+  ): Promise<WorkspaceProfile> {
+    return this.#request(workspaceByIdPath(workspaceId), WorkspaceProfileSchema, {
       method: "PATCH",
       body: JSON.stringify(input),
       headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
     });
   }
 
-  listComputers(accessToken: string): Promise<ListComputersResponse> {
-    return this.#request(HTTP_PATHS.meComputers, ListComputersResponseSchema, {
+  listWorkspaceAdmins(accessToken: string, workspaceId: string): Promise<ListWorkspaceAdminsResponse> {
+    return this.#request(workspaceAdminsPath(workspaceId), ListWorkspaceAdminsResponseSchema, {
       headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
   }
 
-  listTeamMembers(accessToken: string, teamId: string): Promise<ListTeamMembersResponse> {
-    return this.#request(teamMembersPath(teamId), ListTeamMembersResponseSchema, {
+  revokeWorkspaceAdmin(accessToken: string, workspaceId: string, accountId: string): Promise<void> {
+    return this.#requestNoContent(workspaceAdminPath(workspaceId, accountId), {
+      method: "DELETE",
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }
 
-  listTeamMembersConfig(accessToken: string, teamId: string): Promise<ListTeamMembersConfigResponse> {
-    return this.#request(teamMembersConfigPath(teamId), ListTeamMembersConfigResponseSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
-  }
-
-  updateTeamMember(
-    accessToken: string,
-    teamId: string,
-    userId: string,
-    input: UpdateTeamMemberRequest,
-  ): Promise<TeamMemberAdminConfig> {
-    return this.#request(teamMemberPath(teamId, userId), TeamMemberAdminConfigSchema, {
-      method: "PATCH",
-      body: JSON.stringify(input),
-      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-    });
-  }
-
-  removeTeamMember(accessToken: string, teamId: string, userId: string): Promise<void> {
-    return this.#requestNoContent(teamMemberRemovePath(teamId, userId), {
+  createWorkspaceAdminInvitation(accessToken: string, workspaceId: string): Promise<AdminInvitation> {
+    return this.#request(workspaceAdminInvitationsPath(workspaceId), AdminInvitationSchema, {
       method: "POST",
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }
 
-  restoreTeamMember(
-    accessToken: string,
-    teamId: string,
-    userId: string,
-    input: RestoreTeamMemberRequest,
-  ): Promise<TeamMemberAdminConfig> {
-    return this.#request(teamMemberRestorePath(teamId, userId), TeamMemberAdminConfigSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-    });
+  previewAdminInvitation(token: string): Promise<InvitationPreview> {
+    return this.#request(invitationPreviewPath(token), InvitationPreviewSchema, {});
   }
 
-  leaveTeam(accessToken: string, teamId: string): Promise<void> {
-    return this.#requestNoContent(teamLeavePath(teamId), {
+  acceptAdminInvitation(accessToken: string, token: string): Promise<InvitationAcceptanceResponse> {
+    return this.#request(invitationAcceptPath(token), InvitationAcceptanceResponseSchema, {
       method: "POST",
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }
 
-  getTeamInvitation(accessToken: string, teamId: string): Promise<TeamInvitation | undefined> {
-    return this.#requestOptional(teamInvitationPath(teamId), TeamInvitationSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
-  }
-
-  createTeamInvitation(accessToken: string, teamId: string): Promise<TeamInvitation> {
-    return this.#request(teamInvitationPath(teamId), TeamInvitationSchema, {
+  issueComputerConnectCode(accessToken: string, workspaceId: string): Promise<ComputerConnectCodeIssueResponse> {
+    return this.#request(workspaceComputerConnectCodesPath(workspaceId), ComputerConnectCodeIssueResponseSchema, {
       method: "POST",
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }
 
-  rotateTeamInvitation(accessToken: string, teamId: string): Promise<TeamInvitation> {
-    return this.#request(teamInvitationRotatePath(teamId), TeamInvitationSchema, {
-      method: "POST",
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
-  }
-
-  listTeamComputers(accessToken: string, teamId: string): Promise<ListTeamComputersResponse> {
-    return this.#request(teamComputersPath(teamId), ListTeamComputersResponseSchema, {
+  listWorkspaceComputers(accessToken: string, workspaceId: string): Promise<ListWorkspaceComputersResponse> {
+    return this.#request(workspaceComputersPath(workspaceId), ListWorkspaceComputersResponseSchema, {
       headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
   }
 
-  listTeamComputersConfig(accessToken: string, teamId: string): Promise<ListTeamComputersConfigResponse> {
-    return this.#request(teamComputersConfigPath(teamId), ListTeamComputersConfigResponseSchema, {
-      headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
-    });
-  }
-
-  createAgent(accessToken: string, teamId: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
-    return this.#request(teamAgentsPath(teamId), AgentAdminConfigSchema, {
+  createAgent(accessToken: string, workspaceId: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
+    return this.#request(workspaceAgentsPath(workspaceId), AgentAdminConfigSchema, {
       method: "POST",
       body: JSON.stringify(input),
       headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
     });
   }
 
-  listAgents(accessToken: string, teamId: string): Promise<ListAgentsResponse> {
-    return this.#request(teamAgentsPath(teamId), ListAgentsResponseSchema, {
+  listAgents(accessToken: string, workspaceId: string): Promise<ListAgentsResponse> {
+    return this.#request(workspaceAgentsPath(workspaceId), ListAgentsResponseSchema, {
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }
@@ -357,13 +336,13 @@ export class OpenTagApi {
   }
 
   async openImResource(
-    accessToken: string,
+    machineToken: string,
     imMessageId: string,
     ordinal: number,
-    scope: { sessionId: string; computerId: string; instanceId: string; placementGeneration: number },
+    scope: { sessionId: string; instanceId: string; placementGeneration: number },
   ): Promise<Response> {
     const response = await this.#fetchResponse(runtimeImResourcePath(imMessageId, ordinal, scope), {
-      headers: { authorization: `Bearer ${accessToken}` },
+      headers: { authorization: `Bearer ${machineToken}` },
     });
     if (!response.ok) {
       const body = await response.json().catch(() => undefined);

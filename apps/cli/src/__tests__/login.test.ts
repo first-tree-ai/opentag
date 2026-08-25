@@ -27,7 +27,6 @@ describe("runLogin", () => {
       "login",
       "--server",
       "https://opentag.example",
-      "--no-start",
       "--",
       "-R5hUHv2GVEjyiKiBLCyzgi-yef7_tQ5",
     ]);
@@ -35,7 +34,6 @@ describe("runLogin", () => {
     expect(login).toHaveBeenCalledWith(
       expect.objectContaining({
         code: "-R5hUHv2GVEjyiKiBLCyzgi-yef7_tQ5",
-        noStart: true,
         serverUrl: "https://opentag.example",
       }),
     );
@@ -59,7 +57,7 @@ describe("runLogin", () => {
       serverUrl: "https://opentag.example",
     });
 
-    expect(exchangeConnectCode).toHaveBeenCalledWith("one-time-secret", undefined);
+    expect(exchangeConnectCode).toHaveBeenCalledWith("one-time-secret");
     expect(result.message).toBe("Logged in to OpenTag at https://opentag.example");
     expect(result.credentialsPath).toBe(credentialsPath(home));
     expect(JSON.stringify(result)).not.toContain("secret");
@@ -74,7 +72,7 @@ describe("runLogin", () => {
   it("rejects another server before consuming a connect code for a bound home", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-login-"));
     temporaryDirectories.push(home);
-    await resolveComputerIdentity(home, "https://opentag.example", crypto.randomUUID());
+    await resolveComputerIdentity(home, "https://opentag.example");
     const exchangeConnectCode = vi.fn();
     await expect(
       runLogin({ api: { exchangeConnectCode }, code: "one-time-secret", home, serverUrl: "https://other.example" }),
@@ -149,21 +147,22 @@ describe("runLogin", () => {
     expect(login).toHaveBeenCalledOnce();
   });
 
-  it("reports partial success with only the daemon install recovery command", async () => {
+  it("surfaces Account login failures without daemon partial-success messaging", async () => {
     const output: string[] = [];
     const errors: string[] = [];
     const loginResult = { credentialsPath: "/private/credentials.json", message: "Logged in" };
     const login = vi.fn().mockRejectedValue(new LoginServiceInstallError(loginResult, { cause: new Error("secret") }));
 
-    const exitCode = await executeLoginCommand(
-      "one-time-secret",
-      { server: "https://opentag.example" },
-      { login, writeError: (message) => errors.push(message), writeOutput: (message) => output.push(message) },
-    );
+    await expect(
+      executeLoginCommand(
+        "one-time-secret",
+        { server: "https://opentag.example" },
+        { login, writeError: (message) => errors.push(message), writeOutput: (message) => output.push(message) },
+      ),
+    ).rejects.toBeInstanceOf(LoginServiceInstallError);
 
-    expect(exitCode).toBe(1);
-    expect(output).toEqual(["Logged in"]);
-    expect(errors.join(" ")).toContain("opentag-dev daemon install");
+    expect(output).toEqual([]);
+    expect(errors).toEqual([]);
     expect(`${output.join(" ")} ${errors.join(" ")}`).not.toMatch(/one-time-secret|refresh|access/iu);
     expect(login).toHaveBeenCalledOnce();
   });

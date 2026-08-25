@@ -9,4 +9,4 @@ export * from "./invitation.js";
 export { RUNTIME_DEFAULT_MAX_DURATION_MS, RUNTIME_MAX_DURATION_MS } from "./runtime-config.js";
 export * from "./runtime-configuration-options.js";
 export * from "./runtime-protocol.js";
-export * from "./team.js";
+export * from "./workspace.js";

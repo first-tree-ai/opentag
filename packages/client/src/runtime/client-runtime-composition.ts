@@ -20,7 +20,6 @@ import type {
   ResumeAgentRuntimeRequest,
 } from "../agent-runtime/types.js";
 import type { OpenTagApi } from "../api.js";
-import type { AccessTokenProvider } from "../auth/token-provider.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import {
   CLAUDE_CODE_AGENT_RUNTIME_MANIFEST,
@@ -103,7 +102,7 @@ export interface CreateClientRuntimeOptions {
   readonly home: string;
   readonly logger?: ClientLogger;
   readonly signal?: AbortSignal;
-  readonly tokenProvider?: Pick<AccessTokenProvider, "getAccessTokenLease">;
+  readonly machineToken?: string;
 }
 
 export class ComposedClientRuntime {
@@ -442,10 +441,9 @@ export async function createClientRuntime(
   });
   collaboration = new SessionCollaborationClient({ connection, inbox: sessionMessageInbox });
   const resourceFetcher = new ImResourceFetcher({
-    computerId: connection.computerId,
     instanceId: connection.instanceId,
     api: options.api,
-    tokenProvider: options.tokenProvider,
+    machineToken: options.machineToken,
   });
   const mvpReportRecovery = new MvpTurnReportRecovery({
     bindingStore,

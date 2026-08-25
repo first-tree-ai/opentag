@@ -66,6 +66,7 @@ describe("SessionCollaborationService", () => {
     const sourceContext = context();
     const fixture = serviceFixture({
       sourceComputerId: sourceContext.computerId,
+      sourceWorkspaceComputerId: sourceContext.workspaceComputerId,
       sourceInstanceId: sourceContext.instanceId,
     });
     const command = sendCommand();
@@ -148,11 +149,15 @@ function serviceFixture(
     attempt?: ReturnType<typeof attempt>;
     createAttempt?: ReturnType<typeof attempt>;
     sourceComputerId?: string;
+    sourceWorkspaceComputerId?: string;
     sourceInstanceId?: string;
   } = {},
 ) {
   const messageAttempt = options.attempt ?? attempt();
   if (options.sourceComputerId) messageAttempt.route.targetComputerId = options.sourceComputerId;
+  if (options.sourceWorkspaceComputerId) {
+    messageAttempt.route.targetWorkspaceComputerId = options.sourceWorkspaceComputerId;
+  }
   const sessions = {
     authorizeAndRecordMessage: vi
       .fn()
@@ -254,6 +259,7 @@ function attempt(
       sourceSessionId,
       targetSessionId,
       targetComputerId: String(randomUUID()),
+      targetWorkspaceComputerId: String(randomUUID()),
       targetPlacementGeneration: 1,
       targetSessionKind: "internal" as const,
     },
@@ -300,10 +306,11 @@ function createCommand() {
 function context(overrides: Partial<RuntimeBusinessContext> = {}): RuntimeBusinessContext {
   return {
     computerId: randomUUID(),
+    workspaceComputerId: randomUUID(),
+    workspaceId: randomUUID(),
     instanceId: randomUUID(),
     negotiatedCapabilities: { [RUNTIME_CAPABILITY.sessionCollaboration]: 1 },
     signal: new AbortController().signal,
-    userId: randomUUID(),
     ...overrides,
   };
 }

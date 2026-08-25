@@ -18,10 +18,9 @@ describe("ImResourceFetcher", () => {
     homes.push(workspace);
     const openImResource = vi.fn(async () => new Response("resource-body"));
     const fetcher = new ImResourceFetcher({
-      computerId: randomUUID(),
       instanceId: randomUUID(),
       api: { openImResource },
-      tokenProvider: { getAccessTokenLease: async () => ({ accessToken: "token" }) as never },
+      machineToken: "machine-token",
     });
     const first = request();
     const second = { ...request(), imMessageId: first.imMessageId, content: first.content };
@@ -60,7 +59,7 @@ function request(): DirectImMessageDeliveryRequest {
       providerRef: {
         provider: "slack",
         appId: "app-1",
-        teamId: "team-1",
+        teamId: "workspace-1",
         botUserId: "bot-1",
         channelId: "channel-1",
         messageTs: "1710000000.000001",

@@ -9,7 +9,6 @@ import type {
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type WebSocket, WebSocketServer } from "ws";
-import type { AccessTokenProvider } from "../auth/token-provider.js";
 import { ClientRuntime } from "../runtime/client-runtime.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
@@ -55,11 +54,11 @@ describe("ClientRuntime domain dispatch", () => {
       new RuntimeConnection({
         arch: "arm64",
         clientVersion: "0.0.1",
-        computer: { version: 1, computerId, serverUrl: server.url, userId: randomUUID() },
+        computer: { version: 2, computerId, serverUrl: server.url },
         displayName: "workstation",
         instanceId: randomUUID(),
         platform: "darwin",
-        tokenProvider: tokenProvider(),
+        machineToken: "machine-token",
       }),
     );
     await runtime.run();
@@ -252,7 +251,7 @@ function delivery(deliveryId: string, requestId: string, _computerId: string) {
       providerRef: {
         provider: "slack",
         appId: "app-1",
-        teamId: "team-1",
+        teamId: "workspace-1",
         botUserId: "bot-1",
         channelId: "channel-1",
         messageTs: "1710000000.000001",
@@ -276,15 +275,6 @@ function snapshot(): EffectiveRuntimeSnapshot {
   };
 }
 
-function tokenProvider(): AccessTokenProvider {
-  return {
-    getAccessTokenLease: async () => ({
-      accessToken: "access",
-      expiresAt: new Date(Date.now() + 60_000).toISOString(),
-    }),
-  } as unknown as AccessTokenProvider;
-}
-
 function completeLegacyAuth(socket: WebSocket, frame: Record<string, unknown>): void {
   if (frame.protocolVersion !== 1) {
     socket.send(
@@ -303,8 +293,9 @@ function completeLegacyAuth(socket: WebSocket, frame: Record<string, unknown>): 
       type: "auth:result",
       requestId: frame.requestId,
       ok: true,
-      userId: randomUUID(),
-      tokenExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      workspaceComputerId: randomUUID(),
+      workspaceId: randomUUID(),
+      computerId: randomUUID(),
     }),
   );
   socket.send(

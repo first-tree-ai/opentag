@@ -107,7 +107,7 @@ export function validateOAuthNext(value?: string): string {
   ) {
     throw new AuthServiceError("AUTH_OAUTH_FAILED", "validation", "The sign-in destination is invalid", 400);
   }
-  if (/^\/(?:agents(?:\/[^?#]*)?|settings(?:\/[^?#]*)?|onboarding|teams\/new|login)(?:\?[^#]*)?$/.test(next)) {
+  if (/^\/(?:agents(?:\/[^?#]*)?|settings(?:\/[^?#]*)?|onboarding|workspaces\/new|login)(?:\?[^#]*)?$/.test(next)) {
     return next;
   }
   if (/^\/invites\/[A-Za-z0-9_-]{32,512}$/.test(next)) return next;

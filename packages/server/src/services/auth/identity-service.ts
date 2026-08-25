@@ -17,6 +17,11 @@ const ExternalIdentitySchema = z
 
 export type ExternalIdentity = z.infer<typeof ExternalIdentitySchema>;
 
+export interface ResolvedAccountIdentity {
+  accountWasCreated: boolean;
+  userId: string;
+}
+
 export class AuthIdentityService {
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
@@ -27,16 +32,17 @@ export class AuthIdentityService {
   }
 
   resolveOrCreate(identity: ExternalIdentity, expectedUserId?: string): Promise<string> {
-    return this.#database.transaction((transaction) =>
-      this.resolveOrCreateInTransaction(transaction, identity, expectedUserId),
-    );
+    return this.#database.transaction(async (transaction) => {
+      const resolved = await this.resolveOrCreateInTransaction(transaction, identity, expectedUserId);
+      return resolved.userId;
+    });
   }
 
   async resolveOrCreateInTransaction(
     transaction: DatabaseTransaction,
     rawIdentity: ExternalIdentity,
     expectedUserId?: string,
-  ): Promise<string> {
+  ): Promise<ResolvedAccountIdentity> {
     const identity = ExternalIdentitySchema.parse(rawIdentity);
     await transaction.execute(
       sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify([
@@ -70,7 +76,7 @@ export class AuthIdentityService {
         .set({ email: identity.email, updatedAt: now })
         .where(eq(authIdentities.id, existing.id));
       await transaction.update(users).set({ email: identity.email, updatedAt: now }).where(eq(users.id, user.id));
-      return user.id;
+      return { accountWasCreated: false, userId: user.id };
     }
     if (expectedUserId) {
       const [user] = await transaction.select().from(users).where(eq(users.id, expectedUserId)).limit(1).for("update");
@@ -86,7 +92,7 @@ export class AuthIdentityService {
         createdAt: now,
         updatedAt: now,
       });
-      return user.id;
+      return { accountWasCreated: false, userId: user.id };
     }
     const [user] = await transaction
       .insert(users)
@@ -102,7 +108,7 @@ export class AuthIdentityService {
       createdAt: now,
       updatedAt: now,
     });
-    return user.id;
+    return { accountWasCreated: true, userId: user.id };
   }
 
   #conflict(): AuthServiceError {

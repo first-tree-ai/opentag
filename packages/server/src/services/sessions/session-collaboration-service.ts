@@ -23,6 +23,7 @@ interface LocalAttempt {
   attemptCount: number;
   commandRequestId: string;
   computerId: string;
+  workspaceComputerId: string;
   instanceId: string;
   messageId: string;
   sessionId: string;
@@ -75,6 +76,7 @@ export class SessionCollaborationService {
         const created = await this.#sessions.createInternalSessionWithMessage({
           creatorSessionId: command.sourceSessionId,
           creatorComputerId: context.computerId,
+          creatorWorkspaceComputerId: context.workspaceComputerId,
           creatorPlacementGeneration: command.sourcePlacementGeneration,
           messageId,
           initialMessage: command.initialMessage.text,
@@ -87,6 +89,7 @@ export class SessionCollaborationService {
           messageId,
           sourceSessionId: command.sourceSessionId,
           sourceComputerId: context.computerId,
+          sourceWorkspaceComputerId: context.workspaceComputerId,
           sourcePlacementGeneration: command.sourcePlacementGeneration,
           targetSessionId: command.targetSessionId,
           content: command.content.text,
@@ -128,6 +131,7 @@ export class SessionCollaborationService {
       pending.messageId !== delivery.messageId ||
       pending.sessionId !== delivery.targetSessionId ||
       pending.computerId !== context.computerId ||
+      pending.workspaceComputerId !== context.workspaceComputerId ||
       pending.instanceId !== context.instanceId
     ) {
       return undefined;
@@ -148,11 +152,11 @@ export class SessionCollaborationService {
     const { route } = attempt;
     const attemptCount = attempt.attemptCount;
     if (attemptCount === null) throw new Error("A deduplicated Session message cannot be delivered again");
-    const targetInstanceId = this.#registry.currentInstanceId(route.targetComputerId);
+    const targetInstanceId = this.#registry.currentInstanceId(route.targetWorkspaceComputerId);
     if (
       !targetInstanceId ||
       !this.#registry.supportsCapability(
-        route.targetComputerId,
+        route.targetWorkspaceComputerId,
         targetInstanceId,
         RUNTIME_CAPABILITY.sessionCollaboration,
       )
@@ -165,7 +169,7 @@ export class SessionCollaborationService {
 
     let reconciled: SessionReconcileResult;
     try {
-      reconciled = await this.#domain.requestReconcile(route.targetComputerId, targetInstanceId, {
+      reconciled = await this.#domain.requestReconcile(route.targetWorkspaceComputerId, targetInstanceId, {
         type: "session:reconcile",
         requestId: randomUUID(),
         computerId: route.targetComputerId,
@@ -200,11 +204,12 @@ export class SessionCollaborationService {
       content: { kind: "text", text: attempt.message.content },
       runtime,
     };
-    if (route.targetComputerId === context.computerId && targetInstanceId === context.instanceId) {
+    if (route.targetWorkspaceComputerId === context.workspaceComputerId && targetInstanceId === context.instanceId) {
       this.#rememberLocal(delivery.requestId, {
         attemptCount,
         commandRequestId: command.requestId,
         computerId: context.computerId,
+        workspaceComputerId: context.workspaceComputerId,
         instanceId: context.instanceId,
         messageId: attempt.message.id,
         sessionId,
@@ -214,7 +219,7 @@ export class SessionCollaborationService {
 
     try {
       const delivered = await this.#domain.requestSessionMessageDelivery(
-        route.targetComputerId,
+        route.targetWorkspaceComputerId,
         targetInstanceId,
         delivery,
       );

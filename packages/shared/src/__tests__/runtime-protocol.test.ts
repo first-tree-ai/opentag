@@ -34,7 +34,7 @@ describe("runtime protocol", () => {
         type: "auth",
         requestId: crypto.randomUUID(),
         protocolVersion: RUNTIME_PROTOCOL_V1,
-        accessToken: "access",
+        machineToken: "machine",
         supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
       }),
     ).toThrow();
@@ -82,7 +82,7 @@ describe("runtime protocol", () => {
         providerReadiness: { version: 1, providers: ["codex"] },
       }),
     ).toMatchObject({ providerReadiness: { version: 1, providers: ["codex"] } });
-    expect(() => ClientRuntimeFrameSchema.parse({ ...register, teamId: crypto.randomUUID() })).toThrow();
+    expect(() => ClientRuntimeFrameSchema.parse({ ...register, workspaceId: crypto.randomUUID() })).toThrow();
   });
 
   it("validates extensible v2 offers while keeping security fields strict", () => {
@@ -109,7 +109,7 @@ describe("runtime protocol", () => {
         requestId: crypto.randomUUID(),
         protocolVersion: RUNTIME_PROTOCOL_V2,
         supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
-        accessToken: "access",
+        machineToken: "machine",
       }),
     ).toMatchObject({ protocolVersion: RUNTIME_PROTOCOL_V2 });
     expect(() =>

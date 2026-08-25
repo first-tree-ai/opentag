@@ -6,26 +6,22 @@ import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { DirectImMessageDeliveryRequest } from "@opentag/shared";
 import type { OpenTagApi } from "../api.js";
-import type { AccessTokenProvider } from "../auth/token-provider.js";
 
 const MAX_RESOURCE_BYTES = 25 * 1024 * 1024;
 
 export class ImResourceFetcher {
   readonly #api?: Pick<OpenTagApi, "openImResource">;
-  readonly #computerId: string;
   readonly #instanceId: string;
-  readonly #tokens?: Pick<AccessTokenProvider, "getAccessTokenLease">;
+  readonly #machineToken?: string;
 
   constructor(input: {
-    computerId: string;
     instanceId: string;
     api?: Pick<OpenTagApi, "openImResource">;
-    tokenProvider?: Pick<AccessTokenProvider, "getAccessTokenLease">;
+    machineToken?: string;
   }) {
     this.#api = input.api;
-    this.#computerId = input.computerId;
     this.#instanceId = input.instanceId;
-    this.#tokens = input.tokenProvider;
+    this.#machineToken = input.machineToken;
   }
 
   async fetchForTurn(request: DirectImMessageDeliveryRequest, workspace: string): Promise<string | undefined> {
@@ -38,7 +34,7 @@ export class ImResourceFetcher {
         lines.push(`- ${resourceLabel}: unavailable (${resource.availability})`);
         continue;
       }
-      if (!this.#api || !this.#tokens) {
+      if (!this.#api || !this.#machineToken) {
         lines.push(`- ${resourceLabel}: unavailable (runtime resource client is not configured)`);
         continue;
       }
@@ -55,10 +51,8 @@ export class ImResourceFetcher {
         } catch {
           // A complete target is published only after a private temporary download succeeds.
         }
-        const lease = await this.#tokens.getAccessTokenLease();
-        const response = await this.#api.openImResource(lease.accessToken, resource.imMessageId, resource.ordinal, {
+        const response = await this.#api.openImResource(this.#machineToken, resource.imMessageId, resource.ordinal, {
           sessionId: request.sessionId,
-          computerId: this.#computerId,
           instanceId: this.#instanceId,
           placementGeneration: request.placementGeneration,
         });

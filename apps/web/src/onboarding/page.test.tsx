@@ -1,13 +1,11 @@
 import type {
   AgentAdminConfig,
   AgentListItem,
-  Computer,
   CreateAgentRequest,
   ImBindingHandoffStatus,
-  MeMembership,
-  TeamComputerSummary,
-  TeamMemberSummary,
+  MeWorkspace,
   UserProfile,
+  WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,45 +14,47 @@ import { browserApi } from "../api.js";
 import { OnboardingPage } from "./page.js";
 import type { RuntimeFactsAdapter, RuntimeFactsResult, RuntimeProviderStatus } from "./runtime-facts.js";
 
-const teamId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
+const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const computerAId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const computerBId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 
 const user: UserProfile = { id: userId, email: "ada@example.com", displayName: "Ada" };
-const admin: MeMembership = {
-  teamId,
-  teamName: "example",
-  teamDisplayName: "Example",
-  role: "admin",
+const admin: MeWorkspace = {
+  id: workspaceId,
+  name: "example",
+  displayName: "Example",
   setupCompletedAt: null,
+  grantedAt: "2026-08-20T00:00:00.000Z",
 };
-const member: MeMembership = { ...admin, role: "member" };
-const computerA: TeamComputerSummary = {
-  id: computerAId,
-  ownerUserId: userId,
-  ownerDisplayName: "Ada",
+const computerA: WorkspaceComputerSummary = {
+  computerId: computerAId,
   displayName: "Ada's Mac",
   platform: "darwin",
   connectionStatus: "online",
   connectedAt: "2026-08-20T00:00:00.000Z",
   lastSeenAt: "2026-08-20T00:00:00.000Z",
   observedAt: "2026-08-20T00:00:00.000Z",
+  enrolledAt: "2026-08-20T00:00:00.000Z",
   agentIds: [],
 };
-const computerB: TeamComputerSummary = {
+const computerB: WorkspaceComputerSummary = {
   ...computerA,
-  id: computerBId,
+  computerId: computerBId,
   displayName: "Studio Mac",
 };
 const agent: AgentListItem = {
   id: agentId,
-  teamId,
+  workspaceId,
   name: "opentag",
   displayName: "OpenTag",
-  manager: { userId, displayName: "Ada" },
-  computer: { id: computerAId, displayName: computerA.displayName, platform: "darwin" },
+  createdBy: { userId, displayName: "Ada" },
+  computer: {
+    computerId: computerAId,
+    displayName: computerA.displayName,
+    platform: "darwin",
+  },
   runtimeProvider: "codex",
   receiveMode: "mention_only",
   status: "active",
@@ -67,7 +67,7 @@ const agent: AgentListItem = {
 function adminConfig(): AgentAdminConfig {
   return {
     id: agent.id,
-    teamId,
+    workspaceId,
     name: agent.name,
     displayName: agent.displayName,
     runtimeProvider: agent.runtimeProvider,
@@ -75,7 +75,7 @@ function adminConfig(): AgentAdminConfig {
     status: "active",
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,
-    managerUserId: userId,
+    createdByUserId: userId,
     computerId: computerAId,
     revision: 1,
     runtimeConfig: {
@@ -107,29 +107,22 @@ function installFacts({
   agents = [],
   computers = [],
   handoff,
-  members = [],
 }: {
   agents?: AgentListItem[];
-  computers?: TeamComputerSummary[];
+  computers?: WorkspaceComputerSummary[];
   handoff?: ImBindingHandoffStatus;
-  members?: TeamMemberSummary[];
 } = {}) {
   vi.spyOn(browserApi, "computers").mockResolvedValue({ computers });
   vi.spyOn(browserApi, "agents").mockResolvedValue({ agents });
   vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(handoff);
-  vi.spyOn(browserApi, "members").mockResolvedValue({ members });
   vi.spyOn(browserApi, "logout").mockResolvedValue();
-}
-
-function teamAdmin(displayName: string, id: string): TeamMemberSummary {
-  return { userId: id, displayName, role: "admin" };
 }
 
 function renderPage({
   membership = admin,
   runtime = unavailableRuntime(),
 }: {
-  membership?: MeMembership;
+  membership?: MeWorkspace;
   runtime?: RuntimeFactsAdapter;
 } = {}) {
   return render(<OnboardingPage membership={membership} runtimeFacts={runtime} user={user} />);
@@ -306,7 +299,7 @@ describe("OnboardingPage", () => {
     render(<OnboardingPage membership={admin} onSetupReady={onSetupReady} user={user} />);
 
     await waitFor(() => expect(onSetupReady).toHaveBeenCalledWith(agentId));
-    expect(screen.getByRole("heading", { name: "Finishing Team setup" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Finishing Workspace setup" })).toBeTruthy();
   });
 
   it("hands a completed setup over to the Agent it created", async () => {
@@ -517,100 +510,6 @@ describe("OnboardingPage", () => {
     expect(screen.getByText(/mention OpenTag with your first task/)).toBeTruthy();
   });
 
-  it("shows members the same factual handoff progress without configuration controls", async () => {
-    installFacts({ agents: [agent], computers: [computerA] });
-    renderPage({
-      membership: member,
-      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]),
-    });
-    expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
-    expect(screen.getByText("Read only")).toBeTruthy();
-    expect(screen.getByText(/An admin can complete this action/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Feishu/ })).toBeNull();
-  });
-
-  it("shows members the Team-wide runnable route in both the action and preparation summary", async () => {
-    const ownerAdminId = "00000001-0000-4000-8000-000000000001";
-    const adminComputer = {
-      ...computerA,
-      ownerUserId: ownerAdminId,
-      ownerDisplayName: "Grace",
-      displayName: "Grace's Mac",
-    };
-    installFacts({ computers: [adminComputer], members: [teamAdmin("Grace", ownerAdminId)] });
-    renderPage({
-      membership: member,
-      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]),
-    });
-
-    expect(await screen.findByRole("heading", { name: "Create the Agent" })).toBeTruthy();
-    expect(screen.getByText(/Codex on Grace's Mac/)).toBeTruthy();
-    const summary = screen.getByRole("region", { name: "Agent preparation summary" });
-    expect(summary.textContent).toContain("ComputerGrace's Mac");
-    expect(summary.textContent).toContain("RuntimeCodex");
-    expect(screen.getByText("Ready to create")).toBeTruthy();
-  });
-
-  it.each([
-    [["Ada"], "Ask an admin to continue: Ada."],
-    [["Ada", "Grace"], "Ask an admin to continue: Ada or Grace."],
-    [["Ada", "Grace", "Linus"], "Ask an admin to continue: Ada, Grace, or 1 more."],
-    [["Ada", "Grace", "Linus", "Ken"], "Ask an admin to continue: Ada, Grace, or 2 more."],
-  ])("names the admins a member can ask", async (names, expected) => {
-    installFacts({
-      agents: [agent],
-      computers: [computerA],
-      members: [
-        ...names.map((name, index) => teamAdmin(name, `0000000${index}-0000-4000-8000-00000000000${index}`)),
-        { userId, displayName: "Ada Member", role: "member" },
-      ],
-    });
-    renderPage({
-      membership: member,
-      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]),
-    });
-
-    expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
-    expect(screen.getByText(`${expected} Your factual progress will update here.`)).toBeTruthy();
-  });
-
-  it("does not claim a named admin can finish a step tied to one Computer owner", async () => {
-    const ownerAdminId = "00000001-0000-4000-8000-000000000001";
-    installFacts({
-      computers: [{ ...computerA, ownerUserId: ownerAdminId, ownerDisplayName: "Ada" }],
-      members: [teamAdmin("Ada", ownerAdminId), teamAdmin("Grace", "00000002-0000-4000-8000-000000000002")],
-    });
-    renderPage({
-      membership: member,
-      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false }]),
-    });
-
-    expect(await screen.findByRole("heading", { name: "Prepare Codex or Claude Code" })).toBeTruthy();
-    expect(screen.getByText(/Ask an admin to continue: Ada or Grace\./)).toBeTruthy();
-    expect(screen.queryByText(/can complete this action/)).toBeNull();
-  });
-
-  it("keeps a member's facts readable when the member list is unavailable", async () => {
-    installFacts({ agents: [agent], computers: [computerA] });
-    vi.spyOn(browserApi, "members").mockRejectedValue(new Error("Members unavailable"));
-    renderPage({
-      membership: member,
-      runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]),
-    });
-
-    expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
-    expect(screen.getByText(/An admin can complete this action/)).toBeTruthy();
-  });
-
-  it("does not ask for the member list when the viewer manages the Team", async () => {
-    installFacts({ agents: [agent], computers: [computerA] });
-    const members = vi.spyOn(browserApi, "members");
-    renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]) });
-
-    expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
-    expect(members).not.toHaveBeenCalled();
-  });
-
   it("keeps OpenTag editable and waits for the explicit Agent creation action", async () => {
     installFacts({ computers: [computerA] });
     const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
@@ -624,7 +523,7 @@ describe("OnboardingPage", () => {
 
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith(
-        teamId,
+        workspaceId,
         expect.objectContaining({ displayName: "Research Partner", name: "research-partner" }),
       ),
     );
@@ -651,7 +550,7 @@ describe("OnboardingPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith(
-        teamId,
+        workspaceId,
         expect.objectContaining({ computerId: computerAId, runtimeProvider: "claude-code" }),
       ),
     );
@@ -679,7 +578,7 @@ describe("OnboardingPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith(
-        teamId,
+        workspaceId,
         expect.objectContaining({ computerId: computerAId, runtimeProvider: "claude-code" }),
       ),
     );
@@ -691,7 +590,7 @@ describe("OnboardingPage", () => {
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computerA] });
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
     const requests: CreateAgentRequest[] = [];
-    vi.spyOn(browserApi, "createAgent").mockImplementation(async (_teamId, request) => {
+    vi.spyOn(browserApi, "createAgent").mockImplementation(async (_workspaceId, request) => {
       requests.push(request);
       if (requests.length === 1) throw new Error("Response was lost");
       serverAgents = [agent];
@@ -714,7 +613,7 @@ describe("OnboardingPage", () => {
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computerA] });
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
     const requests: CreateAgentRequest[] = [];
-    const create = vi.spyOn(browserApi, "createAgent").mockImplementation(async (_teamId, request) => {
+    const create = vi.spyOn(browserApi, "createAgent").mockImplementation(async (_workspaceId, request) => {
       requests.push(request);
       if (requests.length === 1) throw new Error("Connection closed before the response");
       serverAgents = [agent];
@@ -724,7 +623,7 @@ describe("OnboardingPage", () => {
     const firstPage = renderPage({ runtime });
     fireEvent.click(await screen.findByRole("button", { name: "Create Agent" }));
     expect((await screen.findByRole("alert")).textContent).toBe("Connection closed before the response");
-    const durableRecord = window.localStorage.getItem(`opentag.agent-creation.intent:${teamId}`);
+    const durableRecord = window.localStorage.getItem(`opentag.agent-creation.intent:${workspaceId}`);
     expect(durableRecord).toBeTruthy();
 
     firstPage.unmount();
@@ -732,7 +631,7 @@ describe("OnboardingPage", () => {
     expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
     expect(create).toHaveBeenCalledTimes(2);
     expect(requests[0]?.creationIntentId).toBe(requests[1]?.creationIntentId);
-    expect(window.localStorage.getItem(`opentag.agent-creation.intent:${teamId}`)).toBeNull();
+    expect(window.localStorage.getItem(`opentag.agent-creation.intent:${workspaceId}`)).toBeNull();
   });
 
   it("uses one logical create across parallel page controllers", async () => {
@@ -757,7 +656,7 @@ describe("OnboardingPage", () => {
   it("keeps distinct concurrent creation intents isolated", async () => {
     const requests: CreateAgentRequest[] = [];
     let betaAttempts = 0;
-    vi.spyOn(browserApi, "createAgent").mockImplementation(async (_teamId, request) => {
+    vi.spyOn(browserApi, "createAgent").mockImplementation(async (_workspaceId, request) => {
       requests.push(request);
       if (request.displayName === "Beta" && betaAttempts++ === 0) throw new Error("Beta response was lost");
       return adminConfig();
@@ -774,14 +673,14 @@ describe("OnboardingPage", () => {
         <AgentCreationFlow
           facts={facts}
           initialDisplayName="Alpha"
-          teamId={teamId}
+          workspaceId={workspaceId}
           onCreated={alphaCreated}
           onRefresh={() => undefined}
         />
         <AgentCreationFlow
           facts={facts}
           initialDisplayName="Beta"
-          teamId={teamId}
+          workspaceId={workspaceId}
           onCreated={betaCreated}
           onRefresh={() => undefined}
         />
@@ -798,7 +697,7 @@ describe("OnboardingPage", () => {
     await waitFor(() => expect(alphaCreated).toHaveBeenCalledTimes(1));
     expect((await screen.findByRole("alert")).textContent).toContain("Beta response was lost");
     const betaRequest = requests.find((request) => request.displayName === "Beta");
-    const stored = JSON.parse(String(window.localStorage.getItem(`opentag.agent-creation.intent:${teamId}`))) as {
+    const stored = JSON.parse(String(window.localStorage.getItem(`opentag.agent-creation.intent:${workspaceId}`))) as {
       records: { creationIntentId: string }[];
     };
     expect(stored.records).toHaveLength(1);
@@ -809,30 +708,26 @@ describe("OnboardingPage", () => {
     const betaRequests = requests.filter((request) => request.displayName === "Beta");
     expect(betaRequests).toHaveLength(2);
     expect(betaRequests[1]?.creationIntentId).toBe(betaRequests[0]?.creationIntentId);
-    expect(window.localStorage.getItem(`opentag.agent-creation.intent:${teamId}`)).toBeNull();
+    expect(window.localStorage.getItem(`opentag.agent-creation.intent:${workspaceId}`)).toBeNull();
   });
 
   it("reloads Server facts after Computer setup succeeds", async () => {
     vi.useFakeTimers();
     vi.setSystemTime("2026-08-20T00:00:00.000Z");
-    const computers = vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
+    const computers = vi.spyOn(browserApi, "computers");
     vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [] });
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
-    const connectedComputer: Computer = {
-      id: computerAId,
-      ownerUserId: userId,
-      displayName: computerA.displayName,
-      platform: "darwin",
-      arch: "arm64",
-      clientVersion: "0.0.1",
-      connectionStatus: "online",
+    const connectedComputer: WorkspaceComputerSummary = {
+      ...computerA,
       connectedAt: "2026-08-20T00:00:01.000Z",
       lastSeenAt: "2026-08-20T00:00:01.000Z",
+      observedAt: "2026-08-20T00:00:01.000Z",
     };
-    vi.spyOn(browserApi, "ownComputers")
+    computers
+      .mockResolvedValueOnce({ computers: [] })
       .mockResolvedValueOnce({ computers: [] })
       .mockResolvedValue({ computers: [connectedComputer] });
-    vi.spyOn(browserApi, "issueConnectCode").mockResolvedValue({
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       bootstrapCommand: "opentag connect --code one-time-code",
       expiresIn: 900,
       issuedAt: "2026-08-20T00:00:00.000Z",
@@ -852,7 +747,7 @@ describe("OnboardingPage", () => {
       await vi.advanceTimersByTimeAsync(1_500);
     });
 
-    expect(computers.mock.calls.length).toBeGreaterThan(1);
+    expect(computers.mock.calls.length).toBeGreaterThanOrEqual(4);
   });
 
   it("reloads Server facts after Feishu setup succeeds", async () => {
@@ -876,8 +771,8 @@ describe("OnboardingPage", () => {
   });
 
   it("deduplicates rapid fact refreshes and reports the pending state", async () => {
-    let finishRefresh: ((value: { computers: TeamComputerSummary[] }) => void) | undefined;
-    const pendingComputers = new Promise<{ computers: TeamComputerSummary[] }>((resolve) => {
+    let finishRefresh: ((value: { computers: WorkspaceComputerSummary[] }) => void) | undefined;
+    const pendingComputers = new Promise<{ computers: WorkspaceComputerSummary[] }>((resolve) => {
       finishRefresh = resolve;
     });
     const computers = vi
@@ -905,8 +800,8 @@ describe("OnboardingPage", () => {
   });
 
   it("keeps ready route selection usable when localStorage throws", async () => {
-    const storageTeamId = "a3fda800-7ce2-4338-aae8-3d2120401ed6";
-    const storageAdmin = { ...admin, teamId: storageTeamId };
+    const storageWorkspaceId = "a3fda800-7ce2-4338-aae8-3d2120401ed6";
+    const storageAdmin = { ...admin, id: storageWorkspaceId };
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("Storage unavailable");
     });
@@ -931,19 +826,21 @@ describe("OnboardingPage", () => {
   });
 
   it("publishes an explicit Agent choice for the route URL anchor", async () => {
-    const storageTeamId = "b3fda800-7ce2-4338-aae8-3d2120401ed6";
-    const storageAdmin = { ...admin, teamId: storageTeamId };
+    const storageWorkspaceId = "b3fda800-7ce2-4338-aae8-3d2120401ed6";
+    const storageAdmin = { ...admin, id: storageWorkspaceId };
     const researchAgent: AgentListItem = {
       ...agent,
       id: "2a63a21e-f6c7-4474-91ea-4dabf0566a24",
-      teamId: storageTeamId,
+      workspaceId: storageWorkspaceId,
       name: "research",
       displayName: "Research Agent",
     };
     const handoff = vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
     const onTargetAgentChange = vi.fn();
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computerA] });
-    vi.spyOn(browserApi, "agents").mockResolvedValue({ agents: [{ ...agent, teamId: storageTeamId }, researchAgent] });
+    vi.spyOn(browserApi, "agents").mockResolvedValue({
+      agents: [{ ...agent, workspaceId: storageWorkspaceId }, researchAgent],
+    });
     vi.spyOn(browserApi, "logout").mockResolvedValue();
 
     render(

@@ -15,7 +15,7 @@ import {
   verifyDatabaseMigrations,
   withMigrationLock,
 } from "../../db/migrate.js";
-import { connectCodes, memberships, teams, users } from "../../db/schema/index.js";
+import { accountCliLoginCodes, users, workspaceAdminGrants, workspaces } from "../../db/schema/index.js";
 import {
   AuthService,
   AuthServiceError,
@@ -51,6 +51,7 @@ beforeEach(async () => {
 });
 
 async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z"), authTokens?: AuthTokenProvider) {
+  let currentNow = now;
   await migrateDatabase(databaseUrl, migrationsFolder);
   const client = createDatabaseClient(databaseUrl);
   const bootstrap = await bootstrapInitialAdmin(
@@ -58,19 +59,26 @@ async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z"), aut
     {
       displayName: "Admin",
       email: "admin@example.com",
-      teamDisplayName: "Example",
-      teamName: "example",
+      workspaceDisplayName: "Example",
+      workspaceName: "example",
     },
     now,
   );
   const auth = new AuthService(
     client.database,
-    authTokens ?? new AuthTokenService(jwtSecret, 900, 3600, { now: () => now }),
+    authTokens ?? new AuthTokenService(jwtSecret, 900, 3600, { now: () => currentNow }),
     {
-      now: () => now,
+      now: () => currentNow,
     },
   );
-  return { auth, bootstrap, ...client };
+  return {
+    auth,
+    bootstrap,
+    setNow: (value: Date) => {
+      currentNow = value;
+    },
+    ...client,
+  };
 }
 
 describe("database migrations", () => {
@@ -79,13 +87,14 @@ describe("database migrations", () => {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    expect(journal.entries.slice(-6).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    expect(journal.entries.slice(-7).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 10, tag: "0010_optimal_jazinda" },
       { idx: 11, tag: "0011_staging_team_setup_repair" },
       { idx: 12, tag: "0012_supreme_maddog" },
       { idx: 13, tag: "0013_bizarre_gamma_corps" },
       { idx: 14, tag: "0014_illegal_wolfsbane" },
       { idx: 15, tag: "0015_spotty_machine_man" },
+      { idx: 16, tag: "0016_certain_revanche" },
     ]);
   });
 
@@ -283,13 +292,75 @@ describe("database migrations", () => {
         select count(*)::int as table_count
         from information_schema.tables
         where table_schema = 'public' and table_name in (
-          'users', 'teams', 'memberships', 'connect_codes', 'computers', 'agents',
-          'auth_identities', 'invitations', 'invitation_redemptions'
+          'users', 'workspaces', 'workspace_admin_grants', 'account_cli_login_codes', 'computers',
+          'workspace_computers', 'agents', 'auth_identities', 'admin_invitations'
         )
       `;
       expect(row?.table_count).toBe(9);
     } finally {
       await sql.end();
+    }
+  });
+
+  it("rejects a deployed Team whose only active Admin account is suspended", async () => {
+    const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0015-migrations-"));
+    const legacyMeta = join(legacyFolder, "meta");
+    await mkdir(legacyMeta);
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+      version: string;
+      dialect: string;
+      entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
+    };
+    const legacyEntries = journal.entries.filter(({ idx }) => idx <= 15);
+    for (const entry of legacyEntries) {
+      await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(legacyFolder, `${entry.tag}.sql`));
+    }
+    await writeFile(join(legacyMeta, "_journal.json"), JSON.stringify({ ...journal, entries: legacyEntries }, null, 2));
+
+    try {
+      await migrateDatabase(databaseUrl, legacyFolder);
+      const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      try {
+        const userId = crypto.randomUUID();
+        const teamId = crypto.randomUUID();
+        await sql`
+          insert into users (id, email, display_name, suspended_at)
+          values (${userId}, 'suspended-migration@example.com', 'Suspended Migration Admin', now())
+        `;
+        await sql`insert into teams (id, name, display_name) values (${teamId}, 'suspended', 'Suspended')`;
+        await sql`
+          insert into memberships (team_id, user_id, role, status)
+          values (${teamId}, ${userId}, 'admin', 'active')
+        `;
+
+        await expect(migrateDatabase(databaseUrl, migrationsFolder)).rejects.toThrow(
+          "Workspace cutover requires at least one active Admin per legacy Team",
+        );
+        const [state] = await sql<
+          {
+            migration_count: number;
+            grants_table: string | null;
+            memberships_table: string | null;
+            workspaces_table: string | null;
+          }[]
+        >`
+          select
+            (select count(*)::int from drizzle.__drizzle_migrations) as migration_count,
+            to_regclass('public.memberships')::text as memberships_table,
+            to_regclass('public.workspace_admin_grants')::text as grants_table,
+            to_regclass('public.workspaces')::text as workspaces_table
+        `;
+        expect(state).toEqual({
+          migration_count: 16,
+          grants_table: null,
+          memberships_table: "memberships",
+          workspaces_table: null,
+        });
+      } finally {
+        await sql.end();
+      }
+    } finally {
+      await rm(legacyFolder, { force: true, recursive: true });
     }
   });
 
@@ -428,33 +499,76 @@ describe("database migrations", () => {
         ]);
 
         const userId = crypto.randomUUID();
+        const suspendedUserId = crypto.randomUUID();
         const teamId = crypto.randomUUID();
         const controlTeamId = crypto.randomUUID();
-        const computerId = crypto.randomUUID();
+        const activeAgentComputerId = crypto.randomUUID();
+        const deletedAgentComputerId = crypto.randomUUID();
+        const activeSessionComputerId = crypto.randomUUID();
+        const endedSessionComputerId = crypto.randomUUID();
         const activeAgentId = "6eb89d85-0f12-4962-8465-518071f1d3e9";
         const deletedAgentId = crypto.randomUUID();
+        const imBindingId = crypto.randomUUID();
+        const activeSessionId = crypto.randomUUID();
+        const endedSessionId = crypto.randomUUID();
         await sql`insert into users (id, email, display_name) values (${userId}, 'migration@example.com', 'Migration')`;
+        await sql`
+          insert into users (id, email, display_name, suspended_at)
+          values (${suspendedUserId}, 'suspended@example.com', 'Suspended', now())
+        `;
         await sql`insert into teams (id, name, display_name) values (${teamId}, 'migration', 'Migration')`;
         await sql`
           insert into teams (id, name, display_name)
           values (${controlTeamId}, 'migration-control', 'Migration Control')
         `;
-        await sql`insert into memberships (team_id, user_id, role) values (${teamId}, ${userId}, 'admin')`;
+        await sql`
+          insert into memberships (team_id, user_id, role)
+          values
+            (${teamId}, ${userId}, 'admin'),
+            (${teamId}, ${suspendedUserId}, 'admin'),
+            (${controlTeamId}, ${userId}, 'admin')
+        `;
         await sql`
           insert into computers (id, owner_user_id, display_name, platform, arch, client_version)
-          values (${computerId}, ${userId}, 'Migration Computer', 'linux', 'x64', '0.0.1')
+          values
+            (${activeAgentComputerId}, ${userId}, 'Active Agent Computer', 'linux', 'x64', '0.0.1'),
+            (${deletedAgentComputerId}, ${userId}, 'Deleted Agent Computer', 'linux', 'x64', '0.0.1'),
+            (${activeSessionComputerId}, ${userId}, 'Active Session Computer', 'linux', 'x64', '0.0.1'),
+            (${endedSessionComputerId}, ${userId}, 'Ended Session Computer', 'linux', 'x64', '0.0.1')
         `;
         await sql`
           insert into agents (id, team_id, manager_user_id, computer_id, name, display_name, runtime_provider)
-          values (${activeAgentId}, ${teamId}, ${userId}, ${computerId}, 'active-agent', 'Active Agent', 'codex')
+          values (
+            ${activeAgentId}, ${teamId}, ${userId}, ${activeAgentComputerId},
+            'active-agent', 'Active Agent', 'codex'
+          )
         `;
         await sql`
           insert into agents (
             id, team_id, manager_user_id, computer_id, name, display_name, runtime_provider, deleted_at
           )
           values (
-            ${deletedAgentId}, ${teamId}, ${userId}, ${computerId}, 'deleted-agent', 'Deleted Agent', 'codex', now()
+            ${deletedAgentId}, ${teamId}, ${userId}, ${deletedAgentComputerId},
+            'deleted-agent', 'Deleted Agent', 'codex', now()
           )
+        `;
+        await sql`
+          insert into im_bindings (id, agent_id, provider, status)
+          values (${imBindingId}, ${activeAgentId}, 'slack', 'provisioning')
+        `;
+        await sql`
+          insert into sessions (
+            id, im_binding_id, channel_id, conversation_kind, kind, ended_at
+          )
+          values
+            (${activeSessionId}, ${imBindingId}, 'active-channel', 'channel', 'channel', null),
+            (${endedSessionId}, ${imBindingId}, 'ended-channel', 'channel', 'channel', now())
+        `;
+        await sql`
+          insert into session_placements (session_id, computer_id, generation)
+          values
+            (${activeSessionId}, ${activeSessionComputerId}, 1),
+            (${endedSessionId}, ${endedSessionComputerId}, 1)
         `;
 
         await migrateDatabase(databaseUrl, migrationsFolder);
@@ -468,6 +582,10 @@ describe("database migrations", () => {
             receive_mode_default: string | null;
             statuses: string[];
             receive_modes: string[];
+            workspace_enrollments: number;
+            machine_credentials: number;
+            enrollment_presence_offline: boolean;
+            creator_owner_constraint_removed: boolean;
           }[]
         >`
           select
@@ -482,7 +600,7 @@ describe("database migrations", () => {
             ) as deleted_at_exists,
             exists(
               select 1 from information_schema.columns
-              where table_schema = 'public' and table_name = 'teams' and column_name = 'setup_completed_at'
+              where table_schema = 'public' and table_name = 'workspaces' and column_name = 'setup_completed_at'
             ) as setup_completed_at_exists,
             (
               select column_default from information_schema.columns
@@ -493,10 +611,23 @@ describe("database migrations", () => {
               where table_schema = 'public' and table_name = 'agents' and column_name = 'receive_mode'
             ) as receive_mode_default,
             array(select status::text from agents order by name) as statuses,
-            array(select receive_mode::text from agents order by name) as receive_modes
+            array(select receive_mode::text from agents order by name) as receive_modes,
+            (
+              select count(*)::int from workspace_computers
+              where workspace_id = ${teamId}
+            ) as workspace_enrollments,
+            (select count(*)::int from workspace_computer_credentials) as machine_credentials,
+            not exists(
+              select 1 from workspace_computers
+              where current_instance_id is not null or connected_at is not null
+            ) as enrollment_presence_offline,
+            not exists(
+              select 1 from pg_constraint
+              where conrelid = 'agents'::regclass and conname = 'agents_manager_computer_owner_fk'
+            ) as creator_owner_constraint_removed
         `;
         expect(lifecycle).toEqual({
-          count: 16,
+          count: 17,
           creation_intents_null: true,
           deleted_at_exists: false,
           setup_completed_at_exists: true,
@@ -504,16 +635,63 @@ describe("database migrations", () => {
           receive_mode_default: "'all_message'::agent_receive_mode",
           statuses: ["active", "deleted"],
           receive_modes: ["mention_only", "mention_only"],
+          workspace_enrollments: 4,
+          machine_credentials: 0,
+          enrollment_presence_offline: true,
+          creator_owner_constraint_removed: true,
         });
-        const repairedTeams = await sql<{ completed: boolean; name: string }[]>`
+        const enrollmentStates = await sql<
+          {
+            computer_id: string;
+            current_instance_id: string | null;
+            revoked_at: Date | null;
+            revoked_by_user_id: string | null;
+          }[]
+        >`
+          select computer_id, current_instance_id, revoked_at, revoked_by_user_id
+          from workspace_computers
+          where workspace_id = ${teamId}
+        `;
+        const statesByComputer = new Map(enrollmentStates.map((row) => [row.computer_id, row]));
+        for (const computerId of [activeAgentComputerId, activeSessionComputerId]) {
+          expect(statesByComputer.get(computerId)).toMatchObject({
+            current_instance_id: null,
+            revoked_at: null,
+            revoked_by_user_id: null,
+          });
+        }
+        for (const computerId of [deletedAgentComputerId, endedSessionComputerId]) {
+          expect(statesByComputer.get(computerId)).toMatchObject({
+            current_instance_id: null,
+            revoked_at: expect.any(Date),
+            revoked_by_user_id: userId,
+          });
+        }
+        const preservedComputerIds = await sql<{ id: string }[]>`
+          select id from computers
+          where id in (
+            ${activeAgentComputerId}, ${deletedAgentComputerId},
+            ${activeSessionComputerId}, ${endedSessionComputerId}
+          )
+        `;
+        expect(preservedComputerIds).toHaveLength(4);
+        const preservedAgentIds = await sql<{ id: string }[]>`
+          select id from agents where id in (${activeAgentId}, ${deletedAgentId})
+        `;
+        expect(preservedAgentIds).toHaveLength(2);
+        const repairedWorkspaces = await sql<{ completed: boolean; name: string }[]>`
           select name, setup_completed_at is not null as completed
-          from teams
+          from workspaces
           order by name
         `;
-        expect(repairedTeams).toEqual([
+        expect(repairedWorkspaces).toEqual([
           { completed: true, name: "migration" },
           { completed: false, name: "migration-control" },
         ]);
+        const migratedAdmins = await sql<{ user_id: string }[]>`
+          select user_id::text from workspace_admin_grants where workspace_id = ${teamId} order by user_id
+        `;
+        expect(migratedAdmins).toEqual([{ user_id: userId }]);
         const [agentStatusEnum] = await sql<{ values: string[] }[]>`
           select array_agg(enumlabel order by enumsortorder)::text[] as values
           from pg_enum join pg_type on pg_type.oid = pg_enum.enumtypid
@@ -521,7 +699,7 @@ describe("database migrations", () => {
         `;
         expect(agentStatusEnum?.values).toEqual(["active", "suspended", "deleted"]);
         const [agentNameIndex] = await sql<{ indexdef: string }[]>`
-          select indexdef from pg_indexes where indexname = 'agents_team_name_active_unique'
+          select indexdef from pg_indexes where indexname = 'agents_workspace_name_active_unique'
         `;
         expect(agentNameIndex?.indexdef).toContain("status <> 'deleted'::agent_status");
         const [creationIntentIndex] = await sql<{ indexdef: string }[]>`
@@ -533,7 +711,7 @@ describe("database migrations", () => {
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(16);
+        expect(rerun?.count).toBe(17);
       } finally {
         await sql.end();
       }
@@ -631,8 +809,8 @@ describe("authentication persistence", () => {
     const input = {
       displayName: "Admin",
       email: "admin@example.com",
-      teamDisplayName: "Example",
-      teamName: "example",
+      workspaceDisplayName: "Example",
+      workspaceName: "example",
     };
 
     try {
@@ -658,8 +836,8 @@ describe("authentication persistence", () => {
           connectCodeTtlSeconds: 0,
           displayName: "   ",
           email: "not-an-email",
-          teamDisplayName: "   ",
-          teamName: "Not Valid",
+          workspaceDisplayName: "   ",
+          workspaceName: "Not Valid",
         }),
       ).rejects.toThrow();
       expect(await client.database.select().from(users)).toHaveLength(0);
@@ -667,13 +845,16 @@ describe("authentication persistence", () => {
       const result = await bootstrapInitialAdmin(client.database, {
         displayName: "  Admin  ",
         email: "  ADMIN@EXAMPLE.COM  ",
-        teamDisplayName: "  Example  ",
-        teamName: "  EXAMPLE  ",
+        workspaceDisplayName: "  Example  ",
+        workspaceName: "  EXAMPLE  ",
       });
       const [storedUser] = await client.database.select().from(users).where(eq(users.id, result.userId));
-      const [storedTeam] = await client.database.select().from(teams).where(eq(teams.id, result.teamId));
+      const [storedWorkspace] = await client.database
+        .select()
+        .from(workspaces)
+        .where(eq(workspaces.id, result.workspaceId));
       expect(storedUser).toMatchObject({ displayName: "Admin", email: "admin@example.com" });
-      expect(storedTeam).toMatchObject({ displayName: "Example", name: "example" });
+      expect(storedWorkspace).toMatchObject({ displayName: "Example", name: "example" });
     } finally {
       await client.sql.end();
     }
@@ -683,15 +864,15 @@ describe("authentication persistence", () => {
     const fixture = await createAuthFixture();
     try {
       const tokens = await fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode);
-      const [storedCode] = await fixture.database.select().from(connectCodes);
-      expect(storedCode?.codeHash).toBe(hashSecret(fixture.bootstrap.connectCode));
-      expect(storedCode?.codeHash).not.toBe(fixture.bootstrap.connectCode);
+      const [storedCode] = await fixture.database.select().from(accountCliLoginCodes);
+      expect(storedCode?.tokenHash).toBe(hashSecret(fixture.bootstrap.connectCode));
+      expect(storedCode?.tokenHash).not.toBe(fixture.bootstrap.connectCode);
       for (const token of [tokens.accessToken, tokens.refreshToken]) {
         const claims = decodeJwt(token);
         expect(claims.sub).toBe(fixture.bootstrap.userId);
         expect(claims).toHaveProperty("jti");
         expect(claims).not.toHaveProperty("email");
-        expect(claims).not.toHaveProperty("teamId");
+        expect(claims).not.toHaveProperty("workspaceId");
         expect(claims).not.toHaveProperty("role");
         expect(claims).not.toHaveProperty("sid");
       }
@@ -717,15 +898,15 @@ describe("authentication persistence", () => {
       });
       const [stored] = await fixture.database
         .select()
-        .from(connectCodes)
-        .where(eq(connectCodes.codeHash, hashSecret(issued.code)));
+        .from(accountCliLoginCodes)
+        .where(eq(accountCliLoginCodes.tokenHash, hashSecret(issued.code)));
       expect(stored).toMatchObject({
-        codeHash: hashSecret(issued.code),
+        tokenHash: hashSecret(issued.code),
         userId: fixture.bootstrap.userId,
-        issuerUserId: fixture.bootstrap.userId,
+        issuedByUserId: fixture.bootstrap.userId,
         consumedAt: null,
       });
-      expect(stored?.codeHash).not.toBe(issued.code);
+      expect(stored?.tokenHash).not.toBe(issued.code);
 
       await expect(fixture.auth.exchangeConnectCode(issued.code)).resolves.toMatchObject({ tokenType: "Bearer" });
       await expect(fixture.auth.exchangeConnectCode(issued.code)).rejects.toMatchObject({ code: "AUTH_CODE_CONSUMED" });
@@ -734,51 +915,19 @@ describe("authentication persistence", () => {
     }
   });
 
-  it("issues Web onboarding connect codes only to a live Team Admin", async () => {
+  it("allows a zero-grant Account to issue its own CLI login code", async () => {
     const fixture = await createAuthFixture();
     try {
-      const [member] = await fixture.database
+      const [account] = await fixture.database
         .insert(users)
-        .values({ email: "computer-member@example.com", displayName: "Computer Member" })
+        .values({ email: "zero-grant@example.com", displayName: "Zero Grant Account" })
         .returning();
-      if (!member) throw new Error("Member fixture was not created");
-      await fixture.database.insert(memberships).values({
-        teamId: fixture.bootstrap.teamId,
-        userId: member.id,
-        role: "member",
-        status: "active",
-      });
+      if (!account) throw new Error("Account fixture was not created");
       const issuer = new ConnectCodeService(fixture.database);
-      await expect(issuer.issueForTeamAdmin(member.id, fixture.bootstrap.teamId)).rejects.toMatchObject({
-        code: "MEMBERSHIP_FORBIDDEN",
-      });
-      await expect(issuer.issueForTeamAdmin(fixture.bootstrap.userId, fixture.bootstrap.teamId)).resolves.toMatchObject(
-        {
-          expiresIn: 900,
-        },
-      );
+      await expect(issuer.issueForUser(account.id)).resolves.toMatchObject({ expiresIn: 900 });
       expect(
-        (await fixture.database.select().from(connectCodes)).filter((row) => row.userId === member.id),
-      ).toHaveLength(0);
-    } finally {
-      await fixture.sql.end();
-    }
-  });
-
-  it("refuses to mint a connect code after the user loses every active membership", async () => {
-    const fixture = await createAuthFixture();
-    try {
-      await fixture.database
-        .update(memberships)
-        .set({ status: "left", updatedAt: new Date() })
-        .where(eq(memberships.userId, fixture.bootstrap.userId));
-      const before = await fixture.database.select().from(connectCodes);
-      await expect(
-        new ConnectCodeService(fixture.database).issueForUser(fixture.bootstrap.userId),
-      ).rejects.toMatchObject({
-        code: "AUTH_MEMBERSHIP_REQUIRED",
-      });
-      expect(await fixture.database.select().from(connectCodes)).toHaveLength(before.length);
+        (await fixture.database.select().from(accountCliLoginCodes)).filter((row) => row.userId === account.id),
+      ).toHaveLength(1);
     } finally {
       await fixture.sql.end();
     }
@@ -805,13 +954,13 @@ describe("authentication persistence", () => {
       await expect(fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode)).rejects.toThrow(
         "Injected token signing failure",
       );
-      const [afterFailure] = await fixture.database.select().from(connectCodes);
+      const [afterFailure] = await fixture.database.select().from(accountCliLoginCodes);
       expect(afterFailure?.consumedAt).toBeNull();
 
       await expect(fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode)).resolves.toMatchObject({
         tokenType: "Bearer",
       });
-      const [afterRetry] = await fixture.database.select().from(connectCodes);
+      const [afterRetry] = await fixture.database.select().from(accountCliLoginCodes);
       expect(afterRetry?.consumedAt).not.toBeNull();
     } finally {
       await fixture.sql.end();
@@ -827,7 +976,7 @@ describe("authentication persistence", () => {
         code: "AUTH_USER_MISMATCH",
         statusCode: 409,
       });
-      const [afterMismatch] = await fixture.database.select().from(connectCodes);
+      const [afterMismatch] = await fixture.database.select().from(accountCliLoginCodes);
       expect(afterMismatch?.consumedAt).toBeNull();
       await expect(
         fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode, fixture.bootstrap.userId),
@@ -845,7 +994,7 @@ describe("authentication persistence", () => {
         me: { user: { id: fixture.bootstrap.userId } },
       });
 
-      const [storedCode] = await fixture.database.select().from(connectCodes);
+      const [storedCode] = await fixture.database.select().from(accountCliLoginCodes);
       expect(storedCode?.consumedAt).toBeNull();
     } finally {
       await fixture.sql.end();
@@ -856,18 +1005,12 @@ describe("authentication persistence", () => {
     const now = new Date("2026-08-18T00:00:00.000Z");
     const fixture = await createAuthFixture(now);
     try {
-      await fixture.database
-        .update(connectCodes)
-        .set({ expiresAt: new Date("2026-08-17T23:59:59.000Z") })
-        .where(eq(connectCodes.codeHash, hashSecret(fixture.bootstrap.connectCode)));
+      fixture.setNow(new Date("2026-08-18T00:15:01.000Z"));
       await expect(fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode)).rejects.toMatchObject({
         code: "AUTH_CODE_EXPIRED",
       });
 
-      await fixture.database
-        .update(connectCodes)
-        .set({ expiresAt: new Date("2026-08-18T00:15:00.000Z") })
-        .where(eq(connectCodes.codeHash, hashSecret(fixture.bootstrap.connectCode)));
+      fixture.setNow(now);
       await fixture.database.update(users).set({ suspendedAt: now }).where(eq(users.id, fixture.bootstrap.userId));
       await expect(fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode)).rejects.toMatchObject({
         code: "AUTH_USER_SUSPENDED",
@@ -902,21 +1045,24 @@ describe("authentication persistence", () => {
     }
   });
 
-  it("resolves membership changes live on every protected request", async () => {
+  it("resolves Admin grant revocation live without invalidating the Account session", async () => {
     const fixture = await createAuthFixture();
     try {
       const tokens = await fixture.auth.exchangeConnectCode(fixture.bootstrap.connectCode);
       await expect(fixture.auth.getAuthenticatedUser(tokens.accessToken)).resolves.toMatchObject({
-        me: { memberships: [{ teamId: fixture.bootstrap.teamId, role: "admin" }] },
+        me: { workspaces: [{ id: fixture.bootstrap.workspaceId }] },
       });
 
       await fixture.database
-        .update(memberships)
-        .set({ status: "left", updatedAt: new Date("2026-08-18T00:01:00.000Z") })
-        .where(eq(memberships.userId, fixture.bootstrap.userId));
-      // Losing every membership drops Team authority but keeps the session, so the user can create a new Team.
+        .update(workspaceAdminGrants)
+        .set({
+          revokedAt: new Date("2026-08-18T00:01:00.000Z"),
+          revokedByUserId: fixture.bootstrap.userId,
+        })
+        .where(eq(workspaceAdminGrants.userId, fixture.bootstrap.userId));
+      // Losing every Admin grant drops Workspace authority but keeps the Account session.
       await expect(fixture.auth.getAuthenticatedUser(tokens.accessToken)).resolves.toMatchObject({
-        me: { user: { id: fixture.bootstrap.userId }, memberships: [] },
+        me: { user: { id: fixture.bootstrap.userId }, workspaces: [] },
       });
       await expect(fixture.auth.refresh(tokens.refreshToken)).resolves.toMatchObject({ tokenType: "Bearer" });
 

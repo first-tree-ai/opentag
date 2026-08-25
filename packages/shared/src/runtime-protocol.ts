@@ -235,7 +235,7 @@ export const AuthV1FrameSchema = z
     type: z.literal("auth"),
     requestId: RuntimeRequestIdSchema,
     protocolVersion: z.literal(RUNTIME_PROTOCOL_V1),
-    accessToken: z.string().min(1).max(4096),
+    machineToken: z.string().min(1).max(4096),
   })
   .strict();
 
@@ -245,7 +245,7 @@ export const AuthV2FrameSchema = z
     requestId: RuntimeRequestIdSchema,
     protocolVersion: z.literal(RUNTIME_PROTOCOL_V2),
     supportedProtocolVersions: RuntimeProtocolRangeSchema,
-    accessToken: z.string().min(1).max(4096),
+    machineToken: z.string().min(1).max(4096),
   })
   .strict()
   .superRefine((frame, context) => {
@@ -268,14 +268,15 @@ export const AuthResultFrameSchema = z
     type: z.literal("auth:result"),
     requestId: RuntimeRequestIdSchema,
     ok: z.boolean(),
-    userId: z.string().uuid().optional(),
-    tokenExpiresAt: z.string().datetime().optional(),
+    workspaceComputerId: z.string().uuid().optional(),
+    workspaceId: z.string().uuid().optional(),
+    computerId: z.string().uuid().optional(),
     errorCode: ErrorCodeSchema.optional(),
   })
   .strict()
   .superRefine((frame, context) => {
-    if (frame.ok && (!frame.userId || !frame.tokenExpiresAt)) {
-      context.addIssue({ code: "custom", message: "A successful auth result requires user identity and expiry" });
+    if (frame.ok && (!frame.workspaceComputerId || !frame.workspaceId || !frame.computerId)) {
+      context.addIssue({ code: "custom", message: "A successful auth result requires enrollment identity" });
     }
     if (!frame.ok && !frame.errorCode) {
       context.addIssue({ code: "custom", message: "A failed auth result requires an error code" });

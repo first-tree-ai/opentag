@@ -24,7 +24,7 @@
  * Usage: node scripts/e2e/onboarding-e2e.mjs
  */
 import { execFile, spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createCipheriv, randomBytes } from "node:crypto";
 import { createWriteStream, existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -48,7 +48,8 @@ DATABASE_URL.pathname = `/${DATABASE_NAME}`;
 const CHROMIUM_PATH = process.env.OPENTAG_E2E_CHROMIUM ?? "/opt/pw-browsers/chromium";
 const DEV_EMAIL = "e2e@opentag.local";
 const USER_ID = "11111111-1111-4111-8111-111111111111";
-const TEAM_ID = "22222222-2222-4222-8222-222222222222";
+const WORKSPACE_ID = "22222222-2222-4222-8222-222222222222";
+const ENCRYPTION_KEY = Buffer.alloc(32, 7);
 const ARTIFACT_DIRECTORY = resolve(process.env.OPENTAG_E2E_ARTIFACTS ?? join(tmpdir(), "opentag-onboarding-e2e"));
 /* Set to "off" to probe the Claude Code CLI already installed on PATH instead. */
 const PROVIDER_STUB = process.env.OPENTAG_E2E_PROVIDER_STUB !== "off";
@@ -59,6 +60,18 @@ const KEEP_DATABASE = process.env.OPENTAG_E2E_KEEP_DATABASE === "on";
 let createdDatabase;
 /** Rejects once the Server this run spawned exits, which invalidates every later fact. */
 let serverExited;
+
+function encryptCredential(value) {
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", ENCRYPTION_KEY, nonce);
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+  return [
+    "v1",
+    nonce.toString("base64url"),
+    ciphertext.toString("base64url"),
+    cipher.getAuthTag().toString("base64url"),
+  ].join(".");
+}
 
 /**
  * Endpoint ownership has to hold across every await, not only at its start:
@@ -316,7 +329,7 @@ async function main() {
           OPENTAG_PORT: String(PORT),
           OPENTAG_PUBLIC_URL: BASE_URL,
           OPENTAG_JWT_SECRET: randomBytes(32).toString("hex"),
-          OPENTAG_ENCRYPTION_KEY: randomBytes(32).toString("base64"),
+          OPENTAG_ENCRYPTION_KEY: ENCRYPTION_KEY.toString("base64"),
           OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
           OPENTAG_DEV_AUTH_EMAIL: DEV_EMAIL,
         },
@@ -350,14 +363,15 @@ async function main() {
       return `${BASE_URL} (migrations applied, log: ${serverLogPath})`;
     });
 
-    await step("seed an authenticated user and Team", async () => {
+    await step("seed an authenticated user and Workspace", async () => {
       await psql(
         DATABASE_URL,
         `insert into users (id, email, display_name) values ('${USER_ID}', '${DEV_EMAIL}', 'E2E User');
-         insert into teams (id, name, display_name) values ('${TEAM_ID}', 'e2e-team', 'E2E Team');
-         insert into memberships (team_id, user_id, role, status) values ('${TEAM_ID}', '${USER_ID}', 'admin', 'active');`,
+         insert into workspaces (id, name, display_name) values ('${WORKSPACE_ID}', 'e2e-workspace', 'E2E Workspace');
+         insert into workspace_admin_grants (workspace_id, user_id, granted_by_user_id)
+           values ('${WORKSPACE_ID}', '${USER_ID}', '${USER_ID}');`,
       );
-      return `${DEV_EMAIL} as admin of e2e-team`;
+      return `${DEV_EMAIL} as admin of e2e-workspace`;
     });
 
     const chromium = loadChromium();
@@ -394,7 +408,7 @@ async function main() {
       await page.getByRole("button", { name: "Generate connection command" }).click();
       const command = await waitFor("the bootstrap command", async () => {
         const text = await page.locator("body").innerText();
-        const match = /login --server\s+'?([^\s']+)'?\s+--\s+'?([A-Za-z0-9_-]+)'?/.exec(text);
+        const match = /computer connect --server\s+'?([^\s']+)'?\s+--\s+'?([A-Za-z0-9_-]+)'?/.exec(text);
         return match ? { serverUrl: match[1], code: match[2] } : undefined;
       });
       await shot("02-connect-computer");
@@ -406,7 +420,7 @@ async function main() {
       const cli = join(repositoryRoot, "apps", "cli", "dist", "cli", "index.mjs");
       const { stdout } = await execFileAsync(
         process.execPath,
-        [cli, "login", "--no-start", "--server", BASE_URL, "--", connect.code],
+        [cli, "computer", "connect", "--no-start", "--server", BASE_URL, "--", connect.code],
         { env: { ...process.env, HOME: clientHome, OPENTAG_HOME: openTagHome } },
       );
       return stdout.trim().split("\n")[0];
@@ -426,7 +440,10 @@ async function main() {
       const connected = await waitFor(
         "the Computer to register as online",
         async () => {
-          const online = await psql(DATABASE_URL, "select count(*) from computers where connected_at is not null");
+          const online = await psql(
+            DATABASE_URL,
+            "select count(*) from workspace_computers where current_instance_id is not null",
+          );
           return Number(online) > 0;
         },
         { timeoutMs: 90_000 },
@@ -469,12 +486,14 @@ async function main() {
     await step("verify the Server facts behind the new Agent", async () => {
       const row = await psql(
         DATABASE_URL,
-        `select a.display_name || ' | ' || a.runtime_provider || ' | ' || a.status || ' | ' || c.display_name
-           from agents a join computers c on c.id = a.computer_id where a.team_id = '${TEAM_ID}'`,
+        `select a.display_name || ' | ' || a.runtime_provider || ' | ' || a.status || ' | ' || wc.display_name
+           from agents a
+           join workspace_computers wc on wc.id = a.workspace_computer_id
+          where a.workspace_id = '${WORKSPACE_ID}'`,
       );
       if (!row.includes("claude-code")) throw new Error(`Unexpected Agent row: ${row || "<none>"}`);
       const api = await page.evaluate(async () => {
-        const response = await fetch("/api/v1/teams/22222222-2222-4222-8222-222222222222/computers", {
+        const response = await fetch("/api/v1/workspaces/22222222-2222-4222-8222-222222222222/computers", {
           headers: { "x-opentag-provider-readiness": "1" },
         });
         return response.json();
@@ -512,25 +531,38 @@ async function main() {
       return outcome;
     });
 
-    await step("keep a member out of the admin-only onboarding flow", async () => {
-      await psql(DATABASE_URL, `update memberships set role = 'member' where user_id = '${USER_ID}'`);
+    await step("explain zero-Workspace access without creating a replacement Workspace", async () => {
+      await psql(
+        DATABASE_URL,
+        `update workspace_admin_grants
+            set revoked_by_user_id = '${USER_ID}', revoked_at = now()
+          where user_id = '${USER_ID}' and revoked_at is null`,
+      );
       await page.reload({ waitUntil: "networkidle" });
-      await page.waitForURL(`${BASE_URL}/agents`, { timeout: 30_000 });
-      await page
-        .getByText("An administrator needs to prepare the first Agent.", { exact: false })
-        .waitFor({ timeout: 30_000 });
-      await shot("06-member-waiting-for-admin");
-      await psql(DATABASE_URL, `update memberships set role = 'admin' where user_id = '${USER_ID}'`);
+      await page.getByRole("heading", { name: "No Workspace administration access" }).waitFor({ timeout: 30_000 });
+      await page.getByText("A current Workspace Admin can restore access", { exact: false }).waitFor();
+      await shot("06-zero-workspace-access");
+      await psql(
+        DATABASE_URL,
+        `insert into workspace_admin_grants (workspace_id, user_id, granted_by_user_id)
+           values ('${WORKSPACE_ID}', '${USER_ID}', '${USER_ID}')`,
+      );
       await page.goto(`${BASE_URL}/onboarding`, { waitUntil: "networkidle" });
-      return "member redirected to Agents with the admin dependency explained";
+      return "zero-grant Account saw the restore-access explanation and no replacement Workspace";
     });
 
     await step("reach the ready state with an authorized Feishu binding", async () => {
       const { FEISHU_REQUIRED_TENANT_SCOPES } = await import(
         join(repositoryRoot, "packages", "shared", "dist", "index.mjs")
       );
-      const agentId = await psql(DATABASE_URL, `select id from agents where team_id = '${TEAM_ID}' limit 1`);
-      const scopes = FEISHU_REQUIRED_TENANT_SCOPES.map((scope) => `'${scope}'`).join(", ");
+      const agentId = await psql(DATABASE_URL, `select id from agents where workspace_id = '${WORKSPACE_ID}' limit 1`);
+      const grantedScopes = [...FEISHU_REQUIRED_TENANT_SCOPES].sort();
+      const scopes = grantedScopes.map((scope) => `'${scope}'`).join(", ");
+      const encryptedCredential = encryptCredential({
+        appId: "cli_e2e_app",
+        appSecret: "e2e-app-secret",
+        grantedScopes,
+      });
       await psql(
         DATABASE_URL,
         `delete from im_bindings where agent_id = '${agentId}';
@@ -542,16 +574,19 @@ async function main() {
          ) values (
            '${agentId}', 'feishu', 'active', 'cli_e2e_app', 'tenant_e2e', 'bot_e2e',
            'feishu', 'OpenTag E2E Bot', 1, 1,
-           'e2e-placeholder', ARRAY[${scopes}]::text[], '33333333-3333-4333-8333-333333333333',
+           '${encryptedCredential}', ARRAY[${scopes}]::text[], '33333333-3333-4333-8333-333333333333',
            now() + interval '1 hour', now(), now(), now()
          )`,
       );
       await page.reload({ waitUntil: "networkidle" });
       await page.waitForURL(`${BASE_URL}/agents`, { timeout: 30_000 });
-      const completedAt = await psql(DATABASE_URL, `select setup_completed_at from teams where id = '${TEAM_ID}'`);
-      if (!completedAt) throw new Error("Team setup completion was not persisted");
+      const completedAt = await psql(
+        DATABASE_URL,
+        `select setup_completed_at from workspaces where id = '${WORKSPACE_ID}'`,
+      );
+      if (!completedAt) throw new Error("Workspace setup completion was not persisted");
       await shot("07-completed");
-      return `handoff readiness projected and Team setup completed at ${completedAt}`;
+      return `handoff readiness projected and Workspace setup completed at ${completedAt}`;
     });
 
     await step("survive a Computer outage without losing the Agent", async () => {
@@ -559,7 +594,10 @@ async function main() {
       await waitFor(
         "the Computer to go offline",
         async () => {
-          const offline = await psql(DATABASE_URL, "select count(*) from computers where connected_at is null");
+          const offline = await psql(
+            DATABASE_URL,
+            "select count(*) from workspace_computers where current_instance_id is null",
+          );
           return Number(offline) > 0;
         },
         { timeoutMs: 60_000 },
@@ -568,10 +606,13 @@ async function main() {
       await page.waitForURL(`${BASE_URL}/agents`, { timeout: 30_000 });
       await page.getByRole("heading", { name: "Agents" }).waitFor({ timeout: 30_000 });
       await shot("08-runtime-outage");
-      const agents = await psql(DATABASE_URL, `select count(*) from agents where team_id = '${TEAM_ID}'`);
+      const agents = await psql(DATABASE_URL, `select count(*) from agents where workspace_id = '${WORKSPACE_ID}'`);
       if (Number(agents) !== 1) throw new Error(`Expected exactly one Agent, found ${agents}`);
-      const completedAt = await psql(DATABASE_URL, `select setup_completed_at from teams where id = '${TEAM_ID}'`);
-      if (!completedAt) throw new Error("Computer outage reopened Team setup");
+      const completedAt = await psql(
+        DATABASE_URL,
+        `select setup_completed_at from workspaces where id = '${WORKSPACE_ID}'`,
+      );
+      if (!completedAt) throw new Error("Computer outage reopened Workspace setup");
       return `Agents remained the product destination; setup completion stayed at ${completedAt}`;
     });
 

@@ -205,7 +205,8 @@ export const taskPreviews: readonly TaskPreview[] = [
   },
   {
     id: "customer-visit-feedback",
-    title: "Summarize the recurring issues from yesterday's three customer visits and group them by account and team.",
+    title:
+      "Summarize the recurring issues from yesterday's three customer visits and group them by account and workspace.",
     agent: "Scout",
     source: {
       kind: "feishu",
@@ -219,7 +220,8 @@ export const taskPreviews: readonly TaskPreview[] = [
     exchanges: [
       {
         id: "group-feedback",
-        request: "Please group yesterday's customer visit notes by account, issue, and the team that should follow up.",
+        request:
+          "Please group yesterday's customer visit notes by account, issue, and the workspace that should follow up.",
         requestTime: "10:42 AM",
         duration: "In progress",
         status: "processing",

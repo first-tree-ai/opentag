@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import type { AgentAdminConfig, Computer, ListComputersResponse } from "@opentag/shared";
+import type { AgentAdminConfig, ListWorkspaceComputersResponse, WorkspaceComputerSummary } from "@opentag/shared";
 import {
   CreateAgentRequestSchema,
   CreateAgentRuntimeConfigSchema,
@@ -7,7 +7,7 @@ import {
   UpdateAgentRequestSchema,
   UpdateAgentRuntimeConfigSchema,
 } from "@opentag/shared";
-import { selectTeam } from "../selection/team.js";
+import { selectWorkspace } from "../selection/workspace.js";
 import { type AgentCommandDependencies, resolveAgentCommandContext } from "./context.js";
 
 export interface AgentCreateOptions extends AgentCommandDependencies {
@@ -20,7 +20,7 @@ export interface AgentCreateOptions extends AgentCommandDependencies {
   name: string;
   reasoningEffort?: string;
   runtimeProvider: string;
-  teamName?: string;
+  workspaceName?: string;
 }
 
 export interface AgentCreateResult {
@@ -40,10 +40,13 @@ export interface AgentUpdateOptions extends AgentCommandDependencies {
   reasoningEffort?: string;
 }
 
-export function selectComputer(response: ListComputersResponse, requestedComputerId?: string): Computer {
+export function selectComputer(
+  response: ListWorkspaceComputersResponse,
+  requestedComputerId?: string,
+): WorkspaceComputerSummary {
   if (requestedComputerId) {
-    const selected = response.computers.find((computer) => computer.id === requestedComputerId);
-    if (!selected) throw new Error(`Computer "${requestedComputerId}" is not owned by the current user`);
+    const selected = response.computers.find((computer) => computer.computerId === requestedComputerId);
+    if (!selected) throw new Error(`Computer "${requestedComputerId}" is not enrolled in the selected Workspace`);
     return selected;
   }
   if (response.computers.length === 1) {
@@ -58,21 +61,22 @@ export function selectComputer(response: ListComputersResponse, requestedCompute
 export async function runAgentCreate(options: AgentCreateOptions): Promise<AgentCreateResult> {
   const runtimeConfig = await createRuntimeConfig(options);
   const { api, accessToken } = await resolveAgentCommandContext(options);
-  const [me, computers] = await Promise.all([api.me(accessToken), api.listComputers(accessToken)]);
-  const team = selectTeam(me, options.teamName);
+  const me = await api.me(accessToken);
+  const workspace = selectWorkspace(me, options.workspaceName);
+  const computers = await api.listWorkspaceComputers(accessToken, workspace.id);
   const computer = selectComputer(computers, options.computerId);
   const input = CreateAgentRequestSchema.parse({
     name: options.name,
     displayName: options.displayName,
     runtimeProvider: options.runtimeProvider,
-    computerId: computer.id,
+    computerId: computer.computerId,
     ...(runtimeConfig ? { runtimeConfig } : {}),
   });
-  const agent = await api.createAgent(accessToken, team.teamId, input);
+  const agent = await api.createAgent(accessToken, workspace.id, input);
   return {
     agent,
     ...(computer.connectionStatus === "offline"
-      ? { warning: `Computer ${computer.id} is offline; the Agent configuration was created` }
+      ? { warning: `Computer ${computer.computerId} is offline; the Agent configuration was created` }
       : {}),
   };
 }

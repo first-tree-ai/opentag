@@ -1,13 +1,9 @@
-import type { Computer, ComputerRegisterFrame, ListComputersResponse, MeResponse } from "@opentag/shared";
-import { and, eq } from "drizzle-orm";
-import type { DatabaseClient } from "../../db/client.js";
-import { computers } from "../../db/schema/index.js";
+import type { ComputerRegisterFrame, MeResponse } from "@opentag/shared";
+import { and, eq, isNull } from "drizzle-orm";
+import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
+import { workspaceComputerCredentials, workspaceComputers, workspaces } from "../../db/schema/index.js";
 import { AuthServiceError } from "../auth/index.js";
-import {
-  type ProviderReadinessSource,
-  projectComputerImCliReadiness,
-  projectComputerProviderReadiness,
-} from "./provider-readiness.js";
+import type { ComputerAuthContext } from "./machine-auth-service.js";
 
 export interface ActiveUserResolver {
   getActiveUserById(userId: string): Promise<MeResponse>;
@@ -15,73 +11,31 @@ export interface ActiveUserResolver {
 
 export interface ComputerServiceOptions {
   now?: () => Date;
-  presenceTimeoutMs?: number;
-  providerReadiness?: ProviderReadinessSource;
 }
 
 export class ComputerService {
-  readonly #auth: ActiveUserResolver;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
-  readonly #presenceTimeoutMs: number;
-  readonly #providerReadiness?: ProviderReadinessSource;
 
-  constructor(database: DatabaseClient, auth: ActiveUserResolver, options: ComputerServiceOptions = {}) {
+  constructor(database: DatabaseClient, _auth: ActiveUserResolver, options: ComputerServiceOptions = {}) {
     this.#database = database;
-    this.#auth = auth;
     this.#now = options.now ?? (() => new Date());
-    this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
-    this.#providerReadiness = options.providerReadiness;
   }
 
-  /**
-   * A Computer is only meaningful inside a Team. A session can legitimately hold no membership while the
-   * user has yet to create or join one, so membership is asserted here instead of inferred from the session.
-   */
-  async #requireTeamMember(userId: string): Promise<void> {
-    const me = await this.#auth.getActiveUserById(userId);
-    if (me.memberships.length === 0) {
+  async register(context: ComputerAuthContext, frame: ComputerRegisterFrame): Promise<void> {
+    if (frame.computerId !== context.computerId) {
       throw new AuthServiceError(
-        "AUTH_MEMBERSHIP_REQUIRED",
+        "COMPUTER_IDENTITY_CONFLICT",
         "deterministic",
-        "An active team membership is required",
-        403,
+        "The Computer identity does not match the machine credential",
+        409,
       );
     }
-  }
-
-  async register(userId: string, frame: ComputerRegisterFrame): Promise<void> {
-    await this.#requireTeamMember(userId);
     const now = this.#now();
     await this.#database.transaction(async (transaction) => {
-      await transaction
-        .insert(computers)
-        .values({
-          id: frame.computerId,
-          ownerUserId: userId,
-          displayName: frame.displayName,
-          platform: frame.platform,
-          arch: frame.arch,
-          clientVersion: frame.clientVersion,
-          currentInstanceId: frame.instanceId,
-          connectedAt: now,
-          lastSeenAt: now,
-          updatedAt: now,
-        })
-        .onConflictDoNothing({ target: computers.id });
-
-      const [existing] = await transaction.select().from(computers).where(eq(computers.id, frame.computerId)).limit(1);
-      if (!existing || existing.ownerUserId !== userId) {
-        throw new AuthServiceError(
-          "COMPUTER_IDENTITY_CONFLICT",
-          "deterministic",
-          "The Computer identity belongs to another user",
-          409,
-        );
-      }
-
-      await transaction
-        .update(computers)
+      await this.#lockActiveCredential(transaction, context);
+      const updated = await transaction
+        .update(workspaceComputers)
         .set({
           displayName: frame.displayName,
           platform: frame.platform,
@@ -92,74 +46,86 @@ export class ComputerService {
           lastSeenAt: now,
           updatedAt: now,
         })
-        .where(and(eq(computers.id, frame.computerId), eq(computers.ownerUserId, userId)));
+        .where(
+          and(
+            eq(workspaceComputers.id, context.workspaceComputerId),
+            eq(workspaceComputers.workspaceId, context.workspaceId),
+            eq(workspaceComputers.computerId, context.computerId),
+            isNull(workspaceComputers.revokedAt),
+          ),
+        )
+        .returning({ id: workspaceComputers.id });
+      if (updated.length !== 1) throw unavailableEnrollment();
     });
   }
 
-  async heartbeat(userId: string, computerId: string, instanceId: string): Promise<boolean> {
-    await this.#requireTeamMember(userId);
+  async heartbeat(context: ComputerAuthContext, instanceId: string): Promise<boolean> {
+    const now = this.#now();
+    return this.#database.transaction(async (transaction) => {
+      await this.#lockActiveCredential(transaction, context);
+      const updated = await transaction
+        .update(workspaceComputers)
+        .set({ lastSeenAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(workspaceComputers.id, context.workspaceComputerId),
+            eq(workspaceComputers.workspaceId, context.workspaceId),
+            eq(workspaceComputers.computerId, context.computerId),
+            eq(workspaceComputers.currentInstanceId, instanceId),
+            isNull(workspaceComputers.revokedAt),
+          ),
+        )
+        .returning({ id: workspaceComputers.id });
+      return updated.length === 1;
+    });
+  }
+
+  async assertActiveCredential(context: ComputerAuthContext): Promise<void> {
+    await this.#database.transaction((transaction) => this.#lockActiveCredential(transaction, context));
+  }
+
+  async disconnect(workspaceComputerId: string, instanceId: string): Promise<boolean> {
     const now = this.#now();
     const updated = await this.#database
-      .update(computers)
-      .set({ lastSeenAt: now, updatedAt: now })
+      .update(workspaceComputers)
+      .set({ currentInstanceId: null, connectedAt: null, lastSeenAt: now, updatedAt: now })
+      .where(and(eq(workspaceComputers.id, workspaceComputerId), eq(workspaceComputers.currentInstanceId, instanceId)))
+      .returning({ id: workspaceComputers.id });
+    return updated.length === 1;
+  }
+
+  async #lockActiveCredential(transaction: DatabaseTransaction, context: ComputerAuthContext): Promise<void> {
+    const [workspace] = await transaction
+      .select({ id: workspaces.id })
+      .from(workspaces)
+      .where(eq(workspaces.id, context.workspaceId))
+      .limit(1)
+      .for("update");
+    if (!workspace) throw unavailableEnrollment();
+    const [active] = await transaction
+      .select({ id: workspaceComputerCredentials.id })
+      .from(workspaceComputerCredentials)
+      .innerJoin(workspaceComputers, eq(workspaceComputers.id, workspaceComputerCredentials.workspaceComputerId))
       .where(
         and(
-          eq(computers.id, computerId),
-          eq(computers.ownerUserId, userId),
-          eq(computers.currentInstanceId, instanceId),
+          eq(workspaceComputerCredentials.id, context.credentialId),
+          eq(workspaceComputers.id, context.workspaceComputerId),
+          eq(workspaceComputers.workspaceId, context.workspaceId),
+          eq(workspaceComputers.computerId, context.computerId),
+          isNull(workspaceComputerCredentials.revokedAt),
+          isNull(workspaceComputers.revokedAt),
         ),
       )
-      .returning({ id: computers.id });
-    return updated.length === 1;
+      .limit(1);
+    if (!active) throw unavailableEnrollment();
   }
+}
 
-  async disconnect(computerId: string, instanceId: string): Promise<boolean> {
-    const now = this.#now();
-    const updated = await this.#database
-      .update(computers)
-      .set({ currentInstanceId: null, connectedAt: null, lastSeenAt: now, updatedAt: now })
-      .where(and(eq(computers.id, computerId), eq(computers.currentInstanceId, instanceId)))
-      .returning({ id: computers.id });
-    return updated.length === 1;
-  }
-
-  async listForUser(userId: string, includeProviderReadiness = false): Promise<ListComputersResponse> {
-    await this.#requireTeamMember(userId);
-    const rows = await this.#database.select().from(computers).where(eq(computers.ownerUserId, userId));
-    const observedAt = this.#now();
-    const freshnessCutoff = observedAt.getTime() - this.#presenceTimeoutMs;
-    return {
-      computers: rows.map((row): Computer => {
-        const connectionStatus =
-          row.currentInstanceId !== null && row.lastSeenAt.getTime() >= freshnessCutoff ? "online" : "offline";
-        return {
-          id: row.id,
-          ownerUserId: row.ownerUserId,
-          displayName: row.displayName,
-          platform: row.platform,
-          arch: row.arch,
-          clientVersion: row.clientVersion,
-          connectionStatus,
-          ...(includeProviderReadiness
-            ? {
-                providerReadiness: projectComputerProviderReadiness(
-                  row.id,
-                  connectionStatus,
-                  observedAt,
-                  this.#providerReadiness,
-                ),
-                imCliReadiness: projectComputerImCliReadiness(
-                  row.id,
-                  connectionStatus,
-                  observedAt,
-                  this.#providerReadiness,
-                ),
-              }
-            : {}),
-          connectedAt: row.connectedAt?.toISOString() ?? null,
-          lastSeenAt: row.lastSeenAt.toISOString(),
-        };
-      }),
-    };
-  }
+function unavailableEnrollment(): AuthServiceError {
+  return new AuthServiceError(
+    "COMPUTER_NOT_REGISTERED",
+    "deterministic",
+    "The Computer enrollment credential is unavailable",
+    409,
+  );
 }

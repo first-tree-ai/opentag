@@ -1,6 +1,5 @@
 import type { RefreshTokenResponse } from "@opentag/shared";
 import type { DatabaseClient } from "../../db/client.js";
-import type { InvitationAuditContext } from "../invitations/index.js";
 import type { ResolvedUserTokenIssuer } from "./auth-service.js";
 import { AuthServiceError } from "./errors.js";
 import type { AuthIdentityService } from "./identity-service.js";
@@ -15,7 +14,7 @@ export interface GoogleAuthStartResult {
 
 export interface GoogleAuthCallbackResult {
   next: string;
-  selectedTeamId?: string;
+  selectedWorkspaceId?: string;
   tokens: RefreshTokenResponse;
 }
 
@@ -26,7 +25,6 @@ export interface GoogleAuthCallbackInput {
 }
 
 export interface GoogleAuthCallbackOptions {
-  audit?: InvitationAuditContext;
   onVerified(): void;
 }
 
@@ -94,18 +92,18 @@ export class GoogleBrowserAuthService {
     });
     const invitationToken = invitationTokenFromNext(flow.next);
     const completion = await this.#database.transaction(async (transaction) => {
-      const resolvedUserId = await this.#identities.resolveOrCreateInTransaction(transaction, identity);
+      const resolved = await this.#identities.resolveOrCreateInTransaction(transaction, identity);
       const result = await this.#postAuthentication.completeInTransaction(
         transaction,
-        resolvedUserId,
+        resolved.userId,
+        resolved.accountWasCreated,
         invitationToken,
-        options.audit ?? {},
       );
-      return { selectedTeamId: result.selectedTeamId, userId: resolvedUserId };
+      return { selectedWorkspaceId: result.selectedWorkspaceId, userId: resolved.userId };
     });
     return {
       next: flow.next,
-      ...(completion.selectedTeamId ? { selectedTeamId: completion.selectedTeamId } : {}),
+      ...(completion.selectedWorkspaceId ? { selectedWorkspaceId: completion.selectedWorkspaceId } : {}),
       tokens: await this.#tokenIssuer.issueTokensForUser(completion.userId),
     };
   }

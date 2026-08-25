@@ -11,8 +11,8 @@ import {
   AgentUsageWindowDaysSchema,
   CreateAgentRequestSchema,
   ListAgentsResponseSchema,
-  TEAM_AGENTS_TEMPLATE,
   UpdateAgentRequestSchema,
+  WORKSPACE_AGENTS_TEMPLATE,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -21,7 +21,7 @@ import type { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { parseRequest } from "./request-validation.js";
 
-const TeamParamsSchema = z.object({ teamId: z.string().uuid() }).strict();
+const WorkspaceParamsSchema = z.object({ workspaceId: z.string().uuid() }).strict();
 const AgentParamsSchema = z.object({ agentId: z.string().uuid() }).strict();
 const AgentUsageQuerySchema = z
   .object({ days: z.coerce.number().pipe(AgentUsageWindowDaysSchema).default(AGENT_USAGE_WINDOW_DAYS) })
@@ -41,19 +41,19 @@ export function registerAgentRoutes(
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
 
-  app.post(TEAM_AGENTS_TEMPLATE, { preHandler }, async (request, reply) => {
-    const { teamId } = parseRequest(TeamParamsSchema, request.params);
+  app.post(WORKSPACE_AGENTS_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { workspaceId } = parseRequest(WorkspaceParamsSchema, request.params);
     const input = parseRequest(CreateAgentRequestSchema, request.body);
     const response = AgentAdminConfigSchema.parse(
-      await agentService.createForTeam(authenticatedUserId(request), teamId, input),
+      await agentService.createForWorkspace(authenticatedUserId(request), workspaceId, input),
     );
     return reply.code(201).send(response);
   });
 
-  app.get(TEAM_AGENTS_TEMPLATE, { preHandler }, async (request, reply) => {
-    const { teamId } = parseRequest(TeamParamsSchema, request.params);
+  app.get(WORKSPACE_AGENTS_TEMPLATE, { preHandler }, async (request, reply) => {
+    const { workspaceId } = parseRequest(WorkspaceParamsSchema, request.params);
     const response = ListAgentsResponseSchema.parse(
-      await agentService.listForTeam(authenticatedUserId(request), teamId),
+      await agentService.listForWorkspace(authenticatedUserId(request), workspaceId),
     );
     return reply.code(200).send(response);
   });

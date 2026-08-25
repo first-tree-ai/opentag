@@ -40,6 +40,7 @@ import { ApiError, browserApi } from "./api.js";
 import googleSignInButton from "./assets/google-sign-in-light@2x.png";
 import { ComputerSetup } from "./computer-setup.js";
 import { CreateWorkspaceForm } from "./create-workspace-form.js";
+import { orderAgentIds } from "./features/agent-list-order.js";
 import { AgentUsageTab } from "./features/agent-usage.js";
 import { IntegrationsPage } from "./features/integrations-page.js";
 import { SkillsPage } from "./features/skills-page.js";
@@ -1049,15 +1050,28 @@ function AgentsContent({ agents, canCreate }: { agents: AgentListItem[]; canCrea
 }
 
 function AgentList({ agents }: { agents: AgentListItem[] }) {
-  const sortedAgents = [...agents].sort(
+  const shownOrder = useRef<readonly string[]>([]);
+  const byPriority = [...agents].sort(
     (left, right) => agentCardStatus(left).priority - agentCardStatus(right).priority,
   );
+  const byId = new Map(agents.map((agent) => [agent.id, agent]));
+  /*
+   * Written during render on purpose. `orderAgentIds` is stable under reapplication, so a
+   * repeated render of the same list produces the same order; deferring it to an effect would
+   * show one frame of the resorted list before restoring the order the viewer is pointing at.
+   */
+  const order = orderAgentIds(
+    byPriority.map((agent) => agent.id),
+    shownOrder.current,
+  );
+  shownOrder.current = order;
   return (
     <section className="agent-list-section" aria-label="Agents">
       <div className="agent-card-grid">
-        {sortedAgents.map((agent) => (
-          <AgentCard agent={agent} key={agent.id} />
-        ))}
+        {order.map((id) => {
+          const agent = byId.get(id);
+          return agent ? <AgentCard agent={agent} key={agent.id} /> : null;
+        })}
       </div>
     </section>
   );
@@ -1094,7 +1108,11 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           {initials(agent.displayName)}
         </span>
         <div className="agent-card-identity-copy">
-          <strong>{agent.displayName}</strong>
+          <strong>
+            <Link aria-label={`Open ${agent.displayName}`} className="agent-card-open" to={`/agents/${agent.id}`}>
+              {agent.displayName}
+            </Link>
+          </strong>
           <small>@{agent.name}</small>
         </div>
       </div>
@@ -1111,9 +1129,10 @@ function AgentCard({ agent }: { agent: AgentListItem }) {
           <dd>{formatUsageNumber(agent.usage.tokens)}</dd>
         </div>
       </dl>
-      <Link aria-label={`Open ${agent.displayName}`} className="agent-card-action" to={`/agents/${agent.id}`}>
+      {/* The row itself is the link; the chevron only signals where it goes. */}
+      <span aria-hidden="true" className="agent-card-action">
         <Icon name="chevron-right" />
-      </Link>
+      </span>
     </article>
   );
 }

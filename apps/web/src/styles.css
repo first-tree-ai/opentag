@@ -942,6 +942,7 @@ pre {
 }
 
 .agent-card {
+  position: relative;
   display: grid;
   min-width: 0;
   min-height: 88px;
@@ -1038,6 +1039,26 @@ pre {
   line-height: var(--lh-ui);
 }
 
+/*
+ * The Agent name carries the row's link, stretched over the whole row so the name -- the
+ * subject of the row -- is what a click lands on, rather than a 36px chevron at the far edge.
+ */
+.agent-card-open {
+  color: inherit;
+  text-decoration: none;
+}
+
+.agent-card-open::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+}
+
+.agent-card:hover .agent-card-open {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .agent-card-identity-copy > small {
   margin-top: 2px;
   color: var(--muted);
@@ -1092,8 +1113,10 @@ pre {
   color: color-mix(in srgb, var(--muted) 62%, transparent);
 }
 
+/* Sits above the stretched row link so the failure exit stays reachable. */
 .agent-reconnect {
   position: relative;
+  z-index: 1;
   display: inline;
   font-size: var(--text-meta);
   line-height: var(--lh-ui);
@@ -1139,11 +1162,11 @@ pre {
   transition: transform 180ms ease;
 }
 
-.agent-card-action:hover {
+.agent-card:hover .agent-card-action {
   color: var(--brand-ink);
 }
 
-.agent-card-action:hover .ds-icon {
+.agent-card:hover .agent-card-action .ds-icon {
   transform: translateX(1px);
 }
 
@@ -1474,14 +1497,17 @@ dd {
   line-height: var(--lh-ui);
 }
 
+/*
+ * Usage is supporting detail, not the headline. At display size it outranked the Agent name
+ * and drew the eye to the least actionable number in the row.
+ */
 .agent-card-usage dd {
   color: var(--foreground);
-  font-family: var(--font-display);
-  font-size: var(--text-section);
+  font-family: var(--font-sans);
+  font-size: var(--text-ui);
   font-variant-numeric: tabular-nums;
   font-weight: var(--fw-medium);
-  letter-spacing: var(--track-tight);
-  line-height: var(--lh-tight);
+  line-height: var(--lh-ui);
   white-space: nowrap;
 }
 

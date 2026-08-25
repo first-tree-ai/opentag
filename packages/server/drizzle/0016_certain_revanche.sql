@@ -120,10 +120,13 @@ BEGIN
 	IF EXISTS (
 		SELECT 1 FROM "teams"
 		WHERE NOT EXISTS (
-			SELECT 1 FROM "memberships"
+			SELECT 1
+			FROM "memberships"
+			INNER JOIN "users" ON "users"."id" = "memberships"."user_id"
 			WHERE "memberships"."team_id" = "teams"."id"
 				AND "memberships"."role" = 'admin'
 				AND "memberships"."status" = 'active'
+				AND "users"."suspended_at" IS NULL
 		)
 	) THEN
 		RAISE EXCEPTION 'Workspace cutover requires at least one active Admin per legacy Team';
@@ -183,9 +186,12 @@ ALTER TABLE "agents" ADD COLUMN "workspace_computer_id" uuid;
 ALTER TABLE "session_placements" ADD COLUMN "workspace_computer_id" uuid;
 --> statement-breakpoint
 INSERT INTO "workspace_admin_grants" ("workspace_id", "user_id", "granted_by_user_id", "granted_at")
-SELECT "team_id", "user_id", "user_id", "created_at"
+SELECT "memberships"."team_id", "memberships"."user_id", "memberships"."user_id", "memberships"."created_at"
 FROM "memberships"
-WHERE "role" = 'admin' AND "status" = 'active';
+INNER JOIN "users" ON "users"."id" = "memberships"."user_id"
+WHERE "memberships"."role" = 'admin'
+	AND "memberships"."status" = 'active'
+	AND "users"."suspended_at" IS NULL;
 --> statement-breakpoint
 UPDATE "agents"
 SET "workspace_computer_id" = (
@@ -379,9 +385,12 @@ BEGIN
 	IF EXISTS (
 		SELECT 1 FROM "workspaces"
 		WHERE NOT EXISTS (
-			SELECT 1 FROM "workspace_admin_grants"
+			SELECT 1
+			FROM "workspace_admin_grants"
+			INNER JOIN "users" ON "users"."id" = "workspace_admin_grants"."user_id"
 			WHERE "workspace_admin_grants"."workspace_id" = "workspaces"."id"
 				AND "workspace_admin_grants"."revoked_at" IS NULL
+				AND "users"."suspended_at" IS NULL
 		)
 	) THEN
 		RAISE EXCEPTION 'Workspace cutover produced a Workspace without an active Admin';

@@ -302,6 +302,68 @@ describe("database migrations", () => {
     }
   });
 
+  it("rejects a deployed Team whose only active Admin account is suspended", async () => {
+    const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0015-migrations-"));
+    const legacyMeta = join(legacyFolder, "meta");
+    await mkdir(legacyMeta);
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+      version: string;
+      dialect: string;
+      entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
+    };
+    const legacyEntries = journal.entries.filter(({ idx }) => idx <= 15);
+    for (const entry of legacyEntries) {
+      await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(legacyFolder, `${entry.tag}.sql`));
+    }
+    await writeFile(join(legacyMeta, "_journal.json"), JSON.stringify({ ...journal, entries: legacyEntries }, null, 2));
+
+    try {
+      await migrateDatabase(databaseUrl, legacyFolder);
+      const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      try {
+        const userId = crypto.randomUUID();
+        const teamId = crypto.randomUUID();
+        await sql`
+          insert into users (id, email, display_name, suspended_at)
+          values (${userId}, 'suspended-migration@example.com', 'Suspended Migration Admin', now())
+        `;
+        await sql`insert into teams (id, name, display_name) values (${teamId}, 'suspended', 'Suspended')`;
+        await sql`
+          insert into memberships (team_id, user_id, role, status)
+          values (${teamId}, ${userId}, 'admin', 'active')
+        `;
+
+        await expect(migrateDatabase(databaseUrl, migrationsFolder)).rejects.toThrow(
+          "Workspace cutover requires at least one active Admin per legacy Team",
+        );
+        const [state] = await sql<
+          {
+            migration_count: number;
+            grants_table: string | null;
+            memberships_table: string | null;
+            workspaces_table: string | null;
+          }[]
+        >`
+          select
+            (select count(*)::int from drizzle.__drizzle_migrations) as migration_count,
+            to_regclass('public.memberships')::text as memberships_table,
+            to_regclass('public.workspace_admin_grants')::text as grants_table,
+            to_regclass('public.workspaces')::text as workspaces_table
+        `;
+        expect(state).toEqual({
+          migration_count: 16,
+          grants_table: null,
+          memberships_table: "memberships",
+          workspaces_table: null,
+        });
+      } finally {
+        await sql.end();
+      }
+    } finally {
+      await rm(legacyFolder, { force: true, recursive: true });
+    }
+  });
+
   it("maps legacy left_at rows to the single membership status truth", async () => {
     const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
     const applyFile = async (name: string) => {
@@ -437,6 +499,7 @@ describe("database migrations", () => {
         ]);
 
         const userId = crypto.randomUUID();
+        const suspendedUserId = crypto.randomUUID();
         const teamId = crypto.randomUUID();
         const controlTeamId = crypto.randomUUID();
         const activeAgentComputerId = crypto.randomUUID();
@@ -449,6 +512,10 @@ describe("database migrations", () => {
         const activeSessionId = crypto.randomUUID();
         const endedSessionId = crypto.randomUUID();
         await sql`insert into users (id, email, display_name) values (${userId}, 'migration@example.com', 'Migration')`;
+        await sql`
+          insert into users (id, email, display_name, suspended_at)
+          values (${suspendedUserId}, 'suspended@example.com', 'Suspended', now())
+        `;
         await sql`insert into teams (id, name, display_name) values (${teamId}, 'migration', 'Migration')`;
         await sql`
           insert into teams (id, name, display_name)
@@ -456,7 +523,10 @@ describe("database migrations", () => {
         `;
         await sql`
           insert into memberships (team_id, user_id, role)
-          values (${teamId}, ${userId}, 'admin'), (${controlTeamId}, ${userId}, 'admin')
+          values
+            (${teamId}, ${userId}, 'admin'),
+            (${teamId}, ${suspendedUserId}, 'admin'),
+            (${controlTeamId}, ${userId}, 'admin')
         `;
         await sql`
           insert into computers (id, owner_user_id, display_name, platform, arch, client_version)
@@ -618,6 +688,10 @@ describe("database migrations", () => {
           { completed: true, name: "migration" },
           { completed: false, name: "migration-control" },
         ]);
+        const migratedAdmins = await sql<{ user_id: string }[]>`
+          select user_id::text from workspace_admin_grants where workspace_id = ${teamId} order by user_id
+        `;
+        expect(migratedAdmins).toEqual([{ user_id: userId }]);
         const [agentStatusEnum] = await sql<{ values: string[] }[]>`
           select array_agg(enumlabel order by enumsortorder)::text[] as values
           from pg_enum join pg_type on pg_type.oid = pg_enum.enumtypid

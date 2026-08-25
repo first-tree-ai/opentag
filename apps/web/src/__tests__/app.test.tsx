@@ -1337,13 +1337,13 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("link", { name: /Instructions & behavior/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Model & reasoning/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Messaging/ })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /Name & identity/ })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /^Name Reviewer$/ })).toBeTruthy();
     expect(screen.getByText("Connected computer")).toBeTruthy();
     expect(screen.queryByRole("link", { name: /Connected computer/ })).toBeNull();
     expect(screen.getByRole("link", { name: /Manage Agent/ })).toBeTruthy();
     expect(screen.getByText("Not configured")).toBeTruthy();
     expect(screen.getByText("Codex · Default model · Default reasoning")).toBeTruthy();
-    expect(screen.getByText("Reviewer · @reviewer")).toBeTruthy();
+    expect(screen.getByText("Reviewer")).toBeTruthy();
     expect(screen.getByText("Ada's Mac · macOS · Online")).toBeTruthy();
     expect(screen.queryByText("Runtime")).toBeNull();
   });
@@ -1376,15 +1376,16 @@ describe("OpenTag Web App Shell", () => {
     expect(computerLink.getAttribute("href")).toBe(`/agents/${agentId}/settings/computer`);
   });
 
-  it("edits Agent identity directly and keeps the permanent handle readable", async () => {
+  it("edits the Agent display name without exposing its permanent handle", async () => {
     installApi("admin");
     window.history.replaceState({}, "", `/agents/${agentId}/settings/identity`);
     render(<App />);
 
     const displayName = (await screen.findByLabelText("Display name")) as HTMLInputElement;
-    const handle = screen.getByLabelText("Handle") as HTMLInputElement;
-    expect(handle.readOnly).toBe(true);
-    expect(handle.disabled).toBe(false);
+    expect(screen.getByRole("heading", { name: "Name" })).toBeTruthy();
+    expect(screen.getByText("Choose the name teammates see.")).toBeTruthy();
+    expect(screen.queryByLabelText("Handle")).toBeNull();
+    expect(screen.queryByText(/handle cannot be changed/i)).toBeNull();
     expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
 
     fireEvent.change(displayName, { target: { value: "Research Reviewer" } });

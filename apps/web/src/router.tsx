@@ -1478,7 +1478,7 @@ const agentSettingsSections: ReadonlyArray<{
   },
   {
     key: "identity",
-    label: "Name & identity",
+    label: "Name",
     group: "details",
     icon: "user",
   },
@@ -2037,7 +2037,7 @@ function agentSettingsSummary(agent: AgentDetailView, config: AgentAdminConfig, 
         : messagingConnectionLabel(binding, agent.availability.dependencies.handoff.state);
     return `${titleCase(binding.provider)} · @${agent.name} · ${status}`;
   }
-  if (section === "identity") return `${config.displayName} · @${config.name}`;
+  if (section === "identity") return config.displayName;
   if (section === "computer") {
     const state = agent.availability.dependencies.computer.state;
     const status = state === "ready" ? "Online" : state === "action_required" ? "Offline" : "Unconfirmed";
@@ -2067,10 +2067,10 @@ function GeneralConfigForm({
       const updated = await browserApi.updateAgent(config.id, { expectedRevision: config.revision, displayName });
       setConfig(updated);
       setDisplayName(updated.displayName);
-      setMessage("Identity saved.");
+      setMessage("Name saved.");
       onAgentChanged();
     } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : "Unable to save identity");
+      setMessage(cause instanceof Error ? cause.message : "Unable to save name");
     } finally {
       setSaving(false);
     }
@@ -2078,8 +2078,8 @@ function GeneralConfigForm({
   return (
     <form className="form-card agent-settings-form" onSubmit={submit}>
       <header className="agent-settings-page-title">
-        <h1>Name &amp; identity</h1>
-        <p>Choose the name teammates see. The handle cannot be changed.</p>
+        <h1>Name</h1>
+        <p>Choose the name teammates see.</p>
       </header>
       <Field htmlFor="agent-display-name" label="Display name">
         <input
@@ -2093,9 +2093,6 @@ function GeneralConfigForm({
             setMessage(undefined);
           }}
         />
-      </Field>
-      <Field hint="The handle cannot be changed." htmlFor="agent-handle" label="Handle">
-        <input className="ds-control" id="agent-handle" readOnly value={`@${config.name}`} />
       </Field>
       {dirty ? (
         <div className="dirty-bar">

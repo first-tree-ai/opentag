@@ -84,31 +84,6 @@ export function validateChannelVersion(channel, version) {
   fail(`--channel must be one of ${PORTABLE_CHANNELS.join(", ")}, got "${channel ?? ""}"`);
 }
 
-/**
- * Orders two portable versions the way the channel pointer must move: forward only.
- *
- * Publication is not atomic across a whole release, and release jobs can be retried out of order, so
- * the uploader needs to be able to recognize that the channel already advertises something newer and
- * leave it alone rather than regressing it. Staging prereleases order below the stable release they
- * lead to, matching semver and the coordinates `release-versions.mjs` produces.
- */
-export function comparePortableVersions(left, right) {
-  const parse = (value, label) => {
-    if (typeof value === "string" && value.includes("-staging.")) {
-      const parsed = parseStagingVersion(value, label);
-      return [parsed.major, parsed.minor, parsed.patch, 0, parsed.sequence, parsed.attempt];
-    }
-    const parsed = parseStableVersion(value, label);
-    return [parsed.major, parsed.minor, parsed.patch, 1, 0, 0];
-  };
-  const a = parse(left, "left portable version");
-  const b = parse(right, "right portable version");
-  for (let index = 0; index < a.length; index += 1) {
-    if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1;
-  }
-  return 0;
-}
-
 export function parsePlatform(platform) {
   if (!PORTABLE_PLATFORMS.includes(platform)) {
     fail(`unsupported portable platform: "${platform ?? ""}"`);

@@ -136,15 +136,27 @@ precondition 冲突。可复现性以 tar flavor 为界；release 构建在使�
 6. 从公网端点按精确 version 安装一次该 release，并检查其报告的版本号。这一步在发布主机上运行，因此只覆盖该平台。
 7. 读取 channel 指针以及产生它的 generation。若 channel 已经指向更新的 version，就此停止：不可变对象已发布且可按
    精确 version 安装，指针保持不动。
-8. 写入 `install.sh`，再以第 7 步的 generation 为前置条件写入 `latest.json`，并对两者校验。
+8. 写入 `install.sh`，再以第 7 步的 generation 为前置条件写入 `latest.json`，并对两者校验。precondition 失败不算
+   错误——第 7、8 步会针对新状态重试直到收敛。
 
 第 5、6 步正是 release 无法对外宣称一个公网端点实际不提供的 version 的原因。`HEAD` 或单字节 range 请求只能证明该
 URL 有响应；一个陈旧或路由错误的缓存对象会通过检查，而之后每个真正下载它的 installer 都会因 checksum 不符而拒绝。
 检查所用的每个 URL 都来自本地 release metadata，而不是任何已经存在于远端的内容。
 
-第 7 步让发布单调向前，第 8 步的 generation 前置条件让发布单写者化：并发发布者会触发 precondition 失败，而不是
-交错写出混合状态的 channel。先写 `install.sh` 是因为它与 channel 绑定、与 version 无关，因此两次写入之间失败时，
-留下的 installer 至少与指针一样新。release workflow 还按 channel 做了串行化。
+第 7 步让发布单调向前，第 8 步让发布单写者化。先写 `install.sh` 是因为它与 channel 绑定、与 version 无关，因此
+两次写入之间失败时，留下的 installer 至少与指针一样新。
+
+## Channel head
+
+一个 release channel 有两个必须保持一致的 head：npm dist-tag 与 portable 的 `latest.json`。`npm publish --tag latest`
+会不管当前指向什么，直接把 npm 的 head 移到本次发布的版本上；因此在较新 release 之后发布较旧 release，会把 npm 拉回
+旧版本，而 portable 指针正确地不动，两者就会对外宣称不同的版本。所以两个 head 采用同一条规则——只在版本前进时推进，
+共用 `scripts/release-versions.mjs` 中的同一个比较器。乱序的 release 依然会发布、依然可按精确 version 安装，只是发布
+在 `superseded` 这个 npm dist-tag 下，并且不动 `latest.json`。
+
+release job 按 channel 用 `queue: max` 串行化，它会以 FIFO 顺序保留每一个 pending run。默认的 `single` 会取消已经
+pending 的那个 run，从而静默丢掉一个受保护的 release tag。但顺序本身仍不作为依赖：无论 run 以什么顺序被处理，单调
+性保证都成立。
 
 常用参数：`--dry-run` 只打印计划中的操作而不访问 Cloud Storage，`--preflight-only` 在不写入的情况下检查不可变
 prefix 兼容性，`--skip-build` 复用输出目录中已有的 artifact。

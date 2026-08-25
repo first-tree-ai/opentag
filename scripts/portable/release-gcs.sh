@@ -71,12 +71,14 @@ trim_trailing_slashes() {
 # fails the release instead of the first person to run the install command.
 remote_install_smoke() {
   local bin_name
-  bin_name="$(node -e '
+  # The module path travels in the environment: a module that sees its own path as process.argv[1]
+  # treats itself as the process entry point and runs its CLI main().
+  bin_name="$(OPENTAG_CHANNEL_CONFIG_MODULE="$SCRIPT_DIR/../channel-config.mjs" node -e '
 const { pathToFileURL } = require("node:url");
-import(pathToFileURL(process.argv[1]).href).then((module) => {
-  process.stdout.write(module.CHANNEL_CONFIG[process.argv[2]].binName);
+import(pathToFileURL(process.env.OPENTAG_CHANNEL_CONFIG_MODULE).href).then((module) => {
+  process.stdout.write(module.CHANNEL_CONFIG[process.argv[1]].binName);
 });
-' "$SCRIPT_DIR/../channel-config.mjs" "$CHANNEL")"
+' "$CHANNEL")"
   [[ -n "$bin_name" ]] || die "could not resolve the $CHANNEL binary name"
 
   (

@@ -492,20 +492,33 @@ upload_mutable_object() {
   else
     log "uploading mutable $label to $(gcs_uri "$key")"
   fi
-  run_gcloud "${args[@]}" ||
-    die "failed to write $label; another release may have published concurrently, so the channel was left unchanged"
+  local output status=0
+  output="$(run_gcloud "${args[@]}" 2>&1)" || status=$?
+  if [[ "$status" -eq 0 ]]; then
+    return 0
+  fi
+  printf '%s\n' "$output" >&2
+  # A lost compare-and-swap is not an error: another publisher moved the channel while this run was
+  # committing, so the decision simply has to be made again against the new state.
+  if grep -qiE "precondition|412" <<<"$output"; then
+    return 2
+  fi
+  die "failed to write $label"
 }
 
-compare_portable_versions() {
-  node -e '
+# The module path travels in the environment rather than in argv. A release script that sees its own
+# path as process.argv[1] concludes it is the process entry point and runs its CLI main(), which fails
+# on the arguments meant for this helper and poisons the exit status of an otherwise correct answer.
+compare_release_versions() {
+  OPENTAG_RELEASE_VERSIONS_MODULE="$SCRIPT_DIR/../release-versions.mjs" node -e '
 const { pathToFileURL } = require("node:url");
-import(pathToFileURL(process.argv[1]).href)
-  .then((module) => process.stdout.write(String(module.comparePortableVersions(process.argv[2], process.argv[3]))))
+import(pathToFileURL(process.env.OPENTAG_RELEASE_VERSIONS_MODULE).href)
+  .then((module) => process.stdout.write(String(module.compareReleaseVersions(process.argv[1], process.argv[2]))))
   .catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   });
-' "$SCRIPT_DIR/build-portable.mjs" "$1" "$2"
+' "$1" "$2"
 }
 
 # Reads the channel pointer together with the generation that produced it, so the later write can be
@@ -549,7 +562,7 @@ process.stdout.write(latest.version);
 channel_pointer_would_regress() {
   [[ -n "$REMOTE_LATEST_VERSION" ]] || return 1
   local order
-  order="$(compare_portable_versions "$VERSION" "$REMOTE_LATEST_VERSION")" ||
+  order="$(compare_release_versions "$VERSION" "$REMOTE_LATEST_VERSION")" ||
     die "cannot compare $VERSION against the published channel version $REMOTE_LATEST_VERSION"
   [[ "$order" == "-1" ]]
 }
@@ -698,18 +711,37 @@ log "verifying the public versioned release before updating mutable channel entr
 verify_remote_versioned_release
 verify_public_installable
 
-read_remote_channel_pointer
-if channel_pointer_would_regress; then
-  log "the $CHANNEL channel already points at $REMOTE_LATEST_VERSION, which is newer than $VERSION"
-  log "leaving the channel pointers unchanged; $VERSION is published and installable with --version $VERSION"
-  exit 0
-fi
+# Committing the channel is a read-compare-swap that converges rather than a single guarded write that
+# fails. Losing the race to a concurrent publisher is a normal outcome: this run re-reads the pointer
+# and re-decides, which either advances it or recognizes that a newer release already did.
+COMMIT_ATTEMPTS=5
+attempt=1
+while true; do
+  read_remote_channel_pointer
+  if channel_pointer_would_regress; then
+    log "the $CHANNEL channel already points at $REMOTE_LATEST_VERSION, which is newer than $VERSION"
+    log "leaving the channel pointers unchanged; $VERSION is published and installable with --version $VERSION"
+    exit 0
+  fi
 
-# install.sh first: it is channel-pinned and version-independent, so a failure between the two writes
-# leaves an installer that is at least as new as the pointer, which still installs correctly. The
-# reverse order could advertise a version through an installer that predates it.
-upload_mutable_object "install.sh" "$INSTALLER_PATH" "text/x-shellscript; charset=utf-8" "$CHANNEL/install.sh"
-upload_mutable_object "latest.json" "$LATEST_PATH" "application/json" "$CHANNEL/latest.json" "$REMOTE_LATEST_GENERATION"
+  # install.sh first: it is channel-pinned and version-independent, so a failure between the two
+  # writes leaves an installer that is at least as new as the pointer, which still installs
+  # correctly. The reverse order could advertise a version through an installer that predates it.
+  upload_mutable_object "install.sh" "$INSTALLER_PATH" "text/x-shellscript; charset=utf-8" "$CHANNEL/install.sh"
+
+  pointer_status=0
+  upload_mutable_object "latest.json" "$LATEST_PATH" "application/json" "$CHANNEL/latest.json" \
+    "$REMOTE_LATEST_GENERATION" || pointer_status=$?
+  if [[ "$pointer_status" -eq 0 ]]; then
+    break
+  fi
+
+  attempt=$((attempt + 1))
+  if [[ "$attempt" -gt "$COMMIT_ATTEMPTS" ]]; then
+    die "the channel pointer kept changing under this release after $COMMIT_ATTEMPTS attempts"
+  fi
+  log "the channel pointer moved while committing; re-reading and retrying (attempt $attempt of $COMMIT_ATTEMPTS)"
+done
 
 verify_remote_channel_pointers
 log "published $CHANNEL $VERSION to $(gcs_uri "$CHANNEL")/"

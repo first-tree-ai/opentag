@@ -143,17 +143,30 @@ a fixed order, and each stage is a gate on the next:
    runs on the release host, so it covers that platform only.
 7. Read the channel pointer and the generation that produced it. If the channel already advertises a newer version,
    stop here: the immutable objects are published and installable by exact version, and the pointer is left alone.
-8. Write `install.sh`, then `latest.json` conditioned on the generation from step 7, and verify both.
+8. Write `install.sh`, then `latest.json` conditioned on the generation from step 7, and verify both. A lost
+   precondition is not a failure — steps 7 and 8 are retried against the new state until they converge.
 
 Steps 5 and 6 are why a release cannot advertise a version the public endpoint does not actually serve. A `HEAD` or
 single-byte range request would only prove that something answers at the URL; a stale or misrouted cached object would
 pass while every installer that fetched it would reject its checksum. Every URL checked is derived from the local
 release metadata, never from anything already remote.
 
-Step 7 makes publication monotonic, and the generation precondition in step 8 makes it single-writer: a concurrent
-publisher causes a failed precondition rather than an interleaved channel. `install.sh` is written first because it is
+Step 7 makes publication monotonic and step 8 makes it single-writer. `install.sh` is written first because it is
 channel-pinned and version-independent, so a failure between the two writes leaves an installer that is at least as new
-as the pointer. Release workflows are additionally serialized per channel.
+as the pointer.
+
+## Channel heads
+
+A release channel has two heads that must agree: the npm dist-tag and the portable `latest.json`. `npm publish --tag
+latest` moves npm's head to whatever it publishes regardless of what is already there, so publishing an older release
+after a newer one would drop npm back while the portable pointer correctly held, and the two would advertise different
+versions. Both heads therefore apply the same rule — advance only on a forward move, using one shared comparator in
+`scripts/release-versions.mjs`. An out-of-order release still publishes and stays installable by exact version; it
+publishes under the `superseded` npm dist-tag and leaves `latest.json` alone.
+
+Release jobs are serialized per channel with `queue: max`, which keeps every pending run in FIFO order. The default
+`single` cancels whatever run is already pending, which would silently drop a protected release tag. Order is still not
+relied upon: the monotonic guards hold regardless of the order runs are processed in.
 
 Useful flags: `--dry-run` prints the planned operations without contacting Cloud Storage, `--preflight-only` checks
 immutable-prefix compatibility without writing, and `--skip-build` reuses artifacts already in the output directory.

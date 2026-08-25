@@ -12,7 +12,6 @@ import {
   artifactFileName,
   assertBundledCliHasNoRuntimeDependencies,
   buildPortableReleaseMetadata,
-  comparePortableVersions,
   DEFAULT_DOWNLOAD_BASE_URL,
   getPortableChannelConfig,
   hostPlatform,
@@ -249,21 +248,6 @@ test("the installer help documents the supported options", () => {
   assert.match(rejected.stderr, /unknown option: --nope/);
 });
 
-test("portable versions order monotonically across stable and staging coordinates", () => {
-  assert.equal(comparePortableVersions("1.2.3", "1.2.3"), 0);
-  assert.equal(comparePortableVersions("1.2.4", "1.2.3"), 1);
-  assert.equal(comparePortableVersions("1.2.3", "1.3.0"), -1);
-  assert.equal(comparePortableVersions("2.0.0", "1.99.99"), 1);
-  // A staging prerelease orders below the stable release it leads to.
-  assert.equal(comparePortableVersions("0.0.2-staging.9.1", "0.0.2"), -1);
-  assert.equal(comparePortableVersions("0.0.2", "0.0.2-staging.9.1"), 1);
-  // Staging sequence wins over attempt, and both order numerically rather than lexically.
-  assert.equal(comparePortableVersions("0.0.2-staging.10.1", "0.0.2-staging.9.1"), 1);
-  assert.equal(comparePortableVersions("0.0.2-staging.9.2", "0.0.2-staging.9.1"), 1);
-  assert.equal(comparePortableVersions("0.0.2-staging.9.1", "0.0.2-staging.9.1"), 0);
-  assert.throws(() => comparePortableVersions("1.2", "1.2.3"), /semantic version/);
-});
-
 test("the uploader refuses to accept an immutable object it cannot content-check", async () => {
   const source = await readFile(join(portableDir, "upload-gcs.sh"), "utf8");
   const check = source.slice(
@@ -306,7 +290,7 @@ test("channel pointers are single-writer, monotonic, and ordered installer-first
 
   // latest.json is the commit point, so it is a compare-and-swap against the observed generation.
   assert.match(source, /args\+=\(--if-generation-match="\$generation"\)/);
-  assert.match(source, /upload_mutable_object "latest\.json" .* "\$REMOTE_LATEST_GENERATION"/);
+  assert.match(source, /upload_mutable_object "latest\.json" [\s\S]*?"\$REMOTE_LATEST_GENERATION"/);
   assert.match(source, /read_remote_channel_pointer\n/);
   assert.match(source, /if channel_pointer_would_regress; then/);
 
@@ -317,9 +301,31 @@ test("channel pointers are single-writer, monotonic, and ordered installer-first
     "install.sh must be written before latest.json so a partial publish cannot advertise a version through an older installer",
   );
 
+  // Losing the race must converge rather than fail: re-read the pointer and decide again.
+  assert.match(source, /COMMIT_ATTEMPTS=/);
+  assert.match(source, /grep -qiE "precondition\|412"/);
+  assert.match(source, /the channel pointer moved while committing/);
+
   const workflow = await readFile(join(scriptsDir, "..", ".github", "workflows", "publish-npm-package.yml"), "utf8");
-  const production = workflow.slice(workflow.indexOf("  production:"));
-  assert.match(production, /concurrency:\n\s+group: npm-publish-production\n\s+cancel-in-progress: false/);
+  for (const group of ["npm-publish-staging", "npm-publish-production"]) {
+    // `queue: max` preserves every pending run in FIFO order; the default `single` would cancel a
+    // pending run, silently dropping that release.
+    assert.match(workflow, new RegExp(`group: ${group}\\n\\s+queue: max`));
+  }
+  assert.doesNotMatch(workflow, /cancel-in-progress/, "a cancelled release run can stop between the two channel heads");
+
+  // Both channel heads advance under the same monotonic rule, or they can drift apart. Inspect the
+  // commands themselves rather than the file, so prose about the rule cannot satisfy the check.
+  const publishCommands = workflow
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("run: npm publish"));
+  assert.equal(publishCommands.length, 2, "staging and production each publish exactly once");
+  for (const command of publishCommands) {
+    assert.match(command, /--tag "\$\{\{ steps\.dist_tag\.outputs\.tag \}\}"/);
+    assert.doesNotMatch(command, /--tag latest/);
+  }
+  assert.match(workflow, /node scripts\/resolve-npm-dist-tag\.mjs/);
 });
 
 test("the uploader treats the version prefix as immutable and flips channel pointers last", async () => {
@@ -349,6 +355,32 @@ test("the uploader treats the version prefix as immutable and flips channel poin
     "channel pointers must not move before the release is public",
   );
   assert.ok(pointerVerifyIndex > installerIndex);
+});
+
+test("shell helpers import release modules without tripping their CLI entry point", async () => {
+  // A module handed its own path as process.argv[1] decides it is the process entry point and runs
+  // its CLI main(), which fails on the helper's arguments and poisons an otherwise correct answer.
+  for (const name of ["upload-gcs.sh", "release-gcs.sh"]) {
+    const source = await readFile(join(portableDir, name), "utf8");
+    for (const match of source.matchAll(/import\(pathToFileURL\(([^)]+)\)/g)) {
+      assert.match(match[1], /^process\.env\./, `${name} must pass the module path through the environment, not argv`);
+    }
+  }
+
+  // Exercise the comparator exactly as upload-gcs.sh invokes it, including the exit status.
+  const helper = [
+    'const { pathToFileURL } = require("node:url");',
+    "import(pathToFileURL(process.env.OPENTAG_RELEASE_VERSIONS_MODULE).href)",
+    "  .then((module) => process.stdout.write(String(module.compareReleaseVersions(process.argv[1], process.argv[2]))))",
+    "  .catch((error) => { console.error(error.message); process.exit(1); });",
+  ].join("\n");
+  const result = spawnSync(process.execPath, ["-e", helper, "1.3.0", "1.2.0"], {
+    encoding: "utf8",
+    env: { ...process.env, OPENTAG_RELEASE_VERSIONS_MODULE: join(scriptsDir, "release-versions.mjs") },
+  });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.equal(result.stdout, "1");
+  assert.equal(result.stderr, "");
 });
 
 test("the release scripts default to the OpenTag Cloud Storage coordinates", async () => {

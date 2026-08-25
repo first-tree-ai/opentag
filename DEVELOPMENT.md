@@ -25,21 +25,24 @@ pnpm build
 pnpm typecheck
 pnpm test
 pnpm --filter @opentag/client test:agent-runtime:coverage
-pnpm test:coverage
 pnpm --filter @opentag/server test:integration
 ```
 
 Use `pnpm lint` for lint-only feedback. Use `pnpm format` to apply Biome formatting.
 
-`pnpm test:coverage` builds the workspaces and measures the offline unit tests for CLI, Web, Shared, Client, and Server.
-It includes production source files that tests do not import, but excludes root `scripts/`, Server PostgreSQL integration
-tests, and Provider end-to-end tests. The unified report is a measurement baseline for finding and prioritizing gaps; it
-does not yet enforce repository-wide or per-workspace coverage thresholds. Add regression thresholds only after the
-measurement is stable across repeated runs. Agent Runtime keeps its separate 100% gate in
+The separate `Unit Coverage` workflow runs `pnpm test:coverage` against `main` every Monday at 03:17 UTC and can also be
+started manually. It builds the workspaces and measures the offline unit tests for CLI, Web, Shared, Client, and Server,
+then retains the unified report for 14 days. Run the command locally when changing the root coverage configuration or
+investigating coverage gaps. The measurement includes production source files that tests do not import, but excludes
+root `scripts/`, Server PostgreSQL integration tests, and Provider end-to-end tests. It is a baseline for finding and
+prioritizing gaps, not a required pull request check, and does not yet enforce repository-wide or per-workspace coverage
+thresholds. Add regression thresholds only after the measurement is stable across repeated runs.
+
+Required pull request CI still runs all offline unit tests. Agent Runtime keeps its separate 100% gate in
 `packages/client/vitest.agent-runtime.config.ts`, enforced by
 `pnpm --filter @opentag/client test:agent-runtime:coverage`.
 
-The required pull request check is the stable `CI` fan-in job. It covers the commands above, source and staging CLI
+The required pull request check is the stable `CI` fan-in job. It covers the required commands above, source and staging CLI
 tarball installation, a production-container health smoke, and the supported Node.js lines. Full validation and releases
 run on Node.js 24. Compatibility jobs run `pnpm check:node-compat` on the exact Node.js 22.13.0 floor and the latest
 Node.js 26 release; that command builds, tests, and installs the packed CLI. Node.js 23 and 25 are end-of-life and are not

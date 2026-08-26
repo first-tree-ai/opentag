@@ -2538,7 +2538,7 @@ function messagingConnectionTone(
   return "warning";
 }
 
-function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeResponse["user"] }) {
+function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeResponse>; user: MeResponse["user"] }) {
   const saveInFlight = useRef(false);
   const confirmedDisplayNameRef = useRef(user.displayName);
   const [displayName, setDisplayName] = useState(user.displayName);
@@ -2563,8 +2563,15 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
     try {
       const updated = await browserApi.updateProfile({ displayName });
       setDisplayName(updated.displayName);
+      try {
+        await refreshMe();
+      } catch {
+        // The profile is saved; only the shared Account state is stale, so say that rather than
+        // claiming a save that did not happen. The unsaved-changes bar stays, so Save retries both.
+        setError("Your display name was saved, but OpenTag could not refresh the account. Save again to retry.");
+        return;
+      }
       setMessage("Account profile saved.");
-      refreshMe();
     } catch (cause) {
       setDisplayName(user.displayName);
       setError(cause instanceof Error ? cause.message : "Unable to save the account profile");

@@ -70,6 +70,7 @@ function installApi(
     initialStatus?: "active" | "suspended";
     provider?: "feishu" | "slack";
     runtimeProvider?: "codex" | "claude-code";
+    meFailsAfterProfileUpdate?: boolean;
     profileUpdate?: (displayName: string) => Promise<Response> | Response;
     profileUpdateFails?: boolean;
     setupFailureCode?: string;
@@ -103,6 +104,7 @@ function installApi(
   });
   let setupCompletedAt = options.setupCompletedAt === undefined ? "2026-08-20T00:00:00.000Z" : options.setupCompletedAt;
   let currentDisplayName = "Ada";
+  let profileUpdated = false;
   let computerConnectCodeIssued = false;
   vi.mocked(fetch).mockImplementation(async (input, init) => {
     const path = String(input);
@@ -127,11 +129,20 @@ function installApi(
               400,
             )
           : json({ id: userId, email: "ada@example.com", displayName: body.displayName.trim() });
-      if (response.ok) currentDisplayName = body.displayName.trim();
+      if (response.ok) {
+        currentDisplayName = body.displayName.trim();
+        profileUpdated = true;
+      }
       return response;
     }
     if (path === "/api/v1/me") {
       if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
+      if (options.meFailsAfterProfileUpdate && profileUpdated) {
+        return json(
+          { error: { code: "SERVICE_UNAVAILABLE", category: "transient", message: "Account state unavailable" } },
+          503,
+        );
+      }
       const existing = options.workspaceless
         ? []
         : [
@@ -1060,6 +1071,28 @@ describe("OpenTag Web App Shell", () => {
     ).toHaveLength(1);
     resolveUpdate(json({ id: userId, email: "ada@example.com", displayName: "Pending Name" }));
     await waitFor(() => expect(screen.getByText("Pending Name")).toBeTruthy());
+  });
+
+  it("reports an honest retryable state when the profile saves but the account refresh fails", async () => {
+    installApi({ meFailsAfterProfileUpdate: true });
+    window.history.replaceState({}, "", "/account");
+    render(<App />);
+
+    const displayName = (await screen.findByLabelText("Display name")) as HTMLInputElement;
+    fireEvent.change(displayName, { target: { value: "Ada Lovelace" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Save account profile" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      "Your display name was saved, but OpenTag could not refresh the account. Save again to retry.",
+    );
+    // The save committed, so the page must not claim it failed, and must not claim it succeeded
+    // either while the shared Account is still stale.
+    expect(screen.queryByText("Account profile saved.")).toBeNull();
+    expect(displayName.value).toBe("Ada Lovelace");
+    // The stale shared state is still on screen, and Save stays available to retry both steps.
+    expect(screen.getByRole("button", { name: "Save account profile" })).toBeTruthy();
+    expect(screen.getAllByText("Ada").length).toBeGreaterThan(0);
   });
 
   it("restores the confirmed server name and shows the error when an account update fails", async () => {

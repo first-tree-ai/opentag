@@ -3104,6 +3104,21 @@ textarea:focus {
   margin: 0;
 }
 
+.agent-runtime-reconnect {
+  width: 100%;
+  justify-self: stretch;
+}
+
+/* The shared connect panel is built for a full page; inside the recovery card only its top rule
+   still earns its place, so the page-level padding is dropped. */
+.agent-runtime-reconnect .panel {
+  padding: 16px 0 0;
+}
+
+.agent-runtime-reconnect .agent-runtime-reconnect__scope {
+  margin-top: 12px;
+}
+
 .agent-runtime-edit-form,
 .agent-instructions-form {
   display: grid;

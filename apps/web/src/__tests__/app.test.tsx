@@ -1573,6 +1573,39 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
   });
 
+  it("offers machine recovery on the Connected computer page when the Computer is offline", async () => {
+    installApi({ bound: true, computerStatus: () => "offline" });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Ada's Mac · macOS" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reconnect this Computer" })).toBeTruthy();
+  });
+
+  it("withholds machine recovery when the Computer is reachable but its Provider is not", async () => {
+    installApi({
+      bound: true,
+      computerProviderReadiness: [{ provider: "codex", status: "install", observedAt: "2026-08-20T00:00:00.000Z" }],
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
+    render(<App />);
+
+    expect(await screen.findByText("Codex is not installed on Ada's Mac.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Reconnect this Computer" })).toBeNull();
+  });
+
+  it("generates a command naming the assigned Computer without leaving the Agent", async () => {
+    installApi({ bound: true, computerStatus: () => "offline" });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reconnect this Computer" }));
+
+    expect(screen.getByRole("heading", { name: "Reconnect Ada's Mac" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Generate connection command" })).toBeTruthy();
+    expect(window.location.pathname).toBe(`/agents/${agentId}/settings/computer`);
+  });
+
   it("observes a Computer coming back online from the recovery page itself", async () => {
     let computerStatus: "online" | "offline" = "offline";
     installApi({ bound: true, computerStatus: () => computerStatus });

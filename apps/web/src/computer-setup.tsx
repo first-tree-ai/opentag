@@ -11,6 +11,8 @@ const COPY_FALLBACK_HINT = "Copying is unavailable here. The command is selected
 export interface ComputerSetupProps {
   workspaceId: string;
   onConnected?: (computer: WorkspaceComputerSummary) => void;
+  /** Scopes the panel to one enrollment so a recovery flow names the Computer it came from. */
+  target?: { computerId: string; displayName: string };
 }
 
 function errorMessage(cause: unknown, fallback: string): string {
@@ -33,11 +35,20 @@ function formatRemaining(remainingMs: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-export function ComputerSetup({ workspaceId, onConnected }: ComputerSetupProps) {
-  return <ComputerSetupLifecycle key={workspaceId} workspaceId={workspaceId} onConnected={onConnected} />;
+export function ComputerSetup({ workspaceId, onConnected, target }: ComputerSetupProps) {
+  return (
+    <ComputerSetupLifecycle
+      key={`${workspaceId}:${target?.computerId ?? ""}`}
+      workspaceId={workspaceId}
+      onConnected={onConnected}
+      target={target}
+    />
+  );
 }
 
-function ComputerSetupLifecycle({ workspaceId, onConnected }: ComputerSetupProps) {
+function ComputerSetupLifecycle({ workspaceId, onConnected, target }: ComputerSetupProps) {
+  const targetComputerId = target?.computerId;
+  const targetName = target?.displayName;
   const [bootstrapCommand, setBootstrapCommand] = useState<string>();
   const [error, setError] = useState<string>();
   const [waitingForComputer, setWaitingForComputer] = useState(false);
@@ -141,7 +152,7 @@ function ComputerSetupLifecycle({ workspaceId, onConnected }: ComputerSetupProps
       void browserApi.computers(workspaceId).then(
         (value) => {
           if (!active || completed || activePollCycle.current !== pollCycle) return;
-          const connected = value.computers.find(
+          const reconnected = value.computers.filter(
             (computer) =>
               computer.connectionStatus === "online" &&
               ((!baseline.has(computer.computerId) && computer.connectedAt !== null) ||
@@ -149,6 +160,12 @@ function ComputerSetupLifecycle({ workspaceId, onConnected }: ComputerSetupProps
                   computer.connectedAt !== null &&
                   baseline.get(computer.computerId) !== computer.connectedAt)),
           );
+          // The Computers response carries no link back to the issued code, so another Computer
+          // registering says nothing about this command. A targeted recovery waits for its own
+          // Computer and lets the code expire rather than reading a foreign reconnection as proof.
+          const connected = targetComputerId
+            ? reconnected.find((computer) => computer.computerId === targetComputerId)
+            : reconnected[0];
           if (!connected) return;
           completed = true;
           window.clearInterval(pollTimer);
@@ -170,12 +187,12 @@ function ComputerSetupLifecycle({ workspaceId, onConnected }: ComputerSetupProps
       window.clearInterval(pollTimer);
       window.clearTimeout(expiryTimer);
     };
-  }, [pollCycle, waitingForComputer, workspaceId]);
+  }, [pollCycle, targetComputerId, waitingForComputer, workspaceId]);
 
   return (
     <section className="panel">
-      <h2>Connect a Local Computer</h2>
-      <p>Generate a short-lived command, then run it in a terminal on the Computer.</p>
+      <h2>{targetName ? `Reconnect ${targetName}` : "Connect a Local Computer"}</h2>
+      <p>Generate a short-lived command, then run it in a terminal on {targetName ?? "the Computer"}.</p>
       <Button className="connect-command-primary" onClick={() => void connectComputer()}>
         Generate connection command
       </Button>
@@ -194,7 +211,13 @@ function ComputerSetupLifecycle({ workspaceId, onConnected }: ComputerSetupProps
           </div>
           {copyHint ? <p className="connect-command-meta">{copyHint}</p> : null}
           {waitingForComputer || computerConnected ? (
-            <p role="status">{waitingForComputer ? "Waiting for the Computer to connect…" : "Computer connected."}</p>
+            <p role="status">
+              {waitingForComputer
+                ? `Waiting for ${targetName ?? "the Computer"} to connect…`
+                : targetName
+                  ? `${targetName} is connected.`
+                  : "Computer connected."}
+            </p>
           ) : null}
         </>
       ) : null}

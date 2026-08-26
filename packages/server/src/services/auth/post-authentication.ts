@@ -5,7 +5,6 @@ import type { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 import { AuthServiceError } from "./errors.js";
 
 export interface PostAuthenticationResult {
-  selectedWorkspaceId?: string;
   userId: string;
 }
 
@@ -35,18 +34,10 @@ export class PostAuthenticationService {
       throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
     }
     if (invitationToken) {
-      const acceptance = await this.#workspaceAdmins.acceptInvitationInTransaction(
-        transaction,
-        userId,
-        invitationToken,
-      );
-      return { userId, selectedWorkspaceId: acceptance.workspace.id };
+      await this.#workspaceAdmins.acceptInvitationInTransaction(transaction, userId, invitationToken);
+      return { userId };
     }
-    const selectedWorkspaceId = await this.#workspaceAdmins.establishDefaultWorkspaceForNewAccount(
-      transaction,
-      user,
-      accountWasCreated,
-    );
-    return { userId, ...(selectedWorkspaceId ? { selectedWorkspaceId } : {}) };
+    await this.#workspaceAdmins.establishDefaultWorkspaceForNewAccount(transaction, user, accountWasCreated);
+    return { userId };
   }
 }

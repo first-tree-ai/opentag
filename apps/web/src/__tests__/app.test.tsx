@@ -1842,7 +1842,7 @@ describe("OpenTag Web App Shell", () => {
 
   it("uses the server-ordered first membership without a browser Workspace preference", async () => {
     installApi({ multipleMemberships: true });
-    window.history.replaceState({}, "", `/agents?joinedWorkspaceId=${secondaryWorkspaceId}`);
+    window.history.replaceState({}, "", "/agents");
     const getItem = vi.spyOn(Storage.prototype, "getItem");
     render(<App />);
 

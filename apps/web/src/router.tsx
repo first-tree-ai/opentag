@@ -9,7 +9,6 @@ import type {
   MeResponse,
   MeWorkspace,
   ProviderReadinessStatus,
-  WorkspaceAdminSummary,
   WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
 import {
@@ -426,7 +425,6 @@ interface WorkspaceSession {
   me: MeResponse;
   membership: MeWorkspace;
   refreshMe: () => void;
-  selectWorkspace: (workspaceId: string) => void;
 }
 
 const workspaceContext = createContext<WorkspaceSession | undefined>(undefined);
@@ -442,7 +440,6 @@ export function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route path="/invites/:token" element={<InvitePage />} />
       <Route element={<AuthenticatedWorkspaceGate />}>
         <Route element={<AppShell />}>
           <Route element={<WorkspaceSetupGate />}>
@@ -462,9 +459,7 @@ export function AppRouter() {
             <Route path="/integrations" element={<IntegrationsPage />} />
             <Route path="/resources" element={<Navigate replace to="/skills" />} />
             <Route path="/usage" element={<Navigate replace to="/agents" />} />
-            <Route path="/admins" element={<Navigate replace to="/workspace" />} />
             <Route path="/account" element={<AccountPage />} />
-            <Route path="/workspace" element={<WorkspacePage />} />
           </Route>
         </Route>
       </Route>
@@ -505,7 +500,7 @@ function LoginPage() {
             );
           }}
         </AsyncState>
-        <p className="login-access-note">Access is managed by your workspace.</p>
+        <p className="login-access-note">Sign in to manage your Agents and Computers.</p>
       </section>
     </main>
   );
@@ -557,61 +552,9 @@ function LoginProviderLink({ next, provider }: { next: string; provider: AuthPro
   );
 }
 
-function InvitePage() {
-  const { token = "" } = useParams();
-  const navigate = useNavigate();
-  const preview = useResource(() => browserApi.invitationPreview(token), token);
-  const [error, setError] = useState<string>();
-  const [joining, setJoining] = useState(false);
-  async function join() {
-    setError(undefined);
-    setJoining(true);
-    try {
-      await browserApi.acceptAdminInvitation(token);
-      navigate("/agents", { replace: true });
-    } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 401) {
-        navigate(`/login?next=${encodeURIComponent(`/invites/${token}`)}`);
-      } else {
-        setError(cause instanceof Error ? cause.message : "The invitation could not be accepted");
-      }
-    } finally {
-      setJoining(false);
-    }
-  }
-  return (
-    <main className="center-card decorative-page">
-      <AsyncState state={preview}>
-        {(value) => (
-          <>
-            <span className="eyebrow">Workspace invitation</span>
-            <h1>Join {value.workspaceDisplayName}</h1>
-            <p>This invitation grants complete Workspace Admin access and expires {formatDate(value.expiresAt)}.</p>
-            <Button disabled={joining} onClick={() => void join()}>
-              {joining ? "Accepting…" : "Accept full Workspace Admin access"}
-            </Button>
-          </>
-        )}
-      </AsyncState>
-      {error ? (
-        <div className="notice error" role="alert">
-          {error}
-        </div>
-      ) : null}
-    </main>
-  );
-}
-
-const SELECTED_WORKSPACE_STORAGE_KEY = "opentag.lastExplicitWorkspaceId.v1";
-let memoryWorkspacePreference: string | undefined;
-let memoryWorkspacePreferenceFallback = false;
-
 function AuthenticatedWorkspaceGate() {
   const location = useLocation();
   const [meRevision, setMeRevision] = useState(0);
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(
-    () => new URLSearchParams(location.search).get("joinedWorkspaceId") ?? readWorkspacePreference(),
-  );
   const state = useResource(() => browserApi.me(), `me:${meRevision}`);
   if (state.kind === "error" && state.error instanceof ApiError && state.error.status === 401) {
     const requested = location.pathname === "/" ? "/agents" : `${location.pathname}${location.search}`;
@@ -620,20 +563,12 @@ function AuthenticatedWorkspaceGate() {
   return (
     <AsyncState state={state}>
       {(me) => {
-        const membership =
-          me.workspaces.find((item: MeWorkspace) => item.id === selectedWorkspaceId) ?? me.workspaces[0];
+        const membership = me.workspaces[0];
         if (!membership) {
           return <NoWorkspaceAccess onRetry={() => setMeRevision((value) => value + 1)} />;
         }
-        const selectWorkspace = (workspaceId: string) => {
-          if (!me.workspaces.some((item: MeWorkspace) => item.id === workspaceId)) return;
-          rememberWorkspacePreference(workspaceId);
-          setSelectedWorkspaceId(workspaceId);
-        };
         return (
-          <WorkspaceContext
-            value={{ me, membership, refreshMe: () => setMeRevision((value) => value + 1), selectWorkspace }}
-          >
+          <WorkspaceContext value={{ me, membership, refreshMe: () => setMeRevision((value) => value + 1) }}>
             <Outlet />
           </WorkspaceContext>
         );
@@ -645,12 +580,11 @@ function AuthenticatedWorkspaceGate() {
 function NoWorkspaceAccess({ onRetry }: { onRetry: () => void }) {
   return (
     <main className="center-card decorative-page">
-      <span className="eyebrow">Workspace access</span>
-      <h1>No Workspace administration access</h1>
-      <p>You no longer have Workspace administration access.</p>
+      <span className="eyebrow">Account access</span>
+      <h1>OpenTag is not ready for this account</h1>
+      <p>The server has not assigned the internal access needed to use OpenTag.</p>
       <div className="notice" role="status">
-        Access cannot be restored from this screen. Open an unexpired invitation issued before this transition, or
-        contact an operator.
+        Retry after provisioning finishes, or contact an operator if this continues.
       </div>
       <Button onClick={onRetry}>Check again</Button>
     </main>
@@ -687,33 +621,8 @@ function WorkspaceSetupGate() {
   return onboarding ? <Outlet /> : <Navigate replace to="/onboarding" />;
 }
 
-function readWorkspacePreference(): string | undefined {
-  if (memoryWorkspacePreferenceFallback) return memoryWorkspacePreference;
-  try {
-    const value = window.localStorage.getItem(SELECTED_WORKSPACE_STORAGE_KEY);
-    if (value && value.length <= 64) {
-      memoryWorkspacePreference = value;
-      return value;
-    }
-    return undefined;
-  } catch {
-    return memoryWorkspacePreference;
-  }
-}
-
-function rememberWorkspacePreference(workspaceId: string): void {
-  memoryWorkspacePreference = workspaceId;
-  try {
-    window.localStorage.setItem(SELECTED_WORKSPACE_STORAGE_KEY, workspaceId);
-    memoryWorkspacePreferenceFallback = false;
-  } catch {
-    memoryWorkspacePreferenceFallback = true;
-    // The authoritative membership still determines the available Workspace.
-  }
-}
-
 function AppShell() {
-  const { me, membership, selectWorkspace } = useWorkspace();
+  const { me } = useWorkspace();
   const navigate = useNavigate();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [openMenu, setOpenMenu] = useState<"account">();
@@ -838,60 +747,7 @@ function AppShell() {
                 role="menu"
                 onKeyDown={handleAccountMenuKeyDown}
               >
-                {me.workspaces.length > 1 ? (
-                  <fieldset className="account-workspace-group">
-                    <legend className="menu-label">Workspaces</legend>
-                    {me.workspaces.map((item: MeWorkspace) => {
-                      const current = item.id === membership.id;
-                      const content = (
-                        <>
-                          <span className="workspace-avatar" aria-hidden="true">
-                            {initials(item.displayName)}
-                          </span>
-                          <span className="workspace-option-copy">
-                            <strong>{item.displayName}</strong>
-                            <small>Workspace Admin</small>
-                          </span>
-                          {current ? (
-                            <span className="workspace-option-check" aria-hidden="true">
-                              <Icon name="check" />
-                            </span>
-                          ) : null}
-                        </>
-                      );
-                      return (
-                        <button
-                          aria-current={current ? "true" : undefined}
-                          className="account-workspace-option"
-                          key={item.id}
-                          role="menuitem"
-                          type="button"
-                          onClick={() => {
-                            setOpenMenu(undefined);
-                            setNavigationOpen(false);
-                            if (!current) {
-                              navigate("/agents");
-                              selectWorkspace(item.id);
-                            }
-                          }}
-                        >
-                          {content}
-                        </button>
-                      );
-                    })}
-                  </fieldset>
-                ) : null}
                 <div className="account-menu-actions">
-                  <NavLink
-                    role="menuitem"
-                    to="/workspace"
-                    onClick={() => {
-                      setOpenMenu(undefined);
-                      setNavigationOpen(false);
-                    }}
-                  >
-                    Workspace
-                  </NavLink>
                   <NavLink
                     role="menuitem"
                     to="/agents/computers"
@@ -1005,7 +861,7 @@ function AgentsPage() {
     <>
       <Page
         title="Agents"
-        description="Monitor availability and 30-day usage across your AI workspacemates."
+        description="Monitor availability and 30-day usage across your AI teammates."
         action={
           <Button ref={createTriggerRef} size="compact" variant="outline" onClick={() => setCreateOpen(true)}>
             New Agent <Icon name="plus" />
@@ -1023,7 +879,7 @@ function AgentsContent({ agents, canCreate }: { agents: AgentListItem[]; canCrea
   if (agents.length > 0) return <AgentList agents={agents} />;
   return (
     <EmptyState title="No Agents yet">
-      {canCreate ? "Create the first shared AI workspacemate with New Agent." : "An Admin can create the first Agent."}
+      {canCreate ? "Create the first shared AI teammate with New Agent." : "An Admin can create the first Agent."}
     </EmptyState>
   );
 }
@@ -1366,7 +1222,7 @@ function NewAgentMessagingStep({ agent, onFinish }: { agent: AgentAdminConfig; o
           <div>
             <span className="eyebrow">Agent created</span>
             <h2 id="agent-created-heading">Connect messaging</h2>
-            <p>Connect a Feishu Bot so workspacemates can mention {agent.displayName}.</p>
+            <p>Connect a Feishu Bot so teammates can mention {agent.displayName}.</p>
           </div>
           <div className="agent-create-actions">
             <Button onClick={() => void setup.start()}>Connect Feishu</Button>
@@ -1491,8 +1347,8 @@ function LegacyAgentCapabilityPage({ capability }: { capability: "integrations" 
             <header className="section-header">
               <h2>Agent {label} are not available here</h2>
               <p>
-                OpenTag does not currently show {label} assigned to {agent.displayName}. The Workspace catalog is
-                separate from this Agent.
+                OpenTag does not currently show {label} assigned to {agent.displayName}. The shared catalog is separate
+                from this Agent.
               </p>
             </header>
             <div className="actions">
@@ -1500,7 +1356,7 @@ function LegacyAgentCapabilityPage({ capability }: { capability: "integrations" 
                 Back to {agent.displayName}
               </Link>
               <Link className={buttonClassName({ variant: "secondary" })} to={`/${capability}`}>
-                Browse Workspace {label}
+                Browse {label}
               </Link>
             </div>
           </div>
@@ -1754,46 +1610,10 @@ function AgentSettingsPage() {
 
 function AccountPage() {
   const { me, refreshMe } = useWorkspace();
-  const location = useLocation();
-  if (location.hash === "#workspace-management") {
-    return <Navigate replace to="/workspace" />;
-  }
   return (
     <Page title="Account" description="Manage your personal account details.">
       <AccountSettings refreshMe={refreshMe} user={me.user} />
     </Page>
-  );
-}
-
-/**
- * One surface, reachable at any Workspace count. A Workspace is the scope its Admins share, and being
- * an Admin is the product's only access decision, so who may administer it belongs with what it is
- * called and how the CLI addresses it. Only the selector above this page is conditional: choosing
- * between scopes is meaningless with one, while reading and changing your own Workspace is not.
- */
-function WorkspacePage() {
-  const { membership, refreshMe } = useWorkspace();
-  return (
-    <Page title="Workspace" description="Who can administer this Workspace, and how it is identified.">
-      <WorkspaceSettings membership={membership} refreshMe={refreshMe} />
-    </Page>
-  );
-}
-
-function WorkspaceSettings({ membership, refreshMe }: { membership: MeWorkspace; refreshMe: () => void }) {
-  return (
-    <div className="settings-workspace-stack">
-      <WorkspaceAdminSettings membership={membership} />
-      <section aria-labelledby="workspace-profile-heading" className="account-workspace-profile">
-        <header className="settings-subheader">
-          <div>
-            <h2 id="workspace-profile-heading">Workspace profile</h2>
-            <p>The name people see in invitations, and the identifier CLI commands use.</p>
-          </div>
-        </header>
-        <WorkspaceProfileSettings membership={membership} refreshMe={refreshMe} />
-      </section>
-    </div>
   );
 }
 
@@ -2009,7 +1829,7 @@ function GeneralConfigForm({
     <form className="form-card agent-settings-form" onSubmit={submit}>
       <header className="agent-settings-page-title">
         <h1>Name</h1>
-        <p>Choose the name workspacemates see.</p>
+        <p>Choose the name teammates see.</p>
       </header>
       <Field htmlFor="agent-display-name" label="Display name">
         <input
@@ -2394,7 +2214,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
         <h1 ref={messagingHeadingRef} tabIndex={-1}>
           Messaging
         </h1>
-        <p>Choose how workspacemates can contact and assign work to {agent.displayName}.</p>
+        <p>Choose how teammates can contact and assign work to {agent.displayName}.</p>
       </header>
       <FeishuSetup
         agentId={agent.id}
@@ -2429,7 +2249,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                           <section className="im-section" aria-labelledby="contact-channel-heading">
                             <div className="im-section-heading">
                               <h3 id="contact-channel-heading">Contact channel</h3>
-                              <p>See how workspacemates can reach this agent and check its connection status.</p>
+                              <p>See how teammates can reach this agent and check its connection status.</p>
                             </div>
                             <div className="binding-status">
                               <StatusIndicator
@@ -2539,10 +2359,10 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                         <section className="im-section" aria-labelledby="contact-channel-heading">
                           <div className="im-section-heading">
                             <h3 id="contact-channel-heading">Contact channel</h3>
-                            <p>See how workspacemates can reach this agent.</p>
+                            <p>See how teammates can reach this agent.</p>
                           </div>
                           <EmptyState title="No messaging channel">
-                            Workspacemates cannot contact this agent until a supported bot is connected.
+                            Teammates cannot contact this agent until a supported bot is connected.
                           </EmptyState>
                           <div className="im-actions">
                             <Button onClick={() => void connectFeishu()}>Connect a Feishu Bot</Button>
@@ -2593,7 +2413,7 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
       {confirmation?.kind === "disable_binding" ? (
         <Dialog
           busy={confirmationBusy}
-          description="Workspacemates will no longer be able to assign new work to this agent until another messaging connection is added."
+          description="Teammates will no longer be able to assign new work to this agent until another messaging connection is added."
           returnFocusRef={disableBindingButtonRef}
           title="Disconnect messaging?"
           onClose={closeMessagingConfirmation}
@@ -2780,115 +2600,11 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
   );
 }
 
-function WorkspaceProfileSettings({ membership, refreshMe }: { membership: MeWorkspace; refreshMe: () => void }) {
-  const [message, setMessage] = useState<string>();
-  const [error, setError] = useState<string>();
-  const [saving, setSaving] = useState(false);
-  const [workspaceDisplayName, setWorkspaceDisplayName] = useState(membership.displayName);
-  const dirty = workspaceDisplayName !== membership.displayName;
-
-  useEffect(() => {
-    setWorkspaceDisplayName(membership.displayName);
-  }, [membership.displayName]);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setSaving(true);
-    try {
-      setMessage(undefined);
-      setError(undefined);
-      await browserApi.updateWorkspace(membership.id, {
-        displayName: workspaceDisplayName,
-      });
-      refreshMe();
-      setMessage("Workspace profile saved.");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to save the Workspace profile");
-    } finally {
-      setSaving(false);
-    }
-  }
-  return (
-    <form aria-labelledby="workspace-profile-heading" className="settings-profile-form" onSubmit={submit}>
-      <SettingsList>
-        <SettingsRow label="Workspace name" description="What people see in navigation and invitations.">
-          <Field className="settings-profile-field" htmlFor="workspace-profile-name" label="Workspace name">
-            <input
-              className="ds-control"
-              id="workspace-profile-name"
-              name="displayName"
-              required
-              value={workspaceDisplayName}
-              onChange={(event) => {
-                setWorkspaceDisplayName(event.currentTarget.value);
-                setMessage(undefined);
-                setError(undefined);
-              }}
-            />
-          </Field>
-        </SettingsRow>
-        <SettingsRow
-          label="CLI identifier"
-          description="Created automatically for CLI commands. It stays the same when you rename the Workspace."
-        >
-          <dl className="settings-readonly-value">
-            <div>
-              <dt className="visually-hidden">CLI identifier</dt>
-              <dd>
-                <code>{membership.name}</code>
-              </dd>
-            </div>
-            <div>
-              <dt className="visually-hidden">CLI command</dt>
-              <dd>
-                <small>
-                  <code>--workspace {membership.name}</code>
-                </small>
-              </dd>
-            </div>
-          </dl>
-        </SettingsRow>
-      </SettingsList>
-      {dirty ? (
-        <div className="dirty-bar">
-          <span>Unsaved changes</span>
-          <div className="dirty-actions">
-            <Button
-              disabled={saving}
-              variant="ghost"
-              onClick={() => {
-                setWorkspaceDisplayName(membership.displayName);
-                setMessage(undefined);
-                setError(undefined);
-              }}
-            >
-              Discard
-            </Button>
-            <Button disabled={saving} type="submit">
-              {saving ? "Saving…" : "Save Workspace profile"}
-            </Button>
-          </div>
-        </div>
-      ) : null}
-      {message ? (
-        <p className="settings-inline-status success" role="status">
-          {message}
-        </p>
-      ) : null}
-      {error ? (
-        <p className="notice error" role="alert">
-          {error}
-        </p>
-      ) : null}
-    </form>
-  );
-}
-
 function ComputersPage() {
   const { membership } = useWorkspace();
   const state = useResource(() => browserApi.computers(membership.id), membership.id);
   return (
-    <Page title="Computers" description="Enroll and recover the Computers used by this Workspace's Agents.">
+    <Page title="Computers" description="Enroll and recover the Computers used by your Agents.">
       <AsyncState state={state}>
         {(value) => (
           <div className="settings-workspace-stack">
@@ -2915,66 +2631,6 @@ function ComputersPage() {
         )}
       </AsyncState>
     </Page>
-  );
-}
-
-function WorkspaceAdminSettings({ membership }: { membership: MeWorkspace }) {
-  const { me, refreshMe } = useWorkspace();
-  const [revision, setRevision] = useState(0);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
-  const state = useResource(() => browserApi.admins(membership.id), `${membership.id}:${revision}`);
-
-  async function revoke(admin: WorkspaceAdminSummary) {
-    if (!window.confirm(`Revoke Workspace Admin access for ${admin.displayName}?`)) return;
-    setBusy(true);
-    setError(undefined);
-    try {
-      await browserApi.revokeWorkspaceAdmin(membership.id, admin.userId);
-      setRevision((value) => value + 1);
-      if (admin.userId === me.user.id) refreshMe();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to revoke Workspace Admin access");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <section aria-labelledby="workspace-admins-heading" className="account-workspace-profile">
-      <header className="settings-subheader">
-        <div>
-          <h2 id="workspace-admins-heading">Admins</h2>
-          <p>Every Admin has complete management authority over this Workspace.</p>
-          <p>
-            New invitations cannot be issued. An outstanding invitation can still be accepted while unconsumed,
-            unrevoked, unexpired, and issued by a current Admin.
-          </p>
-        </div>
-      </header>
-      <AsyncState state={state}>
-        {(value) => (
-          <ul className="settings-member-list" aria-label="Workspace Admins">
-            {value.admins.map((admin) => (
-              <li className="settings-member-row" key={admin.userId}>
-                <span>
-                  <strong>{admin.displayName}</strong>
-                  {admin.userId === me.user.id ? " (you)" : ""}
-                </span>
-                <Button disabled={busy} size="compact" variant="secondary" onClick={() => void revoke(admin)}>
-                  Revoke
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </AsyncState>
-      {error ? (
-        <p className="notice error" role="alert">
-          {error}
-        </p>
-      ) : null}
-    </section>
   );
 }
 
@@ -3124,7 +2780,7 @@ function agentRecoveryMessage(agent: AgentDetailView): string {
     computer_offline: "The assigned Computer is offline, so new requests cannot start.",
     runtime_unavailable: "The assigned Computer is not ready to run this Agent.",
     runtime_unconfirmed: "OpenTag could not confirm whether the assigned Computer is ready.",
-    im_not_connected: "Connect Feishu or Slack so workspacemates can assign work to this agent.",
+    im_not_connected: "Connect Feishu or Slack so teammates can assign work to this agent.",
     im_provisioning: "The messaging connection is still being set up.",
     im_reauthorization_required: "The messaging connection needs permission to continue receiving requests.",
     im_error: "The messaging connection needs attention before it can receive requests.",

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   AGENT_RUNTIME_BINDING_MAX_BYTES,
+  AGENT_RUNTIME_DESCRIPTION_MAX_BYTES,
   AGENT_RUNTIME_ID_MAX_BYTES,
   AGENT_RUNTIME_TEXT_MAX_BYTES,
   type AgentPromptRequest,
@@ -9,6 +10,7 @@ import {
 import {
   assertAgentInput,
   assertBinding,
+  assertDescription,
   assertHostedTools,
   assertIdentifier,
   assertJsonValue,
@@ -32,6 +34,27 @@ describe("Agent Runtime validation", () => {
     for (const value of [undefined, 1, "", "   ", "x".repeat(AGENT_RUNTIME_ID_MAX_BYTES + 1)]) {
       expect(() => assertIdentifier(value as string, "runId")).toThrowError(
         expect.objectContaining({ code: "invalid_request" }),
+      );
+    }
+  });
+
+  it("accepts semantic hosted-tool descriptions by byte length instead of identifier rules", () => {
+    expect(() => assertDescription("Send progress, results, or follow-up instructions.", "description")).not.toThrow();
+    expect(() =>
+      assertDescription("界".repeat(Math.floor(AGENT_RUNTIME_DESCRIPTION_MAX_BYTES / 3)), "description"),
+    ).not.toThrow();
+    expect(() => assertDescription("x".repeat(AGENT_RUNTIME_ID_MAX_BYTES + 1), "description")).not.toThrow();
+
+    for (const value of [
+      undefined,
+      1,
+      "",
+      "   ",
+      "x".repeat(AGENT_RUNTIME_DESCRIPTION_MAX_BYTES + 1),
+      "界".repeat(Math.floor(AGENT_RUNTIME_DESCRIPTION_MAX_BYTES / 3) + 1),
+    ]) {
+      expect(() => assertDescription(value as string, "description")).toThrowError(
+        expect.objectContaining({ code: "configuration_invalid" }),
       );
     }
   });
@@ -130,6 +153,26 @@ describe("Agent Runtime validation", () => {
       handler: async () => ({ success: true, content: [] }),
     };
     expect(() => assertHostedTools(policy, hostedTools)).not.toThrow();
+    expect(() =>
+      assertHostedTools(policy, {
+        ...hostedTools,
+        definitions: [
+          {
+            name: "send",
+            description: "x".repeat(AGENT_RUNTIME_ID_MAX_BYTES + 1),
+            inputSchema: { type: "object" },
+          },
+        ],
+      }),
+    ).not.toThrow();
+    for (const description of ["", "   ", "x".repeat(AGENT_RUNTIME_DESCRIPTION_MAX_BYTES + 1)]) {
+      expect(() =>
+        assertHostedTools(policy, {
+          ...hostedTools,
+          definitions: [{ name: "send", description, inputSchema: { type: "object" } }],
+        }),
+      ).toThrowError(expect.objectContaining({ code: "configuration_invalid" }));
+    }
     for (const propertySchema of [
       { type: "string", format: "uuid", description: "Identifier" },
       { type: "number" },

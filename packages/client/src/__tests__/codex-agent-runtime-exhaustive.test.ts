@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +29,7 @@ import type {
   InteractiveCodexAppServerClient,
 } from "../providers/codex/app-server-wire.js";
 import { CodexAppServerError } from "../providers/codex/app-server-wire.js";
+import { SessionCollaborationClient } from "../runtime/session-collaboration-client.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex-app-server.mjs", import.meta.url));
 const directories: string[] = [];
@@ -257,6 +259,47 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
     allowListClient.complete();
     await allowListRun;
     await allowListRuntime.close();
+  });
+
+  it("replaces an old Codex binding that has threadId but no hostedToolsHash", async () => {
+    const hostedTools = collaborationHostedTools();
+    const legacyBinding = { providerId: "codex", schemaVersion: 1, payload: { threadId: "existing-thread" } } as const;
+    expect(codexBindingRequiresHostedToolReplacement(legacyBinding, hostedTools)).toBe(true);
+
+    const incompatibleClient = new ManualCodexClient();
+    await expect(
+      factory(incompatibleClient).resume({
+        ...createRequest(() => undefined),
+        binding: legacyBinding,
+        hostedTools,
+      }),
+    ).rejects.toMatchObject({ code: "binding_incompatible" });
+    expect(incompatibleClient.call("thread/resume")).toBeUndefined();
+    expect(incompatibleClient.call("thread/start")).toBeUndefined();
+
+    const replacementClient = new ManualCodexClient();
+    const replacement = await factory(replacementClient).create({
+      ...createRequest(() => undefined),
+      hostedTools,
+    });
+    expect(replacementClient.call("thread/resume")).toBeUndefined();
+    expect(replacementClient.call("thread/start")?.params).toMatchObject({
+      ephemeral: false,
+      dynamicTools: hostedTools.definitions.map((definition) => ({
+        type: "function",
+        name: definition.name,
+        description: definition.description,
+        inputSchema: definition.inputSchema,
+      })),
+    });
+    expect(replacement.binding?.payload).toMatchObject({
+      threadId: "thread-1",
+      hostedToolsHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+    const upgradedBinding = replacement.binding;
+    await replacement.close();
+    if (!upgradedBinding) throw new Error("Expected the upgraded Codex binding");
+    expect(codexBindingRequiresHostedToolReplacement(upgradedBinding, hostedTools)).toBe(false);
   });
 
   it("maps all supported factory, Turn, policy, and Provider configuration variants", async () => {
@@ -1559,6 +1602,23 @@ function factory(client: ManualCodexClient): CodexAgentRuntimeFactory {
     createClient: () => client,
     probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "test" }),
   });
+}
+
+function collaborationHostedTools() {
+  const tools = new SessionCollaborationClient({
+    connection: {
+      supportsCapability: () => true,
+      send: async () => undefined,
+    },
+    inbox: { accept: vi.fn() },
+  }).hostedToolsForSession({
+    agentId: randomUUID(),
+    sessionId: randomUUID(),
+    placementGeneration: 1,
+    sessionKind: "visible",
+  });
+  if (!tools) throw new Error("Expected production collaboration hosted tools");
+  return tools;
 }
 
 function createRequest(eventSink: CreateAgentRuntimeRequest["eventSink"]): CreateAgentRuntimeRequest {

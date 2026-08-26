@@ -37,6 +37,7 @@ import {
 } from "./services/im-bindings/feishu/index.js";
 import { createImProviderAdapterResolver, ImBindingService } from "./services/im-bindings/index.js";
 import { DefaultSlackApiClient, SlackAdapter, SlackConfigurationService } from "./services/im-bindings/slack/index.js";
+import { OnboardingResetService } from "./services/onboarding-lab/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { WorkspaceAdminAccess } from "./services/workspace-admin-access/index.js";
@@ -78,6 +79,7 @@ export {
 export { AgentService, AgentServiceError } from "./services/agents/index.js";
 export { AuthService, AuthServiceError, AuthTokenService } from "./services/auth/index.js";
 export { ComputerService } from "./services/computers/index.js";
+export { OnboardingResetError, OnboardingResetService } from "./services/onboarding-lab/index.js";
 export {
   SessionCollaborationService,
   type SessionCollaborationServiceOptions,
@@ -238,6 +240,18 @@ export async function startServer(): Promise<void> {
         })
       : undefined;
     const dev = config.devAuth ? new DevBrowserAuthService(database, authService, config.devAuth.email) : undefined;
+    const stagingOnboardingLab = config.stagingOnboardingLab
+      ? {
+          reset: new OnboardingResetService({
+            agents: agentService,
+            database,
+            environment: config.environment,
+            labAccountId: config.stagingOnboardingLab.accountId,
+            registry,
+            workspaceAdmins,
+          }),
+        }
+      : undefined;
     app = createApp({
       webAppRoot: defaultWebAppRoot,
       agentService,
@@ -279,6 +293,7 @@ export async function startServer(): Promise<void> {
             botId: binding.botId,
           }),
       },
+      ...(stagingOnboardingLab ? { stagingOnboardingLab } : {}),
       workspaceService,
       workspaceSetupService,
     });

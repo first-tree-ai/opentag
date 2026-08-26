@@ -20,6 +20,8 @@ export const SLACK_EVENTS_PATH = `${API_V1_PREFIX}/im-bindings/slack/events`;
 export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-messages/:imMessageId/resources/:ordinal`;
 export const WORKSPACE_COMPUTERS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/computers`;
 export const WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/computer-connect-codes`;
+/** Staging-only Onboarding Lab interface; the Account comes only from the authenticated session. */
+export const INTERNAL_ONBOARDING_LAB_PATH = `${API_V1_PREFIX}/internal/onboarding-lab`;
 
 export const HTTP_PATHS = {
   agentById: AGENT_BY_ID_TEMPLATE,
@@ -34,6 +36,7 @@ export const HTTP_PATHS = {
   authProviders: `${API_V1_PREFIX}/auth/providers`,
   authRefresh: `${API_V1_PREFIX}/auth/refresh`,
   computerRuntimeWebSocket: `${API_V1_PREFIX}/computer/ws`,
+  internalOnboardingLab: INTERNAL_ONBOARDING_LAB_PATH,
   me: `${API_V1_PREFIX}/me`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
   workspaceAgents: WORKSPACE_AGENTS_TEMPLATE,

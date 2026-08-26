@@ -91,11 +91,7 @@ export class GoogleBrowserAuthService {
     });
     const userId = await this.#database.transaction(async (transaction) => {
       const resolved = await this.#identities.resolveOrCreateInTransaction(transaction, identity);
-      await this.#postAuthentication.completeInTransaction(
-        transaction,
-        resolved.userId,
-        resolved.accountWasCreated,
-      );
+      await this.#postAuthentication.completeInTransaction(transaction, resolved.userId, resolved.accountWasCreated);
       return resolved.userId;
     });
     return {

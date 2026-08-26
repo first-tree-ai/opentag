@@ -273,17 +273,14 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 Computer enrollment 与恢复位于 Agents 区域。**Generate connection command** 会签发一个 15 分钟、仅可使用
 一次的 code，并复制由 Server 生成的 `computer connect` 命令；页面会轮询 Workspace enrollment，直到新的 daemon
 握手到达。Admins、Workspace 管理和 Account 操作位于 account menu。只有一个 Workspace 时不显示 selector；多个
-Workspace 时才显示，并结合显式最近选择与 Server 的确定性 fallback。CLI 暴露相同的无角色 Admin 操作：
-
-```bash
-pnpm --filter open-tag start admin list --workspace example
-pnpm --filter open-tag start admin revoke <account-id> --workspace example
-```
+Workspace 时才显示，并结合显式最近选择与 Server 的确定性 fallback。Admin CLI 已退场，但现有 Admin grant
+会继续授权当前管理行为。在独立的 Workspace Web 退场 PR 合并前，该 Web 界面仍可能提供 grant 查看与撤销；该界面
+退场后，运维人员必须按照常规数据库变更流程，通过受控 PostgreSQL 运维执行 grant 查看与撤销。
 
 OpenTag 不再提供创建额外 Workspace 或签发新 Admin invitation 的入口。不携带 invitation 的普通注册以及 bootstrap，
 仍会为 Account 配置内部默认 Workspace。变更前已签发的 invitation 在未被使用、撤销且未过期时仍可预览，并且仅在签发者
-仍是当前 Admin 时才可兑换；兑换仍可能新增 Admin。PostgreSQL 只保存其 SHA-256 查询 hash。现有 Admin 仍可列出和撤销；
-撤销 Admin 时，其未使用 invitation 会在同一事务失效。`OPENTAG_ENCRYPTION_KEY` 继续保护 IM provider credential；使用
+仍是当前 Admin 时才可兑换；兑换仍可能新增 Admin。PostgreSQL 只保存其 SHA-256 查询 hash。
+`OPENTAG_ENCRYPTION_KEY` 继续保护 IM provider credential；使用
 `openssl rand -base64 32` 生成。
 
 ## Onboarding 端到端检查

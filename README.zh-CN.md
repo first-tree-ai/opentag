@@ -19,7 +19,7 @@ OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与
 - 持久化 Agent Runtime 执行、delivery custody、上报与恢复；
 - 飞书和 Slack 入站标准化、持久化及 Channel/Thread Session 路由；
 - 供 Agent 自主回复和 Reaction 的 provider CLI 凭证交接；
-- 同源 Admin Web，以及 `doctor`、`login`、`admin`、`agent`、`computer` 和 daemon 服务管理命令。
+- 同源 Admin Web，以及 `doctor`、`login`、`agent`、`computer` 和 daemon 服务管理命令。
 
 这些 Runtime 与消息路径已经实现，但仍处于 pre-alpha 阶段；安装、管理和端到端产品工作流仍在完善。
 
@@ -81,16 +81,13 @@ Effective Runtime Snapshot 目前尚未支持。
 `http://127.0.0.1:8000/`。Workspace Admin 管理 Agents、Tasks、Skills 与 Integrations；Computer enrollment
 和诊断从 Agents 区域进入。OpenTag 不再提供创建额外 Workspace 或签发新 Admin invitation 的入口。不携带
 invitation 的普通注册以及 bootstrap，仍会为 Account 配置内部默认 Workspace。变更前已签发的 invitation 在未被使用、
-撤销且未过期时仍可预览，并且仅在签发者仍是当前 Admin 时才可兑换；兑换仍可能新增 Admin。现有 Admin 仍可列出和撤销：
+撤销且未过期时仍可预览，并且仅在签发者仍是当前 Admin 时才可兑换；兑换仍可能新增 Admin。Admin CLI 已退场，
+但现有 Admin grant 会继续授权当前管理行为。在独立的 Workspace Web 退场 PR 合并前，该 Web 界面仍可能提供 grant
+查看与撤销；该界面退场后，运维人员必须按照常规数据库变更流程，通过受控 PostgreSQL 运维执行 grant 查看与撤销。
 
 若 loopback 开发环境没有 Google 凭据，可设置 `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true`，并将
 `OPENTAG_DEV_AUTH_EMAIL` 设为已有 bootstrap 用户的唯一 email。该 bypass 在 `dev` 以外的环境会被拒绝，
 且不会创建 Account 或 Admin grant。
-
-```bash
-pnpm --filter open-tag start admin list
-pnpm --filter open-tag start admin revoke <account-id>
-```
 
 完整本地工作流请参阅 [DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)。
 

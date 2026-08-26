@@ -280,19 +280,15 @@ Settings tab. Computer enrollment and recovery live in the Agents area. **Genera
 15-minute, single-use code and copies the server-authored `computer connect` command; the page polls the Workspace's
 enrollments until the new daemon handshake arrives. Admins, Workspace management, and Account actions live in the account
 menu. A single-Workspace Account sees no selector; multiple Workspaces reveal one, with explicit recent selection and a
-deterministic Server fallback. Use the CLI for the same roleless Admin operations:
-
-```bash
-pnpm --filter open-tag start admin list --workspace example
-pnpm --filter open-tag start admin revoke <account-id> --workspace example
-```
+deterministic Server fallback. The Admin CLI has been retired, while existing Admin grants continue to authorize current
+management behavior. Until the separate Workspace Web retirement PR is merged, that Web surface may still expose grant
+inspection and revocation. After it is retired, operators must handle grant inspection and revocation through controlled
+PostgreSQL operations under their normal database change procedure.
 
 OpenTag no longer exposes a way to create an additional Workspace or issue a new Admin invitation. Normal sign-up
 without an invitation and bootstrap still provision an internal default Workspace. An invitation issued before this
 transition remains previewable while it is unconsumed, unrevoked, and unexpired, and it remains redeemable only while
 its issuer is also a current Admin; accepting one may still add an Admin. PostgreSQL stores only its SHA-256 lookup hash.
-Existing Admins remain listable and revocable, and revoking an Admin invalidates that Admin's unused invitations in the
-same transaction.
 `OPENTAG_ENCRYPTION_KEY` still protects IM provider credentials; generate it with `openssl rand -base64 32`.
 
 ## Onboarding end-to-end check

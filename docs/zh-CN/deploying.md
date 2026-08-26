@@ -1,7 +1,7 @@
 # OpenTag 部署指南
 
 > Canonical source: [../deploying.md](../deploying.md)
-> Last synced with: 2026-08-20
+> Last synced with: 2026-08-26
 
 OpenTag 的 Staging 环境运行在 [CapRover](https://caprover.com/) 上。每个合入 `main` 且通过 CI 的 revision，都会用
 `Docker` workflow 已经发布到 GHCR 的容器镜像自动部署。CapRover 主机上不构建任何内容，也不上传源码 tarball；一次部署
@@ -122,7 +122,7 @@ IF EXISTS (SELECT 1 FROM "workspace_computer_credentials") THEN
 Agent 的 Connected computer 页会显示 `OpenTag is not running on <name>. Start it there to bring this Computer back
 online.`。这句话对"机器只是睡着了"是对的，在这里是错的——启动旧 daemon 不可能成功。
 
-#### 找出受影响的入组记录
+#### 建立待办清单
 
 ```sql
 select w.name as workspace, wc.display_name, wc.computer_id, wc.platform, wc.last_seen_at
@@ -134,8 +134,11 @@ where wc.revoked_at is null and c.id is null
 order by wc.computer_id, w.name;
 ```
 
-每一行是一条待恢复的**入组记录**，不是一台主机。同一个 `computer_id` 出现在多行上，说明这台主机入组了多个
-Workspace，每一行都需要单独走一遍恢复。全部恢复后这个列表为空。
+每一行是一条**尚未被签发**机器凭证的入组记录，不是一台主机。同一个 `computer_id` 出现在多行上，说明这台主机入组了
+多个 Workspace，每一行都需要单独走一遍。
+
+这个查询衡量的是"是否签发"，不是"是否恢复"。用它建立待办清单，不要用它判断收工——原因见
+[确认恢复](#确认恢复)。
 
 #### 恢复方式
 
@@ -145,16 +148,36 @@ Workspace 的主机只跑一次，其余 Workspace 的 Agent 仍然离线，而�
 
 而且无法集中完成——凭证要写到目标主机的磁盘上。
 
-对上面查询返回的每一行：
+对待办清单里的每一行：
 
 1. **该 Workspace 的** Admin 在 Web 的 Computers 页生成连接命令。该命令一次性、15 分钟过期，所以要等使用者到位再
    生成，不要提前批量生成。
 2. 由使用者在那台主机上执行生成的命令。它会在一行里完成 CLI 升级和入组——这一点很关键，因为已安装的 CLI 早于
    `computer connect` 子命令。
-3. 命令写入机器凭证并重启 daemon 服务。该条入组记录会在一次注册后回到 Online。
+3. 命令写入机器凭证并重启 daemon 服务。
+4. 用下面的检查确认这条入组记录确实回到 Online 之后再处理下一条。**不要**把它从待办清单里消失当作成功。
 
 在一台已经为别的 Workspace 恢复过的主机上重复执行是安全的。`computer-credentials.json` 每条入组记录存一项，入组
 时只替换正在入组的那个 Workspace 对应的那一项，先前的凭证会保留，daemon 重启后会重新拾起全部已存储的入组记录。
 
 重新入组时，只要主机上的 `config/computer.json` 还在，`computerId` 就不变，已有的入组记录会被复用，绑在上面的
 Agent 不受影响。该文件丢失则会被认作一台新的 Computer，此前的每一条入组记录连同它们的 Agent 一起留在离线状态。
+
+#### 确认恢复
+
+权威信号是一次 Runtime 注册，也就是 Computers 页显示的 Online。用 SQL 表达同一条规则——只有当入组记录持有当前
+instance、且在存活窗口（默认 90 秒）内被看到过，才算在线：
+
+```sql
+select w.name as workspace, wc.display_name, wc.computer_id, wc.last_seen_at
+from workspace_computers wc
+join workspaces w on w.id = wc.workspace_id
+where wc.revoked_at is null
+  and (wc.current_instance_id is null or wc.last_seen_at < now() - interval '90 seconds')
+order by wc.computer_id, w.name;
+```
+
+优先用这条，而不是待办清单那条——后者无法证明恢复。`runComputerConnect` 先兑换连接码、由服务端创建新凭证并**吊销
+该入组记录原有的凭证**，之后 CLI 才把 `computer-credentials.json` 写到主机上。因此本地写入若因磁盘、权限或进程中断
+而失败，这条入组记录就处于"服务端有一份 daemon 拿不到的有效凭证、而旧凭证已被吊销"的状态。它会从待办清单里消失，
+却并没有恢复，而且比尝试之前更糟。遇到这种情况，重新生成一条命令再跑一次。

@@ -132,7 +132,7 @@ The Agent's Connected computer page reports `OpenTag is not running on <name>. S
 back online.` That advice is correct for a Computer that is merely asleep and wrong here; starting the old daemon
 cannot succeed.
 
-#### Finding the affected enrollments
+#### Building the work list
 
 ```sql
 select w.name as workspace, wc.display_name, wc.computer_id, wc.platform, wc.last_seen_at
@@ -144,9 +144,12 @@ where wc.revoked_at is null and c.id is null
 order by wc.computer_id, w.name;
 ```
 
-Each row is one enrollment waiting to be recovered, not one host. A `computer_id` appearing on more than one row is a
-host enrolled in several Workspaces, and every one of those rows needs its own pass. The list is empty once the fleet
-has recovered.
+Each row is one enrollment that has not been **issued** a machine credential yet, not one host. A `computer_id`
+appearing on more than one row is a host enrolled in several Workspaces, and every one of those rows needs its own
+pass.
+
+This measures issuance, not recovery. Use it to build the work list; do not use it to declare the work finished. The
+reason is under [Confirming recovery](#confirming-recovery).
 
 #### Recovery
 
@@ -157,14 +160,15 @@ Workspaces leaves the other Workspaces' Agents offline on a machine that already
 
 It cannot be done centrally either — the credential is written to the target host's disk.
 
-For each row returned above:
+For each row in the work list:
 
 1. A Workspace Admin **of that Workspace** opens the Computers page in the web app and generates a connection command.
    The command is single-use and expires in 15 minutes, so generate it once the person is ready rather than in advance.
 2. That person runs the generated command on the host. It upgrades the CLI and enrols in one line, which matters
    because the installed CLI predates the `computer connect` subcommand.
-3. The command writes the machine credential and restarts the daemon service. That enrollment reports Online within
-   one registration.
+3. The command writes the machine credential and restarts the daemon service.
+4. Confirm that the enrollment reports Online before moving on, using the check below. Do not treat its disappearance
+   from the work list as success.
 
 Repeating this on a host already recovered for another Workspace is safe. `computer-credentials.json` holds one entry
 per enrollment and enrolling replaces only the entry for the Workspace being enrolled, so earlier credentials survive
@@ -173,3 +177,25 @@ and the daemon picks up every stored enrollment when it restarts.
 Re-enrolling a host that still has its `config/computer.json` keeps the same `computerId`, so existing enrollments are
 reused and their Agents stay bound. Losing that file makes the host a new Computer, and every previous enrollment stays
 offline with its Agents attached to it.
+
+#### Confirming recovery
+
+The authoritative signal is a Runtime registration, which is what the Computers page reports as Online. The same rule
+in SQL — an enrollment counts as online only while it holds a current instance and was seen inside the presence window,
+90 seconds by default:
+
+```sql
+select w.name as workspace, wc.display_name, wc.computer_id, wc.last_seen_at
+from workspace_computers wc
+join workspaces w on w.id = wc.workspace_id
+where wc.revoked_at is null
+  and (wc.current_instance_id is null or wc.last_seen_at < now() - interval '90 seconds')
+order by wc.computer_id, w.name;
+```
+
+Prefer this over the work-list query, which cannot prove recovery. `runComputerConnect` exchanges the code and the
+Server creates the new credential — revoking the enrollment's previous one — before the CLI writes
+`computer-credentials.json` on the host. A local write that fails on disk space, permissions, or an interrupted
+process therefore leaves an enrollment holding an active Server-side credential that the daemon does not have, with
+the old secret already revoked. That enrollment drops out of the work list without having recovered, and is worse off
+than before the attempt. Generate a fresh command and run it again.

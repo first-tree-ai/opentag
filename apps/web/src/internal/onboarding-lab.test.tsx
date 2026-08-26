@@ -66,6 +66,38 @@ describe("Onboarding Lab page", () => {
     }
   });
 
+  it("stays inert when every control in every preview is clicked", async () => {
+    const requests = vi.mocked(fetch);
+    for (const scenario of ONBOARDING_SCENARIOS) {
+      const view = render(
+        <OnboardingLabPage
+          scenarioId={scenario.id}
+          user={user}
+          onResetSucceeded={vi.fn()}
+          onScenarioChange={vi.fn()}
+        />,
+      );
+      // Clicking a control can reveal another, so keep going until the preview stops changing.
+      const clicked = new Set<Element>();
+      for (let pass = 0; pass < 4; pass += 1) {
+        const preview = screen.getByLabelText(`Onboarding preview: ${scenario.title}`);
+        const controls = [
+          ...within(preview).queryAllByRole("button"),
+          ...within(preview).queryAllByRole("link"),
+        ].filter((control) => !clicked.has(control) && !control.hasAttribute("disabled"));
+        if (controls.length === 0) break;
+        for (const control of controls) {
+          clicked.add(control);
+          fireEvent.click(control);
+        }
+      }
+      expect(clicked.size).toBeGreaterThan(0);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(requests, `scenario ${scenario.id} issued a request`).not.toHaveBeenCalled();
+      view.unmount();
+    }
+  });
+
   it("communicates each state without contacting the Server", () => {
     const requests = vi.mocked(fetch);
 
@@ -156,13 +188,32 @@ describe("Onboarding Lab page", () => {
 
 describe("Onboarding Lab route", () => {
   let meRequests = 0;
+  let resetRequests = 0;
 
-  function installApi(options: { available?: boolean; setupCompletedAt?: string | null } = {}) {
+  function installApi(
+    options: {
+      available?: boolean;
+      setupCompletedAt?: string | null;
+      afterResetSetupCompletedAt?: string | null;
+      meDelayMs?: number;
+      meFailsAfterReset?: boolean;
+    } = {},
+  ) {
     meRequests = 0;
+    resetRequests = 0;
+    const completed = options.setupCompletedAt === undefined ? null : options.setupCompletedAt;
+    const afterReset = options.afterResetSetupCompletedAt === undefined ? null : options.afterResetSetupCompletedAt;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const path = String(input);
       if (path === "/api/v1/me") {
         meRequests += 1;
+        if (resetRequests > 0 && options.meFailsAfterReset) {
+          return json(
+            { error: { code: "SERVICE_UNAVAILABLE", category: "transient", message: "Account state unavailable" } },
+            503,
+          );
+        }
+        if (options.meDelayMs) await new Promise((resolve) => setTimeout(resolve, options.meDelayMs));
         return json({
           user,
           workspaces: [
@@ -170,14 +221,17 @@ describe("Onboarding Lab route", () => {
               id: workspaceId,
               name: "lab",
               displayName: "Lab",
-              setupCompletedAt: options.setupCompletedAt ?? null,
+              setupCompletedAt: resetRequests > 0 ? afterReset : completed,
               grantedAt: "2026-08-20T00:00:00.000Z",
             },
           ],
         });
       }
       if (path === "/api/v1/internal/onboarding-lab") {
-        if (init?.method === "POST") return new Response(null, { status: 204 });
+        if (init?.method === "POST") {
+          resetRequests += 1;
+          return new Response(null, { status: 204 });
+        }
         return new Response(null, { status: options.available === false ? 404 : 204 });
       }
       if (path.endsWith("/computers")) return json({ computers: [] });
@@ -223,8 +277,8 @@ describe("Onboarding Lab route", () => {
     expect(within(preview).getAllByText("Reconnect").length).toBeGreaterThan(0);
   });
 
-  it("refreshes authoritative state and enters ordinary onboarding after a reset", async () => {
-    installApi({ setupCompletedAt: "2026-08-20T00:00:00.000Z" });
+  it("waits for the refreshed Account before entering ordinary onboarding", async () => {
+    installApi({ setupCompletedAt: "2026-08-20T00:00:00.000Z", meDelayMs: 30 });
     window.history.replaceState({}, "", "/internal/onboarding-lab?scenario=setup-complete");
     render(<App />);
     await screen.findByRole("heading", { level: 1, name: "Onboarding Lab" });
@@ -232,8 +286,39 @@ describe("Onboarding Lab route", () => {
 
     await confirmReset();
 
+    // The Account still reports completed setup until the refresh lands, so leaving early would let
+    // the setup gate bounce the tester to /agents instead of into onboarding.
+    expect(window.location.pathname).toBe("/internal/onboarding-lab");
     await waitFor(() => expect(window.location.pathname).toBe("/onboarding"));
     expect(window.location.search).toBe("");
-    await waitFor(() => expect(meRequests).toBeGreaterThan(before));
+    expect(meRequests).toBeGreaterThan(before);
+    expect(await screen.findByRole("heading", { level: 1, name: "Set up OpenTag" })).toBeTruthy();
+  });
+
+  it("stays on the Lab when the refreshed Account still reports completed setup", async () => {
+    installApi({
+      setupCompletedAt: "2026-08-20T00:00:00.000Z",
+      afterResetSetupCompletedAt: "2026-08-20T00:00:00.000Z",
+    });
+    render(<App />);
+    await screen.findByRole("heading", { level: 1, name: "Onboarding Lab" });
+
+    await confirmReset();
+
+    const failure = await screen.findByRole("alert");
+    expect(within(failure).getByText(/still reports completed setup/)).toBeTruthy();
+    expect(window.location.pathname).toBe("/internal/onboarding-lab");
+  });
+
+  it("stays on the Lab when the authoritative refresh fails", async () => {
+    installApi({ setupCompletedAt: "2026-08-20T00:00:00.000Z", meFailsAfterReset: true });
+    render(<App />);
+    await screen.findByRole("heading", { level: 1, name: "Onboarding Lab" });
+
+    await confirmReset();
+
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(window.location.pathname).toBe("/internal/onboarding-lab");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
   });
 });

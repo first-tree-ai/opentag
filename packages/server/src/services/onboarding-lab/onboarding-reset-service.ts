@@ -39,7 +39,13 @@ export interface OnboardingResetConnectionRegistry {
   closeEnrollment(enrollmentId: string): Promise<boolean>;
 }
 
+type QueryExecutor = Pick<DatabaseClient, "select">;
+
 export interface OnboardingResetServiceOptions {
+  /** Test seam: runs after cleanup and before the locked commit boundary, to interleave a writer. */
+  afterCleanup?: () => Promise<void>;
+  /** Test seam: runs inside the locked commit, between verification and the setup marker. */
+  afterVerified?: () => Promise<void>;
   agents: OnboardingResetAgentLifecycle;
   database: DatabaseClient;
   environment: ChannelName;
@@ -63,6 +69,8 @@ export interface OnboardingResetServiceOptions {
  * Account-native; the direct Account-ownership cutover replaces only `#resolveOwnedScope`.
  */
 export class OnboardingResetService {
+  readonly #afterCleanup?: () => Promise<void>;
+  readonly #afterVerified?: () => Promise<void>;
   readonly #agents: OnboardingResetAgentLifecycle;
   readonly #database: DatabaseClient;
   readonly #environment: ChannelName;
@@ -72,6 +80,8 @@ export class OnboardingResetService {
   readonly #workspaceAdmins: WorkspaceAdminAccess;
 
   constructor(options: OnboardingResetServiceOptions) {
+    this.#afterCleanup = options.afterCleanup;
+    this.#afterVerified = options.afterVerified;
     this.#agents = options.agents;
     this.#database = options.database;
     this.#environment = options.environment;
@@ -96,8 +106,8 @@ export class OnboardingResetService {
     for (const enrollmentId of enrollmentIds) {
       await this.#registry?.closeEnrollment(enrollmentId);
     }
-    await this.#verifyCleanedUp(scope);
-    await this.#clearSetupCompletion(scope);
+    await this.#afterCleanup?.();
+    await this.#commitFirstRunState(accountId, scope);
   }
 
   /**
@@ -194,52 +204,71 @@ export class OnboardingResetService {
     });
   }
 
-  /** Re-reads authoritative facts; a retained historical row must never satisfy an active fact. */
-  async #verifyCleanedUp(scope: { workspaceId: string }): Promise<void> {
+  /**
+   * Verification and the setup marker share one locked commit boundary. Every ordinary Agent,
+   * enrollment and connect-code mutation locks this scope first, so re-checking and clearing under
+   * the same lock is what makes a 204 mean the Account really entered onboarding with no active
+   * resource. Verifying outside it would let a concurrent writer slip in between the two steps.
+   */
+  async #commitFirstRunState(accountId: string, scope: { workspaceId: string }): Promise<void> {
     const now = this.#now();
-    const [remainingAgents, activeBindings, activeEnrollments, activeCredentials, usableCodes] = await Promise.all([
-      this.#count(
-        this.#database
-          .select({ value: count() })
-          .from(agents)
-          .where(and(eq(agents.workspaceId, scope.workspaceId), ne(agents.status, "deleted"))),
-      ),
-      this.#count(
-        this.#database
-          .select({ value: count() })
-          .from(imBindings)
-          .innerJoin(agents, eq(agents.id, imBindings.agentId))
-          .where(and(eq(agents.workspaceId, scope.workspaceId), ne(imBindings.status, "disabled"))),
-      ),
-      this.#count(
-        this.#database
-          .select({ value: count() })
-          .from(workspaceComputers)
-          .where(and(eq(workspaceComputers.workspaceId, scope.workspaceId), isNull(workspaceComputers.revokedAt))),
-      ),
-      this.#count(
-        this.#database
-          .select({ value: count() })
-          .from(workspaceComputerCredentials)
-          .innerJoin(workspaceComputers, eq(workspaceComputers.id, workspaceComputerCredentials.workspaceComputerId))
-          .where(
-            and(eq(workspaceComputers.workspaceId, scope.workspaceId), isNull(workspaceComputerCredentials.revokedAt)),
+    await this.#database.transaction(async (transaction) => {
+      await this.#workspaceAdmins.requireAdminForMutation(transaction, accountId, scope.workspaceId);
+      await this.#verifyCleanedUp(transaction, scope, now);
+      await this.#afterVerified?.();
+      await transaction
+        .update(workspaces)
+        .set({ setupCompletedAt: null, updatedAt: now })
+        .where(eq(workspaces.id, scope.workspaceId));
+    });
+  }
+
+  /**
+   * Re-reads authoritative facts; a retained historical row must never satisfy an active fact.
+   * The reads run in sequence because they share the caller's single transaction connection.
+   */
+  async #verifyCleanedUp(executor: QueryExecutor, scope: { workspaceId: string }, now: Date): Promise<void> {
+    const remainingAgents = await this.#count(
+      executor
+        .select({ value: count() })
+        .from(agents)
+        .where(and(eq(agents.workspaceId, scope.workspaceId), ne(agents.status, "deleted"))),
+    );
+    const activeBindings = await this.#count(
+      executor
+        .select({ value: count() })
+        .from(imBindings)
+        .innerJoin(agents, eq(agents.id, imBindings.agentId))
+        .where(and(eq(agents.workspaceId, scope.workspaceId), ne(imBindings.status, "disabled"))),
+    );
+    const activeEnrollments = await this.#count(
+      executor
+        .select({ value: count() })
+        .from(workspaceComputers)
+        .where(and(eq(workspaceComputers.workspaceId, scope.workspaceId), isNull(workspaceComputers.revokedAt))),
+    );
+    const activeCredentials = await this.#count(
+      executor
+        .select({ value: count() })
+        .from(workspaceComputerCredentials)
+        .innerJoin(workspaceComputers, eq(workspaceComputers.id, workspaceComputerCredentials.workspaceComputerId))
+        .where(
+          and(eq(workspaceComputers.workspaceId, scope.workspaceId), isNull(workspaceComputerCredentials.revokedAt)),
+        ),
+    );
+    const usableCodes = await this.#count(
+      executor
+        .select({ value: count() })
+        .from(computerConnectCodes)
+        .where(
+          and(
+            eq(computerConnectCodes.workspaceId, scope.workspaceId),
+            isNull(computerConnectCodes.consumedAt),
+            isNull(computerConnectCodes.revokedAt),
+            gt(computerConnectCodes.expiresAt, now),
           ),
-      ),
-      this.#count(
-        this.#database
-          .select({ value: count() })
-          .from(computerConnectCodes)
-          .where(
-            and(
-              eq(computerConnectCodes.workspaceId, scope.workspaceId),
-              isNull(computerConnectCodes.consumedAt),
-              isNull(computerConnectCodes.revokedAt),
-              gt(computerConnectCodes.expiresAt, now),
-            ),
-          ),
-      ),
-    ]);
+        ),
+    );
     if (remainingAgents + activeBindings + activeEnrollments + activeCredentials + usableCodes > 0) {
       throw new OnboardingResetError(
         "ONBOARDING_RESET_UNVERIFIED",
@@ -247,15 +276,6 @@ export class OnboardingResetService {
         "The Account still has active OpenTag resources after cleanup; retry the reset",
       );
     }
-  }
-
-  /** The final commit marker: only a verified Account is allowed back into onboarding. */
-  async #clearSetupCompletion(scope: { workspaceId: string }): Promise<void> {
-    const now = this.#now();
-    await this.#database
-      .update(workspaces)
-      .set({ setupCompletedAt: null, updatedAt: now })
-      .where(eq(workspaces.id, scope.workspaceId));
   }
 
   async #count(query: PromiseLike<{ value: number }[]>): Promise<number> {

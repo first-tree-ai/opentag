@@ -22,8 +22,12 @@ Object.defineProperty(window, "localStorage", {
 
 vi.stubGlobal("fetch", vi.fn());
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  // A loader that requests again after its first await keeps running once the component is gone.
+  // Let those chains settle before the spy is reset, or their late request lands in the next test
+  // and is attributed to it.
+  await new Promise((resolve) => setTimeout(resolve, 0));
   vi.mocked(fetch).mockReset();
   window.history.replaceState({}, "", "/");
 });

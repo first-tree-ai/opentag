@@ -45,7 +45,18 @@ interface SeededAccount {
   workspaceId: string;
 }
 
-async function fixture(options: { closeEnrollment?: (enrollmentId: string) => Promise<boolean> } = {}) {
+async function fixture(
+  options: {
+    afterCleanup?: (context: {
+      database: DatabaseClient;
+      agents: AgentService;
+      machineAuth: MachineAuthService;
+      lab: SeededAccount;
+    }) => Promise<void>;
+    afterVerified?: () => Promise<void>;
+    closeEnrollment?: (enrollmentId: string) => Promise<boolean>;
+  } = {},
+) {
   const client = createDatabaseClient(databaseUrl);
   const registry = new ConnectionRegistry();
   const closeEnrollment = vi.fn(
@@ -65,7 +76,14 @@ async function fixture(options: { closeEnrollment?: (enrollmentId: string) => Pr
     agentName: "lab-agent",
     externalAppId: "cli_lab",
   });
+  const interleave = options.afterCleanup;
   const reset = new OnboardingResetService({
+    ...(interleave
+      ? {
+          afterCleanup: async () => interleave({ database: client.database, agents: agentService, machineAuth, lab }),
+        }
+      : {}),
+    ...(options.afterVerified ? { afterVerified: options.afterVerified } : {}),
     agents: agentService,
     database: client.database,
     environment: "staging",
@@ -368,6 +386,53 @@ describe("staging Onboarding Lab reset", () => {
     await value.reset.resetOnboarding(value.lab.accountId);
 
     expect((await facts(value.database, value.lab)).setupCompletedAt).toBeNull();
+  });
+
+  it("refuses to clear setup completion when a writer interleaves before the commit", async () => {
+    // Another tester on the shared Account asks for a Computer connect command mid-reset.
+    let interleaved = false;
+    const value = await fixture({
+      afterCleanup: async ({ lab, machineAuth }) => {
+        if (interleaved) return;
+        interleaved = true;
+        await machineAuth.issueForWorkspaceAdmin(lab.accountId, lab.workspaceId);
+      },
+    });
+
+    await expect(value.reset.resetOnboarding(value.lab.accountId)).rejects.toMatchObject({
+      code: "ONBOARDING_RESET_UNVERIFIED",
+    });
+
+    const staged = await facts(value.database, value.lab);
+    expect(staged.setupCompletedAt).not.toBeNull();
+    expect(staged.usableCodes).toBe(1);
+
+    // The retry revokes the interleaved code and converges.
+    await value.reset.resetOnboarding(value.lab.accountId);
+    expect(await facts(value.database, value.lab)).toMatchObject({ setupCompletedAt: null, usableCodes: 0 });
+  });
+
+  it("holds the scope lock across verification and the setup marker", async () => {
+    let pending: Promise<unknown> | undefined;
+    let settled = false;
+    let blockedWhileCommitting: boolean | undefined;
+    const value = await fixture({
+      afterVerified: async () => {
+        // A writer that starts between verification and the marker must wait for this commit.
+        pending = value.machineAuth.issueForWorkspaceAdmin(value.lab.accountId, value.lab.workspaceId).finally(() => {
+          settled = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        blockedWhileCommitting = !settled;
+      },
+    });
+
+    await value.reset.resetOnboarding(value.lab.accountId);
+    await pending;
+
+    expect(blockedWhileCommitting).toBe(true);
+    // The interleaved command belongs to the new run: the marker cleared before it was issued.
+    expect(await facts(value.database, value.lab)).toMatchObject({ setupCompletedAt: null, usableCodes: 1 });
   });
 
   it("leaves another Account's resources unchanged", async () => {

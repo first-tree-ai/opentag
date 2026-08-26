@@ -338,6 +338,7 @@ export function AgentCreationFlow({
         displayedComputer={displayedComputer}
         displayedProvider={displayedProvider}
         facts={facts}
+        preview={preview}
         readyRoutes={readyRoutes}
         refreshing={refreshing}
         selectedRoute={selectedRoute}
@@ -423,6 +424,7 @@ function RuntimeRouteSection({
   onToggleComputerSetup,
   onToggleComputer,
   onToggleRuntime,
+  preview,
   readyRoutes,
   refreshing,
   selectedRoute,
@@ -443,6 +445,7 @@ function RuntimeRouteSection({
   onToggleComputerSetup: () => void;
   onToggleComputer: () => void;
   onToggleRuntime: () => void;
+  preview: boolean;
   readyRoutes: readonly ReadyRoute[];
   refreshing: boolean;
   selectedRoute: ReadyRoute | undefined;
@@ -467,6 +470,7 @@ function RuntimeRouteSection({
       {facts.computers.length === 0 ? (
         <div className="agent-create-runtime-setup">
           <ComputerSetup
+            preview={preview}
             workspaceId={workspaceId}
             onConnected={(computer) =>
               onConnected({
@@ -571,6 +575,7 @@ function RuntimeRouteSection({
               {connectingComputer ? (
                 <div className="agent-create-runtime-setup" id="new-agent-computer-setup">
                   <ComputerSetup
+                    preview={preview}
                     workspaceId={workspaceId}
                     onConnected={(computer) =>
                       onConnected({

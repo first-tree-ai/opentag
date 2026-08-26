@@ -11,6 +11,8 @@ const COPY_FALLBACK_HINT = "Copying is unavailable here. The command is selected
 export interface ComputerSetupProps {
   workspaceId: string;
   onConnected?: (computer: WorkspaceComputerSummary) => void;
+  /** Renders the panel for review only: it issues no connect code and starts no Computer polling. */
+  preview?: boolean;
   /** Scopes the panel to one enrollment so a recovery flow names the Computer it came from. */
   target?: { computerId: string; displayName: string };
 }
@@ -35,18 +37,19 @@ function formatRemaining(remainingMs: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-export function ComputerSetup({ workspaceId, onConnected, target }: ComputerSetupProps) {
+export function ComputerSetup({ workspaceId, onConnected, preview, target }: ComputerSetupProps) {
   return (
     <ComputerSetupLifecycle
       key={`${workspaceId}:${target?.computerId ?? ""}`}
       workspaceId={workspaceId}
       onConnected={onConnected}
+      preview={preview}
       target={target}
     />
   );
 }
 
-function ComputerSetupLifecycle({ workspaceId, onConnected, target }: ComputerSetupProps) {
+function ComputerSetupLifecycle({ workspaceId, onConnected, preview = false, target }: ComputerSetupProps) {
   const targetComputerId = target?.computerId;
   const targetName = target?.displayName;
   const [bootstrapCommand, setBootstrapCommand] = useState<string>();
@@ -96,6 +99,8 @@ function ComputerSetupLifecycle({ workspaceId, onConnected, target }: ComputerSe
   }
 
   async function connectComputer() {
+    // Preview must never issue a connect code: that is durable Server state, not a rendered state.
+    if (preview) return;
     const attempt = connectAttempt.current + 1;
     connectAttempt.current = attempt;
     setError(undefined);
@@ -193,7 +198,7 @@ function ComputerSetupLifecycle({ workspaceId, onConnected, target }: ComputerSe
     <section className="panel">
       <h2>{targetName ? `Reconnect ${targetName}` : "Connect a Local Computer"}</h2>
       <p>Generate a short-lived command, then run it in a terminal on {targetName ?? "the Computer"}.</p>
-      <Button className="connect-command-primary" onClick={() => void connectComputer()}>
+      <Button className="connect-command-primary" disabled={preview} onClick={() => void connectComputer()}>
         Generate connection command
       </Button>
       {bootstrapCommand ? (

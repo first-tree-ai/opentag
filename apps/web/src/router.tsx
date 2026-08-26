@@ -16,6 +16,7 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
+  useCallback,
   useContext,
   useEffect,
   useRef,
@@ -425,7 +426,8 @@ function AsyncState<T>({
 interface WorkspaceSession {
   me: MeResponse;
   membership: MeWorkspace;
-  refreshMe: () => void;
+  /** Resolves only once the authoritative `/me` response has been installed as current state. */
+  refreshMe: () => Promise<MeResponse>;
 }
 
 const workspaceContext = createContext<WorkspaceSession | undefined>(undefined);
@@ -558,20 +560,31 @@ function LoginProviderLink({ next, provider }: { next: string; provider: AuthPro
 function AuthenticatedWorkspaceGate() {
   const location = useLocation();
   const [meRevision, setMeRevision] = useState(0);
+  const [refreshed, setRefreshed] = useState<{ revision: number; me: MeResponse }>();
   const state = useResource(() => browserApi.me(), `me:${meRevision}`);
+  /**
+   * Installs the authoritative response before resolving, so a caller that navigates on the result
+   * cannot have a gate re-evaluate the state this refresh was meant to replace.
+   */
+  const refreshMe = useCallback(async () => {
+    const next = await browserApi.me();
+    setRefreshed({ revision: meRevision, me: next });
+    return next;
+  }, [meRevision]);
   if (state.kind === "error" && state.error instanceof ApiError && state.error.status === 401) {
     const requested = location.pathname === "/" ? "/agents" : `${location.pathname}${location.search}`;
     return <Navigate replace to={`/login?next=${encodeURIComponent(requested)}`} />;
   }
   return (
     <AsyncState state={state}>
-      {(me) => {
+      {(loaded) => {
+        const me = refreshed?.revision === meRevision ? refreshed.me : loaded;
         const membership = me.workspaces[0];
         if (!membership) {
           return <NoWorkspaceAccess onRetry={() => setMeRevision((value) => value + 1)} />;
         }
         return (
-          <WorkspaceContext value={{ me, membership, refreshMe: () => setMeRevision((value) => value + 1) }}>
+          <WorkspaceContext value={{ me, membership, refreshMe }}>
             <Outlet />
           </WorkspaceContext>
         );
@@ -605,7 +618,7 @@ function OnboardingRoute() {
       user={me.user}
       onSetupReady={async (agentId) => {
         await browserApi.completeWorkspaceSetup(membership.id, agentId);
-        refreshMe();
+        await refreshMe();
       }}
       onTargetAgentChange={(agentId) => {
         const next = new URLSearchParams(searchParams);
@@ -637,8 +650,13 @@ function OnboardingLabRoute() {
               next.set("scenario", scenarioId);
               setSearchParams(next, { replace: true });
             }}
-            onResetSucceeded={() => {
-              refreshMe();
+            onResetSucceeded={async () => {
+              // The Lab never infers success from client state: it enters onboarding only once the
+              // refreshed Account actually reports incomplete setup.
+              const account = await refreshMe();
+              if (account.workspaces[0]?.setupCompletedAt) {
+                throw new Error("The Account still reports completed setup; retry the reset.");
+              }
               navigate("/onboarding", { replace: true });
             }}
           />

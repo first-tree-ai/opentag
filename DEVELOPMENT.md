@@ -284,13 +284,13 @@ deterministic Server fallback. Use the CLI for the same roleless Admin operation
 
 ```bash
 pnpm --filter open-tag start admin list --workspace example
-pnpm --filter open-tag start admin invite --workspace example
 pnpm --filter open-tag start admin revoke <account-id> --workspace example
 ```
 
-An Admin invitation expires after 30 minutes and is single-use. PostgreSQL stores only its SHA-256 lookup hash; the
-plaintext URL is returned once at creation, and the recipient must sign in and explicitly accept full Workspace Admin
-authority. Revoking an Admin invalidates that Admin's unused invitations in the same transaction.
+OpenTag no longer creates Admin invitations, so no new multi-administrator Workspace can appear. An invitation issued
+before that removal stays redeemable: PostgreSQL holds only its SHA-256 lookup hash, and the recipient must sign in and
+explicitly accept full Workspace Admin authority at `/invites/:token`. Revoking an Admin remains the way to remove
+access, and it invalidates that Admin's unused invitations in the same transaction.
 `OPENTAG_ENCRYPTION_KEY` still protects IM provider credentials; generate it with `openssl rand -base64 32`.
 
 ## Onboarding end-to-end check
@@ -342,7 +342,7 @@ processes.
 | `OPENTAG_HOST` | `127.0.0.1` | Server listen host |
 | `OPENTAG_PORT` | `8000` | Server listen port |
 | `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor target |
-| `OPENTAG_PUBLIC_URL` | none | Required public Server origin used for browser callbacks and invitation links |
+| `OPENTAG_PUBLIC_URL` | none | Required public Server origin used for browser callbacks |
 | `OPENTAG_ENV` | `dev` | OpenTag environment/channel: `dev`, `staging`, or `prod`; hosted values require HTTPS |
 | `OPENTAG_DATABASE_URL` | none | Required PostgreSQL connection URL |
 | `OPENTAG_JWT_SECRET` | none | Required access-token signing secret; at least 32 characters |

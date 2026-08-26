@@ -23,7 +23,6 @@ export const WORKSPACE_ADMINS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspace
 export const WORKSPACE_ADMIN_TEMPLATE = `${WORKSPACE_ADMINS_TEMPLATE}/:accountId`;
 export const WORKSPACE_COMPUTERS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/computers`;
 export const WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/computer-connect-codes`;
-export const WORKSPACE_ADMIN_INVITATIONS_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/admin-invitations`;
 export const ADMIN_INVITATION_PREVIEW_TEMPLATE = `${API_V1_PREFIX}/admin-invitations/:token/preview`;
 export const ADMIN_INVITATION_ACCEPT_TEMPLATE = `${API_V1_PREFIX}/admin-invitations/:token/accept`;
 
@@ -68,10 +67,6 @@ export function workspaceComputersPath(workspaceId: string): string {
 
 export function workspaceComputerConnectCodesPath(workspaceId: string): string {
   return `${workspaceByIdPath(workspaceId)}/computer-connect-codes`;
-}
-
-export function workspaceAdminInvitationsPath(workspaceId: string): string {
-  return `${workspaceByIdPath(workspaceId)}/admin-invitations`;
 }
 
 export function invitationPreviewPath(token: string): string {

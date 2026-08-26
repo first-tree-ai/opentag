@@ -2909,22 +2909,9 @@ function ComputersPage() {
 function WorkspaceAdminSettings({ membership }: { membership: MeWorkspace }) {
   const { me, refreshMe } = useWorkspace();
   const [revision, setRevision] = useState(0);
-  const [invitation, setInvitation] = useState<Awaited<ReturnType<typeof browserApi.createAdminInvitation>>>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const state = useResource(() => browserApi.admins(membership.id), `${membership.id}:${revision}`);
-
-  async function createInvitation() {
-    setBusy(true);
-    setError(undefined);
-    try {
-      setInvitation(await browserApi.createAdminInvitation(membership.id));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to create the Admin invitation");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function revoke(admin: WorkspaceAdminSummary) {
     if (!window.confirm(`Revoke Workspace Admin access for ${admin.displayName}?`)) return;
@@ -2946,23 +2933,9 @@ function WorkspaceAdminSettings({ membership }: { membership: MeWorkspace }) {
       <header className="settings-subheader">
         <div>
           <h2 id="workspace-admins-heading">Admins</h2>
-          <p>Every Admin has complete management authority over this Workspace.</p>
+          <p>Every Admin has complete management authority over this Workspace. New Admins can no longer be added.</p>
         </div>
-        <Button disabled={busy} onClick={() => void createInvitation()}>
-          {busy ? "Creating…" : "Invite Admin"}
-        </Button>
       </header>
-      {invitation ? (
-        <section className="settings-invitation-panel">
-          <h2>Single-use invitation</h2>
-          <p>Share this link with the intended Admin. It expires {formatInviteExpiry(invitation.expiresAt)}.</p>
-          <label className="invite-link">
-            Invitation link
-            <input aria-label="Invitation link" className="ds-control" readOnly value={invitation.inviteUrl} />
-          </label>
-          <Button onClick={() => void window.navigator.clipboard?.writeText(invitation.inviteUrl)}>Copy link</Button>
-        </section>
-      ) : null}
       <AsyncState state={state}>
         {(value) => (
           <ul className="settings-member-list" aria-label="Workspace Admins">
@@ -3168,11 +3141,4 @@ function formatRelativeTime(value: string): string {
   if (elapsedHours < 24) return `${elapsedHours} ${elapsedHours === 1 ? "hour" : "hours"} ago`;
   const elapsedDays = Math.floor(elapsedHours / 24);
   return `${elapsedDays} ${elapsedDays === 1 ? "day" : "days"} ago`;
-}
-
-function formatInviteExpiry(value: string) {
-  const date = new Date(value);
-  const day = new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(date);
-  const time = new Intl.DateTimeFormat("en-US", { timeStyle: "short" }).format(date);
-  return `${day} at ${time}`;
 }

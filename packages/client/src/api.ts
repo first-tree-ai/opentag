@@ -1,6 +1,4 @@
 import {
-  type AdminInvitation,
-  AdminInvitationSchema,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
@@ -71,7 +69,6 @@ import {
   type ValidationIssue,
   type WorkspaceProfile,
   WorkspaceProfileSchema,
-  workspaceAdminInvitationsPath,
   workspaceAdminPath,
   workspaceAdminsPath,
   workspaceAgentsPath,
@@ -171,13 +168,6 @@ export class OpenTagApi {
   revokeWorkspaceAdmin(accessToken: string, workspaceId: string, accountId: string): Promise<void> {
     return this.#requestNoContent(workspaceAdminPath(workspaceId, accountId), {
       method: "DELETE",
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
-  }
-
-  createWorkspaceAdminInvitation(accessToken: string, workspaceId: string): Promise<AdminInvitation> {
-    return this.#request(workspaceAdminInvitationsPath(workspaceId), AdminInvitationSchema, {
-      method: "POST",
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }

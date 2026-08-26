@@ -1,7 +1,7 @@
 # OpenTag 开发指南
 
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-08-25
+> Last synced with: 2026-08-26
 
 ## 前置要求
 
@@ -277,13 +277,12 @@ Workspace 时才显示，并结合显式最近选择与 Server 的确定性 fall
 
 ```bash
 pnpm --filter open-tag start admin list --workspace example
-pnpm --filter open-tag start admin invite --workspace example
 pnpm --filter open-tag start admin revoke <account-id> --workspace example
 ```
 
-Admin invitation 在 30 分钟后过期，且仅可使用一次。PostgreSQL 只保存 SHA-256 查询 hash；明文 URL 仅在创建时
-返回一次，接收者登录后还必须显式接受完整 Workspace Admin 权限。撤销 Admin 时，其未使用 invitation 会在同一事务
-失效。`OPENTAG_ENCRYPTION_KEY` 继续保护 IM provider credential；使用 `openssl rand -base64 32` 生成。
+OpenTag 不再创建 Admin invitation，因此不会再出现新的多管理员 Workspace。此前已签发的 invitation 仍可兑换：
+PostgreSQL 只保存其 SHA-256 查询 hash，接收者需登录并在 `/invites/:token` 显式接受完整 Workspace Admin 权限。
+撤销 Admin 仍是移除访问权的手段，且会在同一事务中让该 Admin 未使用的 invitation 失效。`OPENTAG_ENCRYPTION_KEY` 继续保护 IM provider credential；使用 `openssl rand -base64 32` 生成。
 
 ## Onboarding 端到端检查
 

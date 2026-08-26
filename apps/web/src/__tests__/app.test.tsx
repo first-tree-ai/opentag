@@ -120,11 +120,6 @@ function installApi(
   let joinedInvitation = options.alreadyJoinedInvitation ?? false;
   let computerConnectCodeIssued = false;
   let workspaceNameConflicts = options.workspaceNameConflicts ?? (options.workspaceNameConflict ? 1 : 0);
-  const invitation = () => ({
-    token: invitationToken,
-    inviteUrl: `https://opentag.example.com/invites/${invitationToken}`,
-    expiresAt: "2026-08-27T00:00:00.000Z",
-  });
   vi.mocked(fetch).mockImplementation(async (input, init) => {
     const path = String(input);
     if (path === "/api/v1/auth/providers") {
@@ -312,9 +307,6 @@ function installApi(
     }
     if (path.startsWith(`/api/v1/workspaces/${workspaceId}/admins/`) && init?.method === "DELETE") {
       return new Response(null, { status: 204 });
-    }
-    if (path === `/api/v1/workspaces/${workspaceId}/admin-invitations` && init?.method === "POST") {
-      return json(invitation(), 201);
     }
     if (path === `/api/v1/admin-invitations/${invitationToken}/preview`) {
       return json({ workspaceDisplayName: "Invited Workspace", expiresAt: "2026-08-27T00:00:00.000Z" });
@@ -1202,9 +1194,8 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Workspace" })).toBeTruthy();
     expect(window.location.pathname).toBe("/workspace");
     expect(screen.getByRole("heading", { name: "Admins" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Invite Admin" })).toBeTruthy();
-    // The name reaches every invitation recipient and the identifier is required by the CLI, so a
-    // solo Admin has to be able to read and change them.
+    expect(screen.queryByRole("button", { name: "Invite Admin" })).toBeNull();
+    // The identifier is required by the CLI, so a solo Admin has to be able to read and change it.
     expect(screen.getByLabelText("Workspace name")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Save account profile" })).toBeNull();
   });
@@ -1983,20 +1974,27 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.search).toBe(`?next=${encodeURIComponent(`/invites/${invitationToken}`)}`);
   });
 
-  it("creates a short-lived single-use Admin invitation from the account menu", async () => {
+  it("offers no way to invite another Admin while keeping revocation reachable", async () => {
     installApi();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText } });
     window.history.replaceState({}, "", "/workspace");
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Admins" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Invite Admin" }));
-    const link = (await screen.findByLabelText("Invitation link")) as HTMLInputElement;
-    expect(link.value).toBe(`https://opentag.example.com/invites/${"A".repeat(43)}`);
-    expect(screen.getByRole("heading", { name: "Single-use invitation" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(link.value));
+    expect(screen.queryByRole("button", { name: "Invite Admin" })).toBeNull();
+    expect(screen.queryByLabelText("Invitation link")).toBeNull();
+
+    window.confirm = vi.fn().mockReturnValue(true);
+    fireEvent.click(screen.getAllByRole("button", { name: "Revoke" })[0] as HTMLElement);
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.some(
+            ([input, init]) =>
+              String(input).startsWith(`/api/v1/workspaces/${workspaceId}/admins/`) && init?.method === "DELETE",
+          ),
+      ).toBe(true),
+    );
   });
 
   it("hides only the selector for a single Workspace, not the Workspace itself", async () => {

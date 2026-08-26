@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import type {
-  AdminInvitation,
   CreateWorkspaceRequest,
   CreateWorkspaceResponse,
   InvitationAcceptanceResponse,
@@ -20,7 +19,7 @@ import {
   workspaceAdminGrants,
   workspaces,
 } from "../../db/schema/index.js";
-import { AuthServiceError, generateSecret, hashSecret } from "../auth/index.js";
+import { AuthServiceError, hashSecret } from "../auth/index.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
@@ -127,26 +126,6 @@ export class WorkspaceAdminAccess {
         grantedAt: grant.grantedAt.toISOString(),
       })),
     };
-  }
-
-  createInvitation(accountId: string, workspaceId: string, publicUrl: URL, ttlMs: number): Promise<AdminInvitation> {
-    return this.withAdminMutation(accountId, workspaceId, async (transaction) => {
-      const now = this.#now();
-      const token = generateSecret(32);
-      const expiresAt = new Date(now.getTime() + ttlMs);
-      await transaction.insert(adminInvitations).values({
-        workspaceId,
-        tokenHash: hashSecret(token),
-        createdByUserId: accountId,
-        createdAt: now,
-        expiresAt,
-      });
-      return {
-        token,
-        inviteUrl: new URL(`/invites/${encodeURIComponent(token)}`, publicUrl).toString(),
-        expiresAt: expiresAt.toISOString(),
-      };
-    });
   }
 
   async previewInvitation(rawToken: string): Promise<InvitationPreview> {

@@ -1,7 +1,7 @@
 # OpenTag
 
 > Canonical source: [README.md](./README.md)
-> Last synced with: 2026-08-21
+> Last synced with: 2026-08-26
 
 OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与 AI 编码 Agent。项目目前处于 **pre-alpha**
 阶段：产品工作流仍在开发中，尚不适合生产使用。
@@ -13,7 +13,7 @@ OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与
 - 会校验 schema 的 Client 健康检查；
 - 与 provider 无关的账号身份、Google 浏览器登录和 PostgreSQL migration；
 - 使用滑动续期无状态 refresh JWT 的一次性 Account 登录 code；
-- 等权、无角色的 Workspace Admin grant 与短时、单次 Admin invitation；
+- 等权、无角色的 Workspace Admin grant；已签发的 Admin invitation 仍可兑换，但不再可新建；
 - 独立认证的 Computer enrollment 与在线状态；
 - Workspace 所有的 Agent Registry、不可变 Computer/provider 绑定与 revision fencing；
 - 持久化 Agent Runtime 执行、delivery custody、上报与恢复；
@@ -79,9 +79,10 @@ Effective Runtime Snapshot 目前尚未支持。
 
 配置 `OPENTAG_GOOGLE_CLIENT_ID` 和 `OPENTAG_GOOGLE_CLIENT_SECRET` 后即可启用 Google 登录，然后打开
 `http://127.0.0.1:8000/`。Workspace Admin 管理 Agents、Tasks、Skills 与 Integrations；Computer enrollment
-和诊断从 Agents 区域进入。Admin invitation 与 Workspace 管理位于 account menu；默认 shell 没有 Settings tab，
-且只有一个 Workspace 时隐藏 Workspace selector。Invitation 在 30 分钟后过期、仅可使用一次，接收者必须显式接受完整
-Workspace Admin 权限。CLI 暴露相同的无角色管理模型：
+和诊断从 Agents 区域进入。Workspace 管理位于 account menu；默认 shell 没有 Settings tab，
+且只有一个 Workspace 时隐藏 Workspace selector。OpenTag 不再签发 Admin invitation：一个 Account 只管理自己的
+Agent，同事通过飞书或 Slack 使用这些 Agent，无需 OpenTag Account。已签发的 invitation 仍可兑换，Admin 仍可列出
+与撤销。CLI 暴露相同的无角色管理模型：
 
 若 loopback 开发环境没有 Google 凭据，可设置 `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true`，并将
 `OPENTAG_DEV_AUTH_EMAIL` 设为已有 bootstrap 用户的唯一 email。该 bypass 在 `dev` 以外的环境会被拒绝，
@@ -89,7 +90,6 @@ Workspace Admin 权限。CLI 暴露相同的无角色管理模型：
 
 ```bash
 pnpm --filter open-tag start admin list
-pnpm --filter open-tag start admin invite
 pnpm --filter open-tag start admin revoke <account-id>
 ```
 

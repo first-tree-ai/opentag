@@ -128,9 +128,7 @@ export async function startServer(): Promise<void> {
     const computerService = new ComputerService(database, authService);
     const workspaceService = new WorkspaceAdminService(database, { providerReadiness: registry, workspaceAdmins });
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
-    const invitationService = new InvitationService(database, config.publicUrl, {
-      workspaceAdmins,
-    });
+    const invitationService = new InvitationService(database, { workspaceAdmins });
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database
         .select({ workspaceComputerId: workspaceComputers.id, runtimeProvider: agents.runtimeProvider })

@@ -59,7 +59,6 @@ describe("workspace page layout", () => {
   it("lets list-heavy Agent and Member sections use the shared page width", () => {
     expect(declarationValue(appStyles, ".agent-list-section", "width")).toBe("100%");
     expect(declarationValue(appStyles, ".settings-members-section", "width")).toBe("100%");
-    expect(declarationValue(appStyles, ".settings-members-section .settings-invitation-panel", "width")).toBe("100%");
   });
 
   it("stretches the Agent row link over the whole row without covering its inline action", () => {

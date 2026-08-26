@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { invitationAcceptPath } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -33,8 +34,25 @@ async function fixture() {
   });
   const auth = new AuthService(client.database, new AuthTokenService(jwtSecret, 900, 3600));
   const workspaceAdmins = new WorkspaceAdminAccess(client.database);
-  const invitations = new InvitationService(client.database, "https://opentag.example.com/base", { workspaceAdmins });
+  const invitations = new InvitationService(client.database, { workspaceAdmins });
   return { ...client, auth, bootstrap, invitations, workspaceAdmins };
+}
+
+/**
+ * OpenTag no longer creates Admin invitations. Outstanding rows must stay redeemable, so the
+ * lifecycle tests seed the row the way an already-issued invitation exists in storage.
+ */
+async function seedOutstandingInvitation(value: Awaited<ReturnType<typeof fixture>>): Promise<{ token: string }> {
+  const token = randomBytes(32).toString("base64url");
+  const now = new Date();
+  await value.database.insert(adminInvitations).values({
+    workspaceId: value.bootstrap.workspaceId,
+    tokenHash: hashSecret(token),
+    createdByUserId: value.bootstrap.userId,
+    createdAt: now,
+    expiresAt: new Date(now.getTime() + 30 * 60 * 1000),
+  });
+  return { token };
 }
 
 async function createAccount(value: Awaited<ReturnType<typeof fixture>>, email: string): Promise<string> {
@@ -47,14 +65,16 @@ async function createAccount(value: Awaited<ReturnType<typeof fixture>>, email: 
 }
 
 describe("Admin invitation lifecycle", () => {
-  it("creates one canonical Web/OAuth invitation destination", async () => {
+  it("keeps the Web invitation destination a valid post-sign-in redirect", async () => {
     const value = await fixture();
     try {
-      const invitation = await value.invitations.create(value.bootstrap.userId, value.bootstrap.workspaceId);
-      const inviteUrl = new URL(invitation.inviteUrl);
-      expect(inviteUrl.origin).toBe("https://opentag.example.com");
-      expect(inviteUrl.pathname).toBe(`/invites/${invitation.token}`);
-      expect(validateOAuthNext(inviteUrl.pathname)).toBe(inviteUrl.pathname);
+      const invitation = await seedOutstandingInvitation(value);
+      const invitePath = `/invites/${invitation.token}`;
+      expect(validateOAuthNext(invitePath)).toBe(invitePath);
+      await expect(value.invitations.preview(invitation.token)).resolves.toMatchObject({
+        workspaceDisplayName: "Example",
+      });
+      expect("create" in value.invitations).toBe(false);
     } finally {
       await value.sql.end();
     }
@@ -65,7 +85,7 @@ describe("Admin invitation lifecycle", () => {
     const app = createApp({ authService: value.auth, invitationService: value.invitations });
     try {
       const tokens = await value.auth.exchangeConnectCode(value.bootstrap.connectCode);
-      const invitation = await value.invitations.create(value.bootstrap.userId, value.bootstrap.workspaceId);
+      const invitation = await seedOutstandingInvitation(value);
       const secondAccountId = await createAccount(value, "second@example.com");
       const grantsBefore = await value.database
         .select({ id: workspaceAdminGrants.id })
@@ -113,7 +133,7 @@ describe("Admin invitation lifecycle", () => {
   it("allows only one of two Accounts to consume an invitation concurrently", async () => {
     const value = await fixture();
     try {
-      const invitation = await value.invitations.create(value.bootstrap.userId, value.bootstrap.workspaceId);
+      const invitation = await seedOutstandingInvitation(value);
       const [firstAccountId, secondAccountId] = await Promise.all([
         createAccount(value, "first@example.com"),
         createAccount(value, "second@example.com"),
@@ -147,7 +167,7 @@ describe("Admin invitation lifecycle", () => {
     const value = await fixture();
     try {
       const secondAccountId = await createAccount(value, "second@example.com");
-      const invitation = await value.invitations.create(value.bootstrap.userId, value.bootstrap.workspaceId);
+      const invitation = await seedOutstandingInvitation(value);
       await value.invitations.accept(secondAccountId, invitation.token);
 
       const results = await Promise.allSettled([

@@ -12,7 +12,7 @@ This repository currently provides the engineering foundation and first control-
 - a schema-validating client health check;
 - provider-neutral account identities, Google browser sign-in, and PostgreSQL migrations;
 - one-time Account login codes with sliding stateless refresh JWTs;
-- equal, roleless Workspace Admin grants and short-lived, single-use Admin invitations;
+- equal, roleless Workspace Admin grants, with outstanding Admin invitations redeemable but no longer issuable;
 - independently authenticated Computer enrollment and presence;
 - Workspace-owned Agent registry with immutable Computer/provider binding and revision fencing;
 - durable Agent Runtime execution, delivery custody, reporting, and recovery;
@@ -80,10 +80,11 @@ supported.
 
 Configure `OPENTAG_GOOGLE_CLIENT_ID` and `OPENTAG_GOOGLE_CLIENT_SECRET` to enable Google sign-in, then open
 `http://127.0.0.1:8000/`. Workspace Admins manage Agents, Tasks, Skills, and Integrations. Computers are enrolled and
-diagnosed from the Agents area. Admin invitations and Workspace management live in the account menu; the default shell
-has no Settings tab and hides Workspace selection when only one Workspace is available. Invitations expire after 30 minutes and
-single-use, and the recipient must explicitly accept complete Workspace Admin authority. The CLI exposes the same
-roleless administration model:
+diagnosed from the Agents area. Workspace management lives in the account menu; the default shell
+has no Settings tab and hides Workspace selection when only one Workspace is available. OpenTag no longer issues Admin
+invitations: an Account administers its own Agents, and colleagues consume them through Feishu or Slack without an
+OpenTag Account. An outstanding invitation stays redeemable, and Admins can still be listed and revoked. The CLI exposes
+the same roleless administration model:
 
 For loopback development without Google credentials, set `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true` and
 `OPENTAG_DEV_AUTH_EMAIL` to the unique email of an existing bootstrap user. This bypass is rejected outside the
@@ -91,7 +92,6 @@ For loopback development without Google credentials, set `OPENTAG_DEV_AUTH_BYPAS
 
 ```bash
 pnpm --filter open-tag start admin list
-pnpm --filter open-tag start admin invite
 pnpm --filter open-tag start admin revoke <account-id>
 ```
 

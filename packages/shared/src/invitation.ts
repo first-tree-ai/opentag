@@ -7,14 +7,6 @@ export const InvitationTokenSchema = z
   .max(512)
   .regex(/^[A-Za-z0-9_-]+$/);
 
-export const AdminInvitationSchema = z
-  .object({
-    token: InvitationTokenSchema,
-    inviteUrl: z.string().url(),
-    expiresAt: z.string().datetime(),
-  })
-  .strict();
-
 export const InvitationPreviewSchema = z
   .object({
     workspaceDisplayName: z.string().min(1),
@@ -25,6 +17,5 @@ export const InvitationPreviewSchema = z
 export const InvitationAcceptanceResponseSchema = z.object({ workspace: MeWorkspaceSchema }).strict();
 
 export type InvitationToken = z.infer<typeof InvitationTokenSchema>;
-export type AdminInvitation = z.infer<typeof AdminInvitationSchema>;
 export type InvitationPreview = z.infer<typeof InvitationPreviewSchema>;
 export type InvitationAcceptanceResponse = z.infer<typeof InvitationAcceptanceResponseSchema>;

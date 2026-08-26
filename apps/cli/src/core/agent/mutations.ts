@@ -19,7 +19,6 @@ export interface AgentCreateOptions extends AgentCommandDependencies {
   name: string;
   reasoningEffort?: string;
   runtimeProvider: string;
-  workspaceName?: string;
 }
 
 export interface AgentCreateResult {
@@ -45,7 +44,7 @@ export function selectComputer(
 ): WorkspaceComputerSummary {
   if (requestedComputerId) {
     const selected = response.computers.find((computer) => computer.computerId === requestedComputerId);
-    if (!selected) throw new Error(`Computer "${requestedComputerId}" is not enrolled in the selected internal scope`);
+    if (!selected) throw new Error(`Computer "${requestedComputerId}" is not enrolled by this Account`);
     return selected;
   }
   if (response.computers.length === 1) {

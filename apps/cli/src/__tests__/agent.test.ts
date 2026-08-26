@@ -176,10 +176,10 @@ describe("Agent CLI core", () => {
       }),
     ).toThrow("use --computer");
     expect(() => selectComputer({ computers: [computer] }, crypto.randomUUID())).toThrow(
-      "is not enrolled in the selected internal scope",
+      "is not enrolled by this Account",
     );
     expect(() => selectComputer({ computers: [computer] }, "75fe9af3-d1c6-472b-b78c-8a7ccf512750")).toThrow(
-      "is not enrolled in the selected internal scope",
+      "is not enrolled by this Account",
     );
   });
 

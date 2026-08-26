@@ -2543,6 +2543,7 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
   const confirmedDisplayNameRef = useRef(user.displayName);
   const [displayName, setDisplayName] = useState(user.displayName);
   const [saving, setSaving] = useState(false);
+  const syncInFlight = useRef(false);
   const [syncing, setSyncing] = useState(false);
   /**
    * A Server-confirmed display name whose Account refresh has not succeeded yet. It is saved, not
@@ -2562,7 +2563,10 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (saveInFlight.current) return;
+    // Enter in the text field submits this form too, so the boundary lives here rather than in
+    // which controls are rendered: a committed save must not be repeated, and a save must never
+    // run against an Account refresh that is still in flight.
+    if (saveInFlight.current || syncInFlight.current || !dirty) return;
     saveInFlight.current = true;
     setSaving(true);
     setMessage(undefined);
@@ -2582,8 +2586,14 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
     }
   }
 
-  /** Refreshes the shared Account after a committed write; it never repeats the write itself. */
+  /**
+   * Refreshes the shared Account after a committed write; it never repeats the write itself. One
+   * refresh at a time, so a slower earlier response can never overwrite a newer projection.
+   */
   async function syncAccount(savedDisplayName: string): Promise<void> {
+    if (syncInFlight.current) return;
+    syncInFlight.current = true;
+    setSyncing(true);
     try {
       await refreshMe();
       setUnsyncedDisplayName(undefined);
@@ -2595,17 +2605,15 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
       setError(
         "Your display name was saved. OpenTag could not refresh the account, so the rest of the page still shows the previous name.",
       );
+    } finally {
+      syncInFlight.current = false;
+      setSyncing(false);
     }
   }
 
   async function retrySync() {
-    if (unsyncedDisplayName === undefined || syncing) return;
-    setSyncing(true);
-    try {
-      await syncAccount(unsyncedDisplayName);
-    } finally {
-      setSyncing(false);
-    }
+    if (unsyncedDisplayName === undefined) return;
+    await syncAccount(unsyncedDisplayName);
   }
 
   return (
@@ -2636,6 +2644,8 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
             <input
               autoComplete="name"
               className="ds-control"
+              // Editing during a refresh-only retry could open a save that races it.
+              disabled={syncing}
               id="account-display-name"
               maxLength={255}
               name="displayName"

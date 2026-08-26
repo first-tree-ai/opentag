@@ -70,6 +70,7 @@ function installApi(
     initialStatus?: "active" | "suspended";
     provider?: "feishu" | "slack";
     runtimeProvider?: "codex" | "claude-code";
+    meDelayMsAfterProfileUpdate?: number;
     meFailuresAfterProfileUpdate?: number;
     profileUpdate?: (displayName: string) => Promise<Response> | Response;
     profileUpdateFails?: boolean;
@@ -138,6 +139,9 @@ function installApi(
     }
     if (path === "/api/v1/me") {
       if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
+      if (profileUpdated && options.meDelayMsAfterProfileUpdate) {
+        await new Promise((resolve) => setTimeout(resolve, options.meDelayMsAfterProfileUpdate));
+      }
       if (profileUpdated && meFailuresRemaining > 0) {
         meFailuresRemaining -= 1;
         return json(
@@ -1107,6 +1111,65 @@ describe("OpenTag Web App Shell", () => {
     expect(
       vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input) === "/api/v1/me" && init?.method === "PATCH"),
     ).toHaveLength(1);
+  });
+
+  it("cannot repeat a committed save by submitting the form while its refresh is outstanding", async () => {
+    installApi({ meFailuresAfterProfileUpdate: 99 });
+    window.history.replaceState({}, "", "/account");
+    render(<App />);
+
+    const displayName = (await screen.findByLabelText("Display name")) as HTMLInputElement;
+    const form = displayName.closest("form");
+    if (!form) throw new Error("Account form was not rendered");
+    fireEvent.change(displayName, { target: { value: "Ada Lovelace" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Save account profile" }));
+    await screen.findByText("Account not refreshed");
+
+    // Save is hidden in this state, but the field still sits in an active form, so Enter would
+    // submit it. The guard has to hold at the submit boundary, not only in the rendered controls.
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input) === "/api/v1/me" && init?.method === "PATCH"),
+    ).toHaveLength(1);
+    expect(screen.getByText("Account not refreshed")).toBeTruthy();
+  });
+
+  it("lets no new save race an in-flight refresh retry", async () => {
+    installApi({ meFailuresAfterProfileUpdate: 1, meDelayMsAfterProfileUpdate: 40 });
+    window.history.replaceState({}, "", "/account");
+    render(<App />);
+
+    const displayName = (await screen.findByLabelText("Display name")) as HTMLInputElement;
+    const form = displayName.closest("form");
+    if (!form) throw new Error("Account form was not rendered");
+    fireEvent.change(displayName, { target: { value: "Ada Lovelace" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Save account profile" }));
+    await screen.findByText("Account not refreshed");
+
+    const refreshesBeforeRetry = vi
+      .mocked(fetch)
+      .mock.calls.filter(([input, init]) => String(input) === "/api/v1/me" && init?.method !== "PATCH").length;
+    fireEvent.click(screen.getByRole("button", { name: "Retry refresh" }));
+
+    // While the retry is in flight the field cannot be edited into a dirty state, a second retry
+    // cannot start, and a submit cannot slip a competing write past it.
+    expect(await screen.findByRole("button", { name: "Refreshing…" })).toBeTruthy();
+    expect(displayName.disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Refreshing…" }));
+    fireEvent.submit(form);
+
+    expect(await screen.findByText("Account profile saved.")).toBeTruthy();
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input) === "/api/v1/me" && init?.method === "PATCH"),
+    ).toHaveLength(1);
+    // Exactly one refresh was added by the retry: the second click never started another.
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input) === "/api/v1/me" && init?.method !== "PATCH"),
+    ).toHaveLength(refreshesBeforeRetry + 1);
+    expect(await screen.findByText("Ada Lovelace")).toBeTruthy();
   });
 
   it("discards back to the saved name, never the stale one, while a refresh is outstanding", async () => {

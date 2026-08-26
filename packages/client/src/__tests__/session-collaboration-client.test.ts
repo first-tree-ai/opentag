@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { RUNTIME_CAPABILITY, type SessionCollaborationCommandResult } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
+import { assertHostedTools } from "../agent-runtime/validation.js";
 import { SessionCollaborationClient } from "../runtime/session-collaboration-client.js";
 
 describe("SessionCollaborationClient", () => {
@@ -58,6 +59,48 @@ describe("SessionCollaborationClient", () => {
       status: "accepted",
     });
     await expect(invocation).resolves.toMatchObject({ success: true });
+  });
+
+  it("keeps production hosted tool definitions inside the portable Client Runtime contract", () => {
+    const client = new SessionCollaborationClient({
+      connection: {
+        supportsCapability: () => true,
+        send: vi.fn(),
+      },
+      inbox: { accept: vi.fn() },
+    });
+    const tools = client.hostedToolsForSession({
+      agentId: randomUUID(),
+      sessionId: randomUUID(),
+      placementGeneration: 1,
+      sessionKind: "visible",
+    });
+    expect(tools).toBeDefined();
+    expect(() =>
+      assertHostedTools(
+        {
+          fileSystem: "workspace-write",
+          network: "disabled",
+          approvals: "never",
+          tools: { mode: "provider-default" },
+        },
+        tools,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertHostedTools(
+        {
+          fileSystem: "workspace-write",
+          network: "disabled",
+          approvals: "never",
+          tools: {
+            mode: "allow-list",
+            names: ["create_internal_session", "send_session_message"],
+          },
+        },
+        tools,
+      ),
+    ).not.toThrow();
   });
 
   it("uses an explicit create message ID unchanged for a caller-driven retry", async () => {

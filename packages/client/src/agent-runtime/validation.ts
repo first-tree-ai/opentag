@@ -1,6 +1,7 @@
 import { AgentRuntimeError } from "./errors.js";
 import {
   AGENT_RUNTIME_BINDING_MAX_BYTES,
+  AGENT_RUNTIME_DESCRIPTION_MAX_BYTES,
   AGENT_RUNTIME_ID_MAX_BYTES,
   AGENT_RUNTIME_TEXT_MAX_BYTES,
   type AgentHostedTools,
@@ -44,6 +45,16 @@ export function assertSystemPrompt(value: string): void {
     Buffer.byteLength(value, "utf8") > AGENT_RUNTIME_TEXT_MAX_BYTES
   ) {
     throw new AgentRuntimeError("configuration_invalid", "systemPrompt must be a non-empty bounded string");
+  }
+}
+
+export function assertDescription(value: string, field: string): void {
+  if (
+    typeof value !== "string" ||
+    value.trim().length === 0 ||
+    Buffer.byteLength(value, "utf8") > AGENT_RUNTIME_DESCRIPTION_MAX_BYTES
+  ) {
+    throw new AgentRuntimeError("configuration_invalid", `${field} must be a non-empty bounded string`);
   }
 }
 
@@ -97,7 +108,7 @@ export function assertHostedTools(policy: AgentRuntimePolicy, hostedTools: Agent
     }
     defined.add(definition.name);
     if (definition.description !== undefined) {
-      assertIdentifier(definition.description, "hostedTools.definitions.description");
+      assertDescription(definition.description, "hostedTools.definitions.description");
     }
     assertJsonValue(definition.inputSchema, "hostedTools.definitions.inputSchema");
     assertToolInputSchema(definition.inputSchema);

@@ -72,15 +72,15 @@ export class SessionCollaborationClient {
             additionalProperties: false,
             required: ["initialMessage"],
             properties: {
-              initialMessage: { type: "string", minLength: 1, maxLength: 16384 },
+              initialMessage: { type: "string" },
               messageId: { type: "string", format: "uuid" },
               overrides: {
                 type: "object",
                 additionalProperties: false,
                 properties: {
-                  model: { type: "string", minLength: 1, maxLength: 128 },
-                  reasoningEffort: { type: "string", minLength: 1, maxLength: 64 },
-                  maxDurationMs: { type: "integer", minimum: 1, maximum: 86400000 },
+                  model: { type: "string" },
+                  reasoningEffort: { type: "string" },
+                  maxDurationMs: { type: "integer" },
                 },
               },
             },
@@ -96,7 +96,7 @@ export class SessionCollaborationClient {
             required: ["targetSessionId", "message"],
             properties: {
               targetSessionId: { type: "string", format: "uuid" },
-              message: { type: "string", minLength: 1, maxLength: 16384 },
+              message: { type: "string" },
               messageId: { type: "string", format: "uuid" },
             },
           },

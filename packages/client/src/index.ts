@@ -3,6 +3,7 @@ export { AgentProviderError, AgentRuntimeError, type AgentRuntimeErrorCode } fro
 export {
   AGENT_RUNTIME_BINDING_MAX_BYTES,
   AGENT_RUNTIME_CONTRACT_VERSION,
+  AGENT_RUNTIME_DESCRIPTION_MAX_BYTES,
   AGENT_RUNTIME_ID_MAX_BYTES,
   AGENT_RUNTIME_TEXT_MAX_BYTES,
   type AgentAbortRequest,

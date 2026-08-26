@@ -70,7 +70,7 @@ function installApi(
     initialStatus?: "active" | "suspended";
     provider?: "feishu" | "slack";
     runtimeProvider?: "codex" | "claude-code";
-    meFailsAfterProfileUpdate?: boolean;
+    meFailuresAfterProfileUpdate?: number;
     profileUpdate?: (displayName: string) => Promise<Response> | Response;
     profileUpdateFails?: boolean;
     setupFailureCode?: string;
@@ -105,6 +105,7 @@ function installApi(
   let setupCompletedAt = options.setupCompletedAt === undefined ? "2026-08-20T00:00:00.000Z" : options.setupCompletedAt;
   let currentDisplayName = "Ada";
   let profileUpdated = false;
+  let meFailuresRemaining = options.meFailuresAfterProfileUpdate ?? 0;
   let computerConnectCodeIssued = false;
   vi.mocked(fetch).mockImplementation(async (input, init) => {
     const path = String(input);
@@ -137,7 +138,8 @@ function installApi(
     }
     if (path === "/api/v1/me") {
       if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
-      if (options.meFailsAfterProfileUpdate && profileUpdated) {
+      if (profileUpdated && meFailuresRemaining > 0) {
+        meFailuresRemaining -= 1;
         return json(
           { error: { code: "SERVICE_UNAVAILABLE", category: "transient", message: "Account state unavailable" } },
           503,
@@ -1073,8 +1075,8 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() => expect(screen.getByText("Pending Name")).toBeTruthy());
   });
 
-  it("reports an honest retryable state when the profile saves but the account refresh fails", async () => {
-    installApi({ meFailsAfterProfileUpdate: true });
+  it("treats a saved name whose refresh failed as needing synchronization, not as unsaved data", async () => {
+    installApi({ meFailuresAfterProfileUpdate: 1 });
     window.history.replaceState({}, "", "/account");
     render(<App />);
 
@@ -1084,15 +1086,46 @@ describe("OpenTag Web App Shell", () => {
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe(
-      "Your display name was saved, but OpenTag could not refresh the account. Save again to retry.",
+      "Your display name was saved. OpenTag could not refresh the account, so the rest of the page still shows the previous name.",
     );
-    // The save committed, so the page must not claim it failed, and must not claim it succeeded
-    // either while the shared Account is still stale.
+    // The write committed, so the page must not offer to repeat it, must not offer to discard it,
+    // and must not describe the saved value as unsaved.
+    expect(screen.queryByText("Unsaved changes")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Save account profile" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Discard" })).toBeNull();
     expect(screen.queryByText("Account profile saved.")).toBeNull();
+    expect(screen.getByText("Account not refreshed")).toBeTruthy();
     expect(displayName.value).toBe("Ada Lovelace");
-    // The stale shared state is still on screen, and Save stays available to retry both steps.
-    expect(screen.getByRole("button", { name: "Save account profile" })).toBeTruthy();
-    expect(screen.getAllByText("Ada").length).toBeGreaterThan(0);
+
+    // Retry re-runs only the refresh; one PATCH was ever sent.
+    fireEvent.click(screen.getByRole("button", { name: "Retry refresh" }));
+
+    expect(await screen.findByText("Account profile saved.")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByText("Account not refreshed")).toBeNull();
+    expect(await screen.findByText("Ada Lovelace")).toBeTruthy();
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input) === "/api/v1/me" && init?.method === "PATCH"),
+    ).toHaveLength(1);
+  });
+
+  it("discards back to the saved name, never the stale one, while a refresh is outstanding", async () => {
+    installApi({ meFailuresAfterProfileUpdate: 99 });
+    window.history.replaceState({}, "", "/account");
+    render(<App />);
+
+    const displayName = (await screen.findByLabelText("Display name")) as HTMLInputElement;
+    fireEvent.change(displayName, { target: { value: "Ada Lovelace" } });
+    fireEvent.click(await screen.findByRole("button", { name: "Save account profile" }));
+    await screen.findByText("Account not refreshed");
+
+    // Editing again reopens the unsaved-changes bar, and Discard must return to the saved value.
+    fireEvent.change(displayName, { target: { value: "Third Name" } });
+    expect(await screen.findByText("Unsaved changes")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+
+    expect(displayName.value).toBe("Ada Lovelace");
+    expect(await screen.findByText("Account not refreshed")).toBeTruthy();
   });
 
   it("restores the confirmed server name and shows the error when an account update fails", async () => {

@@ -2543,9 +2543,16 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
   const confirmedDisplayNameRef = useRef(user.displayName);
   const [displayName, setDisplayName] = useState(user.displayName);
   const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  /**
+   * A Server-confirmed display name whose Account refresh has not succeeded yet. It is saved, not
+   * unsaved, so it — and never the stale projection — is what the form treats as confirmed.
+   */
+  const [unsyncedDisplayName, setUnsyncedDisplayName] = useState<string>();
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
-  const dirty = displayName !== user.displayName;
+  const confirmedDisplayName = unsyncedDisplayName ?? user.displayName;
+  const dirty = displayName !== confirmedDisplayName;
 
   useEffect(() => {
     if (confirmedDisplayNameRef.current === user.displayName) return;
@@ -2563,21 +2570,41 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
     try {
       const updated = await browserApi.updateProfile({ displayName });
       setDisplayName(updated.displayName);
-      try {
-        await refreshMe();
-      } catch {
-        // The profile is saved; only the shared Account state is stale, so say that rather than
-        // claiming a save that did not happen. The unsaved-changes bar stays, so Save retries both.
-        setError("Your display name was saved, but OpenTag could not refresh the account. Save again to retry.");
-        return;
-      }
-      setMessage("Account profile saved.");
+      await syncAccount(updated.displayName);
     } catch (cause) {
-      setDisplayName(user.displayName);
+      // Only the write can fail here; syncAccount reports its own failure. Fall back to the last
+      // confirmed value, which is the saved one when an earlier save is still unsynchronized.
+      setDisplayName(confirmedDisplayName);
       setError(cause instanceof Error ? cause.message : "Unable to save the account profile");
     } finally {
       saveInFlight.current = false;
       setSaving(false);
+    }
+  }
+
+  /** Refreshes the shared Account after a committed write; it never repeats the write itself. */
+  async function syncAccount(savedDisplayName: string): Promise<void> {
+    try {
+      await refreshMe();
+      setUnsyncedDisplayName(undefined);
+      setError(undefined);
+      setMessage("Account profile saved.");
+    } catch {
+      setUnsyncedDisplayName(savedDisplayName);
+      setMessage(undefined);
+      setError(
+        "Your display name was saved. OpenTag could not refresh the account, so the rest of the page still shows the previous name.",
+      );
+    }
+  }
+
+  async function retrySync() {
+    if (unsyncedDisplayName === undefined || syncing) return;
+    setSyncing(true);
+    try {
+      await syncAccount(unsyncedDisplayName);
+    } finally {
+      setSyncing(false);
     }
   }
 
@@ -2631,7 +2658,7 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
               disabled={saving}
               variant="ghost"
               onClick={() => {
-                setDisplayName(user.displayName);
+                setDisplayName(confirmedDisplayName);
                 setMessage(undefined);
                 setError(undefined);
               }}
@@ -2640,6 +2667,18 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
             </Button>
             <Button disabled={saving} type="submit">
               {saving ? "Saving…" : "Save account profile"}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {!dirty && unsyncedDisplayName !== undefined ? (
+        // The value is saved, so this offers only the step that failed: no Save that would repeat
+        // the write, and no Discard that would replace the saved name with the stale projection.
+        <div className="dirty-bar">
+          <span>Account not refreshed</span>
+          <div className="dirty-actions">
+            <Button disabled={syncing} onClick={() => void retrySync()}>
+              {syncing ? "Refreshing…" : "Retry refresh"}
             </Button>
           </div>
         </div>

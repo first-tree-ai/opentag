@@ -120,27 +120,36 @@ export class OnboardingResetService {
    * exactly one active admin. Neither check picks a scope; both only refuse.
    */
   async #resolveOwnedScope(accountId: string): Promise<{ workspaceId: string }> {
-    const workspaceId = await this.#workspaceAdmins.resolveCompatibilityWorkspaceId(accountId);
+    const workspaceId = await this.#selectScope(accountId);
     const owned = await this.#workspaceAdmins.listActiveAdminWorkspaces(accountId);
     if (owned.length !== 1) {
-      throw new OnboardingResetError(
-        "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT",
-        409,
-        "The Lab Account does not own exactly one active OpenTag resource scope",
-      );
+      throw ownershipInconsistent("The Lab Account does not own exactly one active OpenTag resource scope");
     }
     const [{ admins } = { admins: 0 }] = await this.#database
       .select({ admins: count() })
       .from(workspaceAdminGrants)
       .where(and(eq(workspaceAdminGrants.workspaceId, workspaceId), isNull(workspaceAdminGrants.revokedAt)));
     if (admins !== 1) {
-      throw new OnboardingResetError(
-        "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT",
-        409,
-        "The Lab Account resource scope is not owned exclusively by the Lab Account",
-      );
+      throw ownershipInconsistent("The Lab Account resource scope is not owned exclusively by the Lab Account");
     }
     return { workspaceId };
+  }
+
+  /**
+   * The canonical resolver reports "this Account has no scope" as a non-disclosing 404, which is
+   * right for ordinary management: the caller may not be entitled to know. The Lab has already
+   * identified this Account as its own, so the same fact is a retryable ownership inconsistency
+   * rather than a missing page. Only that outcome is translated; every other failure propagates.
+   */
+  async #selectScope(accountId: string): Promise<string> {
+    try {
+      return await this.#workspaceAdmins.resolveCompatibilityWorkspaceId(accountId);
+    } catch (error) {
+      if (error instanceof AuthServiceError && error.code === "RESOURCE_NOT_FOUND" && error.statusCode === 404) {
+        throw ownershipInconsistent("The Lab Account does not own exactly one active OpenTag resource scope");
+      }
+      throw error;
+    }
   }
 
   /**
@@ -287,6 +296,10 @@ export class OnboardingResetService {
     const [row] = await query;
     return row?.value ?? 0;
   }
+}
+
+function ownershipInconsistent(message: string): OnboardingResetError {
+  return new OnboardingResetError("ONBOARDING_RESET_OWNERSHIP_INCONSISTENT", 409, message);
 }
 
 function resourceNotFound(): AuthServiceError {

@@ -464,6 +464,29 @@ describe("staging Onboarding Lab reset", () => {
     expect((await facts(value.database, other)).activeAgents).toBe(1);
   });
 
+  it("reports a Lab Account with no active scope as a retryable ownership inconsistency", async () => {
+    const value = await fixture();
+    const now = new Date();
+    await value.database
+      .update(workspaceAdminGrants)
+      .set({ revokedByUserId: value.lab.accountId, revokedAt: now })
+      .where(
+        and(
+          eq(workspaceAdminGrants.workspaceId, value.lab.workspaceId),
+          eq(workspaceAdminGrants.userId, value.lab.accountId),
+        ),
+      );
+
+    // The canonical resolver answers 404 here; the Lab has already identified this Account, so it
+    // must surface the retryable ownership error rather than look like an unauthorized Account.
+    await expect(value.reset.resetOnboarding(value.lab.accountId)).rejects.toMatchObject({
+      code: "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT",
+      statusCode: 409,
+    });
+    expect(await facts(value.database, value.lab)).toMatchObject({ activeAgents: 1, activeEnrollments: 1 });
+    expect((await facts(value.database, value.lab)).setupCompletedAt).not.toBeNull();
+  });
+
   it("refuses to proceed when the Lab Account owns more than one active scope", async () => {
     const value = await fixture();
     const [second] = await value.database

@@ -646,38 +646,18 @@ function OnboardingContent({
   }
 
   const current = state.currentState;
-  // Every Agent-less state is answered by the AgentCreationFlow branch above, which owns the
-  // Computer and Provider actions those states describe. They stay handled so the union remains
-  // exhaustive for the Agent-bound narrowing below, and so a change to that guard degrades to a
-  // holding state instead of reading `agent` off a variant that does not carry one.
-  if (current.kind === "workspace" || current.kind === "computer") {
+  // deriveOnboardingState resolves an existing Agent before it can report any of these, and
+  // facts.agent comes straight from snapshot.targetAgent, so the AgentCreationFlow branch above
+  // owns every one of them. The arm stays so the union remains exhaustive for the Agent-bound
+  // narrowing below, and so a change to that guard degrades to a holding state instead of reading
+  // `agent` off a variant that does not carry one.
+  if (
+    current.kind === "workspace" ||
+    current.kind === "computer" ||
+    current.kind === "provider" ||
+    current.kind === "agent"
+  ) {
     return <ActionSection title="Preparing OpenTag" description="Setup will continue automatically." pending />;
-  }
-  if (current.kind === "provider") {
-    const factUnavailable = snapshot.runtime.kind === "unavailable";
-    const attention = runtimeAttention(snapshot.runtime, current.computer.id);
-    const copy = attention ? runtimeAttentionCopy(attention, current.computer.displayName) : undefined;
-    return (
-      <ActionSection
-        title={copy?.title ?? (factUnavailable ? "Confirm the runtime route" : "Prepare Codex or Claude Code")}
-        description={
-          copy?.description ??
-          (factUnavailable
-            ? "OpenTag cannot yet confirm an Agent-ready Provider on this Computer."
-            : `Finish Provider setup on ${current.computer.displayName}, then check again.`)
-        }
-      >
-        <ReloadButton pending={refreshPending} onReload={onReload} />
-      </ActionSection>
-    );
-  }
-  if (current.kind === "agent") {
-    return (
-      <ActionSection
-        title="Create the Agent"
-        description={`The runnable route is ${providerLabel(current.provider.provider)} on ${current.computer.displayName}.`}
-      />
-    );
   }
   if (current.kind === "agent-runtime") {
     const agent = snapshot.targetAgent;

@@ -146,9 +146,8 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
     }
 
     /**
-     * A session may legitimately hold no membership: creating or joining a Workspace is the first onboarding
-     * step, so the user must be able to authenticate before any Workspace exists. Workspace-scoped authority is
-     * always re-checked per resource, never inferred from holding a session.
+     * Authentication proves the Account identity, not ownership of every stored resource. A legacy or revoked
+     * Account may have no active Workspace grant, and resource-scoped authority is always checked separately.
      */
     const activeWorkspaces = await this.#workspaceAdmins.listActiveAdminWorkspaces(userId);
 

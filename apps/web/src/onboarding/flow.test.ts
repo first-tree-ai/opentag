@@ -49,7 +49,6 @@ describe("deriveOnboardingState", () => {
       currentState: { kind: "workspace" },
       runtimeReady: false,
       handoffReady: false,
-      canManage: true,
     });
   });
 
@@ -280,10 +279,5 @@ describe("deriveOnboardingState", () => {
       runtimeReady: true,
       handoffReady: true,
     });
-  });
-
-  it("gives every authenticated Workspace participant complete Admin controls", () => {
-    const state = deriveOnboardingState(facts({ agent }));
-    expect(state.canManage).toBe(true);
   });
 });

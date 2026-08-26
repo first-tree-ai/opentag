@@ -616,11 +616,12 @@ describe("OpenTag Web App Shell", () => {
     expect(heading.closest("main")?.classList.contains("decorative-page")).toBe(true);
   });
 
-  it("uses the page header as the sole empty-state action for admins", async () => {
+  it("uses the page header as the Account owner's sole empty-state action", async () => {
     installApi({ emptyAgents: true });
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "No Agents yet" })).toBeTruthy();
+    expect(screen.getByText("Create your first shared AI teammate with New Agent.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "New Agent" }).closest(".page-header")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Agents" })).toBeNull();
   });

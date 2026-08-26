@@ -868,20 +868,16 @@ function AgentsPage() {
           </Button>
         }
       >
-        <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} canCreate />}</AsyncState>
+        <AsyncState state={state}>{(value) => <AgentsContent agents={value.agents} />}</AsyncState>
       </Page>
       {createOpen ? <NewAgentDialog returnFocusRef={createTriggerRef} onClose={() => setCreateOpen(false)} /> : null}
     </>
   );
 }
 
-function AgentsContent({ agents, canCreate }: { agents: AgentListItem[]; canCreate: boolean }) {
+function AgentsContent({ agents }: { agents: AgentListItem[] }) {
   if (agents.length > 0) return <AgentList agents={agents} />;
-  return (
-    <EmptyState title="No Agents yet">
-      {canCreate ? "Create the first shared AI teammate with New Agent." : "An Admin can create the first Agent."}
-    </EmptyState>
-  );
+  return <EmptyState title="No Agents yet">Create your first shared AI teammate with New Agent.</EmptyState>;
 }
 
 function AgentList({ agents }: { agents: AgentListItem[] }) {

@@ -6,7 +6,7 @@ import { Button } from "../ui/design-system.js";
 type SlackConfigurationIntent = "create" | "reauthorize" | "replace";
 
 const SLACK_CONFIGURATION_MESSAGES: Record<string, string> = {
-  IM_BINDING_FORBIDDEN: "Only Admins can manage this Slack configuration.",
+  IM_BINDING_FORBIDDEN: "Only the Account owner can manage this Slack configuration.",
   IM_BINDING_PROVIDER_IMMUTABLE:
     "This Agent is connected to a different IM provider. Disable that binding before connecting Slack.",
   SLACK_APP_TEAM_ALREADY_BOUND:

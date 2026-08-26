@@ -99,8 +99,6 @@ export interface OnboardingState {
   readonly runtimeReady: boolean;
   /** Whether the Server says the Agent's IM handoff is currently usable. */
   readonly handoffReady: boolean;
-  /** Every authenticated Workspace participant in this surface is an Admin. */
-  readonly canManage: boolean;
 }
 
 /**
@@ -108,11 +106,10 @@ export interface OnboardingState {
  * retained. Once an Agent exists, earlier prerequisites never pull the flow back.
  */
 export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
-  const canManage = true;
   const handoffReady = facts.handoff?.handoffReady === true;
 
   if (!facts.workspace) {
-    return { currentState: { kind: "workspace" }, runtimeReady: false, handoffReady, canManage };
+    return { currentState: { kind: "workspace" }, runtimeReady: false, handoffReady };
   }
 
   if (facts.agent) {
@@ -122,7 +119,6 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
         currentState: { kind: "agent-runtime", agent: facts.agent },
         runtimeReady,
         handoffReady,
-        canManage,
       };
     }
     if (facts.handoff?.bindingState === "active" && facts.handoff.handoffReady) {
@@ -130,28 +126,25 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
         currentState: { kind: "ready", agent: facts.agent, handoff: facts.handoff },
         runtimeReady,
         handoffReady,
-        canManage,
       };
     }
     return {
       currentState: { kind: "handoff", agent: facts.agent, progress: handoffProgress(facts.handoff) },
       runtimeReady,
       handoffReady,
-      canManage,
     };
   }
 
   const onlineComputers = facts.computers.filter((computer) => computer.connectionStatus === "online");
   const [onlineComputer, ...otherOnlineComputers] = onlineComputers;
   if (facts.computers.length === 0) {
-    return { currentState: { kind: "computer", availability: "none" }, runtimeReady: false, handoffReady, canManage };
+    return { currentState: { kind: "computer", availability: "none" }, runtimeReady: false, handoffReady };
   }
   if (!onlineComputer) {
     return {
       currentState: { kind: "computer", availability: "offline", computers: facts.computers },
       runtimeReady: false,
       handoffReady,
-      canManage,
     };
   }
 
@@ -183,7 +176,6 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
       currentState: { kind: "computer", availability: "choice", computers: eligibleComputers },
       runtimeReady: false,
       handoffReady,
-      canManage,
     };
   }
 
@@ -194,7 +186,6 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
         currentState: { kind: "computer", availability: "choice", computers: onlineComputers },
         runtimeReady: false,
         handoffReady,
-        canManage,
       };
     }
     computer = onlineComputer;
@@ -210,7 +201,6 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
       currentState: { kind: "provider", availability: "none", computer },
       runtimeReady: false,
       handoffReady,
-      canManage,
     };
   }
 
@@ -229,7 +219,6 @@ export function deriveOnboardingState(facts: OnboardingFacts): OnboardingState {
     currentState: { kind: "agent", computer, provider, alternatives },
     runtimeReady: true,
     handoffReady,
-    canManage,
   };
 }
 

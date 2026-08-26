@@ -341,12 +341,8 @@ export * from "./session.js";
 export {
   type CompleteWorkspaceSetupRequest,
   CompleteWorkspaceSetupRequestSchema,
-  type ListWorkspaceComputersConfigResponse,
-  ListWorkspaceComputersConfigResponseSchema,
   type ListWorkspaceComputersResponse,
   ListWorkspaceComputersResponseSchema,
-  type WorkspaceComputerAdminConfig,
-  WorkspaceComputerAdminConfigSchema,
   type WorkspaceComputerSummary,
   WorkspaceComputerSummarySchema,
   type WorkspaceSetupCompletion,

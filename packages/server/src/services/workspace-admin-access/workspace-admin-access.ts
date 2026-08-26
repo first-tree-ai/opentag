@@ -192,6 +192,14 @@ export class WorkspaceAdminAccess {
     accountWasCreated: boolean,
   ): Promise<string | undefined> {
     if (!accountWasCreated) return undefined;
+    const [existingGrant] = await transaction
+      .select({ workspaceId: workspaceAdminGrants.workspaceId })
+      .from(workspaceAdminGrants)
+      .where(and(eq(workspaceAdminGrants.userId, account.id), isNull(workspaceAdminGrants.revokedAt)))
+      .limit(1);
+    if (existingGrant) {
+      throw new Error("A newly created Account must not already have an active Workspace grant");
+    }
     const now = this.#now();
     const workspaceId = randomUUID();
     await transaction.insert(workspaces).values({

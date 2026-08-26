@@ -19,7 +19,7 @@ afterAll(async () => testDatabase.stop());
 beforeEach(async () => testDatabase.reset());
 
 describe("default Workspace provisioning", () => {
-  it("provisions exactly one internal default Workspace for a new Account", async () => {
+  it("provisions one internal default Workspace and rejects duplicate new-Account provisioning", async () => {
     const client = createDatabaseClient(databaseUrl);
     try {
       await bootstrapInitialAdmin(client.database, {
@@ -39,6 +39,9 @@ describe("default Workspace provisioning", () => {
       );
 
       await postAuthentication.complete(account.id, true);
+      await expect(postAuthentication.complete(account.id, true)).rejects.toThrow(
+        "A newly created Account must not already have an active Workspace grant",
+      );
       const grants = await client.database
         .select({ workspaceId: workspaceAdminGrants.workspaceId })
         .from(workspaceAdminGrants)

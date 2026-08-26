@@ -234,23 +234,50 @@ describe("Account-native management collections", () => {
     expect(service.workspaceService.listComputers).toHaveBeenLastCalledWith(userId, workspaceId, false);
   });
 
-  it("rejects a client-selected scope in the request body", async () => {
+  it("rejects a client-selected scope on every creation route", async () => {
     const { app, service } = appWith();
 
-    for (const payload of [
-      { ...createAgentPayload, workspaceId },
-      { ...createAgentPayload, accountId: userId },
-    ]) {
+    const routes = [
+      { url: HTTP_PATHS.accountAgents, base: createAgentPayload },
+      { url: HTTP_PATHS.accountComputerConnectCodes, base: {} },
+      { url: HTTP_PATHS.accountSetupComplete, base: { agentId } },
+    ];
+    for (const route of routes) {
+      for (const selector of [{ workspaceId }, { accountId: userId }]) {
+        const response = await app.inject({
+          method: "POST",
+          url: route.url,
+          headers: authorization,
+          payload: { ...route.base, ...selector },
+        });
+        expect({ url: route.url, selector, status: response.statusCode }).toEqual({
+          url: route.url,
+          selector,
+          status: 400,
+        });
+        expect(response.json().error.code).toBe("VALIDATION_ERROR");
+      }
+    }
+
+    expect(service.agentService.createForWorkspace).not.toHaveBeenCalled();
+    expect(service.machineAuthService.issueForWorkspaceAdmin).not.toHaveBeenCalled();
+    expect(service.workspaceSetupService.complete).not.toHaveBeenCalled();
+    expect(service.accountScope.resolveCompatibilityWorkspaceId).not.toHaveBeenCalled();
+  });
+
+  it("still issues a connect code for an empty or absent body", async () => {
+    const { app, service } = appWith();
+
+    for (const payload of [undefined, {}]) {
       const response = await app.inject({
         method: "POST",
-        url: HTTP_PATHS.accountAgents,
+        url: HTTP_PATHS.accountComputerConnectCodes,
         headers: authorization,
-        payload,
+        ...(payload === undefined ? {} : { payload }),
       });
-      expect(response.statusCode).toBe(400);
-      expect(response.json().error.code).toBe("VALIDATION_ERROR");
+      expect(response.statusCode).toBe(201);
     }
-    expect(service.agentService.createForWorkspace).not.toHaveBeenCalled();
+    expect(service.machineAuthService.issueForWorkspaceAdmin).toHaveBeenCalledTimes(2);
   });
 
   it("does not disclose whether an Account has no compatibility scope", async () => {

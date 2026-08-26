@@ -81,6 +81,8 @@ export {
   ServiceIdSchema,
 } from "./channel.js";
 export {
+  type AccountComputerConnectCodeIssueRequest,
+  AccountComputerConnectCodeIssueRequestSchema,
   type ComputerConnectCodeExchangeRequest,
   ComputerConnectCodeExchangeRequestSchema,
   type ComputerConnectCodeExchangeResponse,

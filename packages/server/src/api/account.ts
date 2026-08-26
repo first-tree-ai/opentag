@@ -1,4 +1,5 @@
 import {
+  AccountComputerConnectCodeIssueRequestSchema,
   AgentAdminConfigSchema,
   type ChannelName,
   CompleteWorkspaceSetupRequestSchema,
@@ -108,6 +109,7 @@ export function registerAccountRoutes(
     const { environment, publicUrl } = options.computerConnectCode;
 
     app.post(HTTP_PATHS.accountComputerConnectCodes, { preHandler }, async (request, reply) => {
+      parseRequest(AccountComputerConnectCodeIssueRequestSchema, request.body ?? {});
       const scope = await scopeOf(request);
       const issued = await machineAuthService.issueForWorkspaceAdmin(scope.accountId, scope.workspaceId);
       return reply

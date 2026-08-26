@@ -33,7 +33,7 @@ Slack 安装。
 manifest 同时启用可写的 App Home Messages 标签页。修改 Agent 的 `receiveMode` 只更新 OpenTag 本地准入策略；不会修改
 manifest、轮换凭证代际、要求重新安装或授权、重试 Request URL，也不会发送测试消息。
 
-## 管理员配置流程
+## Agent 配置流程
 
 1. 打开 **Connect Slack App**、**Reauthorize Slack** 或 **Change Slack App**。OpenTag 返回无状态指南，其中包含固定 manifest
    与 Agent 专属 Events API Request URL。读取或关闭指南都不写入数据。
@@ -66,8 +66,8 @@ authorization 字段，因此 Agent 专属 URL 对 challenge 只能验证该绑�
 | --- | --- | --- |
 | 绑定 `id`、Agent、Team、provider、status | 保留 | 每个 Agent 最多一个未禁用的当前 IM 绑定；每个 Slack App/Team 安装最多一个当前 Agent 绑定。 |
 | App、Team、Enterprise、Bot User/Bot 身份 | 保留 | App ID 是显式配置证据；Team 与 bot 身份来自 token 检查；Enterprise 可为空。 |
-| Team 与 Bot 展示元数据 | 作为可选展示数据保留 | Team 名称、Bot 展示名称和头像可显示给管理员，但绝不参与配置、入口或 runtime 授权。 |
-| Bot Token 与 Signing Secret | 加密保留 | 一起存入 active credential envelope；管理员、诊断、runtime-config API 都不返回。Signing Secret 永不投影给 runtime。 |
+| Team 与 Bot 展示元数据 | 作为可选展示数据保留 | Team 名称、Bot 展示名称和头像可显示在管理视图中，但绝不参与配置、入口或 runtime 授权。 |
+| Bot Token 与 Signing Secret | 加密保留 | 一起存入 active credential envelope；管理、诊断、runtime-config API 都不返回。Signing Secret 永不投影给 runtime。 |
 | `credentialGeneration` 与 credential schema version | 保留 | 同一绑定的单调凭证修订；同身份重新授权递增，App/Team 替换则创建新绑定身份并禁用旧绑定。 |
 | `grantedCapabilities` | 保留 | Slack 实际返回的 token scopes。active/ready 投影要求完整七项。 |
 | `activatedAt`、`disabledAt`、`createdAt`、`updatedAt` | 保留 | 持久绑定生命周期时间；配置提交设置激活，入站事件不设置。公共 API 将 `activatedAt` 投影为 `lastValidatedAt`。 |
@@ -104,7 +104,7 @@ authorization 字段，因此 Agent 专属 URL 对 challenge 只能验证该绑�
 | `active` | 已提交一个凭证代际。Slack 在当前代际收到匹配签名事件、闭合 App/Team/Bot 身份前仍不 ready。若当前材料不可读、结构不一致或缺少固定 scope，公共状态仍会派生为 `reauthorization_required`。 | 成功的已验证配置或同身份重新授权。 |
 | `reauthorization_required` | 当前安装必须替换或重新授权；scope 契约或凭证检查失败时，绝不把既有材料报告为健康。 | scope 迁移、`tokens_revoked` 或显式恢复写入。 |
 | `error` | 为非 Slack setup/runtime 失败保留的通用状态；Slack 配置验证错误直接返回，不修改当前行。 | 非 Slack provider 工作流或既有通用恢复代码。 |
-| `disabled` | 该绑定身份的终态；active credential 与 setup secret 被清除，Sessions 结束，后续配置会创建或选择另一个当前绑定。 | 管理员禁用、`app_uninstalled`、不完整 legacy Slack 清理或身份替换切换。 |
+| `disabled` | 该绑定身份的终态；active credential 与 setup secret 被清除，Sessions 结束，后续配置会创建或选择另一个当前绑定。 | 显式禁用、`app_uninstalled`、不完整 legacy Slack 清理或身份替换切换。 |
 
 `bindingState`、`ready`、`handoffReady`、`reauthorizationRequired`、`credentialStatus` 与 missing capabilities
 都是投影，不是额外 binding 状态。URL verification 只更新运行观测；匹配的签名真实事件还可在消息/路由工作前设置当前代际
@@ -165,9 +165,9 @@ replacement、禁用旧绑定并停止旧绑定 Sessions。并发配置同时受
 当前产品模式是每个 Agent 一个由客户持有的 Slack App。以后若引入 OpenTag 托管的分布式 App，它必须作为同一 verified
 Integration 激活边界后的独立适配器。该适配器目前只存在于文档：本版本不增加 OAuth setup 状态、占位表或 token 交换持久化。
 
-若引入该适配器，OAuth state 必须签名，并绑定一次性 nonce、浏览器 session、Admin、Agent、Team 与配置意图。installation
-store 与 token rotation 属于该适配器，不属于 active binding。实际 Slack 返回的 scopes 仍然决定能否激活。在此之前，管理
-员一次提交 App ID、Bot Token 与 Signing Secret。
+若引入该适配器，OAuth state 必须签名，并绑定一次性 nonce、浏览器 session、Account、Agent、Team 与配置意图。installation
+store 与 token rotation 属于该适配器，不属于 active binding。实际 Slack 返回的 scopes 仍然决定能否激活。在此之前，
+配置 Agent 的人员一次提交 App ID、Bot Token 与 Signing Secret。
 
 一个分布式 App 安装只产生一组 Team/Bot 身份。因此，若同一 Slack workspace 需要支持多个 OpenTag Agent，必须引入独立的
 workspace-installation aggregate 与显式 Agent 路由；不能静默复用当前 App/Team 到 Agent 的唯一绑定约束。

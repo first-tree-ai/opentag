@@ -3,7 +3,7 @@
 > Canonical source: [README.md](./README.md)
 > Last synced with: 2026-08-26
 
-OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与 AI 编码 Agent。项目目前处于 **pre-alpha**
+OpenTag 是一个全新的独立开源产品，用于连接即时通信与 AI 编码 Agent。项目目前处于 **pre-alpha**
 阶段：产品工作流仍在开发中，尚不适合生产使用。
 
 当前仓库提供 OpenTag 的工程底座和首个控制面纵向切片：
@@ -13,13 +13,13 @@ OpenTag 是一个全新的独立开源产品，用于连接团队即时通信与
 - 会校验 schema 的 Client 健康检查；
 - 与 provider 无关的账号身份、Google 浏览器登录和 PostgreSQL migration；
 - 使用滑动续期无状态 refresh JWT 的一次性 Account 登录 code；
-- 为兼容存量保留的无角色 Workspace Admin grant，以及对已签发单次 Admin invitation 的兑换支持；
-- 独立认证的 Computer enrollment 与在线状态；
-- Workspace 所有的 Agent Registry、不可变 Computer/provider 绑定与 revision fencing；
+- 通过 Account 持有、独立认证的 Computer enrollment 与在线状态；
+- Account 所有的 Agent Registry、不可变 Computer/provider 绑定与 revision fencing；
 - 持久化 Agent Runtime 执行、delivery custody、上报与恢复；
 - 飞书和 Slack 入站标准化、持久化及 Channel/Thread Session 路由；
+- 带显式消息重试的持久化、best-effort internal Session collaboration；
 - 供 Agent 自主回复和 Reaction 的 provider CLI 凭证交接；
-- 同源 Admin Web，以及 `doctor`、`login`、`agent`、`computer` 和 daemon 服务管理命令。
+- 同源管理 Web，以及 `doctor`、`login`、`agent`、`computer` 和 daemon 服务管理命令。
 
 这些 Runtime 与消息路径已经实现，但仍处于 pre-alpha 阶段；安装、管理和端到端产品工作流仍在完善。
 
@@ -39,7 +39,8 @@ pnpm build
 pnpm --filter @opentag/server start
 ```
 
-在另一个终端中 bootstrap 首个 Account 与 Workspace，再兑换输出的 Account 登录 code：
+在另一个终端中 bootstrap 首个 Account，再兑换输出的 Account 登录 code。命令名与
+`OPENTAG_BOOTSTRAP_WORKSPACE_*` 输入会作为兼容接口保留到 Phase 2：
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
@@ -72,22 +73,24 @@ pnpm --filter open-tag start agent list
 
 这会记录 Agent identity 和 Computer binding。Agent 收到已准入工作后，Agent Runtime turn 才会启动。
 
-Workspace Admin 可在 Codex Agent 的 **Runtime** 页面或对应的 `agent update` 参数中管理 model、reasoning effort 和单个
+已登录 Account 可在 Codex Agent 的 **Runtime** 页面或对应的 `agent update` 参数中管理 model、reasoning effort 和单个
 Turn 的最长执行时间。model 或 reasoning 留空表示交由 Codex 管理；duration 留空则使用 OpenTag 的 30 分钟默认值。
 显式填写的 Codex-native 值会在绑定 Computer 准备 Runtime 时校验，OpenTag 不会静默替换。Claude Code 的
 Effective Runtime Snapshot 目前尚未支持。
 
 配置 `OPENTAG_GOOGLE_CLIENT_ID` 和 `OPENTAG_GOOGLE_CLIENT_SECRET` 后即可启用 Google 登录，然后打开
-`http://127.0.0.1:8000/`。Workspace Admin 管理 Agents、Tasks、Skills 与 Integrations；Computer enrollment
-和诊断从 Agents 区域进入。OpenTag 不再提供创建额外 Workspace 或签发新 Admin invitation 的入口。不携带
-invitation 的普通注册以及 bootstrap，仍会为 Account 配置内部默认 Workspace。变更前已签发的 invitation 在未被使用、
-撤销且未过期时仍可预览，并且仅在签发者仍是当前 Admin 时才可兑换；兑换仍可能新增 Admin。Admin CLI 已退场，
-但现有 Admin grant 会继续授权当前管理行为。在独立的 Workspace Web 退场 PR 合并前，该 Web 界面仍可能提供 grant
-查看与撤销；该界面退场后，运维人员必须按照常规数据库变更流程，通过受控 PostgreSQL 运维执行 grant 查看与撤销。
+`http://127.0.0.1:8000/`。已登录 Account 管理自己的 Agents、Tasks、Skills 与 Integrations；Computer enrollment
+和诊断从 Agents 区域进入。产品模型是 **Account → Computer enrollment → Agent → IM binding**。OpenTag 不提供
+Workspace、Admin 或 invitation 管理面。数据库仍会配置内部默认 Workspace 与 grant，作为 Phase 2 前的兼容 seam；
+这些记录不代表产品所有权，也不是共享协作容器。
+
+Internal Session collaboration 是 Agent Runtime 能力，不是 Workspace、Project 或其他管理实体。它不定义跨 Agent
+所有权，也不拥有共享文件、长期记忆、Tasks、Secrets 或 billing。Context Tree 可以独立保存长期上下文，与这条实时
+Session 消息边界正交。
 
 若 loopback 开发环境没有 Google 凭据，可设置 `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true`，并将
 `OPENTAG_DEV_AUTH_EMAIL` 设为已有 bootstrap 用户的唯一 email。该 bypass 在 `dev` 以外的环境会被拒绝，
-且不会创建 Account 或 Admin grant。
+且不会创建 Account 或兼容 grant。
 
 完整本地工作流请参阅 [DEVELOPMENT.zh-CN.md](./DEVELOPMENT.zh-CN.md)。
 
@@ -95,14 +98,16 @@ invitation 的普通注册以及 bootstrap，仍会为 Account 配置内部默�
 
 OpenTag 正通过小型、可验证的纵向切片逐步构建。首个稳定版本发布前，公开 API 和 package 边界可能变化。
 当前代码已包含控制面、本地 Computer 连接、Agent Runtime、持久 IM delivery、飞书/Slack 入站路由、
-Channel/Thread Session 与 provider CLI 直接交接。产品管理面和更广泛的协作工作流仍在开发中。
+Channel/Thread Session 与 provider CLI 直接交接。更广泛的产品与跨 Agent 协作工作流仍在开发中。
 
 ## 文档
 
 - [开发指南](./DEVELOPMENT.zh-CN.md)
 - [Server 可观测性](./docs/zh-CN/observability.md)
 - [直接使用 Provider CLI 发送消息](./docs/zh-CN/direct-provider-cli.md)
+- [Slack App 配置](./docs/zh-CN/slack-app-setup.md)
 - [IM Channel 与 Thread Session](./docs/zh-CN/thread-sessions.md)
+- [Internal Session collaboration](./docs/zh-CN/internal-session-collaboration.md)
 - [贡献指南](./CONTRIBUTING.zh-CN.md)
 - [发布指南](./docs/zh-CN/releasing.md)
 - [部署指南](./docs/zh-CN/deploying.md)

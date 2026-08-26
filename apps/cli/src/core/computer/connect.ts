@@ -63,7 +63,7 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
   await storeMachineEnrollmentCredential({ ...enrollment, serverUrl }, home);
   const result: ComputerConnectResult = {
     credentialsPath: machineCredentialsPath(home),
-    message: `Connected this Computer to Workspace ${enrollment.workspaceId}`,
+    message: "Connected this Computer to the Account",
   };
   if (!manager) return result;
 

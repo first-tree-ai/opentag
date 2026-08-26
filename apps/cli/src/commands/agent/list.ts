@@ -5,7 +5,7 @@ import { runAgentList } from "../../core/agent/queries.js";
 export function registerAgentListCommand(agent: Command): void {
   agent
     .command("list")
-    .option("--workspace <name>", "Workspace canonical name")
+    .option("--workspace <name>", "legacy internal scope name")
     .action(async (options) => {
       process.stdout.write(`${formatAgentList(await runAgentList({ workspaceName: options.workspace }))}\n`);
     });

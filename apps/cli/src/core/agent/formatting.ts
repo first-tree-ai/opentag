@@ -27,7 +27,6 @@ export function formatAgent(agent: AgentAdminConfig): string {
     `id\t${agent.id}`,
     `name\t${agent.name}`,
     `displayName\t${agent.displayName}`,
-    `workspaceId\t${agent.workspaceId}`,
     `createdByUserId\t${agent.createdByUserId}`,
     `computerId\t${agent.computerId}`,
     `runtimeProvider\t${agent.runtimeProvider}`,

@@ -46,7 +46,7 @@ export function selectComputer(
 ): WorkspaceComputerSummary {
   if (requestedComputerId) {
     const selected = response.computers.find((computer) => computer.computerId === requestedComputerId);
-    if (!selected) throw new Error(`Computer "${requestedComputerId}" is not enrolled in the selected Workspace`);
+    if (!selected) throw new Error(`Computer "${requestedComputerId}" is not enrolled in the selected internal scope`);
     return selected;
   }
   if (response.computers.length === 1) {

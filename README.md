@@ -2,7 +2,7 @@
 
 [简体中文](./README.zh-CN.md)
 
-OpenTag is a new, independent open-source product for connecting workspace messaging with AI coding agents. The project is
+OpenTag is a new, independent open-source product for connecting instant messaging with AI coding Agents. The project is
 currently **pre-alpha**: its product workflows are still under development and are not ready for production use.
 
 This repository currently provides the engineering foundation and first control-plane slice for OpenTag:
@@ -12,16 +12,15 @@ This repository currently provides the engineering foundation and first control-
 - a schema-validating client health check;
 - provider-neutral account identities, Google browser sign-in, and PostgreSQL migrations;
 - one-time Account login codes with sliding stateless refresh JWTs;
-- legacy roleless Workspace Admin grants and redemption for outstanding single-use Admin invitations;
-- independently authenticated Computer enrollment and presence;
-- Workspace-owned Agent registry with immutable Computer/provider binding and revision fencing;
+- independently authenticated Computer enrollment and presence owned through an Account;
+- Account-owned Agent registry with immutable Computer/provider binding and revision fencing;
 - durable Agent Runtime execution, delivery custody, reporting, and recovery;
 - Feishu and Slack inbound normalization, persistence, and Channel/Thread Session routing;
 - durable, best-effort internal Session collaboration with explicit message retry;
 - direct provider CLI credential handoff for Agent-controlled replies and reactions; and
-- a same-origin Admin Web plus `doctor`, `login`, `agent`, `computer`, and daemon service management commands.
+- a same-origin management Web plus `doctor`, `login`, `agent`, `computer`, and daemon service management commands.
 
-These runtime and messaging paths are implemented but remain pre-alpha. Installation, administration, and end-to-end product workflows are still being completed.
+These runtime and messaging paths are implemented but remain pre-alpha. Installation, management, and end-to-end product workflows are still being completed.
 
 ## Quick start
 
@@ -39,7 +38,8 @@ pnpm build
 pnpm --filter @opentag/server start
 ```
 
-In another terminal, bootstrap the first Account and Workspace, then exchange the returned Account login code:
+In another terminal, bootstrap the first Account, then exchange the returned Account login code. The command name and
+`OPENTAG_BOOTSTRAP_WORKSPACE_*` inputs remain compatibility interfaces until Phase 2:
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
@@ -72,26 +72,26 @@ pnpm --filter open-tag start agent list
 
 This records the Agent identity and Computer binding. Agent Runtime turns start when admitted work is delivered to that Agent.
 
-Workspace Admins manage model, reasoning effort, and the maximum Turn duration for Codex Agents from the Agent's **Runtime**
+The signed-in Account manages model, reasoning effort, and the maximum Turn duration for Codex Agents from the Agent's **Runtime**
 tab or the corresponding `agent update` flags. A blank model or reasoning value leaves the choice to Codex; a blank
 duration uses OpenTag's 30-minute default. Explicit Codex-native values are validated by the bound Computer when it
 prepares the Runtime and never silently replaced by OpenTag. Claude Code Effective Runtime Snapshots are not yet
 supported.
 
 Configure `OPENTAG_GOOGLE_CLIENT_ID` and `OPENTAG_GOOGLE_CLIENT_SECRET` to enable Google sign-in, then open
-`http://127.0.0.1:8000/`. Workspace Admins manage Agents, Tasks, Skills, and Integrations. Computers are enrolled and
-diagnosed from the Agents area. OpenTag no longer exposes a way to create an additional Workspace or issue a new Admin
-invitation. Normal sign-up without an invitation and bootstrap still provision an internal default Workspace. An
-invitation issued before this transition remains previewable while it is unconsumed, unrevoked, and unexpired, and it
-remains redeemable only while its issuer is also a current Admin; accepting one may still add an Admin. The Admin CLI
-has been retired, while existing Admin grants continue to authorize current management behavior. Until the separate
-Workspace Web retirement PR is merged, that Web surface may still expose grant inspection and revocation. After it is
-retired, operators must handle grant inspection and revocation through controlled PostgreSQL operations under their
-normal database change procedure.
+`http://127.0.0.1:8000/`. The signed-in Account manages its Agents, Tasks, Skills, and Integrations. Computer enrollment
+and diagnosis live in the Agents area. The product model is **Account → Computer enrollment → Agent → IM binding**.
+OpenTag exposes no Workspace, Admin, or invitation management surface. The database still provisions an internal
+default Workspace and grant as a compatibility seam until Phase 2; these records are not product ownership or a shared
+collaboration container.
+
+Internal Session collaboration is an Agent Runtime feature, not a Workspace, Project, or other management entity. It
+does not define cross-Agent ownership or shared files, memory, tasks, secrets, or billing. Context Tree can preserve
+long-term context independently of that real-time Session messaging boundary.
 
 For loopback development without Google credentials, set `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true` and
 `OPENTAG_DEV_AUTH_EMAIL` to the unique email of an existing bootstrap user. This bypass is rejected outside the
-`dev` environment and never creates Accounts or Admin grants.
+`dev` environment and never creates Accounts or compatibility grants.
 
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full local workflow.
 
@@ -99,8 +99,8 @@ See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full local workflow.
 
 OpenTag is being built in small, validated vertical slices. Public APIs and package boundaries may change before the
 first stable release. The current code includes the control plane, local Computer connection, Agent Runtime, durable IM
-delivery, Feishu/Slack inbound routing, Channel/Thread Sessions, and direct provider CLI handoff. Product administration
-and broader collaboration workflows remain under development.
+delivery, Feishu/Slack inbound routing, Channel/Thread Sessions, and direct provider CLI handoff. Broader product and
+cross-Agent collaboration workflows remain under development.
 
 ## Documentation
 

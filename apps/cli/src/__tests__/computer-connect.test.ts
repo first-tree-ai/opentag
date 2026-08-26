@@ -31,13 +31,15 @@ describe("computer connect", () => {
       machineToken: `otmc_${crypto.randomUUID()}.${"a".repeat(43)}`,
     }));
 
-    await runComputerConnect({
+    const result = await runComputerConnect({
       api: { exchangeComputerConnectCode },
       code: "first-code",
       home,
       noStart: true,
       serverUrl: "https://opentag.example",
     });
+    expect(result.message).toBe("Connected this Computer to the Account");
+    expect(result.message).not.toContain(firstWorkspaceId);
     await runComputerConnect({
       api: { exchangeComputerConnectCode },
       code: "second-code",

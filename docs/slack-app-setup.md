@@ -35,7 +35,7 @@ The manifest also enables a writable App Home Messages tab. Changing an Agent's 
 local admission policy. It does not change the manifest, rotate a credential generation, require reinstall or
 reauthorization, retry the Request URL, or send a test message.
 
-## Admin configuration flow
+## Agent configuration flow
 
 1. Open **Connect Slack App**, **Reauthorize Slack**, or **Change Slack App**. OpenTag returns a stateless guide containing
    the fixed manifest and the Agent-specific Events API Request URL. Reading or closing this guide writes nothing.
@@ -77,8 +77,8 @@ can verify only the bound Signing Secret for that challenge; it records no ident
 | --- | --- | --- |
 | Binding `id`, Agent, Team, provider, status | Keep | One current non-disabled IM binding per Agent; one current Slack App/Team installation per Agent binding. |
 | App, Team, Enterprise, Bot User/Bot identity | Keep | App ID is explicit configured evidence; Team and bot identity come from token inspection; Enterprise is optional. |
-| Team and Bot display metadata | Keep as optional presentation data | Team name, Bot display name, and avatar may be shown to administrators, but never authorize configuration, ingress, or runtime access. |
-| Bot Token and Signing Secret | Keep encrypted | Stored together in the active credential envelope; never returned by admin, diagnostics, or runtime-config APIs. The Signing Secret is never projected to runtime. |
+| Team and Bot display metadata | Keep as optional presentation data | Team name, Bot display name, and avatar may be shown in management views, but never authorize configuration, ingress, or runtime access. |
+| Bot Token and Signing Secret | Keep encrypted | Stored together in the active credential envelope; never returned by management, diagnostics, or runtime-config APIs. The Signing Secret is never projected to runtime. |
 | `credentialGeneration` and credential schema version | Keep | Monotonic same-binding credential revision. Same-identity reauthorization increments it; App/Team replacement creates a new binding identity and disables the old one. |
 | `grantedCapabilities` | Keep | Actual token scopes reported by Slack. Active/readiness projections require all seven fixed scopes. |
 | `activatedAt`, `disabledAt`, `createdAt`, `updatedAt` | Keep | Durable binding lifecycle timestamps. Configuration submission sets activation; inbound events do not. Public APIs project `activatedAt` as `lastValidatedAt`. |
@@ -115,7 +115,7 @@ Derived values are not new durable states:
 | `active` | A credential generation was committed. Slack readiness remains false until a matching signed event closes App/Team/Bot identity for that generation. Public state may still derive `reauthorization_required` when the current material is unreadable, structurally inconsistent, or missing a fixed scope. | Successful validated configuration or same-identity reauthorization. |
 | `reauthorization_required` | The current installation must be replaced or reauthorized. Existing material is never reported healthy when the scope contract or credential inspection fails. | Scope migration, `tokens_revoked`, or an explicit recovery write. |
 | `error` | Generic retained state for non-Slack setup/runtime failures; Slack configuration validation errors are returned without mutating the current row. | Non-Slack provider workflows or existing generic recovery code. |
-| `disabled` | Terminal for that binding identity. Active credential and setup secrets are erased, Sessions are ended, and a later configuration creates or selects another current binding. | Admin disable, `app_uninstalled`, incomplete legacy Slack cleanup, or identity replacement cutover. |
+| `disabled` | Terminal for that binding identity. Active credential and setup secrets are erased, Sessions are ended, and a later configuration creates or selects another current binding. | Explicit disable, `app_uninstalled`, incomplete legacy Slack cleanup, or identity replacement cutover. |
 
 `bindingState`, `ready`, `handoffReady`, `reauthorizationRequired`, `credentialStatus`, and missing capabilities are
 projections, not additional binding states. URL verification updates only runtime observation. A matching signed real
@@ -187,9 +187,9 @@ The current product mode is a customer-managed Slack App per Agent. A later dist
 adapter behind the same verified Integration activation boundary. That future adapter is documentation-only today: this
 release does not add OAuth setup state, placeholder tables, or token-exchange persistence.
 
-If that adapter is introduced, OAuth state must be signed and bound to a one-time nonce, browser session, Admin, Agent,
+If that adapter is introduced, OAuth state must be signed and bound to a one-time nonce, browser session, Account, Agent,
 Team, and configuration intent. The installation store and token rotation belong to that adapter, not to the active
-binding. Actual Slack-reported scopes still gate activation. Until then, administrators submit App ID, Bot Token, and
+binding. Actual Slack-reported scopes still gate activation. Until then, the person configuring an Agent submits App ID, Bot Token, and
 Signing Secret in one validated write.
 
 One distributed App installation yields one Team/Bot identity. Supporting several OpenTag Agents in the same Slack

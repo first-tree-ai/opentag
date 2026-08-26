@@ -19,7 +19,7 @@ This repository currently provides the engineering foundation and first control-
 - Feishu and Slack inbound normalization, persistence, and Channel/Thread Session routing;
 - durable, best-effort internal Session collaboration with explicit message retry;
 - direct provider CLI credential handoff for Agent-controlled replies and reactions; and
-- a same-origin Admin Web plus `doctor`, `login`, `admin`, `agent`, `computer`, and daemon service management commands.
+- a same-origin Admin Web plus `doctor`, `login`, `agent`, `computer`, and daemon service management commands.
 
 These runtime and messaging paths are implemented but remain pre-alpha. Installation, administration, and end-to-end product workflows are still being completed.
 
@@ -83,17 +83,15 @@ Configure `OPENTAG_GOOGLE_CLIENT_ID` and `OPENTAG_GOOGLE_CLIENT_SECRET` to enabl
 diagnosed from the Agents area. OpenTag no longer exposes a way to create an additional Workspace or issue a new Admin
 invitation. Normal sign-up without an invitation and bootstrap still provision an internal default Workspace. An
 invitation issued before this transition remains previewable while it is unconsumed, unrevoked, and unexpired, and it
-remains redeemable only while its issuer is also a current Admin; accepting one may still add an Admin. Existing Admins
-remain listable and revocable:
+remains redeemable only while its issuer is also a current Admin; accepting one may still add an Admin. The Admin CLI
+has been retired, while existing Admin grants continue to authorize current management behavior. Until the separate
+Workspace Web retirement PR is merged, that Web surface may still expose grant inspection and revocation. After it is
+retired, operators must handle grant inspection and revocation through controlled PostgreSQL operations under their
+normal database change procedure.
 
 For loopback development without Google credentials, set `OPENTAG_DEV_AUTH_BYPASS_ENABLED=true` and
 `OPENTAG_DEV_AUTH_EMAIL` to the unique email of an existing bootstrap user. This bypass is rejected outside the
 `dev` environment and never creates Accounts or Admin grants.
-
-```bash
-pnpm --filter open-tag start admin list
-pnpm --filter open-tag start admin revoke <account-id>
-```
 
 See [DEVELOPMENT.md](./DEVELOPMENT.md) for the full local workflow.
 

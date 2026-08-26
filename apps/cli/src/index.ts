@@ -1,7 +1,5 @@
 export { CHANNEL, CLI_PACKAGE_NAME, CLI_VERSION } from "./build-info.js";
 export { createProgram } from "./cli/program.js";
-export { formatWorkspaceAdmins } from "./core/admin/formatting.js";
-export { type AdminSelectionOptions, runAdminList, runAdminRevoke } from "./core/admin/operations.js";
 export { formatAgent, formatAgentCreated, formatAgentList } from "./core/agent/formatting.js";
 export {
   runAgentCreate,

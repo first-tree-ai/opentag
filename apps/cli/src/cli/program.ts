@@ -1,6 +1,5 @@
 import { Command } from "commander";
 import { CLI_VERSION } from "../build-info.js";
-import { registerAdminCommand } from "../commands/admin/index.js";
 import { registerAgentCommand } from "../commands/agent/index.js";
 import { registerComputerCommand } from "../commands/computer/index.js";
 import { registerDaemonCommand } from "../commands/daemon/index.js";
@@ -20,6 +19,5 @@ export function createProgram(): Command {
   registerDaemonCommand(program);
   registerDoctorCommand(program);
   registerLoginCommand(program);
-  registerAdminCommand(program);
   return program;
 }

@@ -91,7 +91,7 @@ export class OnboardingResetService {
     if (!this.allows(accountId)) throw resourceNotFound();
     const scope = await this.#resolveOwnedScope(accountId);
 
-    await this.#deleteOwnedAgents(accountId);
+    await this.#deleteOwnedAgents(accountId, scope);
     const enrollmentIds = await this.#revokeComputerAccess(accountId, scope);
     for (const enrollmentId of enrollmentIds) {
       await this.#registry?.closeEnrollment(enrollmentId);
@@ -133,18 +133,11 @@ export class OnboardingResetService {
    * IM bindings, clears encrypted IM and setup credentials, ends Sessions and removes runtime
    * configuration. Already suspended Agents skip straight to deletion.
    */
-  async #deleteOwnedAgents(accountId: string): Promise<void> {
+  async #deleteOwnedAgents(accountId: string, scope: { workspaceId: string }): Promise<void> {
     const owned = await this.#database
       .select({ id: agents.id, status: agents.status })
       .from(agents)
-      .innerJoin(workspaceAdminGrants, eq(workspaceAdminGrants.workspaceId, agents.workspaceId))
-      .where(
-        and(
-          eq(workspaceAdminGrants.userId, accountId),
-          isNull(workspaceAdminGrants.revokedAt),
-          ne(agents.status, "deleted"),
-        ),
-      );
+      .where(and(eq(agents.workspaceId, scope.workspaceId), ne(agents.status, "deleted")));
     for (const agent of owned) {
       if (agent.status === "active") await this.#agents.suspendById(accountId, agent.id);
       await this.#agents.deleteById(accountId, agent.id);
@@ -171,7 +164,7 @@ export class OnboardingResetService {
         );
 
       const enrollments = await transaction
-        .select({ id: workspaceComputers.id, revokedAt: workspaceComputers.revokedAt })
+        .select({ id: workspaceComputers.id })
         .from(workspaceComputers)
         .where(eq(workspaceComputers.workspaceId, scope.workspaceId))
         .for("update");

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { INTERNAL_ONBOARDING_LAB_PATH } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
-import { OnboardingResetService } from "../services/onboarding-lab/index.js";
+import { OnboardingResetError, OnboardingResetService } from "../services/onboarding-lab/index.js";
 
 const PUBLIC_ORIGIN = "https://staging.example.com";
 const apps: ReturnType<typeof createApp>[] = [];
@@ -125,6 +125,28 @@ describe("internal Onboarding Lab interface", () => {
 
     expect(read.statusCode).toBe(401);
     expect(value.resetOnboarding).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed reset as a retryable deterministic error", async () => {
+    const value = fixture();
+    value.resetOnboarding.mockRejectedValueOnce(
+      new OnboardingResetError("ONBOARDING_RESET_UNVERIFIED", 409, "The Account still has active OpenTag resources"),
+    );
+
+    const reset = await value.app.inject({
+      method: "POST",
+      url: INTERNAL_ONBOARDING_LAB_PATH,
+      headers: browserHeaders(),
+    });
+
+    expect(reset.statusCode).toBe(409);
+    expect(reset.json()).toMatchObject({
+      error: {
+        code: "ONBOARDING_RESET_UNVERIFIED",
+        category: "deterministic",
+        message: "The Account still has active OpenTag resources",
+      },
+    });
   });
 
   it("requires browser CSRF protection for the reset", async () => {

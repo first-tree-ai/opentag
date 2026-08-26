@@ -146,14 +146,16 @@ describe("Agent CLI core", () => {
     ).toContain("slackIdentityClosure\tpending");
   });
 
-  it("resolves one Workspace automatically and requires an explicit choice for multiple Workspaces", () => {
+  it("resolves one internal scope automatically and requires an explicit choice for multiple scopes", () => {
     expect(selectWorkspace(me)).toEqual(workspace);
-    expect(() => selectWorkspace({ ...me, workspaces: [] })).toThrow("No Workspace administration access is available");
+    expect(() => selectWorkspace({ ...me, workspaces: [] })).toThrow(
+      "No internal scope is available to the current Account",
+    );
     const multiple = {
       ...me,
       workspaces: [workspace, { ...workspace, id: crypto.randomUUID(), name: "second" }],
     };
-    expect(() => selectWorkspace(multiple)).toThrow("Available Workspaces: example, second");
+    expect(() => selectWorkspace(multiple)).toThrow("Available internal scopes: example, second");
     expect(selectWorkspace(multiple, "second").name).toBe("second");
     expect(() => selectWorkspace(multiple, "missing")).toThrow("is not available");
   });
@@ -167,14 +169,14 @@ describe("Agent CLI core", () => {
       }),
     ).toThrow("use --computer");
     expect(() => selectComputer({ computers: [computer] }, crypto.randomUUID())).toThrow(
-      "is not enrolled in the selected Workspace",
+      "is not enrolled in the selected internal scope",
     );
     expect(() => selectComputer({ computers: [computer] }, "75fe9af3-d1c6-472b-b78c-8a7ccf512750")).toThrow(
-      "is not enrolled in the selected Workspace",
+      "is not enrolled in the selected internal scope",
     );
   });
 
-  it("creates on the selected Workspace and preserves an offline warning", async () => {
+  it("creates in the selected internal scope and preserves an offline warning", async () => {
     const client = api();
     client.listWorkspaceComputers.mockResolvedValue({
       computers: [{ ...computer, connectionStatus: "offline" as const }],
@@ -236,6 +238,7 @@ describe("Agent CLI core", () => {
     expect(client.listAgents).toHaveBeenCalledWith("access", workspaceId);
     expect(formatAgentList(response)).toContain("code-reviewer\t");
     expect(formatAgent(agent)).toContain(`revision\t1`);
+    expect(formatAgent(agent)).not.toContain("workspaceId");
     expect(formatAgent(agent)).toContain(`runtimeConfig.model\t`);
     expect(formatAgentList(response)).toContain("all_message");
     expect(formatAgentList({ agents: [] })).toBe("No Agents registered");
@@ -330,8 +333,13 @@ describe("Agent CLI core", () => {
   it("registers every runtime setting option and keeps update display name optional", () => {
     const program = createProgram();
     const agentCommand = program.commands.find((command) => command.name() === "agent");
+    const computerCommand = program.commands.find((command) => command.name() === "computer");
     const create = agentCommand?.commands.find((command) => command.name() === "create");
     const update = agentCommand?.commands.find((command) => command.name() === "update");
+    const connect = computerCommand?.commands.find((command) => command.name() === "connect");
+    expect(agentCommand?.description()).toBe("Manage Agents available to the current Account");
+    expect(computerCommand?.description()).toBe("Connect and inspect Computers available to the current Account");
+    expect(connect?.description()).toBe("Enroll this Computer with a one-time code");
     expect(create?.options.map((option) => option.long)).toEqual(
       expect.arrayContaining([
         "--model",
@@ -355,7 +363,10 @@ describe("Agent CLI core", () => {
     );
     expect(update?.options.find((option) => option.long === "--display-name")?.mandatory).toBe(false);
     expect(create?.options.find((option) => option.long === "--computer")?.description).toBe(
-      "Computer enrolled in the selected Workspace",
+      "Computer enrolled in the selected internal scope",
+    );
+    expect(create?.options.find((option) => option.long === "--workspace")?.description).toBe(
+      "legacy internal scope name",
     );
     expect(update?.options.find((option) => option.long === "--model")?.description).toContain("Codex only");
     expect(update?.options.find((option) => option.long === "--clear-model")?.description).toContain("Codex manage");

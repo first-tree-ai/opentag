@@ -96,8 +96,9 @@ docker compose down
 生产 Server 镜像不会内置或启动 PostgreSQL。部署时通过 `OPENTAG_DATABASE_URL` 指向独立管理的 PostgreSQL
 实例；上面的 Compose 服务仅用于本地开发。
 
-初始化空安装时，设置必需的 bootstrap 字段并运行一次性管理员命令。该命令会先迁移空数据库，再创建首个
-Account、Workspace、Admin grant 和 Account 登录 code。
+初始化空安装时，设置必需的 bootstrap 字段并运行一次性 bootstrap 命令。该命令会先迁移空数据库，再创建首个
+Account 与 Account 登录 code。当前命令名和 `OPENTAG_BOOTSTRAP_WORKSPACE_*` 输入还会创建内部默认 Workspace 与
+grant，作为 Phase 2 前的兼容 seam；它们不会创建产品层 Workspace 或 Admin 成员关系。
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
@@ -130,7 +131,7 @@ opentag-dev computer list
 ```
 
 daemon 会复用 `${OPENTAG_HOME}/config/computer.json` 中的稳定 physical Computer ID，从
-`${OPENTAG_HOME}/config/computer-credentials.json` 加载各 Workspace 独立的 enrollment credential，每次服务启动
+`${OPENTAG_HOME}/config/computer-credentials.json` 加载各自独立的 enrollment credential，每次服务启动
 创建新的进程 instance，并为每个 enrollment 建立一条 Runtime 连接。OpenTag Home 按生命周期组织：
 
 ```text
@@ -160,13 +161,13 @@ ${OPENTAG_HOME}/
 `config/credentials.json`；`computer connect --no-start` 保存 `config/computer-credentials.json` 但不安装 daemon；
 runtime recovery record 和 Workspace 在首次相关 reconcile 时才出现。
 
-OpenTag 不会在 Agent Workspace 内维护控制文件。Platform 与 Agent instructions 通过所选 Provider 的原生系统
-提示词接口注入。新 Workspace 直接以根目录作为 Provider cwd。既有 schema v1/v2 Workspace 会执行一次兼容
+OpenTag 不会在 Agent work area 内维护控制文件。Platform 与 Agent instructions 通过所选 Provider 的原生系统
+提示词接口注入。新 work area 直接以根目录作为 Provider cwd。既有 schema v1/v2 本地 Workspace layout 会执行一次兼容
 过渡：继续以 `files/` 为 cwd，而不搬动用户文件；只删除可由旧 state 证明 provenance 的 OpenTag legacy
 instruction file。用户创建或已修改的冲突文件会原样保留并 fail closed。清理前先持久化 transition state，
 因此中断后可幂等重试。过渡完成后，Client 只用 workspace state 保持 layout 与 identity，不再检查或管理
-普通 Workspace entry。Schema v3 也作为 downgrade fence：旧 v1/v2 Client 会拒绝它，不会重新解释已升级的
-Workspace。
+普通本地 Workspace entry。Schema v3 也作为 downgrade fence：旧 v1/v2 Client 会拒绝它，不会重新解释已升级的
+layout。这里的 `workspace-states` 与 `workspaces` 是持久化本地 runtime 名称，不代表已移除的产品 Workspace 管理概念。
 
 此布局采用 clean break：OpenTag 不会读取、迁移、删除或回退到根目录的 `credentials.json`、
 `computer.json`、`daemon-owner.json`、`runtime/`、`service/`，也不会读取 `data/computer.json`、
@@ -181,10 +182,10 @@ snapshot；Provider Runtime 启动或恢复时会重新注入托管 instructions
 `config/computer.json` 丢失，当前 Client 会创建新的 Computer identity。Server 虽保留旧 Computer 与 placement
 记录，但 Client 不会自动认领旧 identity 或修复旧 binding。
 
-Provider binding、尚未成功上报的 Turn 证据、Workspace 文件和本机 `daemon.env` 值仅存在于本地。Session
-binding 丢失会破坏 Provider 精确续接，并可能使已 accepted 但尚未上报的工作需要显式修复。Workspace 文件
+Provider binding、尚未成功上报的 Turn 证据、Agent work-area 文件和本机 `daemon.env` 值仅存在于本地。Session
+binding 丢失会破坏 Provider 精确续接，并可能使已 accepted 但尚未上报的工作需要显式修复。work-area 文件
 只能依赖 Git、外部存储或本机备份，OpenTag Server 无法恢复。Effective snapshot 可重新生成，不属于主要
-备份目标。非空 Workspace 丢失 workspace state 时会 fail closed，不会静默选择另一 cwd。
+备份目标。非空 work area 丢失 workspace state 时会 fail closed，不会静默选择另一 cwd。
 
 daemon/service owner、lease state 与日志只有在 daemon 已停止且没有 service mutation 时才可视为本机可重新
 生成数据；操作仍在运行时删除 owner 或 lease 证据，会破坏单 daemon 和 service 互斥。备份应重点保护
@@ -213,9 +214,10 @@ Service mutation 使用两个独立 lease。`${OPENTAG_HOME}/state/service/opera
 
 ## 管理 Agent 配置
 
-Agent 属于 Workspace，并在创建时不可变地绑定到该 Workspace 的一个 active Computer enrollment。所有 Workspace
-Admin 都可创建和管理 Agent，不受 Computer enrollment 操作者或 Agent 创建者影响。当前 Account 只有一个 Workspace
-和一台可选 Computer 时，两者会自动选择：
+已确认的产品方向与产品呈现是 **Account → Computer enrollment → Agent → IM binding**。在 Phase 1 schema 中，
+Agent 通过 active internal scope 对当前 Account 可用且可管理，并在创建时不可变地绑定到该 scope 的一个 active
+Computer enrollment。所选 internal scope 只有一台可选 Computer 时会自动选择。legacy active grant 可能让多个
+Account 看到并管理同一批 Agent 与 enrollment，直到一次性数据拆分和 Phase 2 建立严格 per-Account ownership：
 
 ```bash
 pnpm --filter open-tag start agent create \
@@ -225,7 +227,8 @@ pnpm --filter open-tag start agent create \
 pnpm --filter open-tag start agent list
 ```
 
-存在多个选项时，使用 `--workspace <canonical-name>` 或 `--computer <uuid>`。Computer 离线时仍可选择，因为 online
+存在多台 Computer 时使用 `--computer <uuid>`。`--workspace <canonical-name>` 选项会保持可见并继续工作，但在
+Phase 2 前只用于选择 legacy internal scope，不是产品 Workspace selector。Computer 离线时仍可选择，因为 online
 presence 不是 Agent 配置状态。可以查看或修改可变的展示名称：
 
 ```bash
@@ -235,15 +238,16 @@ pnpm --filter open-tag start agent delete <agent-id>
 ```
 
 更新使用 revision compare-and-swap，不会自动覆盖并发变更；Computer rebind 不是 update 操作。删除是 Server 端
-软删除，对任何 Workspace Admin 幂等。`claude-code` 是允许的配置值，但其 runtime adapter 以及所有 Session/Turn
+软删除，对通过所选 internal scope 获得授权的 Account 幂等。`claude-code` 是允许的配置值，但其 runtime adapter
+以及所有 Session/Turn
 delivery 仍属于后续工作。
 
 这四个 `OPENTAG_BOOTSTRAP_*` 值仅作为一次性命令的输入，运行中的 Server 不会读取它们。
 bootstrap email 是 Account 资料，不是邮箱密码凭据。Account 登录 code 流程先解析稳定的 user ID，再进入与 provider
-无关的 token 颁发边界。未来 Google 或 OIDC identity resolver 可以接入这个边界，无需改变 JWT claims 或 workspace
-权限模型；每次管理授权始终从 PostgreSQL 读取有效 Admin grant。
+无关的 token 颁发边界。未来 Google 或 OIDC identity resolver 可以接入这个边界，无需改变 JWT claims。内部 grant
+仍会从 PostgreSQL 读取，作为 Phase 2 前的兼容 seam；产品不把它暴露为 Admin 成员关系。
 
-## Google 登录、Workspace 管理与 Web App
+## Google 登录与 Web App
 
 创建 Google Web OAuth client，并将 callback 配置为
 `http://127.0.0.1:8000/api/v1/auth/google/callback`，然后设置 `OPENTAG_GOOGLE_CLIENT_ID` 与
@@ -261,7 +265,7 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 
 `OPENTAG_HOST` 与 `OPENTAG_PUBLIC_URL` 都必须保持为 loopback 地址。登录页随后会显示
 `Dev: bypass Google`。callback 会按不区分大小写的 email 精确解析唯一一个已有用户并签发正常浏览器 session；
-它不会创建 Account 或 Workspace，且仍会拒绝 suspended Account 或没有 active Admin grant 的 Account。email 不存在或有重复匹配时
+它不会创建 Account 或内部兼容记录，且仍会拒绝 suspended Account 或缺少所需内部 grant 的 Account。email 不存在或有重复匹配时
 会 fail closed。Server 会在 `staging` 和 `prod` 环境拒绝这组配置。
 
 `OPENTAG_ENV` 是 OpenTag 唯一的环境与发布 channel 选择器。`dev` 对应本地开发行为与 `opentag-dev` binary，
@@ -271,15 +275,13 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 
 打开 `/` 可使用管理 shell。顶层导航固定为 **Agents / Tasks / Skills / Integrations**，没有 Settings tab。
 Computer enrollment 与恢复位于 Agents 区域。**Generate connection command** 会签发一个 15 分钟、仅可使用
-一次的 code，并复制由 Server 生成的 `computer connect` 命令；页面会轮询 Workspace enrollment，直到新的 daemon
-握手到达。Admins、Workspace 管理和 Account 操作位于 account menu。只有一个 Workspace 时不显示 selector；多个
-Workspace 时才显示，并结合显式最近选择与 Server 的确定性 fallback。Admin CLI 已退场，但现有 Admin grant
-会继续授权当前管理行为。在独立的 Workspace Web 退场 PR 合并前，该 Web 界面仍可能提供 grant 查看与撤销；该界面
-退场后，运维人员必须按照常规数据库变更流程，通过受控 PostgreSQL 运维执行 grant 查看与撤销。
+一次的 code，并复制由 Server 生成的 `computer connect` 命令；页面会轮询 Account 的 Computer enrollment，直到新的
+daemon 握手到达。account menu 只包含 Account 操作。OpenTag 不提供 Workspace、Admin 或 invitation 管理面。普通注册
+和 bootstrap 仍会配置内部默认 Workspace 与 grant，但只作为 Phase 2 前的兼容 seam。若内部记录需要例外检查或修正，
+运维人员必须按照常规数据库变更流程，通过受控 PostgreSQL 运维执行。
 
-OpenTag 不再提供创建额外 Workspace 或签发新 Admin invitation 的入口。不携带 invitation 的普通注册以及 bootstrap，
-仍会为 Account 配置内部默认 Workspace。变更前已签发的 invitation 在未被使用、撤销且未过期时仍可预览，并且仅在签发者
-仍是当前 Admin 时才可兑换；兑换仍可能新增 Admin。PostgreSQL 只保存其 SHA-256 查询 hash。
+Session collaboration 仍属于 Agent Runtime，不会引入产品 Workspace、Project 或共享管理容器。Context Tree 可以独立
+保存长期上下文；它不会建立 per-Account ownership，也不改变 Computer enrollment、Agent placement 或 IM binding。
 `OPENTAG_ENCRYPTION_KEY` 继续保护 IM provider credential；使用
 `openssl rand -base64 32` 生成。
 
@@ -287,7 +289,7 @@ OpenTag 不再提供创建额外 Workspace 或签发新 Admin invitation 的入�
 
 `scripts/e2e/onboarding-e2e.mjs` 会在真实 Server、真实 PostgreSQL、真实 Web 构建产物和真实 Computer daemon 上
 跑完整个 `/onboarding` 流程：浏览器登录、从页面读取连接命令、用 CLI 兑换、运行 `daemon service-run`、等待协商出的
-Provider readiness 投影、在表单里创建 Agent，然后检查 handoff、仅限管理员的 setup gate、持久化完成状态，以及后续
+Provider readiness 投影、在表单里创建 Agent，然后检查 handoff、授权 setup gate、持久化完成状态，以及后续
 运行时中断仍停留在正常 Agents 产品流程中的行为。
 
 ```bash

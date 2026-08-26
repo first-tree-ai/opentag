@@ -97,8 +97,10 @@ The service exposes port `5432` and stores data in the `opentag-postgres-data` n
 The production server image does not bundle or start PostgreSQL. Set `OPENTAG_DATABASE_URL` to a separately managed
 PostgreSQL instance when deploying it; the Compose service above is only a local development convenience.
 
-To bootstrap an empty installation, set the required bootstrap fields and run the one-time admin command. It migrates an
-empty database before creating the initial Account, Workspace, Admin grant, and Account login code.
+To bootstrap an empty installation, set the required bootstrap fields and run the one-time bootstrap command. It migrates
+an empty database before creating the initial Account and Account login code. Its current command name and
+`OPENTAG_BOOTSTRAP_WORKSPACE_*` inputs also create the internal default Workspace and grant used as a compatibility seam
+until Phase 2; they do not create product-level Workspace or Admin membership.
 
 ```bash
 export OPENTAG_BOOTSTRAP_EMAIL=admin@example.com
@@ -129,7 +131,7 @@ opentag-dev daemon status
 opentag-dev computer list
 ```
 
-The daemon reuses the stable physical Computer ID in `${OPENTAG_HOME}/config/computer.json`, loads independent Workspace
+The daemon reuses the stable physical Computer ID in `${OPENTAG_HOME}/config/computer.json`, loads independent
 enrollment credentials from `${OPENTAG_HOME}/config/computer-credentials.json`, creates a new process instance on every
 service start, and opens one Runtime connection per enrollment. OpenTag Home is organized by lifecycle:
 
@@ -160,14 +162,15 @@ files (`0600`). Directories and files are created only when their owner needs th
 `config/credentials.json`; `computer connect --no-start` stores `config/computer-credentials.json` without installing the
 daemon; runtime recovery records and workspaces appear on the first relevant reconcile.
 
-OpenTag does not maintain control files inside an Agent Workspace. Platform and Agent instructions are injected through
-the selected Provider's native system-prompt surface. A new Workspace root is the Provider cwd. For an existing
-schema-v1/v2 Workspace, one compatibility transition preserves `files/` as the cwd instead of moving user files. It
+OpenTag does not maintain control files inside an Agent work area. Platform and Agent instructions are injected through
+the selected Provider's native system-prompt surface. A new work-area root is the Provider cwd. For an existing
+schema-v1/v2 local Workspace layout, one compatibility transition preserves `files/` as the cwd instead of moving user files. It
 removes only legacy instruction files whose OpenTag provenance can be established from the old state; a user-authored or
 changed conflict is preserved and fails closed. The transition state is written before cleanup so an interrupted attempt
 is idempotent. After it completes, the Client uses workspace state only to preserve layout and identity and no longer
-inspects or manages Workspace entries. Schema v3 is also a downgrade fence: older v1/v2 Clients reject it instead of
-reinterpreting an upgraded Workspace.
+inspects or manages local Workspace entries. Schema v3 is also a downgrade fence: older v1/v2 Clients reject it instead
+of reinterpreting an upgraded layout. Here `workspace-states` and `workspaces` are persisted local runtime names, not the
+removed product Workspace management concept.
 
 This layout is a clean break: OpenTag does not read, migrate, delete, or fall back to root-level `credentials.json`,
 `computer.json`, `daemon-owner.json`, `runtime/`, `service/`, `data/computer.json`, `data/runtime/agents`, or
@@ -183,10 +186,10 @@ Reissued credentials are new values. If `config/computer.json` is lost, the curr
 identity; although the Server retains the old Computer and placement records, the Client does not automatically reclaim
 that identity or repair old bindings.
 
-Provider bindings, evidence for Turns not yet reported successfully, Workspace files, and local `daemon.env` values are
+Provider bindings, evidence for Turns not yet reported successfully, Agent work-area files, and local `daemon.env` values are
 local-only. Losing a Session binding can reset exact Provider resume continuity and can leave accepted-but-unreported
-work requiring explicit repair. Workspace files require Git, external storage, or a local backup; the OpenTag Server
-cannot restore them. Losing workspace state while its Workspace is non-empty fails closed instead of silently choosing a
+work requiring explicit repair. Work-area files require Git, external storage, or a local backup; the OpenTag Server
+cannot restore them. Losing workspace state while its work area is non-empty fails closed instead of silently choosing a
 different cwd. Effective snapshots are reproducible and are not a primary backup target.
 
 Daemon/service owner and lease state plus logs are locally reproducible only while the daemon is stopped and no service
@@ -216,9 +219,11 @@ their target leases do not contend.
 
 ## Manage Agent configurations
 
-An Agent belongs to a Workspace and is bound immutably at creation time to one active Computer enrollment in that
-Workspace. Every Workspace Admin may create and manage Agents regardless of who enrolled the Computer or created the
-Agent. When the current Account has one Workspace and one eligible Computer, both are selected automatically:
+The accepted product direction and product presentation are **Account → Computer enrollment → Agent → IM binding**.
+In the Phase 1 schema, an Agent is available to and manageable by the current Account through an active internal scope,
+and is bound immutably at creation time to one active Computer enrollment in that scope. When the selected internal
+scope has one eligible Computer, it is selected automatically. Legacy active grants can expose the same Agents and
+enrollments to multiple Accounts until the one-off data split and Phase 2 establish strict per-Account ownership:
 
 ```bash
 pnpm --filter open-tag start agent create \
@@ -228,8 +233,10 @@ pnpm --filter open-tag start agent create \
 pnpm --filter open-tag start agent list
 ```
 
-Use `--workspace <canonical-name>` or `--computer <uuid>` when more than one choice is available. An offline Computer may be
-selected because online presence is not Agent configuration state. Inspect and change the mutable display name with:
+Use `--computer <uuid>` when more than one Computer is available. The `--workspace <canonical-name>` option remains
+visible and functional only as a selector for the legacy internal scope until Phase 2; it is not a product Workspace
+selector. An offline Computer may be selected because online presence is not Agent configuration state. Inspect and
+change the mutable display name with:
 
 ```bash
 pnpm --filter open-tag start agent show <agent-id>
@@ -238,15 +245,17 @@ pnpm --filter open-tag start agent delete <agent-id>
 ```
 
 Updates use revision compare-and-swap and never overwrite a concurrent change automatically. Computer rebinding is not
-an update operation. Deletion is a server-side soft delete and is idempotent for any Workspace Admin. `claude-code` is an accepted configuration value,
+an update operation. Deletion is a server-side soft delete and is idempotent for an Account authorized through the
+selected internal scope. `claude-code` is an accepted configuration value,
 but its runtime adapter and all Session/Turn delivery remain future work.
 
 The four `OPENTAG_BOOTSTRAP_*` values are inputs to this one-time command only; the running server does not read them.
 The bootstrap email is Account profile data, not an email/password credential. The Account login-code flow resolves a
 stable user ID and then uses the provider-neutral token issuer. Future Google or OIDC identity resolvers can join at that
-boundary without changing JWT claims or Workspace authorization; active Admin grants are always loaded from PostgreSQL.
+boundary without changing JWT claims. Internal grants are still loaded from PostgreSQL as a Phase 2 compatibility seam;
+they are not exposed as Admin membership.
 
-## Google sign-in, Workspace administration, and Web App
+## Google sign-in and Web App
 
 Create a Google Web OAuth client whose callback is
 `http://127.0.0.1:8000/api/v1/auth/google/callback`, then set `OPENTAG_GOOGLE_CLIENT_ID` and
@@ -265,8 +274,8 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 
 Both `OPENTAG_HOST` and `OPENTAG_PUBLIC_URL` must remain loopback addresses. The login page then shows
 `Dev: bypass Google`. The callback resolves exactly one existing user by case-insensitive email and issues the normal
-browser session; it never creates an Account or Workspace and still rejects suspended Accounts or Accounts without an active
-Admin grant. Missing or duplicate email matches fail closed. The server refuses this configuration in `staging` and
+browser session; it never creates an Account or internal compatibility records and still rejects suspended Accounts or
+Accounts without the required internal grant. Missing or duplicate email matches fail closed. The server refuses this configuration in `staging` and
 `prod`.
 
 `OPENTAG_ENV` is the only OpenTag environment and release-channel selector. `dev` selects local development behavior and
@@ -277,18 +286,15 @@ startup; it never infers the environment from the hostname.
 
 Open `/` for the management shell. Its top-level navigation is **Agents / Tasks / Skills / Integrations**, with no
 Settings tab. Computer enrollment and recovery live in the Agents area. **Generate connection command** mints a
-15-minute, single-use code and copies the server-authored `computer connect` command; the page polls the Workspace's
-enrollments until the new daemon handshake arrives. Admins, Workspace management, and Account actions live in the account
-menu. A single-Workspace Account sees no selector; multiple Workspaces reveal one, with explicit recent selection and a
-deterministic Server fallback. The Admin CLI has been retired, while existing Admin grants continue to authorize current
-management behavior. Until the separate Workspace Web retirement PR is merged, that Web surface may still expose grant
-inspection and revocation. After it is retired, operators must handle grant inspection and revocation through controlled
-PostgreSQL operations under their normal database change procedure.
+15-minute, single-use code and copies the server-authored `computer connect` command; the page polls the Account's
+Computer enrollments until the new daemon handshake arrives. The account menu contains Account actions. OpenTag exposes
+no Workspace, Admin, or invitation management surface. Normal sign-up and bootstrap still provision an internal default
+Workspace and grant solely as a compatibility seam until Phase 2. Operators handle exceptional inspection or correction
+of those internal records through controlled PostgreSQL operations under their normal database change procedure.
 
-OpenTag no longer exposes a way to create an additional Workspace or issue a new Admin invitation. Normal sign-up
-without an invitation and bootstrap still provision an internal default Workspace. An invitation issued before this
-transition remains previewable while it is unconsumed, unrevoked, and unexpired, and it remains redeemable only while
-its issuer is also a current Admin; accepting one may still add an Admin. PostgreSQL stores only its SHA-256 lookup hash.
+Session collaboration remains an Agent Runtime concern and does not introduce a product Workspace, Project, or shared
+management container. Context Tree can preserve long-term context independently; it does not establish per-Account
+ownership or change Computer enrollment, Agent placement, or IM binding.
 `OPENTAG_ENCRYPTION_KEY` still protects IM provider credentials; generate it with `openssl rand -base64 32`.
 
 ## Onboarding end-to-end check
@@ -296,7 +302,7 @@ its issuer is also a current Admin; accepting one may still add an Admin. Postgr
 `scripts/e2e/onboarding-e2e.mjs` drives the whole `/onboarding` flow against a real Server, a real PostgreSQL database,
 the real Web build, and a real Computer daemon. It signs in through the browser, reads the connect command from the
 page, exchanges it with the CLI, runs `daemon service-run`, waits for the negotiated Provider readiness projection,
-creates the Agent from the form, and then checks the handoff, the admin-only setup gate, persisted completion, and that a
+creates the Agent from the form, and then checks the handoff, the authorized setup gate, persisted completion, and that a
 later runtime outage stays in the normal Agents product flow.
 
 ```bash

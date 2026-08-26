@@ -1,5 +1,7 @@
 # Internal Session collaboration
 
+[简体中文](./zh-CN/internal-session-collaboration.md)
+
 OpenTag Agents can delegate work to reusable internal Sessions with two hosted tools:
 
 - `create_internal_session` creates an internal Session and submits its first text message atomically. The optional
@@ -8,8 +10,13 @@ OpenTag Agents can delegate work to reusable internal Sessions with two hosted t
 - `send_session_message` sends text to an existing Session in the same collaboration scope. Its optional `messageId`
   has the same explicit-retry semantics.
 
+Here, collaboration scope is an operational Session boundary: the same Agent, IM binding, conversation kind, channel,
+and thread. It is not a Workspace, Project, Collaboration aggregate, or other product management entity. It grants no
+cross-Agent ownership and owns no shared files, long-term memory, Tasks, Secrets, Skills, or billing. Context Tree may
+preserve long-term context independently; it does not widen this real-time Session messaging boundary.
+
 Internal Sessions inherit the creator's Agent, IM binding, channel or thread scope, Computer placement, and shared
-Agent Workspace. They have an independent Agent Runtime and may override the model, reasoning effort, and maximum Run
+Agent work area. They have an independent Agent Runtime and may override the model, reasoning effort, and maximum Run
 duration at creation time. They do not receive IM deliveries, provider message references, or
 `OPENTAG_PROVIDER_ENV_FILE`; results and follow-up questions return only through `send_session_message`.
 

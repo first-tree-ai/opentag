@@ -4,7 +4,7 @@ This module is intentionally small. It owns repeated interaction and layout rule
 
 ## Page contract
 
-- Workspace pages use one `1024px` outer frame with `32px` inline gutters, leaving `960px` of visible content.
+- Product pages use one `1024px` outer frame with `32px` inline gutters, leaving `960px` of visible content.
 - Only page shells own page-level width. Sections, lists, forms, and panels use `width: 100%` and do not introduce another max-width.
 - Product pages keep the warm neutral canvas and olive brand treatment. Operational status uses the status palette, not the brand color.
 
@@ -30,5 +30,5 @@ This module is intentionally small. It owns repeated interaction and layout rule
 - Reuse a module when its semantic contract matches; do not add a variant only to reproduce one page.
 - Keep simple table selects as `ds-control` without wrapping them in `Field` or `SettingsRow`.
 - Keep top-level destinations as separate pages; do not repeat the app-shell navigation as page-level `Tabs`.
-- Keep domain modules such as Agent cards, messaging panels, runtime configuration, and invitation flows local to their page until at least two real call sites share the same behavior.
+- Keep domain modules such as Agent cards, messaging panels, runtime configuration, and Integration flows local to their page until at least two real call sites share the same behavior.
 - New pages should compose these modules and existing page shells before adding CSS. If a new pattern is genuinely repeated, deepen the existing module instead of creating a parallel one.

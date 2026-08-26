@@ -5,13 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
 
 const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
-const invitedWorkspaceId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
+const secondaryWorkspaceId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const memberUserId = "63e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
-const otherMemberUserId = "73e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
-const invitationToken = "A".repeat(43);
 
 const agentSummary = {
   id: agentId,
@@ -50,7 +48,7 @@ function installApi(
     agentActivity?: { state: "idle" } | { state: "working"; startedAt: string };
     emptyAgents?: boolean;
     agentCreate?: (input: Record<string, unknown>) => Promise<void> | void;
-    alreadyJoinedInvitation?: boolean;
+    multipleMemberships?: boolean;
     agentCreateError?: "conflict" | "generic" | "name";
     authProviders?: readonly { enabled: boolean; id: string; startUrl: string | null }[];
     bindingReauth?: boolean;
@@ -70,7 +68,6 @@ function installApi(
     computerReadStatus?: (connected: boolean) => number | undefined;
     handoffReady?: boolean;
     initialStatus?: "active" | "suspended";
-    invitationAcceptFails?: boolean;
     provider?: "feishu" | "slack";
     runtimeProvider?: "codex" | "claude-code";
     profileUpdate?: (displayName: string) => Promise<Response> | Response;
@@ -81,7 +78,6 @@ function installApi(
     workspaceless?: boolean;
   } = {},
 ) {
-  const workspaceProfile = { name: "example", displayName: "Example" };
   let lifecycleStatus = options.initialStatus ?? "active";
   let revision = lifecycleStatus === "active" ? 1 : 2;
   const adminConfig = () => ({
@@ -107,7 +103,6 @@ function installApi(
   });
   let setupCompletedAt = options.setupCompletedAt === undefined ? "2026-08-20T00:00:00.000Z" : options.setupCompletedAt;
   let currentDisplayName = "Ada";
-  let joinedInvitation = options.alreadyJoinedInvitation ?? false;
   let computerConnectCodeIssued = false;
   vi.mocked(fetch).mockImplementation(async (input, init) => {
     const path = String(input);
@@ -142,8 +137,8 @@ function installApi(
         : [
             {
               id: workspaceId,
-              name: workspaceProfile.name,
-              displayName: workspaceProfile.displayName,
+              name: "example",
+              displayName: "Example",
               setupCompletedAt,
               grantedAt: "2026-08-20T00:00:00.000Z",
             },
@@ -152,12 +147,12 @@ function installApi(
         user: { id: userId, email: "ada@example.com", displayName: currentDisplayName },
         workspaces: [
           ...existing,
-          ...(joinedInvitation
+          ...(options.multipleMemberships
             ? [
                 {
-                  id: invitedWorkspaceId,
-                  name: "invited-workspace",
-                  displayName: "Invited Workspace",
+                  id: secondaryWorkspaceId,
+                  name: "secondary",
+                  displayName: "Secondary",
                   setupCompletedAt: "2026-08-20T00:00:00.000Z",
                   grantedAt: "2026-08-20T00:00:00.000Z",
                 },
@@ -169,26 +164,6 @@ function installApi(
     if (path === `/api/v1/workspaces/${workspaceId}/setup/complete` && init?.method === "POST") {
       setupCompletedAt = "2026-08-20T00:10:00.000Z";
       return json({ setupCompletedAt });
-    }
-    if (path === `/api/v1/workspaces/${workspaceId}` && init?.method === "PATCH") {
-      const body = JSON.parse(String(init.body)) as { displayName?: string; name?: string };
-      if (body.name !== undefined) workspaceProfile.name = body.name.trim().toLowerCase();
-      if (body.displayName !== undefined) workspaceProfile.displayName = body.displayName.trim();
-      return json({
-        id: workspaceId,
-        name: workspaceProfile.name,
-        displayName: workspaceProfile.displayName,
-        updatedAt: "2026-08-20T00:01:00.000Z",
-      });
-    }
-    if (path === `/api/v1/workspaces/${workspaceId}` && init?.method === undefined) {
-      return json({
-        id: workspaceId,
-        name: workspaceProfile.name,
-        displayName: workspaceProfile.displayName,
-        setupCompletedAt,
-        updatedAt: "2026-08-20T00:00:00.000Z",
-      });
     }
     if (/^\/api\/v1\/workspaces\/[^/]+\/agents$/.test(path) && init?.method === "POST") {
       if (options.agentCreateError) {
@@ -222,7 +197,6 @@ function installApi(
       await options.agentCreate?.(body);
       return json(adminConfig(), 201);
     }
-    // Any Workspace id, so a Workspace created during the test is served like the seeded and invited ones.
     if (/^\/api\/v1\/workspaces\/[^/]+\/agents$/.test(path) && init?.method === undefined) {
       const failureStatus = options.agentListStatus?.();
       if (failureStatus) return json({ error: { message: "Agent list unavailable" } }, failureStatus);
@@ -230,54 +204,14 @@ function installApi(
         agents: options.emptyAgents
           ? []
           : [
-              path.includes(invitedWorkspaceId)
-                ? {
-                    ...agentListItem,
-                    createdBy: options.agentCreator ?? agentListItem.createdBy,
-                    activity: options.agentActivity ?? agentListItem.activity,
-                    workspaceId: invitedWorkspaceId,
-                    status: lifecycleStatus,
-                    runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
-                  }
-                : {
-                    ...agentListItem,
-                    createdBy: options.agentCreator ?? agentListItem.createdBy,
-                    activity: options.agentActivity ?? agentListItem.activity,
-                    status: lifecycleStatus,
-                    runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
-                  },
+              {
+                ...agentListItem,
+                createdBy: options.agentCreator ?? agentListItem.createdBy,
+                activity: options.agentActivity ?? agentListItem.activity,
+                status: lifecycleStatus,
+                runtimeProvider: options.runtimeProvider ?? agentListItem.runtimeProvider,
+              },
             ],
-      });
-    }
-    if (path === `/api/v1/workspaces/${workspaceId}/admins`) {
-      return json({
-        admins: [
-          { userId, displayName: currentDisplayName, grantedAt: "2026-08-20T00:00:00.000Z" },
-          { userId: memberUserId, displayName: "Grace", grantedAt: "2026-08-20T00:01:00.000Z" },
-          { userId: otherMemberUserId, displayName: "Lin", grantedAt: "2026-08-20T00:02:00.000Z" },
-        ],
-      });
-    }
-    if (path.startsWith(`/api/v1/workspaces/${workspaceId}/admins/`) && init?.method === "DELETE") {
-      return new Response(null, { status: 204 });
-    }
-    if (path === `/api/v1/admin-invitations/${invitationToken}/preview`) {
-      return json({ workspaceDisplayName: "Invited Workspace", expiresAt: "2026-08-27T00:00:00.000Z" });
-    }
-    if (path === `/api/v1/admin-invitations/${invitationToken}/accept` && init?.method === "POST") {
-      if (options.unauthenticated) return json({ error: { message: "Sign in required" } }, 401);
-      if (options.invitationAcceptFails) {
-        return json({ error: { message: "The invitation is invalid or expired" } }, 404);
-      }
-      joinedInvitation = true;
-      return json({
-        workspace: {
-          id: invitedWorkspaceId,
-          name: "invited-workspace",
-          displayName: "Invited Workspace",
-          setupCompletedAt: "2026-08-20T00:00:00.000Z",
-          grantedAt: "2026-08-20T00:00:00.000Z",
-        },
       });
     }
     if (/^\/api\/v1\/workspaces\/[^/]+\/computers$/.test(path)) {
@@ -550,7 +484,7 @@ describe("OpenTag Web App Shell", () => {
     expect(createAgent.closest(".page-header")).toBeTruthy();
     const agentCard = agentLink.closest(".agent-card");
     expect(agentCard).toBeTruthy();
-    expect(screen.getByText("Monitor availability and 30-day usage across your AI workspacemates.")).toBeTruthy();
+    expect(screen.getByText("Monitor availability and 30-day usage across your AI teammates.")).toBeTruthy();
     expect(screen.queryByText("Usage · Last 30 days")).toBeNull();
     expect(within(agentCard as HTMLElement).getByText("Tasks")).toBeTruthy();
     expect(within(agentCard as HTMLElement).getByText("Tokens")).toBeTruthy();
@@ -661,7 +595,7 @@ describe("OpenTag Web App Shell", () => {
     expect(signIn.classList.contains("login-provider-button--google")).toBe(true);
     expect(signIn.querySelector('img[alt="Sign in with Google"]')).toBeTruthy();
     expect(new URL(signIn.getAttribute("href") ?? "", window.location.origin).searchParams.get("next")).toBe("/agents");
-    expect(screen.getByText("Access is managed by your workspace.")).toBeTruthy();
+    expect(screen.getByText("Access is managed by your OpenTag operator.")).toBeTruthy();
   });
 
   it("keeps authenticated invalid Agent tabs on the plain workspace canvas", async () => {
@@ -1140,28 +1074,16 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByText("Ada")).toBeTruthy();
   });
 
-  it("keeps Workspace identity and its Admins reachable in the single-Workspace shell", async () => {
-    installApi();
-    window.history.replaceState({}, "", "/workspace");
-    render(<App />);
-    expect(await screen.findByRole("heading", { name: "Workspace" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/workspace");
-    expect(screen.getByRole("heading", { name: "Admins" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Invite Admin" })).toBeNull();
-    expect(screen.getByText(/New invitations cannot be issued/)).toBeTruthy();
-    // The name reaches every invitation recipient and the identifier is required by the CLI, so a
-    // solo Admin has to be able to read and change them.
-    expect(screen.getByLabelText("Workspace name")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Save account profile" })).toBeNull();
-  });
-
-  it("redirects the retired Admins route onto the Workspace surface", async () => {
-    installApi();
-    window.history.replaceState({}, "", "/admins");
-    render(<App />);
-    expect(await screen.findByRole("heading", { name: "Workspace" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/workspace");
-  });
+  it.each(["/workspace", "/admins", `/invites/${"A".repeat(43)}`])(
+    "does not preserve retired Workspace product route %s",
+    async (path) => {
+      window.history.replaceState({}, "", path);
+      render(<App />);
+      expect(await screen.findByRole("heading", { name: "Page not found" })).toBeTruthy();
+      expect(window.location.pathname).toBe(path);
+      expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps the Agent home focused on status, current work, and contact", async () => {
     installApi({ bound: true });
@@ -1290,7 +1212,7 @@ describe("OpenTag Web App Shell", () => {
 
     const displayName = (await screen.findByLabelText("Display name")) as HTMLInputElement;
     expect(screen.getByRole("heading", { name: "Name" })).toBeTruthy();
-    expect(screen.getByText("Choose the name workspacemates see.")).toBeTruthy();
+    expect(screen.getByText("Choose the name teammates see.")).toBeTruthy();
     expect(screen.queryByLabelText("Handle")).toBeNull();
     expect(screen.queryByText(/handle cannot be changed/i)).toBeNull();
     expect(screen.queryByRole("button", { name: "Save changes" })).toBeNull();
@@ -1471,8 +1393,8 @@ describe("OpenTag Web App Shell", () => {
   });
 
   it.each([
-    ["integrations", "Agent integrations are not available here", "Browse Workspace integrations"],
-    ["skills", "Agent skills are not available here", "Browse Workspace skills"],
+    ["integrations", "Agent integrations are not available here", "Browse integrations"],
+    ["skills", "Agent skills are not available here", "Browse skills"],
   ])("keeps legacy Agent %s URLs inside an explicit Agent-scoped boundary", async (section, heading, action) => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/${section}`);
@@ -1480,7 +1402,7 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: heading })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/${section}`);
-    expect(screen.getByText(/assigned to Reviewer.*Workspace catalog is separate/)).toBeTruthy();
+    expect(screen.getByText(/assigned to Reviewer.*shared catalog is separate/)).toBeTruthy();
     expect(screen.getByRole("link", { name: action }).getAttribute("href")).toBe(`/${section}`);
   });
 
@@ -1918,94 +1840,32 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
   });
 
-  it("lets an Admin rename a Workspace only after multiple Workspaces disclose management", async () => {
-    installApi({ alreadyJoinedInvitation: true });
-    window.localStorage.setItem("opentag.lastExplicitWorkspaceId.v1", workspaceId);
-    window.history.replaceState({}, "", "/workspace");
+  it("uses the server-ordered first membership without a browser Workspace preference", async () => {
+    installApi({ multipleMemberships: true });
+    window.history.replaceState({}, "", `/agents?joinedWorkspaceId=${secondaryWorkspaceId}`);
+    const getItem = vi.spyOn(Storage.prototype, "getItem");
     render(<App />);
 
-    const displayName = await screen.findByLabelText("Workspace name");
-    fireEvent.change(displayName, { target: { value: "Renamed Workspace" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save Workspace profile" }));
-
-    await waitFor(() =>
-      expect(
-        vi
-          .mocked(fetch)
-          .mock.calls.some(
-            ([input, init]) => String(input) === `/api/v1/workspaces/${workspaceId}` && init?.method === "PATCH",
-          ),
-      ).toBe(true),
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(getItem).not.toHaveBeenCalled();
+    expect(vi.mocked(fetch).mock.calls.some(([path]) => path === `/api/v1/workspaces/${workspaceId}/agents`)).toBe(
+      true,
     );
-    expect(((await screen.findByLabelText("Workspace name")) as HTMLInputElement).value).toBe("Renamed Workspace");
-  });
-
-  it("accepts a single-use invitation without recording an implicit Workspace preference", async () => {
-    installApi();
-    window.history.replaceState({}, "", `/invites/${invitationToken}`);
-    render(<App />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Accept full Workspace Admin access" }));
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    expect(window.localStorage.getItem("opentag.lastExplicitWorkspaceId.v1")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
-    expect(screen.getByRole("menuitem", { name: /Invited Workspace Workspace Admin/ })).toBeTruthy();
-  });
-
-  it("redirects an unauthenticated invitation acceptance back through sign-in", async () => {
-    installApi({ unauthenticated: true });
-    window.history.replaceState({}, "", `/invites/${invitationToken}`);
-    render(<App />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Accept full Workspace Admin access" }));
-    expect(await screen.findByRole("heading", { name: "Welcome back" })).toBeTruthy();
-    expect(window.location.search).toBe(`?next=${encodeURIComponent(`/invites/${invitationToken}`)}`);
-  });
-
-  it("selects the Workspace redeemed atomically during invitation sign-in", async () => {
-    installApi({ alreadyJoinedInvitation: true });
-    window.history.replaceState({}, "", `/agents?joinedWorkspaceId=${invitedWorkspaceId}`);
-    render(<App />);
-
-    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
     expect(
-      screen.getByRole("menuitem", { name: /Invited Workspace Workspace Admin/ }).getAttribute("aria-current"),
-    ).toBe("true");
-    expect(window.localStorage.getItem("opentag.lastExplicitWorkspaceId.v1")).toBeNull();
+      vi.mocked(fetch).mock.calls.some(([path]) => path === `/api/v1/workspaces/${secondaryWorkspaceId}/agents`),
+    ).toBe(false);
+    getItem.mockRestore();
   });
 
-  it("offers no invitation issuance while keeping Admin revocation reachable", async () => {
-    installApi();
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
-    window.history.replaceState({}, "", "/workspace");
-    render(<App />);
-
-    expect(await screen.findByRole("heading", { name: "Admins" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Invite Admin" })).toBeNull();
-    const revokeButtons = await screen.findAllByRole("button", { name: "Revoke" });
-    fireEvent.click(revokeButtons[1] as HTMLElement);
-    await waitFor(() =>
-      expect(
-        vi
-          .mocked(fetch)
-          .mock.calls.some(
-            ([path, init]) =>
-              path === `/api/v1/workspaces/${workspaceId}/admins/${memberUserId}` && init?.method === "DELETE",
-          ),
-      ).toBe(true),
-    );
-    confirm.mockRestore();
-  });
-
-  it("hides only the selector for a single Workspace, not the Workspace itself", async () => {
-    installApi();
+  it("keeps Workspace management and switching out of the account menu", async () => {
+    installApi({ multipleMemberships: true });
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
 
-    // Choosing between scopes is meaningless with one; reading your own Workspace is not.
     expect(screen.queryByRole("group", { name: "Workspaces" })).toBeNull();
-    expect(screen.getByRole("menuitem", { name: "Workspace" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Workspace" })).toBeNull();
+    expect(screen.queryByText("Secondary")).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Computers" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Account" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: "Admins" })).toBeNull();
   });
@@ -2360,16 +2220,17 @@ describe("OpenTag Web App Shell", () => {
     expect(within(dialog).queryByRole("button", { name: "Create Agent" })).toBeNull();
   });
 
-  it("keeps the Workspace-less authenticated gate read-only while the server finishes Workspace setup", async () => {
+  it("keeps an unprovisioned authenticated account read-only while the server finishes setup", async () => {
     installApi({ workspaceless: true });
     render(
       <StrictMode>
         <App />
       </StrictMode>,
     );
-    expect(await screen.findByRole("heading", { name: "No Workspace administration access" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "OpenTag is not ready for this account" })).toBeTruthy();
     expect(window.location.pathname).toBe("/agents");
-    expect(screen.getByRole("status").textContent).toContain("Access cannot be restored from this screen");
+    expect(screen.getByRole("status").textContent).toContain("Retry after provisioning finishes");
+    expect(screen.getByText(/contact an operator/)).toBeTruthy();
     expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
     const initialMeReads = vi.mocked(fetch).mock.calls.filter(([path]) => path === "/api/v1/me").length;
     fireEvent.click(screen.getByRole("button", { name: "Check again" }));
@@ -2383,7 +2244,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ workspaceless: true });
     window.history.replaceState({}, "", "/onboarding");
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "No Workspace administration access" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "OpenTag is not ready for this account" })).toBeTruthy();
     expect(window.location.pathname).toBe("/onboarding");
     expect(
       vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST"),
@@ -2405,26 +2266,6 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.pathname).toBe("/agents");
   });
 
-  it("loads standalone onboarding when selected Workspace preference storage is unavailable", async () => {
-    installApi({ computerProviderReadiness: [], setupCompletedAt: null });
-    window.history.replaceState({}, "", "/onboarding");
-    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
-      throw new Error("Storage unavailable");
-    });
-    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new Error("Storage unavailable");
-    });
-    try {
-      render(<App />);
-      expect(await screen.findByRole("heading", { name: "Reviewer needs its runtime route" })).toBeTruthy();
-      expect(window.location.pathname).toBe("/onboarding");
-      expect(vi.mocked(fetch).mock.calls.filter(([path]) => path === "/api/v1/me")).toHaveLength(1);
-    } finally {
-      getItem.mockRestore();
-      setItem.mockRestore();
-    }
-  });
-
   it("does not preserve the retired self-serve Workspace creation route", async () => {
     installApi();
     window.history.replaceState({}, "", "/workspaces/new");
@@ -2434,60 +2275,6 @@ describe("OpenTag Web App Shell", () => {
       vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST"),
     ).toBe(false);
   });
-
-  it("switches Workspaces when Workspace preference storage is unavailable", async () => {
-    installApi({ alreadyJoinedInvitation: true });
-    window.localStorage.setItem("opentag.lastExplicitWorkspaceId.v1", workspaceId);
-    const setItem = vi.spyOn(window.localStorage, "setItem").mockImplementation(() => {
-      throw new Error("Storage unavailable");
-    });
-    try {
-      render(<App />);
-      fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
-      fireEvent.click(
-        within(screen.getByRole("group", { name: "Workspaces" })).getByRole("menuitem", {
-          name: /Invited Workspace Workspace Admin/,
-        }),
-      );
-      fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
-      expect(
-        within(screen.getByRole("group", { name: "Workspaces" }))
-          .getByRole("menuitem", { name: /Invited Workspace Workspace Admin/ })
-          .getAttribute("aria-current"),
-      ).toBe("true");
-      expect(window.location.pathname).toBe("/agents");
-      expect(window.localStorage.getItem("opentag.lastExplicitWorkspaceId.v1")).toBe(workspaceId);
-    } finally {
-      setItem.mockRestore();
-    }
-  });
-
-  it.each([`/agents/${agentId}`, "/agents/new"])(
-    "leaves Workspace-scoped Agent route %s when switching Workspaces",
-    async (path) => {
-      installApi({ alreadyJoinedInvitation: true });
-      window.history.replaceState({}, "", path);
-      render(<App />);
-
-      fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
-      const targetWorkspace = within(screen.getByRole("group", { name: "Workspaces" }))
-        .getAllByRole("menuitem")
-        .find(
-          (item) => item.classList.contains("account-workspace-option") && item.getAttribute("aria-current") !== "true",
-        );
-      if (!targetWorkspace) throw new Error("A second Workspace option was not rendered");
-      const targetWorkspaceName = targetWorkspace.querySelector("strong")?.textContent;
-      fireEvent.click(targetWorkspace);
-
-      expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
-      expect(window.location.pathname).toBe("/agents");
-      fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
-      const selectedWorkspace = screen
-        .getByRole("group", { name: "Workspaces" })
-        .querySelector<HTMLElement>('[aria-current="true"]');
-      expect(selectedWorkspace?.querySelector("strong")?.textContent).toBe(targetWorkspaceName);
-    },
-  );
 
   it("keeps account controls personal and signs out from the account menu", async () => {
     installApi();
@@ -2523,14 +2310,14 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
   });
 
-  it("moves focus into multi-Workspace account options and returns it to the trigger on Escape", async () => {
-    installApi({ alreadyJoinedInvitation: true });
+  it("moves focus into account actions and returns it to the trigger on Escape", async () => {
+    installApi({ multipleMemberships: true });
     render(<App />);
     const trigger = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.click(trigger);
-    const currentWorkspace = screen.getByRole("menuitem", { name: /Example Workspace Admin/ });
-    expect(document.activeElement).toBe(currentWorkspace);
-    fireEvent.keyDown(currentWorkspace, { key: "Escape" });
+    const computers = screen.getByRole("menuitem", { name: "Computers" });
+    expect(document.activeElement).toBe(computers);
+    fireEvent.keyDown(computers, { key: "Escape" });
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });
@@ -2540,20 +2327,17 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     const trigger = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.click(trigger);
-    const workspace = screen.getByRole("menuitem", { name: "Workspace" });
     const computers = screen.getByRole("menuitem", { name: "Computers" });
     const account = screen.getByRole("menuitem", { name: "Account" });
     const signOut = screen.getByRole("menuitem", { name: "Sign out" });
-    expect(document.activeElement).toBe(workspace);
-    fireEvent.keyDown(workspace, { key: "ArrowDown" });
     expect(document.activeElement).toBe(computers);
     fireEvent.keyDown(computers, { key: "ArrowDown" });
     expect(document.activeElement).toBe(account);
     fireEvent.keyDown(account, { key: "ArrowDown" });
     expect(document.activeElement).toBe(signOut);
     fireEvent.keyDown(signOut, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(workspace);
-    fireEvent.keyDown(workspace, { key: "End" });
+    expect(document.activeElement).toBe(computers);
+    fireEvent.keyDown(computers, { key: "End" });
     expect(document.activeElement).toBe(signOut);
     fireEvent.keyDown(signOut, { key: "Escape" });
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();

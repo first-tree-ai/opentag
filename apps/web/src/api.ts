@@ -35,18 +35,10 @@ import {
   ImBindingHandoffStatusSchema,
   type ImBindingSummary,
   ImBindingSummarySchema,
-  type InvitationAcceptanceResponse,
-  InvitationAcceptanceResponseSchema,
-  type InvitationPreview,
-  InvitationPreviewSchema,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
-  invitationAcceptPath,
-  invitationPreviewPath,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
-  type ListWorkspaceAdminsResponse,
-  ListWorkspaceAdminsResponseSchema,
   type ListWorkspaceComputersResponse,
   ListWorkspaceComputersResponseSchema,
   type MeResponse,
@@ -58,18 +50,12 @@ import {
   SlackConfigurationResultSchema,
   type UpdateAgentRequest,
   type UpdateUserProfileRequest,
-  type UpdateWorkspaceProfileRequest,
   type UserProfile,
   UserProfileSchema,
   type ValidationIssue,
-  type WorkspaceProfile,
-  WorkspaceProfileSchema,
   type WorkspaceSetupCompletion,
   WorkspaceSetupCompletionSchema,
-  workspaceAdminPath,
-  workspaceAdminsPath,
   workspaceAgentsPath,
-  workspaceByIdPath,
   workspaceComputerConnectCodesPath,
   workspaceComputersPath,
   workspaceSetupCompletePath,
@@ -109,25 +95,6 @@ export class BrowserApi {
 
   authProviders(): Promise<AuthProvidersResponse> {
     return this.request(HTTP_PATHS.authProviders, AuthProvidersResponseSchema, undefined, false);
-  }
-
-  admins(workspaceId: string): Promise<ListWorkspaceAdminsResponse> {
-    return this.request(workspaceAdminsPath(workspaceId), ListWorkspaceAdminsResponseSchema);
-  }
-
-  revokeWorkspaceAdmin(workspaceId: string, accountId: string): Promise<void> {
-    return this.requestNoContent(workspaceAdminPath(workspaceId, accountId), {
-      method: "DELETE",
-      headers: this.csrfHeaders(),
-    });
-  }
-
-  updateWorkspace(workspaceId: string, input: UpdateWorkspaceProfileRequest): Promise<WorkspaceProfile> {
-    return this.request(workspaceByIdPath(workspaceId), WorkspaceProfileSchema, {
-      method: "PATCH",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
   }
 
   completeWorkspaceSetup(workspaceId: string, agentId: string): Promise<WorkspaceSetupCompletion> {
@@ -249,17 +216,6 @@ export class BrowserApi {
 
   issueComputerConnectCode(workspaceId: string): Promise<ComputerConnectCodeIssueResponse> {
     return this.request(workspaceComputerConnectCodesPath(workspaceId), ComputerConnectCodeIssueResponseSchema, {
-      method: "POST",
-      headers: this.csrfHeaders(),
-    });
-  }
-
-  invitationPreview(token: string): Promise<InvitationPreview> {
-    return this.request(invitationPreviewPath(token), InvitationPreviewSchema, undefined, false);
-  }
-
-  acceptAdminInvitation(token: string): Promise<InvitationAcceptanceResponse> {
-    return this.request(invitationAcceptPath(token), InvitationAcceptanceResponseSchema, {
       method: "POST",
       headers: this.csrfHeaders(),
     });

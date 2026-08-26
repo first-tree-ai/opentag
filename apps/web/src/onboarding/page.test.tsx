@@ -299,7 +299,7 @@ describe("OnboardingPage", () => {
     render(<OnboardingPage membership={admin} onSetupReady={onSetupReady} user={user} />);
 
     await waitFor(() => expect(onSetupReady).toHaveBeenCalledWith(agentId));
-    expect(screen.getByRole("heading", { name: "Finishing Workspace setup" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Finishing OpenTag setup" })).toBeTruthy();
   });
 
   it("hands a completed setup over to the Agent it created", async () => {

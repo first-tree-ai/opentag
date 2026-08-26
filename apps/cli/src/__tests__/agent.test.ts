@@ -337,9 +337,9 @@ describe("Agent CLI core", () => {
     const create = agentCommand?.commands.find((command) => command.name() === "create");
     const update = agentCommand?.commands.find((command) => command.name() === "update");
     const connect = computerCommand?.commands.find((command) => command.name() === "connect");
-    expect(agentCommand?.description()).toBe("Manage Agents owned by the current Account");
+    expect(agentCommand?.description()).toBe("Manage Agents available to the current Account");
     expect(computerCommand?.description()).toBe("Connect and inspect Computers available to the current Account");
-    expect(connect?.description()).toBe("Enroll this Computer for an Account with a one-time code");
+    expect(connect?.description()).toBe("Enroll this Computer with a one-time code");
     expect(create?.options.map((option) => option.long)).toEqual(
       expect.arrayContaining([
         "--model",

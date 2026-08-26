@@ -219,9 +219,11 @@ their target leases do not contend.
 
 ## Manage Agent configurations
 
-The product relationship is **Account → Computer enrollment → Agent → IM binding**. An Agent is owned by the current
-Account and is bound immutably at creation time to one active Computer enrollment. When the current Account has one
-eligible Computer, it is selected automatically:
+The accepted product direction and product presentation are **Account → Computer enrollment → Agent → IM binding**.
+In the Phase 1 schema, an Agent is available to and manageable by the current Account through an active internal scope,
+and is bound immutably at creation time to one active Computer enrollment in that scope. When the selected internal
+scope has one eligible Computer, it is selected automatically. Legacy active grants can expose the same Agents and
+enrollments to multiple Accounts until the one-off data split and Phase 2 establish strict per-Account ownership:
 
 ```bash
 pnpm --filter open-tag start agent create \
@@ -243,7 +245,8 @@ pnpm --filter open-tag start agent delete <agent-id>
 ```
 
 Updates use revision compare-and-swap and never overwrite a concurrent change automatically. Computer rebinding is not
-an update operation. Deletion is a server-side soft delete and is idempotent for the owning Account. `claude-code` is an accepted configuration value,
+an update operation. Deletion is a server-side soft delete and is idempotent for an Account authorized through the
+selected internal scope. `claude-code` is an accepted configuration value,
 but its runtime adapter and all Session/Turn delivery remain future work.
 
 The four `OPENTAG_BOOTSTRAP_*` values are inputs to this one-time command only; the running server does not read them.
@@ -290,8 +293,8 @@ Workspace and grant solely as a compatibility seam until Phase 2. Operators hand
 of those internal records through controlled PostgreSQL operations under their normal database change procedure.
 
 Session collaboration remains an Agent Runtime concern and does not introduce a product Workspace, Project, or shared
-management container. Context Tree can preserve long-term context independently; it does not change Account ownership,
-Computer enrollment, Agent placement, or IM binding.
+management container. Context Tree can preserve long-term context independently; it does not establish per-Account
+ownership or change Computer enrollment, Agent placement, or IM binding.
 `OPENTAG_ENCRYPTION_KEY` still protects IM provider credentials; generate it with `openssl rand -base64 32`.
 
 ## Onboarding end-to-end check

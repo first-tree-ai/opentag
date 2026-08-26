@@ -38,7 +38,7 @@ describe("computer connect", () => {
       noStart: true,
       serverUrl: "https://opentag.example",
     });
-    expect(result.message).toBe("Connected this Computer to the Account");
+    expect(result.message).toBe("Connected this Computer");
     expect(result.message).not.toContain(firstWorkspaceId);
     await runComputerConnect({
       api: { exchangeComputerConnectCode },

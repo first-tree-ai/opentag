@@ -214,8 +214,10 @@ Service mutation 使用两个独立 lease。`${OPENTAG_HOME}/state/service/opera
 
 ## 管理 Agent 配置
 
-产品关系是 **Account → Computer enrollment → Agent → IM binding**。Agent 归当前 Account 所有，并在创建时
-不可变地绑定到一个 active Computer enrollment。当前 Account 只有一台可选 Computer 时会自动选择：
+已确认的产品方向与产品呈现是 **Account → Computer enrollment → Agent → IM binding**。在 Phase 1 schema 中，
+Agent 通过 active internal scope 对当前 Account 可用且可管理，并在创建时不可变地绑定到该 scope 的一个 active
+Computer enrollment。所选 internal scope 只有一台可选 Computer 时会自动选择。legacy active grant 可能让多个
+Account 看到并管理同一批 Agent 与 enrollment，直到一次性数据拆分和 Phase 2 建立严格 per-Account ownership：
 
 ```bash
 pnpm --filter open-tag start agent create \
@@ -236,7 +238,8 @@ pnpm --filter open-tag start agent delete <agent-id>
 ```
 
 更新使用 revision compare-and-swap，不会自动覆盖并发变更；Computer rebind 不是 update 操作。删除是 Server 端
-软删除，对所属 Account 幂等。`claude-code` 是允许的配置值，但其 runtime adapter 以及所有 Session/Turn
+软删除，对通过所选 internal scope 获得授权的 Account 幂等。`claude-code` 是允许的配置值，但其 runtime adapter
+以及所有 Session/Turn
 delivery 仍属于后续工作。
 
 这四个 `OPENTAG_BOOTSTRAP_*` 值仅作为一次性命令的输入，运行中的 Server 不会读取它们。
@@ -278,7 +281,7 @@ daemon 握手到达。account menu 只包含 Account 操作。OpenTag 不提供 
 运维人员必须按照常规数据库变更流程，通过受控 PostgreSQL 运维执行。
 
 Session collaboration 仍属于 Agent Runtime，不会引入产品 Workspace、Project 或共享管理容器。Context Tree 可以独立
-保存长期上下文；它不改变 Account 所有权、Computer enrollment、Agent placement 或 IM binding。
+保存长期上下文；它不会建立 per-Account ownership，也不改变 Computer enrollment、Agent placement 或 IM binding。
 `OPENTAG_ENCRYPTION_KEY` 继续保护 IM provider credential；使用
 `openssl rand -base64 32` 生成。
 

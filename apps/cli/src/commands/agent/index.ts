@@ -8,7 +8,7 @@ import { registerAgentShowCommand } from "./show.js";
 import { registerAgentUpdateCommand } from "./update.js";
 
 export function registerAgentCommand(program: Command): void {
-  const agent = program.command("agent").description("Manage Agents owned by the current Account");
+  const agent = program.command("agent").description("Manage Agents available to the current Account");
   registerAgentCreateCommand(agent);
   registerAgentListCommand(agent);
   registerAgentShowCommand(agent);

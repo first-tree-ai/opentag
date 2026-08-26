@@ -13,8 +13,8 @@ OpenTag 是一个全新的独立开源产品，用于连接即时通信与 AI �
 - 会校验 schema 的 Client 健康检查；
 - 与 provider 无关的账号身份、Google 浏览器登录和 PostgreSQL migration；
 - 使用滑动续期无状态 refresh JWT 的一次性 Account 登录 code；
-- 通过 Account 持有、独立认证的 Computer enrollment 与在线状态；
-- Account 所有的 Agent Registry、不可变 Computer/provider 绑定与 revision fencing；
+- 独立认证的 Computer enrollment 与在线状态；
+- 带不可变 Computer/provider 绑定与 revision fencing 的 Agent Registry；
 - 持久化 Agent Runtime 执行、delivery custody、上报与恢复；
 - 飞书和 Slack 入站标准化、持久化及 Channel/Thread Session 路由；
 - 带显式消息重试的持久化、best-effort internal Session collaboration；
@@ -73,16 +73,18 @@ pnpm --filter open-tag start agent list
 
 这会记录 Agent identity 和 Computer binding。Agent 收到已准入工作后，Agent Runtime turn 才会启动。
 
-已登录 Account 可在 Codex Agent 的 **Runtime** 页面或对应的 `agent update` 参数中管理 model、reasoning effort 和单个
-Turn 的最长执行时间。model 或 reasoning 留空表示交由 Codex 管理；duration 留空则使用 OpenTag 的 30 分钟默认值。
+已登录 Account 可在可用 Codex Agent 的 **Runtime** 页面或对应的 `agent update` 参数中管理 model、reasoning effort
+和单个 Turn 的最长执行时间。model 或 reasoning 留空表示交由 Codex 管理；duration 留空则使用 OpenTag 的 30 分钟默认值。
 显式填写的 Codex-native 值会在绑定 Computer 准备 Runtime 时校验，OpenTag 不会静默替换。Claude Code 的
 Effective Runtime Snapshot 目前尚未支持。
 
 配置 `OPENTAG_GOOGLE_CLIENT_ID` 和 `OPENTAG_GOOGLE_CLIENT_SECRET` 后即可启用 Google 登录，然后打开
-`http://127.0.0.1:8000/`。已登录 Account 管理自己的 Agents、Tasks、Skills 与 Integrations；Computer enrollment
-和诊断从 Agents 区域进入。产品模型是 **Account → Computer enrollment → Agent → IM binding**。OpenTag 不提供
-Workspace、Admin 或 invitation 管理面。数据库仍会配置内部默认 Workspace 与 grant，作为 Phase 2 前的兼容 seam；
-这些记录不代表产品所有权，也不是共享协作容器。
+`http://127.0.0.1:8000/`。已登录 Account 管理其内部兼容 scope 中可用的 Agents、Tasks、Skills 与 Integrations；
+Computer enrollment 和诊断从 Agents 区域进入。已确认的产品方向与产品呈现是
+**Account → Computer enrollment → Agent → IM binding**；Phase 1 尚未把它实现为严格的 per-Account schema invariant。
+OpenTag 不提供 Workspace、Admin 或 invitation 管理面。数据库仍会配置内部默认 Workspace 与 grant，作为 Phase 2
+前的兼容 seam。legacy active grant 可能让多个 Account 管理同一批 Agent 与 Computer enrollment，直到一次性数据拆分
+和 Phase 2 建立严格 ownership。这些兼容记录不是共享协作容器。
 
 Internal Session collaboration 是 Agent Runtime 能力，不是 Workspace、Project 或其他管理实体。它不定义跨 Agent
 所有权，也不拥有共享文件、长期记忆、Tasks、Secrets 或 billing。Context Tree 可以独立保存长期上下文，与这条实时

@@ -12,8 +12,8 @@ This repository currently provides the engineering foundation and first control-
 - a schema-validating client health check;
 - provider-neutral account identities, Google browser sign-in, and PostgreSQL migrations;
 - one-time Account login codes with sliding stateless refresh JWTs;
-- independently authenticated Computer enrollment and presence owned through an Account;
-- Account-owned Agent registry with immutable Computer/provider binding and revision fencing;
+- independently authenticated Computer enrollment and presence;
+- Agent registry with immutable Computer/provider binding and revision fencing;
 - durable Agent Runtime execution, delivery custody, reporting, and recovery;
 - Feishu and Slack inbound normalization, persistence, and Channel/Thread Session routing;
 - durable, best-effort internal Session collaboration with explicit message retry;
@@ -72,18 +72,20 @@ pnpm --filter open-tag start agent list
 
 This records the Agent identity and Computer binding. Agent Runtime turns start when admitted work is delivered to that Agent.
 
-The signed-in Account manages model, reasoning effort, and the maximum Turn duration for Codex Agents from the Agent's **Runtime**
-tab or the corresponding `agent update` flags. A blank model or reasoning value leaves the choice to Codex; a blank
+A signed-in Account can manage an available Codex Agent's model, reasoning effort, and maximum Turn duration from the
+Agent's **Runtime** tab or the corresponding `agent update` flags. A blank model or reasoning value leaves the choice to Codex; a blank
 duration uses OpenTag's 30-minute default. Explicit Codex-native values are validated by the bound Computer when it
 prepares the Runtime and never silently replaced by OpenTag. Claude Code Effective Runtime Snapshots are not yet
 supported.
 
 Configure `OPENTAG_GOOGLE_CLIENT_ID` and `OPENTAG_GOOGLE_CLIENT_SECRET` to enable Google sign-in, then open
-`http://127.0.0.1:8000/`. The signed-in Account manages its Agents, Tasks, Skills, and Integrations. Computer enrollment
-and diagnosis live in the Agents area. The product model is **Account → Computer enrollment → Agent → IM binding**.
-OpenTag exposes no Workspace, Admin, or invitation management surface. The database still provisions an internal
-default Workspace and grant as a compatibility seam until Phase 2; these records are not product ownership or a shared
-collaboration container.
+`http://127.0.0.1:8000/`. The signed-in Account manages Agents, Tasks, Skills, and Integrations available through its
+internal compatibility scope. Computer enrollment and diagnosis live in the Agents area. The accepted product direction
+and product presentation are **Account → Computer enrollment → Agent → IM binding**; Phase 1 does not yet make that a
+strict per-Account schema invariant. OpenTag exposes no Workspace, Admin, or invitation management surface. The database
+still provisions an internal default Workspace and grant as a compatibility seam until Phase 2. Legacy active grants
+may let multiple Accounts manage the same Agents and Computer enrollments until the one-off data split and Phase 2
+establish strict ownership. These compatibility records are not a shared collaboration container.
 
 Internal Session collaboration is an Agent Runtime feature, not a Workspace, Project, or other management entity. It
 does not define cross-Agent ownership or shared files, memory, tasks, secrets, or billing. Context Tree can preserve

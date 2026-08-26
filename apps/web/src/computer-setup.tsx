@@ -160,26 +160,19 @@ function ComputerSetupLifecycle({ workspaceId, onConnected, target }: ComputerSe
                   computer.connectedAt !== null &&
                   baseline.get(computer.computerId) !== computer.connectedAt)),
           );
-          // A targeted command still enrolls whichever Computer runs it, so prefer the target and
-          // report the substitution rather than announcing a recovery that did not happen.
-          const matched = targetComputerId
+          // The Computers response carries no link back to the issued code, so another Computer
+          // registering says nothing about this command. A targeted recovery waits for its own
+          // Computer and lets the code expire rather than reading a foreign reconnection as proof.
+          const connected = targetComputerId
             ? reconnected.find((computer) => computer.computerId === targetComputerId)
             : reconnected[0];
-          const connected = matched ?? reconnected[0];
           if (!connected) return;
           completed = true;
           window.clearInterval(pollTimer);
           window.clearTimeout(expiryTimer);
           setWaitingForComputer(false);
-          setRemainingMs(undefined);
-          if (targetName && !matched) {
-            setComputerConnected(false);
-            setError(
-              `This command was used on ${connected.displayName}, not ${targetName}. Generate a new command and run it on ${targetName}.`,
-            );
-            return;
-          }
           setComputerConnected(true);
+          setRemainingMs(undefined);
           onConnectedRef.current?.(connected);
         },
         (cause: unknown) => {
@@ -194,7 +187,7 @@ function ComputerSetupLifecycle({ workspaceId, onConnected, target }: ComputerSe
       window.clearInterval(pollTimer);
       window.clearTimeout(expiryTimer);
     };
-  }, [pollCycle, targetComputerId, targetName, waitingForComputer, workspaceId]);
+  }, [pollCycle, targetComputerId, waitingForComputer, workspaceId]);
 
   return (
     <section className="panel">

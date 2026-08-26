@@ -459,7 +459,7 @@ describe("ComputerSetup", () => {
     expect(onConnected).toHaveBeenCalledTimes(1);
   });
 
-  it("reports when another Computer consumed a command meant for the target", async () => {
+  it("keeps waiting for the target when an unrelated Computer reconnects", async () => {
     const onConnected = vi.fn();
     vi.spyOn(browserApi, "computers")
       .mockResolvedValueOnce({ computers: [existingComputer] })
@@ -479,13 +479,12 @@ describe("ComputerSetup", () => {
     );
     await clickGenerate();
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1_500);
+      await vi.advanceTimersByTimeAsync(3_000);
     });
 
-    expect(screen.getByRole("alert").textContent).toBe(
-      "This command was used on Ada's Linux Computer, not Ada's Mac. Generate a new command and run it on Ada's Mac.",
-    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("Waiting for Ada's Mac to connect…");
     expect(onConnected).not.toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
+    expect(vi.getTimerCount()).toBe(2);
   });
 });

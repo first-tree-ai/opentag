@@ -411,4 +411,81 @@ describe("ComputerSetup", () => {
     expect(screen.getByRole("status").textContent).toBe("Waiting for the Computer to connect…");
     expect(vi.getTimerCount()).toBe(2);
   });
+  it("names the target Computer in its prompt and waiting status", async () => {
+    vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [existingComputer] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      bootstrapCommand,
+      expiresIn: 900,
+      issuedAt: connectedAt,
+    });
+
+    render(
+      <ComputerSetup
+        workspaceId={workspaceId}
+        target={{ computerId: existingComputer.computerId, displayName: existingComputer.displayName }}
+      />,
+    );
+
+    expect(screen.getByRole("heading", { name: "Reconnect Ada's Mac" })).toBeTruthy();
+    await clickGenerate();
+
+    expect(screen.getByRole("status").textContent).toBe("Waiting for Ada's Mac to connect…");
+  });
+
+  it("confirms the target Computer by name once it reconnects", async () => {
+    const onConnected = vi.fn();
+    vi.spyOn(browserApi, "computers")
+      .mockResolvedValueOnce({ computers: [existingComputer] })
+      .mockResolvedValue({ computers: [{ ...existingComputer, connectedAt: "2026-08-20T00:00:02.000Z" }] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      bootstrapCommand,
+      expiresIn: 900,
+      issuedAt: connectedAt,
+    });
+
+    render(
+      <ComputerSetup
+        workspaceId={workspaceId}
+        onConnected={onConnected}
+        target={{ computerId: existingComputer.computerId, displayName: existingComputer.displayName }}
+      />,
+    );
+    await clickGenerate();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500);
+    });
+
+    expect(screen.getByRole("status").textContent).toBe("Ada's Mac is connected.");
+    expect(onConnected).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports when another Computer consumed a command meant for the target", async () => {
+    const onConnected = vi.fn();
+    vi.spyOn(browserApi, "computers")
+      .mockResolvedValueOnce({ computers: [existingComputer] })
+      .mockResolvedValue({ computers: [existingComputer, newComputer] });
+    vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
+      bootstrapCommand,
+      expiresIn: 900,
+      issuedAt: connectedAt,
+    });
+
+    render(
+      <ComputerSetup
+        workspaceId={workspaceId}
+        onConnected={onConnected}
+        target={{ computerId: existingComputer.computerId, displayName: existingComputer.displayName }}
+      />,
+    );
+    await clickGenerate();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_500);
+    });
+
+    expect(screen.getByRole("alert").textContent).toBe(
+      "This command was used on Ada's Linux Computer, not Ada's Mac. Generate a new command and run it on Ada's Mac.",
+    );
+    expect(onConnected).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });

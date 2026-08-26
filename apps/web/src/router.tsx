@@ -1841,7 +1841,7 @@ function AgentSettingsContent({
 }) {
   if (!section) return <AgentSettingsOverview agent={agent} />;
   if (section === "messaging") return <ImTab agent={agent} onAgentChanged={onAgentChanged} />;
-  if (section === "computer") return <AgentComputerSettings agent={agent} />;
+  if (section === "computer") return <AgentComputerSettings agent={agent} onAgentChanged={onAgentChanged} />;
   return <AgentConfigSettingsContent agent={agent} section={section} onAgentChanged={onAgentChanged} />;
 }
 
@@ -2090,7 +2090,9 @@ function computerRecoveryMessage(agent: AgentDetailView): string {
   return `OpenTag is not running on ${computerName}. Start it there to bring this Computer back online.`;
 }
 
-function AgentComputerSettings({ agent }: { agent: AgentDetailView }) {
+function AgentComputerSettings({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
+  const { membership } = useWorkspace();
+  const [reconnecting, setReconnecting] = useState(false);
   const computerState = agent.availability.dependencies.computer;
   const runtimeUnavailable = agent.availability.reason === "runtime_unavailable";
   // A reachable Computer that cannot run this Agent's Provider is not "Online" for this Agent.
@@ -2125,6 +2127,36 @@ function AgentComputerSettings({ agent }: { agent: AgentDetailView }) {
                 </p>
               ) : null}
               <p>{computerRecoveryMessage(agent)}</p>
+              {/* Re-enrolment only answers an unreachable Computer; a missing Provider needs the
+                  Provider installed, so offering it there would send an operator down a dead path. */}
+              {computerState.state === "action_required" ? (
+                <>
+                  <Button
+                    aria-controls="agent-computer-reconnect"
+                    aria-expanded={reconnecting}
+                    size="compact"
+                    variant={reconnecting ? "inline" : "secondary"}
+                    onClick={() => setReconnecting((value) => !value)}
+                  >
+                    {reconnecting ? "Cancel Computer connection" : "Reconnect this Computer"}
+                  </Button>
+                  {reconnecting ? (
+                    <div className="agent-runtime-reconnect" id="agent-computer-reconnect">
+                      <ComputerSetup
+                        workspaceId={membership.id}
+                        target={{
+                          computerId: agent.computer.computerId,
+                          displayName: agent.computer.displayName,
+                        }}
+                        onConnected={() => onAgentChanged()}
+                      />
+                      <p className="agent-runtime-reconnect__scope">
+                        Reconnecting restores this Computer for every Agent that runs on it.
+                      </p>
+                    </div>
+                  ) : null}
+                </>
+              ) : null}
             </div>
           </div>
         )}

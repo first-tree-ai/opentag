@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import {
   computeRuntimeSnapshotHashes,
   type EffectiveRuntimeSnapshot,
+  RUNTIME_CAPABILITY,
   type SessionReconcileRequest,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -25,6 +26,7 @@ import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/cod
 import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
+import { SessionCollaborationClient } from "../runtime/session-collaboration-client.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import {
   SessionRuntimeManager as ProductionSessionRuntimeManager,
@@ -150,6 +152,59 @@ describe("SessionRuntimeManager", () => {
     });
     expect(factory.runtimes).toHaveLength(3);
     await manager.close();
+  });
+
+  it("replaces an old Codex binding that has threadId but no hostedToolsHash", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-old-codex-binding-"));
+    homes.push(home);
+    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
+    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
+    const factory = new FakeFactory();
+    const computerId = randomUUID();
+    const manager = new SessionRuntimeManager({
+      bindingStore: store,
+      providers: await providerRegistry(factory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace,
+    });
+    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
+    const request = reconcile(computerId, snapshot(1));
+    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
+    await manager.ensureRuntime(request.sessionId);
+    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-1"));
+    await manager.close();
+
+    const replacementFactory = new FakeFactory();
+    const collaboration = new SessionCollaborationClient({
+      connection: {
+        supportsCapability: (capability: string) => capability === RUNTIME_CAPABILITY.sessionCollaboration,
+        send: async () => undefined,
+      },
+      inbox: { accept: vi.fn() },
+    });
+    const replacement = new SessionRuntimeManager({
+      bindingStore: store,
+      hostedToolsForSession: (session) => collaboration.hostedToolsForSession(session),
+      providers: await providerRegistry(replacementFactory),
+      providerEnvironmentPath: () => "/tmp/provider-env.sh",
+      workspace: new AgentWorkspaceManager({ home, bindingStore: store }),
+    });
+    const replacementReconciler = new SessionReconciler({
+      computerId,
+      preparation: replacement,
+      localPolicy: replacement,
+    });
+    await expect(replacementReconciler.reconcile({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "ready",
+    });
+    await replacement.ensureRuntime(request.sessionId);
+    expect(replacementFactory.resumed).toEqual([]);
+    expect(replacementFactory.created[0]?.hostedTools?.definitions.map(({ name }) => name)).toEqual([
+      "create_internal_session",
+      "send_session_message",
+    ]);
+    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-1", true));
+    await replacement.close();
   });
 
   it("durably creates, reuses, upgrades, resumes, and stops Session-scoped runtimes", async () => {

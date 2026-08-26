@@ -132,31 +132,44 @@ The Agent's Connected computer page reports `OpenTag is not running on <name>. S
 back online.` That advice is correct for a Computer that is merely asleep and wrong here; starting the old daemon
 cannot succeed.
 
-#### Recovery
-
-Per machine, and it cannot be done centrally — the credential is written to the target machine's disk.
-
-1. A Workspace Admin opens the Computers page in the web app and generates a connection command. The command is
-   single-use and expires in 15 minutes, so generate it once the person is ready rather than in advance.
-2. That person runs the generated command on the machine. It upgrades the CLI and enrols in one line, which matters
-   because the installed CLI predates the `computer connect` subcommand.
-3. The command writes the machine credential and restarts the daemon service. The Computer reports Online within one
-   registration.
-
-Re-enrolling a machine that still has its `config/computer.json` keeps the same `computerId`, so the existing
-enrollment is reused and its Agents stay bound. Losing that file makes the machine a new one, and its previous
-enrollment stays offline with its Agents attached to it.
-
-#### Confirming the scope
+#### Finding the affected enrollments
 
 ```sql
-select w.name as workspace, wc.display_name, wc.platform, wc.last_seen_at
+select w.name as workspace, wc.display_name, wc.computer_id, wc.platform, wc.last_seen_at
 from workspace_computers wc
 join workspaces w on w.id = wc.workspace_id
 left join workspace_computer_credentials c
        on c.workspace_computer_id = wc.id and c.revoked_at is null
 where wc.revoked_at is null and c.id is null
-order by w.name, wc.display_name;
+order by wc.computer_id, w.name;
 ```
 
-Every row is a Computer that has not been re-enrolled. The list is empty once the fleet has recovered.
+Each row is one enrollment waiting to be recovered, not one host. A `computer_id` appearing on more than one row is a
+host enrolled in several Workspaces, and every one of those rows needs its own pass. The list is empty once the fleet
+has recovered.
+
+#### Recovery
+
+**The unit of recovery is one Workspace enrollment, not one physical machine.** A connect code carries the Workspace it
+was issued for and `computer connect` writes the credential for that Workspace alone, while the daemon runs one
+independent Runtime connection per stored enrollment. Running the procedure once on a host enrolled in several
+Workspaces leaves the other Workspaces' Agents offline on a machine that already looks recovered.
+
+It cannot be done centrally either — the credential is written to the target host's disk.
+
+For each row returned above:
+
+1. A Workspace Admin **of that Workspace** opens the Computers page in the web app and generates a connection command.
+   The command is single-use and expires in 15 minutes, so generate it once the person is ready rather than in advance.
+2. That person runs the generated command on the host. It upgrades the CLI and enrols in one line, which matters
+   because the installed CLI predates the `computer connect` subcommand.
+3. The command writes the machine credential and restarts the daemon service. That enrollment reports Online within
+   one registration.
+
+Repeating this on a host already recovered for another Workspace is safe. `computer-credentials.json` holds one entry
+per enrollment and enrolling replaces only the entry for the Workspace being enrolled, so earlier credentials survive
+and the daemon picks up every stored enrollment when it restarts.
+
+Re-enrolling a host that still has its `config/computer.json` keeps the same `computerId`, so existing enrollments are
+reused and their Agents stay bound. Losing that file makes the host a new Computer, and every previous enrollment stays
+offline with its Agents attached to it.

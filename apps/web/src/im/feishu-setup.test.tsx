@@ -305,4 +305,18 @@ describe("FeishuSetup", () => {
     expect(screen.getByText(/did not return a usable authorization/)).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });
+
+  it("directs an unexplained terminal failure to the Account owner", async () => {
+    vi.spyOn(browserApi, "createFeishuSetupAttempt").mockResolvedValue(
+      attempt({ id: firstAttemptId, intent: "create", state: "failed" }),
+    );
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    const failedState = await screen.findByText(/State: failed/);
+    expect(failedState.closest(".notice")?.textContent).toContain(
+      "Feishu setup failed. Retry or contact the Account owner for help.",
+    );
+  });
 });

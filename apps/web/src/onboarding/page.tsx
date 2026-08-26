@@ -57,8 +57,6 @@ interface OnboardingSnapshot {
   readonly targetCandidates: readonly AgentSummary[];
   readonly handoff: OnboardingFacts["handoff"];
   readonly runtime: RuntimeFactsResult;
-  /** Workspace admins a member can ask; empty whenever the viewer manages the Workspace. */
-  readonly admins: readonly string[];
 }
 
 type JourneyStatus = "complete" | "current" | "upcoming";
@@ -201,7 +199,7 @@ export function OnboardingPage({
   );
 
   useEffect(() => {
-    if (resolved?.state.currentState.kind !== "ready" || !resolved.state.canManage) return;
+    if (resolved?.state.currentState.kind !== "ready") return;
     completeSetup(resolved.state.currentState.agent.id);
   }, [completeSetup, resolved]);
   const journey = onboardingJourney(
@@ -243,7 +241,6 @@ export function OnboardingPage({
               ) : null}
               {loadState.kind === "ready" && resolved ? (
                 <OnboardingContent
-                  canManage={resolved.state.canManage}
                   completionState={completionState}
                   onChooseAgent={(agentId) => {
                     setSelectedTargetAgentId(agentId);
@@ -595,7 +592,6 @@ function OnboardingLoading() {
 }
 
 function OnboardingContent({
-  canManage,
   completionState,
   onAgentCreated,
   onChooseAgent,
@@ -606,7 +602,6 @@ function OnboardingContent({
   state,
   workspaceId,
 }: {
-  canManage: boolean;
   completionState: CompletionState;
   onAgentCreated: (agentId: string) => void;
   onChooseAgent: (agentId: string) => void;
@@ -620,33 +615,23 @@ function OnboardingContent({
   if (snapshot.targetCandidates.length > 0 && !snapshot.targetAgent) {
     return (
       <ActionSection
-        readonly={!canManage}
         title="Choose the Agent to finish"
         description="More than one existing Agent could be continued safely."
       >
-        {canManage ? (
-          <div className="onboarding-choice-list">
-            {snapshot.targetCandidates.map((agent) => (
-              <button
-                className="onboarding-choice"
-                key={agent.id}
-                type="button"
-                onClick={() => onChooseAgent(agent.id)}
-              >
-                <strong>{agent.displayName}</strong>
-                <span>
-                  {providerLabel(agent.runtimeProvider)} on {agent.computer.displayName}
-                </span>
-              </button>
-            ))}
-          </div>
-        ) : (
-          <ReadOnlyCopy admins={snapshot.admins} />
-        )}
+        <div className="onboarding-choice-list">
+          {snapshot.targetCandidates.map((agent) => (
+            <button className="onboarding-choice" key={agent.id} type="button" onClick={() => onChooseAgent(agent.id)}>
+              <strong>{agent.displayName}</strong>
+              <span>
+                {providerLabel(agent.runtimeProvider)} on {agent.computer.displayName}
+              </span>
+            </button>
+          ))}
+        </div>
       </ActionSection>
     );
   }
-  if (canManage && !snapshot.targetAgent) {
+  if (!snapshot.targetAgent) {
     return (
       <section className="onboarding-action">
         <AgentCreationFlow
@@ -666,47 +651,28 @@ function OnboardingContent({
     return <ActionSection title="Preparing OpenTag" description="Setup will continue automatically." pending />;
   }
   if (current.kind === "computer" && current.availability === "none") {
-    if (canManage) {
-      return (
-        <section className="onboarding-action">
-          <ComputerSetup workspaceId={workspaceId} onConnected={onReload} />
-        </section>
-      );
-    }
     return (
-      <ActionSection
-        readonly
-        title="Connect a Local Computer"
-        description="Run one secure command in Terminal. OpenTag continues when the Computer connects."
-      >
-        <ReadOnlyCopy admins={snapshot.admins} />
-      </ActionSection>
+      <section className="onboarding-action">
+        <ComputerSetup workspaceId={workspaceId} onConnected={onReload} />
+      </section>
     );
   }
   if (current.kind === "computer" && current.availability === "offline") {
     return (
       <ActionSection
-        readonly={!canManage}
         title="Reconnect your Computer"
         description={`Open OpenTag on ${current.computers.map((computer) => computer.displayName).join(", ")}.`}
       >
-        {canManage ? (
-          <ReloadButton pending={refreshPending} onReload={onReload} />
-        ) : (
-          <ReadOnlyCopy admins={snapshot.admins} />
-        )}
+        <ReloadButton pending={refreshPending} onReload={onReload} />
       </ActionSection>
     );
   }
   if (current.kind === "computer" && current.availability === "choice") {
     return (
       <ActionSection
-        readonly={!canManage}
         title="Choose a runnable Computer"
         description="OpenTag could not safely choose between these Computers."
-      >
-        <ReadOnlyCopy admins={snapshot.admins} />
-      </ActionSection>
+      />
     );
   }
   if (current.kind === "provider") {
@@ -715,7 +681,6 @@ function OnboardingContent({
     const copy = attention ? runtimeAttentionCopy(attention, current.computer.displayName) : undefined;
     return (
       <ActionSection
-        readonly={!canManage}
         title={copy?.title ?? (factUnavailable ? "Confirm the runtime route" : "Prepare Codex or Claude Code")}
         description={
           copy?.description ??
@@ -724,23 +689,16 @@ function OnboardingContent({
             : `Finish Provider setup on ${current.computer.displayName}, then check again.`)
         }
       >
-        {canManage ? (
-          <ReloadButton pending={refreshPending} onReload={onReload} />
-        ) : (
-          <ReadOnlyCopy admins={snapshot.admins} />
-        )}
+        <ReloadButton pending={refreshPending} onReload={onReload} />
       </ActionSection>
     );
   }
   if (current.kind === "agent") {
     return (
       <ActionSection
-        readonly
         title="Create the Agent"
         description={`The runnable route is ${providerLabel(current.provider.provider)} on ${current.computer.displayName}.`}
-      >
-        <ReadOnlyCopy admins={snapshot.admins} />
-      </ActionSection>
+      />
     );
   }
   if (current.kind === "agent-runtime") {
@@ -749,7 +707,6 @@ function OnboardingContent({
     const copy = attention ? runtimeAttentionCopy(attention, agent?.computer.displayName ?? "its Computer") : undefined;
     return (
       <ActionSection
-        readonly={!canManage}
         title={copy?.title ?? `${agent?.displayName ?? "Your Agent"} needs its runtime route`}
         description={
           copy
@@ -757,28 +714,16 @@ function OnboardingContent({
             : "The Agent identity and Feishu setup are unchanged. Restore its bound Computer and Provider, then check again."
         }
       >
-        {canManage ? (
-          <ReloadButton pending={refreshPending} onReload={onReload} />
-        ) : (
-          <ReadOnlyCopy admins={snapshot.admins} />
-        )}
+        <ReloadButton pending={refreshPending} onReload={onReload} />
       </ActionSection>
     );
   }
   if (current.kind === "handoff") {
     return (
-      <ActionSection
-        readonly={!canManage}
-        title={handoffTitle(current)}
-        description="Authorize the Feishu Bot people will mention."
-      >
-        {canManage ? (
-          <FeishuSetup agentId={current.agent.id} onSuccess={onReload}>
-            {(control) => <FeishuAction control={control} progress={current.progress} />}
-          </FeishuSetup>
-        ) : (
-          <ReadOnlyCopy admins={snapshot.admins} />
-        )}
+      <ActionSection title={handoffTitle(current)} description="Authorize the Feishu Bot people will mention.">
+        <FeishuSetup agentId={current.agent.id} onSuccess={onReload}>
+          {(control) => <FeishuAction control={control} progress={current.progress} />}
+        </FeishuSetup>
       </ActionSection>
     );
   }
@@ -814,13 +759,11 @@ function ActionSection({
   children,
   description,
   pending = false,
-  readonly = false,
   title,
 }: {
   children?: ReactNode;
   description: string;
   pending?: boolean;
-  readonly?: boolean;
   title: string;
 }) {
   return (
@@ -830,7 +773,6 @@ function ActionSection({
           <h2>{title}</h2>
           <p>{description}</p>
         </div>
-        {readonly ? <span className="status-chip">Read only</span> : null}
       </div>
       {pending ? (
         <p className="onboarding-pending" role="status">
@@ -855,24 +797,6 @@ function ReloadButton({ onReload, pending }: { onReload: () => void; pending: bo
       ) : null}
     </div>
   );
-}
-
-function ReadOnlyCopy({ admins }: { admins: readonly string[] }) {
-  return <p className="notice">{`${adminGuidance(admins)} Your factual progress will update here.`}</p>;
-}
-
-/**
- * Names people to ask, not people who can act: whether a given admin can finish
- * the current step also depends on facts this page does not decide, such as who
- * owns the Computer the route runs on. At most two names keep the sentence
- * readable in a large Workspace.
- */
-function adminGuidance(admins: readonly string[]): string {
-  const [first, second, ...rest] = admins;
-  if (!first) return "An admin can complete this action.";
-  if (!second) return `Ask an admin to continue: ${first}.`;
-  if (rest.length === 0) return `Ask an admin to continue: ${first} or ${second}.`;
-  return `Ask an admin to continue: ${first}, ${second}, or ${rest.length} more.`;
 }
 
 function FeishuAction({
@@ -924,7 +848,7 @@ async function loadSnapshot(
     runtimeFacts.load({ workspaceId, agents, computers }),
     targetAgent ? browserApi.imBindingHandoff(targetAgent.id) : Promise.resolve(undefined),
   ]);
-  return { agents, computers, targetAgent, targetCandidates, handoff, runtime, admins: [] };
+  return { agents, computers, targetAgent, targetCandidates, handoff, runtime };
 }
 
 function resolveSnapshot(snapshot: OnboardingSnapshot): { state: OnboardingState } {

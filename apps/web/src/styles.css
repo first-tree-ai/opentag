@@ -271,23 +271,6 @@ pre {
   border: 0;
 }
 
-.status-chip {
-  display: inline-flex;
-  width: fit-content;
-  margin-top: 3px;
-  padding: 0.15rem 0.5rem;
-  border: 1px solid var(--strong-border);
-  border-radius: 999px;
-  color: var(--muted);
-  font-size: var(--text-micro);
-  font-weight: var(--fw-semibold);
-}
-
-.status-chip.suspended {
-  border-color: #9a5b18;
-  color: #7b4510;
-}
-
 .shell {
   display: grid;
   min-height: 100dvh;
@@ -2159,11 +2142,6 @@ code {
   font-size: var(--text-body);
 }
 
-.onboarding-action-heading .status-chip {
-  flex: 0 0 auto;
-  margin-top: 4px;
-}
-
 .onboarding-pending {
   width: min(100%, 760px);
   border-left: 2px solid var(--brand);
@@ -3848,10 +3826,6 @@ textarea:focus {
 
   .onboarding-action-heading {
     gap: 12px;
-  }
-
-  .onboarding-action-heading .status-chip {
-    align-self: flex-start;
   }
 
   .onboarding-choice {

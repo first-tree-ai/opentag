@@ -25,22 +25,11 @@ export const WorkspaceComputerSummarySchema = z
   })
   .strict();
 
-export const WorkspaceComputerAdminConfigSchema = WorkspaceComputerSummarySchema.extend({
-  arch: z.string().min(1),
-  clientVersion: z.string().min(1),
-  enrolledByUserId: z.string().uuid(),
-}).strict();
-
 export const ListWorkspaceComputersResponseSchema = z
   .object({ computers: z.array(WorkspaceComputerSummarySchema) })
-  .strict();
-export const ListWorkspaceComputersConfigResponseSchema = z
-  .object({ computers: z.array(WorkspaceComputerAdminConfigSchema) })
   .strict();
 
 export type CompleteWorkspaceSetupRequest = z.infer<typeof CompleteWorkspaceSetupRequestSchema>;
 export type WorkspaceSetupCompletion = z.infer<typeof WorkspaceSetupCompletionSchema>;
 export type WorkspaceComputerSummary = z.infer<typeof WorkspaceComputerSummarySchema>;
-export type WorkspaceComputerAdminConfig = z.infer<typeof WorkspaceComputerAdminConfigSchema>;
 export type ListWorkspaceComputersResponse = z.infer<typeof ListWorkspaceComputersResponseSchema>;
-export type ListWorkspaceComputersConfigResponse = z.infer<typeof ListWorkspaceComputersConfigResponseSchema>;

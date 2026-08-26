@@ -142,6 +142,20 @@ describe("SlackConfiguration", () => {
     );
   });
 
+  it("identifies the Account owner when configuration authority is missing", async () => {
+    vi.spyOn(browserApi, "slackAppConfiguration").mockRejectedValue(
+      new ApiError(403, "forbidden", "IM_BINDING_FORBIDDEN", "deterministic"),
+    );
+    render(<Harness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(await screen.findByRole("alert")).toHaveProperty(
+      "textContent",
+      "Only the Account owner can manage this Slack configuration.",
+    );
+  });
+
   it("cancels locally without writing or creating server setup state", async () => {
     vi.spyOn(browserApi, "slackAppConfiguration").mockResolvedValue(configuration());
     const configure = vi.spyOn(browserApi, "configureSlackApp");

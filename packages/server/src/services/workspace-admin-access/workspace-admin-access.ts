@@ -6,8 +6,6 @@ import { AuthServiceError } from "../auth/index.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
-const WORKSPACE_ADMIN_LIMIT = 50;
-
 export interface AdminWorkspace {
   grantedAt: Date;
   workspaceDisplayName: string;
@@ -40,9 +38,7 @@ export class WorkspaceAdminAccess {
     accountId: string,
     workspaceId: string,
   ): Promise<void> {
-    await this.lockAccountForGrantWrite(transaction, accountId);
     await this.lockWorkspace(transaction, workspaceId);
-    await this.requireWorkspaceHeadroom(transaction, accountId);
     const now = this.#now();
     await transaction.insert(workspaceAdminGrants).values({
       workspaceId,
@@ -92,17 +88,6 @@ export class WorkspaceAdminAccess {
     if (!authority) throw workspaceNotFound();
   }
 
-  async withAdminMutation<T>(
-    accountId: string,
-    workspaceId: string,
-    mutate: (transaction: DatabaseTransaction) => Promise<T>,
-  ): Promise<T> {
-    return this.#database.transaction(async (transaction) => {
-      await this.requireAdminForMutation(transaction, accountId, workspaceId);
-      return mutate(transaction);
-    });
-  }
-
   async requireAdminForAgent(
     accountId: string,
     agentId: string,
@@ -147,23 +132,6 @@ export class WorkspaceAdminAccess {
     if (!scope) throw workspaceNotFound();
     await this.requireAdmin(accountId, scope.workspaceId, executor);
     return scope;
-  }
-
-  async requireAnyAdmin(accountId: string, executor: QueryExecutor = this.#database): Promise<void> {
-    const [authority] = await executor
-      .select({ workspaceId: workspaceAdminGrants.workspaceId })
-      .from(workspaceAdminGrants)
-      .innerJoin(users, and(eq(users.id, workspaceAdminGrants.userId), isNull(users.suspendedAt)))
-      .where(and(eq(workspaceAdminGrants.userId, accountId), isNull(workspaceAdminGrants.revokedAt)))
-      .limit(1);
-    if (!authority) {
-      throw new AuthServiceError(
-        "AUTH_WORKSPACE_ADMIN_REQUIRED",
-        "deterministic",
-        "Active Workspace Admin access is required",
-        403,
-      );
-    }
   }
 
   listActiveAdminWorkspaces(accountId: string): Promise<AdminWorkspace[]> {
@@ -226,31 +194,6 @@ export class WorkspaceAdminAccess {
       .limit(1)
       .for("update");
     if (!workspace) throw workspaceNotFound();
-  }
-
-  async lockAccountForGrantWrite(transaction: DatabaseTransaction, accountId: string): Promise<void> {
-    const [account] = await transaction
-      .select({ id: users.id, suspendedAt: users.suspendedAt })
-      .from(users)
-      .where(eq(users.id, accountId))
-      .limit(1)
-      .for("update");
-    if (!account || account.suspendedAt) throw workspaceNotFound();
-  }
-
-  async requireWorkspaceHeadroom(transaction: DatabaseTransaction, accountId: string): Promise<void> {
-    const held = await transaction
-      .select({ workspaceId: workspaceAdminGrants.workspaceId })
-      .from(workspaceAdminGrants)
-      .where(and(eq(workspaceAdminGrants.userId, accountId), isNull(workspaceAdminGrants.revokedAt)));
-    if (held.length >= WORKSPACE_ADMIN_LIMIT) {
-      throw new AuthServiceError(
-        "WORKSPACE_LIMIT_REACHED",
-        "deterministic",
-        `An Account can administer at most ${WORKSPACE_ADMIN_LIMIT} active Workspaces`,
-        409,
-      );
-    }
   }
 }
 

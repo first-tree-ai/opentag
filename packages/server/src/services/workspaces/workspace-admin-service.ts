@@ -1,9 +1,4 @@
-import type {
-  ListWorkspaceComputersConfigResponse,
-  ListWorkspaceComputersResponse,
-  WorkspaceComputerAdminConfig,
-  WorkspaceComputerSummary,
-} from "@opentag/shared";
+import type { ListWorkspaceComputersResponse, WorkspaceComputerSummary } from "@opentag/shared";
 import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agents, workspaceComputers } from "../../db/schema/index.js";
@@ -51,29 +46,10 @@ export class WorkspaceAdminService {
     includeProviderReadiness = false,
   ): Promise<ListWorkspaceComputersResponse> {
     await this.#workspaceAdmins.requireAdmin(accountId, workspaceId);
-    return { computers: await this.#projectComputers(workspaceId, includeProviderReadiness, false) };
+    return { computers: await this.#projectComputers(workspaceId, includeProviderReadiness) };
   }
 
-  async listComputersConfig(
-    accountId: string,
-    workspaceId: string,
-    includeProviderReadiness = false,
-  ): Promise<ListWorkspaceComputersConfigResponse> {
-    await this.#workspaceAdmins.requireAdmin(accountId, workspaceId);
-    return {
-      computers: (await this.#projectComputers(
-        workspaceId,
-        includeProviderReadiness,
-        true,
-      )) as WorkspaceComputerAdminConfig[],
-    };
-  }
-
-  async #projectComputers(
-    workspaceId: string,
-    includeProviderReadiness: boolean,
-    includeAdminFields: boolean,
-  ): Promise<(WorkspaceComputerSummary | WorkspaceComputerAdminConfig)[]> {
+  async #projectComputers(workspaceId: string, includeProviderReadiness: boolean): Promise<WorkspaceComputerSummary[]> {
     const rows = await this.#database
       .select({ enrollment: workspaceComputers, agentId: agents.id })
       .from(workspaceComputers)
@@ -89,7 +65,7 @@ export class WorkspaceAdminService {
       .orderBy(asc(workspaceComputers.displayName), asc(workspaceComputers.computerId), asc(agents.id));
     const observedAt = this.#now();
     const cutoff = observedAt.getTime() - this.#presenceTimeoutMs;
-    const byId = new Map<string, WorkspaceComputerSummary | WorkspaceComputerAdminConfig>();
+    const byId = new Map<string, WorkspaceComputerSummary>();
     for (const row of rows) {
       const existing = byId.get(row.enrollment.id);
       if (existing) {
@@ -127,17 +103,7 @@ export class WorkspaceAdminService {
         enrolledAt: row.enrollment.enrolledAt.toISOString(),
         agentIds: row.agentId ? [row.agentId] : [],
       };
-      byId.set(
-        row.enrollment.id,
-        includeAdminFields
-          ? {
-              ...base,
-              arch: row.enrollment.arch,
-              clientVersion: row.enrollment.clientVersion,
-              enrolledByUserId: row.enrollment.enrolledByUserId,
-            }
-          : base,
-      );
+      byId.set(row.enrollment.id, base);
     }
     return [...byId.values()];
   }

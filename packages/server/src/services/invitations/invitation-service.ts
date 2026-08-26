@@ -1,25 +1,13 @@
-import type { AdminInvitation, InvitationAcceptanceResponse, InvitationPreview } from "@opentag/shared";
+import type { InvitationAcceptanceResponse, InvitationPreview } from "@opentag/shared";
 import type { DatabaseClient } from "../../db/client.js";
 import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 
-/** Route-facing invitation facade; grant and invitation lifecycle stays in WorkspaceAdminAccess. */
+/** Redemption-only facade for outstanding invitations issued before creation was retired. */
 export class InvitationService {
-  readonly #publicUrl: URL;
-  readonly #ttlMs: number;
   readonly #workspaceAdmins: WorkspaceAdminAccess;
 
-  constructor(
-    database: DatabaseClient,
-    publicUrl: string,
-    options: { now?: () => Date; ttlMs?: number; workspaceAdmins?: WorkspaceAdminAccess } = {},
-  ) {
-    this.#publicUrl = new URL(publicUrl);
-    this.#ttlMs = options.ttlMs ?? 30 * 60 * 1000;
+  constructor(database: DatabaseClient, options: { now?: () => Date; workspaceAdmins?: WorkspaceAdminAccess } = {}) {
     this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(database, { now: options.now });
-  }
-
-  create(accountId: string, workspaceId: string): Promise<AdminInvitation> {
-    return this.#workspaceAdmins.createInvitation(accountId, workspaceId, this.#publicUrl, this.#ttlMs);
   }
 
   preview(rawToken: string): Promise<InvitationPreview> {

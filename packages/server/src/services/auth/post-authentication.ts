@@ -35,7 +35,12 @@ export class PostAuthenticationService {
       throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
     }
     if (invitationToken) {
-      return { userId };
+      const acceptance = await this.#workspaceAdmins.acceptInvitationInTransaction(
+        transaction,
+        userId,
+        invitationToken,
+      );
+      return { userId, selectedWorkspaceId: acceptance.workspace.id };
     }
     const selectedWorkspaceId = await this.#workspaceAdmins.establishDefaultWorkspaceForNewAccount(
       transaction,

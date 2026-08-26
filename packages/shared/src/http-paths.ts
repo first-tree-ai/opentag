@@ -1,5 +1,4 @@
 export const API_V1_PREFIX = "/api/v1";
-export const WORKSPACES_TEMPLATE = `${API_V1_PREFIX}/workspaces`;
 export const WORKSPACE_AGENTS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/agents`;
 export const WORKSPACE_BY_ID_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId`;
 export const WORKSPACE_SETUP_COMPLETE_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/setup/complete`;
@@ -23,7 +22,6 @@ export const WORKSPACE_ADMINS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspace
 export const WORKSPACE_ADMIN_TEMPLATE = `${WORKSPACE_ADMINS_TEMPLATE}/:accountId`;
 export const WORKSPACE_COMPUTERS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/computers`;
 export const WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/computer-connect-codes`;
-export const WORKSPACE_ADMIN_INVITATIONS_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/admin-invitations`;
 export const ADMIN_INVITATION_PREVIEW_TEMPLATE = `${API_V1_PREFIX}/admin-invitations/:token/preview`;
 export const ADMIN_INVITATION_ACCEPT_TEMPLATE = `${API_V1_PREFIX}/admin-invitations/:token/accept`;
 
@@ -43,7 +41,6 @@ export const HTTP_PATHS = {
   me: `${API_V1_PREFIX}/me`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
   workspaceAgents: WORKSPACE_AGENTS_TEMPLATE,
-  workspaces: WORKSPACES_TEMPLATE,
 } as const;
 
 export function workspaceAdminsPath(workspaceId: string): string {
@@ -68,10 +65,6 @@ export function workspaceComputersPath(workspaceId: string): string {
 
 export function workspaceComputerConnectCodesPath(workspaceId: string): string {
   return `${workspaceByIdPath(workspaceId)}/computer-connect-codes`;
-}
-
-export function workspaceAdminInvitationsPath(workspaceId: string): string {
-  return `${workspaceByIdPath(workspaceId)}/admin-invitations`;
 }
 
 export function invitationPreviewPath(token: string): string {

@@ -183,7 +183,7 @@ describe("browser authentication routes", () => {
     );
   });
 
-  it("hands the Workspace selected during invitation sign-in back as a navigation hint", async () => {
+  it("sends a redeemed invitation sign-in to the selected Workspace", async () => {
     const selectedWorkspaceId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
     const token = "A".repeat(43);
     const googleService = google({ next: `/invites/${token}`, selectedWorkspaceId });
@@ -195,7 +195,7 @@ describe("browser authentication routes", () => {
     });
 
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe(`/invites/${token}?joinedWorkspaceId=${selectedWorkspaceId}`);
+    expect(response.headers.location).toBe(`/agents?joinedWorkspaceId=${selectedWorkspaceId}`);
   });
 
   it("accepts provider-owned callback fields but passes only supported values to the Google service", async () => {

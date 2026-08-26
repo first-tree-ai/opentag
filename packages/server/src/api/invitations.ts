@@ -1,10 +1,8 @@
 import {
   ADMIN_INVITATION_ACCEPT_TEMPLATE,
   ADMIN_INVITATION_PREVIEW_TEMPLATE,
-  AdminInvitationSchema,
   InvitationAcceptanceResponseSchema,
   InvitationPreviewSchema,
-  WORKSPACE_ADMIN_INVITATIONS_TEMPLATE,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -13,7 +11,6 @@ import type { UserAuthService } from "../services/auth/index.js";
 import type { InvitationService } from "../services/invitations/index.js";
 import { parseRequest } from "./request-validation.js";
 
-const WorkspaceParamsSchema = z.object({ workspaceId: z.string().uuid() }).strict();
 const InvitationParamsSchema = z.object({ token: z.string().min(1).max(512) }).strict();
 
 function accountId(request: FastifyRequest): string {
@@ -29,14 +26,6 @@ export function registerInvitationRoutes(
   publicOrigin?: string,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
-
-  app.post(WORKSPACE_ADMIN_INVITATIONS_TEMPLATE, { preHandler }, async (request, reply) => {
-    const { workspaceId } = parseRequest(WorkspaceParamsSchema, request.params);
-    return reply
-      .header("Cache-Control", "no-store")
-      .code(201)
-      .send(AdminInvitationSchema.parse(await invitationService.create(accountId(request), workspaceId)));
-  });
 
   app.get(ADMIN_INVITATION_PREVIEW_TEMPLATE, async (request, reply) => {
     const { token } = parseRequest(InvitationParamsSchema, request.params);

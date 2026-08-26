@@ -39,7 +39,6 @@ import { ApiError, browserApi } from "./api.js";
 // Google-provided, pre-approved button asset: https://developers.google.com/identity/branding-guidelines
 import googleSignInButton from "./assets/google-sign-in-light@2x.png";
 import { ComputerSetup } from "./computer-setup.js";
-import { CreateWorkspaceForm } from "./create-workspace-form.js";
 import { orderAgentIds } from "./features/agent-list-order.js";
 import { AgentUsageTab } from "./features/agent-usage.js";
 import { IntegrationsPage } from "./features/integrations-page.js";
@@ -444,7 +443,6 @@ export function AppRouter() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/invites/:token" element={<InvitePage />} />
-      <Route path="/workspaces/new" element={<NewWorkspacePage />} />
       <Route element={<AuthenticatedWorkspaceGate />}>
         <Route element={<AppShell />}>
           <Route element={<WorkspaceSetupGate />}>
@@ -608,27 +606,12 @@ const SELECTED_WORKSPACE_STORAGE_KEY = "opentag.lastExplicitWorkspaceId.v1";
 let memoryWorkspacePreference: string | undefined;
 let memoryWorkspacePreferenceFallback = false;
 
-function NewWorkspacePage() {
-  const navigate = useNavigate();
-  return (
-    <main className="center-card decorative-page">
-      <span className="eyebrow">OpenTag</span>
-      <h1>Create your Workspace</h1>
-      <p>You can invite people and add Agents next.</p>
-      <CreateWorkspaceForm
-        onCreated={() => {
-          navigate("/agents");
-        }}
-        onUnauthenticated={() => navigate(`/login?next=${encodeURIComponent("/workspaces/new")}`)}
-      />
-    </main>
-  );
-}
-
 function AuthenticatedWorkspaceGate() {
   const location = useLocation();
   const [meRevision, setMeRevision] = useState(0);
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(readWorkspacePreference);
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(
+    () => new URLSearchParams(location.search).get("joinedWorkspaceId") ?? readWorkspacePreference(),
+  );
   const state = useResource(() => browserApi.me(), `me:${meRevision}`);
   if (state.kind === "error" && state.error instanceof ApiError && state.error.status === 401) {
     const requested = location.pathname === "/" ? "/agents" : `${location.pathname}${location.search}`;
@@ -666,11 +649,9 @@ function NoWorkspaceAccess({ onRetry }: { onRetry: () => void }) {
       <h1>No Workspace administration access</h1>
       <p>You no longer have Workspace administration access.</p>
       <div className="notice" role="status">
-        A current Workspace Admin can restore access by sending you a new Admin invitation.
+        Access cannot be restored from this screen. Open an unexpired invitation issued before this transition, or
+        contact an operator.
       </div>
-      <Link className={buttonClassName({ variant: "secondary" })} to="/workspaces/new">
-        Create a Workspace
-      </Link>
       <Button onClick={onRetry}>Check again</Button>
     </main>
   );
@@ -1812,17 +1793,6 @@ function WorkspaceSettings({ membership, refreshMe }: { membership: MeWorkspace;
         </header>
         <WorkspaceProfileSettings membership={membership} refreshMe={refreshMe} />
       </section>
-      <section aria-labelledby="workspace-scope-heading" className="account-workspace-profile">
-        <header className="settings-subheader">
-          <div>
-            <h2 id="workspace-scope-heading">Separate scope</h2>
-            <p>Create another Workspace when some Agents must stay invisible to the Admins here.</p>
-          </div>
-          <Link className={buttonClassName({ variant: "secondary" })} to="/workspaces/new">
-            Create Workspace
-          </Link>
-        </header>
-      </section>
     </div>
   );
 }
@@ -2951,22 +2921,9 @@ function ComputersPage() {
 function WorkspaceAdminSettings({ membership }: { membership: MeWorkspace }) {
   const { me, refreshMe } = useWorkspace();
   const [revision, setRevision] = useState(0);
-  const [invitation, setInvitation] = useState<Awaited<ReturnType<typeof browserApi.createAdminInvitation>>>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const state = useResource(() => browserApi.admins(membership.id), `${membership.id}:${revision}`);
-
-  async function createInvitation() {
-    setBusy(true);
-    setError(undefined);
-    try {
-      setInvitation(await browserApi.createAdminInvitation(membership.id));
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Unable to create the Admin invitation");
-    } finally {
-      setBusy(false);
-    }
-  }
 
   async function revoke(admin: WorkspaceAdminSummary) {
     if (!window.confirm(`Revoke Workspace Admin access for ${admin.displayName}?`)) return;
@@ -2989,22 +2946,12 @@ function WorkspaceAdminSettings({ membership }: { membership: MeWorkspace }) {
         <div>
           <h2 id="workspace-admins-heading">Admins</h2>
           <p>Every Admin has complete management authority over this Workspace.</p>
+          <p>
+            New invitations cannot be issued. An outstanding invitation can still be accepted while unconsumed,
+            unrevoked, unexpired, and issued by a current Admin.
+          </p>
         </div>
-        <Button disabled={busy} onClick={() => void createInvitation()}>
-          {busy ? "Creating…" : "Invite Admin"}
-        </Button>
       </header>
-      {invitation ? (
-        <section className="settings-invitation-panel">
-          <h2>Single-use invitation</h2>
-          <p>Share this link with the intended Admin. It expires {formatInviteExpiry(invitation.expiresAt)}.</p>
-          <label className="invite-link">
-            Invitation link
-            <input aria-label="Invitation link" className="ds-control" readOnly value={invitation.inviteUrl} />
-          </label>
-          <Button onClick={() => void window.navigator.clipboard?.writeText(invitation.inviteUrl)}>Copy link</Button>
-        </section>
-      ) : null}
       <AsyncState state={state}>
         {(value) => (
           <ul className="settings-member-list" aria-label="Workspace Admins">
@@ -3210,11 +3157,4 @@ function formatRelativeTime(value: string): string {
   if (elapsedHours < 24) return `${elapsedHours} ${elapsedHours === 1 ? "hour" : "hours"} ago`;
   const elapsedDays = Math.floor(elapsedHours / 24);
   return `${elapsedDays} ${elapsedDays === 1 ? "day" : "days"} ago`;
-}
-
-function formatInviteExpiry(value: string) {
-  const date = new Date(value);
-  const day = new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(date);
-  const time = new Intl.DateTimeFormat("en-US", { timeStyle: "short" }).format(date);
-  return `${day} at ${time}`;
 }

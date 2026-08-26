@@ -83,7 +83,7 @@ function withSelectedWorkspaceHint(
   publicOrigin: string,
 ): string {
   if (!selectedWorkspaceId) return next;
-  const destination = new URL(next, publicOrigin);
+  const destination = new URL(next.startsWith("/invites/") ? "/agents" : next, publicOrigin);
   destination.searchParams.set("joinedWorkspaceId", selectedWorkspaceId);
   return `${destination.pathname}${destination.search}${destination.hash}`;
 }

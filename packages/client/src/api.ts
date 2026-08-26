@@ -1,6 +1,4 @@
 import {
-  type AdminInvitation,
-  AdminInvitationSchema,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
@@ -26,9 +24,6 @@ import {
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
   type CreateAgentRequest,
-  type CreateWorkspaceRequest,
-  type CreateWorkspaceResponse,
-  CreateWorkspaceResponseSchema,
   type ErrorCategory,
   type ErrorCode,
   ErrorEnvelopeSchema,
@@ -71,7 +66,6 @@ import {
   type ValidationIssue,
   type WorkspaceProfile,
   WorkspaceProfileSchema,
-  workspaceAdminInvitationsPath,
   workspaceAdminPath,
   workspaceAdminsPath,
   workspaceAgentsPath,
@@ -136,14 +130,6 @@ export class OpenTagApi {
     });
   }
 
-  createWorkspace(accessToken: string, input: CreateWorkspaceRequest): Promise<CreateWorkspaceResponse> {
-    return this.#request(HTTP_PATHS.workspaces, CreateWorkspaceResponseSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-    });
-  }
-
   getWorkspace(accessToken: string, workspaceId: string): Promise<WorkspaceProfile> {
     return this.#request(workspaceByIdPath(workspaceId), WorkspaceProfileSchema, {
       headers: { authorization: `Bearer ${accessToken}` },
@@ -171,13 +157,6 @@ export class OpenTagApi {
   revokeWorkspaceAdmin(accessToken: string, workspaceId: string, accountId: string): Promise<void> {
     return this.#requestNoContent(workspaceAdminPath(workspaceId, accountId), {
       method: "DELETE",
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
-  }
-
-  createWorkspaceAdminInvitation(accessToken: string, workspaceId: string): Promise<AdminInvitation> {
-    return this.#request(workspaceAdminInvitationsPath(workspaceId), AdminInvitationSchema, {
-      method: "POST",
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }

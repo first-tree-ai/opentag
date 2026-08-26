@@ -240,6 +240,7 @@ export async function startServer(): Promise<void> {
     const dev = config.devAuth ? new DevBrowserAuthService(database, authService, config.devAuth.email) : undefined;
     app = createApp({
       webAppRoot: defaultWebAppRoot,
+      accountScope: workspaceAdmins,
       agentService,
       authService,
       browserAuth: {

@@ -8,7 +8,6 @@ import type {
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type AgentCreationFacts, AgentCreationFlow } from "../agent-creation/agent-creation-flow.js";
 import { browserApi } from "../api.js";
-import { ComputerSetup } from "../computer-setup.js";
 import { FeishuSetup, type FeishuSetupControl } from "../im/feishu-setup.js";
 import { Button, buttonClassName } from "../ui/design-system.js";
 import {
@@ -647,33 +646,12 @@ function OnboardingContent({
   }
 
   const current = state.currentState;
-  if (current.kind === "workspace") {
+  // Every Agent-less state is answered by the AgentCreationFlow branch above, which owns the
+  // Computer and Provider actions those states describe. They stay handled so the union remains
+  // exhaustive for the Agent-bound narrowing below, and so a change to that guard degrades to a
+  // holding state instead of reading `agent` off a variant that does not carry one.
+  if (current.kind === "workspace" || current.kind === "computer") {
     return <ActionSection title="Preparing OpenTag" description="Setup will continue automatically." pending />;
-  }
-  if (current.kind === "computer" && current.availability === "none") {
-    return (
-      <section className="onboarding-action">
-        <ComputerSetup workspaceId={workspaceId} onConnected={onReload} />
-      </section>
-    );
-  }
-  if (current.kind === "computer" && current.availability === "offline") {
-    return (
-      <ActionSection
-        title="Reconnect your Computer"
-        description={`Open OpenTag on ${current.computers.map((computer) => computer.displayName).join(", ")}.`}
-      >
-        <ReloadButton pending={refreshPending} onReload={onReload} />
-      </ActionSection>
-    );
-  }
-  if (current.kind === "computer" && current.availability === "choice") {
-    return (
-      <ActionSection
-        title="Choose a runnable Computer"
-        description="OpenTag could not safely choose between these Computers."
-      />
-    );
   }
   if (current.kind === "provider") {
     const factUnavailable = snapshot.runtime.kind === "unavailable";

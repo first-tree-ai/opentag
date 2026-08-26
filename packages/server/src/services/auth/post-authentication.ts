@@ -18,9 +18,9 @@ export class PostAuthenticationService {
     this.#workspaceAdmins = workspaceAdmins;
   }
 
-  complete(userId: string, accountWasCreated: boolean, invitationToken?: string): Promise<PostAuthenticationResult> {
+  complete(userId: string, accountWasCreated: boolean): Promise<PostAuthenticationResult> {
     return this.#database.transaction((transaction) =>
-      this.completeInTransaction(transaction, userId, accountWasCreated, invitationToken),
+      this.completeInTransaction(transaction, userId, accountWasCreated),
     );
   }
 
@@ -28,19 +28,10 @@ export class PostAuthenticationService {
     transaction: DatabaseTransaction,
     userId: string,
     accountWasCreated: boolean,
-    invitationToken?: string,
   ): Promise<PostAuthenticationResult> {
     const [user] = await transaction.select().from(users).where(eq(users.id, userId)).limit(1).for("update");
     if (!user || user.suspendedAt) {
       throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
-    }
-    if (invitationToken) {
-      const acceptance = await this.#workspaceAdmins.acceptInvitationInTransaction(
-        transaction,
-        userId,
-        invitationToken,
-      );
-      return { userId, selectedWorkspaceId: acceptance.workspace.id };
     }
     const selectedWorkspaceId = await this.#workspaceAdmins.establishDefaultWorkspaceForNewAccount(
       transaction,

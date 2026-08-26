@@ -1,44 +1,18 @@
-import {
-  type ListWorkspaceAdminsConfigResponse,
-  type ListWorkspaceAdminsResponse,
-  type ListWorkspaceComputersConfigResponse,
-  type ListWorkspaceComputersResponse,
-  type UpdateWorkspaceProfileRequest,
-  UpdateWorkspaceProfileRequestSchema,
-  type WorkspaceComputerAdminConfig,
-  type WorkspaceComputerSummary,
-  type WorkspaceProfile,
+import type {
+  ListWorkspaceComputersConfigResponse,
+  ListWorkspaceComputersResponse,
+  WorkspaceComputerAdminConfig,
+  WorkspaceComputerSummary,
 } from "@opentag/shared";
 import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agents, workspaceComputers, workspaces } from "../../db/schema/index.js";
-import { AuthServiceError } from "../auth/index.js";
+import { agents, workspaceComputers } from "../../db/schema/index.js";
 import {
   type ProviderReadinessSource,
   projectComputerImCliReadiness,
   projectComputerProviderReadiness,
 } from "../computers/provider-readiness.js";
-import { WORKSPACE_ADMIN_LIMIT, WorkspaceAdminAccess, workspaceNotFound } from "../workspace-admin-access/index.js";
-
-export const WORKSPACE_ADMIN_GRANT_LIMIT = WORKSPACE_ADMIN_LIMIT;
-
-function isWorkspaceNameConflict(error: unknown): boolean {
-  let current = error;
-  const visited = new Set<unknown>();
-  while (typeof current === "object" && current !== null && !visited.has(current)) {
-    visited.add(current);
-    if (
-      "code" in current &&
-      current.code === "23505" &&
-      "constraint_name" in current &&
-      current.constraint_name === "workspaces_name_unique"
-    ) {
-      return true;
-    }
-    current = "cause" in current ? current.cause : undefined;
-  }
-  return false;
-}
+import { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
 
 export class WorkspaceAdminService {
   readonly #database: DatabaseClient;
@@ -69,70 +43,6 @@ export class WorkspaceAdminService {
     workspaceId: string,
   ): Promise<void> {
     await this.#workspaceAdmins.bootstrapAdminInTransaction(transaction, userId, workspaceId);
-  }
-
-  async updateWorkspaceProfile(
-    accountId: string,
-    workspaceId: string,
-    rawInput: UpdateWorkspaceProfileRequest,
-  ): Promise<WorkspaceProfile> {
-    const input = UpdateWorkspaceProfileRequestSchema.parse(rawInput);
-    try {
-      return await this.#workspaceAdmins.withAdminMutation(accountId, workspaceId, async (transaction) => {
-        const [updated] = await transaction
-          .update(workspaces)
-          .set({
-            ...(input.name !== undefined ? { name: input.name } : {}),
-            ...(input.displayName !== undefined ? { displayName: input.displayName } : {}),
-            updatedAt: this.#now(),
-          })
-          .where(eq(workspaces.id, workspaceId))
-          .returning();
-        if (!updated) throw workspaceNotFound();
-        return {
-          id: updated.id,
-          name: updated.name,
-          displayName: updated.displayName,
-          setupCompletedAt: updated.setupCompletedAt?.toISOString() ?? null,
-          updatedAt: updated.updatedAt.toISOString(),
-        };
-      });
-    } catch (error) {
-      if (isWorkspaceNameConflict(error)) {
-        throw new AuthServiceError(
-          "WORKSPACE_NAME_CONFLICT",
-          "deterministic",
-          "Another Workspace already uses this canonical name",
-          409,
-        );
-      }
-      throw error;
-    }
-  }
-
-  async getWorkspaceProfile(accountId: string, workspaceId: string): Promise<WorkspaceProfile> {
-    await this.#workspaceAdmins.requireAdmin(accountId, workspaceId);
-    const [workspace] = await this.#database.select().from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
-    if (!workspace) throw workspaceNotFound();
-    return {
-      id: workspace.id,
-      name: workspace.name,
-      displayName: workspace.displayName,
-      setupCompletedAt: workspace.setupCompletedAt?.toISOString() ?? null,
-      updatedAt: workspace.updatedAt.toISOString(),
-    };
-  }
-
-  async listAdmins(accountId: string, workspaceId: string): Promise<ListWorkspaceAdminsResponse> {
-    return this.#workspaceAdmins.listAdmins(accountId, workspaceId);
-  }
-
-  async listAdminsConfig(accountId: string, workspaceId: string): Promise<ListWorkspaceAdminsConfigResponse> {
-    return this.#workspaceAdmins.listAdminsConfig(accountId, workspaceId);
-  }
-
-  async revokeAdmin(accountId: string, workspaceId: string, targetAccountId: string): Promise<void> {
-    await this.#workspaceAdmins.revokeAdmin(accountId, workspaceId, targetAccountId);
   }
 
   async listComputers(

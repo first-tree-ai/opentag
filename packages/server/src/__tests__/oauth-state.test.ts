@@ -1,18 +1,17 @@
 import { decodeJwt, SignJWT } from "jose";
 import { describe, expect, it } from "vitest";
-import { invitationTokenFromNext, OAuthFlowService, validateOAuthNext } from "../services/auth/index.js";
+import { OAuthFlowService, validateOAuthNext } from "../services/auth/index.js";
 
 const secret = "oauth-state-secret-that-is-at-least-32-characters";
 const now = new Date("2026-08-19T00:00:00.000Z");
 
 describe("OAuthFlowService", () => {
-  it("binds state to a signed context without putting an invitation bearer in state", async () => {
-    const token = "A".repeat(43);
+  it("binds state to a signed context without a retired invitation intent", async () => {
     const service = new OAuthFlowService(secret, { now: () => now });
-    const started = await service.start(`/invites/${token}`);
-    expect(JSON.stringify(decodeJwt(started.state))).not.toContain(token);
-    expect(await service.verify(started.state, started.context)).toMatchObject({ next: `/invites/${token}` });
-    expect(invitationTokenFromNext(`/invites/${token}`)).toBe(token);
+    const started = await service.start("/agents");
+    expect(decodeJwt(started.state)).not.toHaveProperty("intent");
+    expect(await service.verify(started.state, started.context)).toMatchObject({ next: "/agents" });
+    expect(() => validateOAuthNext(`/invites/${"A".repeat(43)}`)).toThrow();
   });
 
   it("rejects flow substitution, expiry, and unsafe redirect destinations", async () => {

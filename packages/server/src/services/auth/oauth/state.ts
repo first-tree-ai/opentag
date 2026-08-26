@@ -7,7 +7,6 @@ import { generateSecret } from "../security.js";
 const StatePayloadSchema = z.object({
   flowNonce: z.string().min(1),
   provider: z.literal("google"),
-  intent: z.enum(["login", "invite"]),
 });
 const ContextPayloadSchema = z.object({
   flowNonce: z.string().min(1),
@@ -49,10 +48,7 @@ export class OAuthFlowService {
         .setJti(randomUUID())
         .sign(this.#key);
     const [state, context] = await Promise.all([
-      common(
-        new SignJWT({ flowNonce, provider: "google", intent: next.startsWith("/invites/") ? "invite" : "login" }),
-        "opentag-oauth-state",
-      ),
+      common(new SignJWT({ flowNonce, provider: "google" }), "opentag-oauth-state"),
       common(new SignJWT({ flowNonce, next, oidcNonce, provider: "google" }), "opentag-oauth-context"),
     ]);
     return { context, next, oidcNonce, state };
@@ -80,7 +76,6 @@ export class OAuthFlowService {
         throw new Error("OAuth flow mismatch");
       }
       const next = validateOAuthNext(parsedContext.next);
-      if ((parsedState.intent === "invite") !== next.startsWith("/invites/")) throw new Error("OAuth intent mismatch");
       return { next, oidcNonce: parsedContext.oidcNonce };
     } catch {
       throw new AuthServiceError(
@@ -113,11 +108,5 @@ export function validateOAuthNext(value?: string): string {
   if (/^\/(?:agents(?:\/[^?#]*)?|settings(?:\/[^?#]*)?|onboarding|login)(?:\?[^#]*)?$/.test(next)) {
     return next;
   }
-  if (/^\/invites\/[A-Za-z0-9_-]{32,512}$/.test(next)) return next;
   throw new AuthServiceError("AUTH_OAUTH_FAILED", "validation", "The sign-in destination is invalid", 400);
-}
-
-export function invitationTokenFromNext(next: string): string | undefined {
-  const match = /^\/invites\/([A-Za-z0-9_-]{32,512})$/.exec(next);
-  return match?.[1];
 }

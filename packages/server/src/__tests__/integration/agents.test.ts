@@ -18,7 +18,6 @@ import {
 } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../services/runtime-config/index.js";
-import { WorkspaceAdminService } from "../../services/workspaces/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -1002,54 +1001,6 @@ describe("Agent persistence and authorization", () => {
         statusCode: 409,
       });
     } finally {
-      await value.sql.end();
-    }
-  });
-
-  it("holds live Admin authority through a lifecycle mutation before a concurrent downgrade", async () => {
-    const value = await fixture();
-    const authorityLocked = deferred<void>();
-    const releaseMutation = deferred<void>();
-    try {
-      const secondAdmin = await createUser(
-        value.database,
-        value.bootstrap.workspaceId,
-        "lifecycle-admin@example.com",
-        "admin",
-      );
-      const computer = await createComputer(value.database, secondAdmin.id, value.bootstrap.workspaceId);
-      const created = await value.service.createForWorkspace(
-        secondAdmin.id,
-        value.bootstrap.workspaceId,
-        createInput(computer.id),
-      );
-      const lifecycle = new AgentService(value.database, {
-        afterAgentLocked: async () => {
-          authorityLocked.resolve();
-          await releaseMutation.promise;
-        },
-      });
-      const suspend = lifecycle.suspendById(secondAdmin.id, created.id);
-      await authorityLocked.promise;
-      const revoke = new WorkspaceAdminService(value.database).revokeAdmin(
-        value.bootstrap.userId,
-        value.bootstrap.workspaceId,
-        secondAdmin.id,
-      );
-      let revokeSettled = false;
-      void revoke.finally(() => {
-        revokeSettled = true;
-      });
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      expect(revokeSettled).toBe(false);
-      releaseMutation.resolve();
-      await expect(suspend).resolves.toMatchObject({ status: "suspended" });
-      await expect(revoke).resolves.toBeUndefined();
-      await expect(lifecycle.reactivateById(secondAdmin.id, created.id)).rejects.toMatchObject({
-        code: "RESOURCE_NOT_FOUND",
-      });
-    } finally {
-      releaseMutation.resolve();
       await value.sql.end();
     }
   });

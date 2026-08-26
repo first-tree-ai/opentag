@@ -124,8 +124,6 @@ export {
 } from "./errors.js";
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
 export {
-  ADMIN_INVITATION_ACCEPT_TEMPLATE,
-  ADMIN_INVITATION_PREVIEW_TEMPLATE,
   AGENT_BY_ID_TEMPLATE,
   AGENT_CONFIG_TEMPLATE,
   AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE,
@@ -156,37 +154,21 @@ export {
   IM_BINDING_DIAGNOSTICS_TEMPLATE,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
-  invitationAcceptPath,
-  invitationPreviewPath,
   RUNTIME_IM_RESOURCE_TEMPLATE,
   runtimeImResourcePath,
   runtimeWebSocketUrl,
   SLACK_EVENTS_PATH,
-  WORKSPACE_ADMIN_TEMPLATE,
-  WORKSPACE_ADMINS_TEMPLATE,
   WORKSPACE_AGENTS_TEMPLATE,
-  WORKSPACE_BY_ID_TEMPLATE,
   WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE,
   WORKSPACE_COMPUTERS_TEMPLATE,
   WORKSPACE_SETUP_COMPLETE_TEMPLATE,
-  workspaceAdminPath,
-  workspaceAdminsPath,
   workspaceAgentsPath,
-  workspaceByIdPath,
   workspaceComputerConnectCodesPath,
   workspaceComputersPath,
   workspaceSetupCompletePath,
 } from "./http-paths.js";
 export * from "./im-binding.js";
 export * from "./im-message.js";
-export {
-  type InvitationAcceptanceResponse,
-  InvitationAcceptanceResponseSchema,
-  type InvitationPreview,
-  InvitationPreviewSchema,
-  type InvitationToken,
-  InvitationTokenSchema,
-} from "./invitation.js";
 export {
   getRuntimeConfigurationOptions,
   type RuntimeConfigurationOptions,
@@ -359,26 +341,14 @@ export * from "./session.js";
 export {
   type CompleteWorkspaceSetupRequest,
   CompleteWorkspaceSetupRequestSchema,
-  type ListWorkspaceAdminsConfigResponse,
-  ListWorkspaceAdminsConfigResponseSchema,
-  type ListWorkspaceAdminsResponse,
-  ListWorkspaceAdminsResponseSchema,
   type ListWorkspaceComputersConfigResponse,
   ListWorkspaceComputersConfigResponseSchema,
   type ListWorkspaceComputersResponse,
   ListWorkspaceComputersResponseSchema,
-  type UpdateWorkspaceProfileRequest,
-  UpdateWorkspaceProfileRequestSchema,
-  type WorkspaceAdminConfig,
-  WorkspaceAdminConfigSchema,
-  type WorkspaceAdminSummary,
-  WorkspaceAdminSummarySchema,
   type WorkspaceComputerAdminConfig,
   WorkspaceComputerAdminConfigSchema,
   type WorkspaceComputerSummary,
   WorkspaceComputerSummarySchema,
-  type WorkspaceProfile,
-  WorkspaceProfileSchema,
   type WorkspaceSetupCompletion,
   WorkspaceSetupCompletionSchema,
 } from "./workspace.js";

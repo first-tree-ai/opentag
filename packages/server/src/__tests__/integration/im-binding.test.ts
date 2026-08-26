@@ -53,7 +53,7 @@ import { createImProviderAdapterResolver, ImBindingService } from "../../service
 import { SlackConfigurationService } from "../../services/im-bindings/slack/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../services/runtime-config/index.js";
 import { SessionService } from "../../services/sessions/index.js";
-import { WorkspaceAdminService, WorkspaceSetupService } from "../../services/workspaces/index.js";
+import { WorkspaceSetupService } from "../../services/workspaces/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -1259,51 +1259,6 @@ describe("IM binding persistence", () => {
     }
   });
 
-  it("holds Workspace authority while an IM mutation commits so a concurrent downgrade cannot interleave", async () => {
-    const value = await fixture();
-    const authorityLocked = deferred<void>();
-    const releaseMutation = deferred<void>();
-    const service = new ImBindingService(value.database, new ApplicationCipher(Buffer.alloc(32, 7)), {
-      afterMutationAuthorityLocked: async () => {
-        authorityLocked.resolve();
-        await releaseMutation.promise;
-      },
-    });
-    try {
-      const [secondAdmin] = await value.database
-        .insert(users)
-        .values({ email: "second-im-admin@example.com", displayName: "Second IM Admin" })
-        .returning();
-      if (!secondAdmin) throw new Error("Second admin fixture was not created");
-      await value.database.insert(workspaceAdminGrants).values({
-        workspaceId: value.bootstrap.workspaceId,
-        userId: secondAdmin.id,
-        grantedByUserId: value.bootstrap.userId,
-      });
-      const mutation = service.disable(value.bootstrap.userId, value.imBindingId);
-      await authorityLocked.promise;
-      const revoke = new WorkspaceAdminService(value.database).revokeAdmin(
-        secondAdmin.id,
-        value.bootstrap.workspaceId,
-        value.bootstrap.userId,
-      );
-      let revokeSettled = false;
-      void revoke.finally(() => {
-        revokeSettled = true;
-      });
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(revokeSettled).toBe(false);
-      releaseMutation.resolve();
-      await expect(mutation).resolves.toBeUndefined();
-      await expect(revoke).resolves.toBeUndefined();
-      expect(
-        (await value.database.select().from(imBindings).where(eq(imBindings.id, value.imBindingId)))[0]?.status,
-      ).toBe("disabled");
-    } finally {
-      releaseMutation.resolve();
-      await value.sql.end();
-    }
-  });
   it("migrates the authority tables with partial Session uniqueness and self-scope provenance", async () => {
     const value = await fixture();
     try {

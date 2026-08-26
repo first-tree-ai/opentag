@@ -9,7 +9,6 @@ import { type BrowserAuthRoutesOptions, registerBrowserAuthRoutes } from "./api/
 import { registerComputerRoutes } from "./api/computers.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
-import { registerInvitationRoutes } from "./api/invitations.js";
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
@@ -24,7 +23,6 @@ import type { ImResourceService } from "./services/im/index.js";
 import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
 import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
 import { type SlackConfigurationService, SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
-import type { InvitationService } from "./services/invitations/index.js";
 import {
   type WorkspaceAdminService,
   type WorkspaceSetupService,
@@ -48,7 +46,6 @@ export interface CreateAppOptions {
     publicUrl: string;
   };
   browserAuth?: BrowserAuthRoutesOptions;
-  invitationService?: InvitationService;
   imBindingService?: ImBindingService;
   imResourceService?: ImResourceService;
   feishuSetupService?: FeishuSetupService;
@@ -187,9 +184,6 @@ export function createApp(options: CreateAppOptions = {}) {
     }
     if (options.workspaceService) {
       registerWorkspaceRoutes(app, authService, options.workspaceService, publicOrigin, options.workspaceSetupService);
-    }
-    if (options.invitationService) {
-      registerInvitationRoutes(app, authService, options.invitationService, publicOrigin);
     }
     if (options.imBindingService) {
       registerImBindingRoutes(

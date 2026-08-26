@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
-import {
-  ADMIN_INVITATION_ACCEPT_TEMPLATE,
-  ADMIN_INVITATION_PREVIEW_TEMPLATE,
-  WORKSPACE_ADMIN_TEMPLATE,
-} from "@opentag/shared";
+import { WORKSPACE_COMPUTERS_TEMPLATE, WORKSPACE_SETUP_COMPLETE_TEMPLATE } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 
 const WORKSPACE_CREATION_PATH = "/api/v1/workspaces";
 const INVITATION_CREATION_TEMPLATE = "/api/v1/workspaces/:workspaceId/admin-invitations";
+const INVITATION_PREVIEW_TEMPLATE = "/api/v1/admin-invitations/:token/preview";
+const INVITATION_ACCEPT_TEMPLATE = "/api/v1/admin-invitations/:token/accept";
+const WORKSPACE_BY_ID_TEMPLATE = "/api/v1/workspaces/:workspaceId";
+const WORKSPACE_ADMINS_TEMPLATE = "/api/v1/workspaces/:workspaceId/admins";
+const WORKSPACE_ADMIN_TEMPLATE = "/api/v1/workspaces/:workspaceId/admins/:accountId";
 
 const apps: ReturnType<typeof createApp>[] = [];
 
@@ -19,20 +20,6 @@ afterEach(async () => {
 function fixture() {
   const accountId = randomUUID();
   const workspaceId = randomUUID();
-  const revokeAdmin = vi.fn().mockResolvedValue(undefined);
-  const accept = vi.fn().mockResolvedValue({
-    workspace: {
-      id: workspaceId,
-      name: "example",
-      displayName: "Example",
-      setupCompletedAt: null,
-      grantedAt: "2026-08-26T00:00:00.000Z",
-    },
-  });
-  const preview = vi.fn().mockResolvedValue({
-    workspaceDisplayName: "Example",
-    expiresAt: "2030-01-01T00:00:00.000Z",
-  });
   const app = createApp({
     authService: {
       getAuthenticatedUser: vi.fn().mockResolvedValue({
@@ -40,11 +27,11 @@ function fixture() {
         tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
       }),
     } as never,
-    invitationService: { accept, preview } as never,
-    workspaceService: { revokeAdmin } as never,
+    workspaceService: { listComputers: vi.fn().mockResolvedValue({ computers: [] }) } as never,
+    workspaceSetupService: { complete: vi.fn() } as never,
   });
   apps.push(app);
-  return { accept, accountId, app, preview, revokeAdmin, workspaceId };
+  return { app, workspaceId };
 }
 
 describe("Workspace topology freeze", () => {
@@ -70,35 +57,31 @@ describe("Workspace topology freeze", () => {
     expect(invitationResponse.statusCode).toBe(404);
   });
 
-  it("keeps outstanding invitation redemption and Admin revocation available", async () => {
+  it("retires Workspace profile, Admin, and invitation routes while preserving compatibility routes", async () => {
     const value = fixture();
     const token = "A".repeat(43);
     const targetAccountId = randomUUID();
 
-    expect(value.app.hasRoute({ method: "GET", url: ADMIN_INVITATION_PREVIEW_TEMPLATE })).toBe(true);
-    expect(value.app.hasRoute({ method: "POST", url: ADMIN_INVITATION_ACCEPT_TEMPLATE })).toBe(true);
-    expect(value.app.hasRoute({ method: "DELETE", url: WORKSPACE_ADMIN_TEMPLATE })).toBe(true);
+    expect(value.app.hasRoute({ method: "GET", url: INVITATION_PREVIEW_TEMPLATE })).toBe(false);
+    expect(value.app.hasRoute({ method: "POST", url: INVITATION_ACCEPT_TEMPLATE })).toBe(false);
+    expect(value.app.hasRoute({ method: "GET", url: WORKSPACE_BY_ID_TEMPLATE })).toBe(false);
+    expect(value.app.hasRoute({ method: "PATCH", url: WORKSPACE_BY_ID_TEMPLATE })).toBe(false);
+    expect(value.app.hasRoute({ method: "GET", url: WORKSPACE_ADMINS_TEMPLATE })).toBe(false);
+    expect(value.app.hasRoute({ method: "DELETE", url: WORKSPACE_ADMIN_TEMPLATE })).toBe(false);
+    expect(value.app.hasRoute({ method: "GET", url: WORKSPACE_COMPUTERS_TEMPLATE })).toBe(true);
+    expect(value.app.hasRoute({ method: "POST", url: WORKSPACE_SETUP_COMPLETE_TEMPLATE })).toBe(true);
 
-    const preview = await value.app.inject({
-      method: "GET",
-      url: `/api/v1/admin-invitations/${token}/preview`,
-    });
-    const accepted = await value.app.inject({
-      method: "POST",
-      url: `/api/v1/admin-invitations/${token}/accept`,
-      headers: { authorization: "Bearer account-token" },
-    });
-    const revoked = await value.app.inject({
-      method: "DELETE",
-      url: `/api/v1/workspaces/${value.workspaceId}/admins/${targetAccountId}`,
-      headers: { authorization: "Bearer account-token" },
-    });
-
-    expect(preview.statusCode).toBe(200);
-    expect(accepted.statusCode).toBe(200);
-    expect(revoked.statusCode).toBe(204);
-    expect(value.preview).toHaveBeenCalledWith(token);
-    expect(value.accept).toHaveBeenCalledWith(value.accountId, token);
-    expect(value.revokeAdmin).toHaveBeenCalledWith(value.accountId, value.workspaceId, targetAccountId);
+    const retired = await Promise.all([
+      value.app.inject({ method: "GET", url: `/api/v1/admin-invitations/${token}/preview` }),
+      value.app.inject({ method: "POST", url: `/api/v1/admin-invitations/${token}/accept` }),
+      value.app.inject({ method: "GET", url: `/api/v1/workspaces/${value.workspaceId}` }),
+      value.app.inject({ method: "PATCH", url: `/api/v1/workspaces/${value.workspaceId}` }),
+      value.app.inject({ method: "GET", url: `/api/v1/workspaces/${value.workspaceId}/admins` }),
+      value.app.inject({
+        method: "DELETE",
+        url: `/api/v1/workspaces/${value.workspaceId}/admins/${targetAccountId}`,
+      }),
+    ]);
+    expect(retired.map((response) => response.statusCode)).toEqual([404, 404, 404, 404, 404, 404]);
   });
 });

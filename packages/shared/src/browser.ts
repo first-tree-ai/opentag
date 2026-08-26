@@ -5,7 +5,6 @@ export * from "./errors.js";
 export * from "./health.js";
 export * from "./http-paths.js";
 export * from "./im-binding.js";
-export * from "./invitation.js";
 export { RUNTIME_DEFAULT_MAX_DURATION_MS, RUNTIME_MAX_DURATION_MS } from "./runtime-config.js";
 export * from "./runtime-configuration-options.js";
 export * from "./runtime-protocol.js";

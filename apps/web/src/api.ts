@@ -221,6 +221,22 @@ export class BrowserApi {
     });
   }
 
+  /** 204 when this Account may use the staging Onboarding Lab, 404 when it may not. */
+  async onboardingLabAvailable(): Promise<boolean> {
+    const response = await this.fetchWithRefresh(HTTP_PATHS.internalOnboardingLab);
+    if (response.status === 204) return true;
+    if (response.status === 404) return false;
+    throw this.apiError(response, await response.json().catch(() => undefined));
+  }
+
+  /** Resets the authenticated staging Lab Account; it accepts no client-selected Account. */
+  resetOnboardingLab(): Promise<void> {
+    return this.requestNoContent(HTTP_PATHS.internalOnboardingLab, {
+      method: "POST",
+      headers: this.csrfHeaders(),
+    });
+  }
+
   async health(path: "/healthz" | "/readyz"): Promise<{ latencyMs: number; observedAt: string; status: string }> {
     const startedAt = performance.now();
     const response = await this.fetchImpl(path, { credentials: "same-origin" });

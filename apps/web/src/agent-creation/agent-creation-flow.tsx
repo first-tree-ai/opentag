@@ -39,6 +39,8 @@ export interface AgentCreationFlowProps {
   readonly onCreated: (agent: AgentAdminConfig) => void;
   readonly onRefresh: () => void;
   readonly onSubmittingChange?: (submitting: boolean) => void;
+  /** Renders the flow for review only: no creation intent is read or resumed and no Agent is created. */
+  readonly preview?: boolean;
   readonly refreshing?: boolean;
   readonly workspaceId: string;
 }
@@ -85,10 +87,11 @@ export function AgentCreationFlow({
   onCreated,
   onRefresh,
   onSubmittingChange,
+  preview = false,
   refreshing = false,
   workspaceId,
 }: AgentCreationFlowProps) {
-  const pendingIntent = useMemo(() => readCreationIntent(workspaceId), [workspaceId]);
+  const pendingIntent = useMemo(() => (preview ? undefined : readCreationIntent(workspaceId)), [preview, workspaceId]);
   const [displayName, setDisplayName] = useState(() => pendingIntent?.request.displayName ?? initialDisplayName);
   const [name, setName] = useState(() => pendingIntent?.request.name ?? deriveAgentName(initialDisplayName));
   const [nameDirty, setNameDirty] = useState(
@@ -146,8 +149,10 @@ export function AgentCreationFlow({
   }, [displayedComputer, displayedProvider, readyRoutes, selectedRoute]);
 
   useEffect(() => {
+    // Preview is a review surface: it must not pull focus, or scroll, away from the page around it.
+    if (preview) return;
     firstFieldRef.current?.focus();
-  }, []);
+  }, [preview]);
 
   useEffect(() => {
     if (editingName) nameFieldRef.current?.focus();
@@ -187,7 +192,7 @@ export function AgentCreationFlow({
 
   const create = useCallback(
     async (request: Omit<CreateAgentRequest, "creationIntentId">, intent?: CreationIntentRecord) => {
-      if (inFlightRef.current) return;
+      if (preview || inFlightRef.current) return;
       let record = intent;
       inFlightRef.current = true;
       setError(undefined);
@@ -219,7 +224,7 @@ export function AgentCreationFlow({
         onSubmittingChange?.(false);
       }
     },
-    [onCreated, onSubmittingChange, workspaceId],
+    [onCreated, onSubmittingChange, preview, workspaceId],
   );
 
   useEffect(() => {

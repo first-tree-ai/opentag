@@ -4494,6 +4494,82 @@ textarea:focus {
   }
 }
 
+/* Staging Onboarding Lab: an internal review surface, not a product page. */
+.onboarding-lab-section {
+  margin-bottom: 32px;
+}
+
+.onboarding-lab-section h2 {
+  margin-bottom: 8px;
+}
+
+.onboarding-lab-section > p {
+  max-width: 640px;
+  margin-bottom: 16px;
+  color: var(--muted);
+  font-size: var(--text-body);
+}
+
+.onboarding-lab-scenarios {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  margin-bottom: 16px;
+}
+
+.onboarding-lab-scenario {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+  height: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--secondary-foreground);
+  font-weight: var(--fw-regular);
+  text-align: left;
+  white-space: normal;
+  cursor: pointer;
+}
+
+.onboarding-lab-scenario[aria-current] {
+  border-color: var(--strong-border);
+  background: var(--brand-light);
+  color: var(--brand-ink);
+}
+
+.onboarding-lab-scenario span {
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+/* The preview embeds the real onboarding shell, so its full-viewport sizing is scoped here. */
+.onboarding-lab-preview {
+  position: relative;
+  max-height: min(72dvh, 900px);
+  overflow: auto;
+  border: 1px solid var(--strong-border);
+  border-radius: var(--radius);
+}
+
+/* Reviewers judge the desktop layout, so the frame scrolls instead of reflowing the page. */
+.onboarding-lab-preview .onboarding-shell {
+  min-width: 1120px;
+  min-height: 100%;
+}
+
+.onboarding-lab-preview .onboarding-shell::before {
+  position: absolute;
+}
+
+.onboarding-lab-section .notice.error {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .loading-state span {
     animation: none;

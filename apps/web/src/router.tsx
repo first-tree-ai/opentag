@@ -45,6 +45,7 @@ import { SkillsPage } from "./features/skills-page.js";
 import { TaskDetailPage, TasksPage } from "./features/tasks-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
 import { SlackConfiguration } from "./im/slack-configuration.js";
+import { OnboardingLabPage } from "./internal/onboarding-lab-page.js";
 import { OnboardingPage } from "./onboarding/page.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import {
@@ -442,6 +443,8 @@ export function AppRouter() {
       <Route path="/login" element={<LoginPage />} />
       <Route element={<AuthenticatedWorkspaceGate />}>
         <Route element={<AppShell />}>
+          {/* Outside the setup-completion gate so a stuck run can always reopen the Lab. */}
+          <Route path="/internal/onboarding-lab" element={<OnboardingLabRoute />} />
           <Route element={<WorkspaceSetupGate />}>
             <Route path="/onboarding" element={<OnboardingRoute />} />
             <Route index element={<Navigate replace to="/agents" />} />
@@ -610,6 +613,40 @@ function OnboardingRoute() {
         setSearchParams(next, { replace: true });
       }}
     />
+  );
+}
+
+/**
+ * The staging-only Onboarding Lab. The Server decides whether this Account may use it, and an
+ * Account that may not is answered exactly like a page that does not exist.
+ */
+function OnboardingLabRoute() {
+  const { me, refreshMe } = useWorkspace();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const available = useResource(() => browserApi.onboardingLabAvailable(), "onboarding-lab");
+  return (
+    <AsyncState state={available}>
+      {(allowed) =>
+        allowed ? (
+          <OnboardingLabPage
+            scenarioId={searchParams.get("scenario")}
+            user={me.user}
+            onScenarioChange={(scenarioId) => {
+              const next = new URLSearchParams(searchParams);
+              next.set("scenario", scenarioId);
+              setSearchParams(next, { replace: true });
+            }}
+            onResetSucceeded={() => {
+              refreshMe();
+              navigate("/onboarding", { replace: true });
+            }}
+          />
+        ) : (
+          <NotFoundPage />
+        )
+      }
+    </AsyncState>
   );
 }
 

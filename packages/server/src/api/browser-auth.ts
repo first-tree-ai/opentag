@@ -77,10 +77,6 @@ class RouteRateLimiter {
   }
 }
 
-function browserAuthDestination(next: string): string {
-  return next.startsWith("/invites/") ? "/agents" : next;
-}
-
 export function registerBrowserAuthRoutes(
   app: FastifyInstance,
   authService: UserAuthService,
@@ -169,7 +165,7 @@ export function registerBrowserAuthRoutes(
       refreshTtlSeconds: options.refreshTokenTtlSeconds,
       secure: options.secureCookies,
     });
-    return reply.redirect(browserAuthDestination(result.next), 302);
+    return reply.redirect(result.next, 302);
   });
 
   app.post(HTTP_PATHS.authBrowserRefresh, async (request, reply) => {

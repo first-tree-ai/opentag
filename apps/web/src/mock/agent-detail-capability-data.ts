@@ -18,9 +18,9 @@ export const agentIntegrationPreviews: readonly AgentIntegrationPreview[] = [
   },
   {
     name: "Linear",
-    identity: "OpenTag preview workspace",
+    identity: "OpenTag preview",
     purpose: "Read issue context while planning and reviewing work.",
-    scope: "Product workspace · read only",
+    scope: "Shared catalog · read only",
     connection: "Needs attention",
     availability: "Unavailable",
   },
@@ -29,15 +29,15 @@ export const agentIntegrationPreviews: readonly AgentIntegrationPreview[] = [
 export type AgentSkillPreview = {
   readonly name: string;
   readonly description: string;
-  readonly source: "OpenTag" | "Workspace";
+  readonly source: "OpenTag" | "Shared";
   readonly assignment: "Assigned" | "Assignment unavailable";
 };
 
 export const agentSkillPreviews: readonly AgentSkillPreview[] = [
   {
     name: "Release notes writer",
-    description: "Turns merged changes into concise release notes for workspacemates and customers.",
-    source: "Workspace",
+    description: "Turns merged changes into concise release notes for teammates and customers.",
+    source: "Shared",
     assignment: "Assigned",
   },
   {
@@ -49,7 +49,7 @@ export const agentSkillPreviews: readonly AgentSkillPreview[] = [
   {
     name: "Issue triage",
     description: "Classifies incoming issues and recommends a priority.",
-    source: "Workspace",
+    source: "Shared",
     assignment: "Assignment unavailable",
   },
 ];

@@ -322,54 +322,15 @@ pre {
   text-decoration: none;
 }
 
-.workspace-menu,
 .account-menu {
   position: relative;
 }
 
-.workspace-switcher {
-  display: grid;
-  width: 100%;
-  min-height: 43px;
-  align-items: center;
-  justify-content: initial;
-  grid-template-columns: 24px minmax(0, 1fr) 14px;
-  gap: 9px;
-  border: 0;
-  border-radius: 8px;
-  background: #e6e8dc;
-  color: var(--secondary-foreground);
-  font-size: var(--text-ui);
-  font-weight: var(--fw-medium);
-  padding: 5px 10px;
-  text-align: left;
-  transition:
-    background-color 140ms ease,
-    color 140ms ease;
-}
-
-.workspace-switcher:hover,
-.workspace-switcher[aria-expanded="true"] {
-  border-color: transparent;
-  background: var(--brand-light);
-  color: var(--brand-ink);
-}
-
-.workspace-switcher:active,
-.workspace-menu-option:active,
 .account-row:active,
 .account-menu-popover button:active {
   transform: none;
 }
 
-.workspace-menu-chevron {
-  color: var(--muted);
-  font-size: var(--text-meta);
-  line-height: 1;
-  text-align: right;
-}
-
-.workspace-avatar,
 .account-avatar,
 .agent-avatar {
   display: inline-grid;
@@ -383,12 +344,6 @@ pre {
   letter-spacing: var(--track-tight);
 }
 
-.workspace-avatar {
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-}
-
 .account-avatar,
 .agent-avatar {
   border-radius: 50%;
@@ -399,7 +354,6 @@ pre {
   height: 28px;
 }
 
-.workspace-menu-popover,
 .account-menu-popover {
   position: absolute;
   z-index: calc(var(--layer-sidebar) + 1);
@@ -407,139 +361,6 @@ pre {
   border-radius: var(--radius);
   background: var(--surface);
   box-shadow: 0 16px 36px rgb(43 55 38 / 12%);
-}
-
-.workspace-menu-popover {
-  top: calc(100% + 6px);
-  left: 0;
-  display: flex;
-  max-height: calc(100dvh - 32px);
-  flex-direction: column;
-  overflow: hidden;
-  width: min(272px, calc(100vw - 32px));
-  padding: 8px;
-}
-
-.menu-label {
-  padding: 7px 8px 6px;
-  color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-micro);
-  font-weight: var(--fw-semibold);
-  letter-spacing: var(--track-label);
-  text-transform: uppercase;
-}
-
-.workspace-search {
-  display: block;
-  padding: 4px 5px 7px;
-}
-
-.workspace-search input {
-  width: 100%;
-  min-height: 36px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--background);
-  padding: 0 10px;
-}
-
-.workspace-menu-list {
-  display: grid;
-  min-height: 0;
-  max-height: min(352px, 45dvh);
-  gap: 2px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
-}
-
-.workspace-menu-option {
-  display: grid;
-  width: 100%;
-  min-height: 44px;
-  align-items: center;
-  justify-content: initial;
-  grid-template-columns: 24px minmax(0, 1fr) 16px;
-  gap: 10px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--foreground);
-  padding: 6px 8px;
-  text-align: left;
-}
-
-.workspace-menu-option:hover,
-.workspace-menu-option[aria-current="true"] {
-  border-color: transparent;
-  background: var(--brand-light);
-  color: var(--foreground);
-}
-
-.workspace-option-copy,
-.workspace-option-copy strong,
-.workspace-option-copy small {
-  display: block;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workspace-option-copy strong {
-  font-size: var(--text-ui);
-  font-weight: var(--fw-semibold);
-}
-
-.workspace-option-copy small {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: var(--text-meta);
-}
-
-.workspace-option-check {
-  color: var(--brand-ink);
-  font-size: var(--text-ui);
-  font-weight: var(--fw-bold);
-  text-align: right;
-}
-
-.workspace-menu-empty {
-  color: var(--muted);
-  font-size: var(--text-meta);
-  padding: 14px 8px;
-}
-
-.workspace-menu-actions {
-  display: grid;
-  gap: 2px;
-  margin-top: 7px;
-  border-top: 1px solid var(--border);
-  padding-top: 7px;
-}
-
-.workspace-menu-action {
-  display: flex;
-  width: 100%;
-  min-height: 39px;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 9px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--secondary-foreground);
-  font-size: var(--text-ui);
-  font-weight: var(--fw-medium);
-  padding: 0 8px;
-  text-decoration: none;
-}
-
-.workspace-menu-action:hover {
-  border-color: transparent;
-  background: var(--brand-light);
-  color: var(--brand-ink);
 }
 
 .primary-nav,
@@ -647,36 +468,6 @@ pre {
   width: min(240px, calc(100vw - 32px));
 }
 
-.account-workspace-group {
-  display: grid;
-  max-height: min(304px, 42dvh);
-  gap: 2px;
-  overflow-y: auto;
-  min-width: 0;
-  border: 0;
-  border-bottom: 1px solid var(--border);
-  margin-bottom: 5px;
-  padding: 0 0 7px;
-}
-
-.account-menu-popover .account-workspace-option {
-  display: grid;
-  min-height: 48px;
-  grid-template-columns: 24px minmax(0, 1fr) 16px;
-  gap: 10px;
-  padding: 6px 8px;
-  text-align: left;
-}
-
-.account-menu-popover .account-workspace-option[aria-current="true"] {
-  background: transparent;
-  color: var(--foreground);
-}
-
-.account-menu-popover .account-workspace-option.is-static {
-  cursor: default;
-}
-
 .account-menu-actions {
   display: grid;
   gap: 2px;
@@ -732,12 +523,6 @@ pre {
   font-size: var(--text-meta);
   line-height: var(--lh-ui);
   padding: 6px 9px;
-}
-
-.account-workspace-profile {
-  display: grid;
-  width: 100%;
-  gap: 24px;
 }
 
 .sidebar-backdrop,
@@ -833,21 +618,8 @@ pre {
   font-size: var(--text-body);
 }
 
-.invitation-dialog-content {
-  display: grid;
-  gap: 14px;
-}
-
 .dialog-actions {
   margin-top: 4px;
-}
-
-.workspace-profile-dialog {
-  width: min(100%, 760px);
-}
-
-.workspace-profile-dialog .dialog-header {
-  margin-bottom: 20px;
 }
 
 .app-main {
@@ -3411,42 +3183,6 @@ textarea:focus {
   line-height: var(--lh-prose);
 }
 
-.workspace-profile-form {
-  background: transparent;
-  padding: 0;
-}
-
-.workspace-profile-fields {
-  display: grid;
-  gap: 23px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  padding: 23px;
-}
-
-.workspace-profile-row {
-  display: grid;
-  grid-template-columns: 210px minmax(0, 1fr);
-  gap: 29px;
-}
-
-.workspace-profile-copy strong {
-  display: block;
-  margin: 2px 0 5px;
-  font-size: var(--text-ui);
-}
-
-.workspace-profile-copy p {
-  margin-bottom: 0;
-  color: var(--muted);
-  font-size: var(--text-meta);
-}
-
-.workspace-profile-row label {
-  align-content: start;
-}
-
 .dirty-bar {
   display: flex;
   min-height: 55px;
@@ -4208,8 +3944,7 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 
-  .messaging-contact-facts,
-  .workspace-profile-row {
+  .messaging-contact-facts {
     grid-template-columns: 1fr;
     gap: 12px;
   }

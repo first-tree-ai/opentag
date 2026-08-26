@@ -81,14 +81,13 @@ describe("Admin invitation lifecycle", () => {
     const value = await fixture();
     try {
       const accountId = await createAccount(value, "normal-signup@example.com");
-      const completion = await value.postAuthentication.complete(accountId, true);
+      await value.postAuthentication.complete(accountId, true);
       const grants = await value.database
         .select({ workspaceId: workspaceAdminGrants.workspaceId })
         .from(workspaceAdminGrants)
         .innerJoin(workspaces, eq(workspaces.id, workspaceAdminGrants.workspaceId))
         .where(and(eq(workspaceAdminGrants.userId, accountId), isNull(workspaceAdminGrants.revokedAt)));
 
-      expect(completion.selectedWorkspaceId).toBe(grants[0]?.workspaceId);
       expect(grants).toHaveLength(1);
     } finally {
       await value.sql.end();
@@ -100,13 +99,12 @@ describe("Admin invitation lifecycle", () => {
     try {
       const invitation = await seedOutstandingInvitation(value);
       const accountId = await createAccount(value, "invited-signup@example.com");
-      const completion = await value.postAuthentication.complete(accountId, true, invitation.token);
+      await value.postAuthentication.complete(accountId, true, invitation.token);
       const grants = await value.database
         .select({ workspaceId: workspaceAdminGrants.workspaceId })
         .from(workspaceAdminGrants)
         .where(and(eq(workspaceAdminGrants.userId, accountId), isNull(workspaceAdminGrants.revokedAt)));
 
-      expect(completion.selectedWorkspaceId).toBe(value.bootstrap.workspaceId);
       expect(grants).toEqual([{ workspaceId: value.bootstrap.workspaceId }]);
     } finally {
       await value.sql.end();

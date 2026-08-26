@@ -32,7 +32,7 @@ function authService(): UserAuthService {
   };
 }
 
-function google(result: { next?: string; selectedWorkspaceId?: string } = {}) {
+function google(result: { next?: string } = {}) {
   return {
     start: vi
       .fn()
@@ -41,7 +41,6 @@ function google(result: { next?: string; selectedWorkspaceId?: string } = {}) {
       options.onVerified();
       return {
         next: result.next ?? "/agents",
-        ...(result.selectedWorkspaceId ? { selectedWorkspaceId: result.selectedWorkspaceId } : {}),
         tokens: {
           accessToken: "access-secret",
           refreshToken: "refresh-secret",
@@ -183,10 +182,9 @@ describe("browser authentication routes", () => {
     );
   });
 
-  it("sends a redeemed invitation sign-in to the selected Workspace", async () => {
-    const selectedWorkspaceId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
+  it("sends a redeemed invitation sign-in to Agents without a Workspace selection hint", async () => {
     const token = "A".repeat(43);
-    const googleService = google({ next: `/invites/${token}`, selectedWorkspaceId });
+    const googleService = google({ next: `/invites/${token}` });
     const { app } = createBrowserApp({ googleService });
     const response = await app.inject({
       method: "GET",
@@ -195,7 +193,7 @@ describe("browser authentication routes", () => {
     });
 
     expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe(`/agents?joinedWorkspaceId=${selectedWorkspaceId}`);
+    expect(response.headers.location).toBe("/agents");
   });
 
   it("accepts provider-owned callback fields but passes only supported values to the Google service", async () => {

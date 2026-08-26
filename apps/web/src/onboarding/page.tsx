@@ -193,7 +193,7 @@ export function OnboardingPage({
         completionInFlight.current = undefined;
         setCompletionState({
           kind: "error",
-          error: cause instanceof Error ? cause : new Error("Unable to finish Workspace setup"),
+          error: cause instanceof Error ? cause : new Error("Unable to finish OpenTag setup"),
         });
       });
     },
@@ -275,7 +275,7 @@ function OnboardingJourney({ journey }: { journey: OnboardingJourneyState }) {
       <div className="onboarding-journey-intro">
         <span className="eyebrow">Agent setup</span>
         <h1>Set up OpenTag</h1>
-        <p>Prepare one Agent, then bring it into your workspace conversation.</p>
+        <p>Prepare one Agent, then bring it into a shared conversation.</p>
       </div>
       <nav aria-label="Onboarding steps">
         <ol className="onboarding-steps">
@@ -286,7 +286,7 @@ function OnboardingJourney({ journey }: { journey: OnboardingJourneyState }) {
             title="Prepare your Agent"
           />
           <JourneyStep
-            description="Authorize your workspace bot"
+            description="Authorize your messaging bot"
             number="02"
             status={journey.messaging}
             title="Add to Feishu"
@@ -380,7 +380,7 @@ function OnboardingStageContext({ journey }: { journey: OnboardingJourneyState }
           FS
         </span>
         <span>
-          <small>Workspace chat</small>
+          <small>Team chat</small>
           <strong>Feishu</strong>
         </span>
       </div>
@@ -499,7 +499,7 @@ function onboardingJourney(
     stageDescription: prepareComplete
       ? setupReady
         ? "Your Agent is ready for the first conversation in Feishu."
-        : "Authorize the bot your workspace will mention in conversations."
+        : "Authorize the bot people will mention in conversations."
       : "Confirm where your Agent runs, then give it a clear identity.",
     stageStatus: onboardingStageStatus(current),
     stageTitle: prepareComplete
@@ -545,7 +545,7 @@ function journeyComputerRouteFact(
 }
 
 function onboardingStageStatus(current: OnboardingCurrentState): string {
-  if (current.kind === "workspace") return "Checking Workspace";
+  if (current.kind === "workspace") return "Checking OpenTag";
   if (current.kind === "computer") {
     if (current.availability === "none") return "Computer needed";
     if (current.availability === "offline") return "Computer offline";
@@ -770,7 +770,7 @@ function OnboardingContent({
       <ActionSection
         readonly={!canManage}
         title={handoffTitle(current)}
-        description="Authorize the Feishu Bot that your workspace will mention."
+        description="Authorize the Feishu Bot people will mention."
       >
         {canManage ? (
           <FeishuSetup agentId={current.agent.id} onSuccess={onReload}>
@@ -783,7 +783,7 @@ function OnboardingContent({
     );
   }
   if (completionState.kind === "pending") {
-    return <ActionSection title="Finishing Workspace setup" description="Saving the verified Agent handoff." pending />;
+    return <ActionSection title="Finishing OpenTag setup" description="Saving the verified Agent handoff." pending />;
   }
   if (completionState.kind === "error") {
     return (

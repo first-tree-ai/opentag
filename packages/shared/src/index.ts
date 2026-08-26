@@ -81,6 +81,8 @@ export {
   ServiceIdSchema,
 } from "./channel.js";
 export {
+  type AccountComputerConnectCodeIssueRequest,
+  AccountComputerConnectCodeIssueRequestSchema,
   type ComputerConnectCodeExchangeRequest,
   ComputerConnectCodeExchangeRequestSchema,
   type ComputerConnectCodeExchangeResponse,
@@ -124,6 +126,10 @@ export {
 } from "./errors.js";
 export { type ServerHealth, ServerHealthSchema } from "./health.js";
 export {
+  ACCOUNT_AGENTS_PATH,
+  ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
+  ACCOUNT_COMPUTERS_PATH,
+  ACCOUNT_SETUP_COMPLETE_PATH,
   AGENT_BY_ID_TEMPLATE,
   AGENT_CONFIG_TEMPLATE,
   AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE,

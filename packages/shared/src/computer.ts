@@ -31,6 +31,12 @@ export const ComputerConnectCodeExchangeResponseSchema = z
 
 export const ComputerConnectCodeIssueRequestSchema = z.object({ workspaceId: z.string().uuid() }).strict();
 
+/**
+ * The Account-native connect-code request carries no scope: the issuing Account comes from the access
+ * token alone, so any client-selected `workspaceId` or `accountId` is rejected rather than ignored.
+ */
+export const AccountComputerConnectCodeIssueRequestSchema = z.object({}).strict();
+
 export const ComputerConnectCodeIssueResponseSchema = z
   .object({
     bootstrapCommand: z.string().min(1),
@@ -108,6 +114,7 @@ export type ComputerConnectCodeExchangeRequest = z.infer<typeof ComputerConnectC
 export type ComputerConnectCodeExchangeResponse = z.infer<typeof ComputerConnectCodeExchangeResponseSchema>;
 export type ComputerConnectCodeIssueRequest = z.infer<typeof ComputerConnectCodeIssueRequestSchema>;
 export type ComputerConnectCodeIssueResponse = z.infer<typeof ComputerConnectCodeIssueResponseSchema>;
+export type AccountComputerConnectCodeIssueRequest = z.infer<typeof AccountComputerConnectCodeIssueRequestSchema>;
 export type ComputerConnectionStatus = z.infer<typeof ComputerConnectionStatusSchema>;
 export type ProviderReadinessStatus = z.infer<typeof ProviderReadinessStatusSchema>;
 export type ImCliReadinessStatus = z.infer<typeof ImCliReadinessStatusSchema>;

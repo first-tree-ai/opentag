@@ -23,7 +23,20 @@ export const WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE = `${WORKSPACE_BY_ID_TEMP
 /** Staging-only Onboarding Lab interface; the Account comes only from the authenticated session. */
 export const INTERNAL_ONBOARDING_LAB_PATH = `${API_V1_PREFIX}/internal/onboarding-lab`;
 
+/**
+ * Account-native management collections. Ownership comes only from the authenticated Account, so these
+ * paths accept neither a management `workspaceId` nor a client-selected `accountId`.
+ */
+export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
+export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
+export const ACCOUNT_COMPUTER_CONNECT_CODES_PATH = `${API_V1_PREFIX}/computer-connect-codes`;
+export const ACCOUNT_SETUP_COMPLETE_PATH = `${API_V1_PREFIX}/me/setup/complete`;
+
 export const HTTP_PATHS = {
+  accountAgents: ACCOUNT_AGENTS_PATH,
+  accountComputerConnectCodes: ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
+  accountComputers: ACCOUNT_COMPUTERS_PATH,
+  accountSetupComplete: ACCOUNT_SETUP_COMPLETE_PATH,
   agentById: AGENT_BY_ID_TEMPLATE,
   slackEvents: SLACK_EVENTS_PATH,
   authConnectExchange: `${API_V1_PREFIX}/auth/connect/exchange`,

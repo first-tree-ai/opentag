@@ -3,6 +3,7 @@ import websocket from "@fastify/websocket";
 import type { ChannelName } from "@opentag/shared";
 import { ErrorEnvelopeSchema, HTTP_PATHS, ServerHealthSchema } from "@opentag/shared";
 import Fastify, { type FastifyLoggerOptions } from "fastify";
+import { type AccountScopeResolver, registerAccountRoutes } from "./api/account.js";
 import { registerAgentRoutes } from "./api/agents.js";
 import { registerAuthRoutes } from "./api/auth.js";
 import { type BrowserAuthRoutesOptions, registerBrowserAuthRoutes } from "./api/browser-auth.js";
@@ -33,6 +34,8 @@ import {
 import { registerWebApp } from "./web-app.js";
 
 export interface CreateAppOptions {
+  /** Enables the Account-native management collections that back the Workspace-free client contracts. */
+  accountScope?: AccountScopeResolver;
   authService?: UserAuthService;
   webAppRoot?: string;
   agentService?: AgentService;
@@ -188,6 +191,17 @@ export function createApp(options: CreateAppOptions = {}) {
     }
     if (options.workspaceService) {
       registerWorkspaceRoutes(app, authService, options.workspaceService, publicOrigin, options.workspaceSetupService);
+    }
+    if (options.accountScope) {
+      registerAccountRoutes(app, authService, {
+        accountScope: options.accountScope,
+        ...(options.agentService ? { agentService: options.agentService } : {}),
+        ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
+        ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),
+        ...(options.workspaceService ? { workspaceService: options.workspaceService } : {}),
+        ...(options.workspaceSetupService ? { workspaceSetupService: options.workspaceSetupService } : {}),
+        publicOrigin,
+      });
     }
     if (options.stagingOnboardingLab) {
       registerInternalOnboardingLabRoutes(app, authService, options.stagingOnboardingLab.reset, publicOrigin);

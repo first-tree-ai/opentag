@@ -254,6 +254,7 @@ export async function startServer(): Promise<void> {
       : undefined;
     app = createApp({
       webAppRoot: defaultWebAppRoot,
+      accountScope: workspaceAdmins,
       agentService,
       authService,
       browserAuth: {

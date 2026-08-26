@@ -111,13 +111,18 @@ export class OnboardingResetService {
   }
 
   /**
-   * Resolves the one resource scope the Account directly owns, and refuses to proceed when that
-   * ownership is not exclusive. A shared or missing scope is never reset.
+   * Selects the scope through the one canonical compatibility seam, so reset can never target a
+   * different Workspace than the rest of the Account-native surface, and the Account-ownership
+   * cutover replaces one selection rule rather than two.
+   *
+   * Selection alone is not enough for a destructive staging reset, so two fail-closed checks stay
+   * on top of it: the Lab Account must have exactly one active scope, and that scope must have
+   * exactly one active admin. Neither check picks a scope; both only refuse.
    */
   async #resolveOwnedScope(accountId: string): Promise<{ workspaceId: string }> {
+    const workspaceId = await this.#workspaceAdmins.resolveCompatibilityWorkspaceId(accountId);
     const owned = await this.#workspaceAdmins.listActiveAdminWorkspaces(accountId);
-    const [scope, ...others] = owned;
-    if (!scope || others.length > 0) {
+    if (owned.length !== 1) {
       throw new OnboardingResetError(
         "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT",
         409,
@@ -127,7 +132,7 @@ export class OnboardingResetService {
     const [{ admins } = { admins: 0 }] = await this.#database
       .select({ admins: count() })
       .from(workspaceAdminGrants)
-      .where(and(eq(workspaceAdminGrants.workspaceId, scope.workspaceId), isNull(workspaceAdminGrants.revokedAt)));
+      .where(and(eq(workspaceAdminGrants.workspaceId, workspaceId), isNull(workspaceAdminGrants.revokedAt)));
     if (admins !== 1) {
       throw new OnboardingResetError(
         "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT",
@@ -135,7 +140,7 @@ export class OnboardingResetService {
         "The Lab Account resource scope is not owned exclusively by the Lab Account",
       );
     }
-    return { workspaceId: scope.workspaceId };
+    return { workspaceId };
   }
 
   /**

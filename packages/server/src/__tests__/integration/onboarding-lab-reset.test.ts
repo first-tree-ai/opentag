@@ -464,6 +464,25 @@ describe("staging Onboarding Lab reset", () => {
     expect((await facts(value.database, other)).activeAgents).toBe(1);
   });
 
+  it("refuses to proceed when the Lab Account owns more than one active scope", async () => {
+    const value = await fixture();
+    const [second] = await value.database
+      .insert(workspaces)
+      .values({ name: "second", displayName: "Second" })
+      .returning({ id: workspaces.id });
+    if (!second) throw new Error("Second scope fixture was not created");
+    await value.database
+      .insert(workspaceAdminGrants)
+      .values({ workspaceId: second.id, userId: value.lab.accountId, grantedByUserId: value.lab.accountId });
+
+    // The canonical seam would still pick one scope; reset must refuse rather than reset whichever
+    // one selection happens to return.
+    await expect(value.reset.resetOnboarding(value.lab.accountId)).rejects.toMatchObject({
+      code: "ONBOARDING_RESET_OWNERSHIP_INCONSISTENT",
+    });
+    expect((await facts(value.database, value.lab)).activeAgents).toBe(1);
+  });
+
   it("refuses to proceed when the Lab Account scope is not owned exclusively", async () => {
     const value = await fixture();
     const [intruder] = await value.database

@@ -8,7 +8,6 @@ import type {
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type AgentCreationFacts, AgentCreationFlow } from "../agent-creation/agent-creation-flow.js";
 import { browserApi } from "../api.js";
-import { ComputerSetup } from "../computer-setup.js";
 import { FeishuSetup, type FeishuSetupControl } from "../im/feishu-setup.js";
 import { Button, buttonClassName } from "../ui/design-system.js";
 import {
@@ -647,59 +646,18 @@ function OnboardingContent({
   }
 
   const current = state.currentState;
-  if (current.kind === "workspace") {
+  // deriveOnboardingState resolves an existing Agent before it can report any of these, and
+  // facts.agent comes straight from snapshot.targetAgent, so the AgentCreationFlow branch above
+  // owns every one of them. The arm stays so the union remains exhaustive for the Agent-bound
+  // narrowing below, and so a change to that guard degrades to a holding state instead of reading
+  // `agent` off a variant that does not carry one.
+  if (
+    current.kind === "workspace" ||
+    current.kind === "computer" ||
+    current.kind === "provider" ||
+    current.kind === "agent"
+  ) {
     return <ActionSection title="Preparing OpenTag" description="Setup will continue automatically." pending />;
-  }
-  if (current.kind === "computer" && current.availability === "none") {
-    return (
-      <section className="onboarding-action">
-        <ComputerSetup workspaceId={workspaceId} onConnected={onReload} />
-      </section>
-    );
-  }
-  if (current.kind === "computer" && current.availability === "offline") {
-    return (
-      <ActionSection
-        title="Reconnect your Computer"
-        description={`Open OpenTag on ${current.computers.map((computer) => computer.displayName).join(", ")}.`}
-      >
-        <ReloadButton pending={refreshPending} onReload={onReload} />
-      </ActionSection>
-    );
-  }
-  if (current.kind === "computer" && current.availability === "choice") {
-    return (
-      <ActionSection
-        title="Choose a runnable Computer"
-        description="OpenTag could not safely choose between these Computers."
-      />
-    );
-  }
-  if (current.kind === "provider") {
-    const factUnavailable = snapshot.runtime.kind === "unavailable";
-    const attention = runtimeAttention(snapshot.runtime, current.computer.id);
-    const copy = attention ? runtimeAttentionCopy(attention, current.computer.displayName) : undefined;
-    return (
-      <ActionSection
-        title={copy?.title ?? (factUnavailable ? "Confirm the runtime route" : "Prepare Codex or Claude Code")}
-        description={
-          copy?.description ??
-          (factUnavailable
-            ? "OpenTag cannot yet confirm an Agent-ready Provider on this Computer."
-            : `Finish Provider setup on ${current.computer.displayName}, then check again.`)
-        }
-      >
-        <ReloadButton pending={refreshPending} onReload={onReload} />
-      </ActionSection>
-    );
-  }
-  if (current.kind === "agent") {
-    return (
-      <ActionSection
-        title="Create the Agent"
-        description={`The runnable route is ${providerLabel(current.provider.provider)} on ${current.computer.displayName}.`}
-      />
-    );
   }
   if (current.kind === "agent-runtime") {
     const agent = snapshot.targetAgent;

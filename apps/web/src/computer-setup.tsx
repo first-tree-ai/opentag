@@ -9,7 +9,6 @@ const CONNECT_CODE_EXPIRED_MESSAGE = "This Computer connection command expired. 
 const COPY_FALLBACK_HINT = "Copying is unavailable here. The command is selected; press Ctrl or Cmd + C.";
 
 export interface ComputerSetupProps {
-  workspaceId: string;
   onConnected?: (computer: WorkspaceComputerSummary) => void;
   /** Renders the panel for review only: it issues no connect code and starts no Computer polling. */
   preview?: boolean;
@@ -37,11 +36,10 @@ function formatRemaining(remainingMs: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-export function ComputerSetup({ workspaceId, onConnected, preview, target }: ComputerSetupProps) {
+export function ComputerSetup({ onConnected, preview, target }: ComputerSetupProps) {
   return (
     <ComputerSetupLifecycle
-      key={`${workspaceId}:${target?.computerId ?? ""}`}
-      workspaceId={workspaceId}
+      key={target?.computerId ?? ""}
       onConnected={onConnected}
       preview={preview}
       target={target}
@@ -49,7 +47,7 @@ export function ComputerSetup({ workspaceId, onConnected, preview, target }: Com
   );
 }
 
-function ComputerSetupLifecycle({ workspaceId, onConnected, preview = false, target }: ComputerSetupProps) {
+function ComputerSetupLifecycle({ onConnected, preview = false, target }: ComputerSetupProps) {
   const targetComputerId = target?.computerId;
   const targetName = target?.displayName;
   const [bootstrapCommand, setBootstrapCommand] = useState<string>();
@@ -106,13 +104,10 @@ function ComputerSetupLifecycle({ workspaceId, onConnected, preview = false, tar
     setError(undefined);
     try {
       const baseline = new Map(
-        (await browserApi.computers(workspaceId)).computers.map((computer) => [
-          computer.computerId,
-          computer.connectedAt,
-        ]),
+        (await browserApi.computers()).computers.map((computer) => [computer.computerId, computer.connectedAt]),
       );
       if (!mounted.current || connectAttempt.current !== attempt) return;
-      const issued = await browserApi.issueComputerConnectCode(workspaceId);
+      const issued = await browserApi.issueComputerConnectCode();
       if (!mounted.current || connectAttempt.current !== attempt) return;
       const cycle = activePollCycle.current + 1;
       activePollCycle.current = cycle;
@@ -154,7 +149,7 @@ function ComputerSetupLifecycle({ workspaceId, onConnected, preview = false, tar
     pollTimer = window.setInterval(() => {
       // The existing poll cycle also drives the countdown, so the command needs no timer of its own.
       setRemainingMs(Math.max(0, expiresAt - Date.now()));
-      void browserApi.computers(workspaceId).then(
+      void browserApi.computers().then(
         (value) => {
           if (!active || completed || activePollCycle.current !== pollCycle) return;
           const reconnected = value.computers.filter(
@@ -192,7 +187,7 @@ function ComputerSetupLifecycle({ workspaceId, onConnected, preview = false, tar
       window.clearInterval(pollTimer);
       window.clearTimeout(expiryTimer);
     };
-  }, [pollCycle, targetComputerId, waitingForComputer, workspaceId]);
+  }, [pollCycle, targetComputerId, waitingForComputer]);
 
   return (
     <section className="panel">

@@ -1,4 +1,4 @@
-import type { MeWorkspace, UserProfile } from "@opentag/shared/browser";
+import type { UserProfile } from "@opentag/shared/browser";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { browserApi } from "../api.js";
 import type { OnboardingCurrentState } from "./flow.js";
@@ -18,7 +18,6 @@ const RUNTIME_POLL_LIMIT_MS = 10 * 60 * 1_000;
 const RUNTIME_WAIT_STATES: readonly OnboardingCurrentState["kind"][] = ["provider", "agent-runtime"];
 
 export interface OnboardingPageProps {
-  readonly membership: MeWorkspace;
   readonly onSetupReady?: (agentId: string) => Promise<void>;
   readonly onTargetAgentChange?: (agentId: string) => void;
   readonly targetAgentId?: string;
@@ -28,11 +27,10 @@ export interface OnboardingPageProps {
 
 /**
  * Owns the whole conditional onboarding page. The page persists no step: each
- * reload starts from authoritative Workspace, Computer, Agent, runtime and handoff
+ * reload starts from authoritative Account, Computer, Agent, runtime and handoff
  * facts, plus only the explicit route/identity choices and replay intent.
  */
 export function OnboardingPage({
-  membership,
   onSetupReady,
   onTargetAgentChange,
   targetAgentId,
@@ -72,7 +70,7 @@ export function OnboardingPage({
   useEffect(() => {
     let active = true;
     setLoadState((current) => (current.kind === "ready" ? current : { kind: "loading" }));
-    void loadSnapshot(membership.id, runtimeFacts, effectiveTargetAgentId).then(
+    void loadSnapshot(runtimeFacts, effectiveTargetAgentId).then(
       (snapshot) => {
         if (!active) return;
         refreshInFlight.current = false;
@@ -92,7 +90,7 @@ export function OnboardingPage({
     return () => {
       active = false;
     };
-  }, [effectiveTargetAgentId, membership.id, revision, runtimeFacts]);
+  }, [effectiveTargetAgentId, revision, runtimeFacts]);
 
   useEffect(() => {
     const refresh = () => attendedReload();
@@ -174,26 +172,19 @@ export function OnboardingPage({
       onRetryLoad={reload}
       refreshPending={refreshPending}
       user={user}
-      workspaceId={membership.id}
+      accountId={user.id}
     />
   );
 }
 
-async function loadSnapshot(
-  workspaceId: string,
-  runtimeFacts: RuntimeFactsAdapter,
-  targetAgentId?: string,
-): Promise<OnboardingSnapshot> {
-  const [{ computers }, { agents }] = await Promise.all([
-    browserApi.computers(workspaceId),
-    browserApi.agents(workspaceId),
-  ]);
+async function loadSnapshot(runtimeFacts: RuntimeFactsAdapter, targetAgentId?: string): Promise<OnboardingSnapshot> {
+  const [{ computers }, { agents }] = await Promise.all([browserApi.computers(), browserApi.agents()]);
   const targetCandidates = agents.filter((agent) => agent.status === "active");
   const targetAgent =
     targetCandidates.find((agent) => agent.id === targetAgentId) ??
     (targetAgentId === undefined && targetCandidates.length === 1 ? targetCandidates[0] : undefined);
   const [runtime, handoff] = await Promise.all([
-    runtimeFacts.load({ workspaceId, agents, computers }),
+    runtimeFacts.load({ agents, computers }),
     targetAgent ? browserApi.imBindingHandoff(targetAgent.id) : Promise.resolve(undefined),
   ]);
   return { agents, computers, targetAgent, targetCandidates, handoff, runtime };

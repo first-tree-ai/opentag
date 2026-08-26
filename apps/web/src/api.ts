@@ -55,10 +55,6 @@ import {
   type ValidationIssue,
   type WorkspaceSetupCompletion,
   WorkspaceSetupCompletionSchema,
-  workspaceAgentsPath,
-  workspaceComputerConnectCodesPath,
-  workspaceComputersPath,
-  workspaceSetupCompletePath,
 } from "@opentag/shared/browser";
 
 interface RuntimeSchema<T> {
@@ -97,16 +93,16 @@ export class BrowserApi {
     return this.request(HTTP_PATHS.authProviders, AuthProvidersResponseSchema, undefined, false);
   }
 
-  completeWorkspaceSetup(workspaceId: string, agentId: string): Promise<WorkspaceSetupCompletion> {
-    return this.request(workspaceSetupCompletePath(workspaceId), WorkspaceSetupCompletionSchema, {
+  completeSetup(agentId: string): Promise<WorkspaceSetupCompletion> {
+    return this.request(HTTP_PATHS.accountSetupComplete, WorkspaceSetupCompletionSchema, {
       method: "POST",
       body: JSON.stringify({ agentId }),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
   }
 
-  agents(workspaceId: string): Promise<ListAgentsResponse> {
-    return this.request(workspaceAgentsPath(workspaceId), ListAgentsResponseSchema);
+  agents(): Promise<ListAgentsResponse> {
+    return this.request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema);
   }
 
   agent(agentId: string): Promise<AgentDetail> {
@@ -121,8 +117,8 @@ export class BrowserApi {
     return this.request(agentConfigPath(agentId), AgentAdminConfigSchema);
   }
 
-  createAgent(workspaceId: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
-    return this.request(workspaceAgentsPath(workspaceId), AgentAdminConfigSchema, {
+  createAgent(input: CreateAgentRequest): Promise<AgentAdminConfig> {
+    return this.request(HTTP_PATHS.accountAgents, AgentAdminConfigSchema, {
       method: "POST",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
@@ -208,14 +204,14 @@ export class BrowserApi {
     });
   }
 
-  computers(workspaceId: string): Promise<ListWorkspaceComputersResponse> {
-    return this.request(workspaceComputersPath(workspaceId), ListWorkspaceComputersResponseSchema, {
+  computers(): Promise<ListWorkspaceComputersResponse> {
+    return this.request(HTTP_PATHS.accountComputers, ListWorkspaceComputersResponseSchema, {
       headers: { [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
   }
 
-  issueComputerConnectCode(workspaceId: string): Promise<ComputerConnectCodeIssueResponse> {
-    return this.request(workspaceComputerConnectCodesPath(workspaceId), ComputerConnectCodeIssueResponseSchema, {
+  issueComputerConnectCode(): Promise<ComputerConnectCodeIssueResponse> {
+    return this.request(HTTP_PATHS.accountComputerConnectCodes, ComputerConnectCodeIssueResponseSchema, {
       method: "POST",
       headers: this.csrfHeaders(),
     });

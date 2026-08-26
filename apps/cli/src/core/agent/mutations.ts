@@ -7,7 +7,6 @@ import {
   UpdateAgentRequestSchema,
   UpdateAgentRuntimeConfigSchema,
 } from "@opentag/shared";
-import { selectWorkspace } from "../selection/workspace.js";
 import { type AgentCommandDependencies, resolveAgentCommandContext } from "./context.js";
 
 export interface AgentCreateOptions extends AgentCommandDependencies {
@@ -61,9 +60,7 @@ export function selectComputer(
 export async function runAgentCreate(options: AgentCreateOptions): Promise<AgentCreateResult> {
   const runtimeConfig = await createRuntimeConfig(options);
   const { api, accessToken } = await resolveAgentCommandContext(options);
-  const me = await api.me(accessToken);
-  const workspace = selectWorkspace(me, options.workspaceName);
-  const computers = await api.listWorkspaceComputers(accessToken, workspace.id);
+  const computers = await api.listWorkspaceComputers(accessToken);
   const computer = selectComputer(computers, options.computerId);
   const input = CreateAgentRequestSchema.parse({
     name: options.name,
@@ -72,7 +69,7 @@ export async function runAgentCreate(options: AgentCreateOptions): Promise<Agent
     computerId: computer.computerId,
     ...(runtimeConfig ? { runtimeConfig } : {}),
   });
-  const agent = await api.createAgent(accessToken, workspace.id, input);
+  const agent = await api.createAgent(accessToken, input);
   return {
     agent,
     ...(computer.connectionStatus === "offline"

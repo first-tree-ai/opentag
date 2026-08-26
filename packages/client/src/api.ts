@@ -55,9 +55,6 @@ import {
   SlackConfigurationResultSchema,
   type UpdateAgentRequest,
   type ValidationIssue,
-  workspaceAgentsPath,
-  workspaceComputerConnectCodesPath,
-  workspaceComputersPath,
 } from "@opentag/shared";
 
 interface RuntimeSchema<T> {
@@ -116,29 +113,29 @@ export class OpenTagApi {
     });
   }
 
-  issueComputerConnectCode(accessToken: string, workspaceId: string): Promise<ComputerConnectCodeIssueResponse> {
-    return this.#request(workspaceComputerConnectCodesPath(workspaceId), ComputerConnectCodeIssueResponseSchema, {
+  issueComputerConnectCode(accessToken: string): Promise<ComputerConnectCodeIssueResponse> {
+    return this.#request(HTTP_PATHS.accountComputerConnectCodes, ComputerConnectCodeIssueResponseSchema, {
       method: "POST",
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }
 
-  listWorkspaceComputers(accessToken: string, workspaceId: string): Promise<ListWorkspaceComputersResponse> {
-    return this.#request(workspaceComputersPath(workspaceId), ListWorkspaceComputersResponseSchema, {
+  listWorkspaceComputers(accessToken: string): Promise<ListWorkspaceComputersResponse> {
+    return this.#request(HTTP_PATHS.accountComputers, ListWorkspaceComputersResponseSchema, {
       headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
     });
   }
 
-  createAgent(accessToken: string, workspaceId: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
-    return this.#request(workspaceAgentsPath(workspaceId), AgentAdminConfigSchema, {
+  createAgent(accessToken: string, input: CreateAgentRequest): Promise<AgentAdminConfig> {
+    return this.#request(HTTP_PATHS.accountAgents, AgentAdminConfigSchema, {
       method: "POST",
       body: JSON.stringify(input),
       headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
     });
   }
 
-  listAgents(accessToken: string, workspaceId: string): Promise<ListAgentsResponse> {
-    return this.#request(workspaceAgentsPath(workspaceId), ListAgentsResponseSchema, {
+  listAgents(accessToken: string): Promise<ListAgentsResponse> {
+    return this.#request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema, {
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }

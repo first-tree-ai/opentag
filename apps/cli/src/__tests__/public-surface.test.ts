@@ -21,7 +21,6 @@ const EXPECTED_ROOT_EXPORTS = [
   "runDoctor",
   "runLogin",
   "selectComputer",
-  "selectWorkspace",
   "type DoctorOptions",
   "type DoctorResult",
   "type LoginOptions",

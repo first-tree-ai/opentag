@@ -8,8 +8,7 @@ export function registerAgentCreateCommand(agent: Command): void {
     .requiredOption("--name <name>", "canonical Agent name")
     .requiredOption("--display-name <display-name>", "human-facing Agent name")
     .requiredOption("--provider <provider>", "runtime provider: codex or claude-code")
-    .option("--computer <uuid>", "Computer enrolled in the selected internal scope")
-    .option("--workspace <name>", "legacy internal scope name")
+    .option("--computer <uuid>", "Computer enrolled by this Account")
     .option("--model <model>", "exact Codex model ID; effective Runtime Snapshots currently support Codex only")
     .option("--reasoning-effort <effort>", "Codex reasoning effort; effective Runtime Snapshots support Codex only")
     .addOption(new Option("--instructions <text>", "Agent runtime instructions").conflicts("instructionsFile"))
@@ -26,7 +25,6 @@ export function registerAgentCreateCommand(agent: Command): void {
         displayName: options.displayName,
         runtimeProvider: options.provider,
         computerId: options.computer,
-        workspaceName: options.workspace,
         model: options.model,
         reasoningEffort: options.reasoningEffort,
         instructions: options.instructions,

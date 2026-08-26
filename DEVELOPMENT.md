@@ -233,9 +233,9 @@ pnpm --filter open-tag start agent create \
 pnpm --filter open-tag start agent list
 ```
 
-Use `--computer <uuid>` when more than one Computer is available. The `--workspace <canonical-name>` option remains
-visible and functional only as a selector for the legacy internal scope until Phase 2; it is not a product Workspace
-selector. An offline Computer may be selected because online presence is not Agent configuration state. Inspect and
+Use `--computer <uuid>` when more than one Computer is available. There is no scope selector: the Agent belongs to the
+authenticated Account, which the Server resolves on its own. An offline Computer may be selected because online presence
+is not Agent configuration state. Inspect and
 change the mutable display name with:
 
 ```bash

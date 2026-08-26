@@ -595,7 +595,7 @@ describe("OpenTag Web App Shell", () => {
     expect(signIn.classList.contains("login-provider-button--google")).toBe(true);
     expect(signIn.querySelector('img[alt="Sign in with Google"]')).toBeTruthy();
     expect(new URL(signIn.getAttribute("href") ?? "", window.location.origin).searchParams.get("next")).toBe("/agents");
-    expect(screen.getByText("Access is managed by your OpenTag operator.")).toBeTruthy();
+    expect(screen.getByText("Sign in to manage your Agents and Computers.")).toBeTruthy();
   });
 
   it("keeps authenticated invalid Agent tabs on the plain workspace canvas", async () => {

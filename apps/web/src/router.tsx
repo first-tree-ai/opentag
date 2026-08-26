@@ -500,7 +500,7 @@ function LoginPage() {
             );
           }}
         </AsyncState>
-        <p className="login-access-note">Access is managed by your OpenTag operator.</p>
+        <p className="login-access-note">Sign in to manage your Agents and Computers.</p>
       </section>
     </main>
   );

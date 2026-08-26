@@ -99,3 +99,64 @@ CapRover side afterwards:
 - The App's Deployment tab shows the new image reference and a successful build log.
 - `https://<app>/healthz` returns success.
 - The App logs show the migration and listen lines for the expected revision.
+
+## Deployments that need action outside the rollout
+
+Most revisions need nothing beyond the checks above. A migration that invalidates credentials held outside the
+database is different: the rollout succeeds, `/healthz` passes, the logs look clean, and the Computer fleet goes dark
+anyway. Record each such migration here, because nothing in the deployment surfaces it.
+
+### Workspace and machine authority cutover — `0016_certain_revanche` (#161)
+
+This migration moved Runtime authentication from Account access tokens to enrollment-scoped machine credentials. It
+deliberately creates no credentials for existing Computers, and asserts that it created none:
+
+```sql
+IF EXISTS (SELECT 1 FROM "workspace_computer_credentials") THEN
+    RAISE EXCEPTION 'Workspace cutover must not synthesize machine credentials';
+```
+
+Synthesizing a credential nobody consented to would be a back door, so the assertion is correct. The cost is that
+**every Computer enrolled before the cutover must be enrolled again by hand**, and three separate effects hide the
+reason:
+
+- Every Computer reports Offline. `workspace_computers` rows are inserted without `current_instance_id`, and only a
+  Computer registration sets it.
+- A daemon on the pre-cutover CLI authenticates the Runtime WebSocket with an Account access token and is refused with
+  `AUTH_INVALID_TOKEN` and close code 4401.
+- Upgrading the CLI alone does not recover a Computer. The daemon exits with `This Computer is not enrolled; run
+  computer connect first`, because `computer-credentials.json` does not exist. The pre-cutover CLI has no
+  `computer connect` subcommand at all, so the upgrade is required before the enrolment can be run.
+
+The Agent's Connected computer page reports `OpenTag is not running on <name>. Start it there to bring this Computer
+back online.` That advice is correct for a Computer that is merely asleep and wrong here; starting the old daemon
+cannot succeed.
+
+#### Recovery
+
+Per machine, and it cannot be done centrally — the credential is written to the target machine's disk.
+
+1. A Workspace Admin opens the Computers page in the web app and generates a connection command. The command is
+   single-use and expires in 15 minutes, so generate it once the person is ready rather than in advance.
+2. That person runs the generated command on the machine. It upgrades the CLI and enrols in one line, which matters
+   because the installed CLI predates the `computer connect` subcommand.
+3. The command writes the machine credential and restarts the daemon service. The Computer reports Online within one
+   registration.
+
+Re-enrolling a machine that still has its `config/computer.json` keeps the same `computerId`, so the existing
+enrollment is reused and its Agents stay bound. Losing that file makes the machine a new one, and its previous
+enrollment stays offline with its Agents attached to it.
+
+#### Confirming the scope
+
+```sql
+select w.name as workspace, wc.display_name, wc.platform, wc.last_seen_at
+from workspace_computers wc
+join workspaces w on w.id = wc.workspace_id
+left join workspace_computer_credentials c
+       on c.workspace_computer_id = wc.id and c.revoked_at is null
+where wc.revoked_at is null and c.id is null
+order by w.name, wc.display_name;
+```
+
+Every row is a Computer that has not been re-enrolled. The list is empty once the fleet has recovered.

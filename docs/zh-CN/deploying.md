@@ -92,3 +92,59 @@ Job summary 会记录部署的 revision、镜像 tag 和镜像 digest。之后�
 - App 的 Deployment 页显示新的镜像引用和成功的构建日志。
 - `https://<app>/healthz` 返回成功。
 - App 日志中出现预期 revision 的 migration 与监听日志。
+
+## 需要在上线之外补动作的部署
+
+绝大多数 revision 只需要上面那些检查。但如果一次 migration 让数据库之外持有的凭证失效，情况就不同：上线成功、
+`/healthz` 通过、日志干净，而 Computer 全都掉线。这类 migration 必须记录在这里，因为部署流程本身不会暴露它。
+
+### Workspace 与机器授权切换 —— `0016_certain_revanche`（#161）
+
+这次 migration 把 Runtime 认证从 Account access token 换成了作用域限定到单条入组记录的机器凭证。它刻意不为存量
+Computer 生成任何凭证，并且断言自己确实没有生成：
+
+```sql
+IF EXISTS (SELECT 1 FROM "workspace_computer_credentials") THEN
+    RAISE EXCEPTION 'Workspace cutover must not synthesize machine credentials';
+```
+
+凭空造出一份没有人同意过的机器凭证等于自开后门，所以这个断言是对的。代价是**切换前入组的每一台 Computer 都必须
+重新手工入组**，而且有三重效应会掩盖真正的原因：
+
+- 所有 Computer 显示 Offline。`workspace_computers` 的行在插入时没有 `current_instance_id`，只有 Computer 注册才会
+  写入它。
+- 使用切换前 CLI 的 daemon 会用 Account access token 认证 Runtime WebSocket，被以 `AUTH_INVALID_TOKEN` 和关闭码
+  4401 拒绝。
+- 只升级 CLI 无法恢复。daemon 会以 `This Computer is not enrolled; run computer connect first` 退出，因为
+  `computer-credentials.json` 并不存在。而切换前的 CLI 根本没有 `computer connect` 子命令，所以必须先升级才谈得上
+  重新入组。
+
+Agent 的 Connected computer 页会显示 `OpenTag is not running on <name>. Start it there to bring this Computer back
+online.`。这句话对"机器只是睡着了"是对的，在这里是错的——启动旧 daemon 不可能成功。
+
+#### 恢复方式
+
+逐台进行，无法集中完成——凭证要写到目标机器的磁盘上。
+
+1. Workspace Admin 在 Web 的 Computers 页生成连接命令。该命令一次性、15 分钟过期，所以要等使用者到位再生成，不要
+   提前批量生成。
+2. 由使用者在那台机器上执行生成的命令。它会在一行里完成 CLI 升级和入组——这一点很关键，因为已安装的 CLI 早于
+   `computer connect` 子命令。
+3. 命令写入机器凭证并重启 daemon 服务。Computer 会在一次注册后回到 Online。
+
+重新入组时，只要机器上的 `config/computer.json` 还在，`computerId` 就不变，原有的入组记录会被复用，绑在上面的
+Agent 不受影响。该文件丢失则会被认作一台新机器，原入组记录连同它的 Agent 一起留在离线状态。
+
+#### 确认影响范围
+
+```sql
+select w.name as workspace, wc.display_name, wc.platform, wc.last_seen_at
+from workspace_computers wc
+join workspaces w on w.id = wc.workspace_id
+left join workspace_computer_credentials c
+       on c.workspace_computer_id = wc.id and c.revoked_at is null
+where wc.revoked_at is null and c.id is null
+order by w.name, wc.display_name;
+```
+
+每一行都是一台尚未重新入组的 Computer。全部恢复后这个列表为空。

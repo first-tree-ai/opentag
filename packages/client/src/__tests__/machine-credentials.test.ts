@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import {
   machineCredentialsPath,
   readMachineCredentials,
   storeMachineEnrollmentCredential,
+  writeMachineCredentialsAtomically,
 } from "../auth/machine-credentials.js";
 
 const WORKSPACE_ID = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
@@ -112,6 +113,49 @@ describe("machine credentials", () => {
     expect((await readMachineCredentials(home))?.enrollments).toEqual([
       credential({ workspaceComputerId: OTHER_ENROLLMENT_ID, workspaceId: WORKSPACE_ID }),
     ]);
+  });
+
+  /**
+   * The reader drops entries it cannot use, so a writer that skipped validation could resolve happily
+   * while leaving bytes the very next read discards. These pin the write side to the stricter policy.
+   */
+  it("refuses to write an entry its own reader would discard", async () => {
+    const home = await newHome();
+    await storeMachineEnrollmentCredential(credential(), home);
+
+    await expect(
+      writeMachineCredentialsAtomically(
+        { version: 1, enrollments: [{ workspaceComputerId: "not-a-uuid" } as never] },
+        home,
+      ),
+    ).rejects.toThrow("Refusing to write an unusable OpenTag Computer credential (entry 0)");
+
+    // The rejected write must not have touched the credential already on disk.
+    expect((await readMachineCredentials(home))?.enrollments).toEqual([credential()]);
+  });
+
+  it("refuses to write a duplicate enrollment the reader would collapse", async () => {
+    const home = await newHome();
+
+    await expect(
+      writeMachineCredentialsAtomically({ version: 1, enrollments: [credential(), credential()] }, home),
+    ).rejects.toThrow("Refusing to write a duplicate OpenTag Computer enrollment (entry 1)");
+    expect(await readMachineCredentials(home)).toBeUndefined();
+  });
+
+  it("persists exactly what the reader returns", async () => {
+    const home = await newHome();
+    await writeMachineCredentialsAtomically(
+      {
+        version: 1,
+        enrollments: [{ ...credential({ workspaceId: WORKSPACE_ID }), stale: "dropped" } as never],
+      },
+      home,
+    );
+
+    const onDisk = JSON.parse(await readFile(machineCredentialsPath(home), "utf8"));
+    expect(onDisk).toEqual(await readMachineCredentials(home));
+    expect(onDisk.enrollments[0]).not.toHaveProperty("stale");
   });
 
   it("keeps a second Account's enrollment of the same Computer", async () => {

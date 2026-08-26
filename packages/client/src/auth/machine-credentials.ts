@@ -29,12 +29,13 @@ export function readMachineCredentials(home = resolveOpenTagHome()): Promise<Sto
   return readPrivateJson(home, machineCredentialsPath(home), validateMachineCredentials);
 }
 
-export function writeMachineCredentialsAtomically(
+/** Rejects rather than throwing synchronously, so a caller handling the returned promise sees the refusal. */
+export async function writeMachineCredentialsAtomically(
   credentials: StoredMachineCredentials,
   home = resolveOpenTagHome(),
 ): Promise<void> {
-  validateMachineCredentials(credentials);
-  return writePrivateJson(home, machineCredentialsPath(home), credentials);
+  const checked = checkMachineCredentialsToWrite(credentials);
+  await writePrivateJson(home, machineCredentialsPath(home), checked);
 }
 
 export async function storeMachineEnrollmentCredential(
@@ -56,7 +57,45 @@ export async function storeMachineEnrollmentCredential(
   return next;
 }
 
+/**
+ * Reading and writing disagree on purpose. A file on disk may hold entries this Client cannot use, and
+ * one of them must not strand every other enrollment on the host, so unusable entries are dropped.
+ */
 function validateMachineCredentials(value: unknown): StoredMachineCredentials {
+  const enrollmentIds = new Set<string>();
+  const enrollments: MachineEnrollmentCredential[] = [];
+  for (const entry of readCredentialsEnvelope(value)) {
+    const credential = readEnrollmentEntry(entry);
+    if (!credential || enrollmentIds.has(credential.workspaceComputerId)) continue;
+    enrollmentIds.add(credential.workspaceComputerId);
+    enrollments.push(credential);
+  }
+  return { version: 1, enrollments };
+}
+
+/**
+ * A write is the opposite case: the caller is asking for specific credentials to be persisted, so
+ * dropping one would report success while losing an enrollment, and the next read would discard the
+ * bytes just written. Unusable input is rejected, and the validated projection is what reaches disk.
+ */
+function checkMachineCredentialsToWrite(value: StoredMachineCredentials): StoredMachineCredentials {
+  const enrollmentIds = new Set<string>();
+  const enrollments: MachineEnrollmentCredential[] = [];
+  for (const [index, entry] of readCredentialsEnvelope(value).entries()) {
+    const credential = readEnrollmentEntry(entry);
+    if (!credential) {
+      throw new Error(`Refusing to write an unusable OpenTag Computer credential (entry ${index})`);
+    }
+    if (enrollmentIds.has(credential.workspaceComputerId)) {
+      throw new Error(`Refusing to write a duplicate OpenTag Computer enrollment (entry ${index})`);
+    }
+    enrollmentIds.add(credential.workspaceComputerId);
+    enrollments.push(credential);
+  }
+  return { version: 1, enrollments };
+}
+
+function readCredentialsEnvelope(value: unknown): readonly unknown[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("The OpenTag Computer credentials file is invalid");
   }
@@ -64,17 +103,7 @@ function validateMachineCredentials(value: unknown): StoredMachineCredentials {
   if (Object.keys(record).length !== 2 || record.version !== 1 || !Array.isArray(record.enrollments)) {
     throw new Error("The OpenTag Computer credentials file is invalid");
   }
-  // One unreadable entry must not strand every other enrollment on this host, so entries are validated
-  // individually and unusable ones are dropped rather than failing the whole file.
-  const enrollmentIds = new Set<string>();
-  const enrollments: MachineEnrollmentCredential[] = [];
-  for (const entry of record.enrollments) {
-    const credential = readEnrollmentEntry(entry);
-    if (!credential || enrollmentIds.has(credential.workspaceComputerId)) continue;
-    enrollmentIds.add(credential.workspaceComputerId);
-    enrollments.push(credential);
-  }
-  return { version: 1, enrollments };
+  return record.enrollments;
 }
 
 /** Accepts an entry written before or after the ownership cutover; returns undefined when unusable. */

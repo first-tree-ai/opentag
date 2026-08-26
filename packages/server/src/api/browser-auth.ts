@@ -77,15 +77,8 @@ class RouteRateLimiter {
   }
 }
 
-function withSelectedWorkspaceHint(
-  next: string,
-  selectedWorkspaceId: string | undefined,
-  publicOrigin: string,
-): string {
-  if (!selectedWorkspaceId) return next;
-  const destination = new URL(next.startsWith("/invites/") ? "/agents" : next, publicOrigin);
-  destination.searchParams.set("joinedWorkspaceId", selectedWorkspaceId);
-  return `${destination.pathname}${destination.search}${destination.hash}`;
+function browserAuthDestination(next: string): string {
+  return next.startsWith("/invites/") ? "/agents" : next;
 }
 
 export function registerBrowserAuthRoutes(
@@ -176,10 +169,7 @@ export function registerBrowserAuthRoutes(
       refreshTtlSeconds: options.refreshTokenTtlSeconds,
       secure: options.secureCookies,
     });
-    return reply.redirect(
-      withSelectedWorkspaceHint(result.next, result.selectedWorkspaceId, options.publicOrigin),
-      302,
-    );
+    return reply.redirect(browserAuthDestination(result.next), 302);
   });
 
   app.post(HTTP_PATHS.authBrowserRefresh, async (request, reply) => {

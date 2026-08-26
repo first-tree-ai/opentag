@@ -111,10 +111,9 @@ describe("GoogleBrowserAuthService", () => {
     expect(exchangeCode).toHaveBeenCalledOnce();
   });
 
-  it("returns the personal Workspace established by a solo OAuth completion", async () => {
-    const selectedWorkspaceId = "3928e3dc-99b0-4a79-97c8-bf9c26b91add";
+  it("completes default provisioning without exposing a Workspace selection", async () => {
     const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
-    const completeInTransaction = vi.fn().mockResolvedValue({ selectedWorkspaceId, userId });
+    const completeInTransaction = vi.fn().mockResolvedValue({ userId });
     const service = new GoogleBrowserAuthService({
       database: { transaction: (callback: (transaction: object) => unknown) => callback({}) } as never,
       flow: { verify: vi.fn().mockResolvedValue({ next: "/onboarding", oidcNonce: "oidc-nonce" }) } as never,
@@ -134,9 +133,11 @@ describe("GoogleBrowserAuthService", () => {
       } as never,
     });
 
-    await expect(
-      service.callback({ code: "code", state: "state" }, "signed-context", { onVerified: vi.fn() }),
-    ).resolves.toMatchObject({ next: "/onboarding", selectedWorkspaceId });
+    const result = await service.callback({ code: "code", state: "state" }, "signed-context", {
+      onVerified: vi.fn(),
+    });
+    expect(result).toMatchObject({ next: "/onboarding" });
+    expect(Object.keys(result).sort()).toEqual(["next", "tokens"]);
     expect(completeInTransaction).toHaveBeenCalledWith(expect.anything(), userId, true);
   });
 

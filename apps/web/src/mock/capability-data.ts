@@ -1,6 +1,6 @@
 export type SkillPreview = {
   name: string;
-  source: "OpenTag" | "Workspace";
+  source: "OpenTag" | "Shared";
   agentCount: number;
   status: "Demo";
   description: string;
@@ -10,7 +10,7 @@ export type SkillPreview = {
 export const skillPreviews: readonly SkillPreview[] = [
   {
     name: "Release notes writer",
-    source: "Workspace",
+    source: "Shared",
     agentCount: 3,
     status: "Demo",
     description: "Turns merged changes into clear release notes",
@@ -27,7 +27,7 @@ export const skillPreviews: readonly SkillPreview[] = [
   },
   {
     name: "Issue triage",
-    source: "Workspace",
+    source: "Shared",
     agentCount: 5,
     status: "Demo",
     description: "Classifies incoming issues and recommends priority",
@@ -59,7 +59,7 @@ export const integrationPreviews: readonly IntegrationPreview[] = [
     name: "Google Drive",
     abbreviation: "GD",
     category: "Knowledge",
-    description: "Find and reference workspace documents and folders.",
+    description: "Find and reference shared documents and folders.",
   },
   {
     id: "linear",

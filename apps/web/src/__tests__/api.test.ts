@@ -70,43 +70,14 @@ describe("BrowserApi", () => {
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 
-  it("revokes a Workspace Admin with the browser mutation contract", async () => {
-    setDocumentCookie("opentag_csrf=member-csrf; Path=/");
-    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
-      expect(String(input)).toBe(`/api/v1/workspaces/${workspaceId}/admins/${userId}`);
-      expect(init?.method).toBe("DELETE");
-      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("member-csrf");
-      return new Response(null, { status: 204 });
-    });
-
-    await expect(new BrowserApi(fetchImpl).revokeWorkspaceAdmin(workspaceId, userId)).resolves.toBeUndefined();
-    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
-  });
-
-  it("updates Workspace profile fields with the browser mutation contract", async () => {
-    setDocumentCookie("opentag_csrf=workspace-csrf; Path=/");
-    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
-      expect(String(input)).toBe(`/api/v1/workspaces/${workspaceId}`);
-      expect(init?.method).toBe("PATCH");
-      expect(init?.body).toBe(JSON.stringify({ name: "renamed-workspace", displayName: "Renamed Workspace" }));
-      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("workspace-csrf");
-      return new Response(
-        JSON.stringify({
-          id: workspaceId,
-          name: "renamed-workspace",
-          displayName: "Renamed Workspace",
-          updatedAt: "2030-01-01T00:00:00.000Z",
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    });
-    await expect(
-      new BrowserApi(fetchImpl).updateWorkspace(workspaceId, {
-        name: "renamed-workspace",
-        displayName: "Renamed Workspace",
-      }),
-    ).resolves.toMatchObject({ id: workspaceId, name: "renamed-workspace" });
-    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  it("exposes no Workspace management or invitation API", () => {
+    const api = new BrowserApi();
+    expect("admins" in api).toBe(false);
+    expect("revokeWorkspaceAdmin" in api).toBe(false);
+    expect("updateWorkspace" in api).toBe(false);
+    expect("invitationPreview" in api).toBe(false);
+    expect("acceptAdminInvitation" in api).toBe(false);
+    expect("createAdminInvitation" in api).toBe(false);
   });
 
   it("loads strict browser provider availability without retrying as an authenticated request", async () => {
@@ -160,48 +131,6 @@ describe("BrowserApi", () => {
 
     await expect(new BrowserApi().me()).resolves.toMatchObject({ user: { email: "admin@example.com" } });
     expect(fetchImpl.mock.contexts).toEqual([globalThis]);
-  });
-
-  it("rebuilds mutation CSRF headers after refreshing an expired access token", async () => {
-    setDocumentCookie("opentag_csrf=old-token; Path=/");
-    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
-      const url = String(input);
-      const headers = new Headers(init?.headers);
-      if (fetchImpl.mock.calls.length === 1) {
-        expect(url).toContain("/accept");
-        expect(headers.get("X-OpenTag-CSRF")).toBe("old-token");
-        return new Response(null, { status: 401 });
-      }
-      if (fetchImpl.mock.calls.length === 2) {
-        expect(url).toBe("/api/v1/auth/browser/refresh");
-        setDocumentCookie("opentag_csrf=new-token; Path=/");
-        return new Response(null, { status: 204 });
-      }
-      expect(url).toContain("/accept");
-      expect(headers.get("X-OpenTag-CSRF")).toBe("new-token");
-      return new Response(
-        JSON.stringify({
-          workspace: {
-            id: workspaceId,
-            name: "example",
-            displayName: "Example",
-            setupCompletedAt: null,
-            grantedAt: "2030-01-01T00:00:00.000Z",
-          },
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      );
-    });
-
-    await expect(new BrowserApi(fetchImpl).acceptAdminInvitation("A".repeat(32))).resolves.toMatchObject({
-      workspace: { id: workspaceId },
-    });
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
-    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
-  });
-
-  it("exposes no browser mutation that issues an Admin invitation", () => {
-    expect("createAdminInvitation" in new BrowserApi()).toBe(false);
   });
 
   it("shares refresh behavior across optional and no-content requests", async () => {

@@ -36,10 +36,10 @@ describe("Agent detail capability previews", () => {
     );
 
     expect(screen.getByText("Release notes writer")).toBeTruthy();
-    expect(screen.getAllByText("Workspace source")).toHaveLength(2);
+    expect(screen.getAllByText("Shared source")).toHaveLength(2);
     expect(screen.getAllByText("Assigned")).toHaveLength(2);
     expect(screen.getByText("Assignment unavailable")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "View Workspace Skills" }).getAttribute("href")).toBe("/skills");
+    expect(screen.getByRole("link", { name: "View Skills" }).getAttribute("href")).toBe("/skills");
     expect(screen.queryByRole("button")).toBeNull();
   });
 

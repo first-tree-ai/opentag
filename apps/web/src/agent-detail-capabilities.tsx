@@ -10,7 +10,7 @@ export function AgentIntegrationsPreview() {
   return (
     <div className="agent-capability-preview">
       <PreviewNotice>
-        These examples design the Agent-level connection view. They are not connections from your Workspace.
+        These examples design the Agent-level connection view. They are not live connections.
       </PreviewNotice>
       <ul aria-label="Preview Agent integrations" className="agent-integration-list">
         {agentIntegrationPreviews.map((integration) => (
@@ -56,11 +56,11 @@ export function AgentSkillsPreview() {
   return (
     <div className="agent-capability-preview">
       <PreviewNotice>
-        These example assignments show how Agent skills relate to the Workspace Skills list. No assignments are saved.
+        These example assignments show how Agent skills relate to the shared Skills list. No assignments are saved.
       </PreviewNotice>
       <div className="agent-capability-list-heading">
         <p>Skill assignments</p>
-        <Link to="/skills">View Workspace Skills</Link>
+        <Link to="/skills">View Skills</Link>
       </div>
       <ul aria-label="Preview Agent skills" className="agent-skill-list">
         {agentSkillPreviews.map((skill) => (

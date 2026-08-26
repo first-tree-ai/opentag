@@ -14,7 +14,6 @@ export interface GoogleAuthStartResult {
 
 export interface GoogleAuthCallbackResult {
   next: string;
-  selectedWorkspaceId?: string;
   tokens: RefreshTokenResponse;
 }
 
@@ -90,19 +89,18 @@ export class GoogleBrowserAuthService {
       nonce: flow.oidcNonce,
       redirectUri: this.#redirectUri,
     });
-    const completion = await this.#database.transaction(async (transaction) => {
+    const userId = await this.#database.transaction(async (transaction) => {
       const resolved = await this.#identities.resolveOrCreateInTransaction(transaction, identity);
-      const result = await this.#postAuthentication.completeInTransaction(
+      await this.#postAuthentication.completeInTransaction(
         transaction,
         resolved.userId,
         resolved.accountWasCreated,
       );
-      return { selectedWorkspaceId: result.selectedWorkspaceId, userId: resolved.userId };
+      return resolved.userId;
     });
     return {
       next: flow.next,
-      ...(completion.selectedWorkspaceId ? { selectedWorkspaceId: completion.selectedWorkspaceId } : {}),
-      tokens: await this.#tokenIssuer.issueTokensForUser(completion.userId),
+      tokens: await this.#tokenIssuer.issueTokensForUser(userId),
     };
   }
 }

@@ -1061,7 +1061,7 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
-  it("allows the same name in another Workspace and stores claude-code as configuration only", async () => {
+  it("allows the same name in another Account's scope and stores claude-code as configuration only", async () => {
     const value = await fixture();
     try {
       const computer = await createComputer(value.database, value.bootstrap.userId, value.bootstrap.workspaceId);
@@ -1076,13 +1076,10 @@ describe("Agent persistence and authorization", () => {
         .values({ displayName: "Other", name: "other" })
         .returning();
       if (!otherWorkspace) throw new Error("Other Workspace fixture was not created");
-      await value.database.insert(workspaceAdminGrants).values({
-        workspaceId: otherWorkspace.id,
-        userId: value.bootstrap.userId,
-        grantedByUserId: value.bootstrap.userId,
-      });
+      // An Account holds one active grant, so a second scope always belongs to a second Account.
+      const otherAccount = await createUser(value.database, otherWorkspace.id, "other@example.com", "admin");
       await expect(
-        value.service.createForWorkspace(value.bootstrap.userId, otherWorkspace.id, {
+        value.service.createForWorkspace(otherAccount.id, otherWorkspace.id, {
           ...createInput(computer.id, "assistant"),
           runtimeProvider: "claude-code",
         }),
@@ -1094,9 +1091,9 @@ describe("Agent persistence and authorization", () => {
         platform: computer.platform,
         arch: computer.arch,
         clientVersion: computer.clientVersion,
-        enrolledByUserId: value.bootstrap.userId,
+        enrolledByUserId: otherAccount.id,
       });
-      const created = await value.service.createForWorkspace(value.bootstrap.userId, otherWorkspace.id, {
+      const created = await value.service.createForWorkspace(otherAccount.id, otherWorkspace.id, {
         ...createInput(computer.id, "assistant"),
         runtimeProvider: "claude-code",
       });

@@ -156,9 +156,10 @@ export class WorkspaceAdminAccess {
 
   /**
    * Resolves the authenticated Account to the single compatibility Workspace that Account-native routes
-   * operate on, using the same deterministic order as `/me`: setup-completed first, then earliest grant,
-   * then Workspace UUID. This is the only transitional fact behind the Account-native facade and is
-   * removed once Agents and enrollments carry a direct Account owner.
+   * operate on. A unique index keeps an Account to one active grant, so there is exactly one candidate;
+   * the `/me` ordering below is a defensive remnant rather than a choice. This is the only transitional
+   * fact behind the Account-native facade and is removed once Agents and enrollments carry a direct
+   * Account owner.
    */
   async resolveCompatibilityWorkspaceId(accountId: string): Promise<string> {
     const [workspace] = await this.listActiveAdminWorkspaces(accountId);

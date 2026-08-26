@@ -47,6 +47,9 @@ export const workspaceAdminGrants = pgTable(
     uniqueIndex("workspace_admin_grants_active_workspace_user_unique")
       .on(table.workspaceId, table.userId)
       .where(sql`${table.revokedAt} is null`),
+    // One Account holds at most one active grant, so the internal Workspace is a 1:1 shadow of the
+    // Account rather than a scope a client could ever have to choose between.
+    uniqueIndex("workspace_admin_grants_active_user_unique").on(table.userId).where(sql`${table.revokedAt} is null`),
     index("workspace_admin_grants_active_user_workspace_idx")
       .on(table.userId, table.workspaceId)
       .where(sql`${table.revokedAt} is null`),

@@ -17,8 +17,8 @@ beforeEach(async () => testDatabase.reset());
 
 const EARLY = new Date("2026-08-01T00:00:00.000Z");
 const LATE = new Date("2026-08-20T00:00:00.000Z");
-const LOWER_UUID = "11111111-1111-4111-8111-111111111111";
-const HIGHER_UUID = "22222222-2222-4222-8222-222222222222";
+const FIRST_WORKSPACE = "11111111-1111-4111-8111-111111111111";
+const SECOND_WORKSPACE = "22222222-2222-4222-8222-222222222222";
 
 type Client = ReturnType<typeof createDatabaseClient>;
 
@@ -40,89 +40,87 @@ async function createAccount(client: Client, email: string, suspendedAt: Date | 
   return account.id;
 }
 
-async function grantWorkspace(
+async function createWorkspace(client: Client, id: string, name: string, setupCompletedAt?: Date): Promise<string> {
+  await client.database
+    .insert(workspaces)
+    .values({ id, name, displayName: name, setupCompletedAt: setupCompletedAt ?? null });
+  return id;
+}
+
+async function grant(
   client: Client,
-  input: { accountId: string; grantedAt: Date; id: string; name: string; revoked?: boolean; setupCompletedAt?: Date },
-): Promise<string> {
-  await client.database.insert(workspaces).values({
-    id: input.id,
-    name: input.name,
-    displayName: input.name,
-    setupCompletedAt: input.setupCompletedAt ?? null,
-  });
+  input: { accountId: string; grantedAt: Date; revoked?: boolean; workspaceId: string },
+): Promise<void> {
   await client.database.insert(workspaceAdminGrants).values({
-    workspaceId: input.id,
+    workspaceId: input.workspaceId,
     userId: input.accountId,
     grantedByUserId: input.accountId,
     grantedAt: input.grantedAt,
     ...(input.revoked ? { revokedByUserId: input.accountId, revokedAt: LATE } : {}),
   });
-  return input.id;
 }
 
 /**
- * The Account-native facade resolves every management call through this single compatibility fact, so the
- * order is pinned here: setup-completed Workspace first, then earliest grant, then Workspace UUID.
+ * The Account-native facade resolves every management call through this single compatibility fact. The
+ * internal Workspace is a 1:1 shadow of the Account, enforced by a unique index rather than by convention,
+ * so resolution has exactly one candidate and no client ever chooses a scope.
  */
 describe("Account compatibility scope resolution", () => {
-  it("prefers a setup-completed Workspace over an earlier grant", async () => {
+  it("resolves the single active grant", async () => {
     await withClient(async (client) => {
-      const accountId = await createAccount(client, "ordering@example.com");
-      await grantWorkspace(client, { accountId, grantedAt: EARLY, id: LOWER_UUID, name: "incomplete-earlier" });
-      await grantWorkspace(client, {
-        accountId,
-        grantedAt: LATE,
-        id: HIGHER_UUID,
-        name: "completed-later",
-        setupCompletedAt: LATE,
-      });
+      const accountId = await createAccount(client, "single@example.com");
+      await createWorkspace(client, FIRST_WORKSPACE, "only");
+      await grant(client, { accountId, grantedAt: EARLY, workspaceId: FIRST_WORKSPACE });
 
       const access = new WorkspaceAdminAccess(client.database);
-      expect(await access.resolveCompatibilityWorkspaceId(accountId)).toBe(HIGHER_UUID);
+      expect(await access.resolveCompatibilityWorkspaceId(accountId)).toBe(FIRST_WORKSPACE);
     });
   });
 
-  it("falls back to the earliest grant when no Workspace completed setup", async () => {
+  it("rejects a second active grant for the same Account", async () => {
     await withClient(async (client) => {
-      const accountId = await createAccount(client, "earliest@example.com");
-      await grantWorkspace(client, { accountId, grantedAt: LATE, id: LOWER_UUID, name: "granted-later" });
-      await grantWorkspace(client, { accountId, grantedAt: EARLY, id: HIGHER_UUID, name: "granted-earlier" });
+      const accountId = await createAccount(client, "duplicate@example.com");
+      await createWorkspace(client, FIRST_WORKSPACE, "first");
+      await createWorkspace(client, SECOND_WORKSPACE, "second");
+      await grant(client, { accountId, grantedAt: EARLY, workspaceId: FIRST_WORKSPACE });
+
+      await expect(grant(client, { accountId, grantedAt: LATE, workspaceId: SECOND_WORKSPACE })).rejects.toThrow(
+        /workspace_admin_grants_active_user_unique/,
+      );
 
       const access = new WorkspaceAdminAccess(client.database);
-      expect(await access.resolveCompatibilityWorkspaceId(accountId)).toBe(HIGHER_UUID);
+      expect(await access.resolveCompatibilityWorkspaceId(accountId)).toBe(FIRST_WORKSPACE);
     });
   });
 
-  it("breaks a full tie on Workspace UUID", async () => {
+  it("allows a replacement grant once the previous one is revoked", async () => {
     await withClient(async (client) => {
-      const accountId = await createAccount(client, "tie@example.com");
-      await grantWorkspace(client, { accountId, grantedAt: EARLY, id: HIGHER_UUID, name: "higher" });
-      await grantWorkspace(client, { accountId, grantedAt: EARLY, id: LOWER_UUID, name: "lower" });
+      const accountId = await createAccount(client, "regrant@example.com");
+      await createWorkspace(client, FIRST_WORKSPACE, "first");
+      await createWorkspace(client, SECOND_WORKSPACE, "second");
+      await grant(client, { accountId, grantedAt: EARLY, revoked: true, workspaceId: FIRST_WORKSPACE });
+      await grant(client, { accountId, grantedAt: LATE, workspaceId: SECOND_WORKSPACE });
 
       const access = new WorkspaceAdminAccess(client.database);
-      expect(await access.resolveCompatibilityWorkspaceId(accountId)).toBe(LOWER_UUID);
+      expect(await access.resolveCompatibilityWorkspaceId(accountId)).toBe(SECOND_WORKSPACE);
     });
   });
 
-  it("ignores revoked grants and other Accounts", async () => {
+  it("ignores revoked grants and never resolves another Account's scope", async () => {
     await withClient(async (client) => {
       const accountId = await createAccount(client, "revoked@example.com");
       const otherAccountId = await createAccount(client, "other@example.com");
-      await grantWorkspace(client, {
-        accountId,
-        grantedAt: EARLY,
-        id: LOWER_UUID,
-        name: "revoked-scope",
-        revoked: true,
-      });
-      await grantWorkspace(client, { accountId: otherAccountId, grantedAt: EARLY, id: HIGHER_UUID, name: "other" });
+      await createWorkspace(client, FIRST_WORKSPACE, "revoked-scope");
+      await createWorkspace(client, SECOND_WORKSPACE, "other-scope");
+      await grant(client, { accountId, grantedAt: EARLY, revoked: true, workspaceId: FIRST_WORKSPACE });
+      await grant(client, { accountId: otherAccountId, grantedAt: EARLY, workspaceId: SECOND_WORKSPACE });
 
       const access = new WorkspaceAdminAccess(client.database);
       await expect(access.resolveCompatibilityWorkspaceId(accountId)).rejects.toMatchObject({
         code: "RESOURCE_NOT_FOUND",
         statusCode: 404,
       });
-      expect(await access.resolveCompatibilityWorkspaceId(otherAccountId)).toBe(HIGHER_UUID);
+      expect(await access.resolveCompatibilityWorkspaceId(otherAccountId)).toBe(SECOND_WORKSPACE);
     });
   });
 
@@ -130,7 +128,8 @@ describe("Account compatibility scope resolution", () => {
     await withClient(async (client) => {
       const withoutGrant = await createAccount(client, "no-grant@example.com");
       const suspended = await createAccount(client, "suspended@example.com", LATE);
-      await grantWorkspace(client, { accountId: suspended, grantedAt: EARLY, id: LOWER_UUID, name: "suspended-scope" });
+      await createWorkspace(client, FIRST_WORKSPACE, "suspended-scope");
+      await grant(client, { accountId: suspended, grantedAt: EARLY, workspaceId: FIRST_WORKSPACE });
 
       const access = new WorkspaceAdminAccess(client.database);
       for (const accountId of [withoutGrant, suspended]) {

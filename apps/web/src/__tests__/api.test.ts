@@ -200,27 +200,8 @@ describe("BrowserApi", () => {
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 
-  it("creates a single-use Admin invitation through an explicit CSRF-protected mutation", async () => {
-    setDocumentCookie("opentag_csrf=invite-csrf; Path=/");
-    const invitation = {
-      token: "A".repeat(43),
-      inviteUrl: `https://opentag.example.com/invites/${"A".repeat(43)}`,
-      expiresAt: "2030-01-01T00:00:00.000Z",
-    };
-    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
-      expect(init?.method).toBe("POST");
-      expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("invite-csrf");
-      const path = String(input);
-      expect(path).toBe(`/api/v1/workspaces/${workspaceId}/admin-invitations`);
-      return new Response(JSON.stringify(invitation), {
-        status: 201,
-        headers: { "content-type": "application/json" },
-      });
-    });
-    const api = new BrowserApi(fetchImpl);
-    await expect(api.createAdminInvitation(workspaceId)).resolves.toEqual(invitation);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  it("exposes no browser mutation that issues an Admin invitation", () => {
+    expect("createAdminInvitation" in new BrowserApi()).toBe(false);
   });
 
   it("shares refresh behavior across optional and no-content requests", async () => {

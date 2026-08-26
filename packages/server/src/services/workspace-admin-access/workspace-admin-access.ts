@@ -1,8 +1,5 @@
 import { randomUUID } from "node:crypto";
 import type {
-  AdminInvitation,
-  CreateWorkspaceRequest,
-  CreateWorkspaceResponse,
   InvitationAcceptanceResponse,
   InvitationPreview,
   ListWorkspaceAdminsConfigResponse,
@@ -20,7 +17,7 @@ import {
   workspaceAdminGrants,
   workspaces,
 } from "../../db/schema/index.js";
-import { AuthServiceError, generateSecret, hashSecret } from "../auth/index.js";
+import { AuthServiceError, hashSecret } from "../auth/index.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
@@ -70,34 +67,6 @@ export class WorkspaceAdminAccess {
     });
   }
 
-  createWorkspaceWithAdmin(accountId: string, input: CreateWorkspaceRequest): Promise<CreateWorkspaceResponse> {
-    return this.#database.transaction(async (transaction) => {
-      await this.lockAccountForGrantWrite(transaction, accountId);
-      await this.requireWorkspaceHeadroom(transaction, accountId);
-      const now = this.#now();
-      const [workspace] = await transaction
-        .insert(workspaces)
-        .values({ name: input.name, displayName: input.displayName, createdAt: now, updatedAt: now })
-        .returning();
-      if (!workspace) throw new Error("Workspace insert did not return a row");
-      await transaction.insert(workspaceAdminGrants).values({
-        workspaceId: workspace.id,
-        userId: accountId,
-        grantedByUserId: accountId,
-        grantedAt: now,
-      });
-      return {
-        id: workspace.id,
-        name: workspace.name,
-        displayName: workspace.displayName,
-        setupCompletedAt: workspace.setupCompletedAt?.toISOString() ?? null,
-        createdAt: workspace.createdAt.toISOString(),
-        updatedAt: workspace.updatedAt.toISOString(),
-        grantedAt: now.toISOString(),
-      };
-    });
-  }
-
   async listAdmins(accountId: string, workspaceId: string): Promise<ListWorkspaceAdminsResponse> {
     await this.requireAdmin(accountId, workspaceId);
     const rows = await this.#database
@@ -129,26 +98,6 @@ export class WorkspaceAdminAccess {
     };
   }
 
-  createInvitation(accountId: string, workspaceId: string, publicUrl: URL, ttlMs: number): Promise<AdminInvitation> {
-    return this.withAdminMutation(accountId, workspaceId, async (transaction) => {
-      const now = this.#now();
-      const token = generateSecret(32);
-      const expiresAt = new Date(now.getTime() + ttlMs);
-      await transaction.insert(adminInvitations).values({
-        workspaceId,
-        tokenHash: hashSecret(token),
-        createdByUserId: accountId,
-        createdAt: now,
-        expiresAt,
-      });
-      return {
-        token,
-        inviteUrl: new URL(`/invites/${encodeURIComponent(token)}`, publicUrl).toString(),
-        expiresAt: expiresAt.toISOString(),
-      };
-    });
-  }
-
   async previewInvitation(rawToken: string): Promise<InvitationPreview> {
     const tokenHash = hashSecret(this.#parseInvitationToken(rawToken));
     const [row] = await this.#database
@@ -172,75 +121,83 @@ export class WorkspaceAdminAccess {
   }
 
   acceptInvitation(accountId: string, rawToken: string): Promise<InvitationAcceptanceResponse> {
-    return this.#database.transaction(async (transaction) => {
-      const tokenHash = hashSecret(this.#parseInvitationToken(rawToken));
-      const [candidate] = await transaction
-        .select({ workspaceId: adminInvitations.workspaceId })
-        .from(adminInvitations)
-        .where(eq(adminInvitations.tokenHash, tokenHash))
-        .limit(1);
-      if (!candidate) throw this.#invalidInvitation();
+    return this.#database.transaction((transaction) =>
+      this.acceptInvitationInTransaction(transaction, accountId, rawToken),
+    );
+  }
 
-      await this.lockAccountForGrantWrite(transaction, accountId);
-      await this.lockWorkspace(transaction, candidate.workspaceId);
-      const [invitation] = await transaction
-        .select()
-        .from(adminInvitations)
-        .where(eq(adminInvitations.tokenHash, tokenHash))
-        .limit(1)
-        .for("update");
-      const now = this.#now();
-      if (!invitation || invitation.acceptedAt || invitation.revokedAt || invitation.expiresAt <= now) {
-        throw this.#invalidInvitation();
-      }
-      await this.requireAdmin(invitation.createdByUserId, invitation.workspaceId, transaction);
-      const [existing] = await transaction
-        .select({ grantedAt: workspaceAdminGrants.grantedAt })
-        .from(workspaceAdminGrants)
-        .where(
-          and(
-            eq(workspaceAdminGrants.workspaceId, invitation.workspaceId),
-            eq(workspaceAdminGrants.userId, accountId),
-            isNull(workspaceAdminGrants.revokedAt),
-          ),
-        )
-        .limit(1)
-        .for("update");
-      let grantedAt = existing?.grantedAt;
-      if (!grantedAt) {
-        await this.requireWorkspaceHeadroom(transaction, accountId);
-        const [grant] = await transaction
-          .insert(workspaceAdminGrants)
-          .values({
-            workspaceId: invitation.workspaceId,
-            userId: accountId,
-            grantedByUserId: invitation.createdByUserId,
-            grantedAt: now,
-          })
-          .returning({ grantedAt: workspaceAdminGrants.grantedAt });
-        if (!grant) throw new Error("Workspace Admin grant insert did not return a row");
-        grantedAt = grant.grantedAt;
-      }
-      await transaction
-        .update(adminInvitations)
-        .set({ acceptedByUserId: accountId, acceptedAt: now })
-        .where(eq(adminInvitations.id, invitation.id));
-      const [workspace] = await transaction
-        .select()
-        .from(workspaces)
-        .where(eq(workspaces.id, invitation.workspaceId))
-        .limit(1);
-      if (!workspace) throw this.#invalidInvitation();
-      return {
-        workspace: {
-          id: workspace.id,
-          name: workspace.name,
-          displayName: workspace.displayName,
-          setupCompletedAt: workspace.setupCompletedAt?.toISOString() ?? null,
-          grantedAt: grantedAt.toISOString(),
-        },
-      };
-    });
+  async acceptInvitationInTransaction(
+    transaction: DatabaseTransaction,
+    accountId: string,
+    rawToken: string,
+  ): Promise<InvitationAcceptanceResponse> {
+    const tokenHash = hashSecret(this.#parseInvitationToken(rawToken));
+    const [candidate] = await transaction
+      .select({ workspaceId: adminInvitations.workspaceId })
+      .from(adminInvitations)
+      .where(eq(adminInvitations.tokenHash, tokenHash))
+      .limit(1);
+    if (!candidate) throw this.#invalidInvitation();
+
+    await this.lockAccountForGrantWrite(transaction, accountId);
+    await this.lockWorkspace(transaction, candidate.workspaceId);
+    const [invitation] = await transaction
+      .select()
+      .from(adminInvitations)
+      .where(eq(adminInvitations.tokenHash, tokenHash))
+      .limit(1)
+      .for("update");
+    const now = this.#now();
+    if (!invitation || invitation.acceptedAt || invitation.revokedAt || invitation.expiresAt <= now) {
+      throw this.#invalidInvitation();
+    }
+    await this.requireAdmin(invitation.createdByUserId, invitation.workspaceId, transaction);
+    const [existing] = await transaction
+      .select({ grantedAt: workspaceAdminGrants.grantedAt })
+      .from(workspaceAdminGrants)
+      .where(
+        and(
+          eq(workspaceAdminGrants.workspaceId, invitation.workspaceId),
+          eq(workspaceAdminGrants.userId, accountId),
+          isNull(workspaceAdminGrants.revokedAt),
+        ),
+      )
+      .limit(1)
+      .for("update");
+    let grantedAt = existing?.grantedAt;
+    if (!grantedAt) {
+      await this.requireWorkspaceHeadroom(transaction, accountId);
+      const [grant] = await transaction
+        .insert(workspaceAdminGrants)
+        .values({
+          workspaceId: invitation.workspaceId,
+          userId: accountId,
+          grantedByUserId: invitation.createdByUserId,
+          grantedAt: now,
+        })
+        .returning({ grantedAt: workspaceAdminGrants.grantedAt });
+      if (!grant) throw new Error("Workspace Admin grant insert did not return a row");
+      grantedAt = grant.grantedAt;
+    }
+    await transaction
+      .update(adminInvitations)
+      .set({ acceptedByUserId: accountId, acceptedAt: now })
+      .where(eq(adminInvitations.id, invitation.id));
+    const [workspace] = await transaction
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.id, invitation.workspaceId))
+      .limit(1);
+    if (!workspace) throw this.#invalidInvitation();
+    return {
+      workspace: {
+        id: workspace.id,
+        name: workspace.name,
+        displayName: workspace.displayName,
+        setupCompletedAt: workspace.setupCompletedAt?.toISOString() ?? null,
+        grantedAt: grantedAt.toISOString(),
+      },
+    };
   }
 
   async revokeAdmin(accountId: string, workspaceId: string, targetAccountId: string): Promise<void> {

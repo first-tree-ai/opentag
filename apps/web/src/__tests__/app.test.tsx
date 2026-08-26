@@ -11,7 +11,6 @@ const memberUserId = "63e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const otherMemberUserId = "73e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
-const createdWorkspaceId = "6b1f0c9a-2d4e-4a77-9c31-8f0c5b2ad741";
 const invitationToken = "A".repeat(43);
 
 const agentSummary = {
@@ -80,8 +79,6 @@ function installApi(
     setupCompletedAt?: string | null;
     unauthenticated?: boolean;
     workspaceless?: boolean;
-    workspaceNameConflict?: boolean;
-    workspaceNameConflicts?: number;
   } = {},
 ) {
   const workspaceProfile = { name: "example", displayName: "Example" };
@@ -108,23 +105,10 @@ function installApi(
       maxDurationMs: null,
     },
   });
-  const createdWorkspaces: {
-    id: string;
-    name: string;
-    displayName: string;
-    setupCompletedAt: string | null;
-    grantedAt: string;
-  }[] = [];
   let setupCompletedAt = options.setupCompletedAt === undefined ? "2026-08-20T00:00:00.000Z" : options.setupCompletedAt;
   let currentDisplayName = "Ada";
   let joinedInvitation = options.alreadyJoinedInvitation ?? false;
   let computerConnectCodeIssued = false;
-  let workspaceNameConflicts = options.workspaceNameConflicts ?? (options.workspaceNameConflict ? 1 : 0);
-  const invitation = () => ({
-    token: invitationToken,
-    inviteUrl: `https://opentag.example.com/invites/${invitationToken}`,
-    expiresAt: "2026-08-27T00:00:00.000Z",
-  });
   vi.mocked(fetch).mockImplementation(async (input, init) => {
     const path = String(input);
     if (path === "/api/v1/auth/providers") {
@@ -179,44 +163,8 @@ function installApi(
                 },
               ]
             : []),
-          ...createdWorkspaces,
         ],
       });
-    }
-    if (path === "/api/v1/workspaces" && init?.method === "POST") {
-      if (workspaceNameConflicts > 0) {
-        workspaceNameConflicts -= 1;
-        return json(
-          {
-            error: {
-              code: "WORKSPACE_NAME_CONFLICT",
-              category: "deterministic",
-              message: "Another Workspace already uses this canonical name",
-            },
-          },
-          409,
-        );
-      }
-      const body = JSON.parse(String(init.body)) as { displayName: string; name: string };
-      createdWorkspaces.push({
-        id: createdWorkspaceId,
-        name: body.name,
-        displayName: body.displayName,
-        setupCompletedAt: null,
-        grantedAt: "2026-08-20T00:00:00.000Z",
-      });
-      return json(
-        {
-          id: createdWorkspaceId,
-          name: body.name,
-          displayName: body.displayName,
-          setupCompletedAt: null,
-          grantedAt: "2026-08-20T00:00:00.000Z",
-          createdAt: "2026-08-20T00:00:00.000Z",
-          updatedAt: "2026-08-20T00:00:00.000Z",
-        },
-        201,
-      );
     }
     if (path === `/api/v1/workspaces/${workspaceId}/setup/complete` && init?.method === "POST") {
       setupCompletedAt = "2026-08-20T00:10:00.000Z";
@@ -312,9 +260,6 @@ function installApi(
     }
     if (path.startsWith(`/api/v1/workspaces/${workspaceId}/admins/`) && init?.method === "DELETE") {
       return new Response(null, { status: 204 });
-    }
-    if (path === `/api/v1/workspaces/${workspaceId}/admin-invitations` && init?.method === "POST") {
-      return json(invitation(), 201);
     }
     if (path === `/api/v1/admin-invitations/${invitationToken}/preview`) {
       return json({ workspaceDisplayName: "Invited Workspace", expiresAt: "2026-08-27T00:00:00.000Z" });
@@ -1202,7 +1147,8 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Workspace" })).toBeTruthy();
     expect(window.location.pathname).toBe("/workspace");
     expect(screen.getByRole("heading", { name: "Admins" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Invite Admin" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Invite Admin" })).toBeNull();
+    expect(screen.getByText(/New invitations cannot be issued/)).toBeTruthy();
     // The name reaches every invitation recipient and the identifier is required by the CLI, so a
     // solo Admin has to be able to read and change them.
     expect(screen.getByLabelText("Workspace name")).toBeTruthy();
@@ -2016,20 +1962,40 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.search).toBe(`?next=${encodeURIComponent(`/invites/${invitationToken}`)}`);
   });
 
-  it("creates a short-lived single-use Admin invitation from the account menu", async () => {
+  it("selects the Workspace redeemed atomically during invitation sign-in", async () => {
+    installApi({ alreadyJoinedInvitation: true });
+    window.history.replaceState({}, "", `/agents?joinedWorkspaceId=${invitedWorkspaceId}`);
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Account menu" }));
+    expect(
+      screen.getByRole("menuitem", { name: /Invited Workspace Workspace Admin/ }).getAttribute("aria-current"),
+    ).toBe("true");
+    expect(window.localStorage.getItem("opentag.lastExplicitWorkspaceId.v1")).toBeNull();
+  });
+
+  it("offers no invitation issuance while keeping Admin revocation reachable", async () => {
     installApi();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(window.navigator, "clipboard", { configurable: true, value: { writeText } });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     window.history.replaceState({}, "", "/workspace");
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Admins" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Invite Admin" }));
-    const link = (await screen.findByLabelText("Invitation link")) as HTMLInputElement;
-    expect(link.value).toBe(`https://opentag.example.com/invites/${"A".repeat(43)}`);
-    expect(screen.getByRole("heading", { name: "Single-use invitation" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Copy link" }));
-    await waitFor(() => expect(writeText).toHaveBeenCalledWith(link.value));
+    expect(screen.queryByRole("button", { name: "Invite Admin" })).toBeNull();
+    const revokeButtons = await screen.findAllByRole("button", { name: "Revoke" });
+    fireEvent.click(revokeButtons[1] as HTMLElement);
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.some(
+            ([path, init]) =>
+              path === `/api/v1/workspaces/${workspaceId}/admins/${memberUserId}` && init?.method === "DELETE",
+          ),
+      ).toBe(true),
+    );
+    confirm.mockRestore();
   });
 
   it("hides only the selector for a single Workspace, not the Workspace itself", async () => {
@@ -2403,7 +2369,7 @@ describe("OpenTag Web App Shell", () => {
     );
     expect(await screen.findByRole("heading", { name: "No Workspace administration access" })).toBeTruthy();
     expect(window.location.pathname).toBe("/agents");
-    expect(screen.getByRole("status").textContent).toContain("A current Workspace Admin can restore access");
+    expect(screen.getByRole("status").textContent).toContain("Access cannot be restored from this screen");
     expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
     const initialMeReads = vi.mocked(fetch).mock.calls.filter(([path]) => path === "/api/v1/me").length;
     fireEvent.click(screen.getByRole("button", { name: "Check again" }));
@@ -2459,42 +2425,14 @@ describe("OpenTag Web App Shell", () => {
     }
   });
 
-  it("resolves an internal Workspace handle collision without asking the user for another name", async () => {
-    installApi({ workspaceless: true, workspaceNameConflict: true });
+  it("does not preserve the retired self-serve Workspace creation route", async () => {
+    installApi();
     window.history.replaceState({}, "", "/workspaces/new");
     render(<App />);
-    fireEvent.change(await screen.findByLabelText("Workspace name"), { target: { value: "Example" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create Workspace" }));
-    expect(await screen.findByRole("heading", { name: "Set up OpenTag" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/onboarding");
-    const createRequests = vi
-      .mocked(fetch)
-      .mock.calls.filter(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST");
-    expect(createRequests).toHaveLength(2);
-    expect(JSON.parse(String(createRequests[0]?.[1]?.body))).toEqual({ name: "example", displayName: "Example" });
-    expect(JSON.parse(String(createRequests[1]?.[1]?.body))).toMatchObject({
-      displayName: "Example",
-      name: expect.stringMatching(/^example-[a-f0-9]{8}$/),
-    });
-  });
-
-  it("uses a fresh internal handle for every collision on a Workspace name without ASCII characters", async () => {
-    installApi({ workspaceless: true, workspaceNameConflicts: 2 });
-    window.history.replaceState({}, "", "/workspaces/new");
-    render(<App />);
-    fireEvent.change(await screen.findByLabelText("Workspace name"), { target: { value: "示例团队" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create Workspace" }));
-    await screen.findByRole("heading", { name: "Set up OpenTag" });
-    const requests = vi
-      .mocked(fetch)
-      .mock.calls.filter(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST");
-    expect(requests).toHaveLength(3);
-    const bodies = requests.map(
-      (request) => JSON.parse(String(request[1]?.body)) as { displayName: string; name: string },
-    );
-    expect(bodies.every((body) => body.displayName === "示例团队")).toBe(true);
-    expect(bodies.every((body) => /^workspace-[a-f0-9]{8}$/.test(body.name))).toBe(true);
-    expect(new Set(bodies.map((body) => body.name))).toHaveProperty("size", 3);
+    expect(await screen.findByRole("heading", { name: "Page not found" })).toBeTruthy();
+    expect(
+      vi.mocked(fetch).mock.calls.some(([path, init]) => path === "/api/v1/workspaces" && init?.method === "POST"),
+    ).toBe(false);
   });
 
   it("switches Workspaces when Workspace preference storage is unavailable", async () => {

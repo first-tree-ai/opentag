@@ -1,11 +1,12 @@
+import { randomBytes } from "node:crypto";
 import { invitationAcceptPath } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { adminInvitations, users, workspaceAdminGrants } from "../../db/schema/index.js";
-import { AuthService, AuthTokenService, hashSecret } from "../../services/auth/index.js";
+import { adminInvitations, users, workspaceAdminGrants, workspaces } from "../../db/schema/index.js";
+import { AuthService, AuthTokenService, hashSecret, PostAuthenticationService } from "../../services/auth/index.js";
 import { validateOAuthNext } from "../../services/auth/oauth/state.js";
 import { InvitationService } from "../../services/invitations/index.js";
 import { WorkspaceAdminAccess } from "../../services/workspace-admin-access/index.js";
@@ -33,8 +34,22 @@ async function fixture() {
   });
   const auth = new AuthService(client.database, new AuthTokenService(jwtSecret, 900, 3600));
   const workspaceAdmins = new WorkspaceAdminAccess(client.database);
-  const invitations = new InvitationService(client.database, "https://opentag.example.com/base", { workspaceAdmins });
-  return { ...client, auth, bootstrap, invitations, workspaceAdmins };
+  const invitations = new InvitationService(client.database, { workspaceAdmins });
+  const postAuthentication = new PostAuthenticationService(client.database, workspaceAdmins);
+  return { ...client, auth, bootstrap, invitations, postAuthentication, workspaceAdmins };
+}
+
+async function seedOutstandingInvitation(value: Awaited<ReturnType<typeof fixture>>): Promise<{ token: string }> {
+  const token = randomBytes(32).toString("base64url");
+  const now = new Date();
+  await value.database.insert(adminInvitations).values({
+    workspaceId: value.bootstrap.workspaceId,
+    tokenHash: hashSecret(token),
+    createdByUserId: value.bootstrap.userId,
+    createdAt: now,
+    expiresAt: new Date(now.getTime() + 30 * 60 * 1000),
+  });
+  return { token };
 }
 
 async function createAccount(value: Awaited<ReturnType<typeof fixture>>, email: string): Promise<string> {
@@ -47,14 +62,70 @@ async function createAccount(value: Awaited<ReturnType<typeof fixture>>, email: 
 }
 
 describe("Admin invitation lifecycle", () => {
-  it("creates one canonical Web/OAuth invitation destination", async () => {
+  it("keeps an outstanding invitation previewable at the canonical Web/OAuth destination", async () => {
     const value = await fixture();
     try {
-      const invitation = await value.invitations.create(value.bootstrap.userId, value.bootstrap.workspaceId);
-      const inviteUrl = new URL(invitation.inviteUrl);
-      expect(inviteUrl.origin).toBe("https://opentag.example.com");
-      expect(inviteUrl.pathname).toBe(`/invites/${invitation.token}`);
-      expect(validateOAuthNext(inviteUrl.pathname)).toBe(inviteUrl.pathname);
+      const invitation = await seedOutstandingInvitation(value);
+      const invitePath = `/invites/${invitation.token}`;
+      expect(validateOAuthNext(invitePath)).toBe(invitePath);
+      await expect(value.invitations.preview(invitation.token)).resolves.toMatchObject({
+        workspaceDisplayName: "Example",
+      });
+      expect("create" in value.invitations).toBe(false);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("provisions exactly one internal default Workspace for a normal new Account", async () => {
+    const value = await fixture();
+    try {
+      const accountId = await createAccount(value, "normal-signup@example.com");
+      const completion = await value.postAuthentication.complete(accountId, true);
+      const grants = await value.database
+        .select({ workspaceId: workspaceAdminGrants.workspaceId })
+        .from(workspaceAdminGrants)
+        .innerJoin(workspaces, eq(workspaces.id, workspaceAdminGrants.workspaceId))
+        .where(and(eq(workspaceAdminGrants.userId, accountId), isNull(workspaceAdminGrants.revokedAt)));
+
+      expect(completion.selectedWorkspaceId).toBe(grants[0]?.workspaceId);
+      expect(grants).toHaveLength(1);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("redeems a valid invitation inside post-authentication without creating a fallback Workspace", async () => {
+    const value = await fixture();
+    try {
+      const invitation = await seedOutstandingInvitation(value);
+      const accountId = await createAccount(value, "invited-signup@example.com");
+      const completion = await value.postAuthentication.complete(accountId, true, invitation.token);
+      const grants = await value.database
+        .select({ workspaceId: workspaceAdminGrants.workspaceId })
+        .from(workspaceAdminGrants)
+        .where(and(eq(workspaceAdminGrants.userId, accountId), isNull(workspaceAdminGrants.revokedAt)));
+
+      expect(completion.selectedWorkspaceId).toBe(value.bootstrap.workspaceId);
+      expect(grants).toEqual([{ workspaceId: value.bootstrap.workspaceId }]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("rejects an invalid invitation during post-authentication before provisioning a Workspace", async () => {
+    const value = await fixture();
+    try {
+      const accountId = await createAccount(value, "invalid-invitation@example.com");
+      await expect(value.postAuthentication.complete(accountId, true, "A".repeat(43))).rejects.toMatchObject({
+        code: "INVITATION_INVALID",
+        statusCode: 404,
+      });
+      const grants = await value.database
+        .select({ workspaceId: workspaceAdminGrants.workspaceId })
+        .from(workspaceAdminGrants)
+        .where(and(eq(workspaceAdminGrants.userId, accountId), isNull(workspaceAdminGrants.revokedAt)));
+      expect(grants).toHaveLength(0);
     } finally {
       await value.sql.end();
     }
@@ -65,7 +136,7 @@ describe("Admin invitation lifecycle", () => {
     const app = createApp({ authService: value.auth, invitationService: value.invitations });
     try {
       const tokens = await value.auth.exchangeConnectCode(value.bootstrap.connectCode);
-      const invitation = await value.invitations.create(value.bootstrap.userId, value.bootstrap.workspaceId);
+      const invitation = await seedOutstandingInvitation(value);
       const secondAccountId = await createAccount(value, "second@example.com");
       const grantsBefore = await value.database
         .select({ id: workspaceAdminGrants.id })
@@ -113,7 +184,7 @@ describe("Admin invitation lifecycle", () => {
   it("allows only one of two Accounts to consume an invitation concurrently", async () => {
     const value = await fixture();
     try {
-      const invitation = await value.invitations.create(value.bootstrap.userId, value.bootstrap.workspaceId);
+      const invitation = await seedOutstandingInvitation(value);
       const [firstAccountId, secondAccountId] = await Promise.all([
         createAccount(value, "first@example.com"),
         createAccount(value, "second@example.com"),
@@ -147,7 +218,7 @@ describe("Admin invitation lifecycle", () => {
     const value = await fixture();
     try {
       const secondAccountId = await createAccount(value, "second@example.com");
-      const invitation = await value.invitations.create(value.bootstrap.userId, value.bootstrap.workspaceId);
+      const invitation = await seedOutstandingInvitation(value);
       await value.invitations.accept(secondAccountId, invitation.token);
 
       const results = await Promise.allSettled([

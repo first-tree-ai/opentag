@@ -11,30 +11,21 @@ function json(body: unknown, status = 200): Response {
 }
 
 describe("OpenTagApi Workspace surface", () => {
-  it("creates and updates a Workspace by stable UUID", async () => {
-    const created = {
+  it("updates a Workspace profile by stable UUID without exposing self-serve creation", async () => {
+    const profile = {
       id: workspaceId,
       name: "workspace",
       displayName: "Workspace",
       setupCompletedAt: null,
-      createdAt: grantedAt,
-      grantedAt,
       updatedAt: grantedAt,
     };
-    const { createdAt: _createdAt, grantedAt: _grantedAt, ...profile } = created;
     const updated = { ...profile, name: "renamed-workspace", displayName: "Renamed Workspace" };
-    const fetchImpl = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(json(created, 201))
-      .mockResolvedValueOnce(json(updated));
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(json(updated));
     const api = new OpenTagApi("https://opentag.example.com", fetchImpl);
 
-    await expect(api.createWorkspace("access", { name: "workspace", displayName: "Workspace" })).resolves.toEqual(
-      created,
-    );
     await expect(api.updateWorkspace("access", workspaceId, { name: "renamed-workspace" })).resolves.toEqual(updated);
-    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ method: "POST" });
-    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: "PATCH" });
+    expect("createWorkspace" in api).toBe(false);
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ method: "PATCH" });
   });
 
   it("lists and revokes roleless Workspace Admin grants", async () => {
@@ -52,14 +43,9 @@ describe("OpenTagApi Workspace surface", () => {
     expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: "DELETE" });
   });
 
-  it("creates, previews, and explicitly accepts a single-use Admin invitation", async () => {
+  it("previews and explicitly accepts an outstanding Admin invitation without exposing issuance", async () => {
     const token = "A".repeat(43);
-    const invitation = {
-      token,
-      inviteUrl: `https://opentag.example.com/invites/${token}`,
-      expiresAt: "2026-08-26T00:00:00.000Z",
-    };
-    const preview = { workspaceDisplayName: "Workspace", expiresAt: invitation.expiresAt };
+    const preview = { workspaceDisplayName: "Workspace", expiresAt: "2026-08-26T00:00:00.000Z" };
     const acceptance = {
       workspace: {
         id: workspaceId,
@@ -71,15 +57,14 @@ describe("OpenTagApi Workspace surface", () => {
     };
     const fetchImpl = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(json(invitation, 201))
       .mockResolvedValueOnce(json(preview))
       .mockResolvedValueOnce(json(acceptance));
     const api = new OpenTagApi("https://opentag.example.com", fetchImpl);
 
-    await expect(api.createWorkspaceAdminInvitation("access", workspaceId)).resolves.toEqual(invitation);
     await expect(api.previewAdminInvitation(token)).resolves.toEqual(preview);
     await expect(api.acceptAdminInvitation("access", token)).resolves.toEqual(acceptance);
-    expect(fetchImpl.mock.calls[2]?.[1]).toMatchObject({ method: "POST" });
+    expect("createWorkspaceAdminInvitation" in api).toBe(false);
+    expect(fetchImpl.mock.calls[1]?.[1]).toMatchObject({ method: "POST" });
   });
 
   it("issues a machine connect code without exposing enrollment revocation", async () => {

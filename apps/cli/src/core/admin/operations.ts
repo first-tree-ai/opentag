@@ -1,4 +1,4 @@
-import type { AdminInvitation, WorkspaceAdminSummary } from "@opentag/shared";
+import type { WorkspaceAdminSummary } from "@opentag/shared";
 import { selectWorkspace } from "../selection/workspace.js";
 import { type AdminCommandDependencies, resolveAdminCommandContext } from "./context.js";
 
@@ -15,11 +15,6 @@ async function context(options: AdminSelectionOptions) {
 export async function runAdminList(options: AdminSelectionOptions = {}): Promise<WorkspaceAdminSummary[]> {
   const value = await context(options);
   return (await value.api.listWorkspaceAdmins(value.accessToken, value.workspace.id)).admins;
-}
-
-export async function runAdminInvite(options: AdminSelectionOptions = {}): Promise<AdminInvitation> {
-  const value = await context(options);
-  return value.api.createWorkspaceAdminInvitation(value.accessToken, value.workspace.id);
 }
 
 export async function runAdminRevoke(accountId: string, options: AdminSelectionOptions = {}): Promise<string> {

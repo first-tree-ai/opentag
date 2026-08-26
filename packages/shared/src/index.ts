@@ -162,7 +162,6 @@ export {
   runtimeImResourcePath,
   runtimeWebSocketUrl,
   SLACK_EVENTS_PATH,
-  WORKSPACE_ADMIN_INVITATIONS_TEMPLATE,
   WORKSPACE_ADMIN_TEMPLATE,
   WORKSPACE_ADMINS_TEMPLATE,
   WORKSPACE_AGENTS_TEMPLATE,
@@ -170,8 +169,6 @@ export {
   WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE,
   WORKSPACE_COMPUTERS_TEMPLATE,
   WORKSPACE_SETUP_COMPLETE_TEMPLATE,
-  WORKSPACES_TEMPLATE,
-  workspaceAdminInvitationsPath,
   workspaceAdminPath,
   workspaceAdminsPath,
   workspaceAgentsPath,
@@ -183,8 +180,6 @@ export {
 export * from "./im-binding.js";
 export * from "./im-message.js";
 export {
-  type AdminInvitation,
-  AdminInvitationSchema,
   type InvitationAcceptanceResponse,
   InvitationAcceptanceResponseSchema,
   type InvitationPreview,
@@ -364,10 +359,6 @@ export * from "./session.js";
 export {
   type CompleteWorkspaceSetupRequest,
   CompleteWorkspaceSetupRequestSchema,
-  type CreateWorkspaceRequest,
-  CreateWorkspaceRequestSchema,
-  type CreateWorkspaceResponse,
-  CreateWorkspaceResponseSchema,
   type ListWorkspaceAdminsConfigResponse,
   ListWorkspaceAdminsConfigResponseSchema,
   type ListWorkspaceAdminsResponse,

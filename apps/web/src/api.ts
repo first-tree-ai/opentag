@@ -1,6 +1,4 @@
 import {
-  type AdminInvitation,
-  AdminInvitationSchema,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
@@ -24,9 +22,6 @@ import {
   ComputerConnectCodeIssueResponseSchema,
   type ConfigureSlackAppRequest,
   type CreateAgentRequest,
-  type CreateWorkspaceRequest,
-  type CreateWorkspaceResponse,
-  CreateWorkspaceResponseSchema,
   ErrorEnvelopeSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
@@ -71,7 +66,6 @@ import {
   WorkspaceProfileSchema,
   type WorkspaceSetupCompletion,
   WorkspaceSetupCompletionSchema,
-  workspaceAdminInvitationsPath,
   workspaceAdminPath,
   workspaceAdminsPath,
   workspaceAgentsPath,
@@ -119,14 +113,6 @@ export class BrowserApi {
 
   admins(workspaceId: string): Promise<ListWorkspaceAdminsResponse> {
     return this.request(workspaceAdminsPath(workspaceId), ListWorkspaceAdminsResponseSchema);
-  }
-
-  createWorkspace(input: CreateWorkspaceRequest): Promise<CreateWorkspaceResponse> {
-    return this.request(HTTP_PATHS.workspaces, CreateWorkspaceResponseSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
   }
 
   revokeWorkspaceAdmin(workspaceId: string, accountId: string): Promise<void> {
@@ -263,13 +249,6 @@ export class BrowserApi {
 
   issueComputerConnectCode(workspaceId: string): Promise<ComputerConnectCodeIssueResponse> {
     return this.request(workspaceComputerConnectCodesPath(workspaceId), ComputerConnectCodeIssueResponseSchema, {
-      method: "POST",
-      headers: this.csrfHeaders(),
-    });
-  }
-
-  createAdminInvitation(workspaceId: string): Promise<AdminInvitation> {
-    return this.request(workspaceAdminInvitationsPath(workspaceId), AdminInvitationSchema, {
       method: "POST",
       headers: this.csrfHeaders(),
     });

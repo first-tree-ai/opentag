@@ -1,7 +1,7 @@
 # OpenTag 开发指南
 
 > Canonical source: [DEVELOPMENT.md](./DEVELOPMENT.md)
-> Last synced with: 2026-08-25
+> Last synced with: 2026-08-26
 
 ## 前置要求
 
@@ -277,13 +277,14 @@ Workspace 时才显示，并结合显式最近选择与 Server 的确定性 fall
 
 ```bash
 pnpm --filter open-tag start admin list --workspace example
-pnpm --filter open-tag start admin invite --workspace example
 pnpm --filter open-tag start admin revoke <account-id> --workspace example
 ```
 
-Admin invitation 在 30 分钟后过期，且仅可使用一次。PostgreSQL 只保存 SHA-256 查询 hash；明文 URL 仅在创建时
-返回一次，接收者登录后还必须显式接受完整 Workspace Admin 权限。撤销 Admin 时，其未使用 invitation 会在同一事务
-失效。`OPENTAG_ENCRYPTION_KEY` 继续保护 IM provider credential；使用 `openssl rand -base64 32` 生成。
+OpenTag 不再提供创建额外 Workspace 或签发新 Admin invitation 的入口。不携带 invitation 的普通注册以及 bootstrap，
+仍会为 Account 配置内部默认 Workspace。变更前已签发的 invitation 在未被使用、撤销且未过期时仍可预览，并且仅在签发者
+仍是当前 Admin 时才可兑换；兑换仍可能新增 Admin。PostgreSQL 只保存其 SHA-256 查询 hash。现有 Admin 仍可列出和撤销；
+撤销 Admin 时，其未使用 invitation 会在同一事务失效。`OPENTAG_ENCRYPTION_KEY` 继续保护 IM provider credential；使用
+`openssl rand -base64 32` 生成。
 
 ## Onboarding 端到端检查
 
@@ -329,7 +330,7 @@ setup attempt 并记录结果，然后把一条已授权的 binding 写入数据
 | `OPENTAG_HOST` | `127.0.0.1` | Server 监听地址 |
 | `OPENTAG_PORT` | `8000` | Server 监听端口 |
 | `OPENTAG_SERVER_URL` | `http://127.0.0.1:8000` | CLI doctor 目标地址 |
-| `OPENTAG_PUBLIC_URL` | 无 | 浏览器 callback 和邀请链接使用的必需 Server 公共 origin |
+| `OPENTAG_PUBLIC_URL` | 无 | 浏览器 callback 和生成连接命令使用的必需 Server 公共 origin |
 | `OPENTAG_ENV` | `dev` | OpenTag 环境/channel：`dev`、`staging` 或 `prod`；托管值要求 HTTPS |
 | `OPENTAG_DATABASE_URL` | 无 | 必需的 PostgreSQL 连接地址 |
 | `OPENTAG_JWT_SECRET` | 无 | 必需的 access token 签名 secret，至少 32 个字符 |

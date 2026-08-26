@@ -1412,8 +1412,7 @@ pre {
   font-size: var(--text-subsection);
 }
 
-.form-card label,
-.invite-link {
+.form-card label {
   display: grid;
   gap: 7px;
   color: var(--secondary-foreground);
@@ -3510,7 +3509,6 @@ textarea:focus {
 
 .settings-profile-form > h2,
 .settings-list-section h2,
-.settings-invitation-panel h3,
 .settings-readonly-panel h2,
 .settings-unavailable h2,
 .settings-policy-banner h2 {
@@ -3618,68 +3616,6 @@ textarea:focus {
   font-weight: var(--fw-semibold);
   padding: 5px 8px;
   white-space: nowrap;
-}
-
-.settings-invitation-panel {
-  display: grid;
-  width: 100%;
-  gap: 14px;
-  border-top: 1px solid var(--strong-border);
-  background: transparent;
-  padding: 28px 0 0;
-}
-
-.settings-members-section .settings-invitation-panel {
-  width: 100%;
-}
-
-.settings-invitation-panel h3 {
-  margin: 0;
-  font-size: var(--text-subsection);
-  font-weight: var(--fw-semibold);
-}
-
-.settings-invitation-panel > p {
-  max-width: 590px;
-  margin: -7px 0 1px;
-  color: var(--muted);
-  font-size: var(--text-meta);
-}
-
-.settings-invitation-panel:has(.settings-invitation-create) {
-  align-items: center;
-  grid-template-columns: minmax(0, 1fr) auto;
-}
-
-.settings-invitation-panel:has(.settings-invitation-create) h3,
-.settings-invitation-panel:has(.settings-invitation-create) > p {
-  grid-column: 1;
-}
-
-.settings-invitation-panel:has(.settings-invitation-create) h3 {
-  grid-row: 1;
-}
-
-.settings-invitation-panel:has(.settings-invitation-create) > p {
-  grid-row: 2;
-}
-
-.settings-invitation-panel .settings-invitation-create {
-  grid-column: 2;
-  grid-row: 1 / span 2;
-}
-
-.settings-invitation-panel .invite-link {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.settings-invitation-panel .invite-link + .muted {
-  margin: 0;
-  font-size: var(--text-meta);
-}
-
-.settings-invitation-panel .actions {
-  justify-content: flex-end;
 }
 
 .settings-member-list {
@@ -4291,27 +4227,6 @@ textarea:focus {
 
   .agent-integration-list {
     grid-template-columns: 1fr;
-  }
-
-  .settings-invitation-panel,
-  .settings-invitation-panel:has(.settings-invitation-create) {
-    grid-template-columns: 1fr;
-  }
-
-  .settings-invitation-panel h3,
-  .settings-invitation-panel > p,
-  .settings-invitation-panel .invite-link,
-  .settings-invitation-panel .invite-link + .muted,
-  .settings-invitation-panel .actions,
-  .settings-invitation-panel:has(.settings-invitation-create) h3,
-  .settings-invitation-panel:has(.settings-invitation-create) > p,
-  .settings-invitation-panel .settings-invitation-create {
-    grid-column: 1;
-    grid-row: auto;
-  }
-
-  .settings-invitation-panel .settings-invitation-create {
-    justify-content: flex-start;
   }
 
   .settings-table-header {

@@ -107,7 +107,10 @@ export function validateOAuthNext(value?: string): string {
   ) {
     throw new AuthServiceError("AUTH_OAUTH_FAILED", "validation", "The sign-in destination is invalid", 400);
   }
-  if (/^\/(?:agents(?:\/[^?#]*)?|settings(?:\/[^?#]*)?|onboarding|workspaces\/new|login)(?:\?[^#]*)?$/.test(next)) {
+  // OAuth contexts issued before self-serve Workspace creation was retired remain valid for ten minutes.
+  // Send those callbacks to the normal authenticated landing page instead of a removed creation route.
+  if (/^\/workspaces\/new(?:\?[^#]*)?$/.test(next)) return "/agents";
+  if (/^\/(?:agents(?:\/[^?#]*)?|settings(?:\/[^?#]*)?|onboarding|login)(?:\?[^#]*)?$/.test(next)) {
     return next;
   }
   if (/^\/invites\/[A-Za-z0-9_-]{32,512}$/.test(next)) return next;

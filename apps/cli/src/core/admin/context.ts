@@ -1,7 +1,6 @@
 import { AccessTokenProvider, OpenTagApi, readCredentials, resolveOpenTagHome } from "@opentag/client";
 
-export interface AdminApiClient
-  extends Pick<OpenTagApi, "createWorkspaceAdminInvitation" | "listWorkspaceAdmins" | "me" | "revokeWorkspaceAdmin"> {}
+export interface AdminApiClient extends Pick<OpenTagApi, "listWorkspaceAdmins" | "me" | "revokeWorkspaceAdmin"> {}
 
 export interface AdminCommandDependencies {
   accessToken?: string;

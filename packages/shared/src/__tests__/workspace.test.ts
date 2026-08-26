@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   CompleteWorkspaceSetupRequestSchema,
-  CreateWorkspaceRequestSchema,
-  CreateWorkspaceResponseSchema,
   ListWorkspaceComputersResponseSchema,
   UpdateWorkspaceProfileRequestSchema,
   WorkspaceAdminConfigSchema,
@@ -59,36 +57,11 @@ describe("Workspace contracts", () => {
     expect(() => UpdateWorkspaceProfileRequestSchema.parse({ displayName: "   " })).toThrow();
   });
 
-  it("normalizes a Workspace creation request into a canonical slug and trimmed display name", () => {
-    expect(CreateWorkspaceRequestSchema.parse({ name: "  First-Tree  ", displayName: "  First Tree AI  " })).toEqual({
-      name: "first-tree",
-      displayName: "First Tree AI",
-    });
-  });
-
-  it("rejects Workspace creation names that are not URL-safe slugs", () => {
-    for (const name of ["not url safe", "-leading-hyphen", "trailing_underscore", "", "a".repeat(65)]) {
-      expect(() => CreateWorkspaceRequestSchema.parse({ name, displayName: "Example" })).toThrow();
-    }
-  });
-
-  it("requires both Workspace creation fields and rejects unknown ones", () => {
-    expect(() => CreateWorkspaceRequestSchema.parse({ name: "example" })).toThrow();
-    expect(() => CreateWorkspaceRequestSchema.parse({ displayName: "Example" })).toThrow();
-    expect(() => CreateWorkspaceRequestSchema.parse({ name: "example", displayName: "   " })).toThrow();
-    expect(() =>
-      CreateWorkspaceRequestSchema.parse({ name: "example", displayName: "Example", role: "admin" }),
-    ).toThrow();
-  });
-
-  it("applies the same field limits to Workspace updates that creation enforces", () => {
+  it("applies the Workspace writer limits to profile updates", () => {
     const overlongName = "a".repeat(65);
     const overlongDisplayName = "a".repeat(121);
-    expect(() => CreateWorkspaceRequestSchema.parse({ name: overlongName, displayName: "Example" })).toThrow();
     expect(() => UpdateWorkspaceProfileRequestSchema.parse({ name: overlongName })).toThrow();
-    expect(() => CreateWorkspaceRequestSchema.parse({ name: "example", displayName: overlongDisplayName })).toThrow();
     expect(() => UpdateWorkspaceProfileRequestSchema.parse({ displayName: overlongDisplayName })).toThrow();
-    // A Workspace that creation accepts at the boundary must stay renameable to the same boundary.
     expect(UpdateWorkspaceProfileRequestSchema.parse({ name: "a".repeat(64) })).toEqual({ name: "a".repeat(64) });
     expect(UpdateWorkspaceProfileRequestSchema.parse({ displayName: "a".repeat(120) })).toEqual({
       displayName: "a".repeat(120),
@@ -107,19 +80,5 @@ describe("Workspace contracts", () => {
     expect(WorkspaceProfileSchema.parse(legacy)).toMatchObject({ name: legacy.name, displayName: legacy.displayName });
     expect(() => UpdateWorkspaceProfileRequestSchema.parse({ displayName: legacy.displayName })).toThrow();
     expect(() => UpdateWorkspaceProfileRequestSchema.parse({ name: legacy.name })).toThrow();
-  });
-
-  it("returns the created Workspace with its self grant audit time", () => {
-    const created = {
-      id: "d3fda800-7ce2-4338-aae8-3d2120401ed6",
-      name: "first-tree",
-      displayName: "First Tree AI",
-      setupCompletedAt: null,
-      grantedAt: "2026-08-20T00:00:00.000Z",
-      createdAt: "2026-08-20T00:00:00.000Z",
-      updatedAt: "2026-08-20T00:00:00.000Z",
-    };
-    expect(CreateWorkspaceResponseSchema.parse(created)).toEqual(created);
-    expect(() => CreateWorkspaceResponseSchema.parse({ ...created, role: "admin" })).toThrow();
   });
 });

@@ -1,7 +1,5 @@
 import {
   CompleteWorkspaceSetupRequestSchema,
-  CreateWorkspaceRequestSchema,
-  CreateWorkspaceResponseSchema,
   ListWorkspaceAdminsResponseSchema,
   ListWorkspaceComputersResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
@@ -11,7 +9,6 @@ import {
   WORKSPACE_BY_ID_TEMPLATE,
   WORKSPACE_COMPUTERS_TEMPLATE,
   WORKSPACE_SETUP_COMPLETE_TEMPLATE,
-  WORKSPACES_TEMPLATE,
   WorkspaceProfileSchema,
   WorkspaceSetupCompletionSchema,
 } from "@opentag/shared";
@@ -39,13 +36,6 @@ export function registerWorkspaceRoutes(
   workspaceSetupService?: WorkspaceSetupService,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
-
-  app.post(WORKSPACES_TEMPLATE, { preHandler }, async (request, reply) => {
-    const input = parseRequest(CreateWorkspaceRequestSchema, request.body);
-    return reply
-      .code(201)
-      .send(CreateWorkspaceResponseSchema.parse(await workspaceService.createWorkspace(accountId(request), input)));
-  });
 
   app.get(WORKSPACE_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
     const { workspaceId } = parseRequest(WorkspaceParamsSchema, request.params);

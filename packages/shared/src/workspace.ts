@@ -17,15 +17,6 @@ export const WorkspaceProfileSchema = z
   })
   .strict();
 
-export const CreateWorkspaceRequestSchema = z
-  .object({ name: WorkspaceNameInputSchema, displayName: WorkspaceDisplayNameSchema })
-  .strict();
-
-export const CreateWorkspaceResponseSchema = WorkspaceProfileSchema.extend({
-  createdAt: z.string().datetime(),
-  grantedAt: z.string().datetime(),
-}).strict();
-
 export const UpdateWorkspaceProfileRequestSchema = z
   .object({ name: WorkspaceNameInputSchema.optional(), displayName: WorkspaceDisplayNameSchema.optional() })
   .strict()
@@ -85,8 +76,6 @@ export const ListWorkspaceComputersConfigResponseSchema = z
   .strict();
 
 export type WorkspaceProfile = z.infer<typeof WorkspaceProfileSchema>;
-export type CreateWorkspaceRequest = z.infer<typeof CreateWorkspaceRequestSchema>;
-export type CreateWorkspaceResponse = z.infer<typeof CreateWorkspaceResponseSchema>;
 export type UpdateWorkspaceProfileRequest = z.infer<typeof UpdateWorkspaceProfileRequestSchema>;
 export type WorkspaceAdminSummary = z.infer<typeof WorkspaceAdminSummarySchema>;
 export type WorkspaceAdminConfig = z.infer<typeof WorkspaceAdminConfigSchema>;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AdminInvitationSchema, InvitationPreviewSchema } from "../index.js";
+import { InvitationPreviewSchema, InvitationTokenSchema } from "../index.js";
 
 describe("invitation contracts", () => {
   it("returns only bounded public preview fields", () => {
@@ -11,13 +11,8 @@ describe("invitation contracts", () => {
     ).toEqual({ workspaceDisplayName: "Example", expiresAt: "2026-08-26T00:00:00.000Z" });
   });
 
-  it("requires a bounded bearer token for authorized invitation display", () => {
-    expect(() =>
-      AdminInvitationSchema.parse({
-        token: "short",
-        inviteUrl: "https://example.com/invites/short",
-        expiresAt: "2026-08-26T00:00:00.000Z",
-      }),
-    ).toThrow();
+  it("requires a bounded bearer token to redeem an outstanding invitation", () => {
+    expect(() => InvitationTokenSchema.parse("short")).toThrow();
+    expect(InvitationTokenSchema.parse("A".repeat(43))).toBe("A".repeat(43));
   });
 });

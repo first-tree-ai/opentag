@@ -1,7 +1,4 @@
 import {
-  type CreateWorkspaceRequest,
-  CreateWorkspaceRequestSchema,
-  type CreateWorkspaceResponse,
   type ListWorkspaceAdminsConfigResponse,
   type ListWorkspaceAdminsResponse,
   type ListWorkspaceComputersConfigResponse,
@@ -72,23 +69,6 @@ export class WorkspaceAdminService {
     workspaceId: string,
   ): Promise<void> {
     await this.#workspaceAdmins.bootstrapAdminInTransaction(transaction, userId, workspaceId);
-  }
-
-  async createWorkspace(accountId: string, rawInput: CreateWorkspaceRequest): Promise<CreateWorkspaceResponse> {
-    const input = CreateWorkspaceRequestSchema.parse(rawInput);
-    try {
-      return await this.#workspaceAdmins.createWorkspaceWithAdmin(accountId, input);
-    } catch (error) {
-      if (isWorkspaceNameConflict(error)) {
-        throw new AuthServiceError(
-          "WORKSPACE_NAME_CONFLICT",
-          "deterministic",
-          "Another Workspace already uses this canonical name",
-          409,
-        );
-      }
-      throw error;
-    }
   }
 
   async updateWorkspaceProfile(

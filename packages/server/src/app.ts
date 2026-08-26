@@ -10,6 +10,7 @@ import { type BrowserAuthRoutesOptions, registerBrowserAuthRoutes } from "./api/
 import { registerComputerRoutes } from "./api/computers.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImResourceRoute } from "./api/im-resources.js";
+import { registerInternalOnboardingLabRoutes } from "./api/internal-onboarding-lab.js";
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
@@ -24,6 +25,7 @@ import type { ImResourceService } from "./services/im/index.js";
 import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
 import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
 import { type SlackConfigurationService, SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
+import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-lab/index.js";
 import {
   type WorkspaceAdminService,
   type WorkspaceSetupService,
@@ -57,6 +59,8 @@ export interface CreateAppOptions {
   readiness?: BootstrapReadiness;
   runtime?: RuntimeRoutesOptions;
   slackEvents?: SlackEventsRouteOptions;
+  /** Registered only by a staging deployment that configures the shared Onboarding Lab Account. */
+  stagingOnboardingLab?: { reset: OnboardingResetService };
   workspaceService?: WorkspaceAdminService;
   workspaceSetupService?: WorkspaceSetupService;
 }
@@ -199,6 +203,9 @@ export function createApp(options: CreateAppOptions = {}) {
         publicOrigin,
       });
     }
+    if (options.stagingOnboardingLab) {
+      registerInternalOnboardingLabRoutes(app, authService, options.stagingOnboardingLab.reset, publicOrigin);
+    }
     if (options.imBindingService) {
       registerImBindingRoutes(
         app,
@@ -262,6 +269,7 @@ export function createApp(options: CreateAppOptions = {}) {
       error instanceof AuthServiceError ||
       error instanceof AgentServiceError ||
       error instanceof ImBindingServiceError ||
+      error instanceof OnboardingResetError ||
       error instanceof SlackConfigurationServiceError ||
       error instanceof WorkspaceSetupServiceError
     ) {

@@ -16,6 +16,7 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
+  useCallback,
   useContext,
   useEffect,
   useRef,
@@ -45,6 +46,7 @@ import { SkillsPage } from "./features/skills-page.js";
 import { TaskDetailPage, TasksPage } from "./features/tasks-page.js";
 import { FeishuSetup } from "./im/feishu-setup.js";
 import { SlackConfiguration } from "./im/slack-configuration.js";
+import { OnboardingLabPage } from "./internal/onboarding-lab-page.js";
 import { OnboardingPage } from "./onboarding/page.js";
 import { RuntimeConfigurationForm } from "./runtime-configuration.js";
 import {
@@ -424,7 +426,8 @@ function AsyncState<T>({
 interface WorkspaceSession {
   me: MeResponse;
   membership: MeWorkspace;
-  refreshMe: () => void;
+  /** Resolves only once the authoritative `/me` response has been installed as current state. */
+  refreshMe: () => Promise<MeResponse>;
 }
 
 const workspaceContext = createContext<WorkspaceSession | undefined>(undefined);
@@ -442,6 +445,8 @@ export function AppRouter() {
       <Route path="/login" element={<LoginPage />} />
       <Route element={<AuthenticatedWorkspaceGate />}>
         <Route element={<AppShell />}>
+          {/* Outside the setup-completion gate so a stuck run can always reopen the Lab. */}
+          <Route path="/internal/onboarding-lab" element={<OnboardingLabRoute />} />
           <Route element={<WorkspaceSetupGate />}>
             <Route path="/onboarding" element={<OnboardingRoute />} />
             <Route index element={<Navigate replace to="/agents" />} />
@@ -555,20 +560,31 @@ function LoginProviderLink({ next, provider }: { next: string; provider: AuthPro
 function AuthenticatedWorkspaceGate() {
   const location = useLocation();
   const [meRevision, setMeRevision] = useState(0);
+  const [refreshed, setRefreshed] = useState<{ revision: number; me: MeResponse }>();
   const state = useResource(() => browserApi.me(), `me:${meRevision}`);
+  /**
+   * Installs the authoritative response before resolving, so a caller that navigates on the result
+   * cannot have a gate re-evaluate the state this refresh was meant to replace.
+   */
+  const refreshMe = useCallback(async () => {
+    const next = await browserApi.me();
+    setRefreshed({ revision: meRevision, me: next });
+    return next;
+  }, [meRevision]);
   if (state.kind === "error" && state.error instanceof ApiError && state.error.status === 401) {
     const requested = location.pathname === "/" ? "/agents" : `${location.pathname}${location.search}`;
     return <Navigate replace to={`/login?next=${encodeURIComponent(requested)}`} />;
   }
   return (
     <AsyncState state={state}>
-      {(me) => {
+      {(loaded) => {
+        const me = refreshed?.revision === meRevision ? refreshed.me : loaded;
         const membership = me.workspaces[0];
         if (!membership) {
           return <NoWorkspaceAccess onRetry={() => setMeRevision((value) => value + 1)} />;
         }
         return (
-          <WorkspaceContext value={{ me, membership, refreshMe: () => setMeRevision((value) => value + 1) }}>
+          <WorkspaceContext value={{ me, membership, refreshMe }}>
             <Outlet />
           </WorkspaceContext>
         );
@@ -602,7 +618,7 @@ function OnboardingRoute() {
       user={me.user}
       onSetupReady={async (agentId) => {
         await browserApi.completeWorkspaceSetup(membership.id, agentId);
-        refreshMe();
+        await refreshMe();
       }}
       onTargetAgentChange={(agentId) => {
         const next = new URLSearchParams(searchParams);
@@ -610,6 +626,45 @@ function OnboardingRoute() {
         setSearchParams(next, { replace: true });
       }}
     />
+  );
+}
+
+/**
+ * The staging-only Onboarding Lab. The Server decides whether this Account may use it, and an
+ * Account that may not is answered exactly like a page that does not exist.
+ */
+function OnboardingLabRoute() {
+  const { me, refreshMe } = useWorkspace();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const available = useResource(() => browserApi.onboardingLabAvailable(), "onboarding-lab");
+  return (
+    <AsyncState state={available}>
+      {(allowed) =>
+        allowed ? (
+          <OnboardingLabPage
+            scenarioId={searchParams.get("scenario")}
+            user={me.user}
+            onScenarioChange={(scenarioId) => {
+              const next = new URLSearchParams(searchParams);
+              next.set("scenario", scenarioId);
+              setSearchParams(next, { replace: true });
+            }}
+            onResetSucceeded={async () => {
+              // The Lab never infers success from client state: it enters onboarding only once the
+              // refreshed Account actually reports incomplete setup.
+              const account = await refreshMe();
+              if (account.workspaces[0]?.setupCompletedAt) {
+                throw new Error("The Account still reports completed setup; retry the reset.");
+              }
+              navigate("/onboarding", { replace: true });
+            }}
+          />
+        ) : (
+          <NotFoundPage />
+        )
+      }
+    </AsyncState>
   );
 }
 
@@ -2483,14 +2538,22 @@ function messagingConnectionTone(
   return "warning";
 }
 
-function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeResponse["user"] }) {
+function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeResponse>; user: MeResponse["user"] }) {
   const saveInFlight = useRef(false);
   const confirmedDisplayNameRef = useRef(user.displayName);
   const [displayName, setDisplayName] = useState(user.displayName);
   const [saving, setSaving] = useState(false);
+  const syncInFlight = useRef(false);
+  const [syncing, setSyncing] = useState(false);
+  /**
+   * A Server-confirmed display name whose Account refresh has not succeeded yet. It is saved, not
+   * unsaved, so it — and never the stale projection — is what the form treats as confirmed.
+   */
+  const [unsyncedDisplayName, setUnsyncedDisplayName] = useState<string>();
   const [message, setMessage] = useState<string>();
   const [error, setError] = useState<string>();
-  const dirty = displayName !== user.displayName;
+  const confirmedDisplayName = unsyncedDisplayName ?? user.displayName;
+  const dirty = displayName !== confirmedDisplayName;
 
   useEffect(() => {
     if (confirmedDisplayNameRef.current === user.displayName) return;
@@ -2500,7 +2563,10 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (saveInFlight.current) return;
+    // Enter in the text field submits this form too, so the boundary lives here rather than in
+    // which controls are rendered: a committed save must not be repeated, and a save must never
+    // run against an Account refresh that is still in flight.
+    if (saveInFlight.current || syncInFlight.current || !dirty) return;
     saveInFlight.current = true;
     setSaving(true);
     setMessage(undefined);
@@ -2508,15 +2574,46 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
     try {
       const updated = await browserApi.updateProfile({ displayName });
       setDisplayName(updated.displayName);
-      setMessage("Account profile saved.");
-      refreshMe();
+      await syncAccount(updated.displayName);
     } catch (cause) {
-      setDisplayName(user.displayName);
+      // Only the write can fail here; syncAccount reports its own failure. Fall back to the last
+      // confirmed value, which is the saved one when an earlier save is still unsynchronized.
+      setDisplayName(confirmedDisplayName);
       setError(cause instanceof Error ? cause.message : "Unable to save the account profile");
     } finally {
       saveInFlight.current = false;
       setSaving(false);
     }
+  }
+
+  /**
+   * Refreshes the shared Account after a committed write; it never repeats the write itself. One
+   * refresh at a time, so a slower earlier response can never overwrite a newer projection.
+   */
+  async function syncAccount(savedDisplayName: string): Promise<void> {
+    if (syncInFlight.current) return;
+    syncInFlight.current = true;
+    setSyncing(true);
+    try {
+      await refreshMe();
+      setUnsyncedDisplayName(undefined);
+      setError(undefined);
+      setMessage("Account profile saved.");
+    } catch {
+      setUnsyncedDisplayName(savedDisplayName);
+      setMessage(undefined);
+      setError(
+        "Your display name was saved. OpenTag could not refresh the account, so the rest of the page still shows the previous name.",
+      );
+    } finally {
+      syncInFlight.current = false;
+      setSyncing(false);
+    }
+  }
+
+  async function retrySync() {
+    if (unsyncedDisplayName === undefined) return;
+    await syncAccount(unsyncedDisplayName);
   }
 
   return (
@@ -2547,6 +2644,8 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
             <input
               autoComplete="name"
               className="ds-control"
+              // Editing during a refresh-only retry could open a save that races it.
+              disabled={syncing}
               id="account-display-name"
               maxLength={255}
               name="displayName"
@@ -2569,7 +2668,7 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
               disabled={saving}
               variant="ghost"
               onClick={() => {
-                setDisplayName(user.displayName);
+                setDisplayName(confirmedDisplayName);
                 setMessage(undefined);
                 setError(undefined);
               }}
@@ -2578,6 +2677,18 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => void; user: MeR
             </Button>
             <Button disabled={saving} type="submit">
               {saving ? "Saving…" : "Save account profile"}
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {!dirty && unsyncedDisplayName !== undefined ? (
+        // The value is saved, so this offers only the step that failed: no Save that would repeat
+        // the write, and no Discard that would replace the saved name with the stale projection.
+        <div className="dirty-bar">
+          <span>Account not refreshed</span>
+          <div className="dirty-actions">
+            <Button disabled={syncing} onClick={() => void retrySync()}>
+              {syncing ? "Refreshing…" : "Retry refresh"}
             </Button>
           </div>
         </div>

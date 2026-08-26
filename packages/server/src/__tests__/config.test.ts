@@ -9,6 +9,40 @@ const required = {
 };
 
 describe("parseServerConfig", () => {
+  it("registers the staging Onboarding Lab Account only for an explicit staging environment", () => {
+    const accountId = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENV: "staging",
+        OPENTAG_PUBLIC_URL: "https://staging.example.com",
+        OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: ` ${accountId} `,
+      }).stagingOnboardingLab,
+    ).toEqual({ accountId });
+
+    expect(parseServerConfig({ ...required, OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: "" }).stagingOnboardingLab).toBe(
+      undefined,
+    );
+    expect(parseServerConfig(required).stagingOnboardingLab).toBe(undefined);
+
+    for (const invalid of [
+      {
+        OPENTAG_ENV: "prod",
+        OPENTAG_PUBLIC_URL: "https://example.com",
+        OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: accountId,
+      },
+      { OPENTAG_ENV: "dev", OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: accountId },
+      { OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: accountId },
+      {
+        OPENTAG_ENV: "staging",
+        OPENTAG_PUBLIC_URL: "https://staging.example.com",
+        OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: "not-a-uuid",
+      },
+    ]) {
+      expect(() => parseServerConfig({ ...required, ...invalid })).toThrow();
+    }
+  });
+
   it("applies safe local defaults", () => {
     expect(parseServerConfig(required)).toMatchObject({
       accessTokenTtlSeconds: 900,

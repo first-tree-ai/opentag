@@ -187,7 +187,6 @@ vi.mock("../services/im-bindings/slack/index.js", () => ({
     }
   },
 }));
-vi.mock("../services/invitations/index.js", () => ({ InvitationService: class {} }));
 vi.mock("../services/runtime-config/index.js", () => ({ EffectiveRuntimeSnapshotAssembler: class {} }));
 vi.mock("../services/workspaces/index.js", () => ({
   WorkspaceAdminService: class {},

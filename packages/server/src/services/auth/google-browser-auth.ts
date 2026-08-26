@@ -4,7 +4,7 @@ import type { ResolvedUserTokenIssuer } from "./auth-service.js";
 import { AuthServiceError } from "./errors.js";
 import type { AuthIdentityService } from "./identity-service.js";
 import type { GoogleIdentityClient } from "./oauth/google.js";
-import { invitationTokenFromNext, type OAuthFlowService } from "./oauth/state.js";
+import type { OAuthFlowService } from "./oauth/state.js";
 import type { PostAuthenticationService } from "./post-authentication.js";
 
 export interface GoogleAuthStartResult {
@@ -89,15 +89,9 @@ export class GoogleBrowserAuthService {
       nonce: flow.oidcNonce,
       redirectUri: this.#redirectUri,
     });
-    const invitationToken = invitationTokenFromNext(flow.next);
     const userId = await this.#database.transaction(async (transaction) => {
       const resolved = await this.#identities.resolveOrCreateInTransaction(transaction, identity);
-      await this.#postAuthentication.completeInTransaction(
-        transaction,
-        resolved.userId,
-        resolved.accountWasCreated,
-        invitationToken,
-      );
+      await this.#postAuthentication.completeInTransaction(transaction, resolved.userId, resolved.accountWasCreated);
       return resolved.userId;
     });
     return {

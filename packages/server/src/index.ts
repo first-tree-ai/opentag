@@ -37,7 +37,6 @@ import {
 } from "./services/im-bindings/feishu/index.js";
 import { createImProviderAdapterResolver, ImBindingService } from "./services/im-bindings/index.js";
 import { DefaultSlackApiClient, SlackAdapter, SlackConfigurationService } from "./services/im-bindings/slack/index.js";
-import { InvitationService } from "./services/invitations/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { WorkspaceAdminAccess } from "./services/workspace-admin-access/index.js";
@@ -128,7 +127,6 @@ export async function startServer(): Promise<void> {
     const computerService = new ComputerService(database, authService);
     const workspaceService = new WorkspaceAdminService(database, { providerReadiness: registry, workspaceAdmins });
     const applicationCipher = new ApplicationCipher(config.encryptionKey);
-    const invitationService = new InvitationService(database, { workspaceAdmins });
     const agentRuntimeReadinessForAgent = async (agentId: string): Promise<ProviderReadinessStatus> => {
       const [agent] = await database
         .select({ workspaceComputerId: workspaceComputers.id, runtimeProvider: agents.runtimeProvider })
@@ -262,7 +260,6 @@ export async function startServer(): Promise<void> {
       },
       computerService,
       machineAuthService,
-      invitationService,
       imBindingService,
       feishuSetupService,
       slackConfigurationService,

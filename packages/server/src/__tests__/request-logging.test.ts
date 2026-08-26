@@ -28,13 +28,6 @@ describe("request logging", () => {
           tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
         }),
       } as never,
-      invitationService: {
-        preview: vi.fn().mockResolvedValue({
-          workspaceDisplayName: "Example",
-          expiresAt: "2030-01-01T00:00:00.000Z",
-        }),
-        accept: vi.fn(),
-      } as never,
       loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
     });
     try {

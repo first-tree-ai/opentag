@@ -182,20 +182,6 @@ describe("browser authentication routes", () => {
     );
   });
 
-  it("sends a redeemed invitation sign-in to Agents without a Workspace selection hint", async () => {
-    const token = "A".repeat(43);
-    const googleService = google({ next: `/invites/${token}` });
-    const { app } = createBrowserApp({ googleService });
-    const response = await app.inject({
-      method: "GET",
-      url: `${HTTP_PATHS.authGoogleCallback}?code=code&state=state`,
-      headers: { cookie: "opentag_oauth_context=signed-context" },
-    });
-
-    expect(response.statusCode).toBe(302);
-    expect(response.headers.location).toBe("/agents");
-  });
-
   it("accepts provider-owned callback fields but passes only supported values to the Google service", async () => {
     const { app, googleService } = createBrowserApp();
     const response = await app.inject({

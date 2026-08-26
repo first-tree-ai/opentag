@@ -909,42 +909,18 @@ describe("HTTP tracing", () => {
     expect(JSON.stringify(httpSpans[0]?.attributes)).not.toContain("query-secret");
   });
 
-  it("redacts Admin invitation bearer tokens from real preview and accept route spans", async () => {
-    const accountId = randomUUID();
-    const app = createApp({
-      authService: {
-        getAuthenticatedUser: vi.fn().mockResolvedValue({
-          me: { user: { id: accountId }, workspaces: [] },
-          tokenExpiresAt: new Date("2030-01-01T00:00:00.000Z"),
-        }),
-      } as never,
-      invitationService: {
-        preview: vi.fn().mockResolvedValue({
-          workspaceDisplayName: "Example",
-          expiresAt: "2030-01-01T00:00:00.000Z",
-        }),
-        accept: vi.fn().mockResolvedValue({
-          workspace: {
-            id: randomUUID(),
-            name: "example",
-            displayName: "Example",
-            setupCompletedAt: null,
-            grantedAt: "2026-08-25T00:00:00.000Z",
-          },
-        }),
-      } as never,
-    });
+  it("redacts bearer tokens from retired invitation URLs", async () => {
+    const app = createApp();
     const previewToken = "P".repeat(43);
     const acceptToken = "A".repeat(43);
     await app.inject({ method: "GET", url: `/api/v1/admin-invitations/${previewToken}/preview` });
     await app.inject({
       method: "POST",
       url: `/api/v1/admin-invitations/${acceptToken}/accept`,
-      headers: { authorization: "Bearer account-token" },
     });
     await app.close();
 
-    const spans = exporter.getFinishedSpans().filter((span) => span.name.includes("/api/v1/admin-invitations/:token/"));
+    const spans = exporter.getFinishedSpans().filter((span) => span.name.endsWith("unmatched"));
     expect(spans).toHaveLength(2);
     const exported = JSON.stringify(spans.map((span) => span.attributes));
     expect(exported).not.toContain(previewToken);

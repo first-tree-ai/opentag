@@ -111,37 +111,6 @@ describe("GoogleBrowserAuthService", () => {
     expect(exchangeCode).toHaveBeenCalledOnce();
   });
 
-  it("redeems an invitation in the callback transaction without exposing a Workspace selection", async () => {
-    const token = "A".repeat(43);
-    const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
-    const completeInTransaction = vi.fn().mockResolvedValue({ userId });
-    const issueTokensForUser = vi.fn().mockResolvedValue({
-      accessToken: "access-secret",
-      refreshToken: "refresh-secret",
-      tokenType: "Bearer",
-      expiresIn: 900,
-    });
-    const service = new GoogleBrowserAuthService({
-      database: { transaction: (callback: (transaction: object) => unknown) => callback({}) } as never,
-      flow: { verify: vi.fn().mockResolvedValue({ next: `/invites/${token}`, oidcNonce: "oidc-nonce" }) } as never,
-      google: { exchangeCode: vi.fn().mockResolvedValue({ provider: "google" }) } as never,
-      identities: {
-        resolveOrCreateInTransaction: vi.fn().mockResolvedValue({ accountWasCreated: true, userId }),
-      } as never,
-      postAuthentication: { completeInTransaction } as never,
-      publicUrl: "https://opentag.example.com",
-      tokenIssuer: { issueTokensForUser } as never,
-    });
-
-    const result = await service.callback({ code: "code", state: "state" }, "signed-context", {
-      onVerified: vi.fn(),
-    });
-    expect(result).toMatchObject({ next: `/invites/${token}` });
-    expect(Object.keys(result).sort()).toEqual(["next", "tokens"]);
-    expect(completeInTransaction).toHaveBeenCalledWith(expect.anything(), userId, true, token);
-    expect(issueTokensForUser).toHaveBeenCalledWith(userId);
-  });
-
   it("completes default provisioning without exposing a Workspace selection", async () => {
     const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
     const completeInTransaction = vi.fn().mockResolvedValue({ userId });
@@ -169,7 +138,7 @@ describe("GoogleBrowserAuthService", () => {
     });
     expect(result).toMatchObject({ next: "/onboarding" });
     expect(Object.keys(result).sort()).toEqual(["next", "tokens"]);
-    expect(completeInTransaction).toHaveBeenCalledWith(expect.anything(), userId, true, undefined);
+    expect(completeInTransaction).toHaveBeenCalledWith(expect.anything(), userId, true);
   });
 
   it("preserves invalid or expired flow errors before interpreting the provider result", async () => {

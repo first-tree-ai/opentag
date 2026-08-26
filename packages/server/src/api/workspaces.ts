@@ -1,15 +1,9 @@
 import {
   CompleteWorkspaceSetupRequestSchema,
-  ListWorkspaceAdminsResponseSchema,
   ListWorkspaceComputersResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
-  UpdateWorkspaceProfileRequestSchema,
-  WORKSPACE_ADMIN_TEMPLATE,
-  WORKSPACE_ADMINS_TEMPLATE,
-  WORKSPACE_BY_ID_TEMPLATE,
   WORKSPACE_COMPUTERS_TEMPLATE,
   WORKSPACE_SETUP_COMPLETE_TEMPLATE,
-  WorkspaceProfileSchema,
   WorkspaceSetupCompletionSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -20,7 +14,6 @@ import type { WorkspaceAdminService, WorkspaceSetupService } from "../services/w
 import { parseRequest } from "./request-validation.js";
 
 const WorkspaceParamsSchema = z.object({ workspaceId: z.string().uuid() }).strict();
-const AdminParamsSchema = z.object({ workspaceId: z.string().uuid(), accountId: z.string().uuid() }).strict();
 
 function accountId(request: FastifyRequest): string {
   const value = request.authContext?.me.user.id;
@@ -37,25 +30,6 @@ export function registerWorkspaceRoutes(
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
 
-  app.get(WORKSPACE_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
-    const { workspaceId } = parseRequest(WorkspaceParamsSchema, request.params);
-    return reply
-      .code(200)
-      .send(WorkspaceProfileSchema.parse(await workspaceService.getWorkspaceProfile(accountId(request), workspaceId)));
-  });
-
-  app.patch(WORKSPACE_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
-    const { workspaceId } = parseRequest(WorkspaceParamsSchema, request.params);
-    const input = parseRequest(UpdateWorkspaceProfileRequestSchema, request.body);
-    return reply
-      .code(200)
-      .send(
-        WorkspaceProfileSchema.parse(
-          await workspaceService.updateWorkspaceProfile(accountId(request), workspaceId, input),
-        ),
-      );
-  });
-
   if (workspaceSetupService) {
     app.post(WORKSPACE_SETUP_COMPLETE_TEMPLATE, { preHandler }, async (request, reply) => {
       const { workspaceId } = parseRequest(WorkspaceParamsSchema, request.params);
@@ -69,21 +43,6 @@ export function registerWorkspaceRoutes(
         );
     });
   }
-
-  app.get(WORKSPACE_ADMINS_TEMPLATE, { preHandler }, async (request, reply) => {
-    const { workspaceId } = parseRequest(WorkspaceParamsSchema, request.params);
-    return reply
-      .code(200)
-      .send(
-        ListWorkspaceAdminsResponseSchema.parse(await workspaceService.listAdmins(accountId(request), workspaceId)),
-      );
-  });
-
-  app.delete(WORKSPACE_ADMIN_TEMPLATE, { preHandler }, async (request, reply) => {
-    const { workspaceId, accountId: targetAccountId } = parseRequest(AdminParamsSchema, request.params);
-    await workspaceService.revokeAdmin(accountId(request), workspaceId, targetAccountId);
-    return reply.code(204).send();
-  });
 
   app.get(WORKSPACE_COMPUTERS_TEMPLATE, { preHandler }, async (request, reply) => {
     const { workspaceId } = parseRequest(WorkspaceParamsSchema, request.params);

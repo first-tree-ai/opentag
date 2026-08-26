@@ -1,27 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type {
-  InvitationAcceptanceResponse,
-  InvitationPreview,
-  ListWorkspaceAdminsConfigResponse,
-  ListWorkspaceAdminsResponse,
-} from "@opentag/shared";
-import { InvitationTokenSchema } from "@opentag/shared";
-import { and, asc, eq, gt, isNull, ne } from "drizzle-orm";
+import { and, asc, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import {
-  adminInvitations,
-  agents,
-  computerConnectCodes,
-  imBindings,
-  users,
-  workspaceAdminGrants,
-  workspaces,
-} from "../../db/schema/index.js";
-import { AuthServiceError, hashSecret } from "../auth/index.js";
+import { agents, imBindings, users, workspaceAdminGrants, workspaces } from "../../db/schema/index.js";
+import { AuthServiceError } from "../auth/index.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 
-export const WORKSPACE_ADMIN_LIMIT = 50;
+const WORKSPACE_ADMIN_LIMIT = 50;
 
 export interface AdminWorkspace {
   grantedAt: Date;
@@ -64,187 +49,6 @@ export class WorkspaceAdminAccess {
       userId: accountId,
       grantedByUserId: accountId,
       grantedAt: now,
-    });
-  }
-
-  async listAdmins(accountId: string, workspaceId: string): Promise<ListWorkspaceAdminsResponse> {
-    await this.requireAdmin(accountId, workspaceId);
-    const rows = await this.#database
-      .select({ userId: users.id, displayName: users.displayName, grantedAt: workspaceAdminGrants.grantedAt })
-      .from(workspaceAdminGrants)
-      .innerJoin(users, and(eq(users.id, workspaceAdminGrants.userId), isNull(users.suspendedAt)))
-      .where(and(eq(workspaceAdminGrants.workspaceId, workspaceId), isNull(workspaceAdminGrants.revokedAt)))
-      .orderBy(asc(workspaceAdminGrants.grantedAt), asc(users.id));
-    return { admins: rows.map((row) => ({ ...row, grantedAt: row.grantedAt.toISOString() })) };
-  }
-
-  async listAdminsConfig(accountId: string, workspaceId: string): Promise<ListWorkspaceAdminsConfigResponse> {
-    await this.requireAdmin(accountId, workspaceId);
-    const rows = await this.#database
-      .select({ grant: workspaceAdminGrants, user: users })
-      .from(workspaceAdminGrants)
-      .innerJoin(users, eq(users.id, workspaceAdminGrants.userId))
-      .where(and(eq(workspaceAdminGrants.workspaceId, workspaceId), isNull(workspaceAdminGrants.revokedAt)))
-      .orderBy(asc(workspaceAdminGrants.grantedAt), asc(users.id));
-    return {
-      admins: rows.map(({ grant, user }) => ({
-        workspaceId,
-        userId: user.id,
-        email: user.email,
-        displayName: user.displayName,
-        grantedByUserId: grant.grantedByUserId,
-        grantedAt: grant.grantedAt.toISOString(),
-      })),
-    };
-  }
-
-  async previewInvitation(rawToken: string): Promise<InvitationPreview> {
-    const tokenHash = hashSecret(this.#parseInvitationToken(rawToken));
-    const [row] = await this.#database
-      .select({ invitation: adminInvitations, workspaceDisplayName: workspaces.displayName })
-      .from(adminInvitations)
-      .innerJoin(workspaces, eq(workspaces.id, adminInvitations.workspaceId))
-      .where(
-        and(
-          eq(adminInvitations.tokenHash, tokenHash),
-          isNull(adminInvitations.acceptedAt),
-          isNull(adminInvitations.revokedAt),
-          gt(adminInvitations.expiresAt, this.#now()),
-        ),
-      )
-      .limit(1);
-    if (!row) throw this.#invalidInvitation();
-    return {
-      workspaceDisplayName: row.workspaceDisplayName,
-      expiresAt: row.invitation.expiresAt.toISOString(),
-    };
-  }
-
-  acceptInvitation(accountId: string, rawToken: string): Promise<InvitationAcceptanceResponse> {
-    return this.#database.transaction((transaction) =>
-      this.acceptInvitationInTransaction(transaction, accountId, rawToken),
-    );
-  }
-
-  async acceptInvitationInTransaction(
-    transaction: DatabaseTransaction,
-    accountId: string,
-    rawToken: string,
-  ): Promise<InvitationAcceptanceResponse> {
-    const tokenHash = hashSecret(this.#parseInvitationToken(rawToken));
-    const [candidate] = await transaction
-      .select({ workspaceId: adminInvitations.workspaceId })
-      .from(adminInvitations)
-      .where(eq(adminInvitations.tokenHash, tokenHash))
-      .limit(1);
-    if (!candidate) throw this.#invalidInvitation();
-
-    await this.lockAccountForGrantWrite(transaction, accountId);
-    await this.lockWorkspace(transaction, candidate.workspaceId);
-    const [invitation] = await transaction
-      .select()
-      .from(adminInvitations)
-      .where(eq(adminInvitations.tokenHash, tokenHash))
-      .limit(1)
-      .for("update");
-    const now = this.#now();
-    if (!invitation || invitation.acceptedAt || invitation.revokedAt || invitation.expiresAt <= now) {
-      throw this.#invalidInvitation();
-    }
-    await this.requireAdmin(invitation.createdByUserId, invitation.workspaceId, transaction);
-    const [existing] = await transaction
-      .select({ grantedAt: workspaceAdminGrants.grantedAt })
-      .from(workspaceAdminGrants)
-      .where(
-        and(
-          eq(workspaceAdminGrants.workspaceId, invitation.workspaceId),
-          eq(workspaceAdminGrants.userId, accountId),
-          isNull(workspaceAdminGrants.revokedAt),
-        ),
-      )
-      .limit(1)
-      .for("update");
-    let grantedAt = existing?.grantedAt;
-    if (!grantedAt) {
-      await this.requireWorkspaceHeadroom(transaction, accountId);
-      const [grant] = await transaction
-        .insert(workspaceAdminGrants)
-        .values({
-          workspaceId: invitation.workspaceId,
-          userId: accountId,
-          grantedByUserId: invitation.createdByUserId,
-          grantedAt: now,
-        })
-        .returning({ grantedAt: workspaceAdminGrants.grantedAt });
-      if (!grant) throw new Error("Workspace Admin grant insert did not return a row");
-      grantedAt = grant.grantedAt;
-    }
-    await transaction
-      .update(adminInvitations)
-      .set({ acceptedByUserId: accountId, acceptedAt: now })
-      .where(eq(adminInvitations.id, invitation.id));
-    const [workspace] = await transaction
-      .select()
-      .from(workspaces)
-      .where(eq(workspaces.id, invitation.workspaceId))
-      .limit(1);
-    if (!workspace) throw this.#invalidInvitation();
-    return {
-      workspace: {
-        id: workspace.id,
-        name: workspace.name,
-        displayName: workspace.displayName,
-        setupCompletedAt: workspace.setupCompletedAt?.toISOString() ?? null,
-        grantedAt: grantedAt.toISOString(),
-      },
-    };
-  }
-
-  async revokeAdmin(accountId: string, workspaceId: string, targetAccountId: string): Promise<void> {
-    await this.#database.transaction(async (transaction) => {
-      await this.lockAccountForGrantWrite(transaction, targetAccountId);
-      await this.requireAdminForMutation(transaction, accountId, workspaceId);
-      const [target] = await transaction
-        .select({ id: workspaceAdminGrants.id })
-        .from(workspaceAdminGrants)
-        .where(
-          and(
-            eq(workspaceAdminGrants.workspaceId, workspaceId),
-            eq(workspaceAdminGrants.userId, targetAccountId),
-            isNull(workspaceAdminGrants.revokedAt),
-          ),
-        )
-        .limit(1)
-        .for("update");
-      if (!target) throw workspaceNotFound();
-      await this.requireAnotherAdmin(transaction, workspaceId, targetAccountId);
-      const now = this.#now();
-      await transaction
-        .update(workspaceAdminGrants)
-        .set({ revokedByUserId: accountId, revokedAt: now })
-        .where(eq(workspaceAdminGrants.id, target.id));
-      await transaction
-        .update(adminInvitations)
-        .set({ revokedByUserId: accountId, revokedAt: now })
-        .where(
-          and(
-            eq(adminInvitations.workspaceId, workspaceId),
-            eq(adminInvitations.createdByUserId, targetAccountId),
-            isNull(adminInvitations.acceptedAt),
-            isNull(adminInvitations.revokedAt),
-          ),
-        );
-      await transaction
-        .update(computerConnectCodes)
-        .set({ revokedByUserId: accountId, revokedAt: now })
-        .where(
-          and(
-            eq(computerConnectCodes.workspaceId, workspaceId),
-            eq(computerConnectCodes.issuedByUserId, targetAccountId),
-            isNull(computerConnectCodes.consumedAt),
-            isNull(computerConnectCodes.revokedAt),
-          ),
-        );
     });
   }
 
@@ -388,6 +192,14 @@ export class WorkspaceAdminAccess {
     accountWasCreated: boolean,
   ): Promise<string | undefined> {
     if (!accountWasCreated) return undefined;
+    const [existingGrant] = await transaction
+      .select({ workspaceId: workspaceAdminGrants.workspaceId })
+      .from(workspaceAdminGrants)
+      .where(and(eq(workspaceAdminGrants.userId, account.id), isNull(workspaceAdminGrants.revokedAt)))
+      .limit(1);
+    if (existingGrant) {
+      throw new Error("A newly created Account must not already have an active Workspace grant");
+    }
     const now = this.#now();
     const workspaceId = randomUUID();
     await transaction.insert(workspaces).values({
@@ -439,43 +251,6 @@ export class WorkspaceAdminAccess {
         409,
       );
     }
-  }
-
-  async requireAnotherAdmin(
-    transaction: DatabaseTransaction,
-    workspaceId: string,
-    excludedAccountId: string,
-  ): Promise<void> {
-    const [other] = await transaction
-      .select({ userId: workspaceAdminGrants.userId })
-      .from(workspaceAdminGrants)
-      .innerJoin(users, and(eq(users.id, workspaceAdminGrants.userId), isNull(users.suspendedAt)))
-      .where(
-        and(
-          eq(workspaceAdminGrants.workspaceId, workspaceId),
-          isNull(workspaceAdminGrants.revokedAt),
-          ne(workspaceAdminGrants.userId, excludedAccountId),
-        ),
-      )
-      .limit(1);
-    if (!other) {
-      throw new AuthServiceError(
-        "WORKSPACE_LAST_ADMIN",
-        "deterministic",
-        "The last active Workspace Admin cannot be removed",
-        409,
-      );
-    }
-  }
-
-  #parseInvitationToken(value: string): string {
-    const parsed = InvitationTokenSchema.safeParse(value);
-    if (!parsed.success) throw this.#invalidInvitation();
-    return parsed.data;
-  }
-
-  #invalidInvitation(): AuthServiceError {
-    return new AuthServiceError("INVITATION_INVALID", "credential", "The invitation is invalid or expired", 404);
   }
 }
 

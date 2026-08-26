@@ -37,18 +37,10 @@ import {
   ImBindingDiagnosticsSchema,
   type ImBindingSummary,
   ImBindingSummarySchema,
-  type InvitationAcceptanceResponse,
-  InvitationAcceptanceResponseSchema,
-  type InvitationPreview,
-  InvitationPreviewSchema,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
-  invitationAcceptPath,
-  invitationPreviewPath,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
-  type ListWorkspaceAdminsResponse,
-  ListWorkspaceAdminsResponseSchema,
   type ListWorkspaceComputersResponse,
   ListWorkspaceComputersResponseSchema,
   type MeResponse,
@@ -62,14 +54,8 @@ import {
   type SlackConfigurationResult,
   SlackConfigurationResultSchema,
   type UpdateAgentRequest,
-  type UpdateWorkspaceProfileRequest,
   type ValidationIssue,
-  type WorkspaceProfile,
-  WorkspaceProfileSchema,
-  workspaceAdminPath,
-  workspaceAdminsPath,
   workspaceAgentsPath,
-  workspaceByIdPath,
   workspaceComputerConnectCodesPath,
   workspaceComputersPath,
 } from "@opentag/shared";
@@ -126,48 +112,6 @@ export class OpenTagApi {
 
   me(accessToken: string): Promise<MeResponse> {
     return this.#request(HTTP_PATHS.me, MeResponseSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
-  }
-
-  getWorkspace(accessToken: string, workspaceId: string): Promise<WorkspaceProfile> {
-    return this.#request(workspaceByIdPath(workspaceId), WorkspaceProfileSchema, {
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
-  }
-
-  updateWorkspace(
-    accessToken: string,
-    workspaceId: string,
-    input: UpdateWorkspaceProfileRequest,
-  ): Promise<WorkspaceProfile> {
-    return this.#request(workspaceByIdPath(workspaceId), WorkspaceProfileSchema, {
-      method: "PATCH",
-      body: JSON.stringify(input),
-      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-    });
-  }
-
-  listWorkspaceAdmins(accessToken: string, workspaceId: string): Promise<ListWorkspaceAdminsResponse> {
-    return this.#request(workspaceAdminsPath(workspaceId), ListWorkspaceAdminsResponseSchema, {
-      headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_READINESS_V1_HEADER]: "1" },
-    });
-  }
-
-  revokeWorkspaceAdmin(accessToken: string, workspaceId: string, accountId: string): Promise<void> {
-    return this.#requestNoContent(workspaceAdminPath(workspaceId, accountId), {
-      method: "DELETE",
-      headers: { authorization: `Bearer ${accessToken}` },
-    });
-  }
-
-  previewAdminInvitation(token: string): Promise<InvitationPreview> {
-    return this.#request(invitationPreviewPath(token), InvitationPreviewSchema, {});
-  }
-
-  acceptAdminInvitation(accessToken: string, token: string): Promise<InvitationAcceptanceResponse> {
-    return this.#request(invitationAcceptPath(token), InvitationAcceptanceResponseSchema, {
-      method: "POST",
       headers: { authorization: `Bearer ${accessToken}` },
     });
   }

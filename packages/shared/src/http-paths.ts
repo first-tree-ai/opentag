@@ -1,6 +1,6 @@
 export const API_V1_PREFIX = "/api/v1";
 export const WORKSPACE_AGENTS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/agents`;
-export const WORKSPACE_BY_ID_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId`;
+const WORKSPACE_BY_ID_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId`;
 export const WORKSPACE_SETUP_COMPLETE_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/setup/complete`;
 export const AGENT_BY_ID_TEMPLATE = `${API_V1_PREFIX}/agents/:agentId`;
 export const AGENT_CONFIG_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/config`;
@@ -18,12 +18,8 @@ export const IM_BINDING_BY_ID_TEMPLATE = `${API_V1_PREFIX}/im-bindings/:imBindin
 export const IM_BINDING_DIAGNOSTICS_TEMPLATE = `${IM_BINDING_BY_ID_TEMPLATE}/diagnostics`;
 export const SLACK_EVENTS_PATH = `${API_V1_PREFIX}/im-bindings/slack/events`;
 export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-messages/:imMessageId/resources/:ordinal`;
-export const WORKSPACE_ADMINS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/admins`;
-export const WORKSPACE_ADMIN_TEMPLATE = `${WORKSPACE_ADMINS_TEMPLATE}/:accountId`;
 export const WORKSPACE_COMPUTERS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/computers`;
 export const WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/computer-connect-codes`;
-export const ADMIN_INVITATION_PREVIEW_TEMPLATE = `${API_V1_PREFIX}/admin-invitations/:token/preview`;
-export const ADMIN_INVITATION_ACCEPT_TEMPLATE = `${API_V1_PREFIX}/admin-invitations/:token/accept`;
 
 export const HTTP_PATHS = {
   agentById: AGENT_BY_ID_TEMPLATE,
@@ -43,20 +39,8 @@ export const HTTP_PATHS = {
   workspaceAgents: WORKSPACE_AGENTS_TEMPLATE,
 } as const;
 
-export function workspaceAdminsPath(workspaceId: string): string {
-  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/admins`;
-}
-
-export function workspaceByIdPath(workspaceId: string): string {
-  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}`;
-}
-
 export function workspaceSetupCompletePath(workspaceId: string): string {
-  return `${workspaceByIdPath(workspaceId)}/setup/complete`;
-}
-
-export function workspaceAdminPath(workspaceId: string, accountId: string): string {
-  return `${workspaceAdminsPath(workspaceId)}/${encodeURIComponent(accountId)}`;
+  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/setup/complete`;
 }
 
 export function workspaceComputersPath(workspaceId: string): string {
@@ -64,15 +48,7 @@ export function workspaceComputersPath(workspaceId: string): string {
 }
 
 export function workspaceComputerConnectCodesPath(workspaceId: string): string {
-  return `${workspaceByIdPath(workspaceId)}/computer-connect-codes`;
-}
-
-export function invitationPreviewPath(token: string): string {
-  return `${API_V1_PREFIX}/admin-invitations/${encodeURIComponent(token)}/preview`;
-}
-
-export function invitationAcceptPath(token: string): string {
-  return `${API_V1_PREFIX}/admin-invitations/${encodeURIComponent(token)}/accept`;
+  return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/computer-connect-codes`;
 }
 
 export function workspaceAgentsPath(workspaceId: string): string {

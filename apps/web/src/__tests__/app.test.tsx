@@ -2540,6 +2540,18 @@ describe("OpenTag Web App Shell", () => {
     );
   });
 
+  it("opens the Computers page from the account menu", async () => {
+    installApi();
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
+    const computers = screen.getByRole("menuitem", { name: "Computers" });
+    expect(computers.getAttribute("href")).toBe("/agents/computers");
+    fireEvent.click(computers);
+    expect(await screen.findByRole("heading", { level: 1, name: "Computers" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents/computers");
+    expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
+  });
+
   it("moves focus into multi-Workspace account options and returns it to the trigger on Escape", async () => {
     installApi({ alreadyJoinedInvitation: true });
     render(<App />);
@@ -2558,10 +2570,13 @@ describe("OpenTag Web App Shell", () => {
     const trigger = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.click(trigger);
     const workspace = screen.getByRole("menuitem", { name: "Workspace" });
+    const computers = screen.getByRole("menuitem", { name: "Computers" });
     const account = screen.getByRole("menuitem", { name: "Account" });
     const signOut = screen.getByRole("menuitem", { name: "Sign out" });
     expect(document.activeElement).toBe(workspace);
     fireEvent.keyDown(workspace, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(computers);
+    fireEvent.keyDown(computers, { key: "ArrowDown" });
     expect(document.activeElement).toBe(account);
     fireEvent.keyDown(account, { key: "ArrowDown" });
     expect(document.activeElement).toBe(signOut);

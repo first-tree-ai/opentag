@@ -912,6 +912,16 @@ function AppShell() {
                     Workspace
                   </NavLink>
                   <NavLink
+                    role="menuitem"
+                    to="/agents/computers"
+                    onClick={() => {
+                      setOpenMenu(undefined);
+                      setNavigationOpen(false);
+                    }}
+                  >
+                    Computers
+                  </NavLink>
+                  <NavLink
                     end
                     role="menuitem"
                     to="/account"

@@ -199,6 +199,7 @@ describe("parseServerConfig", () => {
     const { BETTER_AUTH_SECRET: _omitted, ...withoutSecret } = required;
     expect(() => parseServerConfig(withoutSecret)).toThrow();
     expect(() => parseServerConfig({ ...required, BETTER_AUTH_SECRET: "short" })).toThrow();
+    expect(() => parseServerConfig({ ...required, BETTER_AUTH_SECRET: required.OPENTAG_JWT_SECRET })).toThrow();
   });
 
   it("parses optional OTLP tracing configuration and validates its bounds", () => {

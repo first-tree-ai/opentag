@@ -1,12 +1,17 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer } from "better-auth/plugins/bearer";
+import { eq } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import { authIdentities, authSessions, authVerifications, users } from "../db/schema/index.js";
 
 /**
- * Mounted under the repository's `/api/v1` versioning convention rather than Better Auth's `/api/auth` default, so the
- * Google callback is `/api/v1/auth/callback/google`.
+ * Where the instance will be mounted, under the repository's `/api/v1` versioning convention rather than Better Auth's
+ * `/api/auth` default, so the Google callback becomes `/api/v1/auth/callback/google`.
+ *
+ * Nothing serves this prefix yet. Mounting Better Auth's catch-all publishes its entire endpoint surface — including
+ * `/update-user`, a second Account-profile writer that would bypass `UserDisplayNameSchema` and the canonical
+ * `/api/v1/me` boundary — so the routes arrive with the stage that needs them and can guard them, not ahead of it.
  */
 export const BETTER_AUTH_BASE_PATH = "/api/v1/auth";
 
@@ -70,6 +75,32 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
           }),
         },
       },
+      account: {
+        /*
+         * OpenTag never calls a provider on the Account's behalf, so it has no use for these credentials and the
+         * pre-migration resolver never persisted them either. Dropping them keeps long-lived provider tokens out of the
+         * database entirely, which no encryption-at-rest option can match: Better Auth 1.7.2's `encryptOAuthTokens`
+         * covers the access and refresh tokens but writes `idToken` through in the clear.
+         */
+        create: { before: async (account) => ({ data: withoutProviderCredentials(account) }) },
+        update: { before: async (account) => ({ data: withoutProviderCredentials(account) }) },
+      },
+      session: {
+        create: {
+          /*
+           * Suspension is the only kill switch this system has for an Account, and the legacy path re-checks it on
+           * every authenticated request. A session must not come into existence for a suspended Account.
+           */
+          before: async (session) => {
+            const [account] = await database
+              .select({ suspendedAt: users.suspendedAt })
+              .from(users)
+              .where(eq(users.id, session.userId))
+              .limit(1);
+            return account && !account.suspendedAt ? undefined : false;
+          },
+        },
+      },
     },
     ...(config.google
       ? {
@@ -81,4 +112,16 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
     // The CLI authenticates with `Authorization: Bearer <session token>`; the browser keeps using cookies.
     plugins: [bearer()],
   });
+}
+
+/** Blanks every provider credential Better Auth would otherwise persist on the identity row. */
+function withoutProviderCredentials<T extends Record<string, unknown>>(account: T): T {
+  return {
+    ...account,
+    accessToken: null,
+    refreshToken: null,
+    idToken: null,
+    accessTokenExpiresAt: null,
+    refreshTokenExpiresAt: null,
+  };
 }

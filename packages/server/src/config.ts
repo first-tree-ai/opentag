@@ -152,6 +152,14 @@ const ServerEnvironmentSchema = z
     if (isHostedEnvironment(value.OPENTAG_ENV) && !value.OPENTAG_PUBLIC_URL.startsWith("https://")) {
       context.addIssue({ code: "custom", message: "OPENTAG_PUBLIC_URL must use HTTPS in hosted environments" });
     }
+    if (value.BETTER_AUTH_SECRET === value.OPENTAG_JWT_SECRET) {
+      // Sharing one key across both would make either rotation invalidate the other's credentials at the same time,
+      // which is the coupling the separate secret exists to remove.
+      context.addIssue({
+        code: "custom",
+        message: "BETTER_AUTH_SECRET must differ from OPENTAG_JWT_SECRET",
+      });
+    }
     if (value.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID && value.OPENTAG_ENV !== "staging") {
       context.addIssue({
         code: "custom",

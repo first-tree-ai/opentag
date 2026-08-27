@@ -109,6 +109,43 @@ describe("Better Auth over the existing Account tables", () => {
     expect(resolved).toBeNull();
   });
 
+  it("refuses to issue a session for a suspended Account", async () => {
+    const userId = await seedLegacyAccount("google-subject-suspended", "suspended@example.com", "Suspended Account");
+    await client.database.update(users).set({ suspendedAt: new Date() }).where(eq(users.id, userId));
+    const auth = createAuth();
+    const context = await auth.$context;
+
+    // The hook refuses the write, so no token ever exists to authenticate with.
+    expect(await context.internalAdapter.createSession(userId)).toBeNull();
+    expect(await client.database.select().from(authSessions).where(eq(authSessions.userId, userId))).toHaveLength(0);
+  });
+
+  it("never persists provider credentials on the identity row", async () => {
+    const userId = await seedLegacyAccount("google-subject-tokens", "tokens@example.com", "Token Account");
+    const auth = createAuth();
+    const context = await auth.$context;
+
+    await context.internalAdapter.updateAccount(
+      (await context.internalAdapter.findAccountByUserId(userId))[0]?.id ?? "",
+      {
+        accessToken: "google-access-token",
+        refreshToken: "google-refresh-token",
+        idToken: "google-id-token",
+        accessTokenExpiresAt: new Date(),
+        refreshTokenExpiresAt: new Date(),
+      },
+    );
+
+    const [stored] = await client.database.select().from(authIdentities).where(eq(authIdentities.userId, userId));
+    expect(stored).toMatchObject({
+      accessToken: null,
+      refreshToken: null,
+      idToken: null,
+      accessTokenExpiresAt: null,
+      refreshTokenExpiresAt: null,
+    });
+  });
+
   it("lowercases an email written through Better Auth", async () => {
     const auth = createAuth();
     const context = await auth.$context;

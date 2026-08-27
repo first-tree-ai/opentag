@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, isNull, sql } from "drizzle-orm";
-import type { FastifyRequest } from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createBetterAuth } from "../../auth/better-auth.js";
@@ -13,7 +13,7 @@ import {
   users,
   workspaceAdminGrants,
 } from "../../db/schema/index.js";
-import { resolveAuthenticatedUserId } from "../../plugins/user-auth.js";
+import { createUserAuthPreHandler, resolveAuthenticatedUserId } from "../../plugins/user-auth.js";
 import {
   AuthService,
   AuthTokenService,
@@ -94,6 +94,19 @@ async function recordExchange({
     .returning({ winner: accountLegacyUpgrades.sessionToken });
   if (!recorded) throw new Error("The legacy upgrade record did not return a session");
   return recorded.winner;
+}
+
+/** Collects whatever a preHandler writes back, which is all these tests need from a reply. */
+function replyStub(): FastifyReply {
+  const written: string[] = [];
+  const reply = {
+    getHeader: () => written,
+    header: (_name: string, value: string[]) => {
+      written.splice(0, written.length, ...value);
+      return reply;
+    },
+  };
+  return reply as unknown as FastifyReply;
 }
 
 /** Replays a response's cookies the way a browser would send them back. */
@@ -439,6 +452,53 @@ describe("Better Auth over the existing Account tables", () => {
     // The legacy access token still authenticates until it expires, so the rollout signs nobody out.
     await expect(authService.getAuthenticatedUser(legacyPair.accessToken)).resolves.toMatchObject({
       me: { user: { id: bootstrap.userId } },
+    });
+  });
+
+  it("does not let a junk bearer header turn a cookie request into a CLI one", async () => {
+    /*
+     * Better Auth reads the header and the cookie, and on an invalid bearer it answers from the cookie. Deciding the
+     * transport from the header merely being present would therefore let a caller holding only the HttpOnly session
+     * cookie attach any `Authorization` value and be treated as the CLI: no origin check, no double-submit token, and
+     * mutations allowed. The transport is chosen before anything authenticates, so a presented bearer stands alone.
+     */
+    await seedLegacyAccount("google-subject-transport", "transport@example.com", "Transport Account");
+    const developer = new DevBrowserAuthService(client.database, "transport@example.com");
+    const auth = createAuth(() => developer.resolveUserId());
+    // Signed by Better Auth rather than assembled here, so this is the cookie a real browser would present.
+    const signedIn = await auth.handler(
+      new Request(`${PUBLIC_URL}/api/v1/auth/dev/sign-in`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+    expect(signedIn.status).toBe(200);
+    const cookie = cookieHeader(signedIn);
+    const preHandler = createUserAuthPreHandler(bridgedAuthService(auth), {
+      betterAuth: auth,
+      publicOrigin: PUBLIC_URL,
+      secureCookies: false,
+      sessionTtlSeconds: SESSION_TTL_SECONDS,
+    });
+    const mutation = (headers: Record<string, string>) =>
+      preHandler({ headers, method: "POST" } as unknown as FastifyRequest, replyStub());
+
+    // The cookie is genuinely good: without the header it reaches the browser path and is refused only for the token.
+    await expect(mutation({ cookie, origin: PUBLIC_URL })).rejects.toMatchObject({ statusCode: 403 });
+
+    /*
+     * With a junk bearer alongside it, the request must be rejected as a bearer credential rather than falling through
+     * to that same cookie — the fallback is what would skip the origin and double-submit checks entirely.
+     *
+     * The token has to carry a `.` and a bad signature. Better Auth's bearer plugin signs a dotless token and installs
+     * it as the session cookie, which overwrites the real one and then fails on its own; only a token it reads as
+     * signed-but-invalid is dropped, leaving the genuine cookie to answer for the request. That is the shape an
+     * attacker would send, so it is the shape this asserts on.
+     */
+    await expect(mutation({ authorization: "Bearer forged.signature", cookie })).rejects.toMatchObject({
+      code: "AUTH_INVALID_TOKEN",
+      statusCode: 401,
     });
   });
 

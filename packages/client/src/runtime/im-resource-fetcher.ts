@@ -4,7 +4,7 @@ import { access, mkdir, rename, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import type { DirectImMessageDeliveryRequest } from "@opentag/shared";
+import type { DirectImMessageDeliveryRequest, RuntimeImSteerRequest } from "@opentag/shared";
 import type { OpenTagApi } from "../api.js";
 
 const MAX_RESOURCE_BYTES = 25 * 1024 * 1024;
@@ -24,7 +24,10 @@ export class ImResourceFetcher {
     this.#machineToken = input.machineToken;
   }
 
-  async fetchForTurn(request: DirectImMessageDeliveryRequest, workspace: string): Promise<string | undefined> {
+  async fetchForTurn(
+    request: DirectImMessageDeliveryRequest | RuntimeImSteerRequest,
+    workspace: string,
+  ): Promise<string | undefined> {
     const resources = request.content.resources ?? [];
     if (resources.length === 0) return undefined;
     const lines: string[] = ["OpenTag IM resources (managed, user-supplied content):"];

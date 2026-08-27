@@ -34,6 +34,7 @@ const detail = {
         state: "accepted",
         attemptCount: 1,
         acceptedAt: "2026-08-27T01:01:00.000Z",
+        steeredAt: null,
         expiresAt: "2026-08-28T01:00:00.000Z",
         reason: null,
         lastErrorCode: null,
@@ -48,6 +49,7 @@ const detail = {
         truncated: false,
         occurredAt: "2026-08-27T01:00:00.000Z",
       },
+      absorbedBy: null,
       report: {
         turnId: "turn-debug",
         outcome: "completed",
@@ -132,6 +134,42 @@ describe("Tasks debug view", () => {
       within(conversation).getByText("1 attempt · Outcome completed · Effects completed · 150 tokens · 4 trace events"),
     ).toBeTruthy();
     expect(screen.getByLabelText("Copy Session")).toBeTruthy();
+  });
+
+  it("renders a steered input as absorbed without a second report or usage", async () => {
+    const root = detail.turns[0];
+    if (!root) throw new Error("Expected the Task fixture to include a root Turn");
+    const steered = {
+      ...root,
+      deliveryId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      delivery: {
+        ...root.delivery,
+        state: "steered" as const,
+        acceptedAt: null,
+        steeredAt: "2026-08-27T01:30:00.000Z",
+      },
+      message: {
+        ...root.message,
+        id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        externalMessageId: "om_steered",
+        fallbackText: "Use the newer requirement.",
+      },
+      absorbedBy: { deliveryId: root.deliveryId, turnId: root.report?.turnId ?? "turn-debug" },
+      report: null,
+    } satisfies TaskDetail["turns"][number];
+    vi.spyOn(browserApi, "task").mockResolvedValue({ ...detail, turns: [steered, root] });
+    render(
+      <MemoryRouter initialEntries={[`/tasks/${sessionId}`]}>
+        <Routes>
+          <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const conversation = await screen.findByLabelText("Task conversation");
+    expect(within(conversation).getByText("This input was steered into the active Turn.")).toBeTruthy();
+    expect(within(conversation).getByText("absorbed into running Turn")).toBeTruthy();
+    expect(within(conversation).getAllByText(/150 tokens/)).toHaveLength(1);
   });
 
   it("loads older Turns from the detail cursor", async () => {

@@ -132,7 +132,16 @@ async function fixture() {
     turnReport: report,
     reportedAt: new Date("2026-08-27T01:03:00.000Z"),
   });
-  return { ...client, agent, bootstrap, service: new TaskService(client.database), session };
+  return {
+    ...client,
+    agent,
+    binding,
+    bootstrap,
+    deliveryId,
+    service: new TaskService(client.database),
+    session,
+    turnId,
+  };
 }
 
 describe("Task debug queries", () => {
@@ -178,6 +187,102 @@ describe("Task debug queries", () => {
       await expect(
         value.service.list(value.bootstrap.workspaceId, { cursor: "invalid", limit: 50 }),
       ).rejects.toBeInstanceOf(TaskQueryError);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("projects a steered input as absorbed by the root Turn without duplicating its report or usage", async () => {
+    const value = await fixture();
+    try {
+      const [message] = await value.database
+        .insert(imMessages)
+        .values({
+          imBindingId: value.binding.id,
+          providerEventId: "event-steered",
+          channelId: "oc_debug",
+          externalMessageId: "om_steered",
+          providerRevisionKey: "1",
+          operation: "created",
+          direction: "inbound",
+          authorKind: "human",
+          authorExternalId: "ou_debug",
+          authorDisplayName: "Mia",
+          content: { version: 1, fallbackText: "Use the newer requirement.", blocks: [], truncated: false },
+          providerContext: { provider: "feishu", chatType: "p2p" },
+          occurredAt: new Date("2026-08-27T01:04:00.000Z"),
+        })
+        .returning();
+      if (!message) throw new Error("Steered message fixture was not created");
+      const steeredAt = new Date("2026-08-27T01:05:00.000Z");
+      await value.database.insert(imMessageDeliveries).values({
+        messageId: message.id,
+        sessionId: value.session.id,
+        attention: "direct",
+        state: "steered",
+        placementGeneration: 1,
+        inputHash: "b".repeat(64),
+        steerTargetDeliveryId: value.deliveryId,
+        steeredAt,
+        expiresAt: new Date("2026-08-28T01:00:00.000Z"),
+      });
+
+      const listed = await value.service.list(value.bootstrap.workspaceId, { limit: 50 });
+      expect(listed.tasks[0]).toMatchObject({
+        status: "completed",
+        title: "Use the newer requirement.",
+        lastActivityAt: steeredAt.toISOString(),
+      });
+      const [pendingMessage] = await value.database
+        .insert(imMessages)
+        .values({
+          imBindingId: value.binding.id,
+          providerEventId: "event-steer-deferred",
+          channelId: "oc_debug",
+          externalMessageId: "om_steer_deferred",
+          providerRevisionKey: "1",
+          operation: "created",
+          direction: "inbound",
+          authorKind: "human",
+          authorExternalId: "ou_debug",
+          authorDisplayName: "Mia",
+          content: { version: 1, fallbackText: "Run this after the root.", blocks: [], truncated: false },
+          providerContext: { provider: "feishu", chatType: "p2p" },
+          occurredAt: new Date("2026-08-27T01:06:00.000Z"),
+        })
+        .returning();
+      if (!pendingMessage) throw new Error("Deferred steer message fixture was not created");
+      const [pendingDelivery] = await value.database
+        .insert(imMessageDeliveries)
+        .values({
+          messageId: pendingMessage.id,
+          sessionId: value.session.id,
+          attention: "direct",
+          state: "pending",
+          placementGeneration: 1,
+          steerTargetDeliveryId: value.deliveryId,
+          expiresAt: new Date("2026-08-28T01:00:00.000Z"),
+        })
+        .returning();
+      if (!pendingDelivery) throw new Error("Deferred steer delivery fixture was not created");
+      const detail = await value.service.get(value.bootstrap.workspaceId, value.session.id, { limit: 50 });
+      expect(detail.turns.find((turn) => turn.deliveryId === pendingDelivery.id)).toMatchObject({
+        delivery: { state: "pending" },
+        absorbedBy: null,
+        report: null,
+      });
+      expect(
+        detail.turns.find((turn) => turn.deliveryId !== value.deliveryId && turn.delivery.state === "steered"),
+      ).toMatchObject({
+        delivery: { state: "steered", acceptedAt: null, steeredAt: steeredAt.toISOString() },
+        absorbedBy: { deliveryId: value.deliveryId, turnId: value.turnId },
+        report: null,
+      });
+      expect(detail.turns.find((turn) => turn.deliveryId === value.deliveryId)?.report?.usage).toEqual({
+        inputTokens: 100,
+        cachedInputTokens: null,
+        outputTokens: 50,
+      });
     } finally {
       await value.sql.end();
     }

@@ -253,6 +253,7 @@ function retainedReports(binding: Awaited<ReturnType<SessionBindingStore["read"]
     });
   }
   for (const recorded of binding.recentRecordedInputs) {
+    if (recorded.kind !== "turn") continue;
     if (
       recorded.report &&
       recorded.requestId &&

@@ -1,8 +1,10 @@
 import { dirname } from "node:path";
 import {
+  computeRuntimeImMessageSemanticHash,
   computeRuntimeSnapshotHashes,
   type DirectImMessageDeliveryRequest,
   EffectiveRuntimeSnapshotSchema,
+  type RuntimeImSteerRequest,
   RuntimeRequestIdSchema,
   RuntimeSha256Schema,
   type RuntimeSnapshotHashes,
@@ -22,12 +24,13 @@ import {
 } from "../storage/durable-file.js";
 import { agentRuntimePaths, sessionBindingPath, snapshotPath } from "./runtime-paths.js";
 
-export const SESSION_BINDING_SCHEMA_VERSION = 2 as const;
+export const SESSION_BINDING_SCHEMA_VERSION = 3 as const;
 export const SESSION_RECORDED_INPUT_LIMIT = 64;
 
 export type UnresolvedTurnPhase = "accepted" | "starting" | "running" | "reporting";
 
-export interface RecordedInput {
+export interface RecordedTurnInput {
+  kind: "turn";
   deliveryId: string;
   inputHash: string;
   requestId?: string;
@@ -35,6 +38,19 @@ export interface RecordedInput {
   resultHash: string;
   turnId: string;
 }
+
+export interface RecordedSteerInput {
+  kind: "steer";
+  deliveryId: string;
+  inputHash: string;
+  requestId: string;
+  rootDeliveryId: string;
+  turnId: string;
+  report?: undefined;
+  resultHash?: undefined;
+}
+
+export type RecordedInput = RecordedTurnInput | RecordedSteerInput;
 
 export interface UnresolvedTurn {
   requestId: string;
@@ -73,7 +89,8 @@ export interface SessionPreparationResult {
 export type CustodyResult =
   | { status: "committed"; binding: LocalSessionBinding; unresolvedTurn: UnresolvedTurn }
   | { status: "existing"; binding: LocalSessionBinding; unresolvedTurn: UnresolvedTurn }
-  | { status: "recorded"; binding: LocalSessionBinding; recorded: RecordedInput };
+  | { status: "recorded"; binding: LocalSessionBinding; recorded: RecordedTurnInput }
+  | { status: "absorbed"; binding: LocalSessionBinding; recorded: RecordedSteerInput };
 
 export class SessionBindingConflictError extends Error {
   constructor(
@@ -190,6 +207,12 @@ export class SessionBindingStore {
       this.#validateDeliveryBinding(binding, request);
       const recorded = binding.recentRecordedInputs.find((entry) => entry.deliveryId === request.deliveryId);
       if (recorded) {
+        if (recorded.kind === "steer") {
+          if (recorded.inputHash !== computeRuntimeImMessageSemanticHash(request)) {
+            throw new SessionBindingConflictError("conflict", "The delivery ID is recorded with different input");
+          }
+          return { status: "absorbed", binding, recorded };
+        }
         if (recorded.inputHash !== inputHash) {
           throw new SessionBindingConflictError("conflict", "The delivery ID is recorded with different input");
         }
@@ -215,6 +238,81 @@ export class SessionBindingStore {
       const updated = { ...binding, unresolvedTurn };
       await this.#writeBinding(path, updated);
       return { status: "committed", binding: updated, unresolvedTurn };
+    });
+  }
+
+  getSteerReceipt(request: RuntimeImSteerRequest, inputHash: string): Promise<RecordedSteerInput | undefined> {
+    return this.#withSessionLock(request.sessionId, async () => {
+      RuntimeSha256Schema.parse(inputHash);
+      const binding = await this.#requireBinding(request.agentId, request.sessionId);
+      this.#validateSteerBinding(binding, request);
+      const recorded = binding.recentRecordedInputs.find((entry) => entry.deliveryId === request.deliveryId);
+      if (!recorded) return undefined;
+      if (
+        recorded.kind !== "steer" ||
+        recorded.inputHash !== inputHash ||
+        recorded.rootDeliveryId !== request.rootDeliveryId ||
+        recorded.turnId !== request.expectedTurnId
+      ) {
+        throw new SessionBindingConflictError("conflict", "The steer delivery ID is recorded with different input");
+      }
+      return recorded;
+    });
+  }
+
+  getAbsorbedReceipt(request: DirectImMessageDeliveryRequest): Promise<RecordedSteerInput | undefined> {
+    return this.#withSessionLock(request.sessionId, async () => {
+      const binding = await this.#requireBinding(request.agentId, request.sessionId);
+      this.#validateDeliveryBinding(binding, request);
+      const recorded = binding.recentRecordedInputs.find((entry) => entry.deliveryId === request.deliveryId);
+      if (!recorded) return undefined;
+      if (recorded.kind !== "steer" || recorded.inputHash !== computeRuntimeImMessageSemanticHash(request)) {
+        throw new SessionBindingConflictError("conflict", "The delivery ID is recorded with different input");
+      }
+      return recorded;
+    });
+  }
+
+  recordSteer(request: RuntimeImSteerRequest, inputHash: string): Promise<RecordedSteerInput> {
+    return this.#withSessionLock(request.sessionId, async () => {
+      RuntimeSha256Schema.parse(inputHash);
+      const path = sessionBindingPath(this.#home, request.agentId, request.sessionId);
+      const binding = await this.#requireBinding(request.agentId, request.sessionId);
+      this.#validateSteerBinding(binding, request);
+      const existing = binding.recentRecordedInputs.find((entry) => entry.deliveryId === request.deliveryId);
+      if (existing) {
+        if (
+          existing.kind === "steer" &&
+          existing.inputHash === inputHash &&
+          existing.rootDeliveryId === request.rootDeliveryId &&
+          existing.turnId === request.expectedTurnId
+        ) {
+          return existing;
+        }
+        throw new SessionBindingConflictError("conflict", "The steer delivery ID is recorded with different input");
+      }
+      const unresolved = binding.unresolvedTurn;
+      if (
+        !unresolved ||
+        unresolved.deliveryId !== request.rootDeliveryId ||
+        unresolved.turnId !== request.expectedTurnId
+      ) {
+        throw new SessionBindingConflictError("conflict", "The steer target does not match the unresolved Turn");
+      }
+      const recorded: RecordedSteerInput = {
+        kind: "steer",
+        deliveryId: request.deliveryId,
+        inputHash,
+        requestId: request.requestId,
+        rootDeliveryId: request.rootDeliveryId,
+        turnId: request.expectedTurnId,
+      };
+      const recentRecordedInputs = [
+        ...binding.recentRecordedInputs.filter((entry) => entry.deliveryId !== recorded.deliveryId),
+        recorded,
+      ].slice(-this.#recordedInputLimit);
+      await this.#writeBinding(path, { ...binding, recentRecordedInputs });
+      return recorded;
     });
   }
 
@@ -293,7 +391,9 @@ export class SessionBindingStore {
       RuntimeSha256Schema.parse(resultHash);
       const path = sessionBindingPath(this.#home, agentId, sessionId);
       const binding = await this.#requireBinding(agentId, sessionId);
-      const alreadyRecorded = binding.recentRecordedInputs.find((entry) => entry.turnId === turnId);
+      const alreadyRecorded = binding.recentRecordedInputs.find(
+        (entry): entry is RecordedTurnInput => entry.kind === "turn" && entry.turnId === turnId,
+      );
       if (alreadyRecorded) {
         if (alreadyRecorded.resultHash === resultHash) return binding;
         throw new SessionBindingConflictError("conflict", "The recorded result hash cannot be replaced");
@@ -305,7 +405,8 @@ export class SessionBindingStore {
       if (unresolved.turnId !== turnId || unresolved.resultHash !== resultHash) {
         throw new SessionBindingConflictError("conflict", "The recorded result does not match the unresolved turn");
       }
-      const recorded: RecordedInput = {
+      const recorded: RecordedTurnInput = {
+        kind: "turn",
         deliveryId: unresolved.deliveryId,
         inputHash: unresolved.inputHash,
         requestId: unresolved.requestId,
@@ -367,6 +468,17 @@ export class SessionBindingStore {
     }
   }
 
+  #validateSteerBinding(binding: LocalSessionBinding, request: RuntimeImSteerRequest): void {
+    if (
+      binding.agentId !== request.agentId ||
+      binding.sessionId !== request.sessionId ||
+      binding.placementGeneration !== request.placementGeneration ||
+      binding.providerHomeIdentity !== this.#artifactIdentity(binding.provider)
+    ) {
+      throw new SessionBindingConflictError("conflict", "The steer delivery does not match the Session binding");
+    }
+  }
+
   #artifactIdentity(providerId: string): string {
     const identity = this.#providerArtifactIdentity(providerId);
     if (identity === undefined) {
@@ -407,10 +519,14 @@ export class SessionBindingStore {
 }
 
 function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
-  if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== SESSION_BINDING_SCHEMA_VERSION)) {
+  if (
+    !isRecord(value) ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2 && value.schemaVersion !== SESSION_BINDING_SCHEMA_VERSION)
+  ) {
     throw new RuntimeStorageError("invalid", "Unsupported Session binding schema");
   }
   const isLegacy = value.schemaVersion === 1;
+  const hasInputKinds = value.schemaVersion === SESSION_BINDING_SCHEMA_VERSION;
   const required = [
     "schemaVersion",
     "sessionId",
@@ -447,7 +563,13 @@ function parseLocalSessionBinding(value: unknown): LocalSessionBinding {
     throw new RuntimeStorageError("invalid", "Session binding values are invalid");
   }
   const recentRecordedInputs = value.recentRecordedInputs.map((entry) =>
-    parseRecordedInput(entry, value.sessionId as string, value.agentId as string, value.placementGeneration as number),
+    parseRecordedInput(
+      entry,
+      value.sessionId as string,
+      value.agentId as string,
+      value.placementGeneration as number,
+      hasInputKinds,
+    ),
   );
   if (recentRecordedInputs.length > SESSION_RECORDED_INPUT_LIMIT) {
     throw new RuntimeStorageError("invalid", "Session binding has too many recorded inputs");
@@ -519,10 +641,32 @@ function parseRecordedInput(
   sessionId: string,
   agentId: string,
   placementGeneration: number,
+  hasInputKinds: boolean,
 ): RecordedInput {
+  if (hasInputKinds && isRecord(value) && value.kind === "steer") {
+    if (
+      !hasOnlyKeys(value, ["kind", "deliveryId", "inputHash", "requestId", "rootDeliveryId", "turnId"]) ||
+      !isString(value.deliveryId) ||
+      !RuntimeSha256Schema.safeParse(value.inputHash).success ||
+      !RuntimeRequestIdSchema.safeParse(value.requestId).success ||
+      !isString(value.rootDeliveryId) ||
+      !isString(value.turnId)
+    ) {
+      throw new RuntimeStorageError("invalid", "Recorded steer input is invalid");
+    }
+    return {
+      kind: "steer",
+      deliveryId: value.deliveryId,
+      inputHash: value.inputHash as string,
+      requestId: value.requestId as string,
+      rootDeliveryId: value.rootDeliveryId,
+      turnId: value.turnId,
+    };
+  }
   if (
     !isRecord(value) ||
-    !hasOnlyKeys(value, ["deliveryId", "inputHash", "requestId", "turnId", "resultHash", "report"]) ||
+    !hasOnlyKeys(value, ["kind", "deliveryId", "inputHash", "requestId", "turnId", "resultHash", "report"]) ||
+    (hasInputKinds ? value.kind !== "turn" : value.kind !== undefined) ||
     !isString(value.deliveryId) ||
     !RuntimeSha256Schema.safeParse(value.inputHash).success ||
     !isString(value.turnId) ||
@@ -544,6 +688,7 @@ function parseRecordedInput(
     throw new RuntimeStorageError("invalid", "Recorded Turn Report identity is invalid");
   }
   return {
+    kind: "turn",
     deliveryId: value.deliveryId,
     inputHash: value.inputHash as string,
     ...(value.requestId ? { requestId: value.requestId as string } : {}),

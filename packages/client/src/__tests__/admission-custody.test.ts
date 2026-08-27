@@ -5,9 +5,10 @@ import { resolve } from "node:path";
 import type {
   DirectImMessageDeliveryRequest,
   EffectiveRuntimeSnapshot,
+  RuntimeImSteerRequest,
   SessionReconcileRequest,
 } from "@opentag/shared";
-import { computeTurnResultHash } from "@opentag/shared";
+import { computeRuntimeImMessageSemanticHash, computeTurnResultHash } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdmissionController } from "../runtime/admission-controller.js";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
@@ -212,6 +213,72 @@ describe("TurnCustodyOwner", () => {
     await expect(accepted).resolves.toMatchObject({ result: { status: "accepted", turnId: "turn-1" } });
     await expect(upgraded).resolves.toMatchObject({ status: "busy", reason: "agent_configuration_busy" });
     expect(fixture.reconciler.getAgent("agent-1")?.revisionSequence).toBe(1);
+  });
+
+  it("deduplicates steer requests and converges an ordinary redelivery as absorbed", async () => {
+    const fixture = await custodyFixture();
+    const steer = vi.fn(async (request: RuntimeImSteerRequest) => {
+      await fixture.store.recordSteer(request, computeRuntimeImMessageSemanticHash(request));
+      return {
+        type: "im:steer:result" as const,
+        requestId: request.requestId,
+        deliveryId: request.deliveryId,
+        sessionId: request.sessionId,
+        placementGeneration: request.placementGeneration,
+        rootDeliveryId: request.rootDeliveryId,
+        expectedTurnId: request.expectedTurnId,
+        status: "steered" as const,
+      };
+    });
+    const owner = new TurnCustodyOwner({
+      bindingStore: fixture.store,
+      id: () => "turn-1",
+      reconciler: fixture.reconciler,
+      steer,
+    });
+    const root = delivery(fixture.runtime, "delivery-1", randomUUID());
+    await expect(owner.accept(root)).resolves.toMatchObject({ result: { status: "accepted", turnId: "turn-1" } });
+    const request: RuntimeImSteerRequest = {
+      type: "im:steer",
+      requestId: randomUUID(),
+      deliveryId: "delivery-2",
+      imMessageId: "message-delivery-2",
+      sessionId: "session-1",
+      agentId: "agent-1",
+      placementGeneration: 1,
+      rootDeliveryId: "delivery-1",
+      expectedTurnId: "turn-1",
+      attention: "direct",
+      content: { kind: "text", text: "hello", providerRef: providerRef("message-delivery-2") },
+    };
+    const first = owner.acceptSteer(request);
+    expect(owner.acceptSteer(structuredClone(request))).toBe(first);
+    await expect(first).resolves.toMatchObject({ status: "steered" });
+    expect(steer).toHaveBeenCalledOnce();
+
+    const fallback = delivery(fixture.runtime, "delivery-2", randomUUID());
+    fallback.content.history = [
+      {
+        imMessageId: "history-kept-by-root-frame",
+        occurredAt: "2026-08-27T08:00:00.000Z",
+        text: "context rebuilt after steer result loss",
+        providerRef: providerRef("history-kept-by-root-frame"),
+      },
+    ];
+    fallback.content.historyTruncated = true;
+    fallback.content.resources = [
+      {
+        imMessageId: fallback.imMessageId,
+        ordinal: 0,
+        kind: "file",
+        filename: "root-only-context.txt",
+        availability: "available",
+      },
+    ];
+    await expect(owner.accept(fallback)).resolves.toMatchObject({
+      result: { status: "absorbed", rootDeliveryId: "delivery-1", turnId: "turn-1" },
+    });
+    expect(owner.admission.snapshot().client).toBe(1);
   });
 });
 

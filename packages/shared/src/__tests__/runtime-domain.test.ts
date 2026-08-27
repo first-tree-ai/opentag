@@ -4,6 +4,8 @@ import {
   AgentTraceBatchSchema,
   ClientRuntimeBusinessFrameSchema,
   computeDirectInputHash,
+  computeRuntimeImMessageSemanticHash,
+  computeRuntimeImSteerInputHash,
   computeRuntimeSnapshotHashes,
   computeTurnResultHash,
   DirectImMessageDeliveryRequestSchema,
@@ -12,6 +14,8 @@ import {
   ImMessageDeliveryResultSchema,
   InternalSessionCreateRequestSchema,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
+  RuntimeImSteerRequestSchema,
+  RuntimeImSteerResultSchema,
   runtimeUsageTotalTokens,
   ServerRuntimeBusinessFrameSchema,
   SessionCollaborationCommandResultSchema,
@@ -188,6 +192,80 @@ describe("runtime domain contract", () => {
       }),
     ).toThrow();
     expect(() => TurnReportRequestSchema.parse({ ...report, outcome: "failed", errorReason: undefined })).toThrow();
+  });
+
+  it("validates IM steer frames, absorbed convergence, and stable semantic identity", () => {
+    const delivery = directDelivery(snapshot());
+    const steer = {
+      type: "im:steer" as const,
+      requestId: "33333333-3333-4333-8333-333333333333",
+      deliveryId: delivery.deliveryId,
+      imMessageId: delivery.imMessageId,
+      sessionId: delivery.sessionId,
+      agentId: delivery.agentId,
+      placementGeneration: delivery.placementGeneration,
+      rootDeliveryId: "delivery-root",
+      expectedTurnId: "turn-root",
+      attention: delivery.attention,
+      content: delivery.content,
+      deadlineAt: delivery.deadlineAt,
+    };
+    expect(ServerRuntimeBusinessFrameSchema.parse(steer)).toEqual(steer);
+    expect(RuntimeImSteerRequestSchema.parse(steer)).toEqual(steer);
+    expect(computeRuntimeImMessageSemanticHash(steer)).toBe(computeRuntimeImMessageSemanticHash(delivery));
+    expect(
+      computeRuntimeImMessageSemanticHash({
+        ...delivery,
+        content: {
+          ...delivery.content,
+          history: [],
+          historyTruncated: true,
+          resources: [
+            {
+              imMessageId: delivery.imMessageId,
+              ordinal: 0,
+              kind: "file",
+              availability: "too_large",
+            },
+          ],
+        },
+      }),
+    ).toBe(computeRuntimeImMessageSemanticHash(steer));
+    expect(computeRuntimeImSteerInputHash(steer)).toMatch(/^[a-f0-9]{64}$/);
+
+    const steered = {
+      type: "im:steer:result" as const,
+      requestId: steer.requestId,
+      deliveryId: steer.deliveryId,
+      sessionId: steer.sessionId,
+      placementGeneration: steer.placementGeneration,
+      rootDeliveryId: steer.rootDeliveryId,
+      expectedTurnId: steer.expectedTurnId,
+      status: "steered" as const,
+    };
+    expect(ClientRuntimeBusinessFrameSchema.parse(steered)).toEqual(steered);
+    expect(RuntimeImSteerResultSchema.parse({ ...steered, status: "retry", reason: "turn_starting" })).toMatchObject({
+      status: "retry",
+    });
+    expect(() =>
+      RuntimeImSteerResultSchema.parse({ ...steered, status: "steered", reason: "turn_starting" }),
+    ).toThrow();
+    expect(() =>
+      RuntimeImSteerResultSchema.parse({ ...steered, status: "deferred", reason: "turn_starting" }),
+    ).toThrow();
+
+    expect(
+      ImMessageDeliveryResultSchema.parse({
+        type: "im:deliver:result",
+        requestId: delivery.requestId,
+        deliveryId: delivery.deliveryId,
+        sessionId: delivery.sessionId,
+        placementGeneration: delivery.placementGeneration,
+        status: "absorbed",
+        rootDeliveryId: steer.rootDeliveryId,
+        turnId: steer.expectedTurnId,
+      }),
+    ).toMatchObject({ status: "absorbed", rootDeliveryId: "delivery-root", turnId: "turn-root" });
   });
 
   it("B-03 enforces field byte budgets independently from JavaScript string length", () => {

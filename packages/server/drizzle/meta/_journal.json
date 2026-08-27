@@ -134,6 +134,13 @@
       "when": 1787813283781,
       "tag": "0018_freezing_vermin",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1787813992272,
+      "tag": "0019_cool_captain_marvel",
+      "breakpoints": true
     }
   ]
 }

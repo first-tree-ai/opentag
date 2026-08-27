@@ -85,6 +85,7 @@ export function isHostedEnvironment(environment: ChannelName): boolean {
 
 const ServerEnvironmentSchema = z
   .object({
+    BETTER_AUTH_SECRET: z.string().min(32),
     OPENTAG_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
     OPENTAG_AUTO_MIGRATE: booleanString("true"),
     OPENTAG_DATABASE_URL: DatabaseUrlSchema,
@@ -210,6 +211,8 @@ export function parseSlackRedirectUrl(value: string, publicOrigin: string): stri
 export interface ServerConfig {
   accessTokenTtlSeconds: number;
   autoMigrate: boolean;
+  /** Signs Better Auth sessions and cookies. Distinct from `jwtSecret` so the two can be rotated independently. */
+  betterAuthSecret: string;
   databaseUrl: string;
   encryptionKey: Uint8Array;
   channel: ChannelConfig;
@@ -259,6 +262,7 @@ export function parseDatabaseConfig(environment: NodeJS.ProcessEnv): DatabaseCon
 
 export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig {
   const parsed = ServerEnvironmentSchema.parse({
+    BETTER_AUTH_SECRET: environment.BETTER_AUTH_SECRET,
     OPENTAG_ACCESS_TOKEN_TTL_SECONDS: environment.OPENTAG_ACCESS_TOKEN_TTL_SECONDS,
     OPENTAG_AUTO_MIGRATE: environment.OPENTAG_AUTO_MIGRATE,
     OPENTAG_DATABASE_URL: environment.OPENTAG_DATABASE_URL,
@@ -288,6 +292,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
   return {
     accessTokenTtlSeconds: parsed.OPENTAG_ACCESS_TOKEN_TTL_SECONDS,
     autoMigrate: parsed.OPENTAG_AUTO_MIGRATE,
+    betterAuthSecret: parsed.BETTER_AUTH_SECRET,
     channel: getChannelConfig(parsed.OPENTAG_ENV),
     databaseUrl: parsed.OPENTAG_DATABASE_URL,
     encryptionKey: parsed.OPENTAG_ENCRYPTION_KEY,

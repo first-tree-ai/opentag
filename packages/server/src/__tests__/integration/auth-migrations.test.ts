@@ -406,7 +406,7 @@ describe("database migrations", () => {
               where table_schema = 'public' and table_name = 'users' and column_name = 'email_verified'
             ) as email_verified_exists
         `;
-        expect(blocked).toEqual({ email_verified_exists: false, migration_count: 18 });
+        expect(blocked).toEqual({ email_verified_exists: false, migration_count: legacyEntries.length });
 
         await sql`delete from users where id = ${duplicateUserId}`;
         const verifiedUserId = crypto.randomUUID();
@@ -703,7 +703,8 @@ describe("database migrations", () => {
             ) as creator_owner_constraint_removed
         `;
         expect(lifecycle).toEqual({
-          count: 19,
+          // Derived from the journal so appending a migration cannot turn "applied exactly once" into a stale literal.
+          count: journal.entries.length,
           creation_intents_null: true,
           deleted_at_exists: false,
           setup_completed_at_exists: true,
@@ -787,7 +788,7 @@ describe("database migrations", () => {
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(19);
+        expect(rerun?.count).toBe(journal.entries.length);
       } finally {
         await sql.end();
       }

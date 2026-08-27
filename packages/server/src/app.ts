@@ -17,6 +17,8 @@ import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
 import { registerWorkspaceRoutes } from "./api/workspaces.js";
+import type { OpenTagBetterAuth } from "./auth/better-auth.js";
+import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { currentTraceId } from "./observability/index.js";
 import { type AgentService, AgentServiceError } from "./services/agents/index.js";
@@ -38,6 +40,8 @@ export interface CreateAppOptions {
   /** Enables the Account-native management collections that back the Workspace-free client contracts. */
   accountScope?: AccountScopeResolver;
   authService?: UserAuthService;
+  /** Mounts Better Auth's own endpoints. Registered ahead of the Web App so the SPA fallback cannot swallow them. */
+  betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
   webAppRoot?: string;
   agentService?: AgentService;
   computerService?: ComputerService;
@@ -171,6 +175,10 @@ export function createApp(options: CreateAppOptions = {}) {
   const slackEvents = options.slackEvents;
   if (slackEvents) {
     app.register(async (slackApp) => registerSlackEventsRoute(slackApp, slackEvents));
+  }
+
+  if (options.betterAuth) {
+    registerBetterAuthRoutes(app, options.betterAuth.instance, options.betterAuth.publicUrl);
   }
 
   if (options.authService) {

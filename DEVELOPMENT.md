@@ -58,13 +58,14 @@ node scripts/cli-pack-smoke.mjs \
 
 ## Run the server and health-check path
 
-Start PostgreSQL, configure the required database and JWT secret, then build and start the server. Migrations run before
+Start PostgreSQL, configure the required database URL and secrets, then build and start the server. Migrations run before
 the server listens.
 
 ```bash
 docker compose up -d postgres
 export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
 export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
+export BETTER_AUTH_SECRET=$(openssl rand -base64 32)
 export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
 export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
 pnpm build
@@ -354,6 +355,7 @@ processes.
 | `OPENTAG_ENV` | `dev` | OpenTag environment/channel: `dev`, `staging`, or `prod`; hosted values require HTTPS |
 | `OPENTAG_DATABASE_URL` | none | Required PostgreSQL connection URL |
 | `OPENTAG_JWT_SECRET` | none | Required access-token signing secret; at least 32 characters |
+| `BETTER_AUTH_SECRET` | none | Required Better Auth session/cookie signing secret; at least 32 characters |
 | `OPENTAG_ENCRYPTION_KEY` | none | Required canonical base64-encoded 32-byte application encryption key |
 | `OPENTAG_GOOGLE_CLIENT_ID` | none | Optional Google OIDC client id; requires the matching secret |
 | `OPENTAG_GOOGLE_CLIENT_SECRET` | none | Optional Google OIDC client secret; requires the matching client id |

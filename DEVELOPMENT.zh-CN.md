@@ -57,13 +57,14 @@ node scripts/cli-pack-smoke.mjs \
 
 ## 运行 Server 与健康检查链路
 
-先启动 PostgreSQL，配置必需的数据库地址和 JWT secret，再构建并启动 Server。Server 会在开始监听前执行
+先启动 PostgreSQL，配置必需的数据库地址与各项 secret，再构建并启动 Server。Server 会在开始监听前执行
 migration。
 
 ```bash
 docker compose up -d postgres
 export OPENTAG_DATABASE_URL=postgresql://opentag:opentag@localhost:5432/opentag
 export OPENTAG_JWT_SECRET=replace-with-at-least-32-random-characters
+export BETTER_AUTH_SECRET=$(openssl rand -base64 32)
 export OPENTAG_ENCRYPTION_KEY=$(openssl rand -base64 32)
 export OPENTAG_PUBLIC_URL=http://127.0.0.1:8000
 pnpm build
@@ -335,6 +336,7 @@ setup attempt 并记录结果，然后把一条已授权的 binding 写入数据
 | `OPENTAG_ENV` | `dev` | OpenTag 环境/channel：`dev`、`staging` 或 `prod`；托管值要求 HTTPS |
 | `OPENTAG_DATABASE_URL` | 无 | 必需的 PostgreSQL 连接地址 |
 | `OPENTAG_JWT_SECRET` | 无 | 必需的 access token 签名 secret，至少 32 个字符 |
+| `BETTER_AUTH_SECRET` | 无 | 必需的 Better Auth session/cookie 签名 secret，至少 32 个字符 |
 | `OPENTAG_ENCRYPTION_KEY` | 无 | 必需的 canonical base64 编码 32-byte 应用层加密密钥 |
 | `OPENTAG_GOOGLE_CLIENT_ID` | 无 | 可选 Google OIDC client id，必须与 secret 同时配置 |
 | `OPENTAG_GOOGLE_CLIENT_SECRET` | 无 | 可选 Google OIDC client secret，必须与 client id 同时配置 |

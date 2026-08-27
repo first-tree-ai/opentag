@@ -3287,19 +3287,20 @@ describe("IM binding persistence", () => {
 
   /**
    * The dispatch guard is `!instanceId || row.computer.currentInstanceId !== instanceId`. The first
-   * disjunct — no runtime connected at all — is covered above. This pins the second: a runtime IS
-   * connected, but the persisted enrollment still names a superseded instance, so it is the persisted
-   * column that withholds the dispatch. De-persisting it would make this disjunct vacuous and silently
-   * let a superseded generation be served.
+   * disjunct — no runtime connected at all — is covered above. This pins the second, in the direction
+   * that actually costs something: the enrollment has advanced to a new generation, while a stale
+   * registry entry for the previous one is still held. `instanceId` comes from the registry, so
+   * dropping this disjunct would dispatch to that superseded generation; the persisted column is the
+   * only thing that recognises it as stale.
    */
-  it("withholds delivery when the persisted instance disagrees with the connected runtime", async () => {
+  it("withholds delivery when the connected runtime is behind the persisted instance", async () => {
     const value = await fixture();
     try {
-      const supersededInstanceId = crypto.randomUUID();
-      const liveInstanceId = crypto.randomUUID();
+      const currentInstanceId = crypto.randomUUID();
+      const staleInstanceId = crypto.randomUUID();
       await value.database
         .update(workspaceComputers)
-        .set({ currentInstanceId: supersededInstanceId })
+        .set({ currentInstanceId })
         .where(eq(workspaceComputers.id, value.workspaceComputer.id));
       const admission = await new ImMessageInbox(value.database).ingest(
         value.imBindingId,
@@ -3312,7 +3313,7 @@ describe("IM binding persistence", () => {
       const domain = { requestReconcile: vi.fn(), requestDelivery: vi.fn() };
       await imDeliveryWorker({
         database: value.database,
-        registry: { currentInstanceId: () => liveInstanceId } as never,
+        registry: { currentInstanceId: () => staleInstanceId } as never,
         domain: domain as never,
       }).runOnce();
 
@@ -3325,6 +3326,7 @@ describe("IM binding persistence", () => {
       await value.sql.end();
     }
   });
+
   it("does not let a pending delivery for an ended Session fence another active Session of the Agent", async () => {
     const value = await fixture();
     try {

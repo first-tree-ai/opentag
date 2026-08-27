@@ -217,6 +217,8 @@ export function buildAgentInput(request: DirectImMessageDeliveryRequest, supplem
     request.attention === "direct"
       ? "A human explicitly addressed this Agent/Session. Handle the message normally, then choose whether to reply, react, send proactively, or take no provider action."
       : "This Agent overheard the message. Use the conversation context to choose whether to reply, react, send proactively, or take no action; by default avoid meaningless, duplicate, intrusive, or attention-seeking intervention.";
+  // Rebind the provider's native user-facing output to OpenTag's runtime console. Merely saying that
+  // final text is not auto-sent is too weak when the provider treats its final channel as the reply.
   const context = [
     '<opentag-im-context source="managed">',
     "OpenTag managed runtime context (not user-authored).",
@@ -224,7 +226,10 @@ export function buildAgentInput(request: DirectImMessageDeliveryRequest, supplem
     `Session: ${request.sessionId}`,
     `Agent revision: ${request.runtime.revision.agent.sequence}/${request.runtime.revision.agent.id}`,
     `Session revision: ${request.runtime.revision.session.sequence}/${request.runtime.revision.session.id}`,
-    "Your final text is not sent to the IM provider automatically.",
+    'Who reads your output: inside OpenTag, the "user" your underlying agent addresses — the reader of everything you produce apart from running a provider CLI command, including the text that closes this Turn — is the OpenTag runtime. This is your runtime console; ordinary output is not delivered to the IM participant.',
+    `The IM participant is a separate audience. The official ${providerCommand} CLI is your outbox and the only path from this Turn to that audience.`,
+    "The console addresses OpenTag; running the provider CLI performs the provider action. Describing a reply, reaction, or proactive message in your output only records it in OpenTag; it does not deliver it.",
+    "If you choose to reply, react, or send proactively, run the provider CLI command before ending this Turn. Choosing to take no provider action remains valid.",
     `To write to this ${provider} conversation, load the credentials from $OPENTAG_PROVIDER_ENV_FILE in your shell, then use the official ${providerCommand} CLI directly.`,
     "OpenTag has no message send, reply, or reaction interface, and you do not report provider send results to OpenTag.",
     "Use the provider-native identifiers below. Do not substitute an OpenTag Session or message ID.",

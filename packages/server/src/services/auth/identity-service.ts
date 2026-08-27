@@ -159,8 +159,16 @@ export class AuthIdentityService {
     await transaction.execute(
       sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["account-email", email])}, 0))`,
     );
-    const [user] = await transaction.select().from(users).where(sql`lower(${users.email}) = ${email}`).limit(1);
-    return user;
+    const holders = await transaction.select().from(users).where(sql`lower(${users.email}) = ${email}`).limit(2);
+    if (holders.length > 1) {
+      /*
+       * Until the uniqueness index lands, a writer predating this resolver can leave two Accounts on one address.
+       * Picking either of them would hand ownership to whichever row the database happened to return first, so refuse
+       * and let an operator reconcile: the index migration reports the same rows by id.
+       */
+      throw this.#emailConflict();
+    }
+    return holders[0];
   }
 
   /**

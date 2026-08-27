@@ -3,7 +3,24 @@ import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { authIdentities, users } from "../../db/schema/index.js";
+import { isUniqueViolation } from "../../db/unique-violation.js";
 import { AuthServiceError } from "./errors.js";
+
+/**
+ * Providers allowed to take over an Account that already holds their address.
+ *
+ * Provider trust and an adapter's verification bit are separate facts: a verified email proves the adapter believes the
+ * address, not that OpenTag trusts that adapter to hand over an existing Account. Widening this list is a security
+ * decision, so a new provider has to be added here deliberately rather than inheriting the authority by asserting
+ * `emailVerified`.
+ */
+const TRUSTED_ATTACHMENT_PROVIDERS: ReadonlySet<string> = new Set(["google"]);
+
+/** The case-insensitive unique index on `users.email`. */
+const USERS_EMAIL_UNIQUE = "users_email_unique";
+
+/** One identity per provider per Account, and one Account per provider identity. */
+const IDENTITY_UNIQUE_INDEXES = ["auth_identities_user_provider_unique", "auth_identities_provider_subject_unique"];
 
 const ExternalIdentitySchema = z
   .object({
@@ -27,9 +44,6 @@ export interface ResolvedAccountIdentity {
   accountWasCreated: boolean;
   userId: string;
 }
-
-/** PostgreSQL unique violation, raised when a concurrent insert wins the race for an email. */
-const UNIQUE_VIOLATION = "23505";
 
 export class AuthIdentityService {
   readonly #database: DatabaseClient;
@@ -100,7 +114,7 @@ export class AuthIdentityService {
      */
     const owner = await this.#lockAccountByEmail(transaction, identity.email);
     if (owner) {
-      if (!identity.emailVerified) throw this.#emailConflict();
+      if (!this.#mayAttachToExistingAccount(identity)) throw this.#emailConflict();
       if (owner.suspendedAt) throw this.#suspended();
       await this.#insertIdentity(transaction, owner.id, identity, now);
       await this.#applyAccountEmail(transaction, owner, identity, now);
@@ -146,10 +160,25 @@ export class AuthIdentityService {
     if (!identity.emailVerified) return;
     const owner = await this.#lockAccountByEmail(transaction, identity.email);
     if (owner && owner.id !== user.id) throw this.#emailConflict();
-    await transaction
-      .update(users)
-      .set({ email: identity.email, emailVerified: true, updatedAt: now })
-      .where(eq(users.id, user.id));
+    try {
+      await transaction
+        .update(users)
+        .set({ email: identity.email, emailVerified: true, updatedAt: now })
+        .where(eq(users.id, user.id));
+    } catch (error) {
+      // Two identities can both observe the same new address as unowned; the row lock above cannot serialize a move
+      // onto an address no row holds yet, so the index decides and the loser is reported as the same conflict.
+      if (isUniqueViolation(error, USERS_EMAIL_UNIQUE)) throw this.#emailConflict();
+      throw error;
+    }
+  }
+
+  /**
+   * Attaching to an Account that already holds the address hands over that Account, so it takes both a verified
+   * address and a provider trusted to make that claim.
+   */
+  #mayAttachToExistingAccount(identity: ExternalIdentity): boolean {
+    return identity.emailVerified && TRUSTED_ATTACHMENT_PROVIDERS.has(identity.provider);
   }
 
   async #insertAccount(transaction: DatabaseTransaction, identity: ExternalIdentity, now: Date) {
@@ -168,7 +197,7 @@ export class AuthIdentityService {
       return user;
     } catch (error) {
       // The row lock above cannot serialize two inserts of an address that does not exist yet; the index does.
-      if (isUniqueViolation(error)) throw this.#emailConflict();
+      if (isUniqueViolation(error, USERS_EMAIL_UNIQUE)) throw this.#emailConflict();
       throw error;
     }
   }
@@ -179,15 +208,25 @@ export class AuthIdentityService {
     identity: ExternalIdentity,
     now: Date,
   ): Promise<void> {
-    await transaction.insert(authIdentities).values({
-      userId,
-      provider: identity.provider,
-      issuer: identity.issuer,
-      subject: identity.subject,
-      email: identity.email,
-      createdAt: now,
-      updatedAt: now,
-    });
+    try {
+      await transaction.insert(authIdentities).values({
+        userId,
+        provider: identity.provider,
+        issuer: identity.issuer,
+        subject: identity.subject,
+        email: identity.email,
+        createdAt: now,
+        updatedAt: now,
+      });
+    } catch (error) {
+      /*
+       * An Account holds at most one identity per provider, and an identity belongs to at most one Account. Two
+       * subjects from the same provider racing onto one address reach here after both passed the email check, so the
+       * index is what decides and the loser is a conflict rather than an opaque failure.
+       */
+      if (IDENTITY_UNIQUE_INDEXES.some((name) => isUniqueViolation(error, name))) throw this.#conflict();
+      throw error;
+    }
   }
 
   #conflict(): AuthServiceError {
@@ -211,8 +250,4 @@ export class AuthIdentityService {
   #suspended(): AuthServiceError {
     return new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
   }
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === UNIQUE_VIOLATION;
 }

@@ -125,6 +125,62 @@ describe("Account identity resolution under the one-email-per-Account invariant"
     expect((await readAccount(moverId))?.email).toBe("mover@example.com");
   });
 
+  it("reports a lost concurrent Account creation as a conflict, not a database error", async () => {
+    // Two identities can both find the address unowned; no row exists to lock, so the unique index is the only
+    // serialization point and the loser must still surface a typed decision.
+    const results = await Promise.allSettled([
+      identities.resolveOrCreate(googleIdentity({ email: "race@example.com", subject: "racer-one" })),
+      identities.resolveOrCreate(googleIdentity({ email: "race@example.com", subject: "racer-two" })),
+    ]);
+
+    // The loser can land on either index: the `users` insert if it lost the address, or the identity insert if it
+    // attached to the winner's Account and found the provider slot taken. Both are decisions, not database errors.
+    for (const failure of results.filter((result) => result.status === "rejected")) {
+      expect(failure.reason).toMatchObject({ statusCode: 409 });
+      expect(["AUTH_EMAIL_CONFLICT", "AUTH_IDENTITY_CONFLICT"]).toContain(failure.reason.code);
+    }
+    expect(await client.database.select().from(users)).toHaveLength(1);
+  });
+
+  it("reports a lost concurrent provider email change as a conflict, not a database error", async () => {
+    await identities.resolveOrCreate(googleIdentity({ email: "mover-one@example.com", subject: "mover-one" }));
+    await identities.resolveOrCreate(googleIdentity({ email: "mover-two@example.com", subject: "mover-two" }));
+
+    const results = await Promise.allSettled([
+      identities.resolveOrCreate(googleIdentity({ email: "target@example.com", subject: "mover-one" })),
+      identities.resolveOrCreate(googleIdentity({ email: "target@example.com", subject: "mover-two" })),
+    ]);
+
+    for (const failure of results.filter((result) => result.status === "rejected")) {
+      expect(failure.reason).toMatchObject({ code: "AUTH_EMAIL_CONFLICT", statusCode: 409 });
+    }
+    const holders = await client.database.select().from(users).where(eq(users.email, "target@example.com"));
+    expect(holders).toHaveLength(1);
+  });
+
+  it("refuses to hand an existing Account to a verified but untrusted provider", async () => {
+    // Verification is the adapter's claim about the address; trust is OpenTag's claim about the adapter. Only the
+    // second one may hand over an Account, so a new provider cannot acquire that authority by asserting the first.
+    const ownerId = await identities.resolveOrCreate(
+      googleIdentity({ email: "trusted@example.com", subject: "google-owner" }),
+    );
+
+    await expect(
+      identities.resolveOrCreate({
+        provider: "oidc",
+        issuer: "https://oidc.example.com",
+        subject: "oidc-subject",
+        email: "trusted@example.com",
+        emailVerified: true,
+        displayName: "Impostor",
+      }),
+    ).rejects.toMatchObject({ code: "AUTH_EMAIL_CONFLICT", statusCode: 409 });
+
+    const attached = await client.database.select().from(authIdentities).where(eq(authIdentities.userId, ownerId));
+    expect(attached).toHaveLength(1);
+    expect(attached[0]?.provider).toBe("google");
+  });
+
   it("refuses to hand an existing Account to an unverified provider address", async () => {
     const ownerId = await identities.resolveOrCreate(
       googleIdentity({ email: "owner@example.com", subject: "owner-subject" }),

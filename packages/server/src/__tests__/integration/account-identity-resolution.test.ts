@@ -28,9 +28,9 @@ beforeEach(async () => testDatabase.reset());
 /**
  * Runs two resolutions that are both past the address lookup before either writes.
  *
- * `Promise.all` alone does not force this: the first call can commit before the second reads, and the race the catch
- * paths exist for never happens. The service's `afterAccountLookup` seam holds each transaction at that point until
- * both have arrived, so exactly one of them must lose to the unique index.
+ * Only usable when the two target *different* addresses. Resolutions claiming the same address serialize on it by
+ * design, so the second cannot reach this point until the first commits, and the barrier would never release — the
+ * bounded wait turns that misuse into a fast failure instead of a hung suite.
  */
 async function raceAtAddressLookup(
   first: (service: AuthIdentityService) => Promise<unknown>,
@@ -38,16 +38,26 @@ async function raceAtAddressLookup(
 ): Promise<PromiseSettledResult<unknown>[]> {
   let arrived = 0;
   let release: () => void = () => undefined;
-  const bothArrived = new Promise<void>((resolve) => {
+  let reject: (error: Error) => void = () => undefined;
+  const bothArrived = new Promise<void>((resolve, fail) => {
     release = resolve;
+    reject = fail;
   });
+  const timer = setTimeout(
+    () => reject(new Error("Both resolutions never reached the address lookup; do they claim the same address?")),
+    5_000,
+  );
   const barrier = async () => {
     arrived += 1;
     if (arrived >= 2) release();
     await bothArrived;
   };
   const service = new AuthIdentityService(client.database, { afterAccountLookup: barrier });
-  return Promise.allSettled([first(service), second(service)]);
+  try {
+    return await Promise.allSettled([first(service), second(service)]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function typedConflicts(results: PromiseSettledResult<unknown>[]): string[] {
@@ -159,26 +169,28 @@ describe("Account identity resolution under the one-email-per-Account invariant"
     expect((await readAccount(moverId))?.email).toBe("mover@example.com");
   });
 
-  it("reports a lost concurrent Account creation as a conflict, not a database error", async () => {
-    // Both transactions read the address as unowned before either writes, so no row exists to lock and the unique
-    // index is the only serialization point. Exactly one must lose, and it must lose as a typed decision.
-    const results = await raceAtAddressLookup(
-      (service) => service.resolveOrCreate(googleIdentity({ email: "race@example.com", subject: "racer-one" })),
-      (service) => service.resolveOrCreate(googleIdentity({ email: "race@example.com", subject: "racer-two" })),
-    );
+  it("creates one Account when two first sign-ins race for the same address", async () => {
+    // No row exists to lock, so without serializing on the address itself both would read it as free and create an
+    // Account each. They serialize instead: the first creates, and the second sees that Account rather than a gap.
+    const results = await Promise.allSettled([
+      identities.resolveOrCreate(googleIdentity({ email: "race@example.com", subject: "racer-one" })),
+      identities.resolveOrCreate(googleIdentity({ email: "race@example.com", subject: "racer-two" })),
+    ]);
 
-    expect(typedConflicts(results)).toEqual(["AUTH_EMAIL_CONFLICT"]);
+    // One Account, and the second subject is refused rather than becoming a second Google identity on it.
+    expect(typedConflicts(results)).toEqual(["AUTH_IDENTITY_CONFLICT"]);
     expect(await client.database.select().from(users)).toHaveLength(1);
+    expect(await client.database.select().from(authIdentities)).toHaveLength(1);
   });
 
   it("reports a lost concurrent provider email change as a conflict, not a database error", async () => {
     await identities.resolveOrCreate(googleIdentity({ email: "mover-one@example.com", subject: "mover-one" }));
     await identities.resolveOrCreate(googleIdentity({ email: "mover-two@example.com", subject: "mover-two" }));
 
-    const results = await raceAtAddressLookup(
-      (service) => service.resolveOrCreate(googleIdentity({ email: "target@example.com", subject: "mover-one" })),
-      (service) => service.resolveOrCreate(googleIdentity({ email: "target@example.com", subject: "mover-two" })),
-    );
+    const results = await Promise.allSettled([
+      identities.resolveOrCreate(googleIdentity({ email: "target@example.com", subject: "mover-one" })),
+      identities.resolveOrCreate(googleIdentity({ email: "target@example.com", subject: "mover-two" })),
+    ]);
 
     expect(typedConflicts(results)).toEqual(["AUTH_EMAIL_CONFLICT"]);
     const holders = await client.database.select().from(users).where(eq(users.email, "target@example.com"));

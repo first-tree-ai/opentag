@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { authIdentities, users } from "../../db/schema/index.js";
-import { isDeadlock, isUniqueViolation } from "../../db/unique-violation.js";
+import { isUniqueViolation } from "../../db/unique-violation.js";
 import { AuthServiceError } from "./errors.js";
 
 /**
@@ -27,7 +27,7 @@ const ExternalIdentitySchema = z
     provider: AuthIdentityProviderSchema,
     issuer: z.string().url().max(2048),
     subject: z.string().min(1).max(512),
-    // Normalized here so every write below inherits it; `users.email` carries a case-insensitive unique index.
+    // Normalized here so every write below inherits it, and so the address is a stable key to serialize on.
     email: z.string().trim().toLowerCase().email(),
     /**
      * Whether the provider asserted this address belongs to the person signing in. Only a verified address may
@@ -118,10 +118,9 @@ export class AuthIdentityService {
     /*
      * An Account may already exist for this address without carrying this identity: the bootstrap Account is created
      * from an email alone, and a person can sign in with a second provider. Resolving it here is what keeps a verified
-     * address mapped to exactly one Account. Without it the insert below would race the `users_email_unique` index and
-     * surface a raw unique violation as an opaque 500.
+     * address mapped to exactly one Account, and what the previous revision was missing — it inserted unconditionally.
      */
-    const owner = await this.#lockAccountByEmail(transaction, identity.email);
+    const owner = await this.#claimAccountByEmail(transaction, identity.email);
     await this.#afterAccountLookup?.();
     if (owner) {
       if (!this.#mayAttachToExistingAccount(identity)) throw this.#emailConflict();
@@ -142,13 +141,25 @@ export class AuthIdentityService {
     return user;
   }
 
-  async #lockAccountByEmail(transaction: DatabaseTransaction, email: string) {
-    const [user] = await transaction
-      .select()
-      .from(users)
-      .where(sql`lower(${users.email}) = ${email}`)
-      .limit(1)
-      .for("update");
+  /**
+   * Claims the address for this transaction, then returns whoever currently holds it.
+   *
+   * The advisory lock is what makes one address resolve to one Account, rather than the unique index. No row exists to
+   * lock when an address is unheld, so two first sign-ins for the same person would otherwise both read it as free;
+   * and two Accounts exchanging addresses would each hold the row the other needs. Serializing on the address itself
+   * removes both: same address contends, different addresses do not, and no transaction ever waits on a second row.
+   *
+   * Deliberately no `FOR UPDATE` on the holder. A transaction reaching here already holds its own Account row, so a
+   * second row lock is what let two Accounts exchanging addresses wait on each other. The advisory lock is the mutual
+   * exclusion; with no second row lock taken anywhere, this path cannot form a cycle.
+   *
+   * The index remains the backstop for any writer that skips this path.
+   */
+  async #claimAccountByEmail(transaction: DatabaseTransaction, email: string) {
+    await transaction.execute(
+      sql`select pg_advisory_xact_lock(hashtextextended(${JSON.stringify(["account-email", email])}, 0))`,
+    );
+    const [user] = await transaction.select().from(users).where(sql`lower(${users.email}) = ${email}`).limit(1);
     return user;
   }
 
@@ -168,25 +179,17 @@ export class AuthIdentityService {
       return;
     }
     if (!identity.emailVerified) return;
-    /*
-     * No row lock on the address being moved to. Each returning identity already holds its own Account row, so taking
-     * a second one here orders two locks by whichever address each transaction happens to be leaving: two Accounts
-     * swapping addresses would grab them in opposite order and deadlock, which PostgreSQL reports as `40P01` — outside
-     * any conflict catch. The unique index decides instead, and the loser is classified below.
-     */
+    const owner = await this.#claimAccountByEmail(transaction, identity.email);
     await this.#afterAccountLookup?.();
+    if (owner && owner.id !== user.id) throw this.#emailConflict();
     try {
       await transaction
         .update(users)
         .set({ email: identity.email, emailVerified: true, updatedAt: now })
         .where(eq(users.id, user.id));
     } catch (error) {
-      /*
-       * Both outcomes mean the same thing: a concurrent move took this address first. Which one PostgreSQL reports
-       * depends on the interleaving — a straight race loses on the index, while two Accounts exchanging addresses wait
-       * on each other's uncommitted tuples and one is chosen as the deadlock victim.
-       */
-      if (isUniqueViolation(error, USERS_EMAIL_UNIQUE) || isDeadlock(error)) throw this.#emailConflict();
+      // Backstop for the index, once it exists: the claim above is what actually decides this.
+      if (isUniqueViolation(error, USERS_EMAIL_UNIQUE)) throw this.#emailConflict();
       throw error;
     }
   }

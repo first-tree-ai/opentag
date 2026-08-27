@@ -255,8 +255,10 @@ stable user ID and then uses the provider-neutral token issuer. Future Google or
 boundary without changing JWT claims. Internal grants are still loaded from PostgreSQL as a Phase 2 compatibility seam;
 they are not exposed as Admin membership.
 
-An Account email is stored lowercased and is unique case-insensitively, so one address identifies at most one Account.
-Every write path normalizes before insert and the `users_email_unique` index is the backstop.
+An Account email is stored lowercased, and one address identifies at most one Account. The identity resolver enforces
+that by serializing on the address before deciding whether to create or attach, so it holds without a database
+constraint; a `users_email_unique` index backs it up for any writer that skips the resolver, and is added only once no
+revision predating the resolver is still serving.
 
 A provider identity therefore attaches to the Account that already holds its address rather than creating a second one.
 Attachment requires the provider to have verified the address, because it hands over an existing Account; an unverified

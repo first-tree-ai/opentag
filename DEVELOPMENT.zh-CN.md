@@ -246,8 +246,9 @@ bootstrap email 是 Account 资料，不是邮箱密码凭据。Account 登录 c
 无关的 token 颁发边界。未来 Google 或 OIDC identity resolver 可以接入这个边界，无需改变 JWT claims。内部 grant
 仍会从 PostgreSQL 读取，作为 Phase 2 前的兼容 seam；产品不把它暴露为 Admin 成员关系。
 
-Account email 以小写存储，并按大小写不敏感唯一，因此一个地址最多对应一个 Account。所有写入路径都会在 insert 前归一化，
-`users_email_unique` 索引是兜底。
+Account email 以小写存储，且一个地址最多对应一个 Account。这由 identity resolver 保证：它在决定新建还是挂载之前先对该地址
+串行化，因此不依赖数据库约束也成立；`users_email_unique` 索引作为兜底，用于防范绕过 resolver 的写入方，并且只在没有任何
+早于该 resolver 的版本仍在服务时才创建。
 
 因此 provider identity 会挂到已持有该地址的 Account 上，而不是新建第二个。挂载要求 provider 已验证该地址，因为这等于交出一个
 已存在的 Account；未验证却已被占用的地址，以及 provider 邮箱变更撞上另一个 Account 的地址，都会以 `AUTH_EMAIL_CONFLICT`

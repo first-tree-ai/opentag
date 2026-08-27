@@ -1,22 +1,25 @@
 import { isIP } from "node:net";
 import { AuthProvidersResponseSchema, HTTP_PATHS } from "@opentag/shared";
 import { fromNodeHeaders } from "better-auth/node";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { OpenTagBetterAuth } from "../auth/better-auth.js";
-import { callBetterAuth, copyBetterAuthCookies } from "../auth/fastify-handler.js";
+import { betterAuthFailure, callBetterAuth, copyBetterAuthCookies } from "../auth/fastify-handler.js";
+import { DEV_SIGN_IN_PATH, LEGACY_UPGRADE_PATH } from "../auth/internal-sign-in.js";
 import {
   BROWSER_COOKIE_NAMES,
   clearBrowserSessionCookies,
+  clearLegacyCredentialCookies,
   clearOAuthContextCookie,
   parseCookies,
   requireBrowserMutationSecurity,
   requireRefreshCookie,
+  setBrowserCsrfCookie,
   setBrowserSessionCookies,
   setOAuthContextCookie,
 } from "../services/auth/browser-cookies.js";
-import { AuthServiceError } from "../services/auth/errors.js";
-import type { DevBrowserAuthService, GoogleBrowserAuthService, UserAuthService } from "../services/auth/index.js";
+import { AuthServiceError, invalidCredential } from "../services/auth/errors.js";
+import type { GoogleBrowserAuthService, UserAuthService } from "../services/auth/index.js";
 import { validateOAuthNext } from "../services/auth/index.js";
 import { parseRequest } from "./request-validation.js";
 
@@ -41,11 +44,20 @@ const CallbackQuerySchema = z
 export interface BrowserAuthRoutesOptions {
   /** Present once Better Auth owns the browser session; the legacy paths stay for credentials it did not issue. */
   betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
-  dev?: DevBrowserAuthService;
+  /**
+   * Whether the loopback-only development sign-in is configured.
+   *
+   * Which Account it signs in is fixed inside the Better Auth instance, so this route decides only whether a request
+   * may ask for it at all.
+   */
+  devSignIn?: boolean;
   google?: GoogleBrowserAuthService;
   publicOrigin: string;
+  /** Lifetime of the credentials the previous revision issued, and of the cookies that still carry them. */
   refreshTokenTtlSeconds: number;
   secureCookies: boolean;
+  /** Lifetime of a Better Auth session, and therefore of the double-submit token that has to outlast it. */
+  sessionTtlSeconds: number;
 }
 
 function isLoopbackAddress(value: string): boolean {
@@ -89,8 +101,12 @@ export function registerBrowserAuthRoutes(
 ): void {
   const limiter = new RouteRateLimiter();
 
+  /** Development sign-in is offered only to a loopback client reaching a loopback host, on a server configured for it. */
+  const devSignInAvailable = (request: FastifyRequest): boolean =>
+    Boolean(options.devSignIn) && isLoopbackAddress(request.ip) && isLoopbackAddress(request.hostname);
+
   app.get(HTTP_PATHS.authProviders, async (request, reply) => {
-    const devAvailable = Boolean(options.dev) && isLoopbackAddress(request.ip) && isLoopbackAddress(request.hostname);
+    const devAvailable = devSignInAvailable(request);
     return reply.code(200).send(
       AuthProvidersResponseSchema.parse({
         providers: [
@@ -111,7 +127,8 @@ export function registerBrowserAuthRoutes(
 
   app.get(HTTP_PATHS.authDevCallback, async (request, reply) => {
     limiter.check(`${request.ip}:dev`);
-    if (!options.dev || !isLoopbackAddress(request.ip) || !isLoopbackAddress(request.hostname)) {
+    const betterAuth = options.betterAuth;
+    if (!devSignInAvailable(request) || !betterAuth) {
       throw new AuthServiceError(
         "AUTH_PROVIDER_DISABLED",
         "deterministic",
@@ -121,9 +138,29 @@ export function registerBrowserAuthRoutes(
     }
     const { next } = parseRequest(StartQuerySchema, request.query);
     const destination = validateOAuthNext(next);
-    const tokens = await options.dev.signIn();
-    setBrowserSessionCookies(reply, tokens, {
-      refreshTtlSeconds: options.refreshTokenTtlSeconds,
+    /*
+     * Better Auth mints the session so a development sign-in is the same revocable credential a Google sign-in is:
+     * visible to `getSession`, and therefore actually ended by sign-out. Writing a session token into OpenTag's own
+     * cookies instead would hide it from both.
+     */
+    const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
+      method: "POST",
+      path: DEV_SIGN_IN_PATH,
+      body: {},
+    });
+    if (!response.ok) {
+      // Better Auth's error body is not OpenTag's envelope, so the failure is restated rather than forwarded.
+      throw new AuthServiceError(
+        "AUTH_DEV_USER_UNAVAILABLE",
+        "deterministic",
+        "The configured development sign-in user is unavailable or ambiguous",
+        503,
+      );
+    }
+    copyBetterAuthCookies(reply, response);
+    // The session cookie alone cannot write: every browser mutation also carries OpenTag's double-submit token.
+    setBrowserCsrfCookie(reply, {
+      maxAgeSeconds: options.sessionTtlSeconds,
       secure: options.secureCookies,
     });
     return reply.redirect(destination, 302);
@@ -196,7 +233,36 @@ export function registerBrowserAuthRoutes(
 
   app.post(HTTP_PATHS.authBrowserRefresh, async (request, reply) => {
     requireBrowserMutationSecurity(request, options.publicOrigin);
-    const tokens = await authService.refresh(requireRefreshCookie(request));
+    const refreshToken = requireRefreshCookie(request);
+    const betterAuth = options.betterAuth;
+    if (betterAuth) {
+      /*
+       * Only a browser that has not signed in since the cutover still holds this cookie, so refreshing it is that
+       * browser's one chance to move across. It is spent on a Better Auth session rather than another legacy pair:
+       * anything else leaves a session sign-out cannot revoke, or a credential that stops working when the legacy
+       * secret is retired.
+       */
+      const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
+        method: "POST",
+        path: LEGACY_UPGRADE_PATH,
+        body: { refreshToken },
+      });
+      if (!response.ok) {
+        throw await betterAuthFailure(
+          response,
+          invalidCredential("AUTH_INVALID_TOKEN", "The refresh token is invalid"),
+        );
+      }
+      copyBetterAuthCookies(reply, response);
+      setBrowserCsrfCookie(reply, {
+        maxAgeSeconds: options.sessionTtlSeconds,
+        secure: options.secureCookies,
+      });
+      // Retired only now that the replacement is on the reply, so a failure above leaves the browser able to retry.
+      clearLegacyCredentialCookies(reply, options.secureCookies);
+      return reply.code(204).send();
+    }
+    const tokens = await authService.refresh(refreshToken);
     setBrowserSessionCookies(reply, tokens, {
       refreshTtlSeconds: options.refreshTokenTtlSeconds,
       secure: options.secureCookies,

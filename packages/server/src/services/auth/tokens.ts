@@ -15,6 +15,14 @@ export interface AuthTokenPair {
 
 export interface AuthTokenProvider {
   issuePairForUser(userId: string): Promise<AuthTokenPair>;
+  /**
+   * Replaces a credential the caller still holds, and withdraws the one it presented.
+   *
+   * Refresh has to be a distinct operation once credentials are rows rather than signatures: issuing without
+   * withdrawing leaves the presented credential valid until its own expiry, so revoking what a client currently holds
+   * would not lock out a copy taken before its last refresh, and every refresh would leave another live row behind.
+   */
+  rotate(token: string, userId: string): Promise<AuthTokenPair>;
   verifyAccess(token: string): Promise<AuthTokenIdentity>;
   verifyRefresh(token: string): Promise<AuthTokenIdentity>;
 }
@@ -47,6 +55,11 @@ export class AuthTokenService implements AuthTokenProvider {
       this.#issue("refresh", userId, this.refreshTtlSeconds),
     ]);
     return { accessToken, refreshToken, expiresIn: this.accessTtlSeconds };
+  }
+
+  /** A signature cannot be withdrawn, so the presented pair stays valid until it expires. */
+  rotate(_token: string, userId: string): Promise<AuthTokenPair> {
+    return this.issuePairForUser(userId);
   }
 
   async verifyAccess(token: string): Promise<AuthTokenIdentity> {

@@ -244,8 +244,19 @@ delivery 仍属于后续工作。
 
 这四个 `OPENTAG_BOOTSTRAP_*` 值仅作为一次性命令的输入，运行中的 Server 不会读取它们。
 bootstrap email 是 Account 资料，不是邮箱密码凭据。Account 登录 code 流程先解析稳定的 user ID，再进入与 provider
-无关的 token 颁发边界。未来 Google 或 OIDC identity resolver 可以接入这个边界，无需改变 JWT claims。内部 grant
-仍会从 PostgreSQL 读取，作为 Phase 2 前的兼容 seam；产品不把它暴露为 Admin 成员关系。
+无关的 token 颁发边界。内部 grant 仍会从 PostgreSQL 读取，作为 Phase 2 前的兼容 seam；产品不把它暴露为 Admin 成员关系。
+
+该边界现在签发的是 Better Auth session，而不是签名的 access/refresh 对：CLI 凭据成为服务端可以撤销的一行记录，
+而不再是只能等它过期的一段签名。兑换响应仍是原来的四个字段，`accessToken` 与 `refreshToken` 携带同一个 session
+token，因此切换前构建的 CLI 无需升级即可继续工作。`OPENTAG_SESSION_TTL_SECONDS` 就是这个凭据的完整有效期，
+默认值取自原 refresh token 的有效期，因为它替代的正是同一件事：客户端可以闲置多久仍保持登录。refresh 采用轮换——
+先签发替代凭据，再撤销所呈现的那个——因此上次 refresh 之前被复制走的副本会立即失效，而不是继续有效到自身过期。
+
+有一处代价需要明说：凭据一旦泄露，可用时长从原先 15 分钟的 access 窗口变成整个 session 有效期。而当初之所以需要
+这个短窗口，正是因为与之配对的 30 天 refresh token 根本无法吊销；session 则可以随时吊销，这就是这次取舍。
+
+切换前签发的凭据仍可通过校验，`OPENTAG_ACCESS_TOKEN_TTL_SECONDS` 与 `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` 只对它们
+生效。持有此类凭据的浏览器会在下一次 refresh 时换成 session；系统不会再基于它们签发任何新凭据。
 
 Account email 以小写存储，且一个地址最多对应一个 Account。这由 identity resolver 保证：它在决定新建还是挂载之前先对该地址
 串行化，因此不依赖数据库约束也成立；`users_email_unique` 索引作为兜底，用于防范绕过 resolver 的写入方，并且只在没有任何
@@ -275,9 +286,10 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 ```
 
 `OPENTAG_HOST` 与 `OPENTAG_PUBLIC_URL` 都必须保持为 loopback 地址。登录页随后会显示
-`Dev: bypass Google`。callback 会按不区分大小写的 email 精确解析唯一一个已有用户并签发正常浏览器 session；
-它不会创建 Account 或内部兼容记录，且仍会拒绝 suspended Account 或缺少所需内部 grant 的 Account。email 不存在或有重复匹配时
-会 fail closed。Server 会在 `staging` 和 `prod` 环境拒绝这组配置。
+`Dev: bypass Google`。callback 会按不区分大小写的 email 精确解析唯一一个已有用户，再通过 Better Auth 签发正常浏览器
+session，因此它与 Google 登录产生的是同一种可吊销 session，登出即可结束它。签入哪个 Account 由配置固定，不取自请求。
+它不会创建 Account 或内部兼容记录，且仍会拒绝 suspended Account；email 不存在或有重复匹配时会 fail closed。
+Server 会在 `staging` 和 `prod` 环境拒绝这组配置。
 
 `OPENTAG_ENV` 是 OpenTag 唯一的环境与发布 channel 选择器。`dev` 对应本地开发行为与 `opentag-dev` binary，
 `staging` 对应 `open-tag-staging` / `opentag-staging`，`prod` 对应 `open-tag` / `opentag`。托管 Node.js 进程的
@@ -359,8 +371,9 @@ setup attempt 并记录结果，然后把一条已授权的 binding 写入数据
 | `OPENTAG_OTEL_HEADERS` | 空 | 逗号分隔 `key=value` 格式的 secret OTLP headers |
 | `OPENTAG_OTEL_ENVIRONMENT` | `OPENTAG_ENV` | Trace deployment environment 标签 |
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | `0` 到 `1` 的全局 trace head sample rate |
-| `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | access token 有效期 |
-| `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | refresh JWT 有效期 |
+| `OPENTAG_SESSION_TTL_SECONDS` | `2592000` | Account session 有效期，浏览器与 CLI 相同 |
+| `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | access JWT 有效期；仅适用于 Better Auth 切换前签发的凭据 |
+| `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | refresh JWT 有效期；仅适用于 Better Auth 切换前签发的凭据 |
 | `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` | 空 | 仅限 staging，允许 reset [Onboarding Lab](./docs/zh-CN/staging-onboarding-lab.md) Account 的 Account UUID；Scenario Preview 不需要配置 |
 | `OPENTAG_HOME` | 随 channel 而定 | 按生命周期分层的 `config/`、`data/`、`state/`、`logs/` 根目录（源码默认为 `~/.opentag-dev`） |
 

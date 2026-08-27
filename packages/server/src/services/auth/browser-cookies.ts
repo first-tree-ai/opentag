@@ -72,8 +72,12 @@ export function setBrowserSessionCookies(
  * A Better Auth sign-in brings its own session cookie but knows nothing about this one, and every browser mutation —
  * including sign-out — requires it. Without this, a session issued by Better Auth can read but never write.
  */
-export function setBrowserCsrfCookie(reply: FastifyReply, options: { maxAgeSeconds: number; secure: boolean }): string {
-  const csrf = generateSecret(24);
+export function setBrowserCsrfCookie(
+  reply: FastifyReply,
+  options: { maxAgeSeconds: number; secure: boolean; value?: string },
+): string {
+  // An existing token is re-sent unchanged when only its lifetime is being extended; a new sign-in mints a fresh one.
+  const csrf = options.value ?? generateSecret(24);
   appendSetCookies(reply, [
     cookie(BROWSER_COOKIE_NAMES.csrf, csrf, { maxAge: options.maxAgeSeconds, path: "/", secure: options.secure }),
   ]);
@@ -81,6 +85,17 @@ export function setBrowserCsrfCookie(reply: FastifyReply, options: { maxAgeSecon
 }
 
 export function clearBrowserSessionCookies(reply: FastifyReply, secure: boolean): void {
+  clearLegacyCredentialCookies(reply, secure);
+  appendSetCookies(reply, [cookie(BROWSER_COOKIE_NAMES.csrf, "", { maxAge: 0, path: "/", secure })]);
+}
+
+/**
+ * Retires the credentials the previous revision issued, leaving the double-submit token alone.
+ *
+ * Used when a browser is moving onto a Better Auth session rather than signing out: it is still signed in, and the
+ * token it needs to mutate with was just issued on the same reply.
+ */
+export function clearLegacyCredentialCookies(reply: FastifyReply, secure: boolean): void {
   appendSetCookies(reply, [
     cookie(BROWSER_COOKIE_NAMES.access, "", { httpOnly: true, maxAge: 0, path: "/", secure }),
     cookie(BROWSER_COOKIE_NAMES.refresh, "", {
@@ -89,7 +104,6 @@ export function clearBrowserSessionCookies(reply: FastifyReply, secure: boolean)
       path: "/api/v1/auth/browser",
       secure,
     }),
-    cookie(BROWSER_COOKIE_NAMES.csrf, "", { maxAge: 0, path: "/", secure }),
   ]);
 }
 

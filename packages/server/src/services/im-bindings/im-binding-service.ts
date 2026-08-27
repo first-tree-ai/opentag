@@ -407,9 +407,9 @@ export class ImBindingService {
     } catch (error) {
       // The partial unique index decides concurrent activations of one App/Workspace; report the loser
       // with the same typed conflict the in-transaction precheck uses.
-      if (isImBindingUniqueViolation(error, "im_bindings_slack_app_workspace_current_unique")) {
+      if (isImBindingUniqueViolation(error, "im_bindings_slack_app_team_current_unique")) {
         throw new ImBindingServiceError(
-          "SLACK_APP_WORKSPACE_ALREADY_BOUND",
+          "SLACK_APP_TEAM_ALREADY_BOUND",
           409,
           "This Slack App installation is already bound to another Agent",
         );
@@ -1104,7 +1104,7 @@ export class ImBindingService {
           .limit(1);
         if (conflicting) {
           throw new ImBindingServiceError(
-            "SLACK_APP_WORKSPACE_ALREADY_BOUND",
+            "SLACK_APP_TEAM_ALREADY_BOUND",
             409,
             "This Slack App installation is already bound to another Agent",
           );

@@ -1,22 +1,24 @@
 import type { SlackAppConfiguration } from "@opentag/shared/browser";
-import { type FormEvent, type ReactNode, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { Button } from "../ui/design-system.js";
 
 type SlackConfigurationIntent = "create" | "reauthorize" | "replace";
 
 const SLACK_CONFIGURATION_MESSAGES: Record<string, string> = {
+  AUTH_INVALID_TOKEN: "Sign in again, then retry adding OpenTag to Slack.",
   IM_BINDING_FORBIDDEN: "Only the Account owner can manage this Slack configuration.",
   IM_BINDING_PROVIDER_IMMUTABLE:
     "This Agent is connected to a different IM provider. Disable that binding before connecting Slack.",
   SLACK_APP_TEAM_ALREADY_BOUND:
-    "This Slack App installation is already connected to another Agent. Create a separate App for this Agent.",
+    "This Slack App installation is already connected to another Agent. Disconnect that Agent first, or use a different Slack App or workspace.",
   SLACK_AUTH_IDENTITY_INCOMPLETE:
     "Slack accepted this token but did not identify an installed Bot. Copy the Bot User OAuth Token, not a User Token.",
   SLACK_AUTH_INVALID: "Slack rejected the Bot User OAuth Token. Copy the Bot Token from OAuth & Permissions.",
   SLACK_BINDING_IDENTITY_MISMATCH:
     "The Slack App, Team, or Bot identity does not match this operation. Reauthorize the current App or explicitly choose Change App.",
   SLACK_CONFIGURATION_CONFLICT: "The Slack binding changed while this form was open. Reopen it and try again.",
+  SLACK_OAUTH_FAILED: "The Slack authorization flow is invalid or expired. Start it again from this Agent.",
   SLACK_SCOPE_REAUTH_REQUIRED:
     "The installed App is missing required bot scopes. Apply the complete manifest, reinstall the App, and retry.",
   SLACK_TOKEN_REVOKED: "Slack revoked the Bot Token. Reauthorize to install fresh credentials.",
@@ -26,6 +28,9 @@ const SLACK_CONFIGURATION_MESSAGES: Record<string, string> = {
 export interface SlackConfigurationControl {
   /** Opens the stateless Slack configuration form. */
   open: (intent?: SlackConfigurationIntent) => Promise<boolean>;
+  /** Starts the first-party OpenTag Slack OAuth install when the server has configured it. */
+  startOAuth: (intent?: SlackConfigurationIntent) => Promise<boolean>;
+  oauthAvailable: boolean;
   feedback: ReactNode;
 }
 
@@ -41,6 +46,40 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
   const [saved, setSaved] = useState(false);
+  const [oauthAvailable, setOAuthAvailable] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void browserApi
+      .slackAppConfiguration(agentId)
+      .then((next) => {
+        if (!cancelled) setOAuthAvailable(next.distributedOAuthAvailable);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const oauthError = params.get("slack_oauth_error");
+    const oauthResult = params.get("slack_oauth");
+    if (!oauthError && oauthResult !== "success") return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("slack_oauth_error");
+    url.searchParams.delete("slack_oauth");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    if (oauthError) {
+      setError(
+        SLACK_CONFIGURATION_MESSAGES[oauthError] ??
+          "The Slack authorization flow is invalid or expired. Start it again from this Agent.",
+      );
+      return;
+    }
+    setSaved(true);
+    onSuccess();
+  }, [onSuccess]);
 
   async function open(nextIntent: SlackConfigurationIntent = "create"): Promise<boolean> {
     if (loading) return false;
@@ -49,6 +88,7 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
     setSaved(false);
     try {
       const next = await browserApi.slackAppConfiguration(agentId);
+      setOAuthAvailable(next.distributedOAuthAvailable);
       setIntent(nextIntent);
       setConfiguration(next);
       return true;
@@ -60,8 +100,27 @@ export function SlackConfiguration({ agentId, children, onSuccess }: SlackConfig
     }
   }
 
+  async function startOAuth(nextIntent: SlackConfigurationIntent = "create"): Promise<boolean> {
+    if (loading) return false;
+    setLoading(true);
+    setError(undefined);
+    setSaved(false);
+    try {
+      const started = await browserApi.startSlackOAuth(agentId, { intent: nextIntent });
+      window.location.assign(started.authorizationUrl);
+      return true;
+    } catch (cause) {
+      setError(normalizeSlackConfigurationError(cause, "Unable to start OpenTag Slack authorization"));
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return children({
     open,
+    startOAuth,
+    oauthAvailable,
     feedback: (
       <>
         {configuration ? (

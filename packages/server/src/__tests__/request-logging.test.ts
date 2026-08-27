@@ -6,6 +6,9 @@ describe("request logging", () => {
     expect(sanitizeRequestUrl("/api/v1/auth/google/callback?code=secret-code&state=secret-state")).toBe(
       "/api/v1/auth/google/callback",
     );
+    expect(sanitizeRequestUrl("/api/v1/im-bindings/slack/oauth/callback?code=slack-code&state=slack-state")).toBe(
+      "/api/v1/im-bindings/slack/oauth/callback",
+    );
     expect(sanitizeRequestUrl("/api/v1/auth/google/start?next=%2Finvite%2Fsecret-token")).toBe(
       "/api/v1/auth/google/start",
     );
@@ -35,6 +38,10 @@ describe("request logging", () => {
         method: "GET",
         url: "/api/v1/auth/google/callback?code=secret-code&state=secret-state",
       });
+      await app.inject({
+        method: "GET",
+        url: "/api/v1/im-bindings/slack/oauth/callback?code=slack-code&state=slack-state",
+      });
       await app.inject({ method: "GET", url: "/invites/secret-invitation-token" });
       await app.inject({ method: "GET", url: "/api/v1/admin-invitations/secret-preview-token/preview" });
       await app.inject({ method: "POST", url: "/api/v1/admin-invitations/secret-accept-token/accept" });
@@ -46,11 +53,14 @@ describe("request logging", () => {
     const logs = chunks.join("");
     expect(logs).not.toContain("secret-code");
     expect(logs).not.toContain("secret-state");
+    expect(logs).not.toContain("slack-code");
+    expect(logs).not.toContain("slack-state");
     expect(logs).not.toContain("secret-invitation-token");
     expect(logs).not.toContain("secret-preview-token");
     expect(logs).not.toContain("secret-accept-token");
     expect(logs).not.toContain("secret-unknown-web-token");
     expect(logs).toContain("/api/v1/auth/google/callback");
+    expect(logs).toContain("/api/v1/im-bindings/slack/oauth/callback");
     expect(logs).toContain("/invites/[REDACTED]");
     expect(logs).toContain("/api/v1/admin-invitations/[REDACTED]/preview");
   });

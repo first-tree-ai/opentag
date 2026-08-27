@@ -25,6 +25,7 @@ function configuration(currentBinding: SlackAppConfiguration["currentBinding"] =
     requiredBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
     subscribedBotEvents: [...SLACK_SUBSCRIBED_BOT_EVENTS],
     currentBinding,
+    distributedOAuthAvailable: false,
   };
 }
 
@@ -62,6 +63,7 @@ describe("SlackConfiguration", () => {
   it("opens a stateless guide with the fixed full scopes and events", async () => {
     const get = vi.spyOn(browserApi, "slackAppConfiguration").mockResolvedValue(configuration());
     render(<Harness />);
+    await waitFor(() => expect(get).toHaveBeenCalledTimes(1));
 
     const open = screen.getByRole("button", { name: "Create" });
     fireEvent.click(open);
@@ -69,7 +71,7 @@ describe("SlackConfiguration", () => {
 
     expect(await screen.findByText(`Required bot scopes: ${SLACK_REQUIRED_BOT_SCOPES.join(", ")}.`)).toBeTruthy();
     expect(screen.getByText(`Subscribed bot events: ${SLACK_SUBSCRIBED_BOT_EVENTS.join(", ")}.`)).toBeTruthy();
-    expect(get).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledTimes(2);
     expect(get).toHaveBeenCalledWith(agentId);
     expect(JSON.parse((screen.getByLabelText("Slack App manifest JSON") as HTMLTextAreaElement).value)).toEqual(
       manifest,
@@ -154,6 +156,42 @@ describe("SlackConfiguration", () => {
       "textContent",
       "Only the Account owner can manage this Slack configuration.",
     );
+  });
+
+  it("starts first-party OpenTag Slack OAuth without exposing the session binding", async () => {
+    vi.spyOn(browserApi, "slackAppConfiguration").mockResolvedValue({
+      ...configuration(),
+      distributedOAuthAvailable: true,
+    });
+    const start = vi.spyOn(browserApi, "startSlackOAuth").mockResolvedValue({
+      authorizationUrl: "https://slack.com/oauth/v2/authorize?client_id=client&state=signed-state",
+      expiresAt: "2026-08-19T00:10:00.000Z",
+    });
+    const assign = vi.fn();
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, assign },
+    });
+    try {
+      function OAuthHarness() {
+        return (
+          <SlackConfiguration agentId={agentId} onSuccess={() => undefined}>
+            {(control) => (
+              <button type="button" onClick={() => void control.startOAuth("create")}>
+                Add OpenTag
+              </button>
+            )}
+          </SlackConfiguration>
+        );
+      }
+      render(<OAuthHarness />);
+      fireEvent.click(screen.getByRole("button", { name: "Add OpenTag" }));
+      await waitFor(() => expect(start).toHaveBeenCalledWith(agentId, { intent: "create" }));
+      expect(assign).toHaveBeenCalledWith("https://slack.com/oauth/v2/authorize?client_id=client&state=signed-state");
+    } finally {
+      Object.defineProperty(window, "location", { configurable: true, value: originalLocation });
+    }
   });
 
   it("cancels locally without writing or creating server setup state", async () => {

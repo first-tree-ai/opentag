@@ -9,6 +9,7 @@ export const BROWSER_COOKIE_NAMES = {
   csrf: "opentag_csrf",
   oauthContext: "opentag_oauth_context",
   refresh: "opentag_refresh",
+  slackOAuthContext: "opentag_slack_oauth_context",
 } as const;
 
 export function parseCookies(header: string | undefined): Record<string, string> {
@@ -95,6 +96,32 @@ export function clearOAuthContextCookie(reply: FastifyReply, secure: boolean): v
       httpOnly: true,
       maxAge: 0,
       path: "/api/v1/auth/google/callback",
+      secure,
+    }),
+  ]);
+}
+
+export function setSlackOAuthContextCookie(
+  reply: FastifyReply,
+  value: string,
+  options: { path: string; secure: boolean; maxAge?: number },
+): void {
+  appendSetCookies(reply, [
+    cookie(BROWSER_COOKIE_NAMES.slackOAuthContext, value, {
+      httpOnly: true,
+      maxAge: options.maxAge ?? 600,
+      path: options.path,
+      secure: options.secure,
+    }),
+  ]);
+}
+
+export function clearSlackOAuthContextCookie(reply: FastifyReply, path: string, secure: boolean): void {
+  appendSetCookies(reply, [
+    cookie(BROWSER_COOKIE_NAMES.slackOAuthContext, "", {
+      httpOnly: true,
+      maxAge: 0,
+      path,
       secure,
     }),
   ]);

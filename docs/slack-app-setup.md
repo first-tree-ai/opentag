@@ -2,9 +2,18 @@
 
 [简体中文](./zh-CN/slack-app-setup.md)
 
-OpenTag supports one customer-owned Slack App installation per Agent. Configuration is a single validated write, not a
-temporary setup workflow. URL verification and inbound messages are runtime observations; neither creates, completes,
-or activates a credential generation.
+OpenTag supports one Slack App/Team/Bot identity per Agent. There are two configuration paths behind the same verified
+Integration activation boundary:
+
+- **OpenTag Slack (distributed OAuth)**: one first-party Slack App named OpenTag. An authenticated Agent management
+  flow starts OAuth; the callback inspects the grant and activates that Agent. Internal subagents stay invisible in Slack.
+- **Customer-owned Slack App**: the person configuring the Agent still submits App ID, Bot Token, and Signing Secret in
+  one validated write.
+
+A Slack workspace installation is never silently shared with another Agent; the second install returns
+`SLACK_APP_TEAM_ALREADY_BOUND`. URL verification and inbound messages are runtime observations; neither creates,
+completes, or activates a credential generation. Production Events API remains signed HTTP and includes
+`app_uninstalled` and `tokens_revoked`. Socket Mode is not used.
 
 ## Fixed Slack capability contract
 
@@ -156,6 +165,7 @@ Configuration errors are explicit and leave active data unchanged:
 - `SLACK_BINDING_IDENTITY_MISMATCH`: Slack returned an App ID different from the configured value.
 - `SLACK_SCOPE_REAUTH_REQUIRED`: the token is missing one or more fixed scopes.
 - `SLACK_CONFIGURATION_CONFLICT`: the binding or generation changed since the form was opened.
+- `SLACK_OAUTH_FAILED`: the first-party Slack OAuth state is invalid, expired, replayed, or was cancelled.
 - `SLACK_APP_TEAM_ALREADY_BOUND`: the App/Team installation is current for another Agent.
 
 ## Migration and recovery
@@ -181,22 +191,51 @@ previous binding at cutover, and stop its Sessions. Concurrent configuration is 
 generation plus database uniqueness constraints. Runtime observations, identity closure, provider revocation, and
 provider disable are independently fenced to the event's exact credential generation.
 
-## Future distributed App adapter
+## First-party distributed OpenTag Slack App
 
-The current product mode is a customer-managed Slack App per Agent. A later distributed OpenTag App would be a separate
-adapter behind the same verified Integration activation boundary. That future adapter is documentation-only today: this
-release does not add OAuth setup state, placeholder tables, or token-exchange persistence.
+When the server is configured with the first-party Slack App credentials, Agent management can start OAuth instead of
+pasting a customer-owned token. The visible Slack Bot is the single OpenTag App; OpenTag internal subagents are not
+installed as additional Slack Bots.
 
-If that adapter is introduced, OAuth state must be signed and bound to a one-time nonce, browser session, Account, Agent,
-Team, and configuration intent. The installation store and token rotation belong to that adapter, not to the active
-binding. Actual Slack-reported scopes still gate activation. Until then, the person configuring an Agent submits App ID, Bot Token, and
-Signing Secret in one validated write.
+Required server environment variables, all or none:
 
-One distributed App installation yields one Team/Bot identity. Supporting several OpenTag Agents in the same Slack
-workspace would therefore require a separate workspace-installation aggregate and explicit Agent routing; it must not
-silently reuse the current unique App/Team-to-Agent binding invariant.
+- `OPENTAG_SLACK_CLIENT_ID`
+- `OPENTAG_SLACK_CLIENT_SECRET`
+- `OPENTAG_SLACK_SIGNING_SECRET`
+- `OPENTAG_SLACK_REDIRECT_URL` — this server's public origin, or the exact callback URL
+  `{OPENTAG_PUBLIC_URL}/api/v1/im-bindings/slack/oauth/callback`
+
+Hosted environments require HTTPS. A partial set fails closed at process start. The callback origin must match
+`OPENTAG_PUBLIC_URL`. Client secret, signing secret, OAuth codes, and tokens are never returned by management APIs or
+written to logs. The signed OAuth state appears only inside the short-lived Slack authorization URL returned by the
+start endpoint and is stripped from server request logs on callback.
+
+Authenticated start `POST /api/v1/agents/:agentId/im-binding/slack/oauth/start` issues a signed state that includes a
+one-time nonce bound to the browser session cookie, Account, Agent, intended action (`create` / `reauthorize` /
+`replace`), and the expected binding generation. The public callback exchanges the Slack code, inspects Bot identity and
+the actual `x-oauth-scopes`, and activates or reauthorizes only after all seven fixed bot scopes and identity checks
+pass, using the same `SlackConfigurationService` write as the manual path. Replay, expiry, session mismatch, and a
+second Agent claiming the same App/Team installation fail without mutating the current binding.
+
+Operators must configure the OpenTag Slack App with:
+
+- Bot display name **OpenTag**
+- Redirect URL equal to `OPENTAG_SLACK_REDIRECT_URL`
+- Events Request URL `{OPENTAG_PUBLIC_URL}/api/v1/im-bindings/slack/events` (signed HTTP, not Socket Mode)
+- The same seven bot scopes and subscribed bot events as the customer-owned manifest, including `app_uninstalled` and
+  `tokens_revoked`
+
+Identity-less Slack URL verification for that shared Request URL uses the first-party signing secret and records no
+binding observation. After install, real events still look up the active App/Team binding and verify HMAC with the
+stored signing secret. Token rotation is not enabled; a later adapter-owned installation store would be required before
+rotating tokens outside the active binding credential envelope.
+
+One distributed App installation still yields one Team/Bot identity. Supporting several OpenTag Agents in the same Slack
+workspace would require a separate workspace-installation aggregate and explicit Agent routing; this release returns
+`SLACK_APP_TEAM_ALREADY_BOUND` instead of sharing the installation.
 
 Slack protocol references: [app manifests](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/),
 [`auth.test`](https://docs.slack.dev/reference/methods/auth.test/),
+[OAuth V2](https://docs.slack.dev/authentication/installing-with-oauth/),
 [request signing](https://docs.slack.dev/authentication/verifying-requests-from-slack/), and
 [`url_verification`](https://docs.slack.dev/reference/events/url_verification/).

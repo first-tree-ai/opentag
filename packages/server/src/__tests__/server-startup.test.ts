@@ -181,6 +181,8 @@ vi.mock("../services/im-bindings/index.js", () => ({
 vi.mock("../services/im-bindings/slack/index.js", () => ({
   DefaultSlackApiClient: class {},
   SlackConfigurationService: class {},
+  SlackOAuthService: class {},
+  SlackOAuthStateService: class {},
   SlackAdapter: class {
     constructor(options: unknown) {
       state.slackAdapterOptions = options;
@@ -201,6 +203,8 @@ const originalSecrets = {
   jwt: process.env.OPENTAG_JWT_SECRET,
   google: process.env.OPENTAG_GOOGLE_CLIENT_SECRET,
   encryption: process.env.OPENTAG_ENCRYPTION_KEY,
+  slackClient: process.env.OPENTAG_SLACK_CLIENT_SECRET,
+  slackSigning: process.env.OPENTAG_SLACK_SIGNING_SECRET,
 };
 const originalExitCode = process.exitCode;
 
@@ -301,6 +305,8 @@ beforeEach(() => {
   process.env.OPENTAG_JWT_SECRET = "jwt-secret";
   process.env.OPENTAG_GOOGLE_CLIENT_SECRET = "google-secret";
   process.env.OPENTAG_ENCRYPTION_KEY = "encryption-secret";
+  process.env.OPENTAG_SLACK_CLIENT_SECRET = "slack-client-secret";
+  process.env.OPENTAG_SLACK_SIGNING_SECRET = "slack-signing-secret";
   process.exitCode = undefined;
 });
 
@@ -313,6 +319,8 @@ afterEach(() => {
   restore("OPENTAG_JWT_SECRET", originalSecrets.jwt);
   restore("OPENTAG_GOOGLE_CLIENT_SECRET", originalSecrets.google);
   restore("OPENTAG_ENCRYPTION_KEY", originalSecrets.encryption);
+  restore("OPENTAG_SLACK_CLIENT_SECRET", originalSecrets.slackClient);
+  restore("OPENTAG_SLACK_SIGNING_SECRET", originalSecrets.slackSigning);
   process.exitCode = originalExitCode;
 });
 
@@ -469,7 +477,7 @@ describe("Server startup", () => {
     async (failureStage, expectedEvents) => {
       const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
       const failure = new Error(
-        "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret",
+        "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret slack-client-secret slack-signing-secret",
       );
       if (failureStage === "configuration")
         state.parseServerConfig.mockImplementation(() => {
@@ -489,6 +497,8 @@ describe("Server startup", () => {
         "jwt-secret",
         "google-secret",
         "encryption-secret",
+        "slack-client-secret",
+        "slack-signing-secret",
       ]) {
         expect(output).not.toContain(secret);
       }
@@ -503,7 +513,9 @@ describe("Server startup", () => {
       log: { error: ReturnType<typeof vi.fn> };
     };
     app.listen.mockRejectedValue(
-      new Error("postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret"),
+      new Error(
+        "postgres://db-user:db-password@localhost/opentag jwt-secret google-secret encryption-secret slack-client-secret slack-signing-secret",
+      ),
     );
 
     await startServer();
@@ -525,6 +537,8 @@ describe("Server startup", () => {
       "jwt-secret",
       "google-secret",
       "encryption-secret",
+      "slack-client-secret",
+      "slack-signing-secret",
     ]) {
       expect(logged).not.toContain(secret);
     }

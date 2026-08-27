@@ -4,6 +4,7 @@ import {
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentSlackConfigurationPath,
+  agentSlackOAuthStartPath,
   feishuSetupAttemptPath,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
@@ -44,6 +45,7 @@ const slackConfiguration = {
   requiredBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
   subscribedBotEvents: [...SLACK_SUBSCRIBED_BOT_EVENTS],
   currentBinding: null,
+  distributedOAuthAvailable: false,
 };
 
 const slackDetail = {
@@ -301,5 +303,24 @@ describe("ImBinding HTTP API", () => {
       category: "credential",
     });
     expect(JSON.stringify(userToken.json())).not.toMatch(/xoxp-user-token|signing-secret|stack/);
+  });
+
+  it("requires authentication to start Slack OAuth", async () => {
+    const app = createApp({
+      authService: authService(),
+      slackOAuth: {
+        authService: authService(),
+        publicOrigin: "https://opentag.example.com",
+        secureCookies: true,
+        slackOAuth: { start: vi.fn(), callback: vi.fn() } as never,
+      },
+    });
+    apps.push(app);
+    const response = await app.inject({
+      method: "POST",
+      url: agentSlackOAuthStartPath(agentId),
+      payload: { intent: "create" },
+    });
+    expect(response.statusCode).toBe(401);
   });
 });

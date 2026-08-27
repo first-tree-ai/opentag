@@ -335,6 +335,10 @@ setup attempt 并记录结果，然后把一条已授权的 binding 写入数据
 | `OPENTAG_ENCRYPTION_KEY` | 无 | 必需的 canonical base64 编码 32-byte 应用层加密密钥 |
 | `OPENTAG_GOOGLE_CLIENT_ID` | 无 | 可选 Google OIDC client id，必须与 secret 同时配置 |
 | `OPENTAG_GOOGLE_CLIENT_SECRET` | 无 | 可选 Google OIDC client secret，必须与 client id 同时配置 |
+| `OPENTAG_SLACK_CLIENT_ID` | 无 | 可选一等 Slack App client id，必须与 secret、signing secret 和 redirect URL 同时配置 |
+| `OPENTAG_SLACK_CLIENT_SECRET` | 无 | 可选一等 Slack App client secret；永不写入日志 |
+| `OPENTAG_SLACK_SIGNING_SECRET` | 无 | 可选一等 Slack App signing secret，用于 Events API HMAC；永不写入日志 |
+| `OPENTAG_SLACK_REDIRECT_URL` | 无 | 可选 public origin，或位于 `OPENTAG_PUBLIC_URL` 上的精确 Slack OAuth callback URL |
 | `OPENTAG_DEV_AUTH_BYPASS_ENABLED` | `false` | 显式启用仅限 loopback 的开发登录，必须同时配置 email |
 | `OPENTAG_DEV_AUTH_EMAIL` | 无 | development bypass 选择的已有唯一 bootstrap 用户 |
 | `OPENTAG_AUTO_MIGRATE` | `true` | 监听前执行已入库的 migration |

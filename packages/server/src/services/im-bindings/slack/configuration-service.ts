@@ -32,6 +32,7 @@ export class SlackConfigurationService {
   readonly #afterConfigurationTransaction?: () => Promise<void>;
   readonly #beforeConfigurationTransaction?: () => Promise<void>;
   readonly #database: DatabaseClient;
+  readonly #distributedOAuthAvailable: boolean;
   readonly #imBindings: ImBindingService;
   readonly #now: () => Date;
   readonly #publicOrigin: string;
@@ -41,6 +42,7 @@ export class SlackConfigurationService {
     database: DatabaseClient;
     imBindings: ImBindingService;
     publicOrigin: string;
+    distributedOAuthAvailable?: boolean;
     now?: () => Date;
     afterConfigurationTransaction?: () => Promise<void>;
     beforeConfigurationTransaction?: () => Promise<void>;
@@ -49,6 +51,7 @@ export class SlackConfigurationService {
     this.#afterConfigurationTransaction = input.afterConfigurationTransaction;
     this.#beforeConfigurationTransaction = input.beforeConfigurationTransaction;
     this.#database = input.database;
+    this.#distributedOAuthAvailable = input.distributedOAuthAvailable === true;
     this.#imBindings = input.imBindings;
     this.#now = input.now ?? (() => new Date());
     this.#publicOrigin = input.publicOrigin;
@@ -312,6 +315,7 @@ export class SlackConfigurationService {
             credentialGeneration: configuredCurrent.credentialGeneration,
           }
         : null,
+      distributedOAuthAvailable: this.#distributedOAuthAvailable,
     };
   }
 }

@@ -36,7 +36,13 @@ import {
   FeishuSetupService,
 } from "./services/im-bindings/feishu/index.js";
 import { createImProviderAdapterResolver, ImBindingService } from "./services/im-bindings/index.js";
-import { DefaultSlackApiClient, SlackAdapter, SlackConfigurationService } from "./services/im-bindings/slack/index.js";
+import {
+  DefaultSlackApiClient,
+  SlackAdapter,
+  SlackConfigurationService,
+  SlackOAuthService,
+  SlackOAuthStateService,
+} from "./services/im-bindings/slack/index.js";
 import { OnboardingResetService } from "./services/onboarding-lab/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCollaborationService, SessionService } from "./services/sessions/index.js";
@@ -99,6 +105,8 @@ export async function startServer(): Promise<void> {
       process.env.OPENTAG_GOOGLE_CLIENT_SECRET ?? "",
       process.env.OPENTAG_ENCRYPTION_KEY ?? "",
       process.env.OPENTAG_OTEL_HEADERS ?? "",
+      process.env.OPENTAG_SLACK_CLIENT_SECRET ?? "",
+      process.env.OPENTAG_SLACK_SIGNING_SECRET ?? "",
     );
     const config = parseServerConfig(process.env);
     const instanceId = randomUUID();
@@ -214,9 +222,23 @@ export async function startServer(): Promise<void> {
     const slackConfigurationService = new SlackConfigurationService({
       api: slackApi,
       database,
+      distributedOAuthAvailable: Boolean(config.slackOAuth),
       imBindings: imBindingService,
       publicOrigin: config.publicUrl,
     });
+    const slackOAuthService = config.slackOAuth
+      ? new SlackOAuthService({
+          api: slackApi,
+          app: config.slackOAuth,
+          authenticateUser: async (accessToken) => {
+            const authenticated = await authService.getAuthenticatedUser(accessToken);
+            return { userId: authenticated.me.user.id };
+          },
+          database,
+          slack: slackConfigurationService,
+          state: new SlackOAuthStateService(config.jwtSecret),
+        })
+      : undefined;
     const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
     const imResourceService = new ImResourceService(database, resolveImAdapter);
     const imDeliveryWorker = new ImDeliveryWorker({
@@ -278,12 +300,23 @@ export async function startServer(): Promise<void> {
       imBindingService,
       feishuSetupService,
       slackConfigurationService,
+      ...(slackOAuthService
+        ? {
+            slackOAuth: {
+              authService,
+              publicOrigin: config.publicUrl,
+              secureCookies: isHostedEnvironment(config.environment),
+              slackOAuth: slackOAuthService,
+            },
+          }
+        : {}),
       imResourceService,
       readiness,
       runtime: { registry, domainOwner },
       slackEvents: {
         imBindings: imBindingService,
         inbox: imMessageInbox,
+        ...(config.slackOAuth ? { firstPartySigningSecret: config.slackOAuth.signingSecret } : {}),
         createAdapter: (binding) =>
           new SlackAdapter({
             api: slackApi,

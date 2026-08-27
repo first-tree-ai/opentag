@@ -313,6 +313,7 @@ describe("OpenTagApi Agent methods", () => {
       requiredBotScopes,
       subscribedBotEvents,
       currentBinding: null,
+      distributedOAuthAvailable: false,
     };
     const detail = {
       id: imBindingId,
@@ -372,5 +373,16 @@ describe("OpenTagApi Agent methods", () => {
       [`/api/v1/agents/${agentId}/im-binding/slack/configuration`, "PUT"],
     ]);
     expect(fetchImpl.mock.calls[1]?.[1]?.body).toBe(JSON.stringify(input));
+
+    fetchImpl.mockResolvedValueOnce(
+      jsonResponse({
+        authorizationUrl: "https://slack.com/oauth/v2/authorize?client_id=client&state=signed-state",
+        expiresAt: "2026-08-19T00:10:00.000Z",
+      }),
+    );
+    await expect(api.startSlackOAuth("access", agentId, { intent: "create" })).resolves.toMatchObject({
+      authorizationUrl: expect.stringContaining("https://slack.com/oauth/v2/authorize"),
+    });
+    expect(fetchImpl.mock.calls.at(-1)?.[1]?.body).toBe(JSON.stringify({ intent: "create" }));
   });
 });

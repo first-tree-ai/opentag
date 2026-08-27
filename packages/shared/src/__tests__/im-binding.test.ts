@@ -14,6 +14,8 @@ import {
   SlackAppConfigurationSchema,
   SlackBindingActivationSchema,
   SlackConfigurationResultSchema,
+  StartSlackOAuthRequestSchema,
+  StartSlackOAuthResponseSchema,
 } from "../im-binding.js";
 import { ImContentV1Schema, NormalizedInboundImEventSchema } from "../im-message.js";
 
@@ -153,6 +155,7 @@ describe("IM binding contracts", () => {
       requiredBotScopes: [...SLACK_REQUIRED_BOT_SCOPES],
       subscribedBotEvents: [...SLACK_SUBSCRIBED_BOT_EVENTS],
       currentBinding: null,
+      distributedOAuthAvailable: false,
     };
     expect(SlackAppConfigurationSchema.parse(configuration)).toEqual(configuration);
     expect(() => SlackAppConfigurationSchema.parse({ ...configuration, signingSecret: "secret" })).toThrow();
@@ -165,6 +168,15 @@ describe("IM binding contracts", () => {
     };
     expect(ConfigureSlackAppRequestSchema.parse(request)).toEqual(request);
     expect(() => ConfigureSlackAppRequestSchema.parse({ ...request, intent: "setup" })).toThrow();
+    expect(StartSlackOAuthRequestSchema.parse({ intent: "create" })).toEqual({ intent: "create" });
+    expect(() => StartSlackOAuthRequestSchema.parse({ intent: "create", state: "secret" })).toThrow();
+    expect(() =>
+      StartSlackOAuthResponseSchema.parse({
+        authorizationUrl: "https://slack.com/oauth/v2/authorize",
+        expiresAt: "2026-08-19T00:10:00.000Z",
+        sessionBinding: "secret",
+      }),
+    ).toThrow();
     const { intent: _intent, ...missingIntent } = request;
     expect(() => ConfigureSlackAppRequestSchema.parse(missingIntent)).toThrow();
     expect(

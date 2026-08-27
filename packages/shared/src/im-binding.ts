@@ -222,6 +222,7 @@ export const SlackAppConfigurationSchema = z
       })
       .strict()
       .nullable(),
+    distributedOAuthAvailable: z.boolean(),
   })
   .strict();
 
@@ -248,6 +249,15 @@ export const SlackConfigurationResultSchema = z
     credentialGeneration: z.number().int().min(1),
     bindingState: z.literal("active"),
     identityClosure: SlackIdentityClosureSchema,
+  })
+  .strict();
+
+export const StartSlackOAuthRequestSchema = z.object({ intent: SlackConfigurationIntentSchema }).strict();
+
+export const StartSlackOAuthResponseSchema = z
+  .object({
+    authorizationUrl: z.string().url(),
+    expiresAt: z.string().datetime(),
   })
   .strict();
 
@@ -318,6 +328,8 @@ export type SlackIdentityClosure = z.infer<typeof SlackIdentityClosureSchema>;
 export type SlackAppConfiguration = z.infer<typeof SlackAppConfigurationSchema>;
 export type ConfigureSlackAppRequest = z.infer<typeof ConfigureSlackAppRequestSchema>;
 export type SlackConfigurationResult = z.infer<typeof SlackConfigurationResultSchema>;
+export type StartSlackOAuthRequest = z.infer<typeof StartSlackOAuthRequestSchema>;
+export type StartSlackOAuthResponse = z.infer<typeof StartSlackOAuthResponseSchema>;
 export type ImBindingCredentialStatus = z.infer<typeof ImBindingCredentialStatusSchema>;
 export type ImBindingDiagnostics = z.infer<typeof ImBindingDiagnosticsSchema>;
 export type SlackBindingActivation = z.infer<typeof SlackBindingActivationSchema>;

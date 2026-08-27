@@ -102,6 +102,46 @@ describe("parseServerConfig", () => {
     }
   });
 
+  it("requires complete first-party Slack OAuth configuration and a callback on this origin", () => {
+    const slack = {
+      OPENTAG_SLACK_CLIENT_ID: "slack-client-id",
+      OPENTAG_SLACK_CLIENT_SECRET: "slack-client-secret",
+      OPENTAG_SLACK_SIGNING_SECRET: "slack-signing-secret",
+      OPENTAG_SLACK_REDIRECT_URL: "http://localhost:8000/api/v1/im-bindings/slack/oauth/callback",
+    };
+    expect(parseServerConfig({ ...required, ...slack }).slackOAuth).toEqual({
+      clientId: "slack-client-id",
+      clientSecret: "slack-client-secret",
+      signingSecret: "slack-signing-secret",
+      redirectUrl: "http://localhost:8000/api/v1/im-bindings/slack/oauth/callback",
+    });
+    expect(
+      parseServerConfig({
+        ...required,
+        ...slack,
+        OPENTAG_SLACK_REDIRECT_URL: "http://localhost:8000",
+      }).slackOAuth?.redirectUrl,
+    ).toBe("http://localhost:8000/api/v1/im-bindings/slack/oauth/callback");
+    expect(parseServerConfig(required).slackOAuth).toBeUndefined();
+    expect(
+      parseServerConfig({ ...required, OPENTAG_SLACK_CLIENT_ID: "", OPENTAG_SLACK_CLIENT_SECRET: "" }).slackOAuth,
+    ).toBe(undefined);
+
+    for (const invalid of [
+      { OPENTAG_SLACK_CLIENT_ID: "slack-client-id" },
+      { ...slack, OPENTAG_SLACK_REDIRECT_URL: "https://evil.example/api/v1/im-bindings/slack/oauth/callback" },
+      { ...slack, OPENTAG_SLACK_REDIRECT_URL: "http://localhost:8000/api/v1/auth/google/callback" },
+      {
+        ...slack,
+        OPENTAG_ENV: "prod",
+        OPENTAG_PUBLIC_URL: "https://opentag.example.com",
+        OPENTAG_SLACK_REDIRECT_URL: "http://opentag.example.com/api/v1/im-bindings/slack/oauth/callback",
+      },
+    ]) {
+      expect(() => parseServerConfig({ ...required, ...invalid })).toThrow();
+    }
+  });
+
   it("requires complete Google configuration and HTTPS in hosted environments", () => {
     expect(isHostedEnvironment("dev")).toBe(false);
     expect(isHostedEnvironment("staging")).toBe(true);

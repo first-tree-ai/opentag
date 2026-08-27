@@ -76,6 +76,59 @@ describe("Slack installed-binding adapter", () => {
     await expect(api.inspectInstallation("xoxp-user-token")).rejects.toThrow("SLACK_AUTH_IDENTITY_INCOMPLETE");
   });
 
+  it("exchanges an OAuth code for a Bot installation without retaining the client secret in errors", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: true,
+          token_type: "bot",
+          access_token: "xoxb-distributed",
+          app_id: "A_OPENTAG",
+          bot_user_id: "U_BOT",
+          team: { id: "T_TEAM", name: "Workspace" },
+          enterprise: null,
+        }),
+        { status: 200 },
+      ),
+    );
+    const api = new DefaultSlackApiClient(undefined, fetchImpl);
+
+    await expect(
+      api.oauthAccess({
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        code: "oauth-code",
+        redirectUri: "https://opentag.example.com/api/v1/im-bindings/slack/oauth/callback",
+      }),
+    ).resolves.toEqual({
+      appId: "A_OPENTAG",
+      teamId: "T_TEAM",
+      enterpriseId: null,
+      botUserId: "U_BOT",
+      botAccessToken: "xoxb-distributed",
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "https://slack.com/api/oauth.v2.access",
+      expect.objectContaining({
+        method: "POST",
+        signal: expect.any(AbortSignal),
+      }),
+    );
+    const body = String(fetchImpl.mock.calls[0]?.[1]?.body);
+    expect(body).toContain("client_secret=client-secret");
+    await expect(
+      new DefaultSlackApiClient(
+        undefined,
+        vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, token_type: "user" }), { status: 200 })),
+      ).oauthAccess({
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        code: "oauth-code",
+        redirectUri: "https://opentag.example.com/api/v1/im-bindings/slack/oauth/callback",
+      }),
+    ).rejects.toThrow("SLACK_AUTH_IDENTITY_INCOMPLETE");
+  });
+
   it("bounds auth.test with a timeout and reports upstream unavailability without credential detail", async () => {
     const fetchImpl = vi.fn().mockRejectedValue(new DOMException("The operation was aborted", "TimeoutError"));
     const api = new DefaultSlackApiClient(undefined, fetchImpl);

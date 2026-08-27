@@ -353,6 +353,10 @@ processes.
 | `OPENTAG_ENCRYPTION_KEY` | none | Required canonical base64-encoded 32-byte application encryption key |
 | `OPENTAG_GOOGLE_CLIENT_ID` | none | Optional Google OIDC client id; requires the matching secret |
 | `OPENTAG_GOOGLE_CLIENT_SECRET` | none | Optional Google OIDC client secret; requires the matching client id |
+| `OPENTAG_SLACK_CLIENT_ID` | none | Optional first-party Slack App client id; requires the matching secret, signing secret, and redirect URL |
+| `OPENTAG_SLACK_CLIENT_SECRET` | none | Optional first-party Slack App client secret; never logged |
+| `OPENTAG_SLACK_SIGNING_SECRET` | none | Optional first-party Slack App signing secret for Events API HMAC; never logged |
+| `OPENTAG_SLACK_REDIRECT_URL` | none | Optional public origin or exact Slack OAuth callback URL on `OPENTAG_PUBLIC_URL` |
 | `OPENTAG_DEV_AUTH_BYPASS_ENABLED` | `false` | Explicitly enable loopback-only development sign-in; requires the configured email |
 | `OPENTAG_DEV_AUTH_EMAIL` | none | Existing unique bootstrap user selected by the development bypass |
 | `OPENTAG_AUTO_MIGRATE` | `true` | Run checked-in migrations before listening |

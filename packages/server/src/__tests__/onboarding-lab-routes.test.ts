@@ -64,7 +64,7 @@ describe("internal Onboarding Lab interface", () => {
     expect(value.resetOnboarding).not.toHaveBeenCalled();
   });
 
-  it("answers 204 for the configured staging Lab Account", async () => {
+  it("reports the reset half as available to the configured staging Lab Account", async () => {
     const value = fixture();
 
     const read = await value.app.inject({
@@ -73,8 +73,8 @@ describe("internal Onboarding Lab interface", () => {
       headers: browserHeaders(),
     });
 
-    expect(read.statusCode).toBe(204);
-    expect(read.body).toBe("");
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toEqual({ reset: true });
   });
 
   it("resets the authenticated Account and never a client-selected Account", async () => {
@@ -91,7 +91,7 @@ describe("internal Onboarding Lab interface", () => {
     expect(value.resetOnboarding).toHaveBeenCalledExactlyOnceWith(value.accountId);
   });
 
-  it("hides the Lab from an Account that is not the configured Lab Account", async () => {
+  it("opens the read half to another Account while refusing that Account the reset", async () => {
     const value = fixture({ labAccountId: randomUUID() });
 
     const [read, reset] = await Promise.all([
@@ -99,7 +99,8 @@ describe("internal Onboarding Lab interface", () => {
       value.app.inject({ method: "POST", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
     ]);
 
-    expect(read.statusCode).toBe(404);
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toEqual({ reset: false });
     expect(reset.statusCode).toBe(404);
     expect(value.resetOnboarding).not.toHaveBeenCalled();
   });
@@ -108,13 +109,14 @@ describe("internal Onboarding Lab interface", () => {
     for (const environment of ["dev", "prod"] as const) {
       const value = fixture({ environment });
 
-      const read = await value.app.inject({
-        method: "GET",
-        url: INTERNAL_ONBOARDING_LAB_PATH,
-        headers: browserHeaders(),
-      });
+      const [read, reset] = await Promise.all([
+        value.app.inject({ method: "GET", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
+        value.app.inject({ method: "POST", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
+      ]);
 
       expect(read.statusCode).toBe(404);
+      expect(reset.statusCode).toBe(404);
+      expect(value.resetOnboarding).not.toHaveBeenCalled();
     }
   });
 

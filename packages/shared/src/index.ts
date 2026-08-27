@@ -176,6 +176,7 @@ export {
 } from "./http-paths.js";
 export * from "./im-binding.js";
 export * from "./im-message.js";
+export { type OnboardingLabAccess, OnboardingLabAccessSchema } from "./onboarding-lab.js";
 export {
   getRuntimeConfigurationOptions,
   type RuntimeConfigurationOptions,

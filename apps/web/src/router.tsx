@@ -630,19 +630,21 @@ function OnboardingRoute() {
 }
 
 /**
- * The staging-only Onboarding Lab. The Server decides whether this Account may use it, and an
- * Account that may not is answered exactly like a page that does not exist.
+ * The staging-only Onboarding Lab. A deployment that configures no Lab Account is answered exactly
+ * like a page that does not exist; where one is configured, every signed-in Account may read the
+ * Scenario Preview, and the Server still decides which single Account may run the reset.
  */
 function OnboardingLabRoute() {
   const { me, refreshMe } = useWorkspace();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const available = useResource(() => browserApi.onboardingLabAvailable(), "onboarding-lab");
+  const access = useResource(() => browserApi.onboardingLabAccess(), "onboarding-lab");
   return (
-    <AsyncState state={available}>
-      {(allowed) =>
-        allowed ? (
+    <AsyncState state={access}>
+      {(value) =>
+        value ? (
           <OnboardingLabPage
+            resetAvailable={value.reset}
             scenarioId={searchParams.get("scenario")}
             user={me.user}
             onScenarioChange={(scenarioId) => {

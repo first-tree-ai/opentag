@@ -22,6 +22,7 @@ function renderLab(overrides: Partial<Parameters<typeof OnboardingLabPage>[0]> =
   const onScenarioChange = vi.fn();
   render(
     <OnboardingLabPage
+      resetAvailable
       scenarioId={null}
       user={user}
       onResetSucceeded={onResetSucceeded}
@@ -54,6 +55,7 @@ describe("Onboarding Lab page", () => {
     for (const scenario of ONBOARDING_SCENARIOS) {
       const view = render(
         <OnboardingLabPage
+          resetAvailable
           scenarioId={scenario.id}
           user={user}
           onResetSucceeded={vi.fn()}
@@ -71,6 +73,7 @@ describe("Onboarding Lab page", () => {
     for (const scenario of ONBOARDING_SCENARIOS) {
       const view = render(
         <OnboardingLabPage
+          resetAvailable
           scenarioId={scenario.id}
           user={user}
           onResetSucceeded={vi.fn()}
@@ -103,6 +106,7 @@ describe("Onboarding Lab page", () => {
 
     render(
       <OnboardingLabPage
+        resetAvailable
         scenarioId="computer-offline"
         user={user}
         onResetSucceeded={vi.fn()}
@@ -111,6 +115,7 @@ describe("Onboarding Lab page", () => {
     ).unmount();
     render(
       <OnboardingLabPage
+        resetAvailable
         scenarioId="setup-complete"
         user={user}
         onResetSucceeded={vi.fn()}
@@ -119,6 +124,7 @@ describe("Onboarding Lab page", () => {
     ).unmount();
     render(
       <OnboardingLabPage
+        resetAvailable
         scenarioId="loading-failure"
         user={user}
         onResetSucceeded={vi.fn()}
@@ -192,7 +198,8 @@ describe("Onboarding Lab route", () => {
 
   function installApi(
     options: {
-      available?: boolean;
+      configured?: boolean;
+      resetAvailable?: boolean;
       setupCompletedAt?: string | null;
       afterResetSetupCompletedAt?: string | null;
       meDelayMs?: number;
@@ -232,7 +239,8 @@ describe("Onboarding Lab route", () => {
           resetRequests += 1;
           return new Response(null, { status: 204 });
         }
-        return new Response(null, { status: options.available === false ? 404 : 204 });
+        if (options.configured === false) return new Response(null, { status: 404 });
+        return json({ reset: options.resetAvailable !== false });
       }
       if (path.endsWith("/computers")) return json({ computers: [] });
       if (path.endsWith("/agents")) return json({ agents: [] });
@@ -257,12 +265,23 @@ describe("Onboarding Lab route", () => {
     expect(window.location.pathname).toBe("/internal/onboarding-lab");
   });
 
-  it("renders Not Found for an Account that may not use the Lab", async () => {
-    installApi({ available: false });
+  it("renders Not Found where the deployment configures no Lab", async () => {
+    installApi({ configured: false });
 
     render(<App />);
 
     expect(await screen.findByRole("heading", { level: 1, name: "Page not found" })).toBeTruthy();
+  });
+
+  it("shows Preview but no reset control to an Account that does not own the reset", async () => {
+    installApi({ resetAvailable: false });
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Onboarding Lab" })).toBeTruthy();
+    expect(screen.getByRole("heading", { level: 2, name: "Scenario Preview" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Reset shared account and start onboarding" })).toBeNull();
+    expect(resetRequests).toBe(0);
   });
 
   it("renders the scenario named in the URL", async () => {

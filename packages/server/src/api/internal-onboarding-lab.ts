@@ -1,4 +1,4 @@
-import { INTERNAL_ONBOARDING_LAB_PATH } from "@opentag/shared";
+import { INTERNAL_ONBOARDING_LAB_PATH, OnboardingLabAccessSchema } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { createUserAuthPreHandler } from "../plugins/user-auth.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
@@ -12,8 +12,10 @@ function accountId(request: FastifyRequest): string {
 
 /**
  * The staging-only Onboarding Lab interface. It is registered only when the deployment configures
- * the Lab Account, and it never accepts a client-selected Account: every request acts on the
- * authenticated Account, and any other Account is indistinguishable from an unregistered route.
+ * the Lab Account, so an unconfigured deployment stays indistinguishable from one that never had
+ * the feature. Reading access is open to any authenticated Account, because Scenario Preview is
+ * client-side fixtures that read nothing and write nothing; the destructive reset stays closed and
+ * never accepts a client-selected Account.
  */
 export function registerInternalOnboardingLabRoutes(
   app: FastifyInstance,
@@ -29,8 +31,9 @@ export function registerInternalOnboardingLabRoutes(
   };
 
   app.get(INTERNAL_ONBOARDING_LAB_PATH, { preHandler }, async (request, reply) => {
-    requireLabAccount(request);
-    return reply.code(204).send();
+    if (!reset.enabled) throw labNotFound();
+    const access = OnboardingLabAccessSchema.parse({ reset: reset.allows(accountId(request)) });
+    return reply.code(200).send(access);
   });
 
   app.post(INTERNAL_ONBOARDING_LAB_PATH, { preHandler }, async (request, reply) => {

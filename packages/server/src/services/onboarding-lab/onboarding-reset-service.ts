@@ -91,9 +91,18 @@ export class OnboardingResetService {
     this.#workspaceAdmins = options.workspaceAdmins ?? new WorkspaceAdminAccess(options.database, { now: options.now });
   }
 
-  /** Whether this Account may use the staging Onboarding Lab at all. */
+  /**
+   * Whether this deployment offers the Lab at all. The environment is re-confirmed here rather than
+   * trusted from route registration, so a misconfigured deployment outside staging still exposes
+   * nothing — not even the read-only Scenario Preview.
+   */
+  get enabled(): boolean {
+    return this.#environment === "staging";
+  }
+
+  /** Whether this Account owns the Lab's destructive half. */
   allows(accountId: string): boolean {
-    return this.#environment === "staging" && accountId === this.#labAccountId;
+    return this.enabled && accountId === this.#labAccountId;
   }
 
   async resetOnboarding(accountId: string): Promise<void> {

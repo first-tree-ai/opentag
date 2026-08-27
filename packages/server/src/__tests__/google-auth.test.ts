@@ -34,6 +34,7 @@ describe("DefaultGoogleIdentityClient", () => {
       issuer: "https://accounts.google.com",
       subject: "google-subject",
       email: "person@example.com",
+      emailVerified: true,
       displayName: "Person",
     });
     expect(verifyIdToken).toHaveBeenCalledWith("signed-id-token");

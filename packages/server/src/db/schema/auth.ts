@@ -1,15 +1,22 @@
 import { relations, sql } from "drizzle-orm";
-import { check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 };
 
+/**
+ * Email is stored lowercased, and one address identifies at most one Account. That is enforced by the identity
+ * resolver, which serializes on the address before deciding whether to create or attach. A case-insensitive unique
+ * index backs it up for any writer that skips the resolver, and lands once no pre-resolver revision is still serving.
+ */
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   email: text("email").notNull(),
+  emailVerified: boolean("email_verified").notNull().default(false),
   displayName: text("display_name").notNull(),
+  image: text("image"),
   suspendedAt: timestamp("suspended_at", { withTimezone: true }),
   ...timestamps,
 });

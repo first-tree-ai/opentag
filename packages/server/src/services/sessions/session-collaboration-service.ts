@@ -49,6 +49,7 @@ export class SessionCollaborationService {
       const attempt = await this.#sessions.createInternalSessionWithMessage({
         creatorSessionId: source.sessionId,
         creatorComputerId: source.computerId,
+        creatorConnectionInstanceId: source.connectionInstanceId,
         creatorWorkspaceComputerId: source.workspaceComputerId,
         creatorPlacementGeneration: source.placementGeneration,
         messageId: input.messageId,
@@ -71,6 +72,7 @@ export class SessionCollaborationService {
         messageId: input.messageId,
         sourceSessionId: source.sessionId,
         sourceComputerId: source.computerId,
+        sourceConnectionInstanceId: source.connectionInstanceId,
         sourceWorkspaceComputerId: source.workspaceComputerId,
         sourcePlacementGeneration: source.placementGeneration,
         targetSessionId: input.targetSessionId,

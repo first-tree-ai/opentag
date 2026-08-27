@@ -82,6 +82,8 @@ export class DefaultGoogleIdentityClient implements GoogleIdentityClient {
         issuer: GOOGLE_ISSUER,
         subject: payload.sub,
         email: payload.email,
+        // The claim check above rejects anything Google has not verified, so reaching here proves verification.
+        emailVerified: true,
         displayName,
       };
     } catch {

@@ -686,9 +686,15 @@ describe("IM binding persistence", () => {
           computerAuthFor(value),
         ),
       ).resolves.toMatchObject({ status: "succeeded", grant: { provider: "slack" } });
+      const sourceConnectionInstanceId = crypto.randomUUID();
+      await value.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: sourceConnectionInstanceId })
+        .where(eq(workspaceComputers.id, value.workspaceComputer.id));
       const internal = await sessionService.createInternalSessionWithMessage({
         creatorSessionId: session.id,
         creatorComputerId: value.computer.id,
+        creatorConnectionInstanceId: sourceConnectionInstanceId,
         creatorWorkspaceComputerId: value.workspaceComputer.id,
         creatorPlacementGeneration: 1,
         messageId: crypto.randomUUID(),

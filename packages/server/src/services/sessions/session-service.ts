@@ -31,6 +31,7 @@ interface ActiveSessionAuthority {
   placement: PlacementRow;
   agentId: string;
   computerId: string;
+  connectionInstanceId: string;
   workspaceComputerId: string;
 }
 
@@ -51,6 +52,7 @@ export interface EnsureChatSessionInTransactionInput {
 export interface CreateInternalSessionWithMessageInput {
   creatorSessionId: string;
   creatorComputerId: string;
+  creatorConnectionInstanceId: string;
   creatorWorkspaceComputerId: string;
   creatorPlacementGeneration: number;
   messageId: string;
@@ -62,6 +64,7 @@ export interface AuthorizeAndRecordSessionMessageInput {
   messageId: string;
   sourceSessionId: string;
   sourceComputerId: string;
+  sourceConnectionInstanceId: string;
   sourceWorkspaceComputerId: string;
   sourcePlacementGeneration: number;
   targetSessionId: string;
@@ -72,6 +75,9 @@ export interface AuthorizedSessionMessageRoute {
   agentId: string;
   imBindingId: string;
   sourceSessionId: string;
+  sourceConnectionInstanceId: string;
+  sourcePlacementGeneration: number;
+  sourceWorkspaceComputerId: string;
   targetSessionId: string;
   targetComputerId: string;
   targetWorkspaceComputerId: string;
@@ -203,6 +209,7 @@ export class SessionService {
       const creator = await this.#activeSource(transaction, {
         sessionId: input.creatorSessionId,
         computerId: input.creatorComputerId,
+        connectionInstanceId: input.creatorConnectionInstanceId,
         workspaceComputerId: input.creatorWorkspaceComputerId,
         placementGeneration: input.creatorPlacementGeneration,
       });
@@ -346,6 +353,7 @@ export class SessionService {
       const source = await this.#activeSource(transaction, {
         sessionId: input.sourceSessionId,
         computerId: input.sourceComputerId,
+        connectionInstanceId: input.sourceConnectionInstanceId,
         workspaceComputerId: input.sourceWorkspaceComputerId,
         placementGeneration: input.sourcePlacementGeneration,
       });
@@ -433,18 +441,42 @@ export class SessionService {
         return { admitted: false } as const;
       }
 
-      const [placement] = await transaction
+      const authorityPlacementIds = [...new Set([route.sourceSessionId, route.targetSessionId])].sort();
+      const authorityPlacements = await transaction
         .select({
           generation: sessionPlacements.generation,
+          sessionId: sessionPlacements.sessionId,
           workspaceComputerId: sessionPlacements.workspaceComputerId,
         })
         .from(sessionPlacements)
-        .where(eq(sessionPlacements.sessionId, route.targetSessionId))
+        .where(inArray(sessionPlacements.sessionId, authorityPlacementIds))
+        .orderBy(sessionPlacements.sessionId)
+        .for("update");
+      const sourcePlacement = authorityPlacements.find(({ sessionId }) => sessionId === route.sourceSessionId);
+      const targetPlacement = authorityPlacements.find(({ sessionId }) => sessionId === route.targetSessionId);
+      if (
+        authorityPlacements.length !== authorityPlacementIds.length ||
+        sourcePlacement?.workspaceComputerId !== route.sourceWorkspaceComputerId ||
+        sourcePlacement.generation !== route.sourcePlacementGeneration ||
+        targetPlacement?.workspaceComputerId !== route.targetWorkspaceComputerId ||
+        targetPlacement.generation !== route.targetPlacementGeneration
+      ) {
+        return { admitted: false } as const;
+      }
+
+      const [sourceComputer] = await transaction
+        .select({
+          currentInstanceId: workspaceComputers.currentInstanceId,
+          revokedAt: workspaceComputers.revokedAt,
+        })
+        .from(workspaceComputers)
+        .where(eq(workspaceComputers.id, route.sourceWorkspaceComputerId))
         .limit(1)
         .for("update");
       if (
-        placement?.workspaceComputerId !== route.targetWorkspaceComputerId ||
-        placement.generation !== route.targetPlacementGeneration
+        !sourceComputer ||
+        sourceComputer.revokedAt !== null ||
+        sourceComputer.currentInstanceId !== route.sourceConnectionInstanceId
       ) {
         return { admitted: false } as const;
       }
@@ -644,7 +676,13 @@ export class SessionService {
 
   async #activeSource(
     transaction: DatabaseTransaction,
-    input: { sessionId: string; computerId: string; workspaceComputerId: string; placementGeneration: number },
+    input: {
+      sessionId: string;
+      computerId: string;
+      connectionInstanceId: string;
+      workspaceComputerId: string;
+      placementGeneration: number;
+    },
   ): Promise<ActiveSessionAuthority> {
     const [source] = await transaction
       .select({
@@ -652,6 +690,7 @@ export class SessionService {
         placement: sessionPlacements,
         agentId: agents.id,
         computerId: workspaceComputers.computerId,
+        connectionInstanceId: workspaceComputers.currentInstanceId,
         workspaceComputerId: workspaceComputers.id,
       })
       .from(sessions)
@@ -679,12 +718,13 @@ export class SessionService {
     if (!source) throw new SessionServiceError("SESSION_SOURCE_UNAVAILABLE", "The source Session is not active");
     if (
       source.computerId !== input.computerId ||
+      source.connectionInstanceId !== input.connectionInstanceId ||
       source.workspaceComputerId !== input.workspaceComputerId ||
       source.placement.generation !== input.placementGeneration
     ) {
       throw new SessionServiceError("SESSION_PLACEMENT_STALE", "The source Session placement is stale");
     }
-    return source;
+    return { ...source, connectionInstanceId: input.connectionInstanceId };
   }
 
   async #activeTarget(
@@ -773,6 +813,9 @@ export class SessionService {
       agentId: source.agentId,
       imBindingId: source.session.imBindingId,
       sourceSessionId: source.session.id,
+      sourceConnectionInstanceId: source.connectionInstanceId,
+      sourcePlacementGeneration: source.placement.generation,
+      sourceWorkspaceComputerId: source.workspaceComputerId,
       targetSessionId: target.session.id,
       targetComputerId: target.computerId,
       targetWorkspaceComputerId: target.workspaceComputerId,

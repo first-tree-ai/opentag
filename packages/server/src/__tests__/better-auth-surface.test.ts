@@ -136,6 +136,7 @@ describe("published Better Auth surface", () => {
         betterAuth: { instance, publicUrl: "https://opentag.example.com" },
         publicOrigin: "https://opentag.example.com",
         refreshTokenTtlSeconds: 3600,
+        sessionTtlSeconds: 3600,
         secureCookies: true,
       },
     });

@@ -97,6 +97,7 @@ function createBrowserApp(
       ...(googleService ? { google: googleService as unknown as GoogleBrowserAuthService } : {}),
       publicOrigin: "http://localhost:8000",
       refreshTokenTtlSeconds: 3600,
+      sessionTtlSeconds: 3600,
       secureCookies: false,
     },
   });

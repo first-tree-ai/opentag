@@ -193,12 +193,18 @@ export function createApp(options: CreateAppOptions = {}) {
     const authOptions = {
       ...(options.betterAuth ? { betterAuth: options.betterAuth.instance } : {}),
       ...(publicOrigin ? { publicOrigin } : {}),
+      ...(options.browserAuth
+        ? {
+            secureCookies: options.browserAuth.secureCookies,
+            sessionTtlSeconds: options.browserAuth.sessionTtlSeconds,
+          }
+        : {}),
     };
     if (options.betterAuth) {
       registerBetterAuthRoutes(app, options.betterAuth.instance, {
         publicUrl: options.betterAuth.publicUrl,
         secureCookies: options.browserAuth?.secureCookies ?? true,
-        sessionTtlSeconds: options.browserAuth?.refreshTokenTtlSeconds ?? 60 * 60 * 24 * 7,
+        sessionTtlSeconds: options.browserAuth?.sessionTtlSeconds ?? 60 * 60 * 24 * 30,
       });
     }
     registerAuthRoutes(app, authService);

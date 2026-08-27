@@ -1,3 +1,6 @@
+import { and, eq } from "drizzle-orm";
+import type { DatabaseClient } from "../db/client.js";
+import { authSessions } from "../db/schema/index.js";
 import { AuthServiceError, invalidCredential } from "../services/auth/errors.js";
 import type { AuthTokenIdentity, AuthTokenPair, AuthTokenProvider } from "../services/auth/tokens.js";
 import type { OpenTagBetterAuth } from "./better-auth.js";
@@ -13,10 +16,12 @@ import type { OpenTagBetterAuth } from "./better-auth.js";
  */
 export class BetterAuthSessionTokens implements AuthTokenProvider {
   readonly #auth: OpenTagBetterAuth;
+  readonly #database: DatabaseClient;
   readonly #now: () => Date;
 
-  constructor(auth: OpenTagBetterAuth, options: { now?: () => Date } = {}) {
+  constructor(auth: OpenTagBetterAuth, database: DatabaseClient, options: { now?: () => Date } = {}) {
     this.#auth = auth;
+    this.#database = database;
     this.#now = options.now ?? (() => new Date());
   }
 
@@ -31,15 +36,24 @@ export class BetterAuthSessionTokens implements AuthTokenProvider {
     };
   }
 
+  /**
+   * Withdraws the presented session and issues its replacement, in that order.
+   *
+   * The delete is the gate, and it is what makes this safe to race: exactly one caller can remove a given row, so two
+   * refreshes of the same credential cannot both go on to mint a session, and a revocation that lands first means the
+   * delete finds nothing and no replacement is created. Verifying and then deleting would decide both of those on
+   * stale information — two live sessions from one credential, or access restored after it was revoked.
+   *
+   * Withdrawing first does mean a failure before the replacement exists signs the client out. That is the direction to
+   * fail in: the alternative keeps a credential alive that something already decided to end.
+   */
   async rotate(token: string, userId: string): Promise<AuthTokenPair> {
-    const pair = await this.issuePairForUser(userId);
-    /*
-     * Withdrawn only once the replacement exists, so a failure between the two costs a stale row rather than a
-     * signed-out client. Issuing without withdrawing would leave the presented credential valid until its own expiry,
-     * so revoking what a client currently holds would not lock out a copy taken before its last refresh.
-     */
-    await (await this.#auth.$context).internalAdapter.deleteSession(token);
-    return pair;
+    const [withdrawn] = await this.#database
+      .delete(authSessions)
+      .where(and(eq(authSessions.token, token), eq(authSessions.userId, userId)))
+      .returning({ userId: authSessions.userId });
+    if (!withdrawn) throw invalidCredential("AUTH_INVALID_TOKEN", "The token is invalid");
+    return this.issuePairForUser(withdrawn.userId);
   }
 
   verifyAccess(token: string): Promise<AuthTokenIdentity> {
@@ -84,9 +98,22 @@ export class BridgedSessionTokens implements AuthTokenProvider {
     return this.#sessions.issuePairForUser(userId);
   }
 
-  /** Always a session, and the presented credential is withdrawn when the session store is the one holding it. */
-  rotate(token: string, userId: string): Promise<AuthTokenPair> {
-    return this.#sessions.rotate(token, userId);
+  /**
+   * Always produces a session, and withdraws the presented credential when the session store is the one holding it.
+   *
+   * A credential the session store rejects is only rotated into a new session once the legacy provider vouches for it.
+   * Issuing on any rejection would resurrect a session that was revoked between verification and withdrawal — the
+   * legacy check is what separates "this was never a session" from "this session is gone".
+   */
+  async rotate(token: string, userId: string): Promise<AuthTokenPair> {
+    try {
+      return await this.#sessions.rotate(token, userId);
+    } catch (cause) {
+      if (!(cause instanceof AuthServiceError) || cause.code !== "AUTH_INVALID_TOKEN") throw cause;
+      await this.#legacy.verifyRefresh(token);
+      // Nothing to withdraw: a signature cannot be taken back, so it simply runs out on its own schedule.
+      return this.#sessions.issuePairForUser(userId);
+    }
   }
 
   verifyAccess(token: string): Promise<AuthTokenIdentity> {

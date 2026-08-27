@@ -53,10 +53,15 @@ export interface LegacyCredential {
  * moves across on its next refresh rather than being asked to sign in again.
  *
  * One legacy credential converges on one session, however many times it is presented. A stateless refresh token has
- * nothing to consume, so the exchange is recorded against the token itself and the first writer wins: a replay — or a
- * second tab whose request raced the first — is handed the session that already exists rather than minting another.
- * Without that, the loser's row would stay live and invisible to the browser that created it, surviving the sign-out
- * that was supposed to end it.
+ * nothing to consume, so the exchange is recorded against the token itself in a single statement that returns the
+ * winning session — the first writer's. A later caller withdraws the session it had just created and hands back the
+ * winner's, so every response carries the same token and it does not matter which `Set-Cookie` the browser applies
+ * last. Without that, a replay or two tabs racing a `401` would each leave a live row invisible to the browser holding
+ * the cookie, surviving the sign-out meant to end it.
+ *
+ * The record is the gate, so nothing here takes a lock. An advisory lock would be held by one connection while every
+ * waiter held another, and the holder still needs a connection of its own to do the work: a pool of ten stalls on ten
+ * concurrent exchanges of the same credential.
  */
 export function legacyUpgradePlugin(options: LegacyUpgradeOptions): BetterAuthPlugin {
   return {
@@ -69,31 +74,32 @@ export function legacyUpgradePlugin(options: LegacyUpgradeOptions): BetterAuthPl
           const refreshToken = ctx.body.refreshToken;
           const credential = await resolve(options.resolveCredential(refreshToken));
           const user = await requireUser(ctx, credential.userId);
-          const exchange = `${LEGACY_EXCHANGE_PREFIX}${hashSecret(refreshToken)}`;
+          const session = await createSession(ctx, credential.userId);
 
-          const session = await options.serialize(exchange, async () => {
-            const recorded = await ctx.context.internalAdapter.findVerificationValue(exchange);
-            if (!recorded) {
-              const created = await createSession(ctx, credential.userId);
-              await ctx.context.internalAdapter.createVerificationValue({
-                identifier: exchange,
-                value: created.token,
-                expiresAt: credential.expiresAt,
-              });
-              return created;
-            }
-            const existing = await ctx.context.internalAdapter.findSession(recorded.value);
-            if (!existing) {
-              // The credential is spent and the session it produced is already gone; there is nothing to hand back.
-              throw new APIError("UNAUTHORIZED", {
-                code: "AUTH_INVALID_TOKEN",
-                message: "The refresh token has already been exchanged",
-              });
-            }
-            return existing.session;
+          const winner = await options.recordExchange({
+            expiresAt: credential.expiresAt,
+            sessionToken: session.token,
+            tokenHash: hashSecret(refreshToken),
           });
+          if (winner === session.token) {
+            await setSessionCookie(ctx, { session, user });
+            return ctx.json({ userId: credential.userId });
+          }
 
-          await setSessionCookie(ctx, { session, user });
+          /*
+           * Another exchange of this credential got there first. Withdraw the session just created — it was handed to
+           * nobody — and hand back theirs, so the credential still corresponds to exactly one revocable row.
+           */
+          await ctx.context.internalAdapter.deleteSession(session.token);
+          const existing = await ctx.context.internalAdapter.findSession(winner);
+          if (!existing) {
+            // The credential is spent and the session it produced is already gone; there is nothing to hand back.
+            throw new APIError("UNAUTHORIZED", {
+              code: "AUTH_INVALID_TOKEN",
+              message: "The refresh token has already been exchanged",
+            });
+          }
+          await setSessionCookie(ctx, { session: existing.session, user });
           return ctx.json({ userId: credential.userId });
         },
       ),
@@ -101,20 +107,25 @@ export function legacyUpgradePlugin(options: LegacyUpgradeOptions): BetterAuthPl
   };
 }
 
-export interface LegacyUpgradeOptions {
-  resolveCredential: (refreshToken: string) => Promise<LegacyCredential>;
-  /**
-   * Runs the exchange with every other exchange of the same credential held off.
-   *
-   * Better Auth's own `reserveVerificationValue` would be the natural gate, but its first-writer-wins comes from
-   * writing a derived primary key, and `auth_verifications.id` is a `uuid` column with a default — the derived id does
-   * not survive the insert, so every caller reserves successfully. A lock keyed on the exchange is what actually
-   * serializes it.
-   */
-  serialize: <T>(key: string, run: () => Promise<T>) => Promise<T>;
+/** One exchange of a legacy credential. */
+export interface LegacyExchange {
+  expiresAt: Date;
+  sessionToken: string;
+  tokenHash: string;
 }
 
-const LEGACY_EXCHANGE_PREFIX = "opentag-legacy-upgrade:";
+export interface LegacyUpgradeOptions {
+  /**
+   * Records this exchange and answers with the session token that won, which is this one only on a first exchange.
+   *
+   * It has to decide the winner in one statement. Better Auth's `reserveVerificationValue` looks like the primitive
+   * for exactly this and is not: its first-writer-wins comes from writing a derived primary key, and
+   * `auth_verifications.id` is a `uuid` column with a default, so the derived id does not survive the insert and every
+   * caller reserves successfully.
+   */
+  recordExchange: (exchange: LegacyExchange) => Promise<string>;
+  resolveCredential: (refreshToken: string) => Promise<LegacyCredential>;
+}
 
 /** The statuses OpenTag's authentication decisions produce, named as Better Auth's error constructor wants them. */
 const API_STATUSES = {

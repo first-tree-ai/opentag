@@ -9,7 +9,7 @@ import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
-import { agents, workspaceComputers } from "./db/schema/index.js";
+import { accountLegacyUpgrades, agents, workspaceComputers } from "./db/schema/index.js";
 import { createServerDiagnosticReporter, initTelemetry, shutdownTelemetry } from "./observability/index.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
@@ -297,14 +297,26 @@ export async function startServer(): Promise<void> {
             userId: (await authService.getActiveUserById(identity.userId)).user.id,
           };
         },
-        serialize: (key, run) =>
-          database.transaction(async (transaction) => {
-            await transaction.execute(sqlExpression`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
-            return run();
-          }),
+        /*
+         * One statement decides the winner, so a replay or a raced tab converges without a lock — and therefore
+         * without a connection waiting on one. The conflict branch rewrites the key with its own value: a no-op that
+         * exists only so `RETURNING` reports the row already there, since `DO NOTHING` returns nothing at all.
+         */
+        recordExchange: async ({ expiresAt, sessionToken, tokenHash }) => {
+          const [recorded] = await database
+            .insert(accountLegacyUpgrades)
+            .values({ expiresAt, sessionToken, tokenHash })
+            .onConflictDoUpdate({
+              target: accountLegacyUpgrades.tokenHash,
+              set: { tokenHash: sqlExpression`${accountLegacyUpgrades.tokenHash}` },
+            })
+            .returning({ winner: accountLegacyUpgrades.sessionToken });
+          if (!recorded) throw new Error("The legacy upgrade record did not return a session");
+          return recorded.winner;
+        },
       },
     });
-    sessionTokens = new BetterAuthSessionTokens(betterAuth);
+    sessionTokens = new BetterAuthSessionTokens(betterAuth, database);
     const google = config.google
       ? new GoogleBrowserAuthService({
           database,
@@ -346,6 +358,7 @@ export async function startServer(): Promise<void> {
         google,
         publicOrigin: config.publicUrl,
         refreshTokenTtlSeconds: config.refreshTokenTtlSeconds,
+        sessionTtlSeconds: config.sessionTtlSeconds,
         secureCookies: isHostedEnvironment(config.environment),
       },
       connectCode: {

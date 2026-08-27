@@ -72,8 +72,12 @@ export function setBrowserSessionCookies(
  * A Better Auth sign-in brings its own session cookie but knows nothing about this one, and every browser mutation —
  * including sign-out — requires it. Without this, a session issued by Better Auth can read but never write.
  */
-export function setBrowserCsrfCookie(reply: FastifyReply, options: { maxAgeSeconds: number; secure: boolean }): string {
-  const csrf = generateSecret(24);
+export function setBrowserCsrfCookie(
+  reply: FastifyReply,
+  options: { maxAgeSeconds: number; secure: boolean; value?: string },
+): string {
+  // An existing token is re-sent unchanged when only its lifetime is being extended; a new sign-in mints a fresh one.
+  const csrf = options.value ?? generateSecret(24);
   appendSetCookies(reply, [
     cookie(BROWSER_COOKIE_NAMES.csrf, csrf, { maxAge: options.maxAgeSeconds, path: "/", secure: options.secure }),
   ]);

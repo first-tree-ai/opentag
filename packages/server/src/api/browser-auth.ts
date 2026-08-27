@@ -53,8 +53,11 @@ export interface BrowserAuthRoutesOptions {
   devSignIn?: boolean;
   google?: GoogleBrowserAuthService;
   publicOrigin: string;
+  /** Lifetime of the credentials the previous revision issued, and of the cookies that still carry them. */
   refreshTokenTtlSeconds: number;
   secureCookies: boolean;
+  /** Lifetime of a Better Auth session, and therefore of the double-submit token that has to outlast it. */
+  sessionTtlSeconds: number;
 }
 
 function isLoopbackAddress(value: string): boolean {
@@ -157,7 +160,7 @@ export function registerBrowserAuthRoutes(
     copyBetterAuthCookies(reply, response);
     // The session cookie alone cannot write: every browser mutation also carries OpenTag's double-submit token.
     setBrowserCsrfCookie(reply, {
-      maxAgeSeconds: options.refreshTokenTtlSeconds,
+      maxAgeSeconds: options.sessionTtlSeconds,
       secure: options.secureCookies,
     });
     return reply.redirect(destination, 302);
@@ -252,7 +255,7 @@ export function registerBrowserAuthRoutes(
       }
       copyBetterAuthCookies(reply, response);
       setBrowserCsrfCookie(reply, {
-        maxAgeSeconds: options.refreshTokenTtlSeconds,
+        maxAgeSeconds: options.sessionTtlSeconds,
         secure: options.secureCookies,
       });
       // Retired only now that the replacement is on the reply, so a failure above leaves the browser able to retry.

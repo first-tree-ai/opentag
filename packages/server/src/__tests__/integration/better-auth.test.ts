@@ -6,7 +6,13 @@ import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createBetterAuth } from "../../auth/better-auth.js";
 import { BetterAuthSessionTokens, BridgedSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { authIdentities, authSessions, users, workspaceAdminGrants } from "../../db/schema/index.js";
+import {
+  accountLegacyUpgrades,
+  authIdentities,
+  authSessions,
+  users,
+  workspaceAdminGrants,
+} from "../../db/schema/index.js";
 import { resolveAuthenticatedUserId } from "../../plugins/user-auth.js";
 import {
   AuthService,
@@ -26,7 +32,10 @@ const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 function bridgedAuthService(auth: ReturnType<typeof createAuth>): AuthService {
   return new AuthService(
     client.database,
-    new BridgedSessionTokens(new BetterAuthSessionTokens(auth), new AuthTokenService(LEGACY_SECRET, 900, 3600)),
+    new BridgedSessionTokens(
+      new BetterAuthSessionTokens(auth, client.database),
+      new AuthTokenService(LEGACY_SECRET, 900, 3600),
+    ),
   );
 }
 
@@ -60,17 +69,31 @@ function createAuth(
     secureCookies: false,
     sessionTtlSeconds: SESSION_TTL_SECONDS,
     ...(devSignIn ? { devSignIn } : {}),
-    ...(legacyUpgrade ? { legacyUpgrade: { resolveCredential: legacyUpgrade, serialize: serializeExchange } } : {}),
+    ...(legacyUpgrade ? { legacyUpgrade: { recordExchange, resolveCredential: legacyUpgrade } } : {}),
     google: { clientId: "google-client-id", clientSecret: "google-client-secret" },
   });
 }
 
-/** The lock the composition root supplies, so a raced exchange is serialized here exactly as it is in production. */
-function serializeExchange<T>(key: string, run: () => Promise<T>): Promise<T> {
-  return client.database.transaction(async (transaction) => {
-    await transaction.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
-    return run();
-  });
+/** The single-statement gate the composition root supplies, so a raced exchange converges here as it does in production. */
+async function recordExchange({
+  expiresAt,
+  sessionToken,
+  tokenHash,
+}: {
+  expiresAt: Date;
+  sessionToken: string;
+  tokenHash: string;
+}): Promise<string> {
+  const [recorded] = await client.database
+    .insert(accountLegacyUpgrades)
+    .values({ expiresAt, sessionToken, tokenHash })
+    .onConflictDoUpdate({
+      target: accountLegacyUpgrades.tokenHash,
+      set: { tokenHash: sql`${accountLegacyUpgrades.tokenHash}` },
+    })
+    .returning({ winner: accountLegacyUpgrades.sessionToken });
+  if (!recorded) throw new Error("The legacy upgrade record did not return a session");
+  return recorded.winner;
 }
 
 /** Replays a response's cookies the way a browser would send them back. */
@@ -350,6 +373,43 @@ describe("Better Auth over the existing Account tables", () => {
     });
   });
 
+  it("lets one of two concurrent refreshes win, and never resurrects a revoked credential", async () => {
+    /*
+     * Verifying and then replacing decides both of these on stale information: two refreshes that verify the same
+     * token would each go on to mint a session, and a revocation landing between verification and replacement would be
+     * undone by the replacement. The withdrawal is the gate instead, so exactly one caller can proceed.
+     */
+    const bootstrap = await bootstrapInitialAdmin(client.database, {
+      displayName: "Admin",
+      email: "admin@example.com",
+      workspaceDisplayName: "Example",
+      workspaceName: "example",
+    });
+    const authService = bridgedAuthService(createAuth());
+    const initial = await authService.exchangeConnectCode(bootstrap.connectCode);
+
+    const raced = await Promise.allSettled([
+      authService.refresh(initial.refreshToken),
+      authService.refresh(initial.refreshToken),
+    ]);
+
+    const won = raced.filter((outcome) => outcome.status === "fulfilled");
+    expect(won).toHaveLength(1);
+    expect(raced.filter((outcome) => outcome.status === "rejected")[0]).toMatchObject({
+      reason: { code: "AUTH_INVALID_TOKEN" },
+    });
+    const live = await client.database.select().from(authSessions).where(eq(authSessions.userId, bootstrap.userId));
+    expect(live).toHaveLength(1);
+
+    // A refresh that starts against a credential something else has already revoked must not hand back access.
+    const survivor = won[0] as PromiseFulfilledResult<{ refreshToken: string }>;
+    await client.database.delete(authSessions).where(eq(authSessions.token, survivor.value.refreshToken));
+    await expect(authService.refresh(survivor.value.refreshToken)).rejects.toMatchObject({
+      code: "AUTH_INVALID_TOKEN",
+    });
+    expect(await client.database.select().from(authSessions)).toHaveLength(0);
+  });
+
   it("upgrades a credential the previous revision issued the first time it is refreshed", async () => {
     /*
      * A CLI that has not reached the server since the cutover still holds a signed pair. Verification falls back to the
@@ -533,7 +593,11 @@ describe("Better Auth over the existing Account tables", () => {
     for (const response of [first, second, replay]) expect(response.status).toBe(200);
     const sessions = await client.database.select().from(authSessions);
     expect(sessions).toHaveLength(1);
-    // Every exchange hands back the one session, so no browser is left holding a cookie for a row nothing else knows.
+    /*
+     * Every exchange hands back the same session. The browser keeps whichever `Set-Cookie` arrives last, which is not
+     * necessarily the exchange that won the race — converging on one token is what stops it from being left holding a
+     * cookie for a row that was deleted.
+     */
     for (const response of [first, second, replay]) {
       await expect(
         auth.api.getSession({ headers: new Headers({ cookie: cookieHeader(response) }) }),

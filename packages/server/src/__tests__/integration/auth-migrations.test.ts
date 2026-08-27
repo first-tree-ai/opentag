@@ -108,10 +108,12 @@ describe("database migrations", () => {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    expect(journal.entries.slice(20, 23).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    expect(journal.entries.slice(20, 24).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 20, tag: "0020_large_jack_power" },
       { idx: 21, tag: "0021_slow_gamora" },
       { idx: 22, tag: "0022_short_kitty_pryde" },
+      // Records which session a legacy credential was exchanged for, so a replayed exchange converges on one row.
+      { idx: 23, tag: "0023_motionless_gideon" },
     ]);
   });
 

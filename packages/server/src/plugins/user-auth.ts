@@ -5,6 +5,7 @@ import {
   BROWSER_COOKIE_NAMES,
   parseCookies,
   requireBrowserMutationSecurity,
+  setBrowserCsrfCookie,
 } from "../services/auth/browser-cookies.js";
 import { invalidCredential } from "../services/auth/errors.js";
 import type { AuthenticatedUser, UserAuthService } from "../services/auth/index.js";
@@ -21,6 +22,9 @@ export interface UserAuthPreHandlerOptions {
   /** Present once Better Auth issues sessions; credentials it did not issue still resolve through the legacy path. */
   betterAuth?: OpenTagBetterAuth;
   publicOrigin?: string;
+  secureCookies?: boolean;
+  /** Present with `betterAuth`; the double-submit token is renewed on this schedule so it outlasts a rolling session. */
+  sessionTtlSeconds?: number;
 }
 
 /**
@@ -50,7 +54,7 @@ export async function resolveAuthenticatedUserId(
 }
 
 export function createUserAuthPreHandler(authService: UserAuthService, options: UserAuthPreHandlerOptions = {}) {
-  return async function userAuthPreHandler(request: FastifyRequest, _reply: FastifyReply): Promise<void> {
+  return async function userAuthPreHandler(request: FastifyRequest, reply: FastifyReply): Promise<void> {
     const authorization = request.headers.authorization;
     const bearer = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : undefined;
 
@@ -73,7 +77,10 @@ export function createUserAuthPreHandler(authService: UserAuthService, options: 
     if (options.betterAuth) {
       const session = await options.betterAuth.api.getSession({ headers: fromNodeHeaders(request.headers) });
       if (session) {
-        if (!bearer) requireBrowserOrigin();
+        if (!bearer) {
+          requireBrowserOrigin();
+          renewBrowserCsrfCookie(request, reply, options);
+        }
         request.authContext = {
           me: await authService.getActiveUserById(session.user.id),
           tokenExpiresAt: session.session.expiresAt,
@@ -92,4 +99,26 @@ export function createUserAuthPreHandler(authService: UserAuthService, options: 
     requireBrowserOrigin();
     request.authContext = await authService.getAuthenticatedUser(accessCookie);
   };
+}
+
+/**
+ * Extends the double-submit token alongside the session it accompanies.
+ *
+ * Better Auth renews a session as it is used, so a browser that keeps working keeps its session but would watch this
+ * cookie expire on the schedule it was first issued on — leaving it authenticated and unable to mutate or sign out.
+ * The value is re-sent unchanged, so a tab that already read it stays correct.
+ */
+function renewBrowserCsrfCookie(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  options: UserAuthPreHandlerOptions,
+): void {
+  if (options.sessionTtlSeconds === undefined) return;
+  const current = parseCookies(request.headers.cookie)[BROWSER_COOKIE_NAMES.csrf];
+  if (!current) return;
+  setBrowserCsrfCookie(reply, {
+    maxAgeSeconds: options.sessionTtlSeconds,
+    secure: options.secureCookies ?? true,
+    value: current,
+  });
 }

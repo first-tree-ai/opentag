@@ -1,7 +1,6 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer } from "better-auth/plugins/bearer";
-import { eq } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import { authIdentities, authSessions, authVerifications, users } from "../db/schema/index.js";
 
@@ -16,6 +15,15 @@ import { authIdentities, authSessions, authVerifications, users } from "../db/sc
 export const BETTER_AUTH_BASE_PATH = "/api/v1/auth";
 
 export interface BetterAuthConfig {
+  /**
+   * Runs before any session row exists, and must throw to prevent one.
+   *
+   * Better Auth owns account creation on its own sign-in paths, so this is where OpenTag's Account invariants are
+   * enforced: an Account is not suspended, and it holds the compatibility Workspace grant every authenticated route
+   * derives authority from. Enforcing at issuance rather than after it means there is no window in which a session
+   * exists for an Account that does not satisfy them.
+   */
+  onSessionCreating: (userId: string) => Promise<void>;
   /** Origin the browser reaches the server on; also the only trusted origin. */
   publicUrl: string;
   secret: string;
@@ -87,17 +95,10 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
       },
       session: {
         create: {
-          /*
-           * Suspension is the only kill switch this system has for an Account, and the legacy path re-checks it on
-           * every authenticated request. A session must not come into existence for a suspended Account.
-           */
+          // Throwing here aborts the sign-in that asked for the session, so the caller sees why rather than a
+          // session that silently failed to appear.
           before: async (session) => {
-            const [account] = await database
-              .select({ suspendedAt: users.suspendedAt })
-              .from(users)
-              .where(eq(users.id, session.userId))
-              .limit(1);
-            return account && !account.suspendedAt ? undefined : false;
+            await config.onSessionCreating(session.userId);
           },
         },
       },

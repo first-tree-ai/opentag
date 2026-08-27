@@ -8,14 +8,14 @@ import {
   UserProfileSchema,
 } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
-import { createUserAuthPreHandler } from "../plugins/user-auth.js";
+import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import { buildConnectBootstrapCommand, type ConnectCodeIssuer, type UserAuthService } from "../services/auth/index.js";
 import { parseRequest } from "./request-validation.js";
 
 export interface MeRoutesOptions {
   connectCodeIssuer?: ConnectCodeIssuer;
   environment?: ChannelName;
-  publicOrigin?: string;
+  authOptions?: UserAuthPreHandlerOptions;
   publicUrl?: string;
 }
 
@@ -24,7 +24,7 @@ export function registerMeRoutes(
   authService: UserAuthService,
   options: MeRoutesOptions = {},
 ): void {
-  const preHandler = createUserAuthPreHandler(authService, { publicOrigin: options.publicOrigin });
+  const preHandler = createUserAuthPreHandler(authService, options.authOptions ?? {});
   app.get(HTTP_PATHS.me, { preHandler }, async (request, reply) =>
     reply.code(200).send(MeResponseSchema.parse(request.authContext?.me)),
   );

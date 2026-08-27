@@ -8,7 +8,7 @@ import {
 } from "@opentag/shared";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
-import { createUserAuthPreHandler } from "../plugins/user-auth.js";
+import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { buildComputerConnectCommand, type MachineAuthService } from "../services/computers/index.js";
 import { parseRequest } from "./request-validation.js";
@@ -19,7 +19,7 @@ export function registerComputerRoutes(
   app: FastifyInstance,
   authService: UserAuthService,
   machineAuthService: MachineAuthService,
-  publicOrigin?: string,
+  authOptions?: UserAuthPreHandlerOptions,
   environment?: ChannelName,
   publicUrl?: string,
 ): void {
@@ -34,7 +34,7 @@ export function registerComputerRoutes(
   if (environment && publicUrl) {
     app.post(
       WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE,
-      { preHandler: createUserAuthPreHandler(authService, { publicOrigin }) },
+      { preHandler: createUserAuthPreHandler(authService, authOptions ?? {}) },
       async (request, reply) => {
         const accountId = request.authContext?.me.user.id;
         if (!accountId) throw new Error("Authenticated Account context is missing");

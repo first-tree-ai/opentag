@@ -8,7 +8,7 @@ import {
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { createUserAuthPreHandler } from "../plugins/user-auth.js";
+import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import type { WorkspaceAdminService, WorkspaceSetupService } from "../services/workspaces/index.js";
 import { parseRequest } from "./request-validation.js";
@@ -25,10 +25,10 @@ export function registerWorkspaceRoutes(
   app: FastifyInstance,
   authService: UserAuthService,
   workspaceService: WorkspaceAdminService,
-  publicOrigin?: string,
+  authOptions?: UserAuthPreHandlerOptions,
   workspaceSetupService?: WorkspaceSetupService,
 ): void {
-  const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
+  const preHandler = createUserAuthPreHandler(authService, authOptions ?? {});
 
   if (workspaceSetupService) {
     app.post(WORKSPACE_SETUP_COMPLETE_TEMPLATE, { preHandler }, async (request, reply) => {

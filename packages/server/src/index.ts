@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import type { ProviderReadinessStatus } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import { createApp } from "./app.js";
+import { createBetterAuth } from "./auth/better-auth.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
@@ -253,6 +254,15 @@ export async function startServer(): Promise<void> {
     });
     const identityService = new AuthIdentityService(database);
     const postAuthentication = new PostAuthenticationService(database, workspaceAdmins);
+    const betterAuth = createBetterAuth(database, {
+      onSessionCreating: async (userId) => {
+        await postAuthentication.ensureAccountReady(userId);
+      },
+      publicUrl: config.publicUrl,
+      secret: config.betterAuthSecret,
+      secureCookies: isHostedEnvironment(config.environment),
+      ...(config.google ? { google: config.google } : {}),
+    });
     const google = config.google
       ? new GoogleBrowserAuthService({
           database,
@@ -278,6 +288,7 @@ export async function startServer(): Promise<void> {
         }
       : undefined;
     app = createApp({
+      betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
       webAppRoot: defaultWebAppRoot,
       accountScope: workspaceAdmins,
       agentService,

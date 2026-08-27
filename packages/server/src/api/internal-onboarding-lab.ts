@@ -1,6 +1,6 @@
 import { INTERNAL_ONBOARDING_LAB_PATH, OnboardingLabAccessSchema } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { createUserAuthPreHandler } from "../plugins/user-auth.js";
+import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
 import type { OnboardingResetService } from "../services/onboarding-lab/index.js";
 
@@ -21,9 +21,9 @@ export function registerInternalOnboardingLabRoutes(
   app: FastifyInstance,
   authService: UserAuthService,
   reset: OnboardingResetService,
-  publicOrigin?: string,
+  authOptions?: UserAuthPreHandlerOptions,
 ): void {
-  const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
+  const preHandler = createUserAuthPreHandler(authService, authOptions ?? {});
   const requireLabAccount = (request: FastifyRequest): string => {
     const account = accountId(request);
     if (!reset.allows(account)) throw labNotFound();

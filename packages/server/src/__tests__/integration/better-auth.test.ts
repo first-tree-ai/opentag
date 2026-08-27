@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createBetterAuth } from "../../auth/better-auth.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { authIdentities, authSessions, users } from "../../db/schema/index.js";
+import { authIdentities, authSessions, users, workspaceAdminGrants } from "../../db/schema/index.js";
+import { PostAuthenticationService } from "../../services/auth/index.js";
+import { WorkspaceAdminAccess } from "../../services/workspace-admin-access/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const GOOGLE_ISSUER = "https://accounts.google.com";
@@ -11,10 +13,12 @@ const PUBLIC_URL = "http://localhost:8000";
 
 let testDatabase: MigratedTestDatabase;
 let client: ReturnType<typeof createDatabaseClient>;
+let postAuthentication: PostAuthenticationService;
 
 beforeAll(async () => {
   testDatabase = await startMigratedTestDatabase();
   client = createDatabaseClient(testDatabase.databaseUrl);
+  postAuthentication = new PostAuthenticationService(client.database, new WorkspaceAdminAccess(client.database));
 }, 120_000);
 
 afterAll(async () => {
@@ -28,6 +32,7 @@ beforeEach(async () => {
 
 function createAuth() {
   return createBetterAuth(client.database, {
+    onSessionCreating: (userId) => postAuthentication.ensureAccountReady(userId).then(() => undefined),
     publicUrl: PUBLIC_URL,
     secret: "better-auth-integration-secret-at-least-32-characters",
     secureCookies: false,
@@ -115,9 +120,37 @@ describe("Better Auth over the existing Account tables", () => {
     const auth = createAuth();
     const context = await auth.$context;
 
-    // The hook refuses the write, so no token ever exists to authenticate with.
-    expect(await context.internalAdapter.createSession(userId)).toBeNull();
+    // The hook aborts the sign-in, so no token ever exists to authenticate with.
+    await expect(context.internalAdapter.createSession(userId)).rejects.toMatchObject({
+      code: "AUTH_USER_SUSPENDED",
+      statusCode: 403,
+    });
     expect(await client.database.select().from(authSessions).where(eq(authSessions.userId, userId))).toHaveLength(0);
+  });
+
+  it("gives an Account its compatibility Workspace grant before any session exists", async () => {
+    /*
+     * Every authenticated route derives authority from an active grant, and Better Auth owns account creation on its
+     * own sign-in paths — so the grant is established at session issuance rather than by the legacy resolver, and an
+     * Account cannot hold a session without one.
+     */
+    const userId = await seedLegacyAccount("google-subject-grant", "grant@example.com", "Grant Account");
+    expect(await client.database.select().from(workspaceAdminGrants)).toHaveLength(0);
+    const auth = createAuth();
+    const context = await auth.$context;
+
+    const session = await context.internalAdapter.createSession(userId);
+
+    expect(session.token).toBeTruthy();
+    const grants = await client.database
+      .select()
+      .from(workspaceAdminGrants)
+      .where(and(eq(workspaceAdminGrants.userId, userId), isNull(workspaceAdminGrants.revokedAt)));
+    expect(grants).toHaveLength(1);
+
+    // Idempotent: a returning Account keeps the one grant it already had.
+    await context.internalAdapter.createSession(userId);
+    expect(await client.database.select().from(workspaceAdminGrants)).toHaveLength(1);
   });
 
   it("never persists provider credentials on the identity row", async () => {

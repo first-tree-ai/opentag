@@ -441,6 +441,62 @@ describe("database migrations", () => {
     }
   });
 
+  it("reconciles Accounts a rolled-back server revision left unverified", async () => {
+    /*
+     * 0019 is expand-only so the previous revision keeps running against the new schema, which a rollback needs
+     * because rolling back code does not roll back migrations. That revision predates the writer maintaining
+     * `email_verified`, so this replays it: stop at 0019, write the row that revision would have written, then let the
+     * next migration reconcile it.
+     */
+    const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0019-migrations-"));
+    const legacyMeta = join(legacyFolder, "meta");
+    await mkdir(legacyMeta);
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+      version: string;
+      dialect: string;
+      entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
+    };
+    const legacyEntries = journal.entries.filter(({ idx }) => idx <= 19);
+    for (const entry of legacyEntries) {
+      await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(legacyFolder, `${entry.tag}.sql`));
+    }
+    await writeFile(join(legacyMeta, "_journal.json"), JSON.stringify({ ...journal, entries: legacyEntries }, null, 2));
+
+    try {
+      await migrateDatabase(databaseUrl, legacyFolder);
+      const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      try {
+        const staleId = crypto.randomUUID();
+        const untouchedId = crypto.randomUUID();
+        await sql`
+          insert into users (id, email, display_name, email_verified)
+          values
+            (${staleId}, 'stale@example.com', 'Stale Account', false),
+            (${untouchedId}, 'no-identity@example.com', 'No Identity', false)
+        `;
+        await sql`
+          insert into auth_identities (user_id, provider, issuer, subject, email)
+          values (${staleId}, 'google', 'https://accounts.google.com', 'stale-subject', 'stale@example.com')
+        `;
+
+        await migrateDatabase(databaseUrl, migrationsFolder);
+
+        const verified = await sql<{ email_verified: boolean; id: string }[]>`
+          select id, email_verified from users order by email
+        `;
+        expect([...verified]).toEqual([
+          // An Account with no provider identity has nothing asserting its address, so it stays unverified.
+          { email_verified: false, id: untouchedId },
+          { email_verified: true, id: staleId },
+        ]);
+      } finally {
+        await sql.end();
+      }
+    } finally {
+      await rm(legacyFolder, { force: true, recursive: true });
+    }
+  });
+
   it("maps legacy left_at rows to the single membership status truth", async () => {
     const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
     const applyFile = async (name: string) => {

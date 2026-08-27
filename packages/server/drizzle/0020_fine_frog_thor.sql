@@ -46,4 +46,16 @@ CREATE INDEX "auth_sessions_user_id_idx" ON "auth_sessions" USING btree ("user_i
 CREATE INDEX "auth_sessions_expires_at_idx" ON "auth_sessions" USING btree ("expires_at");--> statement-breakpoint
 CREATE INDEX "auth_verifications_identifier_idx" ON "auth_verifications" USING btree ("identifier");--> statement-breakpoint
 CREATE INDEX "auth_verifications_expires_at_idx" ON "auth_verifications" USING btree ("expires_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "auth_identities_issuer_subject_unique" ON "auth_identities" USING btree ("issuer","subject");
+CREATE UNIQUE INDEX "auth_identities_issuer_subject_unique" ON "auth_identities" USING btree ("issuer","subject");--> statement-breakpoint
+/*
+ * Repeat 0019's verification backfill.
+ *
+ * 0019 is deliberately expand-only so the previous server revision keeps running against the new schema, which a
+ * rollback requires because rolling back application code does not roll back migrations. That revision predates the
+ * writer which maintains `email_verified`, so any Account it created between the two deployments carries `false`
+ * despite holding a verified provider identity. Every migration that precedes a consumer of this flag repeats the
+ * reconciliation; it is idempotent, and the stage that first reads the flag must repeat it again.
+ */
+UPDATE "users" SET "email_verified" = true, "updated_at" = now()
+WHERE "email_verified" = false
+	AND EXISTS (SELECT 1 FROM "auth_identities" WHERE "auth_identities"."user_id" = "users"."id");

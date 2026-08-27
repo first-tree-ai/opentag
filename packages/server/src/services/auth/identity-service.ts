@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { authIdentities, users } from "../../db/schema/index.js";
-import { isUniqueViolation } from "../../db/unique-violation.js";
+import { isDeadlock, isUniqueViolation } from "../../db/unique-violation.js";
 import { AuthServiceError } from "./errors.js";
 
 /**
@@ -181,7 +181,12 @@ export class AuthIdentityService {
         .set({ email: identity.email, emailVerified: true, updatedAt: now })
         .where(eq(users.id, user.id));
     } catch (error) {
-      if (isUniqueViolation(error, USERS_EMAIL_UNIQUE)) throw this.#emailConflict();
+      /*
+       * Both outcomes mean the same thing: a concurrent move took this address first. Which one PostgreSQL reports
+       * depends on the interleaving — a straight race loses on the index, while two Accounts exchanging addresses wait
+       * on each other's uncommitted tuples and one is chosen as the deadlock victim.
+       */
+      if (isUniqueViolation(error, USERS_EMAIL_UNIQUE) || isDeadlock(error)) throw this.#emailConflict();
       throw error;
     }
   }

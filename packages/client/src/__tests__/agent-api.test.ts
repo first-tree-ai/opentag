@@ -92,7 +92,7 @@ describe("OpenTagApi Agent methods", () => {
       .mockResolvedValueOnce(new Response(null, { status: 204 }));
     const api = new OpenTagApi("https://opentag.example", fetchImpl);
 
-    await api.createAgent("access", workspaceId, {
+    await api.createAgent("access", {
       creationIntentId,
       computerId,
       displayName: "Code Reviewer",
@@ -100,7 +100,7 @@ describe("OpenTagApi Agent methods", () => {
       runtimeProvider: "codex",
       runtimeConfig: { instructions: "Custom instructions", maxDurationMs: 60_000 },
     });
-    await api.listAgents("access", workspaceId);
+    await api.listAgents("access");
     await api.getAgent("access", agentId);
     await api.getAgentUsage("access", agentId, 30);
     await api.getAgentConfig("access", agentId);
@@ -114,8 +114,8 @@ describe("OpenTagApi Agent methods", () => {
     await api.deleteAgent("access", agentId);
 
     expect(fetchImpl.mock.calls.map(([url, init]) => [String(url), init?.method ?? "GET"])).toEqual([
-      [`https://opentag.example/api/v1/workspaces/${workspaceId}/agents`, "POST"],
-      [`https://opentag.example/api/v1/workspaces/${workspaceId}/agents`, "GET"],
+      ["https://opentag.example/api/v1/agents", "POST"],
+      ["https://opentag.example/api/v1/agents", "GET"],
       [`https://opentag.example/api/v1/agents/${agentId}`, "GET"],
       [`https://opentag.example/api/v1/agents/${agentId}/usage?days=30`, "GET"],
       [`https://opentag.example/api/v1/agents/${agentId}/config`, "GET"],
@@ -182,7 +182,7 @@ describe("OpenTagApi Agent methods", () => {
       ),
     );
     await expect(
-      typedApi.createAgent("access", workspaceId, {
+      typedApi.createAgent("access", {
         computerId,
         displayName: "Bestony",
         name: "Bestony",
@@ -207,7 +207,7 @@ describe("OpenTagApi Agent methods", () => {
       ),
     );
     await expect(
-      malformedApi.createAgent("access", workspaceId, {
+      malformedApi.createAgent("access", {
         computerId,
         displayName: "Bestony",
         name: "Bestony",

@@ -4,7 +4,11 @@ import { readPrivateJson, writePrivateJson } from "../storage/private-json-file.
 
 export interface MachineEnrollmentCredential {
   workspaceComputerId: string;
-  workspaceId: string;
+  /**
+   * @deprecated The enrollment identifies its own scope. Optional so credentials written before and
+   * after the ownership cutover are both readable by the same Client.
+   */
+  workspaceId?: string;
   computerId: string;
   machineToken: string;
   serverUrl: string;
@@ -25,12 +29,13 @@ export function readMachineCredentials(home = resolveOpenTagHome()): Promise<Sto
   return readPrivateJson(home, machineCredentialsPath(home), validateMachineCredentials);
 }
 
-export function writeMachineCredentialsAtomically(
+/** Rejects rather than throwing synchronously, so a caller handling the returned promise sees the refusal. */
+export async function writeMachineCredentialsAtomically(
   credentials: StoredMachineCredentials,
   home = resolveOpenTagHome(),
 ): Promise<void> {
-  validateMachineCredentials(credentials);
-  return writePrivateJson(home, machineCredentialsPath(home), credentials);
+  const checked = checkMachineCredentialsToWrite(credentials);
+  await writePrivateJson(home, machineCredentialsPath(home), checked);
 }
 
 export async function storeMachineEnrollmentCredential(
@@ -38,18 +43,59 @@ export async function storeMachineEnrollmentCredential(
   home = resolveOpenTagHome(),
 ): Promise<StoredMachineCredentials> {
   const current = (await readMachineCredentials(home)) ?? { version: 1 as const, enrollments: [] };
+  // The enrollment id is the identity; the legacy scope is only compared when both entries carry one,
+  // so a re-enrolment that arrives without it still replaces the credential it supersedes.
   const enrollments = current.enrollments.filter(
     (entry) =>
-      entry.workspaceComputerId !== credential.workspaceComputerId && entry.workspaceId !== credential.workspaceId,
+      entry.workspaceComputerId !== credential.workspaceComputerId &&
+      !(entry.workspaceId !== undefined && entry.workspaceId === credential.workspaceId),
   );
   enrollments.push({ ...credential });
-  enrollments.sort((left, right) => left.workspaceId.localeCompare(right.workspaceId));
+  enrollments.sort((left, right) => left.workspaceComputerId.localeCompare(right.workspaceComputerId));
   const next: StoredMachineCredentials = { version: 1, enrollments };
   await writeMachineCredentialsAtomically(next, home);
   return next;
 }
 
+/**
+ * Reading and writing disagree on purpose. A file on disk may hold entries this Client cannot use, and
+ * one of them must not strand every other enrollment on the host, so unusable entries are dropped.
+ */
 function validateMachineCredentials(value: unknown): StoredMachineCredentials {
+  const enrollmentIds = new Set<string>();
+  const enrollments: MachineEnrollmentCredential[] = [];
+  for (const entry of readCredentialsEnvelope(value)) {
+    const credential = readEnrollmentEntry(entry);
+    if (!credential || enrollmentIds.has(credential.workspaceComputerId)) continue;
+    enrollmentIds.add(credential.workspaceComputerId);
+    enrollments.push(credential);
+  }
+  return { version: 1, enrollments };
+}
+
+/**
+ * A write is the opposite case: the caller is asking for specific credentials to be persisted, so
+ * dropping one would report success while losing an enrollment, and the next read would discard the
+ * bytes just written. Unusable input is rejected, and the validated projection is what reaches disk.
+ */
+function checkMachineCredentialsToWrite(value: StoredMachineCredentials): StoredMachineCredentials {
+  const enrollmentIds = new Set<string>();
+  const enrollments: MachineEnrollmentCredential[] = [];
+  for (const [index, entry] of readCredentialsEnvelope(value).entries()) {
+    const credential = readEnrollmentEntry(entry);
+    if (!credential) {
+      throw new Error(`Refusing to write an unusable OpenTag Computer credential (entry ${index})`);
+    }
+    if (enrollmentIds.has(credential.workspaceComputerId)) {
+      throw new Error(`Refusing to write a duplicate OpenTag Computer enrollment (entry ${index})`);
+    }
+    enrollmentIds.add(credential.workspaceComputerId);
+    enrollments.push(credential);
+  }
+  return { version: 1, enrollments };
+}
+
+function readCredentialsEnvelope(value: unknown): readonly unknown[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error("The OpenTag Computer credentials file is invalid");
   }
@@ -57,30 +103,30 @@ function validateMachineCredentials(value: unknown): StoredMachineCredentials {
   if (Object.keys(record).length !== 2 || record.version !== 1 || !Array.isArray(record.enrollments)) {
     throw new Error("The OpenTag Computer credentials file is invalid");
   }
-  const workspaceIds = new Set<string>();
-  const enrollmentIds = new Set<string>();
-  for (const value of record.enrollments) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      throw new Error("The OpenTag Computer credentials file is invalid");
-    }
-    const entry = value as Record<string, unknown>;
-    if (
-      Object.keys(entry).length !== 5 ||
-      !isUuid(entry.workspaceComputerId) ||
-      !isUuid(entry.workspaceId) ||
-      !isUuid(entry.computerId) ||
-      typeof entry.machineToken !== "string" ||
-      !entry.machineToken.startsWith("otmc_") ||
-      typeof entry.serverUrl !== "string" ||
-      workspaceIds.has(entry.workspaceId) ||
-      enrollmentIds.has(entry.workspaceComputerId)
-    ) {
-      throw new Error("The OpenTag Computer credentials file is invalid");
-    }
-    workspaceIds.add(entry.workspaceId);
-    enrollmentIds.add(entry.workspaceComputerId);
+  return record.enrollments;
+}
+
+/** Accepts an entry written before or after the ownership cutover; returns undefined when unusable. */
+function readEnrollmentEntry(value: unknown): MachineEnrollmentCredential | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const entry = value as Record<string, unknown>;
+  if (
+    !isUuid(entry.workspaceComputerId) ||
+    !isUuid(entry.computerId) ||
+    typeof entry.machineToken !== "string" ||
+    !entry.machineToken.startsWith("otmc_") ||
+    typeof entry.serverUrl !== "string" ||
+    (entry.workspaceId !== undefined && !isUuid(entry.workspaceId))
+  ) {
+    return undefined;
   }
-  return record as unknown as StoredMachineCredentials;
+  return {
+    workspaceComputerId: entry.workspaceComputerId,
+    computerId: entry.computerId,
+    machineToken: entry.machineToken,
+    serverUrl: entry.serverUrl,
+    ...(entry.workspaceId === undefined ? {} : { workspaceId: entry.workspaceId }),
+  };
 }
 
 function isUuid(value: unknown): value is string {

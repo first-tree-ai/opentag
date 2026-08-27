@@ -354,21 +354,20 @@ jobs:
           test ! -e "$runtime_home/computer.json"
 
           agent_create=$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent create \
-            --workspace example \
             --name ci-agent \
             --display-name "CI Agent" \
             --provider codex \
             --computer "$computer_id")
           agent_id=$(printf '%s\n' "$agent_create" | awk '{print $3}')
           test -n "$agent_id"
-          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent list --workspace example | grep -q "$agent_id"
+          OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent list | grep -q "$agent_id"
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent show "$agent_id" | grep -q $'revision\t1'
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent update "$agent_id" \
             --display-name "Updated CI Agent" | grep -q $'revision\t2'
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent suspend "$agent_id" | \
             grep -q $'status\tsuspended'
           OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent delete "$agent_id" | grep -q "$agent_id"
-          test "$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent list --workspace example)" = \
+          test "$(OPENTAG_HOME="$runtime_home" node apps/cli/dist/cli/index.mjs agent list)" = \
             "No Agents registered"
 
           kill -INT "$daemon_pid"

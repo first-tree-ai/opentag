@@ -227,9 +227,8 @@ pnpm --filter open-tag start agent create \
 pnpm --filter open-tag start agent list
 ```
 
-存在多台 Computer 时使用 `--computer <uuid>`。`--workspace <canonical-name>` 选项会保持可见并继续工作，但在
-Phase 2 前只用于选择 legacy internal scope，不是产品 Workspace selector。Computer 离线时仍可选择，因为 online
-presence 不是 Agent 配置状态。可以查看或修改可变的展示名称：
+存在多台 Computer 时使用 `--computer <uuid>`。没有 scope selector：Agent 属于已认证的 Account，由 Server 自行
+解析。Computer 离线时仍可选择，因为 online presence 不是 Agent 配置状态。可以查看或修改可变的展示名称：
 
 ```bash
 pnpm --filter open-tag start agent show <agent-id>

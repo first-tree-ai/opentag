@@ -6,8 +6,7 @@ export function registerComputerListCommand(computer: Command): void {
   computer
     .command("list")
     .description("List Computers")
-    .option("--workspace <name-or-id>", "legacy internal scope name or UUID")
-    .action(async (options) => {
-      process.stdout.write(`${formatComputerList(await listComputers(options.workspace))}\n`);
+    .action(async () => {
+      process.stdout.write(`${formatComputerList(await listComputers())}\n`);
     });
 }

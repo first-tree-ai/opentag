@@ -269,6 +269,7 @@ resolved path.
 On 2026-08-27 that change measured locally on macOS, through
 `turbo run test --continue`, as `@opentag/shared` 67/67, `@opentag/web`
 322/322, `apps/cli` 124/124 and `@opentag/client` 463/463, with
-`@opentag/server` at 256/257: its `observability` tracing case fails there for
-unrelated reasons and is tracked separately. The same commit ran green across
-all five packages in CI, where that case did not reproduce.
+`@opentag/server` at 256/257: its `observability` tracing case raced the
+server close there, which #187 has since fixed on `main` in `22001a6`, so
+that case passes from that commit onward. That same change ran green across
+all five packages in CI, where the case did not reproduce.

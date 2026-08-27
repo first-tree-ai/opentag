@@ -248,7 +248,14 @@ bootstrap email 是 Account 资料，不是邮箱密码凭据。Account 登录 c
 仍会从 PostgreSQL 读取，作为 Phase 2 前的兼容 seam；产品不把它暴露为 Admin 成员关系。
 
 Account email 以小写存储，并按大小写不敏感唯一，因此一个地址最多对应一个 Account。所有写入路径都会在 insert 前归一化，
-`users_email_unique` 索引是兜底。`users.email_verified` 记录该地址是否由 identity provider 断言过；登录 code 流程不会设置它。
+`users_email_unique` 索引是兜底。
+
+因此 provider identity 会挂到已持有该地址的 Account 上，而不是新建第二个。挂载要求 provider 已验证该地址，因为这等于交出一个
+已存在的 Account；未验证却已被占用的地址，以及 provider 邮箱变更撞上另一个 Account 的地址，都会以 `AUTH_EMAIL_CONFLICT`
+拒绝。bootstrap Account 与本人首次 Google 登录就是这样合成同一个 Account 的。
+
+`users.email_verified` 记录 Account 当前存储的那个地址是否被 provider 断言过。它只会为该地址置位，不会为 provider 返回的
+其他地址置位；登录 code 流程不会设置它。
 
 ## Google 登录与 Web App
 

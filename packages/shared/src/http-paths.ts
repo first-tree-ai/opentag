@@ -33,12 +33,15 @@ export const ACCOUNT_AGENTS_PATH = `${API_V1_PREFIX}/agents`;
 export const ACCOUNT_COMPUTERS_PATH = `${API_V1_PREFIX}/computers`;
 export const ACCOUNT_COMPUTER_CONNECT_CODES_PATH = `${API_V1_PREFIX}/computer-connect-codes`;
 export const ACCOUNT_SETUP_COMPLETE_PATH = `${API_V1_PREFIX}/me/setup/complete`;
+export const ACCOUNT_TASKS_PATH = `${API_V1_PREFIX}/sessions`;
+export const TASK_BY_ID_TEMPLATE = `${ACCOUNT_TASKS_PATH}/:sessionId`;
 
 export const HTTP_PATHS = {
   accountAgents: ACCOUNT_AGENTS_PATH,
   accountComputerConnectCodes: ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   accountComputers: ACCOUNT_COMPUTERS_PATH,
   accountSetupComplete: ACCOUNT_SETUP_COMPLETE_PATH,
+  accountTasks: ACCOUNT_TASKS_PATH,
   agentById: AGENT_BY_ID_TEMPLATE,
   slackEvents: SLACK_EVENTS_PATH,
   slackOAuthCallback: SLACK_OAUTH_CALLBACK_PATH,
@@ -57,6 +60,10 @@ export const HTTP_PATHS = {
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,
   workspaceAgents: WORKSPACE_AGENTS_TEMPLATE,
 } as const;
+
+export function taskByIdPath(sessionId: string): string {
+  return `${ACCOUNT_TASKS_PATH}/${encodeURIComponent(sessionId)}`;
+}
 
 export function workspaceSetupCompletePath(workspaceId: string): string {
   return `${API_V1_PREFIX}/workspaces/${encodeURIComponent(workspaceId)}/setup/complete`;

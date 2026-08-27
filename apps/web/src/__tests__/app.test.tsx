@@ -10,6 +10,7 @@ const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const memberUserId = "63e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
+const taskSessionId = "11111111-1111-4111-8111-111111111111";
 
 const agentSummary = {
   id: agentId,
@@ -32,6 +33,17 @@ const agentListItem = {
   ...agentSummary,
   activity: { state: "idle" as const },
   usage: { windowDays: 30 as const, tasks: 32, failed: 0, tokens: 428_000 },
+};
+const taskSummary = {
+  id: taskSessionId,
+  agent: { id: agentId, name: "reviewer", displayName: "Reviewer", runtimeProvider: "codex" },
+  source: { provider: "feishu", conversationKind: "dm", channelId: "oc_debug", threadKey: null },
+  sessionKind: "channel",
+  title: "Investigate the failed deployment",
+  status: "completed",
+  createdAt: "2026-08-20T00:00:00.000Z",
+  endedAt: null,
+  lastActivityAt: "2026-08-20T00:02:00.000Z",
 };
 
 function json(value: unknown, status = 200) {
@@ -182,6 +194,51 @@ function installApi(
     if (path === "/api/v1/me/setup/complete" && init?.method === "POST") {
       setupCompletedAt = "2026-08-20T00:10:00.000Z";
       return json({ setupCompletedAt });
+    }
+    if (path === "/api/v1/sessions") {
+      return json({ tasks: [taskSummary], nextCursor: null });
+    }
+    if (path === `/api/v1/sessions/${taskSessionId}`) {
+      return json({
+        task: taskSummary,
+        turns: [
+          {
+            deliveryId: "33333333-3333-4333-8333-333333333333",
+            attention: "direct",
+            delivery: {
+              state: "accepted",
+              attemptCount: 1,
+              acceptedAt: "2026-08-20T00:01:00.000Z",
+              expiresAt: "2026-08-21T00:00:00.000Z",
+              reason: null,
+              lastErrorCode: null,
+            },
+            message: {
+              id: "44444444-4444-4444-8444-444444444444",
+              externalMessageId: "om_debug",
+              operation: "created",
+              authorKind: "human",
+              authorDisplayName: "Mia",
+              fallbackText: "Please investigate the failed deployment.",
+              truncated: false,
+              occurredAt: "2026-08-20T00:00:00.000Z",
+            },
+            report: {
+              turnId: "turn-debug",
+              outcome: "completed",
+              executionEffects: "completed",
+              finalText: "Stored runtime output",
+              errorReason: null,
+              usage: null,
+              traceSummary: { lastSequence: 2, droppedEvents: 0 },
+              reportedAt: "2026-08-20T00:02:00.000Z",
+            },
+          },
+        ],
+        internalSessions: [],
+        collaborationMessages: [],
+        nextCursor: null,
+      });
     }
     if (path === "/api/v1/agents" && init?.method === "POST") {
       if (options.agentCreateError) {
@@ -1923,36 +1980,28 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Messaging" })));
   });
 
-  it("shows the Tasks demo and opens a Task detail", async () => {
+  it("shows stored Tasks and opens a Task detail", async () => {
     installApi();
     window.history.replaceState({}, "", "/tasks");
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Tasks" })).toBeTruthy();
-    expect(screen.getByText("Demo data")).toBeTruthy();
-    const task = screen.getByRole("link", {
-      name: "Review the Q3 launch plan, identify unresolved owners, and flag every item without a confirmed date.",
+    expect(screen.getByText("Read-only debug view")).toBeTruthy();
+    const task = await screen.findByRole("link", {
+      name: "Investigate the failed deployment",
     });
     fireEvent.click(task);
-    expect(
-      await screen.findByText(
-        "Eight items were checked. Five are ready, two still need owners, and one has no confirmed date.",
-      ),
-    ).toBeTruthy();
-    expect(screen.getByLabelText("Task source").textContent).toContain("Product Launch");
-    expect(window.location.pathname).toBe("/tasks/q3-launch-readiness");
+    expect(await screen.findByText("Stored runtime output")).toBeTruthy();
+    expect(screen.getByLabelText("Task source").textContent).toContain("Reviewer");
+    expect(window.location.pathname).toBe(`/tasks/${taskSessionId}`);
   });
 
-  it("labels a directly opened Task detail as demo data", async () => {
+  it("labels a directly opened Task detail as a read-only debug view", async () => {
     installApi();
-    window.history.replaceState({}, "", "/tasks/q3-launch-readiness");
+    window.history.replaceState({}, "", `/tasks/${taskSessionId}`);
     render(<App />);
 
-    expect(
-      await screen.findByText(
-        "Eight items were checked. Five are ready, two still need owners, and one has no confirmed date.",
-      ),
-    ).toBeTruthy();
-    expect(screen.getByText("Demo data")).toBeTruthy();
+    expect(await screen.findByText("Stored runtime output")).toBeTruthy();
+    expect(screen.getByText("Read-only debug view")).toBeTruthy();
   });
 
   it.each(["/settings", "/settings/members", "/members", "/teams"])(
@@ -1987,7 +2036,9 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
     expect(getItem).not.toHaveBeenCalled();
-    expect(vi.mocked(fetch).mock.calls.some(([path]) => path === "/api/v1/agents")).toBe(true);
+    await waitFor(() =>
+      expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path) === "/api/v1/agents")).toBe(true),
+    );
     expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path).includes("/api/v1/workspaces/"))).toBe(false);
     getItem.mockRestore();
   });

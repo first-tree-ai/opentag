@@ -40,6 +40,8 @@ import {
   imBindingDisablePath,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
+  type ListTasksResponse,
+  ListTasksResponseSchema,
   type ListWorkspaceComputersResponse,
   ListWorkspaceComputersResponseSchema,
   type MeResponse,
@@ -54,6 +56,9 @@ import {
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
+  type TaskDetail,
+  TaskDetailSchema,
+  taskByIdPath,
   type UpdateAgentRequest,
   type UpdateUserProfileRequest,
   type UserProfile,
@@ -109,6 +114,20 @@ export class BrowserApi {
 
   agents(): Promise<ListAgentsResponse> {
     return this.request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema);
+  }
+
+  tasks(input: { cursor?: string; agentId?: string; kind?: "channel" | "thread" } = {}): Promise<ListTasksResponse> {
+    const query = new URLSearchParams();
+    if (input.cursor) query.set("cursor", input.cursor);
+    if (input.agentId) query.set("agentId", input.agentId);
+    if (input.kind) query.set("kind", input.kind);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    return this.request(`${HTTP_PATHS.accountTasks}${suffix}`, ListTasksResponseSchema);
+  }
+
+  task(sessionId: string, cursor?: string): Promise<TaskDetail> {
+    const query = cursor ? `?${new URLSearchParams({ cursor }).toString()}` : "";
+    return this.request(`${taskByIdPath(sessionId)}${query}`, TaskDetailSchema);
   }
 
   agent(agentId: string): Promise<AgentDetail> {

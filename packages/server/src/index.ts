@@ -46,6 +46,7 @@ import {
 import { OnboardingResetService } from "./services/onboarding-lab/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
 import { SessionCollaborationService, SessionService } from "./services/sessions/index.js";
+import { TaskService } from "./services/tasks/index.js";
 import { WorkspaceAdminAccess } from "./services/workspace-admin-access/index.js";
 import { WorkspaceAdminService, WorkspaceSetupService } from "./services/workspaces/index.js";
 import { defaultWebAppRoot } from "./web-app.js";
@@ -176,6 +177,7 @@ export async function startServer(): Promise<void> {
     const workspaceSetupService = new WorkspaceSetupService(database, imBindingService, { workspaceAdmins });
     const imMessageInbox = new ImMessageInbox(database);
     const sessionService = new SessionService(database);
+    const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
     let sessionCollaborationService: SessionCollaborationService;
     const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
@@ -300,6 +302,7 @@ export async function startServer(): Promise<void> {
       imBindingService,
       feishuSetupService,
       slackConfigurationService,
+      taskService,
       ...(slackOAuthService
         ? {
             slackOAuth: {

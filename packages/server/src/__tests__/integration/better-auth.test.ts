@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
+import type { FastifyRequest } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createBetterAuth } from "../../auth/better-auth.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { authIdentities, authSessions, users, workspaceAdminGrants } from "../../db/schema/index.js";
-import { PostAuthenticationService } from "../../services/auth/index.js";
+import { resolveAuthenticatedUserId } from "../../plugins/user-auth.js";
+import { AuthService, PostAuthenticationService } from "../../services/auth/index.js";
 import { WorkspaceAdminAccess } from "../../services/workspace-admin-access/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -128,11 +130,11 @@ describe("Better Auth over the existing Account tables", () => {
     expect(await client.database.select().from(authSessions).where(eq(authSessions.userId, userId))).toHaveLength(0);
   });
 
-  it("gives an Account its compatibility Workspace grant before any session exists", async () => {
+  it("provisions a never-granted Account before its first session exists", async () => {
     /*
-     * Every authenticated route derives authority from an active grant, and Better Auth owns account creation on its
-     * own sign-in paths — so the grant is established at session issuance rather than by the legacy resolver, and an
-     * Account cannot hold a session without one.
+     * Better Auth owns account creation on its own sign-in paths, so first-time provisioning happens at session
+     * issuance rather than in the legacy resolver. This is about an Account that has never been provisioned; the
+     * revocation case below is what shows the rule is "never granted", not "no active grant".
      */
     const userId = await seedLegacyAccount("google-subject-grant", "grant@example.com", "Grant Account");
     expect(await client.database.select().from(workspaceAdminGrants)).toHaveLength(0);
@@ -182,6 +184,33 @@ describe("Better Auth over the existing Account tables", () => {
       .where(eq(workspaceAdminGrants.userId, userId));
     expect(grants).toHaveLength(1);
     expect(grants[0]?.revokedAt).not.toBeNull();
+  });
+
+  it("refuses a session's identity once the Account is suspended", async () => {
+    /*
+     * Routes that authenticate outside the preHandler — the Slack callback is one — must get the same answer it
+     * would give. Trusting the id on the session would let an Account suspended after issuance pass an identity check
+     * and reach the side effects behind it before any later authority check ran.
+     */
+    const userId = await seedLegacyAccount("google-subject-live", "live@example.com", "Live Account");
+    const auth = createAuth();
+    const context = await auth.$context;
+    const session = await context.internalAdapter.createSession(userId);
+    const request = { headers: { cookie: "", authorization: `Bearer ${session.token}` } } as unknown as FastifyRequest;
+    const authService = new AuthService(client.database, {
+      issuePairForUser: async () => ({ accessToken: "", refreshToken: "", expiresIn: 0 }),
+      verifyAccess: async () => ({ expiresAt: new Date(), userId }),
+      verifyRefresh: async () => ({ expiresAt: new Date(), userId }),
+    });
+
+    expect(await resolveAuthenticatedUserId(request, authService, { betterAuth: auth })).toBe(userId);
+
+    await client.database.update(users).set({ suspendedAt: new Date() }).where(eq(users.id, userId));
+
+    await expect(resolveAuthenticatedUserId(request, authService, { betterAuth: auth })).rejects.toMatchObject({
+      code: "AUTH_USER_SUSPENDED",
+      statusCode: 403,
+    });
   });
 
   it("never persists provider credentials on the identity row", async () => {

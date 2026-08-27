@@ -214,11 +214,15 @@ export function registerBrowserAuthRoutes(
         path: "/sign-out",
         body: {},
       });
-      copyBetterAuthCookies(reply, response);
       /*
        * Better Auth's sign-out swallows a failed session delete and still reports success, so taking its word would
        * let this route promise revocation while quietly degrading to a cookie-only logout. Reading the row back is
-       * what makes the promise checkable: if it survived, the caller is still signed in and must be told so.
+       * what makes the promise checkable.
+       *
+       * Nothing is written to the reply until that read succeeds. Better Auth clears the cookie even when its delete
+       * failed, and Fastify's error handler keeps headers already placed on the reply — propagating them before the
+       * check would destroy the browser's only copy of a token whose session is still live, leaving nothing to retry
+       * the revocation with and a stolen copy usable until expiry.
        */
       if (session) {
         const survivor = await (await instance.$context).internalAdapter.findSession(session.session.token);
@@ -226,6 +230,7 @@ export function registerBrowserAuthRoutes(
           throw new AuthServiceError("INTERNAL_ERROR", "transient", "Sign-out could not revoke the session", 500);
         }
       }
+      copyBetterAuthCookies(reply, response);
     }
     // Cleared unconditionally: a browser mid-rollout can hold either credential, and signing out must end both.
     clearBrowserSessionCookies(reply, options.secureCookies);

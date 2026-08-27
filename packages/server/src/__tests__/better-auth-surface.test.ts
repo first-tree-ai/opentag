@@ -101,6 +101,57 @@ describe("published Better Auth surface", () => {
     expect(cookies.some((value) => value.startsWith("opentag_csrf="))).toBe(false);
   });
 
+  it("keeps the browser's token when revocation could not be verified", async () => {
+    /*
+     * Better Auth clears the session cookie even when its own delete failed, and Fastify keeps headers already placed
+     * on the reply. Propagating them before the survivor check would destroy the browser's only copy of a token whose
+     * session is still live — nothing left to retry revocation with, and a stolen copy usable until expiry.
+     */
+    const surviving = { token: "still-here" };
+    const context = Promise.resolve({
+      authCookies: { sessionToken: { name: "opentag.session_token" } },
+      internalAdapter: { findSession: vi.fn(async () => surviving) },
+    });
+    const instance = {
+      $context: context,
+      api: { getSession: vi.fn(async () => ({ session: surviving, user: { id: "u" } })) },
+      handler: vi.fn(
+        async () =>
+          new Response(JSON.stringify({ success: true }), {
+            status: 200,
+            headers: { "set-cookie": "opentag.session_token=; Path=/; Max-Age=0" },
+          }),
+      ),
+    } as unknown as OpenTagBetterAuth;
+
+    const app = createApp({
+      authService: authService(),
+      betterAuth: { instance, publicUrl: "https://opentag.example.com" },
+      browserAuth: {
+        betterAuth: { instance, publicUrl: "https://opentag.example.com" },
+        publicOrigin: "https://opentag.example.com",
+        refreshTokenTtlSeconds: 3600,
+        secureCookies: true,
+      },
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/browser/logout",
+      headers: {
+        origin: "https://opentag.example.com",
+        cookie: "opentag_csrf=token; opentag.session_token=abc",
+        "x-opentag-csrf": "token",
+      },
+    });
+
+    expect(response.statusCode).toBe(500);
+    const header = response.headers["set-cookie"];
+    const cookies = header === undefined ? [] : ([] as string[]).concat(header as string | string[]);
+    expect(cookies, "a failed revocation must not strip the caller's credential").toEqual([]);
+  });
+
   it("builds the forwarded URL from the configured origin, not the request Host", async () => {
     const { handler, instance } = recordingBetterAuth();
     const app = build(instance);

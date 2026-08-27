@@ -36,7 +36,9 @@ export async function resolveAuthenticatedUserId(
 ): Promise<string | undefined> {
   if (options.betterAuth) {
     const session = await options.betterAuth.api.getSession({ headers: fromNodeHeaders(request.headers) });
-    if (session) return session.user.id;
+    // Resolved live rather than trusted from the session, so an Account suspended after issuance is rejected here
+    // instead of at whatever authority check happens to come after the caller's side effects.
+    if (session) return (await authService.getActiveUserById(session.user.id)).user.id;
   }
   const authorization = request.headers.authorization;
   const legacyToken = authorization?.startsWith("Bearer ")

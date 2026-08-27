@@ -491,7 +491,7 @@ export class ImDeliveryWorker {
       }
       const result = await admitted.result;
       setActiveSpanAttributes(outcomeAttrs(result.status, "reason" in result ? result.reason : undefined));
-      if (result.status === "rejected") {
+      if (result.status === "rejected" && (result.reason === "invalid_input" || result.reason === "input_conflict")) {
         await this.#reject(claim.id, result.reason, claim.claimToken);
       } else if (result.status !== "steered") {
         await this.#recordFailure(

@@ -3,6 +3,7 @@ import {
   type DirectImMessageDeliveryRequest,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_FINAL_TEXT_MAX_BYTES,
+  type RuntimeImSteerRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRunResult, AgentRuntimeEventSink } from "../agent-runtime/types.js";
@@ -16,7 +17,7 @@ import {
 } from "../runtime/agent-turn-runner.js";
 import { ImCredentialEnvironmentError } from "../runtime/im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "../runtime/im-resource-fetcher.js";
-import type { SessionBindingStore } from "../runtime/session-binding-store.js";
+import type { RecordedSteerInput, SessionBindingStore } from "../runtime/session-binding-store.js";
 import { ClientRuntimeProviderStartError, type SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
 import type { TurnReportOwner } from "../runtime/turn-report-owner.js";
@@ -92,6 +93,7 @@ describe("AgentTurnRunner", () => {
     expect(feishuInput.items[0]?.text).toContain("$OpenTagLarkBody = @'\nfirst line\n\nsecond line");
     expect(feishuInput.items[0]?.text).toContain('lark-cli ... --markdown "$OPENTAG_LARK_BODY"');
     expect(input.items[0]?.text).not.toContain("OPENTAG_LARK_BODY");
+    expect(() => buildAgentInput(steerRequest())).toThrow("A steer input requires the root runtime snapshot");
   });
 
   it("preserves ambient attention beside the provider reference without disabling provider credentials", () => {
@@ -402,6 +404,139 @@ describe("AgentTurnRunner", () => {
     resolvePrompt({ runId: "turn-1", status: "aborted", output: [] });
     await runner.settled();
   });
+
+  it("steers only a matching running root and reuses the durable receipt", async () => {
+    let resolvePrompt!: (result: AgentRunResult) => void;
+    let resolveReporting!: () => void;
+    let observer: AgentRuntimeEventSink | undefined;
+    let receipt: RecordedSteerInput | undefined;
+    let invalidateAfterFetch = false;
+    const runtimeState = { phase: "running" as const, activeRunId: "turn-1", queuedRunCount: 0 };
+    const capabilities = { steer: "supported" as "supported" | "unsupported", interactions: "unsupported" as const };
+    const steer = vi.fn().mockRejectedValueOnce(new Error("steer failed")).mockResolvedValue(undefined);
+    const markReporting = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveReporting = resolve;
+        }),
+    );
+    const bindingStore = {
+      updateUnresolved: vi.fn(async () => undefined),
+      getSteerReceipt: vi.fn(async (request: RuntimeImSteerRequest) => {
+        if (request.deliveryId === "delivery-conflict") throw new Error("input conflict");
+        return receipt?.deliveryId === request.deliveryId ? receipt : undefined;
+      }),
+      recordSteer: vi.fn(async (request: RuntimeImSteerRequest, inputHash: string) => {
+        if (request.deliveryId === "delivery-4") throw new Error("receipt write failed");
+        receipt = {
+          kind: "steer",
+          deliveryId: request.deliveryId,
+          inputHash,
+          requestId: request.requestId,
+          rootDeliveryId: request.rootDeliveryId,
+          turnId: request.expectedTurnId,
+        };
+        return receipt;
+      }),
+    };
+    const runner = new AgentTurnRunner({
+      bindingStore: bindingStore as unknown as SessionBindingStore,
+      connection: { send: vi.fn(async () => undefined) },
+      custody: { markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
+      reportOwner: {
+        create: vi.fn((input) => ({
+          ...input,
+          type: "turn:report",
+          requestId: randomUUID(),
+          resultHash: "e".repeat(64),
+        })),
+        submit: vi.fn(async () => undefined),
+      } as unknown as TurnReportOwner,
+      runtimeManager: {
+        ensureRuntime: async () => ({
+          capabilities,
+          state: runtimeState,
+          steer,
+          prompt: async () => {
+            await observer?.({ type: "run_started", runId: "turn-1" });
+            return new Promise<AgentRunResult>((resolve) => {
+              resolvePrompt = resolve;
+            });
+          },
+        }),
+        cwd: () => "/workspace",
+        observe: (_sessionId: string, sink: AgentRuntimeEventSink) => {
+          observer = sink;
+          return () => {
+            observer = undefined;
+          };
+        },
+      } as unknown as SessionRuntimeManager,
+      resourceFetcher: {
+        fetchForTurn: vi.fn(async () => {
+          if (invalidateAfterFetch) {
+            invalidateAfterFetch = false;
+            runtimeState.activeRunId = "turn-other";
+          }
+        }),
+      } as unknown as ImResourceFetcher,
+      credentialEnvironment: credentialEnvironment(),
+    });
+    const request = steerRequest();
+    runner.start(liveOwner(delivery()));
+    await expect(runner.steer(request)).resolves.toMatchObject({ status: "retry", reason: "turn_starting" });
+    await vi.waitFor(() =>
+      expect(bindingStore.updateUnresolved).toHaveBeenCalledWith("agent-1", "session-1", "turn-1", "running"),
+    );
+    await expect(
+      runner.steer({ ...request, requestId: randomUUID(), deliveryId: "delivery-conflict" }),
+    ).resolves.toMatchObject({ status: "rejected", reason: "input_conflict" });
+    await expect(
+      runner.steer({ ...request, requestId: randomUUID(), rootDeliveryId: "delivery-other" }),
+    ).resolves.toMatchObject({ status: "rejected", reason: "target_mismatch" });
+    capabilities.steer = "unsupported";
+    await expect(runner.steer(request)).resolves.toMatchObject({ status: "deferred", reason: "steer_unsupported" });
+    capabilities.steer = "supported";
+    runtimeState.activeRunId = "turn-other";
+    await expect(runner.steer(request)).resolves.toMatchObject({ status: "deferred", reason: "turn_not_running" });
+    runtimeState.activeRunId = "turn-1";
+    invalidateAfterFetch = true;
+    await expect(
+      runner.steer({ ...request, requestId: randomUUID(), deliveryId: "delivery-3" }),
+    ).resolves.toMatchObject({ status: "deferred", reason: "turn_not_running" });
+    runtimeState.activeRunId = "turn-1";
+    await expect(runner.steer(request)).resolves.toMatchObject({ status: "deferred", reason: "steer_state_unknown" });
+    await expect(
+      runner.steer({ ...request, requestId: randomUUID(), deliveryId: "delivery-4" }),
+    ).resolves.toMatchObject({ status: "deferred", reason: "steer_state_unknown" });
+    const successfulRequest = { ...request, requestId: randomUUID(), deliveryId: "delivery-5" };
+    await expect(runner.steer(successfulRequest)).resolves.toMatchObject({
+      status: "steered",
+      expectedTurnId: "turn-1",
+    });
+    await expect(runner.steer({ ...successfulRequest, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "steered",
+    });
+    expect(steer).toHaveBeenCalledTimes(3);
+    expect(steer).toHaveBeenCalledWith(expect.objectContaining({ expectedRunId: "turn-1" }));
+    expect(bindingStore.recordSteer).toHaveBeenCalledTimes(2);
+    await expect(
+      runner.steer({ ...request, requestId: randomUUID(), deliveryId: "delivery-6", expectedTurnId: "turn-other" }),
+    ).resolves.toMatchObject({
+      status: "deferred",
+      reason: "turn_not_running",
+    });
+    resolvePrompt({ runId: "turn-1", status: "completed", output: [] });
+    await vi.waitFor(() => expect(markReporting).toHaveBeenCalledOnce());
+    await expect(
+      runner.steer({ ...request, requestId: randomUUID(), deliveryId: "delivery-7" }),
+    ).resolves.toMatchObject({
+      status: "deferred",
+      reason: "turn_not_running",
+    });
+    resolveReporting();
+    await runner.settled();
+  });
 });
 
 function liveOwner(request: DirectImMessageDeliveryRequest): LiveTurnOwner {
@@ -446,6 +581,22 @@ function providerRef(messageTs: string) {
     botUserId: "bot-1",
     channelId: "channel-1",
     messageTs,
+  };
+}
+
+function steerRequest(): RuntimeImSteerRequest {
+  return {
+    type: "im:steer",
+    requestId: randomUUID(),
+    deliveryId: "delivery-2",
+    imMessageId: randomUUID(),
+    sessionId: "session-1",
+    agentId: "agent-1",
+    placementGeneration: 1,
+    rootDeliveryId: "delivery-1",
+    expectedTurnId: "turn-1",
+    attention: "direct",
+    content: { kind: "text", text: "updated direction", providerRef: providerRef("1710000000.000002") },
   };
 }
 

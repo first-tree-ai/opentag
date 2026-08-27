@@ -1,6 +1,6 @@
 {
-  "id": "ad244a34-4913-4129-b0c8-0e8e3fe9de30",
-  "prevId": "a246d5f9-64bc-40be-aac1-22e2f67ad93b",
+  "id": "04509559-efb3-40b9-8513-d7d6de06a68e",
+  "prevId": "ad244a34-4913-4129-b0c8-0e8e3fe9de30",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -474,11 +474,24 @@
           "primaryKey": false,
           "notNull": true
         },
+        "email_verified": {
+          "name": "email_verified",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "display_name": {
           "name": "display_name",
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "image": {
+          "name": "image",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "suspended_at": {
           "name": "suspended_at",

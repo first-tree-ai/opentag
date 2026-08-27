@@ -209,6 +209,7 @@ function installApi(
               state: "accepted",
               attemptCount: 1,
               acceptedAt: "2026-08-20T00:01:00.000Z",
+              steeredAt: null,
               expiresAt: "2026-08-21T00:00:00.000Z",
               reason: null,
               lastErrorCode: null,
@@ -223,6 +224,7 @@ function installApi(
               truncated: false,
               occurredAt: "2026-08-20T00:00:00.000Z",
             },
+            absorbedBy: null,
             report: {
               turnId: "turn-debug",
               outcome: "completed",

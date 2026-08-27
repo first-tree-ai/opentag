@@ -2,10 +2,23 @@ import type {
   DirectImMessageDeliveryRequest,
   ImContentV1,
   ProviderInboundContext,
+  RuntimeImSteerRequest,
   TurnReportRequest,
 } from "@opentag/shared";
 import { sql } from "drizzle-orm";
-import { bigint, check, index, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import {
+  type AnyPgColumn,
+  bigint,
+  check,
+  index,
+  jsonb,
+  pgEnum,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+  uuid,
+} from "drizzle-orm/pg-core";
 import { imBindings } from "./im-bindings.js";
 import { sessions } from "./sessions.js";
 
@@ -13,7 +26,13 @@ export const imMessageDirection = pgEnum("im_message_direction", ["inbound", "ou
 export const imMessageOperation = pgEnum("im_message_operation", ["created", "edited", "deleted"]);
 export const imAuthorKind = pgEnum("im_author_kind", ["human", "bot", "system"]);
 export const imDeliveryAttention = pgEnum("im_delivery_attention", ["direct", "ambient"]);
-export const imDeliveryState = pgEnum("im_delivery_state", ["pending", "accepted", "terminal_rejected", "expired"]);
+export const imDeliveryState = pgEnum("im_delivery_state", [
+  "pending",
+  "accepted",
+  "steered",
+  "terminal_rejected",
+  "expired",
+]);
 export const imMessages = pgTable(
   "im_messages",
   {
@@ -72,9 +91,13 @@ export const imMessageDeliveries = pgTable(
     placementGeneration: bigint("placement_generation", { mode: "number" }).notNull(),
     dispatchRequestId: uuid("dispatch_request_id"),
     dispatchInputHash: text("dispatch_input_hash"),
-    dispatchPayload: jsonb("dispatch_payload").$type<DirectImMessageDeliveryRequest>(),
+    dispatchPayload: jsonb("dispatch_payload").$type<DirectImMessageDeliveryRequest | RuntimeImSteerRequest>(),
     inputHash: text("input_hash"),
     turnId: text("turn_id"),
+    steerTargetDeliveryId: uuid("steer_target_delivery_id").references((): AnyPgColumn => imMessageDeliveries.id, {
+      onDelete: "restrict",
+    }),
+    steeredAt: timestamp("steered_at", { withTimezone: true }),
     reportOwnerInstanceId: uuid("report_owner_instance_id"),
     resultHash: text("result_hash"),
     turnReport: jsonb("turn_report").$type<TurnReportRequest>(),
@@ -89,6 +112,7 @@ export const imMessageDeliveries = pgTable(
   (table) => [
     uniqueIndex("im_message_deliveries_message_session_unique").on(table.messageId, table.sessionId),
     index("im_message_deliveries_session_id_idx").on(table.sessionId),
+    index("im_message_deliveries_steer_target_idx").on(table.steerTargetDeliveryId),
     index("im_message_deliveries_pending_idx").on(table.state, table.nextAttemptAt),
     uniqueIndex("im_message_deliveries_dispatch_request_unique")
       .on(table.dispatchRequestId)
@@ -102,8 +126,16 @@ export const imMessageDeliveries = pgTable(
     ),
     check(
       "im_message_deliveries_custody_shape",
-      sql`(${table.state} = 'accepted' and ${table.inputHash} is not null and ${table.turnId} is not null and ${table.reportOwnerInstanceId} is not null and ${table.acceptedAt} is not null)
-        or (${table.state} <> 'accepted' and ${table.turnId} is null and ${table.reportOwnerInstanceId} is null and ${table.reportedAt} is null and ${table.turnReport} is null and ${table.resultHash} is null)`,
+      sql`(${table.state} = 'accepted' and ${table.inputHash} is not null and ${table.turnId} is not null
+          and ${table.reportOwnerInstanceId} is not null and ${table.acceptedAt} is not null
+          and ${table.steerTargetDeliveryId} is null and ${table.steeredAt} is null)
+        or (${table.state} = 'steered' and ${table.inputHash} is not null and ${table.steerTargetDeliveryId} is not null
+          and ${table.steeredAt} is not null and ${table.turnId} is null and ${table.reportOwnerInstanceId} is null
+          and ${table.acceptedAt} is null and ${table.reportedAt} is null and ${table.turnReport} is null
+          and ${table.resultHash} is null)
+        or (${table.state} not in ('accepted', 'steered') and ${table.inputHash} is null and ${table.turnId} is null
+          and ${table.reportOwnerInstanceId} is null and ${table.acceptedAt} is null and ${table.steeredAt} is null
+          and ${table.reportedAt} is null and ${table.turnReport} is null and ${table.resultHash} is null)`,
     ),
     check(
       "im_message_deliveries_report_shape",

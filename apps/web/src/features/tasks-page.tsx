@@ -297,6 +297,7 @@ export function TaskDetailPage() {
 
 function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
   const report = turn.report;
+  const absorbedBy = turn.absorbedBy;
   const usage = report?.usage;
   const tokenTotal = usage
     ? (usage.inputTokens ?? 0) + (usage.cachedInputTokens ?? 0) + (usage.outputTokens ?? 0)
@@ -327,10 +328,18 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
           </span>
           <span>
             <strong>{task.agent.displayName}</strong>
-            <small>{report ? `${report.outcome} · ${formatTimestamp(report.reportedAt)}` : turn.delivery.state}</small>
+            <small>
+              {absorbedBy
+                ? "absorbed into running Turn"
+                : report
+                  ? `${report.outcome} · ${formatTimestamp(report.reportedAt)}`
+                  : turn.delivery.state}
+            </small>
           </span>
         </header>
-        {report?.finalText ? (
+        {absorbedBy ? (
+          <p className="task-progress-summary">This input was steered into the active Turn.</p>
+        ) : report?.finalText ? (
           <section className="task-agent-response" aria-label="Stored runtime final output">
             <p className="task-answer-paragraph">{report.finalText}</p>
           </section>
@@ -349,6 +358,8 @@ function TaskTurnView({ task, turn }: { task: TaskSummary; turn: TaskTurn }) {
           <section className="task-agent-events">
             <DebugValue label="Delivery" value={turn.deliveryId} />
             <DebugValue label="Message" value={turn.message.externalMessageId} />
+            {absorbedBy ? <DebugValue label="Absorbed by delivery" value={absorbedBy.deliveryId} /> : null}
+            {absorbedBy ? <DebugValue label="Target Turn" value={absorbedBy.turnId} /> : null}
             {report ? <DebugValue label="Turn" value={report.turnId} /> : null}
             <p className="task-process-metadata">
               {[

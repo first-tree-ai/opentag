@@ -1,10 +1,13 @@
 import { randomUUID } from "node:crypto";
 import {
   computeDirectInputHash,
+  computeRuntimeImSteerInputHash,
   type DirectImMessageDeliveryRequest,
   hashTuple,
   type ImMessageDeliveryResult,
   type InputRejectReason,
+  type RuntimeImSteerRequest,
+  type RuntimeImSteerResult,
   type TurnReportRequest,
   TurnReportRequestSchema,
 } from "@opentag/shared";
@@ -22,6 +25,7 @@ export interface TurnCustodyOwnerOptions {
   preflight?(request: DirectImMessageDeliveryRequest): Promise<InputRejectReason | undefined>;
   reconciler: SessionReconciler;
   start?(owner: LiveTurnOwner): Promise<void> | void;
+  steer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult>;
 }
 
 export interface LiveTurnOwner {
@@ -41,6 +45,16 @@ interface RememberedRequest {
   decision: Promise<DeliveryDecision>;
 }
 
+interface RememberedSteer {
+  requestHash: string;
+  decision: Promise<RuntimeImSteerResult>;
+}
+
+interface SteerDelivery {
+  inputHash: string;
+  decision: Promise<RuntimeImSteerResult>;
+}
+
 export class TurnCustodyOwner {
   readonly admission: AdmissionController;
   readonly #bindingStore: SessionBindingStore;
@@ -50,9 +64,12 @@ export class TurnCustodyOwner {
   readonly #now: () => number;
   readonly #preflight?: TurnCustodyOwnerOptions["preflight"];
   readonly #start?: TurnCustodyOwnerOptions["start"];
+  readonly #steer?: TurnCustodyOwnerOptions["steer"];
   readonly #requests = new Map<string, RememberedRequest>();
   readonly #deliveries = new Map<string, OwnedDelivery>();
   readonly #turns = new Map<string, OwnedDelivery>();
+  readonly #steerRequests = new Map<string, RememberedSteer>();
+  readonly #steerDeliveries = new Map<string, SteerDelivery>();
 
   constructor(options: TurnCustodyOwnerOptions) {
     this.admission = options.admission ?? new AdmissionController();
@@ -63,9 +80,44 @@ export class TurnCustodyOwner {
     this.#now = options.now ?? Date.now;
     this.#preflight = options.preflight;
     this.#start = options.start;
+    this.#steer = options.steer;
     if (!Number.isSafeInteger(this.#maxRememberedRequests) || this.#maxRememberedRequests < 1) {
       throw new Error("maxRememberedRequests must be a positive safe integer");
     }
+  }
+
+  acceptSteer(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult> {
+    const inputHash = computeRuntimeImSteerInputHash(request);
+    const requestHash = hashTuple([request.deliveryId, inputHash]);
+    const remembered = this.#steerRequests.get(request.requestId);
+    if (remembered) {
+      return remembered.requestHash === requestHash
+        ? remembered.decision
+        : Promise.resolve(rejectedSteer(request, "input_conflict"));
+    }
+    const existing = this.#steerDeliveries.get(request.deliveryId);
+    if (existing) {
+      const decision =
+        existing.inputHash === inputHash
+          ? existing.decision.then((result) => ({ ...result, requestId: request.requestId }))
+          : Promise.resolve(rejectedSteer(request, "input_conflict"));
+      this.#rememberSteer(request.requestId, requestHash, decision);
+      return decision;
+    }
+    const deadline = request.deadlineAt ? Date.parse(request.deadlineAt) : undefined;
+    const decision =
+      deadline !== undefined && deadline <= this.#now()
+        ? Promise.resolve(rejectedSteer(request, "invalid_input"))
+        : (this.#steer?.(request) ?? Promise.resolve(deferredSteer(request, "steer_unsupported")));
+    const delivery = { inputHash, decision };
+    this.#steerDeliveries.set(request.deliveryId, delivery);
+    void decision.then((result) => {
+      if (result.status === "retry" && this.#steerDeliveries.get(request.deliveryId) === delivery) {
+        this.#steerDeliveries.delete(request.deliveryId);
+      }
+    });
+    this.#rememberSteer(request.requestId, requestHash, decision);
+    return decision;
   }
 
   accept(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> {
@@ -98,7 +150,7 @@ export class TurnCustodyOwner {
     }
     const admission = this.admission.reserve(request.sessionId, request.agentId);
     if (!admission.accepted) {
-      const decision = Promise.resolve({ result: rejected(request, admission.reason) });
+      const decision = this.#absorbedOrRejected(request, admission.reason);
       this.#remember(request.requestId, requestHash, decision);
       return decision;
     }
@@ -169,6 +221,10 @@ export class TurnCustodyOwner {
         this.#discard(owner);
         return { result: accepted(owner.request, custody.recorded.turnId) };
       }
+      if (custody.status === "absorbed") {
+        this.#discard(owner);
+        return { result: absorbed(owner.request, custody.recorded.rootDeliveryId, custody.recorded.turnId) };
+      }
       if (custody.status === "existing" && custody.unresolvedTurn.turnId !== owner.turnId) {
         this.#discard(owner);
         return { result: rejected(owner.request, "session_recovery_required") };
@@ -198,6 +254,21 @@ export class TurnCustodyOwner {
     }
   }
 
+  async #absorbedOrRejected(
+    request: DirectImMessageDeliveryRequest,
+    reason: InputRejectReason,
+  ): Promise<DeliveryDecision> {
+    try {
+      const receipt = await this.#bindingStore.getAbsorbedReceipt(request);
+      if (receipt) return { result: absorbed(request, receipt.rootDeliveryId, receipt.turnId) };
+    } catch (error) {
+      if (error instanceof SessionBindingConflictError && error.code === "conflict") {
+        return { result: rejected(request, "input_conflict") };
+      }
+    }
+    return { result: rejected(request, reason) };
+  }
+
   #discard(owner: OwnedDelivery): void {
     owner.reservation.release();
     if (this.#deliveries.get(owner.request.deliveryId) === owner) this.#deliveries.delete(owner.request.deliveryId);
@@ -210,6 +281,20 @@ export class TurnCustodyOwner {
       const oldest = this.#requests.keys().next().value;
       if (oldest === undefined) break;
       this.#requests.delete(oldest);
+    }
+  }
+
+  #rememberSteer(requestId: string, requestHash: string, decision: Promise<RuntimeImSteerResult>): void {
+    this.#steerRequests.set(requestId, { requestHash, decision });
+    while (this.#steerRequests.size > this.#maxRememberedRequests) {
+      const oldest = this.#steerRequests.keys().next().value;
+      if (oldest === undefined) break;
+      this.#steerRequests.delete(oldest);
+    }
+    while (this.#steerDeliveries.size > this.#maxRememberedRequests) {
+      const oldest = this.#steerDeliveries.keys().next().value;
+      if (oldest === undefined) break;
+      this.#steerDeliveries.delete(oldest);
     }
   }
 
@@ -242,6 +327,55 @@ function rejected(request: DirectImMessageDeliveryRequest, reason: InputRejectRe
     status: "rejected",
     reason,
   };
+}
+
+function absorbed(
+  request: DirectImMessageDeliveryRequest,
+  rootDeliveryId: string,
+  turnId: string,
+): ImMessageDeliveryResult {
+  return {
+    type: "im:deliver:result",
+    requestId: request.requestId,
+    deliveryId: request.deliveryId,
+    sessionId: request.sessionId,
+    placementGeneration: request.placementGeneration,
+    status: "absorbed",
+    rootDeliveryId,
+    turnId,
+  };
+}
+
+function rejectedSteer(
+  request: RuntimeImSteerRequest,
+  reason: Extract<RuntimeImSteerResult, { status: "rejected" }>["reason"],
+): RuntimeImSteerResult {
+  return steerResult(request, "rejected", reason);
+}
+
+function deferredSteer(
+  request: RuntimeImSteerRequest,
+  reason: Extract<RuntimeImSteerResult, { status: "deferred" }>["reason"],
+): RuntimeImSteerResult {
+  return steerResult(request, "deferred", reason);
+}
+
+function steerResult(
+  request: RuntimeImSteerRequest,
+  status: "deferred" | "rejected",
+  reason: Extract<RuntimeImSteerResult, { status: "deferred" | "rejected" }>["reason"],
+): RuntimeImSteerResult {
+  return {
+    type: "im:steer:result",
+    requestId: request.requestId,
+    deliveryId: request.deliveryId,
+    sessionId: request.sessionId,
+    placementGeneration: request.placementGeneration,
+    rootDeliveryId: request.rootDeliveryId,
+    expectedTurnId: request.expectedTurnId,
+    status,
+    reason,
+  } as RuntimeImSteerResult;
 }
 
 function mapStorageError(error: unknown): InputRejectReason {

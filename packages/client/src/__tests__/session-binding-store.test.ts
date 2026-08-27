@@ -25,7 +25,7 @@ describe("SessionBindingStore", () => {
     const fixture = await bindingFixture();
     const binding = await fixture.store.read("agent-1", "session-1");
     expect(binding).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       agentId: "agent-1",
       sessionId: "session-1",
       workspaceId: "workspace-1",
@@ -216,7 +216,7 @@ describe("SessionBindingStore", () => {
     await writeFile(path, `${JSON.stringify(current)}\n`, "utf8");
 
     await expect(fixture.store.read("agent-1", "session-1")).resolves.toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       provider: "claude-code",
       runtimeBinding: { providerId: "claude-code", schemaVersion: 1 },
     });
@@ -243,7 +243,7 @@ describe("SessionBindingStore", () => {
     });
     const rewritten = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
     expect(rewritten).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       runtimeBinding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "legacy-thread" } },
     });
     expect(rewritten).not.toHaveProperty("providerThreadId");
@@ -278,7 +278,7 @@ describe("SessionBindingStore", () => {
 
     await expect(fixture.reconciler.reconcile(fixture.reconcile)).resolves.toMatchObject({ status: "ready" });
     expect(await readFile(legacyPath, "utf8")).toBe('{"legacy":true}\n');
-    await expect(fixture.store.read("agent-1", "session-1")).resolves.toMatchObject({ schemaVersion: 2 });
+    await expect(fixture.store.read("agent-1", "session-1")).resolves.toMatchObject({ schemaVersion: 3 });
   });
 
   it.each(["type root", "Agent directory"] as const)(

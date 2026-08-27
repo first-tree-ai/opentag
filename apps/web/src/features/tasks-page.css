@@ -38,6 +38,106 @@
   line-height: 40px;
 }
 
+.tasks-debug-note {
+  color: var(--muted);
+  font-size: var(--text-meta);
+  white-space: nowrap;
+}
+
+.task-load-more {
+  display: block;
+  margin: var(--space-6) auto 0;
+  padding: var(--space-2) var(--space-4);
+}
+
+.task-provider-mark {
+  align-items: center;
+  background: var(--surface-soft);
+  border-radius: 4px;
+  display: inline-flex;
+  font-size: 10px;
+  font-weight: 700;
+  height: 20px;
+  justify-content: center;
+  width: 20px;
+}
+
+.task-debug-facts {
+  display: grid;
+  gap: var(--space-2);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin: var(--space-4) 0;
+}
+
+.task-debug-value {
+  align-items: center;
+  display: flex;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.task-debug-value strong {
+  color: var(--muted);
+  font-size: var(--text-micro);
+  text-transform: uppercase;
+}
+
+.task-debug-value code {
+  font-size: var(--text-micro);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-debug-value button {
+  background: transparent;
+  border: 0;
+  color: var(--brand-ink);
+  cursor: pointer;
+  font-size: var(--text-micro);
+  padding: 0;
+}
+
+.task-capture-boundary {
+  background: var(--surface-soft);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: var(--text-ui);
+  margin: var(--space-4) 0 var(--space-6);
+  padding: var(--space-3) var(--space-4);
+}
+
+.task-runtime-error {
+  color: var(--error);
+  font-family: var(--font-mono);
+  font-size: var(--text-ui);
+}
+
+.task-related-sessions {
+  border-top: 1px solid var(--border);
+  margin-top: var(--space-8);
+  padding-top: var(--space-4);
+}
+
+.task-related-sessions > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.task-collaboration-message {
+  border-left: 2px solid var(--strong-border);
+  margin-top: var(--space-3);
+  padding-left: var(--space-3);
+}
+
+.task-collaboration-message p {
+  white-space: pre-wrap;
+}
+
+.task-collaboration-message small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
 .task-toolbar {
   display: grid;
   align-items: center;

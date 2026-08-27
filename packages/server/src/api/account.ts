@@ -7,17 +7,38 @@ import {
   CreateAgentRequestSchema,
   HTTP_PATHS,
   ListAgentsResponseSchema,
+  ListTasksResponseSchema,
   ListWorkspaceComputersResponseSchema,
   PROVIDER_READINESS_V1_HEADER,
+  TASK_BY_ID_TEMPLATE,
+  TaskDetailSchema,
   WorkspaceSetupCompletionSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { z } from "zod";
 import { createUserAuthPreHandler } from "../plugins/user-auth.js";
 import type { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { buildComputerConnectCommand, type MachineAuthService } from "../services/computers/index.js";
+import type { TaskService } from "../services/tasks/index.js";
 import type { WorkspaceAdminService, WorkspaceSetupService } from "../services/workspaces/index.js";
 import { parseRequest } from "./request-validation.js";
+
+const TaskListQuerySchema = z
+  .object({
+    agentId: z.string().uuid().optional(),
+    cursor: z.string().min(1).max(1024).optional(),
+    kind: z.enum(["channel", "thread"]).optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+  })
+  .strict();
+const TaskDetailQuerySchema = z
+  .object({
+    cursor: z.string().min(1).max(1024).optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+  })
+  .strict();
+const TaskParamsSchema = z.object({ sessionId: z.string().uuid() }).strict();
 
 /**
  * Resolves the authenticated Account to the compatibility Workspace that still backs management storage.
@@ -34,6 +55,7 @@ export interface AccountRoutesOptions {
   computerConnectCode?: { environment: ChannelName; publicUrl: string };
   machineAuthService?: MachineAuthService;
   publicOrigin?: string;
+  taskService?: TaskService;
   workspaceService?: WorkspaceAdminService;
   workspaceSetupService?: WorkspaceSetupService;
 }
@@ -82,6 +104,25 @@ export function registerAccountRoutes(
       return reply
         .code(200)
         .send(ListAgentsResponseSchema.parse(await agentService.listForWorkspace(scope.accountId, scope.workspaceId)));
+    });
+  }
+
+  if (options.taskService) {
+    const taskService = options.taskService;
+
+    app.get(HTTP_PATHS.accountTasks, { preHandler }, async (request, reply) => {
+      const query = parseRequest(TaskListQuerySchema, request.query);
+      const scope = await scopeOf(request);
+      const response = ListTasksResponseSchema.parse(await taskService.list(scope.workspaceId, query));
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
+
+    app.get(TASK_BY_ID_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { sessionId } = parseRequest(TaskParamsSchema, request.params);
+      const query = parseRequest(TaskDetailQuerySchema, request.query);
+      const scope = await scopeOf(request);
+      const response = TaskDetailSchema.parse(await taskService.get(scope.workspaceId, sessionId, query));
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
     });
   }
 

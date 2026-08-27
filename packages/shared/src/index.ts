@@ -130,6 +130,7 @@ export {
   ACCOUNT_COMPUTER_CONNECT_CODES_PATH,
   ACCOUNT_COMPUTERS_PATH,
   ACCOUNT_SETUP_COMPLETE_PATH,
+  ACCOUNT_TASKS_PATH,
   AGENT_BY_ID_TEMPLATE,
   AGENT_CONFIG_TEMPLATE,
   AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE,
@@ -168,6 +169,8 @@ export {
   runtimeWebSocketUrl,
   SLACK_EVENTS_PATH,
   SLACK_OAUTH_CALLBACK_PATH,
+  TASK_BY_ID_TEMPLATE,
+  taskByIdPath,
   WORKSPACE_AGENTS_TEMPLATE,
   WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE,
   WORKSPACE_COMPUTERS_TEMPLATE,
@@ -349,6 +352,7 @@ export {
   ServerWelcomeV2FrameSchema,
 } from "./runtime-protocol.js";
 export * from "./session.js";
+export * from "./task.js";
 export {
   type CompleteWorkspaceSetupRequest,
   CompleteWorkspaceSetupRequestSchema,

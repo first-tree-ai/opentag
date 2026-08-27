@@ -2,6 +2,7 @@ export * from "./agent-runtime-configs.js";
 export * from "./agents.js";
 export * from "./auth.js";
 export * from "./auth-identities.js";
+export * from "./better-auth.js";
 export * from "./computers.js";
 export * from "./im-bindings.js";
 export * from "./im-messages.js";

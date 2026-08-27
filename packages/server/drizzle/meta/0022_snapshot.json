@@ -1,6 +1,6 @@
 {
-  "id": "5d08a60d-0c6a-41c4-923c-74775a12ee0f",
-  "prevId": "04509559-efb3-40b9-8513-d7d6de06a68e",
+  "id": "2914c5d6-179d-4098-aa3d-55c4594cf17a",
+  "prevId": "5d08a60d-0c6a-41c4-923c-74775a12ee0f",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -2865,6 +2865,120 @@
       },
       "isRLSEnabled": false
     },
+    "public.session_cli_proofs": {
+      "name": "session_cli_proofs",
+      "schema": "",
+      "columns": {
+        "session_id": {
+          "name": "session_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "proof_id": {
+          "name": "proof_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workspace_computer_id": {
+          "name": "workspace_computer_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "placement_generation": {
+          "name": "placement_generation",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "connection_instance_id": {
+          "name": "connection_instance_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "session_cli_proofs_session_id_sessions_id_fk": {
+          "name": "session_cli_proofs_session_id_sessions_id_fk",
+          "tableFrom": "session_cli_proofs",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "session_cli_proofs_workspace_computer_id_workspace_computers_id_fk": {
+          "name": "session_cli_proofs_workspace_computer_id_workspace_computers_id_fk",
+          "tableFrom": "session_cli_proofs",
+          "tableTo": "workspace_computers",
+          "columnsFrom": [
+            "workspace_computer_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "session_cli_proofs_proof_id_unique": {
+          "name": "session_cli_proofs_proof_id_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "proof_id"
+          ]
+        },
+        "session_cli_proofs_token_hash_unique": {
+          "name": "session_cli_proofs_token_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "token_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {
+        "session_cli_proofs_token_hash_shape": {
+          "name": "session_cli_proofs_token_hash_shape",
+          "value": "\"session_cli_proofs\".\"token_hash\" ~ '^[0-9a-f]{64}$'"
+        },
+        "session_cli_proofs_generation_positive": {
+          "name": "session_cli_proofs_generation_positive",
+          "value": "\"session_cli_proofs\".\"placement_generation\" >= 1"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.session_messages": {
       "name": "session_messages",
       "schema": "",
@@ -3048,6 +3162,218 @@
         "session_messages_attempt_shape": {
           "name": "session_messages_attempt_shape",
           "value": "(\"session_messages\".\"attempt_count\" = 0 and \"session_messages\".\"last_attempt_at\" is null)\n        or (\"session_messages\".\"attempt_count\" > 0 and \"session_messages\".\"last_attempt_at\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.session_descendants": {
+      "name": "session_descendants",
+      "schema": "",
+      "columns": {
+        "ancestor_session_id": {
+          "name": "ancestor_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "descendant_session_id": {
+          "name": "descendant_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "depth": {
+          "name": "depth",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_message_created_at": {
+          "name": "last_message_created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_message_id": {
+          "name": "last_message_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_delivery_outcome": {
+          "name": "last_delivery_outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "task_preview": {
+          "name": "task_preview",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "session_descendants_ancestor_activity_idx": {
+          "name": "session_descendants_ancestor_activity_idx",
+          "columns": [
+            {
+              "expression": "ancestor_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "last_message_created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "last_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "descendant_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "session_descendants_ancestor_depth_activity_idx": {
+          "name": "session_descendants_ancestor_depth_activity_idx",
+          "columns": [
+            {
+              "expression": "ancestor_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "depth",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "last_message_created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "last_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "descendant_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "session_descendants_descendant_ancestor_idx": {
+          "name": "session_descendants_descendant_ancestor_idx",
+          "columns": [
+            {
+              "expression": "descendant_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "ancestor_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "session_descendants_last_message_idx": {
+          "name": "session_descendants_last_message_idx",
+          "columns": [
+            {
+              "expression": "last_message_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "session_descendants_ancestor_session_id_sessions_id_fk": {
+          "name": "session_descendants_ancestor_session_id_sessions_id_fk",
+          "tableFrom": "session_descendants",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "ancestor_session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "session_descendants_descendant_session_id_sessions_id_fk": {
+          "name": "session_descendants_descendant_session_id_sessions_id_fk",
+          "tableFrom": "session_descendants",
+          "tableTo": "sessions",
+          "columnsFrom": [
+            "descendant_session_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "session_descendants_ancestor_session_id_descendant_session_id_pk": {
+          "name": "session_descendants_ancestor_session_id_descendant_session_id_pk",
+          "columns": [
+            "ancestor_session_id",
+            "descendant_session_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "session_descendants_depth_positive": {
+          "name": "session_descendants_depth_positive",
+          "value": "\"session_descendants\".\"depth\" >= 1"
+        },
+        "session_descendants_outcome_valid": {
+          "name": "session_descendants_outcome_valid",
+          "value": "\"session_descendants\".\"last_delivery_outcome\" in ('accepted', 'unreachable', 'unknown', 'rejected')"
+        },
+        "session_descendants_preview_bounds": {
+          "name": "session_descendants_preview_bounds",
+          "value": "char_length(\"session_descendants\".\"task_preview\") between 1 and 256"
         }
       },
       "isRLSEnabled": false
@@ -3294,6 +3620,33 @@
             },
             {
               "expression": "thread_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "sessions_creator_created_idx": {
+          "name": "sessions_creator_created_idx",
+          "columns": [
+            {
+              "expression": "created_by_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

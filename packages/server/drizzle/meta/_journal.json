@@ -152,8 +152,15 @@
     {
       "idx": 21,
       "version": "7",
-      "when": 1787830845165,
-      "tag": "0021_odd_liz_osborn",
+      "when": 1787826940097,
+      "tag": "0021_slow_gamora",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1787841453286,
+      "tag": "0022_short_kitty_pryde",
       "breakpoints": true
     }
   ]

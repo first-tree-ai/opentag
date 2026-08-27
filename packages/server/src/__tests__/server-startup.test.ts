@@ -343,11 +343,11 @@ describe("Server startup", () => {
     ]);
 
     const appOptions = state.appOptions as {
-      browserAuth: { dev: unknown; google: unknown; secureCookies: boolean };
+      browserAuth: { devSignIn: unknown; google: unknown; secureCookies: boolean };
       slackEvents: { createAdapter(binding: unknown): unknown };
     };
     expect(appOptions.browserAuth).toMatchObject({ secureCookies: true });
-    expect(appOptions.browserAuth.dev).toBeDefined();
+    expect(appOptions.browserAuth.devSignIn).toBe(true);
     expect(appOptions.browserAuth.google).toBeDefined();
     expect(state.devAuthArgs).toEqual(expect.arrayContaining(["dev@example.com"]));
     expect(state.googleOptions).toMatchObject({ publicUrl: state.config.publicUrl });

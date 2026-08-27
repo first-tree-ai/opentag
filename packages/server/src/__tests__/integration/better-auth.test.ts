@@ -8,7 +8,12 @@ import { BetterAuthSessionTokens, BridgedSessionTokens } from "../../auth/sessio
 import { createDatabaseClient } from "../../db/client.js";
 import { authIdentities, authSessions, users, workspaceAdminGrants } from "../../db/schema/index.js";
 import { resolveAuthenticatedUserId } from "../../plugins/user-auth.js";
-import { AuthService, AuthTokenService, PostAuthenticationService } from "../../services/auth/index.js";
+import {
+  AuthService,
+  AuthTokenService,
+  DevBrowserAuthService,
+  PostAuthenticationService,
+} from "../../services/auth/index.js";
 import { WorkspaceAdminAccess } from "../../services/workspace-admin-access/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -43,14 +48,23 @@ beforeEach(async () => {
   await testDatabase.reset();
 });
 
-function createAuth() {
+function createAuth(devSignIn?: () => Promise<string>) {
   return createBetterAuth(client.database, {
     onSessionCreating: (userId) => postAuthentication.ensureAccountReady(userId).then(() => undefined),
     publicUrl: PUBLIC_URL,
     secret: "better-auth-integration-secret-at-least-32-characters",
     secureCookies: false,
+    ...(devSignIn ? { devSignIn } : {}),
     google: { clientId: "google-client-id", clientSecret: "google-client-secret" },
   });
+}
+
+/** Replays a response's cookies the way a browser would send them back. */
+function cookieHeader(response: Response): string {
+  return response.headers
+    .getSetCookie()
+    .map((value) => value.split(";", 1)[0])
+    .join("; ");
 }
 
 /** Writes the exact row shape the pre-migration identity resolver produced. */
@@ -335,5 +349,68 @@ describe("Better Auth over the existing Account tables", () => {
     expect(created.email).toBe("mixed.casing@example.com");
     const [stored] = await client.database.select().from(users).where(eq(users.id, created.id));
     expect(stored?.email).toBe("mixed.casing@example.com");
+  });
+
+  it("signs the configured development Account in with a session that sign-out revokes", async () => {
+    const configured = await seedLegacyAccount("google-subject-dev", "dev@example.com", "Dev Account");
+    const other = await seedLegacyAccount("google-subject-other", "other@example.com", "Other Account");
+    // Mixed casing on purpose: the resolver matches on the normalized address, as the configured value is unnormalized.
+    const developer = new DevBrowserAuthService(client.database, "DEV@Example.com");
+    const auth = createAuth(() => developer.resolveUserId());
+
+    const signIn = await auth.handler(
+      new Request(`${PUBLIC_URL}/api/v1/auth/dev/sign-in`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        // The endpoint takes no input, so a caller naming another Account still gets the configured one.
+        body: JSON.stringify({ userId: other }),
+      }),
+    );
+    expect(signIn.status).toBe(200);
+
+    const issued = await client.database.select().from(authSessions);
+    expect(issued).toHaveLength(1);
+    expect(issued[0]?.userId).toBe(configured);
+
+    /*
+     * The credential has to be the one Better Auth itself understands. A session token written into OpenTag's own
+     * cookie would still authenticate through the legacy fallback, so the sign-in would look correct — but `getSession`
+     * would not see it, and sign-out would have nothing to revoke.
+     */
+    const cookie = cookieHeader(signIn);
+    await expect(auth.api.getSession({ headers: new Headers({ cookie }) })).resolves.toMatchObject({
+      user: { email: "dev@example.com", id: configured },
+    });
+
+    const signOut = await auth.handler(
+      new Request(`${PUBLIC_URL}/api/v1/auth/sign-out`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+    expect(signOut.status).toBe(200);
+    expect(await client.database.select().from(authSessions)).toHaveLength(0);
+    await expect(auth.api.getSession({ headers: new Headers({ cookie }) })).resolves.toBeNull();
+  });
+
+  it("refuses development sign-in when the configured Account is ambiguous", async () => {
+    await seedLegacyAccount("google-subject-twin-a", "twin@example.com", "Twin One");
+    await seedLegacyAccount("google-subject-twin-b", "TWIN@example.com", "Twin Two");
+    const developer = new DevBrowserAuthService(client.database, "twin@example.com");
+    const auth = createAuth(() => developer.resolveUserId());
+
+    const response = await auth.handler(
+      new Request(`${PUBLIC_URL}/api/v1/auth/dev/sign-in`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+
+    // Reported as the answerable failure it is, so a misconfigured email is not logged as an internal server error.
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({ code: "AUTH_DEV_USER_UNAVAILABLE" });
+    expect(await client.database.select().from(authSessions)).toHaveLength(0);
   });
 });

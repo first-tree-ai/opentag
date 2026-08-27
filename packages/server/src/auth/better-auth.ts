@@ -3,6 +3,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer } from "better-auth/plugins/bearer";
 import type { DatabaseClient } from "../db/client.js";
 import { authIdentities, authSessions, authVerifications, users } from "../db/schema/index.js";
+import { devSignInPlugin } from "./dev-sign-in.js";
 
 /**
  * Where the instance will be mounted, under the repository's `/api/v1` versioning convention rather than Better Auth's
@@ -31,6 +32,12 @@ export interface BetterAuthConfig {
   publicUrl: string;
   secret: string;
   secureCookies: boolean;
+  /**
+   * Resolves the single Account development sign-in may issue a session for.
+   *
+   * Supplied only when development sign-in is configured, so the endpoint does not exist on a server without it.
+   */
+  devSignIn?: () => Promise<string>;
   google?: { clientId: string; clientSecret: string };
 }
 
@@ -113,8 +120,11 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
           },
         }
       : {}),
-    // The CLI authenticates with `Authorization: Bearer <session token>`; the browser keeps using cookies.
-    plugins: [bearer()],
+    plugins: [
+      // The CLI authenticates with `Authorization: Bearer <session token>`; the browser keeps using cookies.
+      bearer(),
+      ...(config.devSignIn ? [devSignInPlugin(config.devSignIn)] : []),
+    ],
   });
 }
 

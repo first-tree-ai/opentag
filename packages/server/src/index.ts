@@ -272,6 +272,7 @@ export async function startServer(): Promise<void> {
     });
     const identityService = new AuthIdentityService(database);
     const postAuthentication = new PostAuthenticationService(database, workspaceAdmins);
+    const dev = config.devAuth ? new DevBrowserAuthService(database, config.devAuth.email) : undefined;
     const betterAuth = createBetterAuth(database, {
       onSessionCreating: async (userId) => {
         await postAuthentication.ensureAccountReady(userId);
@@ -279,6 +280,7 @@ export async function startServer(): Promise<void> {
       publicUrl: config.publicUrl,
       secret: config.betterAuthSecret,
       secureCookies: isHostedEnvironment(config.environment),
+      ...(dev ? { devSignIn: () => dev.resolveUserId() } : {}),
       ...(config.google ? { google: config.google } : {}),
     });
     sessionTokens = new BetterAuthSessionTokens(betterAuth);
@@ -293,7 +295,6 @@ export async function startServer(): Promise<void> {
           tokenIssuer: authService,
         })
       : undefined;
-    const dev = config.devAuth ? new DevBrowserAuthService(database, authService, config.devAuth.email) : undefined;
     const stagingOnboardingLab = config.stagingOnboardingLab
       ? {
           reset: new OnboardingResetService({
@@ -313,7 +314,7 @@ export async function startServer(): Promise<void> {
       agentService,
       authService,
       browserAuth: {
-        dev,
+        devSignIn: Boolean(dev),
         google,
         publicOrigin: config.publicUrl,
         refreshTokenTtlSeconds: config.refreshTokenTtlSeconds,

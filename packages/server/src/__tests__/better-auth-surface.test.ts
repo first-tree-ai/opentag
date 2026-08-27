@@ -54,6 +54,9 @@ describe("published Better Auth surface", () => {
      */
     const unpublished = [
       { method: "POST" as const, url: "/api/v1/auth/update-user" },
+      // Mints a session with no credential at all. It exists only on a loopback development server, and even there
+      // nothing but the fenced OpenTag route may reach it.
+      { method: "POST" as const, url: "/api/v1/auth/dev/sign-in" },
       { method: "POST" as const, url: "/api/v1/auth/sign-in/social" },
       { method: "POST" as const, url: "/api/v1/auth/sign-out" },
       { method: "GET" as const, url: "/api/v1/auth/get-session" },

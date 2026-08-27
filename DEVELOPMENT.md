@@ -287,10 +287,11 @@ export OPENTAG_DEV_AUTH_EMAIL=admin@example.com
 ```
 
 Both `OPENTAG_HOST` and `OPENTAG_PUBLIC_URL` must remain loopback addresses. The login page then shows
-`Dev: bypass Google`. The callback resolves exactly one existing user by case-insensitive email and issues the normal
-browser session; it never creates an Account or internal compatibility records and still rejects suspended Accounts or
-Accounts without the required internal grant. Missing or duplicate email matches fail closed. The server refuses this configuration in `staging` and
-`prod`.
+`Dev: bypass Google`. The callback resolves exactly one existing user by case-insensitive email and then issues the
+normal browser session through Better Auth, so it is the same revocable session a Google sign-in produces and signing
+out ends it. Which Account it signs in is fixed from configuration, not taken from the request. It never creates an
+Account or internal compatibility records and still rejects suspended Accounts; a missing or duplicate email match
+fails closed. The server refuses this configuration in `staging` and `prod`.
 
 `OPENTAG_ENV` is the only OpenTag environment and release-channel selector. `dev` selects local development behavior and
 the `opentag-dev` binary, `staging` selects `open-tag-staging` / `opentag-staging`, and `prod` selects

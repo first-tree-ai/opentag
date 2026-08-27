@@ -14,7 +14,7 @@ export {
   type IssuedConnectCode,
   issueConnectCodeInTransaction,
 } from "./connect-code-service.js";
-export { DevBrowserAuthService, type DevBrowserTokenIssuer } from "./dev-browser-auth.js";
+export { DevBrowserAuthService } from "./dev-browser-auth.js";
 export { AuthServiceError } from "./errors.js";
 export {
   type GoogleAuthCallbackInput,

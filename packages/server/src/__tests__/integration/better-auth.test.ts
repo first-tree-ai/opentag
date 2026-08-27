@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
+import type { FastifyRequest } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createBetterAuth } from "../../auth/better-auth.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { authIdentities, authSessions, users } from "../../db/schema/index.js";
+import { authIdentities, authSessions, users, workspaceAdminGrants } from "../../db/schema/index.js";
+import { resolveAuthenticatedUserId } from "../../plugins/user-auth.js";
+import { AuthService, PostAuthenticationService } from "../../services/auth/index.js";
+import { WorkspaceAdminAccess } from "../../services/workspace-admin-access/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const GOOGLE_ISSUER = "https://accounts.google.com";
@@ -11,10 +15,12 @@ const PUBLIC_URL = "http://localhost:8000";
 
 let testDatabase: MigratedTestDatabase;
 let client: ReturnType<typeof createDatabaseClient>;
+let postAuthentication: PostAuthenticationService;
 
 beforeAll(async () => {
   testDatabase = await startMigratedTestDatabase();
   client = createDatabaseClient(testDatabase.databaseUrl);
+  postAuthentication = new PostAuthenticationService(client.database, new WorkspaceAdminAccess(client.database));
 }, 120_000);
 
 afterAll(async () => {
@@ -28,6 +34,7 @@ beforeEach(async () => {
 
 function createAuth() {
   return createBetterAuth(client.database, {
+    onSessionCreating: (userId) => postAuthentication.ensureAccountReady(userId).then(() => undefined),
     publicUrl: PUBLIC_URL,
     secret: "better-auth-integration-secret-at-least-32-characters",
     secureCookies: false,
@@ -115,9 +122,95 @@ describe("Better Auth over the existing Account tables", () => {
     const auth = createAuth();
     const context = await auth.$context;
 
-    // The hook refuses the write, so no token ever exists to authenticate with.
-    expect(await context.internalAdapter.createSession(userId)).toBeNull();
+    // The hook aborts the sign-in, so no token ever exists to authenticate with.
+    await expect(context.internalAdapter.createSession(userId)).rejects.toMatchObject({
+      code: "AUTH_USER_SUSPENDED",
+      statusCode: 403,
+    });
     expect(await client.database.select().from(authSessions).where(eq(authSessions.userId, userId))).toHaveLength(0);
+  });
+
+  it("provisions a never-granted Account before its first session exists", async () => {
+    /*
+     * Better Auth owns account creation on its own sign-in paths, so first-time provisioning happens at session
+     * issuance rather than in the legacy resolver. This is about an Account that has never been provisioned; the
+     * revocation case below is what shows the rule is "never granted", not "no active grant".
+     */
+    const userId = await seedLegacyAccount("google-subject-grant", "grant@example.com", "Grant Account");
+    expect(await client.database.select().from(workspaceAdminGrants)).toHaveLength(0);
+    const auth = createAuth();
+    const context = await auth.$context;
+
+    const session = await context.internalAdapter.createSession(userId);
+
+    expect(session.token).toBeTruthy();
+    const grants = await client.database
+      .select()
+      .from(workspaceAdminGrants)
+      .where(and(eq(workspaceAdminGrants.userId, userId), isNull(workspaceAdminGrants.revokedAt)));
+    expect(grants).toHaveLength(1);
+
+    // Idempotent: a returning Account keeps the one grant it already had.
+    await context.internalAdapter.createSession(userId);
+    expect(await client.database.select().from(workspaceAdminGrants)).toHaveLength(1);
+  });
+
+  it("does not restore a Workspace grant that was revoked", async () => {
+    /*
+     * "Has no active grant" is not the same as "is new". Provisioning on that basis would hand a revoked Account a
+     * fresh Workspace and Admin grant on its next sign-in, undoing the revocation. Only an Account with no grant in
+     * its history is new.
+     */
+    const userId = await seedLegacyAccount("google-subject-revoked", "revoked@example.com", "Revoked Account");
+    const auth = createAuth();
+    const context = await auth.$context;
+    await context.internalAdapter.createSession(userId);
+    const [granted] = await client.database
+      .select({ id: workspaceAdminGrants.id })
+      .from(workspaceAdminGrants)
+      .where(eq(workspaceAdminGrants.userId, userId));
+    if (!granted) throw new Error("The Account was not provisioned");
+
+    await client.database
+      .update(workspaceAdminGrants)
+      .set({ revokedAt: new Date(), revokedByUserId: userId })
+      .where(eq(workspaceAdminGrants.id, granted.id));
+
+    await context.internalAdapter.createSession(userId);
+
+    const grants = await client.database
+      .select()
+      .from(workspaceAdminGrants)
+      .where(eq(workspaceAdminGrants.userId, userId));
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.revokedAt).not.toBeNull();
+  });
+
+  it("refuses a session's identity once the Account is suspended", async () => {
+    /*
+     * Routes that authenticate outside the preHandler — the Slack callback is one — must get the same answer it
+     * would give. Trusting the id on the session would let an Account suspended after issuance pass an identity check
+     * and reach the side effects behind it before any later authority check ran.
+     */
+    const userId = await seedLegacyAccount("google-subject-live", "live@example.com", "Live Account");
+    const auth = createAuth();
+    const context = await auth.$context;
+    const session = await context.internalAdapter.createSession(userId);
+    const request = { headers: { cookie: "", authorization: `Bearer ${session.token}` } } as unknown as FastifyRequest;
+    const authService = new AuthService(client.database, {
+      issuePairForUser: async () => ({ accessToken: "", refreshToken: "", expiresIn: 0 }),
+      verifyAccess: async () => ({ expiresAt: new Date(), userId }),
+      verifyRefresh: async () => ({ expiresAt: new Date(), userId }),
+    });
+
+    expect(await resolveAuthenticatedUserId(request, authService, { betterAuth: auth })).toBe(userId);
+
+    await client.database.update(users).set({ suspendedAt: new Date() }).where(eq(users.id, userId));
+
+    await expect(resolveAuthenticatedUserId(request, authService, { betterAuth: auth })).rejects.toMatchObject({
+      code: "AUTH_USER_SUSPENDED",
+      statusCode: 403,
+    });
   });
 
   it("never persists provider credentials on the identity row", async () => {

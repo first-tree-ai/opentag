@@ -18,6 +18,8 @@ import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
 import { registerWorkspaceRoutes } from "./api/workspaces.js";
+import type { OpenTagBetterAuth } from "./auth/better-auth.js";
+import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { currentTraceId } from "./observability/index.js";
 import { type AgentService, AgentServiceError } from "./services/agents/index.js";
@@ -41,6 +43,8 @@ export interface CreateAppOptions {
   /** Enables the Account-native management collections that back the Workspace-free client contracts. */
   accountScope?: AccountScopeResolver;
   authService?: UserAuthService;
+  /** Publishes Better Auth's allowlisted endpoints and lets every authenticated route resolve its sessions. */
+  betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
   webAppRoot?: string;
   agentService?: AgentService;
   computerService?: ComputerService;
@@ -186,6 +190,17 @@ export function createApp(options: CreateAppOptions = {}) {
   if (options.authService) {
     const authService = options.authService;
     const publicOrigin = options.browserAuth?.publicOrigin;
+    const authOptions = {
+      ...(options.betterAuth ? { betterAuth: options.betterAuth.instance } : {}),
+      ...(publicOrigin ? { publicOrigin } : {}),
+    };
+    if (options.betterAuth) {
+      registerBetterAuthRoutes(app, options.betterAuth.instance, {
+        publicUrl: options.betterAuth.publicUrl,
+        secureCookies: options.browserAuth?.secureCookies ?? true,
+        sessionTtlSeconds: options.browserAuth?.refreshTokenTtlSeconds ?? 60 * 60 * 24 * 7,
+      });
+    }
     registerAuthRoutes(app, authService);
     registerMeRoutes(app, authService, {
       ...(options.connectCode
@@ -195,14 +210,19 @@ export function createApp(options: CreateAppOptions = {}) {
             publicUrl: options.connectCode.publicUrl,
           }
         : {}),
-      publicOrigin,
+      authOptions,
     });
-    if (options.browserAuth) registerBrowserAuthRoutes(app, authService, options.browserAuth);
+    if (options.browserAuth) {
+      registerBrowserAuthRoutes(app, authService, {
+        ...options.browserAuth,
+        ...(options.betterAuth ? { betterAuth: options.betterAuth } : {}),
+      });
+    }
     if (options.agentService) {
-      registerAgentRoutes(app, authService, options.agentService, publicOrigin);
+      registerAgentRoutes(app, authService, options.agentService, authOptions);
     }
     if (options.workspaceService) {
-      registerWorkspaceRoutes(app, authService, options.workspaceService, publicOrigin, options.workspaceSetupService);
+      registerWorkspaceRoutes(app, authService, options.workspaceService, authOptions, options.workspaceSetupService);
     }
     if (options.accountScope) {
       registerAccountRoutes(app, authService, {
@@ -213,11 +233,11 @@ export function createApp(options: CreateAppOptions = {}) {
         ...(options.workspaceService ? { workspaceService: options.workspaceService } : {}),
         ...(options.workspaceSetupService ? { workspaceSetupService: options.workspaceSetupService } : {}),
         ...(options.taskService ? { taskService: options.taskService } : {}),
-        publicOrigin,
+        authOptions,
       });
     }
     if (options.stagingOnboardingLab) {
-      registerInternalOnboardingLabRoutes(app, authService, options.stagingOnboardingLab.reset, publicOrigin);
+      registerInternalOnboardingLabRoutes(app, authService, options.stagingOnboardingLab.reset, authOptions);
     }
     if (options.imBindingService) {
       registerImBindingRoutes(
@@ -226,10 +246,10 @@ export function createApp(options: CreateAppOptions = {}) {
         options.imBindingService,
         options.feishuSetupService,
         options.slackConfigurationService,
-        publicOrigin,
+        authOptions,
       );
     }
-    if (options.slackOAuth) registerSlackOAuthRoutes(app, options.slackOAuth);
+    if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
     if (options.imResourceService && options.machineAuthService) {
       registerImResourceRoute(app, options.machineAuthService, options.imResourceService);
     }
@@ -240,7 +260,7 @@ export function createApp(options: CreateAppOptions = {}) {
         app,
         authService,
         machineAuthService,
-        publicOrigin,
+        authOptions,
         options.computerConnectCode?.environment,
         options.computerConnectCode?.publicUrl,
       );

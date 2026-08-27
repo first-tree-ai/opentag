@@ -19,7 +19,7 @@ import {
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { createUserAuthPreHandler } from "../plugins/user-auth.js";
+import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import type { FeishuSetupService } from "../services/im-bindings/feishu/index.js";
 import type { ImBindingService } from "../services/im-bindings/index.js";
@@ -42,9 +42,9 @@ export function registerImBindingRoutes(
   imBindings: ImBindingService,
   feishu: FeishuSetupService | undefined,
   slack: SlackConfigurationService | undefined,
-  publicOrigin?: string,
+  authOptions?: UserAuthPreHandlerOptions,
 ): void {
-  const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
+  const preHandler = createUserAuthPreHandler(authService, authOptions ?? {});
 
   app.get(AGENT_IM_BINDING_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);

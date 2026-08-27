@@ -1,7 +1,10 @@
 import { isIP } from "node:net";
 import { AuthProvidersResponseSchema, HTTP_PATHS } from "@opentag/shared";
+import { fromNodeHeaders } from "better-auth/node";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import type { OpenTagBetterAuth } from "../auth/better-auth.js";
+import { callBetterAuth, copyBetterAuthCookies } from "../auth/fastify-handler.js";
 import {
   BROWSER_COOKIE_NAMES,
   clearBrowserSessionCookies,
@@ -36,6 +39,8 @@ const CallbackQuerySchema = z
   });
 
 export interface BrowserAuthRoutesOptions {
+  /** Present once Better Auth owns the browser session; the legacy paths stay for credentials it did not issue. */
+  betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
   dev?: DevBrowserAuthService;
   google?: GoogleBrowserAuthService;
   publicOrigin: string;
@@ -126,10 +131,31 @@ export function registerBrowserAuthRoutes(
 
   app.get(HTTP_PATHS.authGoogleStart, async (request, reply) => {
     limiter.check(`${request.ip}:start`);
+    const { next } = parseRequest(StartQuerySchema, request.query);
+    const destination = validateOAuthNext(next);
+
+    if (options.betterAuth) {
+      /*
+       * Better Auth expects the client to POST for a URL and navigate itself. The login page is a plain link, so this
+       * route does the POST server-side and redirects — which also keeps the provider's state and PKCE cookies on the
+       * response, and keeps `validateOAuthNext` as the single gate on where sign-in may land.
+       */
+      const response = await callBetterAuth(options.betterAuth.instance, options.betterAuth.publicUrl, request, {
+        method: "POST",
+        path: "/sign-in/social",
+        body: { callbackURL: destination, provider: "google" },
+      });
+      const payload = (await response.json().catch(() => undefined)) as { url?: string } | undefined;
+      if (!response.ok || !payload?.url) {
+        throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);
+      }
+      copyBetterAuthCookies(reply, response);
+      return reply.redirect(payload.url, 302);
+    }
+
     if (!options.google) {
       throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);
     }
-    const { next } = parseRequest(StartQuerySchema, request.query);
     const result = await options.google.start(next);
     setOAuthContextCookie(reply, result.context, options.secureCookies);
     return reply.redirect(result.authorizationUrl, 302);
@@ -180,6 +206,33 @@ export function registerBrowserAuthRoutes(
 
   app.post(HTTP_PATHS.authBrowserLogout, async (request, reply) => {
     requireBrowserMutationSecurity(request, options.publicOrigin);
+    if (options.betterAuth) {
+      const instance = options.betterAuth.instance;
+      const session = await instance.api.getSession({ headers: fromNodeHeaders(request.headers) });
+      const response = await callBetterAuth(instance, options.betterAuth.publicUrl, request, {
+        method: "POST",
+        path: "/sign-out",
+        body: {},
+      });
+      /*
+       * Better Auth's sign-out swallows a failed session delete and still reports success, so taking its word would
+       * let this route promise revocation while quietly degrading to a cookie-only logout. Reading the row back is
+       * what makes the promise checkable.
+       *
+       * Nothing is written to the reply until that read succeeds. Better Auth clears the cookie even when its delete
+       * failed, and Fastify's error handler keeps headers already placed on the reply — propagating them before the
+       * check would destroy the browser's only copy of a token whose session is still live, leaving nothing to retry
+       * the revocation with and a stolen copy usable until expiry.
+       */
+      if (session) {
+        const survivor = await (await instance.$context).internalAdapter.findSession(session.session.token);
+        if (survivor) {
+          throw new AuthServiceError("INTERNAL_ERROR", "transient", "Sign-out could not revoke the session", 500);
+        }
+      }
+      copyBetterAuthCookies(reply, response);
+    }
+    // Cleared unconditionally: a browser mid-rollout can hold either credential, and signing out must end both.
     clearBrowserSessionCookies(reply, options.secureCookies);
     return reply.code(204).send();
   });

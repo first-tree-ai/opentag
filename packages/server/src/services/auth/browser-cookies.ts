@@ -66,6 +66,20 @@ export function setBrowserSessionCookies(
   return csrf;
 }
 
+/**
+ * Issues the readable half of the double-submit pair on its own.
+ *
+ * A Better Auth sign-in brings its own session cookie but knows nothing about this one, and every browser mutation —
+ * including sign-out — requires it. Without this, a session issued by Better Auth can read but never write.
+ */
+export function setBrowserCsrfCookie(reply: FastifyReply, options: { maxAgeSeconds: number; secure: boolean }): string {
+  const csrf = generateSecret(24);
+  appendSetCookies(reply, [
+    cookie(BROWSER_COOKIE_NAMES.csrf, csrf, { maxAge: options.maxAgeSeconds, path: "/", secure: options.secure }),
+  ]);
+  return csrf;
+}
+
 export function clearBrowserSessionCookies(reply: FastifyReply, secure: boolean): void {
   appendSetCookies(reply, [
     cookie(BROWSER_COOKIE_NAMES.access, "", { httpOnly: true, maxAge: 0, path: "/", secure }),

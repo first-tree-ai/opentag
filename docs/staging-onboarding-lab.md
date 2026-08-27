@@ -11,8 +11,9 @@ runtime readiness and IM bindings immediately advance the fact-derived onboardin
 return to a first-run state on its own.
 
 The Lab is not available in production and it never resets an Account other than the authenticated one. Its two halves
-are gated differently: Scenario Preview reads nothing and writes nothing, so every signed-in Account on a configured
-staging deployment may open it; the destructive reset stays limited to the single configured Lab Account.
+are gated differently: Scenario Preview reads nothing and writes nothing, so every signed-in Account on any staging
+deployment may open it, with no configuration at all; the destructive reset stays limited to the single configured Lab
+Account, and no Account owns it until a deployment names one.
 
 ## Shared staging Account
 
@@ -25,7 +26,10 @@ for keeping a personal staging login signed in at the same time.
 
 ## Configuration
 
-Add one optional Server setting to the staging deployment:
+Scenario Preview needs none. A staging deployment offers it as soon as it runs, because the scenarios are fixed
+client-side fixtures.
+
+The reset needs one optional Server setting:
 
 ```bash
 OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID=00000000-0000-0000-0000-000000000000
@@ -33,17 +37,17 @@ OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID=00000000-0000-0000-0000-000000000000
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` | empty | Account UUID allowed to use the staging Onboarding Lab |
+| `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` | empty | Account UUID allowed to reset the staging Onboarding Lab Account |
 
 Rules the Server enforces:
 
-- the value must be an Account UUID; an empty value leaves the Lab unconfigured;
+- the value must be an Account UUID; an empty value leaves the reset unowned, and Preview unaffected;
 - the setting is valid only with `OPENTAG_ENV=staging`, so configuring it in production fails Server startup;
-- when it is unset, no Lab route is registered at all;
-- every request must be authenticated; on a configured staging deployment any Account may read the Lab and see Scenario
-  Preview, and the response reports whether that Account owns the reset;
-- an unconfigured deployment, and any deployment outside staging, answers both requests like a page that does not exist;
-- only the configured Account may reset; any other Account is refused exactly like a page that does not exist;
+- every request must be authenticated; on a staging deployment any Account may read the Lab and see Scenario Preview,
+  and the response reports whether that Account owns the reset;
+- any deployment outside staging answers both requests like a page that does not exist;
+- only the configured Account may reset; every other Account, and every Account while none is configured, is refused
+  exactly like a page that does not exist;
 - reset always targets the authenticated Account and accepts no client-selected Account;
 - reset requires the normal browser CSRF protection.
 

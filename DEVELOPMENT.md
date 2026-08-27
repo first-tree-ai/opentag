@@ -381,7 +381,7 @@ processes.
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | Global trace head sample rate from `0` to `1` |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | Access-token lifetime |
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-JWT lifetime |
-| `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` | empty | Staging-only Account UUID allowed to use the [Onboarding Lab](./docs/staging-onboarding-lab.md) |
+| `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` | empty | Staging-only Account UUID allowed to reset the [Onboarding Lab](./docs/staging-onboarding-lab.md) Account; Scenario Preview needs no configuration |
 | `OPENTAG_HOME` | channel-specific | Root for lifecycle-separated `config/`, `data/`, `state/`, and `logs/` (`~/.opentag-dev` in source) |
 
 If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm

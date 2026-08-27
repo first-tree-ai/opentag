@@ -11,11 +11,11 @@ function accountId(request: FastifyRequest): string {
 }
 
 /**
- * The staging-only Onboarding Lab interface. It is registered only when the deployment configures
- * the Lab Account, so an unconfigured deployment stays indistinguishable from one that never had
- * the feature. Reading access is open to any authenticated Account, because Scenario Preview is
- * client-side fixtures that read nothing and write nothing; the destructive reset stays closed and
- * never accepts a client-selected Account.
+ * The staging-only Onboarding Lab interface. Any staging deployment registers it, and every
+ * deployment outside staging stays indistinguishable from one that never had the feature. Reading
+ * access is open to any authenticated Account, because Scenario Preview is client-side fixtures that
+ * read nothing and write nothing; the destructive reset stays closed, is refused until a deployment
+ * configures the Account that owns it, and never accepts a client-selected Account.
  */
 export function registerInternalOnboardingLabRoutes(
   app: FastifyInstance,

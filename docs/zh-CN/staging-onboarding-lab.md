@@ -9,7 +9,8 @@ Onboarding Lab 是仅限 staging 的页面，用于迭代首次使用体验。�
 推进由事实推导出的 onboarding 流程，因此一个已完成的 Account 无法自行回到首次使用状态。
 
 Lab 在 production 不可用，也永远不会 reset 除已认证 Account 之外的任何 Account。它的两半门禁不同：Scenario Preview 不读取也不
-写入任何内容，因此在已配置的 staging 部署上，任何已登录 Account 都可以打开；破坏性的 reset 仍然只属于那个被配置的 Lab Account。
+写入任何内容，因此在任何 staging 部署上，任何已登录 Account 都可以打开，且不需要任何配置；破坏性的 reset 仍然只属于那个被配置的
+Lab Account，在部署指定之前没有任何 Account 拥有它。
 
 ## 共享 staging Account
 
@@ -21,7 +22,9 @@ Lab 在 production 不可用，也永远不会 reset 除已认证 Account 之外
 
 ## 配置
 
-在 staging 部署中增加一个可选的 Server 设置：
+Scenario Preview 不需要任何配置。staging 部署一运行就提供它，因为场景是固定的客户端 fixture。
+
+reset 需要一个可选的 Server 设置：
 
 ```bash
 OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID=00000000-0000-0000-0000-000000000000
@@ -33,13 +36,12 @@ OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID=00000000-0000-0000-0000-000000000000
 
 Server 强制执行的规则：
 
-- 取值必须是 Account UUID；空值表示 Lab 未配置；
+- 取值必须是 Account UUID；空值表示 reset 无人拥有，不影响 Preview；
 - 该设置只在 `OPENTAG_ENV=staging` 时有效，因此在 production 配置会导致 Server 启动失败；
-- 未配置时完全不注册任何 Lab 路由；
-- 每个请求都必须完成认证；在已配置的 staging 部署上，任何 Account 都可以读取 Lab 并查看 Scenario Preview，响应会说明该 Account
-  是否拥有 reset；
-- 未配置的部署，以及 staging 之外的任何部署，对两种请求的响应都与页面不存在完全一致；
-- 只有被配置的 Account 可以 reset；其他 Account 得到的拒绝与页面不存在完全一致；
+- 每个请求都必须完成认证；在 staging 部署上，任何 Account 都可以读取 Lab 并查看 Scenario Preview，响应会说明该 Account 是否
+  拥有 reset；
+- staging 之外的任何部署，对两种请求的响应都与页面不存在完全一致；
+- 只有被配置的 Account 可以 reset；其他 Account，以及尚未配置时的所有 Account，得到的拒绝与页面不存在完全一致；
 - reset 始终作用于已认证 Account，不接受客户端选择的 Account；
 - reset 需要常规的浏览器 CSRF 保护。
 

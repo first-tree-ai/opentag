@@ -669,9 +669,9 @@ function OnboardingRoute() {
 }
 
 /**
- * The staging-only Onboarding Lab. A deployment that configures no Lab Account is answered exactly
- * like a page that does not exist; where one is configured, every signed-in Account may read the
- * Scenario Preview, and the Server still decides which single Account may run the reset.
+ * The staging-only Onboarding Lab. A deployment outside staging is answered exactly like a page that
+ * does not exist; on staging every signed-in Account may read the Scenario Preview, and the Server
+ * still decides which single Account, if any, may run the reset.
  */
 function OnboardingLabRoute() {
   const { me, refreshMe } = useAccount();

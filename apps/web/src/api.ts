@@ -251,8 +251,8 @@ export class BrowserApi {
   }
 
   /**
-   * Reports what this Account may do in the staging Onboarding Lab, and `undefined` where the
-   * deployment configures no Lab at all — the interface is then absent, not merely closed.
+   * Reports what this Account may do in the staging Onboarding Lab, and `undefined` outside staging,
+   * where the interface is absent rather than merely closed.
    */
   async onboardingLabAccess(): Promise<OnboardingLabAccess | undefined> {
     const response = await this.fetchWithRefresh(HTTP_PATHS.internalOnboardingLab);

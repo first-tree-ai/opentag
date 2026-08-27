@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "./api.js";
 import { ComputerSetup } from "./computer-setup.js";
 
-const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const bootstrapCommand = "opentag computer connect --server https://opentag.example.com -- connect-code";
 const connectedAt = "2026-08-20T00:00:00.000Z";
 const existingComputer: Computer = {
@@ -62,7 +61,7 @@ describe("ComputerSetup", () => {
       return { bootstrapCommand, expiresIn: 900, issuedAt: connectedAt };
     });
 
-    render(<ComputerSetup workspaceId={workspaceId} />);
+    render(<ComputerSetup />);
     expect(
       screen.getByRole("button", { name: "Generate connection command" }).classList.contains("connect-command-primary"),
     ).toBe(true);
@@ -87,7 +86,7 @@ describe("ComputerSetup", () => {
       issuedAt: connectedAt,
     });
 
-    render(<ComputerSetup workspaceId={workspaceId} onConnected={onConnected} />);
+    render(<ComputerSetup onConnected={onConnected} />);
     await clickGenerate();
     expect(vi.getTimerCount()).toBe(2);
 
@@ -113,7 +112,7 @@ describe("ComputerSetup", () => {
       issuedAt: connectedAt,
     });
 
-    render(<ComputerSetup workspaceId={workspaceId} onConnected={onConnected} />);
+    render(<ComputerSetup onConnected={onConnected} />);
     await clickGenerate();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(3_000);
@@ -132,7 +131,7 @@ describe("ComputerSetup", () => {
       issuedAt: connectedAt,
     });
 
-    const view = render(<ComputerSetup workspaceId={workspaceId} />);
+    const view = render(<ComputerSetup />);
     await clickGenerate();
     expect(vi.getTimerCount()).toBe(2);
 
@@ -150,7 +149,7 @@ describe("ComputerSetup", () => {
       issuedAt: connectedAt,
     });
 
-    render(<ComputerSetup workspaceId={workspaceId} onConnected={onConnected} />);
+    render(<ComputerSetup onConnected={onConnected} />);
     await clickGenerate();
     expect(vi.getTimerCount()).toBe(2);
 
@@ -180,7 +179,7 @@ describe("ComputerSetup", () => {
         issuedAt: "2026-08-20T00:00:01.000Z",
       });
 
-    render(<ComputerSetup workspaceId={workspaceId} />);
+    render(<ComputerSetup />);
     await clickGenerate();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
@@ -206,7 +205,7 @@ describe("ComputerSetup", () => {
       .mockResolvedValueOnce({ bootstrapCommand: "first command", expiresIn: 2, issuedAt: connectedAt })
       .mockImplementationOnce(() => replacementIssue.promise);
 
-    render(<ComputerSetup workspaceId={workspaceId} />);
+    render(<ComputerSetup />);
     await clickGenerate();
     await clickGenerate();
 
@@ -245,7 +244,7 @@ describe("ComputerSetup", () => {
       .mockResolvedValueOnce({ bootstrapCommand: "first command", expiresIn: 900, issuedAt: connectedAt })
       .mockImplementationOnce(() => replacementIssue.promise);
 
-    render(<ComputerSetup workspaceId={workspaceId} onConnected={onConnected} />);
+    render(<ComputerSetup onConnected={onConnected} />);
     await clickGenerate();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_500);
@@ -279,7 +278,7 @@ describe("ComputerSetup", () => {
       .mockResolvedValueOnce({ bootstrapCommand: "first command", expiresIn: 900, issuedAt: connectedAt })
       .mockRejectedValueOnce(new Error("Replacement command failed"));
 
-    render(<ComputerSetup workspaceId={workspaceId} onConnected={onConnected} />);
+    render(<ComputerSetup onConnected={onConnected} />);
     await clickGenerate();
     await clickGenerate();
 
@@ -306,7 +305,7 @@ describe("ComputerSetup", () => {
       issuedAt: connectedAt,
     });
 
-    render(<ComputerSetup workspaceId={workspaceId} />);
+    render(<ComputerSetup />);
     await clickGenerate();
 
     expect(screen.getByText("Expires in 15:00")).toBeTruthy();
@@ -343,7 +342,7 @@ describe("ComputerSetup", () => {
       issuedAt: connectedAt,
     });
 
-    render(<ComputerSetup workspaceId={workspaceId} />);
+    render(<ComputerSetup />);
     await clickGenerate();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Copy command" }));
@@ -366,7 +365,7 @@ describe("ComputerSetup", () => {
       issuedAt: connectedAt,
     });
 
-    render(<ComputerSetup workspaceId={workspaceId} />);
+    render(<ComputerSetup />);
     await clickGenerate();
     expect(screen.getByText("Expires in 15:00")).toBeTruthy();
 
@@ -382,7 +381,7 @@ describe("ComputerSetup", () => {
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [] });
     vi.spyOn(browserApi, "issueComputerConnectCode").mockRejectedValue("unavailable");
 
-    render(<ComputerSetup workspaceId={workspaceId} />);
+    render(<ComputerSetup />);
     await clickGenerate();
 
     expect(screen.getByRole("alert").textContent).toBe("Unable to create a Computer connection command");
@@ -401,7 +400,7 @@ describe("ComputerSetup", () => {
       issuedAt: connectedAt,
     });
 
-    render(<ComputerSetup workspaceId={workspaceId} />);
+    render(<ComputerSetup />);
     await clickGenerate();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_500);
@@ -420,10 +419,7 @@ describe("ComputerSetup", () => {
     });
 
     render(
-      <ComputerSetup
-        workspaceId={workspaceId}
-        target={{ computerId: existingComputer.computerId, displayName: existingComputer.displayName }}
-      />,
+      <ComputerSetup target={{ computerId: existingComputer.computerId, displayName: existingComputer.displayName }} />,
     );
 
     expect(screen.getByRole("heading", { name: "Reconnect Ada's Mac" })).toBeTruthy();
@@ -445,7 +441,6 @@ describe("ComputerSetup", () => {
 
     render(
       <ComputerSetup
-        workspaceId={workspaceId}
         onConnected={onConnected}
         target={{ computerId: existingComputer.computerId, displayName: existingComputer.displayName }}
       />,
@@ -472,7 +467,6 @@ describe("ComputerSetup", () => {
 
     render(
       <ComputerSetup
-        workspaceId={workspaceId}
         onConnected={onConnected}
         target={{ computerId: existingComputer.computerId, displayName: existingComputer.displayName }}
       />,

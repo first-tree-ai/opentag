@@ -178,11 +178,11 @@ function installApi(
         ],
       });
     }
-    if (path === `/api/v1/workspaces/${workspaceId}/setup/complete` && init?.method === "POST") {
+    if (path === "/api/v1/me/setup/complete" && init?.method === "POST") {
       setupCompletedAt = "2026-08-20T00:10:00.000Z";
       return json({ setupCompletedAt });
     }
-    if (/^\/api\/v1\/workspaces\/[^/]+\/agents$/.test(path) && init?.method === "POST") {
+    if (path === "/api/v1/agents" && init?.method === "POST") {
       if (options.agentCreateError) {
         if (options.agentCreateError === "conflict") {
           return json(
@@ -214,7 +214,7 @@ function installApi(
       await options.agentCreate?.(body);
       return json(adminConfig(), 201);
     }
-    if (/^\/api\/v1\/workspaces\/[^/]+\/agents$/.test(path) && init?.method === undefined) {
+    if (path === "/api/v1/agents" && init?.method === undefined) {
       const failureStatus = options.agentListStatus?.();
       if (failureStatus) return json({ error: { message: "Agent list unavailable" } }, failureStatus);
       return json({
@@ -231,7 +231,7 @@ function installApi(
             ],
       });
     }
-    if (/^\/api\/v1\/workspaces\/[^/]+\/computers$/.test(path)) {
+    if (path === "/api/v1/computers") {
       const failureStatus = options.computerReadStatus?.(computerConnectCodeIssued);
       if (failureStatus) return json({ error: { message: "Computer readiness unavailable" } }, failureStatus);
       if (options.computerEvidenceFails) return json({ error: { message: "Computer evidence unavailable" } }, 503);
@@ -267,7 +267,7 @@ function installApi(
         ],
       });
     }
-    if (/^\/api\/v1\/workspaces\/[^/]+\/computer-connect-codes$/.test(path) && init?.method === "POST") {
+    if (path === "/api/v1/computer-connect-codes" && init?.method === "POST") {
       computerConnectCodeIssued = true;
       return json(
         {
@@ -945,9 +945,7 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}`));
     const createCall = vi
       .mocked(fetch)
-      .mock.calls.find(
-        ([input, init]) => String(input) === `/api/v1/workspaces/${workspaceId}/agents` && init?.method === "POST",
-      );
+      .mock.calls.find(([input, init]) => String(input) === "/api/v1/agents" && init?.method === "POST");
     expect(createCall).toBeTruthy();
     expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
       creationIntentId: expect.any(String),
@@ -982,9 +980,7 @@ describe("OpenTag Web App Shell", () => {
       expect(
         vi
           .mocked(fetch)
-          .mock.calls.filter(
-            ([input, init]) => String(input) === `/api/v1/workspaces/${workspaceId}/agents` && init?.method === "POST",
-          ),
+          .mock.calls.filter(([input, init]) => String(input) === "/api/v1/agents" && init?.method === "POST"),
       ).toHaveLength(1),
     );
     await waitFor(() => expect(dialog).toBe(document.activeElement));
@@ -1970,7 +1966,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("link", { name: "Settings" })).toBeNull();
   });
 
-  it("uses the server-ordered first membership without a browser Workspace preference", async () => {
+  it("sends no management scope even when the Account holds several memberships", async () => {
     installApi({ multipleMemberships: true });
     window.history.replaceState({}, "", "/agents");
     const getItem = vi.spyOn(Storage.prototype, "getItem");
@@ -1978,12 +1974,8 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
     expect(getItem).not.toHaveBeenCalled();
-    expect(vi.mocked(fetch).mock.calls.some(([path]) => path === `/api/v1/workspaces/${workspaceId}/agents`)).toBe(
-      true,
-    );
-    expect(
-      vi.mocked(fetch).mock.calls.some(([path]) => path === `/api/v1/workspaces/${secondaryWorkspaceId}/agents`),
-    ).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.some(([path]) => path === "/api/v1/agents")).toBe(true);
+    expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path).includes("/api/v1/workspaces/"))).toBe(false);
     getItem.mockRestore();
   });
 
@@ -2138,9 +2130,7 @@ describe("OpenTag Web App Shell", () => {
     expect(
       vi
         .mocked(fetch)
-        .mock.calls.filter(
-          ([input, init]) => String(input) === `/api/v1/workspaces/${workspaceId}/agents` && init?.method === "POST",
-        ),
+        .mock.calls.filter(([input, init]) => String(input) === "/api/v1/agents" && init?.method === "POST"),
     ).toHaveLength(0);
   });
 
@@ -2161,9 +2151,7 @@ describe("OpenTag Web App Shell", () => {
     expect(
       vi
         .mocked(fetch)
-        .mock.calls.filter(
-          ([input, init]) => String(input) === `/api/v1/workspaces/${workspaceId}/agents` && init?.method === "POST",
-        ),
+        .mock.calls.filter(([input, init]) => String(input) === "/api/v1/agents" && init?.method === "POST"),
     ).toHaveLength(0);
   });
 
@@ -2179,9 +2167,7 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}`));
     const createCall = vi
       .mocked(fetch)
-      .mock.calls.find(
-        ([input, init]) => String(input) === `/api/v1/workspaces/${workspaceId}/agents` && init?.method === "POST",
-      );
+      .mock.calls.find(([input, init]) => String(input) === "/api/v1/agents" && init?.method === "POST");
     expect(JSON.parse(String(createCall?.[1]?.body))).toEqual({
       creationIntentId: expect.any(String),
       name: "bestony",
@@ -2264,9 +2250,7 @@ describe("OpenTag Web App Shell", () => {
     await waitFor(() => {
       const request = vi
         .mocked(fetch)
-        .mock.calls.find(
-          ([path, init]) => path === `/api/v1/workspaces/${workspaceId}/agents` && init?.method === "POST",
-        );
+        .mock.calls.find(([path, init]) => path === "/api/v1/agents" && init?.method === "POST");
       expect(JSON.parse(String(request?.[1]?.body))).toEqual({
         creationIntentId: expect.any(String),
         name: "codex-reviewer",

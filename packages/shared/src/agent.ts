@@ -70,7 +70,12 @@ export const UpdateAgentRuntimeConfigSchema = z
 const AgentIdentitySchema = z
   .object({
     id: z.string().uuid(),
-    workspaceId: z.string().uuid(),
+    /**
+     * @deprecated The management scope is derived from the authenticated Account. Optional so that
+     * removing it at the ownership cutover is not a breaking contract change for already-published
+     * clients; no Account-native consumer reads it.
+     */
+    workspaceId: z.string().uuid().optional(),
     name: AgentNameSchema,
     displayName: AgentDisplayNameSchema,
     runtimeProvider: AgentRuntimeProviderSchema,

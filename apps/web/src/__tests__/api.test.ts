@@ -218,7 +218,7 @@ describe("BrowserApi", () => {
     expect(untypedError.issues).toBeUndefined();
   });
 
-  it("mints a connect command with CSRF and lists the Workspace enrollments", async () => {
+  it("mints a connect command with CSRF and lists the Account enrollments", async () => {
     setDocumentCookie("opentag_csrf=connect-csrf; Path=/");
     const computer = {
       computerId: userId,
@@ -239,14 +239,14 @@ describe("BrowserApi", () => {
       agentIds: [],
     };
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
-      if (String(input) === `/api/v1/workspaces/${workspaceId}/computers`) {
+      if (String(input) === "/api/v1/computers") {
         expect(new Headers(init?.headers).get("x-opentag-provider-readiness")).toBe("1");
         return new Response(JSON.stringify({ computers: [computer] }), {
           status: 200,
           headers: { "content-type": "application/json" },
         });
       }
-      expect(String(input)).toBe(`/api/v1/workspaces/${workspaceId}/computer-connect-codes`);
+      expect(String(input)).toBe("/api/v1/computer-connect-codes");
       expect(init?.method).toBe("POST");
       expect(new Headers(init?.headers).get("X-OpenTag-CSRF")).toBe("connect-csrf");
       expect(init?.body).toBeUndefined();
@@ -260,8 +260,8 @@ describe("BrowserApi", () => {
       );
     });
     const api = new BrowserApi(fetchImpl);
-    await expect(api.computers(workspaceId)).resolves.toEqual({ computers: [computer] });
-    await expect(api.issueComputerConnectCode(workspaceId)).resolves.toMatchObject({ expiresIn: 900 });
+    await expect(api.computers()).resolves.toEqual({ computers: [computer] });
+    await expect(api.issueComputerConnectCode()).resolves.toMatchObject({ expiresIn: 900 });
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 });

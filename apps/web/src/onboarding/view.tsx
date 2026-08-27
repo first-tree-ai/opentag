@@ -39,7 +39,7 @@ export interface OnboardingViewProps {
   readonly onRetryLoad: () => void;
   readonly refreshPending: boolean;
   readonly user: UserProfile;
-  readonly workspaceId: string;
+  readonly accountId: string;
 }
 
 /**
@@ -58,7 +58,7 @@ export function OnboardingView({
   onRetryLoad,
   refreshPending,
   user,
-  workspaceId,
+  accountId,
 }: OnboardingViewProps) {
   const snapshot = load.kind === "ready" ? load.snapshot : undefined;
   const resolved = useMemo(() => (snapshot ? resolveSnapshot(snapshot) : undefined), [snapshot]);
@@ -89,7 +89,7 @@ export function OnboardingView({
                   refreshPending={refreshPending}
                   snapshot={snapshot}
                   state={resolved.state}
-                  workspaceId={workspaceId}
+                  accountId={accountId}
                 />
               ) : null}
             </div>
@@ -483,7 +483,7 @@ function OnboardingContent({
   refreshPending,
   snapshot,
   state,
-  workspaceId,
+  accountId,
 }: {
   completionState: CompletionState;
   mode: OnboardingViewMode;
@@ -494,7 +494,7 @@ function OnboardingContent({
   refreshPending: boolean;
   snapshot: OnboardingSnapshot;
   state: OnboardingState;
-  workspaceId: string;
+  accountId: string;
 }) {
   if (snapshot.targetCandidates.length > 0 && !snapshot.targetAgent) {
     return (
@@ -523,7 +523,7 @@ function OnboardingContent({
           initialDisplayName="OpenTag"
           preview={mode === "preview"}
           refreshing={refreshPending}
-          workspaceId={workspaceId}
+          accountId={accountId}
           onCreated={(agent) => onAgentCreated(agent.id)}
           onRefresh={onReload}
         />

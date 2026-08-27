@@ -4,6 +4,7 @@ import type { ProviderReadinessStatus } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
+import { BetterAuthSessionTokens, BridgedSessionTokens } from "./auth/session-tokens.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
@@ -19,6 +20,7 @@ import { AgentService } from "./services/agents/index.js";
 import {
   AuthIdentityService,
   AuthService,
+  type AuthTokenProvider,
   AuthTokenService,
   ConnectCodeService,
   DefaultGoogleIdentityClient,
@@ -95,6 +97,12 @@ export {
   SessionService,
 } from "./services/sessions/index.js";
 
+/** The bridge is constructed before Better Auth exists; this makes the ordering mistake loud rather than silent. */
+function requireSessionTokens(tokens: AuthTokenProvider | undefined): AuthTokenProvider {
+  if (!tokens) throw new Error("Session tokens were used before Better Auth was constructed");
+  return tokens;
+}
+
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
@@ -125,9 +133,23 @@ export async function startServer(): Promise<void> {
 
     const { database, sql } = createDatabaseClient(config.databaseUrl);
     const workspaceAdmins = new WorkspaceAdminAccess(database);
+    const legacyTokens = new AuthTokenService(
+      config.jwtSecret,
+      config.accessTokenTtlSeconds,
+      config.refreshTokenTtlSeconds,
+    );
+    // Assigned below, once Better Auth exists; the bridge reads it lazily so the two can be constructed in either order.
+    let sessionTokens: AuthTokenProvider | undefined;
     const authService = new AuthService(
       database,
-      new AuthTokenService(config.jwtSecret, config.accessTokenTtlSeconds, config.refreshTokenTtlSeconds),
+      new BridgedSessionTokens(
+        {
+          issuePairForUser: (userId) => requireSessionTokens(sessionTokens).issuePairForUser(userId),
+          verifyAccess: (token) => requireSessionTokens(sessionTokens).verifyAccess(token),
+          verifyRefresh: (token) => requireSessionTokens(sessionTokens).verifyRefresh(token),
+        },
+        legacyTokens,
+      ),
       { workspaceAdmins },
     );
     const connectCodeService = new ConnectCodeService(database);
@@ -259,6 +281,7 @@ export async function startServer(): Promise<void> {
       secureCookies: isHostedEnvironment(config.environment),
       ...(config.google ? { google: config.google } : {}),
     });
+    sessionTokens = new BetterAuthSessionTokens(betterAuth);
     const google = config.google
       ? new GoogleBrowserAuthService({
           database,

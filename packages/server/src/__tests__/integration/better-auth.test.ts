@@ -2,16 +2,27 @@ import { randomUUID } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
 import type { FastifyRequest } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createBetterAuth } from "../../auth/better-auth.js";
+import { BetterAuthSessionTokens, BridgedSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { authIdentities, authSessions, users, workspaceAdminGrants } from "../../db/schema/index.js";
 import { resolveAuthenticatedUserId } from "../../plugins/user-auth.js";
-import { AuthService, PostAuthenticationService } from "../../services/auth/index.js";
+import { AuthService, AuthTokenService, PostAuthenticationService } from "../../services/auth/index.js";
 import { WorkspaceAdminAccess } from "../../services/workspace-admin-access/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const GOOGLE_ISSUER = "https://accounts.google.com";
 const PUBLIC_URL = "http://localhost:8000";
+const LEGACY_SECRET = "legacy-jwt-secret-of-at-least-32-characters";
+
+/** The composition the server runs: Better Auth issues, and credentials it did not issue still verify. */
+function bridgedAuthService(auth: ReturnType<typeof createAuth>): AuthService {
+  return new AuthService(
+    client.database,
+    new BridgedSessionTokens(new BetterAuthSessionTokens(auth), new AuthTokenService(LEGACY_SECRET, 900, 3600)),
+  );
+}
 
 let testDatabase: MigratedTestDatabase;
 let client: ReturnType<typeof createDatabaseClient>;
@@ -210,6 +221,79 @@ describe("Better Auth over the existing Account tables", () => {
     await expect(resolveAuthenticatedUserId(request, authService, { betterAuth: auth })).rejects.toMatchObject({
       code: "AUTH_USER_SUSPENDED",
       statusCode: 403,
+    });
+  });
+
+  it("hands the CLI a revocable session through the connect-code contract it already speaks", async () => {
+    /*
+     * The response keeps its four fields, so a CLI built before the cutover stores and presents this unchanged. What
+     * changed is what the token is: a row the server can revoke, rather than a signature it can only wait out.
+     */
+    const bootstrap = await bootstrapInitialAdmin(client.database, {
+      displayName: "Admin",
+      email: "admin@example.com",
+      workspaceDisplayName: "Example",
+      workspaceName: "example",
+    });
+    const auth = createAuth();
+    const authService = bridgedAuthService(auth);
+
+    const exchanged = await authService.exchangeConnectCode(bootstrap.connectCode);
+
+    expect(exchanged.tokenType).toBe("Bearer");
+    expect(exchanged.expiresIn).toBeGreaterThan(0);
+    // One credential, not a pair: a session is revocable, so there is nothing for a second token to protect against.
+    expect(exchanged.refreshToken).toBe(exchanged.accessToken);
+
+    const persisted = await client.database
+      .select()
+      .from(authSessions)
+      .where(eq(authSessions.userId, bootstrap.userId));
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]?.token).toBe(exchanged.accessToken);
+
+    // The same token authenticates as a bearer credential, which is how the CLI already sends it.
+    const resolved = await auth.api.getSession({
+      headers: new Headers({ authorization: `Bearer ${exchanged.accessToken}` }),
+    });
+    expect(resolved?.user.id).toBe(bootstrap.userId);
+
+    // Revocation is immediate, which the stateless pair could never offer.
+    await (await auth.$context).internalAdapter.deleteSession(exchanged.accessToken);
+    await expect(authService.getAuthenticatedUser(exchanged.accessToken)).rejects.toMatchObject({
+      code: "AUTH_INVALID_TOKEN",
+    });
+  });
+
+  it("upgrades a credential the previous revision issued the first time it is refreshed", async () => {
+    /*
+     * A CLI that has not reached the server since the cutover still holds a signed pair. Verification falls back to the
+     * legacy signature, and because issuance only ever produces a session, refreshing is what moves it across.
+     */
+    const bootstrap = await bootstrapInitialAdmin(client.database, {
+      displayName: "Admin",
+      email: "admin@example.com",
+      workspaceDisplayName: "Example",
+      workspaceName: "example",
+    });
+    const auth = createAuth();
+    const legacy = new AuthTokenService(LEGACY_SECRET, 900, 3600);
+    const legacyPair = await legacy.issuePairForUser(bootstrap.userId);
+    const authService = bridgedAuthService(auth);
+
+    const refreshed = await authService.refresh(legacyPair.refreshToken);
+
+    expect(refreshed.accessToken).not.toBe(legacyPair.accessToken);
+    const persisted = await client.database
+      .select()
+      .from(authSessions)
+      .where(eq(authSessions.userId, bootstrap.userId));
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]?.token).toBe(refreshed.accessToken);
+
+    // The legacy access token still authenticates until it expires, so the rollout signs nobody out.
+    await expect(authService.getAuthenticatedUser(legacyPair.accessToken)).resolves.toMatchObject({
+      me: { user: { id: bootstrap.userId } },
     });
   });
 

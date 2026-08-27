@@ -1,22 +1,15 @@
-DO $$
-DECLARE
-	duplicate_count integer;
-	duplicate_ids text;
-BEGIN
-	SELECT count(*), string_agg("id"::text, ', ' ORDER BY "id")
-	INTO duplicate_count, duplicate_ids
-	FROM "users"
-	WHERE lower("email") IN (
-		SELECT lower("email") FROM "users" GROUP BY lower("email") HAVING count(*) > 1
-	);
-	IF duplicate_count > 0 THEN
-		RAISE EXCEPTION 'Account email normalization found % Accounts sharing an email address (users.id: %)', duplicate_count, duplicate_ids
-			USING HINT = 'Merge each duplicate before migrating: keep the earliest users row, repoint every foreign key that references the others, then delete them.';
-	END IF;
-END $$;--> statement-breakpoint
+/*
+ * Expand only. Nothing here changes how the previous server revision behaves, which a rollback requires because
+ * rolling back application code does not roll back migrations.
+ *
+ * The `users_email_unique` index deliberately does NOT land here. That revision handles an unknown provider subject by
+ * inserting a new `users` row without first resolving the Account already holding the address, so creating the index
+ * while it is still serving would turn its bootstrap-Account first-sign-in from a silent duplicate into a raw `23505`.
+ * The index is a backstop for writers that skip the resolver; it arrives in a later migration, once no such writer is
+ * still serving. Correctness in the meantime comes from the resolver's advisory lock on the address itself.
+ */
 ALTER TABLE "users" ADD COLUMN "email_verified" boolean DEFAULT false NOT NULL;--> statement-breakpoint
 ALTER TABLE "users" ADD COLUMN "image" text;--> statement-breakpoint
 UPDATE "users" SET "email" = lower("email"), "updated_at" = now() WHERE "email" <> lower("email");--> statement-breakpoint
 UPDATE "users" SET "email_verified" = true, "updated_at" = now()
-WHERE EXISTS (SELECT 1 FROM "auth_identities" WHERE "auth_identities"."user_id" = "users"."id");--> statement-breakpoint
-CREATE UNIQUE INDEX "users_email_unique" ON "users" USING btree (lower("email"));
+WHERE EXISTS (SELECT 1 FROM "auth_identities" WHERE "auth_identities"."user_id" = "users"."id");

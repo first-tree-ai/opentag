@@ -368,7 +368,7 @@ describe("database migrations", () => {
     }
   });
 
-  it("refuses to normalize Account email casing while two Accounts share an address, then backfills verification", async () => {
+  it("normalizes Account email casing and backfills verification without constraining the previous writer", async () => {
     const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0017-migrations-"));
     const legacyMeta = join(legacyFolder, "meta");
     await mkdir(legacyMeta);
@@ -387,30 +387,12 @@ describe("database migrations", () => {
       await migrateDatabase(databaseUrl, legacyFolder);
       const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
       try {
-        const keptUserId = crypto.randomUUID();
-        const duplicateUserId = crypto.randomUUID();
+        const casingUserId = crypto.randomUUID();
+        const verifiedUserId = crypto.randomUUID();
         await sql`
           insert into users (id, email, display_name)
-          values
-            (${keptUserId}, 'Casing@Example.com', 'Mixed Casing'),
-            (${duplicateUserId}, 'casing@example.com', 'Lower Casing')
+          values (${casingUserId}, 'Casing@Example.com', 'Mixed Casing')
         `;
-
-        await expect(migrateDatabase(databaseUrl, migrationsFolder)).rejects.toThrow(
-          "Accounts sharing an email address",
-        );
-        const [blocked] = await sql<{ email_verified_exists: boolean; migration_count: number }[]>`
-          select
-            (select count(*)::int from drizzle.__drizzle_migrations) as migration_count,
-            exists(
-              select 1 from information_schema.columns
-              where table_schema = 'public' and table_name = 'users' and column_name = 'email_verified'
-            ) as email_verified_exists
-        `;
-        expect(blocked).toEqual({ email_verified_exists: false, migration_count: legacyEntries.length });
-
-        await sql`delete from users where id = ${duplicateUserId}`;
-        const verifiedUserId = crypto.randomUUID();
         await sql`
           insert into users (id, email, display_name)
           values (${verifiedUserId}, 'Verified@Example.com', 'Verified Identity')
@@ -426,13 +408,19 @@ describe("database migrations", () => {
           select id, email, email_verified from users order by email
         `;
         expect([...accounts]).toEqual([
-          { email: "casing@example.com", email_verified: false, id: keptUserId },
+          // No identity asserts this address, so the backfill leaves it unverified.
+          { email: "casing@example.com", email_verified: false, id: casingUserId },
           { email: "verified@example.com", email_verified: true, id: verifiedUserId },
         ]);
 
+        /*
+         * The previous server revision inserts a `users` row for an unknown provider subject without resolving the
+         * address first. It has to keep working after this migration, so no uniqueness lands here: creating the index
+         * while that revision is still serving would turn its bootstrap-Account first sign-in into a raw `23505`.
+         */
         await expect(
-          sql`insert into users (email, display_name) values ('CASING@EXAMPLE.COM', 'Rejected')`,
-        ).rejects.toThrow("users_email_unique");
+          sql`insert into users (email, display_name) values ('CASING@EXAMPLE.COM', 'Previous Revision')`,
+        ).resolves.toBeDefined();
       } finally {
         await sql.end();
       }

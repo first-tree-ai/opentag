@@ -151,7 +151,7 @@ function safeEqual(left: string, right: string): boolean {
   return leftBuffer.byteLength === rightBuffer.byteLength && timingSafeEqual(leftBuffer, rightBuffer);
 }
 
-function appendSetCookies(reply: FastifyReply, values: string[]): void {
+export function appendSetCookies(reply: FastifyReply, values: string[]): void {
   const current = reply.getHeader("set-cookie");
   const existing = Array.isArray(current) ? current.map(String) : current ? [String(current)] : [];
   reply.header("set-cookie", [...existing, ...values]);

@@ -329,6 +329,7 @@ async function main() {
           OPENTAG_PORT: String(PORT),
           OPENTAG_PUBLIC_URL: BASE_URL,
           OPENTAG_JWT_SECRET: randomBytes(32).toString("hex"),
+          BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
           OPENTAG_ENCRYPTION_KEY: ENCRYPTION_KEY.toString("base64"),
           OPENTAG_DEV_AUTH_BYPASS_ENABLED: "true",
           OPENTAG_DEV_AUTH_EMAIL: DEV_EMAIL,

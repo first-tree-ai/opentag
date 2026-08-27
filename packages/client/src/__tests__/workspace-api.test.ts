@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { OpenTagApi } from "../api.js";
 
-const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
 const grantedAt = "2026-08-19T00:00:00.000Z";
 
 function json(body: unknown, status = 200): Response {
@@ -33,7 +32,7 @@ describe("OpenTagApi Workspace surface", () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValueOnce(json(code, 201));
     const api = new OpenTagApi("https://opentag.example.com", fetchImpl);
 
-    await expect(api.issueComputerConnectCode("access", workspaceId)).resolves.toEqual(code);
+    await expect(api.issueComputerConnectCode("access")).resolves.toEqual(code);
     expect("revokeWorkspaceComputer" in api).toBe(false);
   });
 });

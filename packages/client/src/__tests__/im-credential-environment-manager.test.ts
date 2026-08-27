@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -364,7 +364,8 @@ describe("ImCredentialEnvironmentManager", () => {
 });
 
 async function temporaryHome(): Promise<string> {
-  const home = await mkdtemp(join(tmpdir(), "opentag-im-credentials-"));
+  // Temp roots are symlinked on macOS, so canonicalize to match the paths the code under test resolves.
+  const home = await realpath(await mkdtemp(join(tmpdir(), "opentag-im-credentials-")));
   homes.push(home);
   return home;
 }

@@ -15,7 +15,6 @@ import {
   selectComputer,
 } from "../core/agent/mutations.js";
 import { runAgentList, runAgentShow } from "../core/agent/queries.js";
-import { selectWorkspace } from "../core/selection/workspace.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const workspaceId = "d3fda800-7ce2-4338-aae8-3d2120401ed6";
@@ -146,18 +145,26 @@ describe("Agent CLI core", () => {
     ).toContain("slackIdentityClosure\tpending");
   });
 
-  it("resolves one internal scope automatically and requires an explicit choice for multiple scopes", () => {
-    expect(selectWorkspace(me)).toEqual(workspace);
-    expect(() => selectWorkspace({ ...me, workspaces: [] })).toThrow(
-      "No internal scope is available to the current Account",
-    );
-    const multiple = {
+  it("sends no management scope and never asks the Account to choose one", async () => {
+    const client = api();
+    client.me = vi.fn().mockResolvedValue({
       ...me,
       workspaces: [workspace, { ...workspace, id: crypto.randomUUID(), name: "second" }],
-    };
-    expect(() => selectWorkspace(multiple)).toThrow("Available internal scopes: example, second");
-    expect(selectWorkspace(multiple, "second").name).toBe("second");
-    expect(() => selectWorkspace(multiple, "missing")).toThrow("is not available");
+    });
+
+    await runAgentList({ accessToken: "access", api: client });
+    await runAgentCreate({
+      accessToken: "access",
+      api: client,
+      name: "code-reviewer",
+      displayName: "Code Reviewer",
+      runtimeProvider: "codex",
+    });
+
+    expect(client.listAgents).toHaveBeenCalledWith("access");
+    expect(client.listWorkspaceComputers).toHaveBeenCalledWith("access");
+    expect(client.createAgent).toHaveBeenCalledWith("access", expect.objectContaining({ name: "code-reviewer" }));
+    expect(client.me).not.toHaveBeenCalled();
   });
 
   it("resolves an enrolled Computer and rejects ambiguous or unknown choices", () => {
@@ -169,14 +176,14 @@ describe("Agent CLI core", () => {
       }),
     ).toThrow("use --computer");
     expect(() => selectComputer({ computers: [computer] }, crypto.randomUUID())).toThrow(
-      "is not enrolled in the selected internal scope",
+      "is not enrolled by this Account",
     );
     expect(() => selectComputer({ computers: [computer] }, "75fe9af3-d1c6-472b-b78c-8a7ccf512750")).toThrow(
-      "is not enrolled in the selected internal scope",
+      "is not enrolled by this Account",
     );
   });
 
-  it("creates in the selected internal scope and preserves an offline warning", async () => {
+  it("creates without a management scope and preserves an offline warning", async () => {
     const client = api();
     client.listWorkspaceComputers.mockResolvedValue({
       computers: [{ ...computer, connectionStatus: "offline" as const }],
@@ -188,7 +195,7 @@ describe("Agent CLI core", () => {
       displayName: " Code Reviewer ",
       runtimeProvider: "codex",
     });
-    expect(client.createAgent).toHaveBeenCalledWith("access", workspaceId, {
+    expect(client.createAgent).toHaveBeenCalledWith("access", {
       computerId,
       displayName: "Code Reviewer",
       name: "code-reviewer",
@@ -215,7 +222,7 @@ describe("Agent CLI core", () => {
         instructionsFile,
         maxDurationMs: "30000",
       });
-      expect(client.createAgent).toHaveBeenCalledWith("access", workspaceId, {
+      expect(client.createAgent).toHaveBeenCalledWith("access", {
         computerId,
         displayName: "Code Reviewer",
         name: "code-reviewer",
@@ -235,7 +242,7 @@ describe("Agent CLI core", () => {
   it("lists and formats deterministic Agent projections", async () => {
     const client = api();
     const response = await runAgentList({ accessToken: "access", api: client });
-    expect(client.listAgents).toHaveBeenCalledWith("access", workspaceId);
+    expect(client.listAgents).toHaveBeenCalledWith("access");
     expect(formatAgentList(response)).toContain("code-reviewer\t");
     expect(formatAgent(agent)).toContain(`revision\t1`);
     expect(formatAgent(agent)).not.toContain("workspaceId");
@@ -336,6 +343,7 @@ describe("Agent CLI core", () => {
     const computerCommand = program.commands.find((command) => command.name() === "computer");
     const create = agentCommand?.commands.find((command) => command.name() === "create");
     const update = agentCommand?.commands.find((command) => command.name() === "update");
+    const list = agentCommand?.commands.find((command) => command.name() === "list");
     const connect = computerCommand?.commands.find((command) => command.name() === "connect");
     expect(agentCommand?.description()).toBe("Manage Agents available to the current Account");
     expect(computerCommand?.description()).toBe("Connect and inspect Computers available to the current Account");
@@ -363,11 +371,10 @@ describe("Agent CLI core", () => {
     );
     expect(update?.options.find((option) => option.long === "--display-name")?.mandatory).toBe(false);
     expect(create?.options.find((option) => option.long === "--computer")?.description).toBe(
-      "Computer enrolled in the selected internal scope",
+      "Computer enrolled by this Account",
     );
-    expect(create?.options.find((option) => option.long === "--workspace")?.description).toBe(
-      "legacy internal scope name",
-    );
+    expect(create?.options.find((option) => option.long === "--workspace")).toBeUndefined();
+    expect(list?.options.find((option) => option.long === "--workspace")).toBeUndefined();
     expect(update?.options.find((option) => option.long === "--model")?.description).toContain("Codex only");
     expect(update?.options.find((option) => option.long === "--clear-model")?.description).toContain("Codex manage");
     expect(update?.options.find((option) => option.long === "--clear-max-duration")?.description).toContain(

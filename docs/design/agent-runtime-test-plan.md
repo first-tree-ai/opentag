@@ -256,6 +256,20 @@ both create and resumed Runs completed, the materialized opaque binding was
 preserved, and the Runs produced 53 and 95 ordered events respectively. The
 Client manifests contain no Pi package, SDK, CLI, or bundled-binary dependency.
 
-The monorepo test command retains two unrelated existing macOS CLI failures
-caused solely by `/tmp` versus `/private/tmp` path spelling. All other package
-tests passed; the Pi and Client suites are green.
+The two macOS CLI failures this command used to retain, caused solely by `/tmp`
+versus `/private/tmp` path spelling, no longer occur. The 13 reusable
+temporary-directory helpers across the CLI and Client suites now canonicalize
+with `realpath`, so the fixture paths they hand out match the canonical paths
+the code under test resolves, on every platform and under Turborepo's strict
+environment mode. No `TMPDIR` override is required. Tests that call `mkdtemp`
+inline still receive raw paths, which is harmless where the directory serves
+only as a filesystem location rather than as a string compared against a
+resolved path.
+
+On 2026-08-27 that change measured locally on macOS, through
+`turbo run test --continue`, as `@opentag/shared` 67/67, `@opentag/web`
+322/322, `apps/cli` 124/124 and `@opentag/client` 463/463, with
+`@opentag/server` at 256/257: its `observability` tracing case raced the
+server close there, which #187 has since fixed on `main` in `22001a6`, so
+that case passes from that commit onward. That same change ran green across
+all five packages in CI, where the case did not reproduce.

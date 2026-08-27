@@ -211,10 +211,10 @@ function projectAgentAvailability(
   };
 }
 
-async function loadAgentList(workspaceId: string): Promise<{ agents: AgentListItem[] }> {
+async function loadAgentList(): Promise<{ agents: AgentListItem[] }> {
   const [{ agents }, computersResult] = await Promise.all([
-    browserApi.agents(workspaceId),
-    browserApi.computers(workspaceId).then(
+    browserApi.agents(),
+    browserApi.computers().then(
       (value) => ({ kind: "ready" as const, value }),
       () => ({ kind: "unconfirmed" as const }),
     ),
@@ -258,7 +258,7 @@ async function loadAgentList(workspaceId: string): Promise<{ agents: AgentListIt
 async function loadAgentDetail(agentId: string): Promise<AgentDetailView> {
   const agent = await browserApi.agent(agentId);
   const [computersResult, bindingResult, handoffResult] = await Promise.allSettled([
-    browserApi.computers(agent.workspaceId),
+    browserApi.computers(),
     browserApi.imBinding(agent.id),
     browserApi.imBindingHandoff(agent.id),
   ]);
@@ -608,16 +608,15 @@ function NoWorkspaceAccess({ onRetry }: { onRetry: () => void }) {
 }
 
 function OnboardingRoute() {
-  const { me, membership, refreshMe } = useWorkspace();
+  const { me, refreshMe } = useWorkspace();
   const [searchParams, setSearchParams] = useSearchParams();
   const targetAgentId = searchParams.get("agentId") ?? undefined;
   return (
     <OnboardingPage
-      membership={membership}
       targetAgentId={targetAgentId}
       user={me.user}
       onSetupReady={async (agentId) => {
-        await browserApi.completeWorkspaceSetup(membership.id, agentId);
+        await browserApi.completeSetup(agentId);
         await refreshMe();
       }}
       onTargetAgentChange={(agentId) => {
@@ -906,10 +905,10 @@ function WorkspaceNavIcon({ name }: { name: "agents" | "integrations" | "skills"
 }
 
 function AgentsPage() {
-  const { membership } = useWorkspace();
+  const { me } = useWorkspace();
   const [createOpen, setCreateOpen] = useState(false);
   const createTriggerRef = useRef<HTMLButtonElement>(null);
-  const state = useResource(() => loadAgentList(membership.id), membership.id, {
+  const state = useResource(() => loadAgentList(), me.user.id, {
     onBackgroundError: markAgentListUnconfirmed,
     revalidateMs: 30_000,
     refreshOnFocus: true,
@@ -1106,8 +1105,8 @@ function formatUsageNumber(value: number): string {
   }).format(value);
 }
 
-function useOwnComputersResource(workspaceId: string, refreshVersion = 0) {
-  return useResource(() => browserApi.computers(workspaceId), `${workspaceId}:${refreshVersion}`, {
+function useOwnComputersResource(accountId: string, refreshVersion = 0) {
+  return useResource(() => browserApi.computers(), `${accountId}:${refreshVersion}`, {
     onBackgroundError: markOwnComputersUnconfirmed,
     revalidateMs: 30_000,
     refreshOnFocus: true,
@@ -1115,11 +1114,11 @@ function useOwnComputersResource(workspaceId: string, refreshVersion = 0) {
 }
 
 function NewAgentPage() {
-  const { membership } = useWorkspace();
+  const { me } = useWorkspace();
   const navigate = useNavigate();
   const [computerRefreshVersion, setComputerRefreshVersion] = useState(0);
   const [created, setCreated] = useState<AgentAdminConfig>();
-  const computers = useOwnComputersResource(membership.id, computerRefreshVersion);
+  const computers = useOwnComputersResource(me.user.id, computerRefreshVersion);
   return (
     <Page
       title={created ? "Agent created" : "Create Agent"}
@@ -1134,7 +1133,7 @@ function NewAgentPage() {
       ) : (
         <AgentCreationContent
           computers={computers}
-          workspaceId={membership.id}
+          accountId={me.user.id}
           onCreated={setCreated}
           onRefresh={() => setComputerRefreshVersion((current) => current + 1)}
         />
@@ -1150,10 +1149,10 @@ function NewAgentDialog({
   onClose: () => void;
   returnFocusRef: { current: HTMLButtonElement | null };
 }) {
-  const { membership } = useWorkspace();
+  const { me } = useWorkspace();
   const navigate = useNavigate();
   const [computerRefreshVersion, setComputerRefreshVersion] = useState(0);
-  const computers = useOwnComputersResource(membership.id, computerRefreshVersion);
+  const computers = useOwnComputersResource(me.user.id, computerRefreshVersion);
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<AgentAdminConfig>();
   const finish = () => {
@@ -1178,7 +1177,7 @@ function NewAgentDialog({
       ) : (
         <AgentCreationContent
           computers={computers}
-          workspaceId={membership.id}
+          accountId={me.user.id}
           onCancel={onClose}
           onCreated={setCreated}
           onRefresh={() => setComputerRefreshVersion((current) => current + 1)}
@@ -1195,14 +1194,14 @@ function AgentCreationContent({
   onCreated,
   onRefresh,
   onSubmittingChange,
-  workspaceId,
+  accountId,
 }: {
   computers: LoadState<{ computers: WorkspaceComputerSummary[] }>;
   onCancel?: () => void;
   onCreated: (agent: AgentAdminConfig) => void;
   onRefresh: () => void;
   onSubmittingChange?: (submitting: boolean) => void;
-  workspaceId: string;
+  accountId: string;
 }) {
   const current = computers.kind === "ready" ? computers.value : undefined;
   const [retained, setRetained] = useState(current);
@@ -1253,7 +1252,7 @@ function AgentCreationContent({
       <AgentCreationFlow
         facts={agentCreationFactsFromOwnComputers(value.computers)}
         refreshing={computers.kind === "loading"}
-        workspaceId={workspaceId}
+        accountId={accountId}
         onCancel={onCancel}
         onComputerRefreshFocus={() => {
           setComputerRefreshFocusActive(true);
@@ -1944,7 +1943,6 @@ function computerRecoveryMessage(agent: AgentDetailView): string {
 }
 
 function AgentComputerSettings({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
-  const { membership } = useWorkspace();
   const [reconnecting, setReconnecting] = useState(false);
   const computerState = agent.availability.dependencies.computer;
   const runtimeUnavailable = agent.availability.reason === "runtime_unavailable";
@@ -1996,7 +1994,6 @@ function AgentComputerSettings({ agent, onAgentChanged }: { agent: AgentDetailVi
                   {reconnecting ? (
                     <div className="agent-runtime-reconnect" id="agent-computer-reconnect">
                       <ComputerSetup
-                        workspaceId={membership.id}
                         target={{
                           computerId: agent.computer.computerId,
                           displayName: agent.computer.displayName,
@@ -2710,8 +2707,8 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
 }
 
 function ComputersPage() {
-  const { membership } = useWorkspace();
-  const state = useResource(() => browserApi.computers(membership.id), membership.id);
+  const { me } = useWorkspace();
+  const state = useResource(() => browserApi.computers(), me.user.id);
   return (
     <Page title="Computers" description="Enroll and recover the Computers used by your Agents.">
       <AsyncState state={state}>
@@ -2735,7 +2732,7 @@ function ComputersPage() {
                 </ul>
               )}
             </section>
-            <ComputerSetup workspaceId={membership.id} />
+            <ComputerSetup />
           </div>
         )}
       </AsyncState>

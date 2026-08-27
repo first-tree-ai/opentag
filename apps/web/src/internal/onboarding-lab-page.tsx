@@ -3,11 +3,7 @@ import { useRef, useState } from "react";
 import { browserApi } from "../api.js";
 import { OnboardingView } from "../onboarding/view.js";
 import { Button, Dialog } from "../ui/design-system.js";
-import {
-  findOnboardingScenario,
-  ONBOARDING_LAB_WORKSPACE_ID,
-  ONBOARDING_SCENARIOS,
-} from "./onboarding-lab-scenarios.js";
+import { findOnboardingScenario, ONBOARDING_LAB_ACCOUNT_ID, ONBOARDING_SCENARIOS } from "./onboarding-lab-scenarios.js";
 
 export interface OnboardingLabPageProps {
   readonly onScenarioChange: (scenarioId: string) => void;
@@ -107,7 +103,7 @@ export function OnboardingLabPage({
             onRetryLoad={noop}
             refreshPending={false}
             user={user}
-            workspaceId={ONBOARDING_LAB_WORKSPACE_ID}
+            accountId={ONBOARDING_LAB_ACCOUNT_ID}
           />
         </figure>
       </section>

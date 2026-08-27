@@ -3,7 +3,6 @@ import type {
   AgentListItem,
   CreateAgentRequest,
   ImBindingHandoffStatus,
-  MeWorkspace,
   UserProfile,
   WorkspaceComputerSummary,
 } from "@opentag/shared/browser";
@@ -21,13 +20,6 @@ const computerBId = "95fe9af3-d1c6-472b-b78c-8a7ccf512750";
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 
 const user: UserProfile = { id: userId, email: "ada@example.com", displayName: "Ada" };
-const admin: MeWorkspace = {
-  id: workspaceId,
-  name: "example",
-  displayName: "Example",
-  setupCompletedAt: null,
-  grantedAt: "2026-08-20T00:00:00.000Z",
-};
 const computerA: WorkspaceComputerSummary = {
   computerId: computerAId,
   displayName: "Ada's Mac",
@@ -118,14 +110,8 @@ function installFacts({
   vi.spyOn(browserApi, "logout").mockResolvedValue();
 }
 
-function renderPage({
-  membership = admin,
-  runtime = unavailableRuntime(),
-}: {
-  membership?: MeWorkspace;
-  runtime?: RuntimeFactsAdapter;
-} = {}) {
-  return render(<OnboardingPage membership={membership} runtimeFacts={runtime} user={user} />);
+function renderPage({ runtime = unavailableRuntime() }: { runtime?: RuntimeFactsAdapter } = {}) {
+  return render(<OnboardingPage runtimeFacts={runtime} user={user} />);
 }
 
 describe("OnboardingPage", () => {
@@ -264,7 +250,7 @@ describe("OnboardingPage", () => {
         },
       ],
     });
-    render(<OnboardingPage membership={admin} user={user} />);
+    render(<OnboardingPage user={user} />);
     expect(await screen.findByText("Install Codex")).toBeTruthy();
     expect(screen.getByText("Install Codex on Ada's Mac.")).toBeTruthy();
   });
@@ -280,7 +266,7 @@ describe("OnboardingPage", () => {
       ],
       handoff: { bindingState: "active", handoffReady: true },
     });
-    render(<OnboardingPage membership={admin} user={user} />);
+    render(<OnboardingPage user={user} />);
     expect(await screen.findByRole("heading", { name: "OpenTag is ready" })).toBeTruthy();
   });
 
@@ -296,7 +282,7 @@ describe("OnboardingPage", () => {
       ],
       handoff: { bindingState: "active", handoffReady: true },
     });
-    render(<OnboardingPage membership={admin} onSetupReady={onSetupReady} user={user} />);
+    render(<OnboardingPage onSetupReady={onSetupReady} user={user} />);
 
     await waitFor(() => expect(onSetupReady).toHaveBeenCalledWith(agentId));
     expect(screen.getByRole("heading", { name: "Finishing OpenTag setup" })).toBeTruthy();
@@ -313,7 +299,7 @@ describe("OnboardingPage", () => {
       ],
       handoff: { bindingState: "active", handoffReady: true },
     });
-    render(<OnboardingPage membership={admin} user={user} />);
+    render(<OnboardingPage user={user} />);
     expect(await screen.findByRole("heading", { name: "OpenTag is ready" })).toBeTruthy();
 
     const manage = screen.getByRole("link", { name: "Manage this Agent" }) as HTMLAnchorElement;
@@ -523,7 +509,6 @@ describe("OnboardingPage", () => {
 
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith(
-        workspaceId,
         expect.objectContaining({ displayName: "Research Partner", name: "research-partner" }),
       ),
     );
@@ -550,7 +535,6 @@ describe("OnboardingPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith(
-        workspaceId,
         expect.objectContaining({ computerId: computerAId, runtimeProvider: "claude-code" }),
       ),
     );
@@ -578,7 +562,6 @@ describe("OnboardingPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
     await waitFor(() =>
       expect(create).toHaveBeenCalledWith(
-        workspaceId,
         expect.objectContaining({ computerId: computerAId, runtimeProvider: "claude-code" }),
       ),
     );
@@ -590,7 +573,7 @@ describe("OnboardingPage", () => {
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computerA] });
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
     const requests: CreateAgentRequest[] = [];
-    vi.spyOn(browserApi, "createAgent").mockImplementation(async (_workspaceId, request) => {
+    vi.spyOn(browserApi, "createAgent").mockImplementation(async (request) => {
       requests.push(request);
       if (requests.length === 1) throw new Error("Response was lost");
       serverAgents = [agent];
@@ -613,7 +596,7 @@ describe("OnboardingPage", () => {
     vi.spyOn(browserApi, "computers").mockResolvedValue({ computers: [computerA] });
     vi.spyOn(browserApi, "imBindingHandoff").mockResolvedValue(undefined);
     const requests: CreateAgentRequest[] = [];
-    const create = vi.spyOn(browserApi, "createAgent").mockImplementation(async (_workspaceId, request) => {
+    const create = vi.spyOn(browserApi, "createAgent").mockImplementation(async (request) => {
       requests.push(request);
       if (requests.length === 1) throw new Error("Connection closed before the response");
       serverAgents = [agent];
@@ -623,7 +606,7 @@ describe("OnboardingPage", () => {
     const firstPage = renderPage({ runtime });
     fireEvent.click(await screen.findByRole("button", { name: "Create Agent" }));
     expect((await screen.findByRole("alert")).textContent).toBe("Connection closed before the response");
-    const durableRecord = window.localStorage.getItem(`opentag.agent-creation.intent:${workspaceId}`);
+    const durableRecord = window.localStorage.getItem(`opentag.agent-creation.intent:${userId}`);
     expect(durableRecord).toBeTruthy();
 
     firstPage.unmount();
@@ -631,7 +614,7 @@ describe("OnboardingPage", () => {
     expect(await screen.findByRole("heading", { name: "Connect OpenTag to Feishu" })).toBeTruthy();
     expect(create).toHaveBeenCalledTimes(2);
     expect(requests[0]?.creationIntentId).toBe(requests[1]?.creationIntentId);
-    expect(window.localStorage.getItem(`opentag.agent-creation.intent:${workspaceId}`)).toBeNull();
+    expect(window.localStorage.getItem(`opentag.agent-creation.intent:${userId}`)).toBeNull();
   });
 
   it("uses one logical create across parallel page controllers", async () => {
@@ -644,8 +627,8 @@ describe("OnboardingPage", () => {
       return adminConfig();
     });
     const runtime = runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]);
-    render(<OnboardingPage membership={admin} runtimeFacts={runtime} user={user} />);
-    render(<OnboardingPage membership={admin} runtimeFacts={runtime} user={user} />);
+    render(<OnboardingPage runtimeFacts={runtime} user={user} />);
+    render(<OnboardingPage runtimeFacts={runtime} user={user} />);
     await waitFor(() => expect(screen.getAllByRole("button", { name: "Create Agent" })).toHaveLength(2));
     const actions = screen.getAllByRole("button", { name: "Create Agent" });
     fireEvent.click(actions[0] as HTMLButtonElement);
@@ -656,7 +639,7 @@ describe("OnboardingPage", () => {
   it("keeps distinct concurrent creation intents isolated", async () => {
     const requests: CreateAgentRequest[] = [];
     let betaAttempts = 0;
-    vi.spyOn(browserApi, "createAgent").mockImplementation(async (_workspaceId, request) => {
+    vi.spyOn(browserApi, "createAgent").mockImplementation(async (request) => {
       requests.push(request);
       if (request.displayName === "Beta" && betaAttempts++ === 0) throw new Error("Beta response was lost");
       return adminConfig();
@@ -673,14 +656,14 @@ describe("OnboardingPage", () => {
         <AgentCreationFlow
           facts={facts}
           initialDisplayName="Alpha"
-          workspaceId={workspaceId}
+          accountId={userId}
           onCreated={alphaCreated}
           onRefresh={() => undefined}
         />
         <AgentCreationFlow
           facts={facts}
           initialDisplayName="Beta"
-          workspaceId={workspaceId}
+          accountId={userId}
           onCreated={betaCreated}
           onRefresh={() => undefined}
         />
@@ -697,7 +680,7 @@ describe("OnboardingPage", () => {
     await waitFor(() => expect(alphaCreated).toHaveBeenCalledTimes(1));
     expect((await screen.findByRole("alert")).textContent).toContain("Beta response was lost");
     const betaRequest = requests.find((request) => request.displayName === "Beta");
-    const stored = JSON.parse(String(window.localStorage.getItem(`opentag.agent-creation.intent:${workspaceId}`))) as {
+    const stored = JSON.parse(String(window.localStorage.getItem(`opentag.agent-creation.intent:${userId}`))) as {
       records: { creationIntentId: string }[];
     };
     expect(stored.records).toHaveLength(1);
@@ -708,7 +691,7 @@ describe("OnboardingPage", () => {
     const betaRequests = requests.filter((request) => request.displayName === "Beta");
     expect(betaRequests).toHaveLength(2);
     expect(betaRequests[1]?.creationIntentId).toBe(betaRequests[0]?.creationIntentId);
-    expect(window.localStorage.getItem(`opentag.agent-creation.intent:${workspaceId}`)).toBeNull();
+    expect(window.localStorage.getItem(`opentag.agent-creation.intent:${userId}`)).toBeNull();
   });
 
   it("reloads Server facts after Computer setup succeeds", async () => {
@@ -800,8 +783,6 @@ describe("OnboardingPage", () => {
   });
 
   it("keeps ready route selection usable when localStorage throws", async () => {
-    const storageWorkspaceId = "a3fda800-7ce2-4338-aae8-3d2120401ed6";
-    const storageAdmin = { ...admin, id: storageWorkspaceId };
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("Storage unavailable");
     });
@@ -811,7 +792,6 @@ describe("OnboardingPage", () => {
     installFacts({ computers: [computerA, computerB] });
 
     renderPage({
-      membership: storageAdmin,
       runtime: runtimeFacts([
         { computerId: computerAId, provider: "codex", runtimeReady: true },
         { computerId: computerBId, provider: "codex", runtimeReady: true },
@@ -827,7 +807,6 @@ describe("OnboardingPage", () => {
 
   it("publishes an explicit Agent choice for the route URL anchor", async () => {
     const storageWorkspaceId = "b3fda800-7ce2-4338-aae8-3d2120401ed6";
-    const storageAdmin = { ...admin, id: storageWorkspaceId };
     const researchAgent: AgentListItem = {
       ...agent,
       id: "2a63a21e-f6c7-4474-91ea-4dabf0566a24",
@@ -845,7 +824,6 @@ describe("OnboardingPage", () => {
 
     render(
       <OnboardingPage
-        membership={storageAdmin}
         onTargetAgentChange={onTargetAgentChange}
         runtimeFacts={runtimeFacts([
           { computerId: computerAId, provider: "codex", runtimeReady: true, status: "ready" },

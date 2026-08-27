@@ -3,7 +3,6 @@ import type { OnboardingProvider } from "./flow.js";
 import { normalizeOnboardingProviders } from "./provider-readiness.js";
 
 export interface RuntimeFactsInput {
-  readonly workspaceId: string;
   readonly agents: readonly AgentSummary[];
   readonly computers: readonly WorkspaceComputerSummary[];
 }

@@ -7,7 +7,6 @@ import {
   UpdateAgentRequestSchema,
   UpdateAgentRuntimeConfigSchema,
 } from "@opentag/shared";
-import { selectWorkspace } from "../selection/workspace.js";
 import { type AgentCommandDependencies, resolveAgentCommandContext } from "./context.js";
 
 export interface AgentCreateOptions extends AgentCommandDependencies {
@@ -20,7 +19,6 @@ export interface AgentCreateOptions extends AgentCommandDependencies {
   name: string;
   reasoningEffort?: string;
   runtimeProvider: string;
-  workspaceName?: string;
 }
 
 export interface AgentCreateResult {
@@ -46,7 +44,7 @@ export function selectComputer(
 ): WorkspaceComputerSummary {
   if (requestedComputerId) {
     const selected = response.computers.find((computer) => computer.computerId === requestedComputerId);
-    if (!selected) throw new Error(`Computer "${requestedComputerId}" is not enrolled in the selected internal scope`);
+    if (!selected) throw new Error(`Computer "${requestedComputerId}" is not enrolled by this Account`);
     return selected;
   }
   if (response.computers.length === 1) {
@@ -61,9 +59,7 @@ export function selectComputer(
 export async function runAgentCreate(options: AgentCreateOptions): Promise<AgentCreateResult> {
   const runtimeConfig = await createRuntimeConfig(options);
   const { api, accessToken } = await resolveAgentCommandContext(options);
-  const me = await api.me(accessToken);
-  const workspace = selectWorkspace(me, options.workspaceName);
-  const computers = await api.listWorkspaceComputers(accessToken, workspace.id);
+  const computers = await api.listWorkspaceComputers(accessToken);
   const computer = selectComputer(computers, options.computerId);
   const input = CreateAgentRequestSchema.parse({
     name: options.name,
@@ -72,7 +68,7 @@ export async function runAgentCreate(options: AgentCreateOptions): Promise<Agent
     computerId: computer.computerId,
     ...(runtimeConfig ? { runtimeConfig } : {}),
   });
-  const agent = await api.createAgent(accessToken, workspace.id, input);
+  const agent = await api.createAgent(accessToken, input);
   return {
     agent,
     ...(computer.connectionStatus === "offline"

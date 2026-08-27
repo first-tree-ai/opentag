@@ -586,12 +586,13 @@ describe("background and WebSocket tracing", () => {
       workspaceId: randomUUID(),
       computerId: randomUUID(),
     };
+    const registry = new ConnectionRegistry();
     const app = createApp({
       authService: runtimeAuthService() as never,
       machineAuthService: { verifyMachineToken: vi.fn().mockResolvedValue(machine) } as never,
       computerService: runtimeComputerService() as never,
       runtime: {
-        registry: new ConnectionRegistry(),
+        registry,
         business: {
           parse: (value) => runtimeTestFrame(value),
           laneKey: (frame) => String(frame.key),
@@ -657,8 +658,16 @@ describe("background and WebSocket tracing", () => {
     const overloadedRequestId = randomUUID();
     socket.send(JSON.stringify({ type: "test:work", requestId: overloadedRequestId, key: "slow" }));
     expect(await frames.next()).toMatchObject({ type: "test:result", requestId: overloadedRequestId, status: "busy" });
+    expect(registry.currentInstanceId(machine.workspaceComputerId)).toBe(registration.instanceId);
     socket.close();
-    await new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    // The client socket's own close event proves nothing about the server: the server observes the
+    // close on a separate socket object, and only that handler aborts the session, closes the
+    // scheduler, and drops the registry entry. Releasing the held work before then lets it complete
+    // against a connection the server still considers live, which is traced as "handled". Wait for
+    // the registry entry to disappear so the release always happens after the server-observed close.
+    await vi.waitFor(() => expect(registry.currentInstanceId(machine.workspaceComputerId)).toBeUndefined(), {
+      timeout: 5_000,
+    });
     releaseSlow?.();
     await vi.waitFor(() => {
       const outcomes = exporter

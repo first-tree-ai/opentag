@@ -1732,7 +1732,7 @@ code {
 .onboarding-journey-intro h1 {
   max-width: 8ch;
   margin-bottom: 16px;
-  font-size: var(--text-display);
+  font-size: var(--text-title);
   line-height: var(--lh-tight);
   text-wrap: balance;
 }
@@ -1956,10 +1956,8 @@ code {
 
 .onboarding-runtime-summary dt {
   color: var(--muted);
-  font-family: var(--font-mono);
-  font-size: var(--text-micro);
-  letter-spacing: var(--track-label);
-  text-transform: uppercase;
+  font-size: var(--text-meta);
+  font-weight: var(--fw-medium);
 }
 
 .onboarding-runtime-summary dd {
@@ -2033,6 +2031,11 @@ code {
   justify-content: flex-end;
 }
 
+.onboarding-endpoint-mark-image {
+  object-fit: contain;
+  padding: 8px;
+}
+
 .onboarding-endpoint-mark {
   display: inline-flex;
   width: 42px;
@@ -2102,6 +2105,14 @@ code {
   background: var(--brand);
 }
 
+/* A link being built and a link that has broken are not the same waiting, so they do not look
+   the same either. */
+.onboarding-messaging-connection[data-status="attention"] .onboarding-messaging-bridge span {
+  border-color: var(--color-status-danger, #8a2a24);
+  background: #f6e9e7;
+  color: #6f211c;
+}
+
 .onboarding-workspace-body {
   padding: 38px 44px 48px;
 }
@@ -2116,6 +2127,15 @@ code {
   width: 100%;
   border-top: 0;
   padding-top: 0;
+}
+
+/* `form-card` dresses a form that owns its page. Here the stage card already is that surface, so the
+   form sits directly on it — the same shape step 02 has, rather than a second card inside the first. */
+.onboarding-action > .form-card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
 }
 
 .onboarding-action-heading {
@@ -2155,7 +2175,10 @@ code {
   gap: 14px;
 }
 
-.onboarding-action .ds-button:not(.ds-button--compact) {
+/* Onboarding spends a step on one action, so its buttons are sized as that action. Text buttons
+   are excluded by variant: `inline` carries no box of its own, and giving it one centres its label
+   inside 190px of nothing, away from the control it belongs to. */
+.onboarding-action .ds-button:not(.ds-button--compact, .ds-button--inline) {
   min-height: 46px;
   min-width: 190px;
   border-radius: 10px;
@@ -2499,13 +2522,15 @@ textarea:focus {
 }
 
 .agent-name-summary {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
   padding: 0 2px;
 }
 
 .agent-name-handle {
   min-width: 0;
   overflow: hidden;
-  color: var(--muted);
   font-family: var(--font-mono);
   font-size: var(--text-meta);
   font-weight: var(--fw-medium);
@@ -2513,8 +2538,10 @@ textarea:focus {
   white-space: nowrap;
 }
 
-.agent-name-handle:hover {
-  color: var(--foreground);
+.agent-name-required {
+  margin: 0;
+  color: var(--secondary-foreground);
+  font-size: var(--text-meta);
 }
 
 #agent-name-editor {
@@ -2536,13 +2563,9 @@ textarea:focus {
 
 .agent-create-runtime-header h3 {
   margin: 0;
-  font-size: var(--text-subsection);
-}
-
-.agent-create-runtime-header p {
-  margin: 4px 0 0;
-  color: var(--muted);
-  font-size: var(--text-meta);
+  color: var(--secondary-foreground);
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
 }
 
 .agent-create-route-summary {
@@ -2576,13 +2599,12 @@ textarea:focus {
   color: var(--muted);
   font-size: var(--text-meta);
   font-weight: var(--fw-medium);
-  letter-spacing: var(--track-label);
-  text-transform: uppercase;
 }
 
 .agent-create-route-copy strong {
   overflow: hidden;
   font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -3832,7 +3854,7 @@ textarea:focus {
     gap: 5px;
   }
 
-  .onboarding-action .ds-button,
+  .onboarding-action .ds-button:not(.ds-button--compact, .ds-button--inline),
   .onboarding-feedback > .ds-button {
     width: 100%;
   }
@@ -4494,40 +4516,91 @@ textarea:focus {
   }
 }
 
-/* Staging Onboarding Lab: an internal review surface, not a product page. */
-.onboarding-lab-section {
-  margin-bottom: 32px;
+/* Staging Onboarding Lab. The page under it *is* the onboarding page, so everything the Lab adds
+   floats above it and is styled to read as tooling rather than as part of the product. */
+.onboarding-lab-switcher {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 40;
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+  max-width: min(380px, calc(100vw - 40px));
 }
 
-.onboarding-lab-section h2 {
-  margin-bottom: 8px;
+.onboarding-lab-switcher-toggle {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid rgb(22 33 27 / 12%);
+  border-radius: 12px;
+  background: var(--foreground);
+  box-shadow: 0 10px 30px rgb(45 62 34 / 22%);
+  color: var(--surface);
+  padding: 9px 15px;
+  text-align: right;
+  cursor: pointer;
 }
 
-.onboarding-lab-section > p {
-  max-width: 640px;
-  margin-bottom: 16px;
+.onboarding-lab-switcher-toggle-eyebrow {
+  color: rgb(253 252 247 / 62%);
+  font-size: var(--text-micro);
+  font-weight: var(--fw-bold);
+  letter-spacing: var(--track-label);
+  text-transform: uppercase;
+}
+
+.onboarding-lab-switcher-toggle-scenario {
+  overflow: hidden;
+  font-size: var(--text-ui);
+  font-weight: var(--fw-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.onboarding-lab-switcher-panel {
+  display: grid;
+  gap: 16px;
+  width: min(380px, calc(100vw - 40px));
+  max-height: min(74dvh, 720px);
+  overflow-y: auto;
+  border: 1px solid var(--strong-border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgb(45 62 34 / 20%);
+  padding: 18px;
+  text-align: left;
+}
+
+.onboarding-lab-switcher-intro h2 {
+  margin: 6px 0 6px;
+  font-size: var(--text-subsection);
+}
+
+.onboarding-lab-switcher-intro p {
+  margin: 0;
   color: var(--muted);
-  font-size: var(--text-body);
+  font-size: var(--text-meta);
 }
 
 .onboarding-lab-scenarios {
   display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  margin-bottom: 16px;
+  gap: 6px;
 }
 
 .onboarding-lab-scenario {
   display: grid;
   align-content: start;
-  gap: 4px;
+  gap: 3px;
   min-width: 0;
-  height: 100%;
-  padding: 12px 14px;
+  padding: 9px 11px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
   color: var(--secondary-foreground);
+  font-size: var(--text-ui);
   font-weight: var(--fw-regular);
   text-align: left;
   white-space: normal;
@@ -4545,29 +4618,34 @@ textarea:focus {
   font-size: var(--text-meta);
 }
 
-/* The preview embeds the real onboarding shell, so its full-viewport sizing is scoped here. */
-.onboarding-lab-preview {
-  position: relative;
-  max-height: min(72dvh, 900px);
-  overflow: auto;
-  border: 1px solid var(--strong-border);
-  border-radius: var(--radius);
-}
-
-/* Reviewers judge the desktop layout, so the frame scrolls instead of reflowing the page. */
-.onboarding-lab-preview .onboarding-shell {
-  min-width: 1120px;
-  min-height: 100%;
-}
-
-.onboarding-lab-preview .onboarding-shell::before {
-  position: absolute;
-}
-
-.onboarding-lab-section .notice.error {
+.onboarding-lab-switcher-reset {
   display: grid;
-  gap: 12px;
   justify-items: start;
+  gap: 10px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.onboarding-lab-switcher-reset h3 {
+  margin: 0;
+  font-size: var(--text-ui);
+}
+
+.onboarding-lab-switcher-reset p {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--text-meta);
+}
+
+.onboarding-lab-switcher-reset .notice {
+  margin: 0;
+  font-size: var(--text-meta);
+}
+
+.onboarding-lab-switcher-reset .notice.error {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
 }
 
 @media (prefers-reduced-motion: reduce) {

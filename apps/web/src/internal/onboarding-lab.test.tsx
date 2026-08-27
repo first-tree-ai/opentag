@@ -33,7 +33,25 @@ function renderLab(overrides: Partial<Parameters<typeof OnboardingLabPage>[0]> =
   return { onResetSucceeded, onScenarioChange };
 }
 
+/**
+ * The onboarding surface the Lab renders as its page. The Lab adds no frame of its own, so this is
+ * the same element production renders, and the floating switcher is the only thing outside it.
+ */
+function onboardingSurface(): HTMLElement {
+  const shell = document.querySelector<HTMLElement>(".onboarding-shell");
+  if (!shell) throw new Error("The Lab did not render the onboarding surface");
+  return shell;
+}
+
+/** Opens the floating switcher, which is where every control the Lab adds lives. */
+function openSwitcher(): HTMLElement {
+  const toggle = screen.getByRole("button", { name: /Onboarding Lab/ });
+  if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+  return toggle;
+}
+
 async function confirmReset() {
+  openSwitcher();
   fireEvent.click(screen.getByRole("button", { name: "Reset shared account and start onboarding" }));
   const dialog = await screen.findByRole("dialog");
   fireEvent.click(within(dialog).getByRole("button", { name: "Reset and start onboarding" }));
@@ -46,6 +64,7 @@ describe("Onboarding Lab page", () => {
 
   it("warns that the staging Account is shared before any reset", () => {
     renderLab();
+    openSwitcher();
 
     expect(screen.getByText(/Shared staging test account/)).toBeTruthy();
     expect(screen.getByText(/can interrupt another tester/)).toBeTruthy();
@@ -62,8 +81,7 @@ describe("Onboarding Lab page", () => {
           onScenarioChange={vi.fn()}
         />,
       );
-      expect(screen.getByLabelText(`Onboarding preview: ${scenario.title}`)).toBeTruthy();
-      expect(screen.getByRole("heading", { level: 1, name: "Set up OpenTag" })).toBeTruthy();
+      expect(within(onboardingSurface()).getByRole("heading", { level: 1, name: "Set up OpenTag" })).toBeTruthy();
       view.unmount();
     }
   });
@@ -83,7 +101,7 @@ describe("Onboarding Lab page", () => {
       // Clicking a control can reveal another, so keep going until the preview stops changing.
       const clicked = new Set<Element>();
       for (let pass = 0; pass < 4; pass += 1) {
-        const preview = screen.getByLabelText(`Onboarding preview: ${scenario.title}`);
+        const preview = onboardingSurface();
         const controls = [
           ...within(preview).queryAllByRole("button"),
           ...within(preview).queryAllByRole("link"),
@@ -138,6 +156,7 @@ describe("Onboarding Lab page", () => {
 
   it("keeps only the selected fixture in the URL", () => {
     const { onScenarioChange } = renderLab();
+    openSwitcher();
 
     fireEvent.click(screen.getByRole("button", { name: /Computer offline/ }));
 
@@ -147,6 +166,7 @@ describe("Onboarding Lab page", () => {
   it("requires one confirmation before it resets the shared Account", async () => {
     const reset = vi.spyOn(browserApi, "resetOnboardingLab").mockResolvedValue();
     renderLab();
+    openSwitcher();
 
     fireEvent.click(screen.getByRole("button", { name: "Reset shared account and start onboarding" }));
     const dialog = await screen.findByRole("dialog");
@@ -181,7 +201,7 @@ describe("Onboarding Lab page", () => {
     const failure = await screen.findByRole("alert");
     expect(within(failure).getByText("The Account still has active OpenTag resources")).toBeTruthy();
     expect(onResetSucceeded).not.toHaveBeenCalled();
-    expect(screen.getByRole("heading", { level: 1, name: "Onboarding Lab" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Onboarding Lab/ })).toBeTruthy();
 
     fireEvent.click(within(failure).getByRole("button", { name: "Retry" }));
     const dialog = await screen.findByRole("dialog");
@@ -263,8 +283,20 @@ describe("Onboarding Lab route", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Onboarding Lab" })).toBeTruthy();
+    // The Lab renders the onboarding page itself; only the floating switcher names the Lab.
+    expect(await screen.findByRole("button", { name: /Onboarding Lab/ })).toBeTruthy();
+    expect(within(onboardingSurface()).getByRole("heading", { level: 1, name: "Set up OpenTag" })).toBeTruthy();
     expect(window.location.pathname).toBe("/internal/onboarding-lab");
+  });
+
+  it("renders the onboarding page without the application navigation", async () => {
+    installApi();
+
+    render(<App />);
+
+    await screen.findByRole("button", { name: /Onboarding Lab/ });
+    expect(document.querySelector(".shell")).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Primary navigation" })).toBeNull();
   });
 
   it("renders Not Found where the deployment offers no Lab at all", async () => {
@@ -280,8 +312,9 @@ describe("Onboarding Lab route", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Onboarding Lab" })).toBeTruthy();
-    expect(screen.getByRole("heading", { level: 2, name: "Scenario Preview" })).toBeTruthy();
+    await screen.findByRole("button", { name: /Onboarding Lab/ });
+    openSwitcher();
+    expect(screen.getByRole("heading", { level: 2, name: "Onboarding Lab" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Reset shared account and start onboarding" })).toBeNull();
     expect(resetRequests).toBe(0);
   });
@@ -292,7 +325,8 @@ describe("Onboarding Lab route", () => {
 
     render(<App />);
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Onboarding Lab" })).toBeTruthy();
+    await screen.findByRole("button", { name: /Onboarding Lab/ });
+    openSwitcher();
     expect(screen.getAllByRole("button", { name: /Brand new account/ }).length).toBeGreaterThan(0);
     expect(screen.queryByRole("heading", { name: "OpenTag is not ready for this account" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Reset shared account and start onboarding" })).toBeNull();
@@ -304,7 +338,8 @@ describe("Onboarding Lab route", () => {
 
     render(<App />);
 
-    const preview = await screen.findByLabelText("Onboarding preview: Computer offline");
+    await screen.findByRole("button", { name: /Onboarding Lab/ });
+    const preview = onboardingSurface();
     expect(within(preview).getByRole("heading", { level: 2, name: "Prepare your Agent" })).toBeTruthy();
     expect(within(preview).getAllByText("Computer offline").length).toBeGreaterThan(0);
     expect(within(preview).getAllByText("Reconnect").length).toBeGreaterThan(0);
@@ -314,7 +349,7 @@ describe("Onboarding Lab route", () => {
     installApi({ setupCompletedAt: "2026-08-20T00:00:00.000Z", meDelayMs: 30 });
     window.history.replaceState({}, "", "/internal/onboarding-lab?scenario=setup-complete");
     render(<App />);
-    await screen.findByRole("heading", { level: 1, name: "Onboarding Lab" });
+    await screen.findByRole("button", { name: /Onboarding Lab/ });
     const before = meRequests;
 
     await confirmReset();
@@ -334,7 +369,7 @@ describe("Onboarding Lab route", () => {
       afterResetSetupCompletedAt: "2026-08-20T00:00:00.000Z",
     });
     render(<App />);
-    await screen.findByRole("heading", { level: 1, name: "Onboarding Lab" });
+    await screen.findByRole("button", { name: /Onboarding Lab/ });
 
     await confirmReset();
 
@@ -346,7 +381,7 @@ describe("Onboarding Lab route", () => {
   it("stays on the Lab when the authoritative refresh fails", async () => {
     installApi({ setupCompletedAt: "2026-08-20T00:00:00.000Z", meFailsAfterReset: true });
     render(<App />);
-    await screen.findByRole("heading", { level: 1, name: "Onboarding Lab" });
+    await screen.findByRole("button", { name: /Onboarding Lab/ });
 
     await confirmReset();
 

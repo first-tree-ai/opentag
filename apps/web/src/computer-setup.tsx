@@ -7,10 +7,22 @@ const COMPUTER_POLL_INTERVAL_MS = 1_500;
 const COPY_FEEDBACK_MS = 2_000;
 const CONNECT_CODE_EXPIRED_MESSAGE = "This Computer connection command expired. Generate a new one to continue.";
 const COPY_FALLBACK_HINT = "Copying is unavailable here. The command is selected; press Ctrl or Cmd + C.";
+/**
+ * The command and validity Preview shows in place of an issued one. Review needs the shape of this
+ * step — a long install-and-connect line, its copy affordance and a running validity — and none of
+ * it is a fact about a Computer, so it is stated here rather than read from the Server.
+ */
+const PREVIEW_BOOTSTRAP_COMMAND =
+  "npm i -g @opentag/cli && opentag computer connect --server https://opentag.example.com -- preview-connect-code";
+const PREVIEW_CONNECT_CODE_REMAINING_MS = 900_000;
 
 export interface ComputerSetupProps {
   onConnected?: (computer: WorkspaceComputerSummary) => void;
-  /** Renders the panel for review only: it issues no connect code and starts no Computer polling. */
+  /**
+   * Renders the panel for review only: it issues no connect code, starts no Computer polling and
+   * never resolves a connection. The panel still answers the primary action, from a fixed command,
+   * so review sees the same hierarchy production shows after the code is issued.
+   */
   preview?: boolean;
   /** Scopes the panel to one enrollment so a recovery flow names the Computer it came from. */
   target?: { computerId: string; displayName: string };
@@ -98,7 +110,19 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
 
   async function connectComputer() {
     // Preview must never issue a connect code: that is durable Server state, not a rendered state.
-    if (preview) return;
+    // It renders the state that follows one instead. `pollCycle` stays at 0, which is what keeps the
+    // poll and expiry effect below inert, so no Computer is ever read and the validity never counts
+    // down to a failure Preview cannot recover from.
+    if (preview) {
+      setError(undefined);
+      setBootstrapCommand(PREVIEW_BOOTSTRAP_COMMAND);
+      setComputerConnected(false);
+      setRemainingMs(PREVIEW_CONNECT_CODE_REMAINING_MS);
+      setCopied(false);
+      setCopyHint(undefined);
+      setWaitingForComputer(true);
+      return;
+    }
     const attempt = connectAttempt.current + 1;
     connectAttempt.current = attempt;
     setError(undefined);
@@ -192,8 +216,14 @@ function ComputerSetupLifecycle({ onConnected, preview = false, target }: Comput
   return (
     <section className="panel">
       <h2>{targetName ? `Reconnect ${targetName}` : "Connect a Local Computer"}</h2>
-      <p>Generate a short-lived command, then run it in a terminal on {targetName ?? "the Computer"}.</p>
-      <Button className="connect-command-primary" disabled={preview} onClick={() => void connectComputer()}>
+      {/*
+        Connecting a new Computer needs no machine named: whichever terminal runs the command is the
+        Computer that gets enrolled, so saying "on this computer" would only be wrong for anyone who
+        runs it over SSH. Reconnecting is the opposite — one enrollment is being restored, and it has
+        to happen on that machine.
+      */}
+      <p>Generate a command, then run it in the terminal{targetName ? ` on ${targetName}` : ""}.</p>
+      <Button className="connect-command-primary" onClick={() => void connectComputer()}>
         Generate connection command
       </Button>
       {bootstrapCommand ? (

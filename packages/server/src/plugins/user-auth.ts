@@ -23,6 +23,30 @@ export interface UserAuthPreHandlerOptions {
   publicOrigin?: string;
 }
 
+/**
+ * Resolves who a request is, across every credential this server accepts, or `undefined` when it carries none.
+ *
+ * Routes that authenticate outside the preHandler need the same answer it would give — otherwise a browser holding
+ * one kind of credential works everywhere except there.
+ */
+export async function resolveAuthenticatedUserId(
+  request: FastifyRequest,
+  authService: UserAuthService,
+  options: UserAuthPreHandlerOptions = {},
+): Promise<string | undefined> {
+  if (options.betterAuth) {
+    const session = await options.betterAuth.api.getSession({ headers: fromNodeHeaders(request.headers) });
+    if (session) return session.user.id;
+  }
+  const authorization = request.headers.authorization;
+  const legacyToken = authorization?.startsWith("Bearer ")
+    ? authorization.slice("Bearer ".length).trim()
+    : parseCookies(request.headers.cookie)[BROWSER_COOKIE_NAMES.access];
+  if (!legacyToken) return undefined;
+  const authenticated = await authService.getAuthenticatedUser(legacyToken);
+  return authenticated.me.user.id;
+}
+
 export function createUserAuthPreHandler(authService: UserAuthService, options: UserAuthPreHandlerOptions = {}) {
   return async function userAuthPreHandler(request: FastifyRequest, _reply: FastifyReply): Promise<void> {
     const authorization = request.headers.authorization;

@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 import { AuthProvidersResponseSchema, HTTP_PATHS } from "@opentag/shared";
+import { fromNodeHeaders } from "better-auth/node";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { OpenTagBetterAuth } from "../auth/better-auth.js";
@@ -206,13 +207,25 @@ export function registerBrowserAuthRoutes(
   app.post(HTTP_PATHS.authBrowserLogout, async (request, reply) => {
     requireBrowserMutationSecurity(request, options.publicOrigin);
     if (options.betterAuth) {
-      // Revokes the session row rather than only dropping the cookie, which is what the legacy JWTs could never do.
-      const response = await callBetterAuth(options.betterAuth.instance, options.betterAuth.publicUrl, request, {
+      const instance = options.betterAuth.instance;
+      const session = await instance.api.getSession({ headers: fromNodeHeaders(request.headers) });
+      const response = await callBetterAuth(instance, options.betterAuth.publicUrl, request, {
         method: "POST",
         path: "/sign-out",
         body: {},
       });
       copyBetterAuthCookies(reply, response);
+      /*
+       * Better Auth's sign-out swallows a failed session delete and still reports success, so taking its word would
+       * let this route promise revocation while quietly degrading to a cookie-only logout. Reading the row back is
+       * what makes the promise checkable: if it survived, the caller is still signed in and must be told so.
+       */
+      if (session) {
+        const survivor = await (await instance.$context).internalAdapter.findSession(session.session.token);
+        if (survivor) {
+          throw new AuthServiceError("INTERNAL_ERROR", "transient", "Sign-out could not revoke the session", 500);
+        }
+      }
     }
     // Cleared unconditionally: a browser mid-rollout can hold either credential, and signing out must end both.
     clearBrowserSessionCookies(reply, options.secureCookies);

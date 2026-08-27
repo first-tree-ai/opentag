@@ -100,7 +100,6 @@ async function fixture() {
   const oauth = new SlackOAuthService({
     api: api as never,
     app: slackApp,
-    authenticateUser: async () => ({ userId: bootstrap.userId }),
     database: client.database,
     now: () => now,
     slack,
@@ -141,7 +140,7 @@ describe("Slack distributed OAuth adapter", () => {
       ).toHaveLength(0);
 
       const completed = await value.oauth.callback({
-        accessToken: "browser-access",
+        authenticatedUserId: value.bootstrap.userId,
         code: "slack-oauth-code",
         sessionBinding: started.sessionBinding,
         state,
@@ -173,7 +172,7 @@ describe("Slack distributed OAuth adapter", () => {
 
       await expect(
         value.oauth.callback({
-          accessToken: "browser-access",
+          authenticatedUserId: value.bootstrap.userId,
           code: "slack-oauth-code",
           sessionBinding: started.sessionBinding,
           state,
@@ -199,7 +198,7 @@ describe("Slack distributed OAuth adapter", () => {
       if (!state) throw new Error("OAuth start did not return state");
       await expect(
         value.oauth.callback({
-          accessToken: "browser-access",
+          authenticatedUserId: value.bootstrap.userId,
           code: "slack-oauth-code",
           sessionBinding: started.sessionBinding,
           state,

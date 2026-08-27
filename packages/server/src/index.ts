@@ -234,10 +234,6 @@ export async function startServer(): Promise<void> {
       ? new SlackOAuthService({
           api: slackApi,
           app: config.slackOAuth,
-          authenticateUser: async (accessToken) => {
-            const authenticated = await authService.getAuthenticatedUser(accessToken);
-            return { userId: authenticated.me.user.id };
-          },
           database,
           slack: slackConfigurationService,
           state: new SlackOAuthStateService(config.jwtSecret),

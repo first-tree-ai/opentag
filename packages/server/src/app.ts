@@ -187,7 +187,11 @@ export function createApp(options: CreateAppOptions = {}) {
       ...(publicOrigin ? { publicOrigin } : {}),
     };
     if (options.betterAuth) {
-      registerBetterAuthRoutes(app, options.betterAuth.instance, options.betterAuth.publicUrl);
+      registerBetterAuthRoutes(app, options.betterAuth.instance, {
+        publicUrl: options.betterAuth.publicUrl,
+        secureCookies: options.browserAuth?.secureCookies ?? true,
+        sessionTtlSeconds: options.browserAuth?.refreshTokenTtlSeconds ?? 60 * 60 * 24 * 7,
+      });
     }
     registerAuthRoutes(app, authService);
     registerMeRoutes(app, authService, {
@@ -237,7 +241,7 @@ export function createApp(options: CreateAppOptions = {}) {
         authOptions,
       );
     }
-    if (options.slackOAuth) registerSlackOAuthRoutes(app, options.slackOAuth);
+    if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
     if (options.imResourceService && options.machineAuthService) {
       registerImResourceRoute(app, options.machineAuthService, options.imResourceService);
     }

@@ -153,6 +153,37 @@ describe("Better Auth over the existing Account tables", () => {
     expect(await client.database.select().from(workspaceAdminGrants)).toHaveLength(1);
   });
 
+  it("does not restore a Workspace grant that was revoked", async () => {
+    /*
+     * "Has no active grant" is not the same as "is new". Provisioning on that basis would hand a revoked Account a
+     * fresh Workspace and Admin grant on its next sign-in, undoing the revocation. Only an Account with no grant in
+     * its history is new.
+     */
+    const userId = await seedLegacyAccount("google-subject-revoked", "revoked@example.com", "Revoked Account");
+    const auth = createAuth();
+    const context = await auth.$context;
+    await context.internalAdapter.createSession(userId);
+    const [granted] = await client.database
+      .select({ id: workspaceAdminGrants.id })
+      .from(workspaceAdminGrants)
+      .where(eq(workspaceAdminGrants.userId, userId));
+    if (!granted) throw new Error("The Account was not provisioned");
+
+    await client.database
+      .update(workspaceAdminGrants)
+      .set({ revokedAt: new Date(), revokedByUserId: userId })
+      .where(eq(workspaceAdminGrants.id, granted.id));
+
+    await context.internalAdapter.createSession(userId);
+
+    const grants = await client.database
+      .select()
+      .from(workspaceAdminGrants)
+      .where(eq(workspaceAdminGrants.userId, userId));
+    expect(grants).toHaveLength(1);
+    expect(grants[0]?.revokedAt).not.toBeNull();
+  });
+
   it("never persists provider credentials on the identity row", async () => {
     const userId = await seedLegacyAccount("google-subject-tokens", "tokens@example.com", "Token Account");
     const auth = createAuth();

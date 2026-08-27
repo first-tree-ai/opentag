@@ -1,6 +1,6 @@
 import { fromNodeHeaders } from "better-auth/node";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { appendSetCookies } from "../services/auth/browser-cookies.js";
+import { appendSetCookies, setBrowserCsrfCookie } from "../services/auth/browser-cookies.js";
 import { BETTER_AUTH_BASE_PATH, type OpenTagBetterAuth } from "./better-auth.js";
 
 /**
@@ -17,7 +17,19 @@ import { BETTER_AUTH_BASE_PATH, type OpenTagBetterAuth } from "./better-auth.js"
  */
 const PUBLISHED_PATHS = [{ method: "GET" as const, path: "/callback/:provider" }];
 
-export function registerBetterAuthRoutes(app: FastifyInstance, auth: OpenTagBetterAuth, publicUrl: string): void {
+export interface BetterAuthRoutesOptions {
+  publicUrl: string;
+  secureCookies: boolean;
+  /** Matches the session lifetime the double-submit token accompanies. */
+  sessionTtlSeconds: number;
+}
+
+export function registerBetterAuthRoutes(
+  app: FastifyInstance,
+  auth: OpenTagBetterAuth,
+  options: BetterAuthRoutesOptions,
+): void {
+  const publicUrl = options.publicUrl;
   app.register(async (authApp) => {
     authApp.removeAllContentTypeParsers();
     authApp.addContentTypeParser("*", { parseAs: "buffer" }, (_request, body, done) => {
@@ -28,8 +40,21 @@ export function registerBetterAuthRoutes(app: FastifyInstance, auth: OpenTagBett
       authApp.route({
         method,
         url: `${BETTER_AUTH_BASE_PATH}${path}`,
-        handler: async (request, reply) =>
-          sendBetterAuthResponse(reply, await callBetterAuth(auth, publicUrl, request)),
+        handler: async (request, reply) => {
+          const response = await callBetterAuth(auth, publicUrl, request);
+          /*
+           * A Better Auth sign-in issues its own session cookie and knows nothing about OpenTag's double-submit
+           * token, which every browser mutation — including sign-out — requires. Issuing it alongside the session is
+           * what makes a freshly signed-in browser able to write at all.
+           */
+          if (await isSessionEstablished(auth, response)) {
+            setBrowserCsrfCookie(reply, {
+              maxAgeSeconds: options.sessionTtlSeconds,
+              secure: options.secureCookies,
+            });
+          }
+          return sendBetterAuthResponse(reply, response);
+        },
       });
     }
   });
@@ -92,4 +117,10 @@ export async function sendBetterAuthResponse(reply: FastifyReply, response: Resp
   copyBetterAuthCookies(reply, response);
   if (!response.body) return reply.send(null);
   return reply.send(Buffer.from(await response.arrayBuffer()));
+}
+
+/** Whether a Better Auth response handed the browser a session cookie. */
+async function isSessionEstablished(auth: OpenTagBetterAuth, response: Response): Promise<boolean> {
+  const sessionCookieName = (await auth.$context).authCookies.sessionToken.name;
+  return response.headers.getSetCookie().some((value) => value.split("=", 1)[0]?.trim() === sessionCookieName);
 }

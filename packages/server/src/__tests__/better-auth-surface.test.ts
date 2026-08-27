@@ -22,7 +22,11 @@ function authService(): UserAuthService {
  */
 function recordingBetterAuth(): { handler: ReturnType<typeof vi.fn>; instance: OpenTagBetterAuth } {
   const handler = vi.fn(async () => new Response("reached", { status: 200 }));
-  return { handler, instance: { api: { getSession: vi.fn() }, handler } as unknown as OpenTagBetterAuth };
+  const context = Promise.resolve({ authCookies: { sessionToken: { name: "opentag.session_token" } } });
+  return {
+    handler,
+    instance: { $context: context, api: { getSession: vi.fn() }, handler } as unknown as OpenTagBetterAuth,
+  };
 }
 
 function build(betterAuth: OpenTagBetterAuth) {
@@ -61,6 +65,40 @@ describe("published Better Auth surface", () => {
       expect(response.statusCode, `${request.method} ${request.url} reached Better Auth`).toBe(404);
     }
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("issues the double-submit token alongside a session, so a fresh sign-in can mutate", async () => {
+    /*
+     * Better Auth's session cookie is not enough on its own: every browser mutation, sign-out included, also needs
+     * OpenTag's readable double-submit token. Without this a user who signs in can read but never write.
+     */
+    const handler = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: "/agents", "set-cookie": "opentag.session_token=abc; Path=/; HttpOnly" },
+        }),
+    );
+    const context = Promise.resolve({ authCookies: { sessionToken: { name: "opentag.session_token" } } });
+    const app = build({ $context: context, api: { getSession: vi.fn() }, handler } as unknown as OpenTagBetterAuth);
+
+    const response = await app.inject({ method: "GET", url: "/api/v1/auth/callback/google?code=x&state=y" });
+
+    const cookies = ([] as string[]).concat(response.headers["set-cookie"] as string | string[]);
+    expect(cookies.some((value) => value.startsWith("opentag.session_token="))).toBe(true);
+    expect(cookies.some((value) => value.startsWith("opentag_csrf="))).toBe(true);
+  });
+
+  it("does not hand out a double-submit token when sign-in failed", async () => {
+    const handler = vi.fn(async () => new Response(JSON.stringify({ error: "nope" }), { status: 401 }));
+    const context = Promise.resolve({ authCookies: { sessionToken: { name: "opentag.session_token" } } });
+    const app = build({ $context: context, api: { getSession: vi.fn() }, handler } as unknown as OpenTagBetterAuth);
+
+    const response = await app.inject({ method: "GET", url: "/api/v1/auth/callback/google?error=denied&state=y" });
+
+    const header = response.headers["set-cookie"];
+    const cookies = header === undefined ? [] : ([] as string[]).concat(header as string | string[]);
+    expect(cookies.some((value) => value.startsWith("opentag_csrf="))).toBe(false);
   });
 
   it("builds the forwarded URL from the configured origin, not the request Host", async () => {

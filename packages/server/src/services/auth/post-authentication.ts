@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { users, workspaceAdminGrants } from "../../db/schema/index.js";
 import type { WorkspaceAdminAccess } from "../workspace-admin-access/index.js";
@@ -26,9 +26,10 @@ export class PostAuthenticationService {
   /**
    * The same guarantees as {@link complete}, for a caller that does not know whether the Account was just created.
    *
-   * Better Auth owns account creation on its own sign-in paths, so nothing there can tell us. Deriving it from the
-   * absence of a grant is equivalent for this purpose and makes the call idempotent: a returning Account is a no-op,
-   * and one that never received its grant — or lost it — gets one before any session exists.
+   * Better Auth owns account creation on its own sign-in paths, so nothing there can tell us. What stands in for it is
+   * whether the Account has *ever* held a grant, not whether it holds one now: an Account whose grants were revoked
+   * has been provisioned, and re-provisioning it would hand back the authority that revocation removed. Only an
+   * Account with no grant in its history is treated as new, which also makes the call idempotent.
    */
   async ensureAccountReady(userId: string): Promise<PostAuthenticationResult> {
     return this.#database.transaction(async (transaction) => {
@@ -36,12 +37,12 @@ export class PostAuthenticationService {
       if (!user || user.suspendedAt) {
         throw new AuthServiceError("AUTH_USER_SUSPENDED", "deterministic", "The user account is suspended", 403);
       }
-      const [grant] = await transaction
-        .select({ workspaceId: workspaceAdminGrants.workspaceId })
+      const [everGranted] = await transaction
+        .select({ id: workspaceAdminGrants.id })
         .from(workspaceAdminGrants)
-        .where(and(eq(workspaceAdminGrants.userId, userId), isNull(workspaceAdminGrants.revokedAt)))
+        .where(eq(workspaceAdminGrants.userId, userId))
         .limit(1);
-      if (!grant) {
+      if (!everGranted) {
         await this.#workspaceAdmins.establishDefaultWorkspaceForNewAccount(transaction, user, true);
       }
       return { userId };

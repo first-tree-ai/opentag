@@ -423,15 +423,33 @@ function AsyncState<T>({
   return children(state.value);
 }
 
-interface WorkspaceSession {
+/**
+ * Authentication proves the Account identity and nothing more. The Server says the same: an Account
+ * may hold no active resource grant and still be signed in, so a page that needs only the Account
+ * reads this rather than the Workspace session below.
+ */
+interface AccountSession {
   me: MeResponse;
-  membership: MeWorkspace;
+  /** Re-reads `/me` from scratch, showing the loading state again; a failure surfaces as the load error. */
+  reloadMe: () => void;
   /** Resolves only once the authoritative `/me` response has been installed as current state. */
   refreshMe: () => Promise<MeResponse>;
 }
 
+interface WorkspaceSession extends AccountSession {
+  membership: MeWorkspace;
+}
+
+const accountContext = createContext<AccountSession | undefined>(undefined);
+const AccountContext = accountContext.Provider;
 const workspaceContext = createContext<WorkspaceSession | undefined>(undefined);
 const WorkspaceContext = workspaceContext.Provider;
+
+function useAccount(): AccountSession {
+  const value = useContext(accountContext);
+  if (!value) throw new Error("Account context is missing");
+  return value;
+}
 
 function useWorkspace(): WorkspaceSession {
   const value = useContext(workspaceContext);
@@ -443,28 +461,35 @@ export function AppRouter() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
-      <Route element={<AuthenticatedWorkspaceGate />}>
+      <Route element={<AuthenticatedAccountGate />}>
         <Route element={<AppShell />}>
-          {/* Outside the setup-completion gate so a stuck run can always reopen the Lab. */}
+          {/*
+            Outside the setup-completion gate so a stuck run can always reopen the Lab, and outside
+            the Workspace-authority gate because Scenario Preview needs the Account and nothing else.
+          */}
           <Route path="/internal/onboarding-lab" element={<OnboardingLabRoute />} />
-          <Route element={<WorkspaceSetupGate />}>
-            <Route path="/onboarding" element={<OnboardingRoute />} />
-            <Route index element={<Navigate replace to="/agents" />} />
-            <Route path="/agents" element={<AgentsPage />} />
-            <Route path="/agents/computers" element={<ComputersPage />} />
-            <Route path="/agents/new" element={<NewAgentPage />} />
-            <Route path="/agents/:agentId" element={<AgentDetailPage />} />
-            <Route path="/agents/:agentId/usage" element={<AgentUsagePage />} />
-            <Route path="/agents/:agentId/settings" element={<AgentSettingsPage />} />
-            <Route path="/agents/:agentId/settings/:section" element={<AgentSettingsPage />} />
-            <Route path="/agents/:agentId/:legacySection" element={<LegacyAgentSectionRedirect />} />
-            <Route path="/tasks" element={<TasksPage />} />
-            <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
-            <Route path="/skills" element={<SkillsPage />} />
-            <Route path="/integrations" element={<IntegrationsPage />} />
-            <Route path="/resources" element={<Navigate replace to="/skills" />} />
-            <Route path="/usage" element={<Navigate replace to="/agents" />} />
-            <Route path="/account" element={<AccountPage />} />
+        </Route>
+        <Route element={<WorkspaceAuthorityGate />}>
+          <Route element={<AppShell />}>
+            <Route element={<WorkspaceSetupGate />}>
+              <Route path="/onboarding" element={<OnboardingRoute />} />
+              <Route index element={<Navigate replace to="/agents" />} />
+              <Route path="/agents" element={<AgentsPage />} />
+              <Route path="/agents/computers" element={<ComputersPage />} />
+              <Route path="/agents/new" element={<NewAgentPage />} />
+              <Route path="/agents/:agentId" element={<AgentDetailPage />} />
+              <Route path="/agents/:agentId/usage" element={<AgentUsagePage />} />
+              <Route path="/agents/:agentId/settings" element={<AgentSettingsPage />} />
+              <Route path="/agents/:agentId/settings/:section" element={<AgentSettingsPage />} />
+              <Route path="/agents/:agentId/:legacySection" element={<LegacyAgentSectionRedirect />} />
+              <Route path="/tasks" element={<TasksPage />} />
+              <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
+              <Route path="/skills" element={<SkillsPage />} />
+              <Route path="/integrations" element={<IntegrationsPage />} />
+              <Route path="/resources" element={<Navigate replace to="/skills" />} />
+              <Route path="/usage" element={<Navigate replace to="/agents" />} />
+              <Route path="/account" element={<AccountPage />} />
+            </Route>
           </Route>
         </Route>
       </Route>
@@ -557,7 +582,11 @@ function LoginProviderLink({ next, provider }: { next: string; provider: AuthPro
   );
 }
 
-function AuthenticatedWorkspaceGate() {
+/**
+ * Resolves the authenticated Account and publishes it. Workspace authority is a separate question,
+ * asked below only by the routes that act on stored resources.
+ */
+function AuthenticatedAccountGate() {
   const location = useLocation();
   const [meRevision, setMeRevision] = useState(0);
   const [refreshed, setRefreshed] = useState<{ revision: number; me: MeResponse }>();
@@ -577,19 +606,30 @@ function AuthenticatedWorkspaceGate() {
   }
   return (
     <AsyncState state={state}>
-      {(loaded) => {
-        const me = refreshed?.revision === meRevision ? refreshed.me : loaded;
-        const membership = me.workspaces[0];
-        if (!membership) {
-          return <NoWorkspaceAccess onRetry={() => setMeRevision((value) => value + 1)} />;
-        }
-        return (
-          <WorkspaceContext value={{ me, membership, refreshMe }}>
-            <Outlet />
-          </WorkspaceContext>
-        );
-      }}
+      {(loaded) => (
+        <AccountContext
+          value={{
+            me: refreshed?.revision === meRevision ? refreshed.me : loaded,
+            refreshMe,
+            reloadMe: () => setMeRevision((value) => value + 1),
+          }}
+        >
+          <Outlet />
+        </AccountContext>
+      )}
     </AsyncState>
+  );
+}
+
+/** Refuses the Account-shaped dead end to the routes that act on stored resources. */
+function WorkspaceAuthorityGate() {
+  const { me, refreshMe, reloadMe } = useAccount();
+  const membership = me.workspaces[0];
+  if (!membership) return <NoWorkspaceAccess onRetry={reloadMe} />;
+  return (
+    <WorkspaceContext value={{ me, membership, refreshMe, reloadMe }}>
+      <Outlet />
+    </WorkspaceContext>
   );
 }
 
@@ -634,7 +674,7 @@ function OnboardingRoute() {
  * Scenario Preview, and the Server still decides which single Account may run the reset.
  */
 function OnboardingLabRoute() {
-  const { me, refreshMe } = useWorkspace();
+  const { me, refreshMe } = useAccount();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const access = useResource(() => browserApi.onboardingLabAccess(), "onboarding-lab");
@@ -678,7 +718,7 @@ function WorkspaceSetupGate() {
 }
 
 function AppShell() {
-  const { me } = useWorkspace();
+  const { me } = useAccount();
   const navigate = useNavigate();
   const [navigationOpen, setNavigationOpen] = useState(false);
   const [openMenu, setOpenMenu] = useState<"account">();

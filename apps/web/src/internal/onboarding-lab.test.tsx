@@ -200,6 +200,7 @@ describe("Onboarding Lab route", () => {
     options: {
       configured?: boolean;
       resetAvailable?: boolean;
+      workspaces?: "none";
       setupCompletedAt?: string | null;
       afterResetSetupCompletedAt?: string | null;
       meDelayMs?: number;
@@ -221,6 +222,7 @@ describe("Onboarding Lab route", () => {
           );
         }
         if (options.meDelayMs) await new Promise((resolve) => setTimeout(resolve, options.meDelayMs));
+        if (options.workspaces === "none") return json({ user, workspaces: [] });
         return json({
           user,
           workspaces: [
@@ -282,6 +284,18 @@ describe("Onboarding Lab route", () => {
     expect(screen.getByRole("heading", { level: 2, name: "Scenario Preview" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Reset shared account and start onboarding" })).toBeNull();
     expect(resetRequests).toBe(0);
+  });
+
+  it("shows Preview to an authenticated Account that holds no active resource grant", async () => {
+    // The Server admits this Account and answers the Lab read, so the Web must not refuse it first.
+    installApi({ resetAvailable: false, workspaces: "none" });
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { level: 1, name: "Onboarding Lab" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: /Brand new account/ }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole("heading", { name: "OpenTag is not ready for this account" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Reset shared account and start onboarding" })).toBeNull();
   });
 
   it("renders the scenario named in the URL", async () => {

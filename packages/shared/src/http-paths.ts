@@ -12,7 +12,6 @@ export const AGENT_IM_BINDING_HANDOFF_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/h
 export const AGENT_IM_BINDING_CONFIG_TEMPLATE = `${AGENT_IM_BINDING_TEMPLATE}/config`;
 export const AGENT_FEISHU_SETUP_ATTEMPTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/feishu/setup-attempts`;
 export const FEISHU_SETUP_ATTEMPT_TEMPLATE = `${API_V1_PREFIX}/im-bindings/feishu/setup-attempts/:attemptId`;
-export const AGENT_SLACK_CONFIGURATION_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/configuration`;
 export const AGENT_SLACK_OAUTH_START_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/oauth/start`;
 export const AGENT_SLACK_EVENTS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/events`;
 export const IM_BINDING_BY_ID_TEMPLATE = `${API_V1_PREFIX}/im-bindings/:imBindingId`;
@@ -120,10 +119,6 @@ export function agentFeishuSetupAttemptsPath(agentId: string): string {
 
 export function feishuSetupAttemptPath(attemptId: string): string {
   return `${API_V1_PREFIX}/im-bindings/feishu/setup-attempts/${encodeURIComponent(attemptId)}`;
-}
-
-export function agentSlackConfigurationPath(agentId: string): string {
-  return `${agentByIdPath(agentId)}/im-binding/slack/configuration`;
 }
 
 export function agentSlackOAuthStartPath(agentId: string): string {

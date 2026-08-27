@@ -15,13 +15,11 @@ import {
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentReactivatePath,
-  agentSlackConfigurationPath,
   agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
   type ComputerConnectCodeIssueResponse,
   ComputerConnectCodeIssueResponseSchema,
-  type ConfigureSlackAppRequest,
   type CreateAgentRequest,
   ErrorEnvelopeSchema,
   type FeishuSetupAttempt,
@@ -49,10 +47,6 @@ import {
   type OnboardingLabAccess,
   OnboardingLabAccessSchema,
   PROVIDER_READINESS_V1_HEADER,
-  type SlackAppConfiguration,
-  SlackAppConfigurationSchema,
-  type SlackConfigurationResult,
-  SlackConfigurationResultSchema,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
@@ -204,18 +198,6 @@ export class BrowserApi {
 
   feishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
     return this.request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema);
-  }
-
-  slackAppConfiguration(agentId: string): Promise<SlackAppConfiguration> {
-    return this.request(agentSlackConfigurationPath(agentId), SlackAppConfigurationSchema);
-  }
-
-  configureSlackApp(agentId: string, input: ConfigureSlackAppRequest): Promise<SlackConfigurationResult> {
-    return this.request(agentSlackConfigurationPath(agentId), SlackConfigurationResultSchema, {
-      method: "PUT",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
   }
 
   startSlackOAuth(agentId: string, input: StartSlackOAuthRequest): Promise<StartSlackOAuthResponse> {

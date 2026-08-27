@@ -284,11 +284,10 @@ describe("Agent persistence and authorization", () => {
         .insert(imBindings)
         .values({
           agentId: created.id,
-          provider: "slack",
+          provider: "feishu",
           status: "active",
-          externalAppId: "A1",
-          externalTeamId: "T1",
-          externalBotId: "B1",
+          externalAppId: "cli_fixture",
+          externalBotId: "ou_fixture",
           credentialSchemaVersion: 1,
           credentialGeneration: 1,
           encryptedCredential: "fixture",

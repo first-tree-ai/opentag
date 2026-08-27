@@ -25,7 +25,7 @@ export const slackOAuthNonces = pgTable(
   (table) => [
     index("slack_oauth_nonces_user_agent_idx").on(table.userId, table.agentId, table.createdAt),
     index("slack_oauth_nonces_expires_idx").on(table.expiresAt),
-    check("slack_oauth_nonces_intent", sql`${table.intent} in ('create', 'reauthorize', 'replace')`),
+    check("slack_oauth_nonces_intent", sql`${table.intent} in ('create', 'reauthorize')`),
     check("slack_oauth_nonces_expiry", sql`${table.expiresAt} > ${table.createdAt}`),
     check(
       "slack_oauth_nonces_expected_binding_pair",

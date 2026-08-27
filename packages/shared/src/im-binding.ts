@@ -196,46 +196,12 @@ export const CreateFeishuSetupAttemptRequestSchema = z
   .object({ intent: FeishuSetupIntentSchema.default("create") })
   .strict();
 
-export const SlackAppManifestSchema = z.record(z.string(), z.unknown());
-export const SlackConfigurationIntentSchema = z.enum(["create", "reauthorize", "replace"]);
+export const SlackConfigurationIntentSchema = z.enum(["create", "reauthorize"]);
 
 export const SlackIdentityClosureSchema = z
   .object({
     status: z.enum(["pending", "verified"]),
     verifiedAt: z.string().datetime().nullable(),
-  })
-  .strict();
-
-export const SlackAppConfigurationSchema = z
-  .object({
-    agentId: z.string().uuid(),
-    manifest: SlackAppManifestSchema,
-    manifestUrl: z.string().url(),
-    eventsUrl: z.string().url(),
-    requiredBotScopes: z.array(z.string().min(1).max(160)).max(32),
-    subscribedBotEvents: z.array(z.string().min(1).max(160)).max(32),
-    currentBinding: z
-      .object({
-        id: z.string().uuid(),
-        appId: z.string().min(1).max(255),
-        credentialGeneration: z.number().int().min(1),
-      })
-      .strict()
-      .nullable(),
-    distributedOAuthAvailable: z.boolean(),
-  })
-  .strict();
-
-export const ConfigureSlackAppRequestSchema = z
-  .object({
-    intent: SlackConfigurationIntentSchema,
-    expectedBinding: z
-      .object({ id: z.string().uuid(), credentialGeneration: z.number().int().min(1) })
-      .strict()
-      .nullable(),
-    appId: z.string().min(1).max(255),
-    botAccessToken: z.string().min(1).max(4096),
-    signingSecret: z.string().min(1).max(512),
   })
   .strict();
 
@@ -322,11 +288,8 @@ export type ImBindingAdminDetail = z.infer<typeof ImBindingAdminDetailSchema>;
 export type FeishuSetupIntent = z.infer<typeof FeishuSetupIntentSchema>;
 export type FeishuSetupState = z.infer<typeof FeishuSetupStateSchema>;
 export type FeishuSetupAttempt = z.infer<typeof FeishuSetupAttemptSchema>;
-export type SlackAppManifest = z.infer<typeof SlackAppManifestSchema>;
 export type SlackConfigurationIntent = z.infer<typeof SlackConfigurationIntentSchema>;
 export type SlackIdentityClosure = z.infer<typeof SlackIdentityClosureSchema>;
-export type SlackAppConfiguration = z.infer<typeof SlackAppConfigurationSchema>;
-export type ConfigureSlackAppRequest = z.infer<typeof ConfigureSlackAppRequestSchema>;
 export type SlackConfigurationResult = z.infer<typeof SlackConfigurationResultSchema>;
 export type StartSlackOAuthRequest = z.infer<typeof StartSlackOAuthRequestSchema>;
 export type StartSlackOAuthResponse = z.infer<typeof StartSlackOAuthResponseSchema>;

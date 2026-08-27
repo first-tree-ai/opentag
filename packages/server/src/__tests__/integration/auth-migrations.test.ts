@@ -82,14 +82,14 @@ async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z"), aut
 }
 
 describe("database migrations", () => {
-  it("orders the Slack single-configuration cleanup after the deployed setup migrations", async () => {
+  it("orders Slack workspace routing after the deployed setup and identity migrations", async () => {
     const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    // Anchored to the fixed 0010..0019 range rather than the tail: a trailing slice silently stops covering the
+    // Anchored to the fixed 0010..0021 range rather than the tail: a trailing slice silently stops covering the
     // earliest entry every time a migration is appended, which would quietly shrink what this test guarantees.
-    expect(journal.entries.slice(10, 20).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    expect(journal.entries.slice(10, 22).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 10, tag: "0010_optimal_jazinda" },
       { idx: 11, tag: "0011_staging_team_setup_repair" },
       { idx: 12, tag: "0012_supreme_maddog" },
@@ -100,6 +100,8 @@ describe("database migrations", () => {
       { idx: 17, tag: "0017_sour_tiger_shark" },
       { idx: 18, tag: "0018_salty_tombstone" },
       { idx: 19, tag: "0019_previous_magneto" },
+      { idx: 20, tag: "0020_large_jack_power" },
+      { idx: 21, tag: "0021_slack_workspace_routing" },
     ]);
   });
 
@@ -205,11 +207,14 @@ describe("database migrations", () => {
             last_error_code: string | null;
             observed_connected_at: Date | null;
             setup_attempt_id: string | null;
+            slack_installation_id: string | null;
+            slack_route_kind: string | null;
             status: string;
           }[]
         >`
           select agent_id::text, status, encrypted_credential, setup_attempt_id::text,
-                 encrypted_setup_context, observed_connected_at, last_error_code
+                 encrypted_setup_context, observed_connected_at, last_error_code,
+                 slack_installation_id::text, slack_route_kind::text
           from im_bindings
           order by agent_id
         `;
@@ -222,24 +227,30 @@ describe("database migrations", () => {
             encrypted_setup_context: null,
             observed_connected_at: null,
             last_error_code: "SLACK_CONFIGURATION_REQUIRED",
+            slack_installation_id: null,
+            slack_route_kind: null,
           },
           {
             agent_id: slackIncompleteAgentId,
-            status: "reauthorization_required",
-            encrypted_credential: "encrypted-incomplete",
+            status: "disabled",
+            encrypted_credential: null,
             setup_attempt_id: null,
             encrypted_setup_context: null,
             observed_connected_at: null,
             last_error_code: "SLACK_SCOPE_REAUTH_REQUIRED",
+            slack_installation_id: null,
+            slack_route_kind: null,
           },
           {
             agent_id: slackCompleteAgentId,
             status: "active",
-            encrypted_credential: "encrypted-complete",
+            encrypted_credential: null,
             setup_attempt_id: null,
             encrypted_setup_context: null,
             observed_connected_at: null,
             last_error_code: null,
+            slack_installation_id: expect.any(String),
+            slack_route_kind: "default",
           },
           {
             agent_id: feishuAgentId,
@@ -249,8 +260,14 @@ describe("database migrations", () => {
             encrypted_setup_context: "encrypted-feishu-setup",
             observed_connected_at: expect.any(Date),
             last_error_code: null,
+            slack_installation_id: null,
+            slack_route_kind: null,
           },
         ]);
+        const installations = await sql<{ encrypted_credential: string | null; status: string }[]>`
+          select status::text, encrypted_credential from slack_installations
+        `;
+        expect(installations).toEqual([{ status: "active", encrypted_credential: "encrypted-complete" }]);
         const pendingColumn = await sql<{ count: number }[]>`
           select count(*)::int as count from information_schema.columns
           where table_name = 'im_bindings' and column_name = 'pending_receive_mode'

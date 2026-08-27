@@ -1,7 +1,7 @@
 import { AGENT_SLACK_EVENTS_TEMPLATE, SLACK_EVENTS_PATH } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ImMessageInbox } from "../services/im/index.js";
-import type { ImBindingService, SlackIngressBinding } from "../services/im-bindings/index.js";
+import type { ImBindingService, SlackInstallationIngress } from "../services/im-bindings/index.js";
 import type { SlackAdapter } from "../services/im-bindings/slack/adapter.js";
 import { preparseSlackRoute, verifySlackSignature } from "../services/im-bindings/slack/signature.js";
 
@@ -42,7 +42,7 @@ function isIdentityLessUrlVerification(rawBody: Buffer): boolean {
 export interface SlackEventsRouteOptions {
   imBindings: ImBindingService;
   inbox: ImMessageInbox;
-  createAdapter(binding: SlackIngressBinding): SlackAdapter;
+  createAdapter(installation: SlackInstallationIngress): SlackAdapter;
   firstPartySigningSecret?: string;
   now?: () => Date;
 }
@@ -74,44 +74,64 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
     }
   };
 
-  const processEnvelope = async (binding: SlackIngressBinding, envelope: SlackEnvelopeBase, reply: FastifyReply) => {
+  const processEnvelope = async (
+    installation: SlackInstallationIngress,
+    envelope: SlackEnvelopeBase,
+    reply: FastifyReply,
+  ) => {
     if (envelope.type !== "event_callback" || !envelope.event_id || !envelope.event) {
       return reply.code(400).send({ error: "unsupported_envelope" });
     }
     if (envelope.event.type === "app_uninstalled") {
-      await options.imBindings.disableFromProvider(binding.imBindingId, binding.generation);
+      await options.imBindings.disableSlackInstallationFromProvider(
+        installation.installationId,
+        installation.generation,
+      );
       return reply.code(200).send({ ok: true });
     }
     if (envelope.event.type === "tokens_revoked") {
-      if (envelope.event.tokens?.bot?.includes(binding.botUserId)) {
-        await options.imBindings.requireReauthorization(binding.imBindingId, binding.generation, "SLACK_TOKEN_REVOKED");
+      if (envelope.event.tokens?.bot?.includes(installation.botUserId)) {
+        await options.imBindings.requireSlackInstallationReauthorization(
+          installation.installationId,
+          installation.generation,
+          "SLACK_TOKEN_REVOKED",
+        );
       }
       return reply.code(200).send({ ok: true });
     }
     const identityClosed = envelope.authorizations?.some(
       (authorization) =>
         authorization.is_bot === true &&
-        authorization.team_id === binding.teamId &&
-        authorization.user_id === binding.botUserId,
+        authorization.team_id === installation.teamId &&
+        authorization.user_id === installation.botUserId,
     );
     if (!identityClosed) return reply.code(401).send({ error: "binding_mismatch" });
-    if (!(await options.imBindings.recordSlackIdentityClosure(binding.imBindingId, binding.generation))) {
+    if (
+      !(await options.imBindings.recordSlackInstallationIdentityClosure(
+        installation.installationId,
+        installation.generation,
+      ))
+    ) {
       return reply.code(200).send({ ok: true });
     }
+    const routed = await options.imBindings.resolveSlackDefaultRoute(installation.installationId);
+    if (!routed) return reply.code(200).send({ ok: true });
 
     try {
-      const adapter = options.createAdapter(binding);
+      const adapter = options.createAdapter(installation);
       const events = adapter.normalizeInbound({
         eventId: envelope.event_id,
-        appId: binding.appId,
-        teamId: binding.teamId,
-        botUserId: binding.botUserId,
-        botId: binding.botId,
+        appId: installation.appId,
+        teamId: installation.teamId,
+        botUserId: installation.botUserId,
+        botId: installation.botId,
         event: envelope.event,
         eventTime: envelope.event_time,
       });
       for (const event of events) {
-        await options.inbox.ingest(binding.imBindingId, binding.generation, event, undefined, { provider: "slack" });
+        await options.inbox.ingest(routed.imBindingId, installation.generation, event, undefined, {
+          provider: "slack",
+        });
       }
     } catch {
       throw new SlackEventProcessingError();
@@ -123,14 +143,14 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
     if (!Buffer.isBuffer(request.body)) return reply.code(400).send({ error: "invalid_body" });
     const agentId = (request.params as { agentId?: unknown }).agentId;
     if (typeof agentId !== "string") return reply.code(400).send({ error: "invalid_route" });
-    const binding = await options.imBindings.findSlackIngressBindingForAgent(agentId);
-    if (!binding) return reply.code(404).send({ error: "binding_not_found" });
+    const installation = await options.imBindings.findSlackInstallationIngressForAgent(agentId);
+    if (!installation) return reply.code(404).send({ error: "binding_not_found" });
     const requestHeaders = headers(request);
     if (
       !verifySlackSignature({
         rawBody: request.body,
         ...requestHeaders,
-        signingSecret: binding.signingSecret,
+        signingSecret: installation.signingSecret,
         now: options.now?.(),
       })
     ) {
@@ -142,14 +162,14 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
       if (typeof envelope.challenge !== "string") return reply.code(400).send({ error: "invalid_challenge" });
       // Slack's URL-verification protocol omits App and Team identity. The Agent-specific URL
       // supplies only the lookup key; a valid HMAC records an observation but never changes config.
-      await options.imBindings.recordSlackObservation(binding.imBindingId, binding.generation);
+      await options.imBindings.recordSlackInstallationObservation(installation.installationId, installation.generation);
       return reply.code(200).send({ challenge: envelope.challenge });
     }
     if (!envelope.api_app_id || !envelope.team_id) return reply.code(400).send({ error: "invalid_route" });
-    if (envelope.api_app_id !== binding.appId || envelope.team_id !== binding.teamId) {
+    if (envelope.api_app_id !== installation.appId || envelope.team_id !== installation.teamId) {
       return reply.code(401).send({ error: "binding_mismatch" });
     }
-    return processEnvelope(binding, envelope, reply);
+    return processEnvelope(installation, envelope, reply);
   });
 
   app.post(SLACK_EVENTS_PATH, async (request, reply) => {
@@ -174,13 +194,13 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
     // trusted until the HMAC below succeeds.
     const route = preparseSlackRoute(request.body);
     if (!route) return reply.code(400).send({ error: "invalid_route" });
-    const binding = await options.imBindings.findSlackIngressBinding(route.appId, route.teamId);
-    if (!binding) return reply.code(404).send({ error: "binding_not_found" });
+    const installation = await options.imBindings.findSlackInstallationIngress(route.appId, route.teamId);
+    if (!installation) return reply.code(404).send({ error: "binding_not_found" });
     if (
       !verifySlackSignature({
         rawBody: request.body,
         ...requestHeaders,
-        signingSecret: binding.signingSecret,
+        signingSecret: installation.signingSecret,
         now: options.now?.(),
       })
     ) {
@@ -189,15 +209,15 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
 
     const envelope = parseEnvelope(request.body);
     if (!envelope) return reply.code(400).send({ error: "invalid_json" });
-    if (envelope.api_app_id !== binding.appId || envelope.team_id !== binding.teamId) {
+    if (envelope.api_app_id !== installation.appId || envelope.team_id !== installation.teamId) {
       return reply.code(401).send({ error: "binding_mismatch" });
     }
     if (envelope.type === "url_verification") {
-      await options.imBindings.recordSlackObservation(binding.imBindingId, binding.generation);
+      await options.imBindings.recordSlackInstallationObservation(installation.installationId, installation.generation);
       return typeof envelope.challenge === "string"
         ? reply.code(200).send({ challenge: envelope.challenge })
         : reply.code(400).send({ error: "invalid_challenge" });
     }
-    return processEnvelope(binding, envelope, reply);
+    return processEnvelope(installation, envelope, reply);
   });
 }

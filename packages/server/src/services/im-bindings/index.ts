@@ -1,4 +1,9 @@
-export type { SlackIngressBinding, VerifiedFeishuBinding } from "./im-binding-service.js";
+export type {
+  SlackInboundRoute,
+  SlackIngressBinding,
+  SlackInstallationIngress,
+  VerifiedFeishuBinding,
+} from "./im-binding-service.js";
 export {
   disableImBindingInTransaction,
   ImBindingService,

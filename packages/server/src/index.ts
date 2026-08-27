@@ -224,9 +224,7 @@ export async function startServer(): Promise<void> {
     const slackConfigurationService = new SlackConfigurationService({
       api: slackApi,
       database,
-      distributedOAuthAvailable: Boolean(config.slackOAuth),
       imBindings: imBindingService,
-      publicOrigin: config.publicUrl,
     });
     const slackOAuthService = config.slackOAuth
       ? new SlackOAuthService({
@@ -301,7 +299,6 @@ export async function startServer(): Promise<void> {
       machineAuthService,
       imBindingService,
       feishuSetupService,
-      slackConfigurationService,
       taskService,
       ...(slackOAuthService
         ? {

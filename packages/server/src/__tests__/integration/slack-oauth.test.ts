@@ -3,7 +3,14 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { agents, computers, imBindings, slackOAuthNonces, workspaceComputers } from "../../db/schema/index.js";
+import {
+  agents,
+  computers,
+  imBindings,
+  slackInstallations,
+  slackOAuthNonces,
+  workspaceComputers,
+} from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import { ImBindingService } from "../../services/im-bindings/index.js";
@@ -92,9 +99,7 @@ async function fixture() {
   const slack = new SlackConfigurationService({
     api: api as never,
     database: client.database,
-    distributedOAuthAvailable: true,
     imBindings: imBindingService,
-    publicOrigin: "https://opentag.example.com",
     now: () => now,
   });
   const oauth = new SlackOAuthService({
@@ -110,7 +115,28 @@ async function fixture() {
 }
 
 describe("Slack distributed OAuth adapter", () => {
-  it("activates one first-party installation through the existing Slack configuration boundary", async () => {
+  it("rejects the removed Slack replace intent at the database boundary", async () => {
+    const value = await fixture();
+    try {
+      await expect(
+        value.database.insert(slackOAuthNonces).values({
+          nonceHash: "removed-replace-nonce-hash",
+          userId: value.bootstrap.userId,
+          agentId: value.first.id,
+          intent: "replace",
+          sessionBindingHash: "removed-replace-session-binding-hash",
+          createdAt: now,
+          expiresAt: new Date(now.getTime() + 10 * 60 * 1000),
+        }),
+      ).rejects.toMatchObject({
+        cause: { code: "23514", constraint_name: "slack_oauth_nonces_intent" },
+      });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("activates one first-party installation through the Slack installation boundary", async () => {
     const value = await fixture();
     try {
       await value.database.insert(slackOAuthNonces).values({
@@ -122,8 +148,6 @@ describe("Slack distributed OAuth adapter", () => {
         createdAt: new Date(now.getTime() - 20 * 60 * 1000),
         expiresAt: new Date(now.getTime() - 10 * 60 * 1000),
       });
-      const configuration = await value.slack.get(value.bootstrap.userId, value.first.id);
-      expect(configuration.distributedOAuthAvailable).toBe(true);
       const started = await value.oauth.start(value.bootstrap.userId, value.first.id, "create");
       expect(started.authorizationUrl).toContain("client_id=slack-client-id");
       expect(started.authorizationUrl).toContain("state=");
@@ -168,8 +192,16 @@ describe("Slack distributed OAuth adapter", () => {
         externalTeamId: "T_TEAM",
         encryptedSetupContext: null,
       });
-      expect(binding?.encryptedCredential).not.toContain("xoxb-distributed");
-      expect(binding?.encryptedCredential).not.toContain(slackApp.signingSecret);
+      expect(binding?.encryptedCredential).toBeNull();
+      expect(binding?.slackRouteKind).toBe("default");
+      expect(binding?.slackInstallationId).toEqual(expect.any(String));
+      const [installation] = await value.database
+        .select()
+        .from(slackInstallations)
+        .where(eq(slackInstallations.id, binding?.slackInstallationId as string));
+      expect(installation?.encryptedCredential).toEqual(expect.any(String));
+      expect(installation?.encryptedCredential).not.toContain("xoxb-distributed");
+      expect(installation?.encryptedCredential).not.toContain(slackApp.signingSecret);
 
       await expect(
         value.oauth.callback({
@@ -184,7 +216,7 @@ describe("Slack distributed OAuth adapter", () => {
     }
   });
 
-  it("returns an explicit conflict when the same Slack workspace is already bound to another Agent", async () => {
+  it("installs one workspace Slack installation and can select a second Agent as the default route", async () => {
     const value = await fixture();
     try {
       await value.slack.configure(value.bootstrap.userId, value.first.id, {
@@ -197,17 +229,42 @@ describe("Slack distributed OAuth adapter", () => {
       const started = await value.oauth.start(value.bootstrap.userId, value.second.id, "create");
       const state = new URL(started.authorizationUrl).searchParams.get("state");
       if (!state) throw new Error("OAuth start did not return state");
-      await expect(
-        value.oauth.callback({
-          accessToken: "browser-access",
-          code: "slack-oauth-code",
-          sessionBinding: started.sessionBinding,
-          state,
-        }),
-      ).rejects.toMatchObject({ code: "SLACK_APP_TEAM_ALREADY_BOUND", statusCode: 409 });
+      const completed = await value.oauth.callback({
+        accessToken: "browser-access",
+        code: "slack-oauth-code",
+        sessionBinding: started.sessionBinding,
+        state,
+      });
+      expect(completed.result).toMatchObject({
+        agentId: value.second.id,
+        appId: "A_OPENTAG",
+        teamId: "T_TEAM",
+        credentialGeneration: 2,
+        bindingState: "active",
+      });
       const rows = await value.database.select().from(imBindings);
-      expect(rows).toHaveLength(1);
-      expect(rows[0]).toMatchObject({ agentId: value.first.id, status: "active", credentialGeneration: 1 });
+      expect(rows).toHaveLength(2);
+      expect(rows.find((row) => row.agentId === value.first.id)).toMatchObject({
+        status: "active",
+        slackRouteKind: "explicit",
+        credentialGeneration: 2,
+        encryptedCredential: null,
+      });
+      expect(rows.find((row) => row.agentId === value.second.id)).toMatchObject({
+        status: "active",
+        slackRouteKind: "default",
+        credentialGeneration: 2,
+        encryptedCredential: null,
+      });
+      expect(new Set(rows.map((row) => row.slackInstallationId)).size).toBe(1);
+      const installations = await value.database.select().from(slackInstallations);
+      expect(installations).toHaveLength(1);
+      expect(installations[0]).toMatchObject({
+        workspaceId: value.bootstrap.workspaceId,
+        credentialGeneration: 2,
+        status: "active",
+      });
+      expect(installations[0]?.encryptedCredential).not.toContain("xoxb-distributed");
     } finally {
       await value.sql.end();
     }

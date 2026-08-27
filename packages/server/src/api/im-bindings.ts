@@ -3,8 +3,6 @@ import {
   AGENT_IM_BINDING_CONFIG_TEMPLATE,
   AGENT_IM_BINDING_HANDOFF_TEMPLATE,
   AGENT_IM_BINDING_TEMPLATE,
-  AGENT_SLACK_CONFIGURATION_TEMPLATE,
-  ConfigureSlackAppRequestSchema,
   CreateFeishuSetupAttemptRequestSchema,
   FEISHU_SETUP_ATTEMPT_TEMPLATE,
   FeishuSetupAttemptSchema,
@@ -14,8 +12,6 @@ import {
   ImBindingDiagnosticsSchema,
   ImBindingHandoffStatusSchema,
   ImBindingSummarySchema,
-  SlackAppConfigurationSchema,
-  SlackConfigurationResultSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -23,7 +19,6 @@ import { createUserAuthPreHandler } from "../plugins/user-auth.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import type { FeishuSetupService } from "../services/im-bindings/feishu/index.js";
 import type { ImBindingService } from "../services/im-bindings/index.js";
-import type { SlackConfigurationService } from "../services/im-bindings/slack/index.js";
 import { parseRequest } from "./request-validation.js";
 
 const AgentParamsSchema = z.object({ agentId: z.string().uuid() }).strict();
@@ -41,7 +36,6 @@ export function registerImBindingRoutes(
   authService: UserAuthService,
   imBindings: ImBindingService,
   feishu: FeishuSetupService | undefined,
-  slack: SlackConfigurationService | undefined,
   publicOrigin?: string,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
@@ -84,21 +78,6 @@ export function registerImBindingRoutes(
       return reply
         .code(200)
         .send(FeishuSetupAttemptSchema.parse(await feishu.cancel(authenticatedUserId(request), attemptId)));
-    });
-  }
-
-  if (slack) {
-    app.get(AGENT_SLACK_CONFIGURATION_TEMPLATE, { preHandler }, async (request, reply) => {
-      const { agentId } = parseRequest(AgentParamsSchema, request.params);
-      const configuration = await slack.get(authenticatedUserId(request), agentId);
-      return reply.code(200).send(SlackAppConfigurationSchema.parse(configuration));
-    });
-
-    app.put(AGENT_SLACK_CONFIGURATION_TEMPLATE, { preHandler }, async (request, reply) => {
-      const { agentId } = parseRequest(AgentParamsSchema, request.params);
-      const input = parseRequest(ConfigureSlackAppRequestSchema, request.body);
-      const configured = await slack.configure(authenticatedUserId(request), agentId, input);
-      return reply.code(200).send(SlackConfigurationResultSchema.parse(configured));
     });
   }
 

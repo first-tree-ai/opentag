@@ -89,7 +89,8 @@ describe("Agent Runtime Client Turn vertical", () => {
     expect(fixture.clients[0]?.developerInstructions).toContain("# OpenTag managed instructions");
     expect(fixture.clients[0]?.developerInstructions).toContain("## Platform\n\nplatform");
     expect(fixture.clients[0]?.developerInstructions).toContain("## Agent\n\nagent");
-    expect(fixture.clients[0]?.developerInstructions).not.toContain("## Session");
+    expect(fixture.clients[0]?.developerInstructions).toContain("## Session");
+    expect(fixture.clients[0]?.developerInstructions).toContain("Session kind: visible");
     expect(fixture.clients[0]?.methods).toContain("thread/start");
     expect(fixture.clients[0]?.methods).not.toContain("thread/resume");
     expect(await fixture.store.read("agent-1", "session-1")).toMatchObject({

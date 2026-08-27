@@ -7,6 +7,7 @@ export * from "./computers.js";
 export * from "./im-bindings.js";
 export * from "./im-messages.js";
 export * from "./invitations.js";
+export * from "./session-cli-proofs.js";
 export * from "./session-messages.js";
 export * from "./sessions.js";
 export * from "./slack-oauth.js";

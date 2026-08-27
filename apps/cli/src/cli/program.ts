@@ -5,6 +5,7 @@ import { registerComputerCommand } from "../commands/computer/index.js";
 import { registerDaemonCommand } from "../commands/daemon/index.js";
 import { registerDoctorCommand } from "../commands/doctor.js";
 import { registerLoginCommand } from "../commands/login.js";
+import { registerSessionCommand } from "../commands/session/index.js";
 import { channelConfig } from "../core/channel/config.js";
 
 export function createProgram(): Command {
@@ -19,5 +20,6 @@ export function createProgram(): Command {
   registerDaemonCommand(program);
   registerDoctorCommand(program);
   registerLoginCommand(program);
+  registerSessionCommand(program);
   return program;
 }

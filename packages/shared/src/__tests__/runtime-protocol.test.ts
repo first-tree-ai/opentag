@@ -140,7 +140,7 @@ describe("runtime protocol", () => {
     expect(negotiated["server.unknownFeature"]).toBeUndefined();
     expect(missingRuntimeCapabilities(["runtime.imDelivery"], negotiated)).toEqual([]);
     expect(missingRuntimeCapabilities(["future.requiredFeature"], negotiated)).toEqual(["future.requiredFeature"]);
-    expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(1);
+    expect(negotiated[RUNTIME_CAPABILITY.sessionCollaboration]).toBe(2);
     expect(negotiated[RUNTIME_CAPABILITY.imSteer]).toBe(1);
     expect(RUNTIME_REQUIRED_CLIENT_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.sessionCollaboration);
     expect(RUNTIME_REQUIRED_SERVER_CAPABILITIES).not.toContain(RUNTIME_CAPABILITY.sessionCollaboration);

@@ -14,6 +14,7 @@ import { registerInternalOnboardingLabRoutes } from "./api/internal-onboarding-l
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
+import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
 import { registerWorkspaceRoutes } from "./api/workspaces.js";
@@ -27,6 +28,7 @@ import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bind
 import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
 import { type SlackConfigurationService, SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-lab/index.js";
+import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
 import {
   type WorkspaceAdminService,
@@ -61,6 +63,7 @@ export interface CreateAppOptions {
   loggerStream?: FastifyLoggerOptions["stream"];
   readiness?: BootstrapReadiness;
   runtime?: RuntimeRoutesOptions;
+  runtimeSessions?: RuntimeSessionRoutesOptions;
   slackEvents?: SlackEventsRouteOptions;
   /** Registered only by a staging deployment that configures the shared Onboarding Lab Account. */
   stagingOnboardingLab?: { reset: OnboardingResetService };
@@ -124,6 +127,8 @@ export function createApp(options: CreateAppOptions = {}) {
     },
   });
   const readiness = options.readiness ?? new BootstrapReadiness();
+
+  if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
 
   app.register(fastifyOpenTelemetry, {
     wrapRoutes: true,
@@ -289,6 +294,30 @@ export function createApp(options: CreateAppOptions = {}) {
         },
       });
       return reply.code(error.statusCode).send(envelope);
+    }
+    if (error instanceof SessionCliProofError) {
+      return reply.code(401).send(
+        ErrorEnvelopeSchema.parse({
+          error: {
+            code: "SESSION_PROOF_INVALID",
+            category: "credential",
+            message: "The Session CLI proof is invalid or stale",
+            requestId: request.id,
+          },
+        }),
+      );
+    }
+    if (error instanceof SessionServiceError && error.code === "SESSION_CURSOR_INVALID") {
+      return reply.code(400).send(
+        ErrorEnvelopeSchema.parse({
+          error: {
+            code: error.code,
+            category: "validation",
+            message: error.message,
+            requestId: request.id,
+          },
+        }),
+      );
     }
     if (error instanceof RequestValidationError) {
       const envelope = ErrorEnvelopeSchema.parse({

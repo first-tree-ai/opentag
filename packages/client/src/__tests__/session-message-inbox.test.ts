@@ -203,7 +203,8 @@ describe("SessionMessageInbox", () => {
   it("builds managed collaboration context without IM provider references", () => {
     const input = buildSessionMessageInput(delivery({ text: "Report the result" }));
     expect(input.items[0]?.text).toContain("final text is not returned automatically");
-    expect(input.items[0]?.text).toContain("send_session_message");
+    expect(input.items[0]?.text).toContain("opentag session send");
+    expect(input.items[0]?.text).toContain("Message ID:");
     expect(input.items[0]?.text).not.toContain("OPENTAG_PROVIDER_ENV_FILE");
     expect(input.items[1]?.text).toBe("Report the result");
   });
@@ -275,6 +276,7 @@ function reconcileFor(computerId: string, request: SessionMessageDeliveryRequest
     placementGeneration: request.placementGeneration,
     desired: "ready",
     sessionKind: "internal",
+    creatorSessionId: request.sourceSessionId,
     runtime: request.runtime,
   };
 }

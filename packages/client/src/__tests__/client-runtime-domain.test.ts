@@ -123,7 +123,7 @@ describe("ClientRuntime domain dispatch", () => {
     expect(JSON.stringify(logs)).not.toContain(sendError.message);
   });
 
-  it("dispatches SessionMessage deliveries and collaboration command results on their separate paths", async () => {
+  it("dispatches SessionMessage deliveries and returns typed delivery results", async () => {
     const agentId = randomUUID();
     const delivery = {
       type: "session:message:deliver" as const,
@@ -136,13 +136,7 @@ describe("ClientRuntime domain dispatch", () => {
       content: { kind: "text" as const, text: "work" },
       runtime: { ...snapshot(), agentId, workspace: { ...snapshot().workspace, workspaceId: agentId } },
     };
-    const commandResult = {
-      type: "session:collaboration:result" as const,
-      requestId: randomUUID(),
-      messageId: randomUUID(),
-      status: "accepted" as const,
-    };
-    const connection = new FrameConnection([delivery, commandResult]);
+    const connection = new FrameConnection([delivery]);
     const handleSessionMessageDelivery = vi.fn((request: SessionMessageDeliveryRequest) => ({
       type: "session:message:deliver:result" as const,
       requestId: request.requestId,
@@ -151,9 +145,7 @@ describe("ClientRuntime domain dispatch", () => {
       placementGeneration: request.placementGeneration,
       status: "accepted" as const,
     }));
-    const handleSessionCollaborationResult = vi.fn();
     const runtime = new ClientRuntime(connection as unknown as RuntimeConnection, {
-      handleSessionCollaborationResult,
       handleSessionMessageDelivery,
     });
     await runtime.run();
@@ -161,7 +153,6 @@ describe("ClientRuntime domain dispatch", () => {
     expect(connection.sent).toContainEqual(
       expect.objectContaining({ type: "session:message:deliver:result", messageId: delivery.messageId }),
     );
-    expect(handleSessionCollaborationResult).toHaveBeenCalledWith(commandResult);
   });
 
   it("dispatches optional IM steer frames and returns the typed result", async () => {

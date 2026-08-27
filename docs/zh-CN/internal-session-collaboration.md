@@ -1,47 +1,46 @@
-# Internal Session collaboration
+# Internal Session 协作
 
 > Canonical source: [internal-session-collaboration.md](../internal-session-collaboration.md)
-> Last synced with: 2026-08-26
+> Last synced with: 2026-08-27
 
-OpenTag Agent 可以通过两个 hosted tool，把工作委托给可复用的 internal Session：
+OpenTag Agent 在每个 managed Session 内通过 CLI 委派工作：
 
-- `create_internal_session` 会创建 internal Session，并原子提交首条文本消息。可选 `messageId` 是幂等键；收到
-  `unknown` 或 `unreachable` 后，应使用返回的 ID、完全相同的首条消息与 overrides 重试。
-- `send_session_message` 会向同一 collaboration scope 内的既有 Session 发送文本。可选 `messageId` 使用相同的
-  显式重试语义。
+```text
+opentag session create --message <task>
+opentag session send <target-session-id> --message <text>
+opentag session list
+```
 
-这里的 collaboration scope 是运行中的 Session 边界：相同 Agent、IM binding、conversation kind、channel 与
-thread。它不是 Workspace、Project、Collaboration aggregate 或其他产品管理实体，不授予跨 Agent 所有权，也不拥有
-共享文件、长期记忆、Tasks、Secrets、Skills 或 billing。Context Tree 可以独立保存长期上下文，但不会扩大这条实时
-Session 消息边界。
+当前 source Session 是隐式身份。Runtime 注入 managed proof 文件，CLI 从
+`OPENTAG_HOME/config/computer.json` 读取 Server 绑定；调用者不能传 Agent 或 source Session ID。proof 绑定当前
+Session、placement generation、Computer enrollment 与 Client connection。同一绑定下的 reconcile（包括 timeout 或
+response 丢失后的重试）会复用同一 proof；placement、connection、Agent 或 IM binding 变化都会使旧 proof 失效。
 
-Internal Session 继承创建者的 Agent、IM binding、channel 或 thread scope、Computer placement 与共享 Agent work
-area。它拥有独立 Agent Runtime，并可在创建时覆盖 model、reasoning effort 与最长 Run duration。它不接收 IM
-delivery、provider message reference 或 `OPENTAG_PROVIDER_ENV_FILE`；结果与后续问题只通过
-`send_session_message` 返回。
+同一个 daemon OS 用户启动的所有 Provider 进程目前属于同一信任域。文件权限可以隔离其他 OS 用户并减少意外暴露，
+但不能隔离以同一用户运行的 sibling Session。在 OpenTag 提供按 Session 的 OS/container 隔离之前，proof 用于让 Server
+校验当前 Runtime binding 并移除调用方可选的 source 参数；它不能防御能够读取 daemon 用户文件的受攻击 sibling
+Session。
 
-## Delivery 与持久化
+`session create` 会原子创建 internal 子 Session 与首条消息；`session send` 向同一 Agent 和 conversation scope 内的
+既有 Session 发消息。两者都支持可选 `--message-id` 做显式重试；结果不确定时必须复用相同 ID 和完全一致的语义输入。
+`accepted` 只表示目标已把消息接收入有界 FIFO，不表示任务完成。
 
-Session 消息采用实时、best-effort collaboration。`accepted` 表示目标 Client 已把消息放入有界内存 FIFO，不表示
-目标 Agent 已完成工作。目标忙碌时，会在当前 Run 结束后启动新 prompt Run，而不是 steer 正在执行的 Run。
+`session list` 默认按最近消息活动倒序返回直接子 Session。每页默认 20 条、最多 100 条；`--cursor` 翻页，
+`--recursive` 包含全部后代，`--since` 过滤近期活动，`--json` 返回 `{ items, nextCursor }`。不提供无界 `--all`。
 
-Server 会在 `session_messages` 中只保存一次每条已授权逻辑消息，包括来源与目标 Session、文本 hash、尝试次数和
-最近观测到的 delivery 结果。这条持久事实用于跨重启冲突检测与幂等，不是 delivery queue：不存在 pending 状态、
-lease、next-attempt 时间、后台 worker、启动扫描或自动 replay。`unknown` 或 `unreachable` 消息只有在调用者使用
-相同 `messageId` 再次显式调用 tool 时才会重试。
+Internal Session 与主 Session 共享 Agent 的 tools、MCP、workspace 和默认 Runtime 配置；创建时可以覆盖 model、
+reasoning effort 和最长 Run duration。Internal Session 不接收 IM delivery 或临时
+`OPENTAG_PROVIDER_ENV_FILE`，而是通过 `opentag session send` 回报。两类 Session 都收到角色化 managed instructions，
+也都可以继续创建下一层 internal Session。
 
-每次显式尝试都由单调递增的 attempt number fencing，因此旧尝试的迟到结果不能覆盖较新的观测。未授权、已结束、
-placement 过期或跨 scope 请求会在创建消息事实前被拒绝。
+Session 协作是实时 best-effort 通道，不是持久 job queue。Server 保存已授权逻辑消息及最近结果用于幂等和冲突检测，
+目标投递仍使用有界内存 FIFO，不自动 replay。Agent-facing Session 命令刻意不提供 `end`；管理生命周期失效流程仍可设置
+既有 `sessions.ended_at`。Retention 不在本功能范围。
 
-## Rolling compatibility
+CLI surface 仅协商 `runtime.sessionCollaboration` capability v2；旧 Client 不会协商该 capability，也不会收到 Session
+proof。
 
-Client 与 Server 仅在 runtime protocol v2 协商可选 `runtime.sessionCollaboration` capability 后暴露 collaboration。
-既有 v1 连接和未协商该 capability 的 v2 peer 会继续使用现有 IM 与 Agent Runtime 路径，不会看到 collaboration tool
-或 internal-Session reconcile 字段。重连改变已协商 hosted-tool 集合时，即使 placement 与 runtime revision 未变，
-Client 也会重新 prepare 既有 idle Session。Session 使用新的已协商 tool surface 恢复前，会先关闭旧 provider runtime。
-
-Codex App Server 只在线程启动时注册 dynamic tool。持久 Codex binding 与协商后的 hosted-tool 定义不一致时，Client
-会显式选择创建 provider，而不是 resume；只在创建成功后保存新 binding。`AgentRuntimeFactory.resume` 保持精确语义，
-遇到 hosted-tool mismatch 会拒绝，不会静默启动另一线程。后续启动会正常 resume replacement thread；provider 默认
-native tool 与 hosted tool 仍可并存。对称 replacement 会在不再协商 collaboration 时移除 dynamic tool。OpenTag
-Session identity 保持稳定，但每次这种 capability 过渡都会有意重置 Codex provider transcript。
+OpenTag 当前仅在单 Server replica 下支持这条路径。proof-authenticated Session CLI HTTP 与 source/target
+SessionMessage Runtime 投递都依赖该 replica 本地的 WebSocket owner。当前不支持普通多 replica 负载均衡、sticky
+routing，也不支持跨 replica owner discovery、forwarding 或 delivery relay；启用横向 replica 前必须先完成明确的跨实例
+owner-routing 设计。

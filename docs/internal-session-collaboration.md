@@ -2,53 +2,49 @@
 
 [简体中文](./zh-CN/internal-session-collaboration.md)
 
-OpenTag Agents can delegate work to reusable internal Sessions with two hosted tools:
+OpenTag Agents delegate work through the CLI available inside every managed Session:
 
-- `create_internal_session` creates an internal Session and submits its first text message atomically. The optional
-  `messageId` is the idempotency key; after an `unknown` or `unreachable` result, retry with the returned ID and the
-  exact same initial message and overrides.
-- `send_session_message` sends text to an existing Session in the same collaboration scope. Its optional `messageId`
-  has the same explicit-retry semantics.
+```text
+opentag session create --message <task>
+opentag session send <target-session-id> --message <text>
+opentag session list
+```
 
-Here, collaboration scope is an operational Session boundary: the same Agent, IM binding, conversation kind, channel,
-and thread. It is not a Workspace, Project, Collaboration aggregate, or other product management entity. It grants no
-cross-Agent ownership and owns no shared files, long-term memory, Tasks, Secrets, Skills, or billing. Context Tree may
-preserve long-term context independently; it does not widen this real-time Session messaging boundary.
+The current source Session is implicit. The Runtime supplies a managed proof file and the CLI reads the Server binding
+from `OPENTAG_HOME/config/computer.json`; callers cannot pass an Agent or source Session identity. The proof is bound to
+the current Session, placement generation, Computer enrollment, and Client connection. Reconciles for the same binding
+reuse the same proof, including retries after a timeout or lost response. Placement, connection, Agent, or IM-binding
+changes invalidate the old proof.
 
-Internal Sessions inherit the creator's Agent, IM binding, channel or thread scope, Computer placement, and shared
-Agent work area. They have an independent Agent Runtime and may override the model, reasoning effort, and maximum Run
-duration at creation time. They do not receive IM deliveries, provider message references, or
-`OPENTAG_PROVIDER_ENV_FILE`; results and follow-up questions return only through `send_session_message`.
+All Provider processes launched by one daemon OS user currently form one trust domain. File permissions protect proof
+files from other OS users and accidental exposure, but do not isolate sibling Sessions running as that same user. Until
+OpenTag introduces per-Session OS or container isolation, the proof lets the Server validate a live Runtime binding and
+removes caller-selected source flags; it is not a security boundary against a compromised sibling Session that can read
+the daemon user's files.
 
-## Delivery and persistence
+`session create` atomically creates an internal child Session and its first message. `session send` addresses an
+existing Session in the same Agent and conversation scope. Both accept an optional `--message-id` for an explicit retry;
+reuse the same ID and identical semantic input after an uncertain result. `accepted` means the target accepted the
+message into its bounded FIFO, not that the task completed.
 
-Session messages are real-time, best-effort collaboration. `accepted` means that the target Client placed the message
-in its bounded in-memory FIFO; it does not mean that the target Agent completed the work. A busy target starts a new
-prompt Run after its current Run finishes rather than steering the active Run.
+`session list` returns direct children by default, ordered by recent message activity. Pages default to 20 items and
+are capped at 100; `--cursor` continues a page, `--recursive` includes descendants, `--since` filters recent activity,
+and `--json` returns `{ items, nextCursor }`. There is no unbounded `--all` mode.
 
-The Server stores each authorized logical message once in `session_messages`, including its source and target Sessions,
-text hash, attempt count, and latest observed delivery outcome. This durable fact provides cross-restart conflict
-detection and idempotency. It is not a delivery queue: there is no pending state, lease, next-attempt timestamp,
-background worker, startup scan, or automatic replay. An `unknown` or `unreachable` message is retried only when the
-caller explicitly invokes the tool again with the same `messageId`.
+Internal Sessions share their Agent's tools, MCPs, workspace, and default Runtime configuration. A creation command may
+override the model, reasoning effort, or maximum Run duration. Internal Sessions do not receive IM delivery or the
+temporary `OPENTAG_PROVIDER_ENV_FILE`; they report through `opentag session send`. Both visible and internal Sessions
+receive role-aware managed instructions and may create further internal Sessions.
 
-Every explicit attempt is fenced by its monotonically increasing attempt number, so a late result from an older attempt
-cannot overwrite a newer observation. Unauthorized, ended, stale-placement, or cross-scope requests are rejected before
-a message fact is created.
+Session collaboration is real-time and best-effort, not a persistent job queue. The Server stores authorized logical
+messages and their latest observed outcome for idempotency and conflict detection, while target delivery remains an
+in-memory bounded FIFO with no automatic replay. Agent-facing Session operations intentionally provide no `end`;
+administrative lifecycle invalidation may still set the existing `sessions.ended_at` field. Retention is out of scope.
 
-## Rolling compatibility
+This CLI surface requires `runtime.sessionCollaboration` capability version 2. Older Clients do not negotiate the
+capability and do not receive a Session proof.
 
-The Client and Server expose collaboration only when runtime protocol v2 negotiates the optional
-`runtime.sessionCollaboration` capability. Existing v1 connections and v2 peers without that capability continue to use
-the existing IM and Agent Runtime paths without seeing collaboration tools or internal-Session reconcile fields.
-When a reconnect changes the negotiated hosted-tool set, the Client re-prepares existing idle Sessions even when their
-placement and runtime revisions are unchanged. The old provider runtime is closed before the Session resumes with the
-newly negotiated tool surface.
-
-Codex App Server registers dynamic tools only when a thread starts. When a durable Codex binding does not match the
-negotiated hosted-tool definitions, the Client explicitly chooses provider creation instead of resume and persists the
-new binding only after successful creation. `AgentRuntimeFactory.resume` remains exact and rejects a hosted-tool
-mismatch rather than silently starting another thread. Later starts resume the replacement thread normally;
-provider-default native tools remain available alongside hosted tools. A symmetric replacement removes dynamic tools
-when collaboration is no longer negotiated. The OpenTag Session identity remains stable, but each such capability
-transition intentionally resets the Codex provider transcript.
+OpenTag currently supports this path only with a single Server replica. Proof-authenticated Session CLI HTTP and
+source/target SessionMessage Runtime delivery both use that replica's local WebSocket owner. Ordinary multi-replica
+load balancing, sticky routing, and cross-replica owner discovery, forwarding, or delivery relay are not supported;
+horizontal replicas require an explicit cross-instance owner-routing design before they can be enabled.

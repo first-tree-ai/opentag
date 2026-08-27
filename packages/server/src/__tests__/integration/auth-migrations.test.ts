@@ -103,6 +103,18 @@ describe("database migrations", () => {
     ]);
   });
 
+  it("orders the Account and Better Auth expansions before Session collaboration storage", async () => {
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+
+    expect(journal.entries.slice(20, 23).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+      { idx: 20, tag: "0020_large_jack_power" },
+      { idx: 21, tag: "0021_slow_gamora" },
+      { idx: 22, tag: "0022_short_kitty_pryde" },
+    ]);
+  });
+
   it("removes only Slack setup state, disables incomplete rows, and fences incomplete legacy scopes", async () => {
     const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0013-migrations-"));
     const legacyMeta = join(legacyFolder, "meta");

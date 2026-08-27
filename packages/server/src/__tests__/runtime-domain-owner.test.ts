@@ -6,6 +6,7 @@ import {
   type EffectiveRuntimeSnapshot,
   type RuntimeImSteerRequest,
   type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryResult,
   type SessionReconcileRequest,
   type SessionReconcileResult,
   type TurnReportRequest,
@@ -19,7 +20,11 @@ import type {
   RecordedTurnRecord,
   RuntimeCustodyStore,
 } from "../runtime/runtime-custody-store.js";
-import { RuntimeDomainConflictError, RuntimeDomainOwner } from "../runtime/runtime-domain-owner.js";
+import {
+  RuntimeDomainConflictError,
+  RuntimeDomainOwner,
+  type RuntimeDomainOwnerOptions,
+} from "../runtime/runtime-domain-owner.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
 
 describe("RuntimeDomainOwner", () => {
@@ -58,6 +63,25 @@ describe("RuntimeDomainOwner", () => {
         sessionId: "session-conflict-after-completion",
       }),
     ).toThrow(RuntimeDomainConflictError);
+  });
+
+  it("applies reconcile admission after preparation and before the Runtime frame", async () => {
+    const prepareReconcile = vi.fn(
+      async (_computerId: string, _instanceId: string, request: SessionReconcileRequest) => ({
+        ...request,
+        sessionCliProof: { proofId: randomUUID(), token: "runtime-proof" },
+      }),
+    );
+    const fixture = await ownerFixture(1_000, { prepareReconcile });
+    const request = reconcileRequest(fixture.computerId);
+    const admission = vi.fn(async () => ({ admitted: false as const }));
+
+    await expect(
+      fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request, undefined, admission),
+    ).rejects.toMatchObject({ code: "authority_unavailable" });
+    expect(prepareReconcile).toHaveBeenCalledOnce();
+    expect(admission).toHaveBeenCalledOnce();
+    expect(fixture.frames).toEqual([]);
   });
 
   it("B-20 records one stable accepted delivery across an explicit retry", async () => {
@@ -399,7 +423,7 @@ describe("RuntimeDomainOwner", () => {
     expect((await fixture.owner.getTurn(report.turnId))?.instanceId).toBe(replacement.instanceId);
   });
 
-  it("correlates remote SessionMessage delivery and delegates unmatched local acknowledgements", async () => {
+  it("correlates SessionMessage delivery results and ignores unmatched results", async () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();
     const instanceId = randomUUID();
@@ -416,15 +440,7 @@ describe("RuntimeDomainOwner", () => {
       },
       async () => undefined,
     );
-    const onLocal = vi.fn().mockResolvedValue({
-      type: "session:collaboration:result",
-      requestId: randomUUID(),
-      messageId: randomUUID(),
-      status: "accepted",
-    });
-    const owner = new RuntimeDomainOwner(registry, new MemoryRuntimeCustodyStore(), {
-      onLocalSessionMessageDeliveryResult: onLocal,
-    });
+    const owner = new RuntimeDomainOwner(registry, new MemoryRuntimeCustodyStore());
     const context = {
       computerId,
       workspaceComputerId: computerId,
@@ -445,11 +461,58 @@ describe("RuntimeDomainOwner", () => {
     };
     await expect(owner.handle(accepted, context)).resolves.toBeUndefined();
     await expect(pending).resolves.toEqual(accepted);
-    expect(onLocal).not.toHaveBeenCalled();
-
     const unmatched = { ...accepted, requestId: randomUUID() };
-    await expect(owner.handle(unmatched, context)).resolves.toMatchObject({ status: "accepted" });
-    expect(onLocal).toHaveBeenCalledWith(unmatched, context);
+    await expect(owner.handle(unmatched, context)).resolves.toBeUndefined();
+  });
+
+  it("dispatches SessionMessage frames only through an admitted onDispatched boundary", async () => {
+    const fixture = await ownerFixture();
+    const rejected = sessionMessageDelivery();
+    const rejectedDispatched = vi.fn();
+    await expect(
+      fixture.owner.requestSessionMessageDelivery(
+        fixture.computerId,
+        fixture.instanceId,
+        rejected,
+        rejectedDispatched,
+        async () => ({ admitted: false }),
+      ),
+    ).rejects.toMatchObject({ code: "authority_unavailable" });
+    expect(rejectedDispatched).not.toHaveBeenCalled();
+    expect(fixture.frames).not.toContainEqual(rejected);
+
+    const admitted = sessionMessageDelivery();
+    const admittedDispatched = vi.fn();
+    const admission = vi.fn(async (operation: (onDispatched: () => void) => Promise<SessionMessageDeliveryResult>) => {
+      let markDispatched: () => void = () => undefined;
+      const dispatched = new Promise<void>((resolve) => {
+        markDispatched = resolve;
+      });
+      const result = operation(markDispatched);
+      await dispatched;
+      expect(fixture.frames).toContainEqual(admitted);
+      return { admitted: true as const, result };
+    });
+    const pending = fixture.owner.requestSessionMessageDelivery(
+      fixture.computerId,
+      fixture.instanceId,
+      admitted,
+      admittedDispatched,
+      admission,
+    );
+    await vi.waitFor(() => expect(fixture.frames).toContainEqual(admitted));
+    const result = {
+      type: "session:message:deliver:result" as const,
+      requestId: admitted.requestId,
+      messageId: admitted.messageId,
+      targetSessionId: admitted.targetSessionId,
+      placementGeneration: admitted.placementGeneration,
+      status: "accepted" as const,
+    };
+    await fixture.owner.handle(result, fixture.context);
+    await expect(pending).resolves.toEqual(result);
+    expect(admittedDispatched).toHaveBeenCalledOnce();
+    expect(admission).toHaveBeenCalledOnce();
   });
 });
 
@@ -459,7 +522,10 @@ async function waitForDeliveryFrame(frames: unknown[], requestId: string): Promi
   });
 }
 
-async function ownerFixture(requestTimeoutMs = 1_000) {
+async function ownerFixture(
+  requestTimeoutMs = 1_000,
+  options: Pick<RuntimeDomainOwnerOptions, "prepareReconcile"> = {},
+) {
   const registry = new ConnectionRegistry();
   const computerId = randomUUID();
   const instanceId = randomUUID();
@@ -476,7 +542,7 @@ async function ownerFixture(requestTimeoutMs = 1_000) {
     },
     async () => undefined,
   );
-  const owner = new RuntimeDomainOwner(registry, new MemoryRuntimeCustodyStore(), { requestTimeoutMs });
+  const owner = new RuntimeDomainOwner(registry, new MemoryRuntimeCustodyStore(), { requestTimeoutMs, ...options });
   const context: RuntimeBusinessContext = {
     computerId,
     workspaceComputerId: computerId,

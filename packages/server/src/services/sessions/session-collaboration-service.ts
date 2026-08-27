@@ -1,34 +1,19 @@
 import { randomUUID } from "node:crypto";
 import {
-  type ClientRuntimeBusinessFrame,
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
-  type SessionCollaborationCommandResult,
+  type SessionCliCommandResponse,
+  type SessionCliCreateRequest,
+  type SessionCliSendRequest,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
   type SessionReconcileResult,
 } from "@opentag/shared";
 import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { type RuntimeDomainOwner, RuntimeDomainRequestError } from "../../runtime/runtime-domain-owner.js";
-import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import type { EffectiveRuntimeSnapshotAssembler } from "../runtime-config/index.js";
+import type { SessionCliSourceContext } from "./session-cli-proof-service.js";
 import type { SessionMessageAttempt, SessionMessageOutcome, SessionService } from "./session-service.js";
-
-type CollaborationCommand = Extract<
-  ClientRuntimeBusinessFrame,
-  { type: "session:internal:create" | "session:message" }
->;
-
-interface LocalAttempt {
-  attemptCount: number;
-  commandRequestId: string;
-  computerId: string;
-  workspaceComputerId: string;
-  instanceId: string;
-  messageId: string;
-  sessionId: string;
-  timer: ReturnType<typeof setTimeout>;
-}
 
 export interface SessionCollaborationServiceOptions {
   assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
@@ -36,10 +21,12 @@ export interface SessionCollaborationServiceOptions {
   registry: Pick<ConnectionRegistry, "currentInstanceId" | "supportsCapability">;
   sessions: Pick<
     SessionService,
-    "authorizeAndRecordMessage" | "createInternalSessionWithMessage" | "recordMessageOutcome"
+    | "authorizeAndRecordMessage"
+    | "createInternalSessionWithMessage"
+    | "recordMessageOutcome"
+    | "withCollaborationDispatchAdmission"
   >;
   onDiagnostic?: (code: string) => void;
-  localResultTimeoutMs?: number;
 }
 
 export class SessionCollaborationService {
@@ -47,9 +34,7 @@ export class SessionCollaborationService {
   readonly #domain: SessionCollaborationServiceOptions["domain"];
   readonly #registry: SessionCollaborationServiceOptions["registry"];
   readonly #sessions: SessionCollaborationServiceOptions["sessions"];
-  readonly #localResultTimeoutMs: number;
   readonly #onDiagnostic: SessionCollaborationServiceOptions["onDiagnostic"];
-  readonly #localAttempts = new Map<string, LocalAttempt>();
 
   constructor(options: SessionCollaborationServiceOptions) {
     this.#assembler = options.assembler;
@@ -57,222 +42,176 @@ export class SessionCollaborationService {
     this.#registry = options.registry;
     this.#sessions = options.sessions;
     this.#onDiagnostic = options.onDiagnostic;
-    this.#localResultTimeoutMs = options.localResultTimeoutMs ?? 30_000;
   }
 
-  async handle(
-    command: CollaborationCommand,
-    context: RuntimeBusinessContext,
-  ): Promise<SessionCollaborationCommandResult> {
-    const messageId = command.type === "session:internal:create" ? command.initialMessage.messageId : command.messageId;
-    if (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.sessionCollaboration] === undefined) {
-      return result(command.requestId, messageId, "rejected", { code: "configuration_unsupported" });
-    }
-
+  async create(input: SessionCliCreateRequest, source: SessionCliSourceContext): Promise<SessionCliCommandResponse> {
     try {
-      let attempt: SessionMessageAttempt;
-      let sessionId: string;
-      if (command.type === "session:internal:create") {
-        const created = await this.#sessions.createInternalSessionWithMessage({
-          creatorSessionId: command.sourceSessionId,
-          creatorComputerId: context.computerId,
-          creatorWorkspaceComputerId: context.workspaceComputerId,
-          creatorPlacementGeneration: command.sourcePlacementGeneration,
-          messageId,
-          initialMessage: command.initialMessage.text,
-          overrides: command.overrides,
-        });
-        attempt = created;
-        sessionId = created.session.id;
-      } else {
-        attempt = await this.#sessions.authorizeAndRecordMessage({
-          messageId,
-          sourceSessionId: command.sourceSessionId,
-          sourceComputerId: context.computerId,
-          sourceWorkspaceComputerId: context.workspaceComputerId,
-          sourcePlacementGeneration: command.sourcePlacementGeneration,
-          targetSessionId: command.targetSessionId,
-          content: command.content.text,
-        });
-        sessionId = attempt.route.targetSessionId;
-      }
-      if (attempt.attemptCount === null) {
-        return result(command.requestId, messageId, attempt.message.lastOutcome, {
-          sessionId,
-          ...(attempt.message.lastErrorCode ? { code: attempt.message.lastErrorCode } : {}),
-        });
-      }
-      let runtime: EffectiveRuntimeSnapshot;
-      try {
-        runtime = await this.#assembler.assembleForSession(attempt.route.targetSessionId);
-      } catch {
-        return this.#recordOutcome(
-          result(command.requestId, messageId, "unreachable", { sessionId, code: "runtime_not_ready" }),
-          attempt.attemptCount,
-        );
-      }
-      return await this.#deliver(command, attempt, runtime, context, sessionId);
+      const attempt = await this.#sessions.createInternalSessionWithMessage({
+        creatorSessionId: source.sessionId,
+        creatorComputerId: source.computerId,
+        creatorConnectionInstanceId: source.connectionInstanceId,
+        creatorWorkspaceComputerId: source.workspaceComputerId,
+        creatorPlacementGeneration: source.placementGeneration,
+        messageId: input.messageId,
+        initialMessage: input.message,
+        overrides: {
+          ...(input.model ? { model: input.model } : {}),
+          ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+          ...(input.maxDurationMs ? { maxDurationMs: input.maxDurationMs } : {}),
+        },
+      });
+      return await this.#deliver(attempt, attempt.session.id);
     } catch (error) {
-      const mapped = mapFailure(error);
-      if (mapped.status === "rejected") {
-        this.#onDiagnostic?.(`SESSION_COLLABORATION_${mapped.code.toUpperCase()}`);
-      }
-      return result(command.requestId, messageId, mapped.status, { code: mapped.code });
+      return this.#failure(input.messageId, error);
     }
   }
 
-  async handleLocalDeliveryResult(
-    delivery: SessionMessageDeliveryResult,
-    context: RuntimeBusinessContext,
-  ): Promise<SessionCollaborationCommandResult | undefined> {
-    const pending = this.#localAttempts.get(delivery.requestId);
-    if (
-      !pending ||
-      pending.messageId !== delivery.messageId ||
-      pending.sessionId !== delivery.targetSessionId ||
-      pending.computerId !== context.computerId ||
-      pending.workspaceComputerId !== context.workspaceComputerId ||
-      pending.instanceId !== context.instanceId
-    ) {
-      return undefined;
+  async send(input: SessionCliSendRequest, source: SessionCliSourceContext): Promise<SessionCliCommandResponse> {
+    try {
+      const attempt = await this.#sessions.authorizeAndRecordMessage({
+        messageId: input.messageId,
+        sourceSessionId: source.sessionId,
+        sourceComputerId: source.computerId,
+        sourceConnectionInstanceId: source.connectionInstanceId,
+        sourceWorkspaceComputerId: source.workspaceComputerId,
+        sourcePlacementGeneration: source.placementGeneration,
+        targetSessionId: input.targetSessionId,
+        content: input.message,
+      });
+      return await this.#deliver(attempt, input.targetSessionId);
+    } catch (error) {
+      return this.#failure(input.messageId, error);
     }
-    this.#localAttempts.delete(delivery.requestId);
-    clearTimeout(pending.timer);
-    const visible = mapDeliveryResult(pending.commandRequestId, delivery, pending.sessionId);
-    return this.#recordOutcome(visible, pending.attemptCount);
   }
 
-  async #deliver(
-    command: CollaborationCommand,
-    attempt: SessionMessageAttempt,
-    runtime: EffectiveRuntimeSnapshot,
-    context: RuntimeBusinessContext,
-    sessionId: string,
-  ): Promise<SessionCollaborationCommandResult> {
-    const { route } = attempt;
-    const attemptCount = attempt.attemptCount;
-    if (attemptCount === null) throw new Error("A deduplicated Session message cannot be delivered again");
-    const targetInstanceId = this.#registry.currentInstanceId(route.targetWorkspaceComputerId);
+  async #deliver(attempt: SessionMessageAttempt, sessionId: string): Promise<SessionCliCommandResponse> {
+    if (attempt.attemptCount === null) {
+      return response(
+        attempt.message.id,
+        attempt.message.lastOutcome,
+        sessionId,
+        attempt.message.lastErrorCode ?? undefined,
+      );
+    }
+    let runtime: EffectiveRuntimeSnapshot;
+    try {
+      runtime = await this.#assembler.assembleForSession(attempt.route.targetSessionId);
+    } catch {
+      return this.#record(
+        response(attempt.message.id, "unreachable", sessionId, "runtime_not_ready"),
+        attempt.attemptCount,
+      );
+    }
+    const targetInstanceId = this.#registry.currentInstanceId(attempt.route.targetWorkspaceComputerId);
     if (
       !targetInstanceId ||
       !this.#registry.supportsCapability(
-        route.targetWorkspaceComputerId,
+        attempt.route.targetWorkspaceComputerId,
         targetInstanceId,
         RUNTIME_CAPABILITY.sessionCollaboration,
       )
     ) {
-      return this.#recordOutcome(
-        result(command.requestId, attempt.message.id, "unreachable", { sessionId, code: "runtime_unavailable" }),
-        attemptCount,
+      return this.#record(
+        response(attempt.message.id, "unreachable", sessionId, "runtime_unavailable"),
+        attempt.attemptCount,
       );
     }
-
     let reconciled: SessionReconcileResult;
     try {
-      reconciled = await this.#domain.requestReconcile(route.targetWorkspaceComputerId, targetInstanceId, {
-        type: "session:reconcile",
-        requestId: randomUUID(),
-        computerId: route.targetComputerId,
-        sessionId: route.targetSessionId,
-        agentId: route.agentId,
-        placementGeneration: route.targetPlacementGeneration,
-        ...(route.targetSessionKind === "internal" ? { sessionKind: "internal" as const } : {}),
-        desired: "ready",
-        runtime,
-      });
+      reconciled = await this.#domain.requestReconcile(
+        attempt.route.targetWorkspaceComputerId,
+        targetInstanceId,
+        {
+          type: "session:reconcile",
+          requestId: randomUUID(),
+          computerId: attempt.route.targetComputerId,
+          sessionId: attempt.route.targetSessionId,
+          agentId: attempt.route.agentId,
+          placementGeneration: attempt.route.targetPlacementGeneration,
+          ...(attempt.route.targetSessionKind === "internal"
+            ? {
+                sessionKind: "internal" as const,
+                creatorSessionId: attempt.route.targetCreatorSessionId ?? attempt.route.sourceSessionId,
+              }
+            : {}),
+          desired: "ready",
+          runtime,
+        },
+        undefined,
+        (operation) => this.#sessions.withCollaborationDispatchAdmission(attempt.route, operation),
+      );
     } catch {
-      return this.#recordOutcome(
-        result(command.requestId, attempt.message.id, "unreachable", { sessionId, code: "runtime_not_ready" }),
-        attemptCount,
+      return this.#record(
+        response(attempt.message.id, "unreachable", sessionId, "runtime_not_ready"),
+        attempt.attemptCount,
       );
     }
     if (!new Set(["ready", "running", "reporting"]).has(reconciled.status)) {
-      return this.#recordOutcome(
-        result(command.requestId, attempt.message.id, "unreachable", { sessionId, code: "runtime_not_ready" }),
-        attemptCount,
+      return this.#record(
+        response(attempt.message.id, "unreachable", sessionId, "runtime_not_ready"),
+        attempt.attemptCount,
       );
     }
-
     const delivery: SessionMessageDeliveryRequest = {
       type: "session:message:deliver",
       requestId: randomUUID(),
       messageId: attempt.message.id,
-      sourceSessionId: route.sourceSessionId,
-      targetSessionId: route.targetSessionId,
-      agentId: route.agentId,
-      placementGeneration: route.targetPlacementGeneration,
+      sourceSessionId: attempt.route.sourceSessionId,
+      targetSessionId: attempt.route.targetSessionId,
+      agentId: attempt.route.agentId,
+      placementGeneration: attempt.route.targetPlacementGeneration,
       content: { kind: "text", text: attempt.message.content },
       runtime,
     };
-    if (route.targetWorkspaceComputerId === context.workspaceComputerId && targetInstanceId === context.instanceId) {
-      this.#rememberLocal(delivery.requestId, {
-        attemptCount,
-        commandRequestId: command.requestId,
-        computerId: context.computerId,
-        workspaceComputerId: context.workspaceComputerId,
-        instanceId: context.instanceId,
-        messageId: attempt.message.id,
-        sessionId,
-      });
-      return result(command.requestId, attempt.message.id, "local", { sessionId, delivery });
-    }
-
     try {
       const delivered = await this.#domain.requestSessionMessageDelivery(
-        route.targetWorkspaceComputerId,
+        attempt.route.targetWorkspaceComputerId,
         targetInstanceId,
         delivery,
+        undefined,
+        (operation) => this.#sessions.withCollaborationDispatchAdmission(attempt.route, operation),
       );
-      return this.#recordOutcome(mapDeliveryResult(command.requestId, delivered, sessionId), attemptCount);
+      return this.#record(mapDelivery(delivered, sessionId), attempt.attemptCount);
     } catch (error) {
       const unknown = error instanceof RuntimeDomainRequestError && error.code === "timeout";
-      return this.#recordOutcome(
-        result(command.requestId, attempt.message.id, unknown ? "unknown" : "unreachable", {
+      return this.#record(
+        response(
+          attempt.message.id,
+          unknown ? "unknown" : "unreachable",
           sessionId,
-          code: unknown ? "delivery_timeout" : "runtime_unavailable",
-        }),
-        attemptCount,
+          unknown ? "delivery_timeout" : "runtime_unavailable",
+        ),
+        attempt.attemptCount,
       );
     }
   }
 
-  async #recordOutcome(
-    visible: SessionCollaborationCommandResult,
-    attemptCount: number,
-  ): Promise<SessionCollaborationCommandResult> {
-    if (visible.status === "local") return visible;
+  async #record(result: SessionCliCommandResponse, attemptCount: number): Promise<SessionCliCommandResponse> {
     try {
       const updated = await this.#sessions.recordMessageOutcome({
-        messageId: visible.messageId,
+        messageId: result.messageId,
         attemptCount,
-        outcome: visible.status as SessionMessageOutcome,
-        ...(visible.code ? { errorCode: visible.code } : {}),
+        outcome: result.status as SessionMessageOutcome,
+        ...(result.code ? { errorCode: result.code } : {}),
       });
-      if (updated) return visible;
+      if (updated) return result;
     } catch {
-      // The durable fact remains unknown and is never replayed automatically.
+      // The durable outcome remains unknown; commands never replay automatically.
     }
-    return result(visible.requestId, visible.messageId, "unknown", {
-      ...(visible.sessionId ? { sessionId: visible.sessionId } : {}),
-      code: "outcome_write_failed",
-    });
+    return response(result.messageId, "unknown", result.sessionId, "outcome_write_failed");
   }
 
-  #rememberLocal(requestId: string, input: Omit<LocalAttempt, "timer">): void {
-    const timer = setTimeout(() => this.#localAttempts.delete(requestId), this.#localResultTimeoutMs);
-    timer.unref();
-    this.#localAttempts.set(requestId, { ...input, timer });
+  #failure(messageId: string, error: unknown): SessionCliCommandResponse {
+    const mapped = mapFailure(error);
+    if (mapped.status === "rejected") this.#onDiagnostic?.(`SESSION_COLLABORATION_${mapped.code.toUpperCase()}`);
+    return response(messageId, mapped.status, undefined, mapped.code);
   }
 }
 
-function mapDeliveryResult(
-  requestId: string,
-  delivery: SessionMessageDeliveryResult,
-  sessionId: string,
-): SessionCollaborationCommandResult {
-  if (delivery.status === "accepted") return result(requestId, delivery.messageId, "accepted", { sessionId });
+function mapDelivery(delivery: SessionMessageDeliveryResult, sessionId: string): SessionCliCommandResponse {
+  if (delivery.status === "accepted") return response(delivery.messageId, "accepted", sessionId);
   if (delivery.reason === "session_busy" || delivery.reason === "agent_busy" || delivery.reason === "client_busy") {
-    return result(requestId, delivery.messageId, "unreachable", { sessionId, code: "capacity" });
+    return response(delivery.messageId, "unreachable", sessionId, "capacity");
   }
   if (
     delivery.reason === "stale_generation" ||
@@ -280,12 +219,9 @@ function mapDeliveryResult(
     delivery.reason === "stale_configuration" ||
     delivery.reason === "session_recovery_required"
   ) {
-    return result(requestId, delivery.messageId, "unreachable", { sessionId, code: "runtime_not_ready" });
+    return response(delivery.messageId, "unreachable", sessionId, "runtime_not_ready");
   }
-  return result(requestId, delivery.messageId, "rejected", {
-    sessionId,
-    code: delivery.reason ?? "target_unavailable",
-  });
+  return response(delivery.messageId, "rejected", sessionId, delivery.reason ?? "target_unavailable");
 }
 
 function mapFailure(error: unknown): { status: "unreachable" | "rejected"; code: string } {
@@ -299,19 +235,11 @@ function mapFailure(error: unknown): { status: "unreachable" | "rejected"; code:
   return { status: "unreachable", code: "runtime_unavailable" };
 }
 
-function result(
-  requestId: string,
+function response(
   messageId: string,
-  status: SessionCollaborationCommandResult["status"],
-  fields: Pick<SessionCollaborationCommandResult, "code" | "delivery" | "sessionId"> = {},
-): SessionCollaborationCommandResult {
-  return {
-    type: "session:collaboration:result",
-    requestId,
-    messageId,
-    status,
-    ...(fields.sessionId ? { sessionId: fields.sessionId } : {}),
-    ...(fields.code ? { code: fields.code } : {}),
-    ...(fields.delivery ? { delivery: fields.delivery } : {}),
-  };
+  status: SessionCliCommandResponse["status"],
+  sessionId?: string,
+  code?: string,
+): SessionCliCommandResponse {
+  return { messageId, status, ...(sessionId ? { sessionId } : {}), ...(code ? { code } : {}) };
 }

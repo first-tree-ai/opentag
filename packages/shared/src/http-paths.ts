@@ -20,6 +20,9 @@ export const IM_BINDING_DIAGNOSTICS_TEMPLATE = `${IM_BINDING_BY_ID_TEMPLATE}/dia
 export const SLACK_EVENTS_PATH = `${API_V1_PREFIX}/im-bindings/slack/events`;
 export const SLACK_OAUTH_CALLBACK_PATH = `${API_V1_PREFIX}/im-bindings/slack/oauth/callback`;
 export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-messages/:imMessageId/resources/:ordinal`;
+export const RUNTIME_INTERNAL_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions/internal`;
+export const RUNTIME_SESSION_MESSAGES_PATH = `${API_V1_PREFIX}/runtime/session-messages`;
+export const RUNTIME_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions`;
 export const WORKSPACE_COMPUTERS_TEMPLATE = `${API_V1_PREFIX}/workspaces/:workspaceId/computers`;
 export const WORKSPACE_COMPUTER_CONNECT_CODES_TEMPLATE = `${WORKSPACE_BY_ID_TEMPLATE}/computer-connect-codes`;
 /** Staging-only Onboarding Lab interface; the Account comes only from the authenticated session. */
@@ -55,6 +58,9 @@ export const HTTP_PATHS = {
   authProviders: `${API_V1_PREFIX}/auth/providers`,
   authRefresh: `${API_V1_PREFIX}/auth/refresh`,
   computerRuntimeWebSocket: `${API_V1_PREFIX}/computer/ws`,
+  runtimeInternalSessions: RUNTIME_INTERNAL_SESSIONS_PATH,
+  runtimeSessionMessages: RUNTIME_SESSION_MESSAGES_PATH,
+  runtimeSessions: RUNTIME_SESSIONS_PATH,
   internalOnboardingLab: INTERNAL_ONBOARDING_LAB_PATH,
   me: `${API_V1_PREFIX}/me`,
   meConnectCodes: `${API_V1_PREFIX}/me/connect-codes`,

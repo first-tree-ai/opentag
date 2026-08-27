@@ -10,7 +10,8 @@ const ExternalIdentitySchema = z
     provider: AuthIdentityProviderSchema,
     issuer: z.string().url().max(2048),
     subject: z.string().min(1).max(512),
-    email: z.string().email(),
+    // Normalized here so every downstream write inherits it; `users.email` carries a case-insensitive unique index.
+    email: z.string().trim().toLowerCase().email(),
     displayName: UserDisplayNameSchema,
   })
   .strict();

@@ -1,18 +1,28 @@
 import { relations, sql } from "drizzle-orm";
-import { check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, index, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const timestamps = {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 };
 
-export const users = pgTable("users", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  email: text("email").notNull(),
-  displayName: text("display_name").notNull(),
-  suspendedAt: timestamp("suspended_at", { withTimezone: true }),
-  ...timestamps,
-});
+/**
+ * Email is stored lowercased and guarded by a case-insensitive unique index. Every write path must normalize before
+ * insert; the index is the backstop that keeps a missed normalization from creating a second Account for one person.
+ */
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    email: text("email").notNull(),
+    emailVerified: boolean("email_verified").notNull().default(false),
+    displayName: text("display_name").notNull(),
+    image: text("image"),
+    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (table) => [uniqueIndex("users_email_unique").on(sql`lower(${table.email})`)],
+);
 
 export const workspaces = pgTable(
   "workspaces",

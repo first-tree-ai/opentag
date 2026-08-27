@@ -255,6 +255,10 @@ stable user ID and then uses the provider-neutral token issuer. Future Google or
 boundary without changing JWT claims. Internal grants are still loaded from PostgreSQL as a Phase 2 compatibility seam;
 they are not exposed as Admin membership.
 
+An Account email is stored lowercased and is unique case-insensitively, so one address identifies at most one Account.
+Every write path normalizes before insert and the `users_email_unique` index is the backstop. `users.email_verified`
+records whether an identity provider asserted the address; the login-code flow never sets it.
+
 ## Google sign-in and Web App
 
 Create a Google Web OAuth client whose callback is

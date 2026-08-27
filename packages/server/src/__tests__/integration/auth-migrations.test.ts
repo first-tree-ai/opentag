@@ -87,7 +87,9 @@ describe("database migrations", () => {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    expect(journal.entries.slice(-8).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    // Anchored to the fixed 0010..0017 range rather than the tail: a trailing slice silently stops covering the
+    // earliest entry every time a migration is appended, which would quietly shrink what this test guarantees.
+    expect(journal.entries.slice(10, 18).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 10, tag: "0010_optimal_jazinda" },
       { idx: 11, tag: "0011_staging_team_setup_repair" },
       { idx: 12, tag: "0012_supreme_maddog" },
@@ -365,6 +367,79 @@ describe("database migrations", () => {
     }
   });
 
+  it("refuses to normalize Account email casing while two Accounts share an address, then backfills verification", async () => {
+    const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0017-migrations-"));
+    const legacyMeta = join(legacyFolder, "meta");
+    await mkdir(legacyMeta);
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+      version: string;
+      dialect: string;
+      entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
+    };
+    const legacyEntries = journal.entries.filter(({ idx }) => idx <= 17);
+    for (const entry of legacyEntries) {
+      await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(legacyFolder, `${entry.tag}.sql`));
+    }
+    await writeFile(join(legacyMeta, "_journal.json"), JSON.stringify({ ...journal, entries: legacyEntries }, null, 2));
+
+    try {
+      await migrateDatabase(databaseUrl, legacyFolder);
+      const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      try {
+        const keptUserId = crypto.randomUUID();
+        const duplicateUserId = crypto.randomUUID();
+        await sql`
+          insert into users (id, email, display_name)
+          values
+            (${keptUserId}, 'Casing@Example.com', 'Mixed Casing'),
+            (${duplicateUserId}, 'casing@example.com', 'Lower Casing')
+        `;
+
+        await expect(migrateDatabase(databaseUrl, migrationsFolder)).rejects.toThrow(
+          "Accounts sharing an email address",
+        );
+        const [blocked] = await sql<{ email_verified_exists: boolean; migration_count: number }[]>`
+          select
+            (select count(*)::int from drizzle.__drizzle_migrations) as migration_count,
+            exists(
+              select 1 from information_schema.columns
+              where table_schema = 'public' and table_name = 'users' and column_name = 'email_verified'
+            ) as email_verified_exists
+        `;
+        expect(blocked).toEqual({ email_verified_exists: false, migration_count: 18 });
+
+        await sql`delete from users where id = ${duplicateUserId}`;
+        const verifiedUserId = crypto.randomUUID();
+        await sql`
+          insert into users (id, email, display_name)
+          values (${verifiedUserId}, 'Verified@Example.com', 'Verified Identity')
+        `;
+        await sql`
+          insert into auth_identities (user_id, provider, issuer, subject, email)
+          values (${verifiedUserId}, 'google', 'https://accounts.google.com', 'google-subject-1', 'Verified@Example.com')
+        `;
+
+        await migrateDatabase(databaseUrl, migrationsFolder);
+
+        const accounts = await sql<{ email: string; email_verified: boolean; id: string }[]>`
+          select id, email, email_verified from users order by email
+        `;
+        expect([...accounts]).toEqual([
+          { email: "casing@example.com", email_verified: false, id: keptUserId },
+          { email: "verified@example.com", email_verified: true, id: verifiedUserId },
+        ]);
+
+        await expect(
+          sql`insert into users (email, display_name) values ('CASING@EXAMPLE.COM', 'Rejected')`,
+        ).rejects.toThrow("users_email_unique");
+      } finally {
+        await sql.end();
+      }
+    } finally {
+      await rm(legacyFolder, { force: true, recursive: true });
+    }
+  });
+
   it("maps legacy left_at rows to the single membership status truth", async () => {
     const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
     const applyFile = async (name: string) => {
@@ -628,7 +703,7 @@ describe("database migrations", () => {
             ) as creator_owner_constraint_removed
         `;
         expect(lifecycle).toEqual({
-          count: 18,
+          count: 19,
           creation_intents_null: true,
           deleted_at_exists: false,
           setup_completed_at_exists: true,
@@ -712,7 +787,7 @@ describe("database migrations", () => {
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(18);
+        expect(rerun?.count).toBe(19);
       } finally {
         await sql.end();
       }

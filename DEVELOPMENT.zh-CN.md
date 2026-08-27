@@ -246,6 +246,9 @@ bootstrap email 是 Account 资料，不是邮箱密码凭据。Account 登录 c
 无关的 token 颁发边界。未来 Google 或 OIDC identity resolver 可以接入这个边界，无需改变 JWT claims。内部 grant
 仍会从 PostgreSQL 读取，作为 Phase 2 前的兼容 seam；产品不把它暴露为 Admin 成员关系。
 
+Account email 以小写存储，并按大小写不敏感唯一，因此一个地址最多对应一个 Account。所有写入路径都会在 insert 前归一化，
+`users_email_unique` 索引是兜底。`users.email_verified` 记录该地址是否由 identity provider 断言过；登录 code 流程不会设置它。
+
 ## Google 登录与 Web App
 
 创建 Google Web OAuth client，并将 callback 配置为

@@ -502,6 +502,57 @@ describe("Better Auth over the existing Account tables", () => {
     });
   });
 
+  it("forwards the renewed session cookie, so an active browser is not signed out on the original schedule", async () => {
+    /*
+     * Better Auth extends a session as it is used and reports the replacement cookie in response headers. A
+     * result-only `getSession` throws those away, and the failure is silent: the row keeps moving while the browser
+     * keeps the cookie it was first given, so an active user is signed out at the original expiry and the renewed row
+     * is left behind. Nothing about the initial TTL catches that — only the header bridge does.
+     */
+    await seedLegacyAccount("google-subject-renewal", "renewal@example.com", "Renewal Account");
+    const developer = new DevBrowserAuthService(client.database, "renewal@example.com");
+    const auth = createAuth(() => developer.resolveUserId());
+    const signedIn = await auth.handler(
+      new Request(`${PUBLIC_URL}/api/v1/auth/dev/sign-in`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+    const cookie = cookieHeader(signedIn);
+
+    /*
+     * Aged past `updateAge` by moving the expiry back, which is what Better Auth actually reads:
+     * `expiresAt - expiresIn + updateAge <= now` is its condition for refreshing.
+     */
+    const aged = new Date(Date.now() + (SESSION_TTL_SECONDS - 2 * 24 * 60 * 60) * 1000);
+    await client.database.update(authSessions).set({ expiresAt: aged });
+
+    const reply = replyStub();
+    await createUserAuthPreHandler(bridgedAuthService(auth), {
+      betterAuth: auth,
+      publicOrigin: PUBLIC_URL,
+      secureCookies: false,
+      sessionTtlSeconds: SESSION_TTL_SECONDS,
+    })({ headers: { cookie }, method: "GET" } as unknown as FastifyRequest, reply);
+
+    // The row moved forward, which is the half that used to happen silently on its own.
+    const [renewed] = await client.database.select().from(authSessions);
+    expect(renewed?.expiresAt.getTime()).toBeGreaterThan(aged.getTime());
+
+    // And the browser was told: the replacement cookie has to reach the reply, or it keeps the one that expires first.
+    const written = ([] as string[]).concat((reply.getHeader("set-cookie") ?? []) as string[]);
+    const sessionCookieName = (await auth.$context).authCookies.sessionToken.name;
+    const forwarded = written.find((value) => value.startsWith(`${sessionCookieName}=`));
+    expect(forwarded, "the renewed session cookie was not forwarded to the browser").toBeDefined();
+
+    // What it forwarded is a working credential, not just any cookie.
+    const replacement = forwarded?.split(";", 1)[0] ?? "";
+    await expect(auth.api.getSession({ headers: new Headers({ cookie: replacement }) })).resolves.toMatchObject({
+      user: { email: "renewal@example.com" },
+    });
+  });
+
   it("never persists provider credentials on the identity row", async () => {
     const userId = await seedLegacyAccount("google-subject-tokens", "tokens@example.com", "Token Account");
     const auth = createAuth();

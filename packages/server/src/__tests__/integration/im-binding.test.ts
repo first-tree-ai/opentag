@@ -3285,6 +3285,46 @@ describe("IM binding persistence", () => {
     }
   });
 
+  /**
+   * The dispatch guard is `!instanceId || row.computer.currentInstanceId !== instanceId`. The first
+   * disjunct — no runtime connected at all — is covered above. This pins the second: a runtime IS
+   * connected, but the persisted enrollment still names a superseded instance, so it is the persisted
+   * column that withholds the dispatch. De-persisting it would make this disjunct vacuous and silently
+   * let a superseded generation be served.
+   */
+  it("withholds delivery when the persisted instance disagrees with the connected runtime", async () => {
+    const value = await fixture();
+    try {
+      const supersededInstanceId = crypto.randomUUID();
+      const liveInstanceId = crypto.randomUUID();
+      await value.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: supersededInstanceId })
+        .where(eq(workspaceComputers.id, value.workspaceComputer.id));
+      const admission = await new ImMessageInbox(value.database).ingest(
+        value.imBindingId,
+        1,
+        inbound("Ev-persisted-instance-fence"),
+      );
+      const deliveryId = admission.deliveryIds[0];
+      if (!deliveryId) throw new Error("Persisted instance fence fixture was not admitted");
+
+      const domain = { requestReconcile: vi.fn(), requestDelivery: vi.fn() };
+      await imDeliveryWorker({
+        database: value.database,
+        registry: { currentInstanceId: () => liveInstanceId } as never,
+        domain: domain as never,
+      }).runOnce();
+
+      expect(domain.requestReconcile).not.toHaveBeenCalled();
+      expect(domain.requestDelivery).not.toHaveBeenCalled();
+      expect(
+        (await value.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId)))[0],
+      ).toMatchObject({ attemptCount: 1, lastErrorCode: "IM_DELIVERY_RUNTIME_UNAVAILABLE", state: "pending" });
+    } finally {
+      await value.sql.end();
+    }
+  });
   it("does not let a pending delivery for an ended Session fence another active Session of the Agent", async () => {
     const value = await fixture();
     try {

@@ -25,6 +25,40 @@ afterAll(async () => {
 
 beforeEach(async () => testDatabase.reset());
 
+/**
+ * Runs two resolutions that are both past the address lookup before either writes.
+ *
+ * `Promise.all` alone does not force this: the first call can commit before the second reads, and the race the catch
+ * paths exist for never happens. The service's `afterAccountLookup` seam holds each transaction at that point until
+ * both have arrived, so exactly one of them must lose to the unique index.
+ */
+async function raceAtAddressLookup(
+  first: (service: AuthIdentityService) => Promise<unknown>,
+  second: (service: AuthIdentityService) => Promise<unknown>,
+): Promise<PromiseSettledResult<unknown>[]> {
+  let arrived = 0;
+  let release: () => void = () => undefined;
+  const bothArrived = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const barrier = async () => {
+    arrived += 1;
+    if (arrived >= 2) release();
+    await bothArrived;
+  };
+  const service = new AuthIdentityService(client.database, { afterAccountLookup: barrier });
+  return Promise.allSettled([first(service), second(service)]);
+}
+
+function typedConflicts(results: PromiseSettledResult<unknown>[]): string[] {
+  return results
+    .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+    .map((result) => {
+      expect(result.reason).toMatchObject({ statusCode: 409 });
+      return String((result.reason as { code: string }).code);
+    });
+}
+
 function googleIdentity(overrides: Partial<ExternalIdentity> = {}): ExternalIdentity {
   return {
     provider: "google",
@@ -126,19 +160,14 @@ describe("Account identity resolution under the one-email-per-Account invariant"
   });
 
   it("reports a lost concurrent Account creation as a conflict, not a database error", async () => {
-    // Two identities can both find the address unowned; no row exists to lock, so the unique index is the only
-    // serialization point and the loser must still surface a typed decision.
-    const results = await Promise.allSettled([
-      identities.resolveOrCreate(googleIdentity({ email: "race@example.com", subject: "racer-one" })),
-      identities.resolveOrCreate(googleIdentity({ email: "race@example.com", subject: "racer-two" })),
-    ]);
+    // Both transactions read the address as unowned before either writes, so no row exists to lock and the unique
+    // index is the only serialization point. Exactly one must lose, and it must lose as a typed decision.
+    const results = await raceAtAddressLookup(
+      (service) => service.resolveOrCreate(googleIdentity({ email: "race@example.com", subject: "racer-one" })),
+      (service) => service.resolveOrCreate(googleIdentity({ email: "race@example.com", subject: "racer-two" })),
+    );
 
-    // The loser can land on either index: the `users` insert if it lost the address, or the identity insert if it
-    // attached to the winner's Account and found the provider slot taken. Both are decisions, not database errors.
-    for (const failure of results.filter((result) => result.status === "rejected")) {
-      expect(failure.reason).toMatchObject({ statusCode: 409 });
-      expect(["AUTH_EMAIL_CONFLICT", "AUTH_IDENTITY_CONFLICT"]).toContain(failure.reason.code);
-    }
+    expect(typedConflicts(results)).toEqual(["AUTH_EMAIL_CONFLICT"]);
     expect(await client.database.select().from(users)).toHaveLength(1);
   });
 
@@ -146,16 +175,42 @@ describe("Account identity resolution under the one-email-per-Account invariant"
     await identities.resolveOrCreate(googleIdentity({ email: "mover-one@example.com", subject: "mover-one" }));
     await identities.resolveOrCreate(googleIdentity({ email: "mover-two@example.com", subject: "mover-two" }));
 
-    const results = await Promise.allSettled([
-      identities.resolveOrCreate(googleIdentity({ email: "target@example.com", subject: "mover-one" })),
-      identities.resolveOrCreate(googleIdentity({ email: "target@example.com", subject: "mover-two" })),
-    ]);
+    const results = await raceAtAddressLookup(
+      (service) => service.resolveOrCreate(googleIdentity({ email: "target@example.com", subject: "mover-one" })),
+      (service) => service.resolveOrCreate(googleIdentity({ email: "target@example.com", subject: "mover-two" })),
+    );
 
-    for (const failure of results.filter((result) => result.status === "rejected")) {
-      expect(failure.reason).toMatchObject({ code: "AUTH_EMAIL_CONFLICT", statusCode: 409 });
-    }
+    expect(typedConflicts(results)).toEqual(["AUTH_EMAIL_CONFLICT"]);
     const holders = await client.database.select().from(users).where(eq(users.email, "target@example.com"));
     expect(holders).toHaveLength(1);
+  });
+
+  it("reports a swap of two Account addresses as a conflict, not a deadlock", async () => {
+    // The interleaving that a second row lock would deadlock on: each Account moves onto the address the other is
+    // leaving, so ordering the locks by target address gives the two transactions opposite orders.
+    await identities.resolveOrCreate(googleIdentity({ email: "left@example.com", subject: "left" }));
+    await identities.resolveOrCreate(googleIdentity({ email: "right@example.com", subject: "right" }));
+
+    const results = await raceAtAddressLookup(
+      (service) => service.resolveOrCreate(googleIdentity({ email: "right@example.com", subject: "left" })),
+      (service) => service.resolveOrCreate(googleIdentity({ email: "left@example.com", subject: "right" })),
+    );
+
+    for (const code of typedConflicts(results)) {
+      expect(code).toBe("AUTH_EMAIL_CONFLICT");
+    }
+    expect(await client.database.select().from(users)).toHaveLength(2);
+  });
+
+  it("heals an Account a previous server revision left unverified on the next sign-in", async () => {
+    // Migration 0019 backfills once, and the previous revision keeps serving afterwards without maintaining the flag.
+    // The returning-identity path is what makes that self-correcting rather than permanent.
+    const userId = await identities.resolveOrCreate(googleIdentity({ email: "healed@example.com", subject: "healed" }));
+    await client.database.update(users).set({ emailVerified: false }).where(eq(users.id, userId));
+
+    await identities.resolveOrCreate(googleIdentity({ email: "healed@example.com", subject: "healed" }));
+
+    expect(await readAccount(userId)).toEqual({ email: "healed@example.com", emailVerified: true, id: userId });
   });
 
   it("refuses to hand an existing Account to a verified but untrusted provider", async () => {

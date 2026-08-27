@@ -46,10 +46,19 @@ export interface ResolvedAccountIdentity {
 }
 
 export class AuthIdentityService {
+  readonly #afterAccountLookup?: () => Promise<void>;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
 
-  constructor(database: DatabaseClient, options: { now?: () => Date } = {}) {
+  constructor(
+    database: DatabaseClient,
+    options: {
+      /** Test seam for holding a transaction between reading the address owner and writing, to force a real race. */
+      afterAccountLookup?: () => Promise<void>;
+      now?: () => Date;
+    } = {},
+  ) {
+    this.#afterAccountLookup = options.afterAccountLookup;
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
   }
@@ -113,6 +122,7 @@ export class AuthIdentityService {
      * surface a raw unique violation as an opaque 500.
      */
     const owner = await this.#lockAccountByEmail(transaction, identity.email);
+    await this.#afterAccountLookup?.();
     if (owner) {
       if (!this.#mayAttachToExistingAccount(identity)) throw this.#emailConflict();
       if (owner.suspendedAt) throw this.#suspended();
@@ -158,16 +168,19 @@ export class AuthIdentityService {
       return;
     }
     if (!identity.emailVerified) return;
-    const owner = await this.#lockAccountByEmail(transaction, identity.email);
-    if (owner && owner.id !== user.id) throw this.#emailConflict();
+    /*
+     * No row lock on the address being moved to. Each returning identity already holds its own Account row, so taking
+     * a second one here orders two locks by whichever address each transaction happens to be leaving: two Accounts
+     * swapping addresses would grab them in opposite order and deadlock, which PostgreSQL reports as `40P01` — outside
+     * any conflict catch. The unique index decides instead, and the loser is classified below.
+     */
+    await this.#afterAccountLookup?.();
     try {
       await transaction
         .update(users)
         .set({ email: identity.email, emailVerified: true, updatedAt: now })
         .where(eq(users.id, user.id));
     } catch (error) {
-      // Two identities can both observe the same new address as unowned; the row lock above cannot serialize a move
-      // onto an address no row holds yet, so the index decides and the loser is reported as the same conflict.
       if (isUniqueViolation(error, USERS_EMAIL_UNIQUE)) throw this.#emailConflict();
       throw error;
     }

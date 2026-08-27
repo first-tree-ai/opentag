@@ -1,6 +1,8 @@
+import { ErrorCodeSchema } from "@opentag/shared";
 import { fromNodeHeaders } from "better-auth/node";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { appendSetCookies, setBrowserCsrfCookie } from "../services/auth/browser-cookies.js";
+import { AuthServiceError } from "../services/auth/errors.js";
 import { BETTER_AUTH_BASE_PATH, type OpenTagBetterAuth } from "./better-auth.js";
 
 /**
@@ -117,6 +119,20 @@ export async function sendBetterAuthResponse(reply: FastifyReply, response: Resp
   copyBetterAuthCookies(reply, response);
   if (!response.body) return reply.send(null);
   return reply.send(Buffer.from(await response.arrayBuffer()));
+}
+
+/**
+ * Restates a failed Better Auth call in OpenTag's error envelope.
+ *
+ * Better Auth replies in its own shape, which the client would read as an unrecognized failure and flatten. The status
+ * and code an OpenTag endpoint reported are carried across so a rejected credential and a suspended Account stay
+ * distinguishable; anything else becomes the caller's fallback rather than being guessed at.
+ */
+export async function betterAuthFailure(response: Response, fallback: AuthServiceError): Promise<AuthServiceError> {
+  const body = (await response.json().catch(() => undefined)) as { code?: unknown; message?: unknown } | undefined;
+  const code = ErrorCodeSchema.safeParse(body?.code);
+  if (!code.success || typeof body?.message !== "string") return fallback;
+  return new AuthServiceError(code.data, fallback.category, body.message, response.status);
 }
 
 /** Whether a Better Auth response handed the browser a session cookie. */

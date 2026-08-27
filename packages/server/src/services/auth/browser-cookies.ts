@@ -81,6 +81,17 @@ export function setBrowserCsrfCookie(reply: FastifyReply, options: { maxAgeSecon
 }
 
 export function clearBrowserSessionCookies(reply: FastifyReply, secure: boolean): void {
+  clearLegacyCredentialCookies(reply, secure);
+  appendSetCookies(reply, [cookie(BROWSER_COOKIE_NAMES.csrf, "", { maxAge: 0, path: "/", secure })]);
+}
+
+/**
+ * Retires the credentials the previous revision issued, leaving the double-submit token alone.
+ *
+ * Used when a browser is moving onto a Better Auth session rather than signing out: it is still signed in, and the
+ * token it needs to mutate with was just issued on the same reply.
+ */
+export function clearLegacyCredentialCookies(reply: FastifyReply, secure: boolean): void {
   appendSetCookies(reply, [
     cookie(BROWSER_COOKIE_NAMES.access, "", { httpOnly: true, maxAge: 0, path: "/", secure }),
     cookie(BROWSER_COOKIE_NAMES.refresh, "", {
@@ -89,7 +100,6 @@ export function clearBrowserSessionCookies(reply: FastifyReply, secure: boolean)
       path: "/api/v1/auth/browser",
       secure,
     }),
-    cookie(BROWSER_COOKIE_NAMES.csrf, "", { maxAge: 0, path: "/", secure }),
   ]);
 }
 

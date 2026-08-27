@@ -3,7 +3,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer } from "better-auth/plugins/bearer";
 import type { DatabaseClient } from "../db/client.js";
 import { authIdentities, authSessions, authVerifications, users } from "../db/schema/index.js";
-import { devSignInPlugin } from "./dev-sign-in.js";
+import { devSignInPlugin, legacyUpgradePlugin } from "./internal-sign-in.js";
 
 /**
  * Where the instance will be mounted, under the repository's `/api/v1` versioning convention rather than Better Auth's
@@ -39,6 +39,13 @@ export interface BetterAuthConfig {
    */
   devSignIn?: () => Promise<string>;
   google?: { clientId: string; clientSecret: string };
+  /**
+   * Verifies a refresh credential the previous revision issued and answers whose it is.
+   *
+   * Supplied while the compatibility window is open. It must reject anything it cannot verify: it is the only thing
+   * standing between the upgrade endpoint and an unauthenticated session.
+   */
+  legacyUpgrade?: (refreshToken: string) => Promise<string>;
 }
 
 export type OpenTagBetterAuth = ReturnType<typeof createBetterAuth>;
@@ -124,6 +131,7 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
       // The CLI authenticates with `Authorization: Bearer <session token>`; the browser keeps using cookies.
       bearer(),
       ...(config.devSignIn ? [devSignInPlugin(config.devSignIn)] : []),
+      ...(config.legacyUpgrade ? [legacyUpgradePlugin(config.legacyUpgrade)] : []),
     ],
   });
 }

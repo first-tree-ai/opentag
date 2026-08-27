@@ -57,6 +57,8 @@ describe("published Better Auth surface", () => {
       // Mints a session with no credential at all. It exists only on a loopback development server, and even there
       // nothing but the fenced OpenTag route may reach it.
       { method: "POST" as const, url: "/api/v1/auth/dev/sign-in" },
+      // Reachable only through the route that owns the refresh cookie, and only for as long as legacy credentials do.
+      { method: "POST" as const, url: "/api/v1/auth/legacy/upgrade" },
       { method: "POST" as const, url: "/api/v1/auth/sign-in/social" },
       { method: "POST" as const, url: "/api/v1/auth/sign-out" },
       { method: "GET" as const, url: "/api/v1/auth/get-session" },

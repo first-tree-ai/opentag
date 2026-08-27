@@ -4,11 +4,12 @@ import { fromNodeHeaders } from "better-auth/node";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { OpenTagBetterAuth } from "../auth/better-auth.js";
-import { DEV_SIGN_IN_PATH } from "../auth/dev-sign-in.js";
-import { callBetterAuth, copyBetterAuthCookies } from "../auth/fastify-handler.js";
+import { betterAuthFailure, callBetterAuth, copyBetterAuthCookies } from "../auth/fastify-handler.js";
+import { DEV_SIGN_IN_PATH, LEGACY_UPGRADE_PATH } from "../auth/internal-sign-in.js";
 import {
   BROWSER_COOKIE_NAMES,
   clearBrowserSessionCookies,
+  clearLegacyCredentialCookies,
   clearOAuthContextCookie,
   parseCookies,
   requireBrowserMutationSecurity,
@@ -17,7 +18,7 @@ import {
   setBrowserSessionCookies,
   setOAuthContextCookie,
 } from "../services/auth/browser-cookies.js";
-import { AuthServiceError } from "../services/auth/errors.js";
+import { AuthServiceError, invalidCredential } from "../services/auth/errors.js";
 import type { GoogleBrowserAuthService, UserAuthService } from "../services/auth/index.js";
 import { validateOAuthNext } from "../services/auth/index.js";
 import { parseRequest } from "./request-validation.js";
@@ -229,7 +230,36 @@ export function registerBrowserAuthRoutes(
 
   app.post(HTTP_PATHS.authBrowserRefresh, async (request, reply) => {
     requireBrowserMutationSecurity(request, options.publicOrigin);
-    const tokens = await authService.refresh(requireRefreshCookie(request));
+    const refreshToken = requireRefreshCookie(request);
+    const betterAuth = options.betterAuth;
+    if (betterAuth) {
+      /*
+       * Only a browser that has not signed in since the cutover still holds this cookie, so refreshing it is that
+       * browser's one chance to move across. It is spent on a Better Auth session rather than another legacy pair:
+       * anything else leaves a session sign-out cannot revoke, or a credential that stops working when the legacy
+       * secret is retired.
+       */
+      const response = await callBetterAuth(betterAuth.instance, betterAuth.publicUrl, request, {
+        method: "POST",
+        path: LEGACY_UPGRADE_PATH,
+        body: { refreshToken },
+      });
+      if (!response.ok) {
+        throw await betterAuthFailure(
+          response,
+          invalidCredential("AUTH_INVALID_TOKEN", "The refresh token is invalid"),
+        );
+      }
+      copyBetterAuthCookies(reply, response);
+      setBrowserCsrfCookie(reply, {
+        maxAgeSeconds: options.refreshTokenTtlSeconds,
+        secure: options.secureCookies,
+      });
+      // Retired only now that the replacement is on the reply, so a failure above leaves the browser able to retry.
+      clearLegacyCredentialCookies(reply, options.secureCookies);
+      return reply.code(204).send();
+    }
+    const tokens = await authService.refresh(refreshToken);
     setBrowserSessionCookies(reply, tokens, {
       refreshTtlSeconds: options.refreshTokenTtlSeconds,
       secure: options.secureCookies,

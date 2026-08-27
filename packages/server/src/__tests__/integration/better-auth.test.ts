@@ -48,13 +48,14 @@ beforeEach(async () => {
   await testDatabase.reset();
 });
 
-function createAuth(devSignIn?: () => Promise<string>) {
+function createAuth(devSignIn?: () => Promise<string>, legacyUpgrade?: (refreshToken: string) => Promise<string>) {
   return createBetterAuth(client.database, {
     onSessionCreating: (userId) => postAuthentication.ensureAccountReady(userId).then(() => undefined),
     publicUrl: PUBLIC_URL,
     secret: "better-auth-integration-secret-at-least-32-characters",
     secureCookies: false,
     ...(devSignIn ? { devSignIn } : {}),
+    ...(legacyUpgrade ? { legacyUpgrade } : {}),
     google: { clientId: "google-client-id", clientSecret: "google-client-secret" },
   });
 }
@@ -392,6 +393,61 @@ describe("Better Auth over the existing Account tables", () => {
     expect(signOut.status).toBe(200);
     expect(await client.database.select().from(authSessions)).toHaveLength(0);
     await expect(auth.api.getSession({ headers: new Headers({ cookie }) })).resolves.toBeNull();
+  });
+
+  it("upgrades a browser the previous revision signed in, without asking it to sign in again", async () => {
+    const bootstrap = await bootstrapInitialAdmin(client.database, {
+      displayName: "Browser",
+      email: "browser@example.com",
+      workspaceDisplayName: "Example",
+      workspaceName: "example",
+    });
+    const legacy = new AuthTokenService(LEGACY_SECRET, 900, 3600);
+    const legacyPair = await legacy.issuePairForUser(bootstrap.userId);
+    const authService = bridgedAuthService(createAuth());
+    const auth = createAuth(undefined, async (refreshToken) => {
+      const identity = await legacy.verifyRefresh(refreshToken);
+      return (await authService.getActiveUserById(identity.userId)).user.id;
+    });
+
+    const upgrade = await auth.handler(
+      new Request(`${PUBLIC_URL}/api/v1/auth/legacy/upgrade`, {
+        method: "POST",
+        // The origin a browser actually sends, so a trusted-origin rejection would surface here rather than in staging.
+        headers: { "content-type": "application/json", origin: PUBLIC_URL },
+        body: JSON.stringify({ refreshToken: legacyPair.refreshToken }),
+      }),
+    );
+
+    expect(upgrade.status).toBe(200);
+    const cookie = cookieHeader(upgrade);
+    await expect(auth.api.getSession({ headers: new Headers({ cookie }) })).resolves.toMatchObject({
+      user: { id: bootstrap.userId },
+    });
+    // The same Account, not a second one: the upgrade must not read as a new person signing in.
+    expect(await client.database.select().from(users)).toHaveLength(1);
+  });
+
+  it("refuses to upgrade a refresh credential that does not verify", async () => {
+    const legacy = new AuthTokenService(LEGACY_SECRET, 900, 3600);
+    const authService = bridgedAuthService(createAuth());
+    const auth = createAuth(undefined, async (refreshToken) => {
+      const identity = await legacy.verifyRefresh(refreshToken);
+      return (await authService.getActiveUserById(identity.userId)).user.id;
+    });
+
+    const forged = await auth.handler(
+      new Request(`${PUBLIC_URL}/api/v1/auth/legacy/upgrade`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ refreshToken: `${randomUUID()}.${randomUUID()}.${randomUUID()}` }),
+      }),
+    );
+
+    // Nothing else guards this endpoint, so a token that does not verify must produce no session at all.
+    expect(forged.status).toBe(401);
+    expect(await client.database.select().from(authSessions)).toHaveLength(0);
+    expect(forged.headers.getSetCookie()).toEqual([]);
   });
 
   it("refuses development sign-in when the configured Account is ambiguous", async () => {

@@ -282,6 +282,15 @@ export async function startServer(): Promise<void> {
       secureCookies: isHostedEnvironment(config.environment),
       ...(dev ? { devSignIn: () => dev.resolveUserId() } : {}),
       ...(config.google ? { google: config.google } : {}),
+      /*
+       * Verified against the legacy provider alone, never the bridge: this endpoint exists to retire a credential the
+       * previous revision issued, and a Better Auth session presented here is already what it would upgrade to. The
+       * live Account read is what keeps a suspended Account from refreshing its way back in.
+       */
+      legacyUpgrade: async (refreshToken) => {
+        const identity = await legacyTokens.verifyRefresh(refreshToken);
+        return (await authService.getActiveUserById(identity.userId)).user.id;
+      },
     });
     sessionTokens = new BetterAuthSessionTokens(betterAuth);
     const google = config.google

@@ -350,4 +350,68 @@ describe("browser authentication routes", () => {
     expect(refreshed.statusCode).toBe(204);
     expect(auth.refresh).toHaveBeenCalledWith("refresh");
   });
+
+  it("spends a legacy refresh on a Better Auth session rather than another legacy pair", async () => {
+    const betterAuth = betterAuthStub(
+      () =>
+        new Response(JSON.stringify({ userId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e" }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "set-cookie": "opentag.session_token=upgraded; Path=/; HttpOnly",
+          },
+        }),
+    );
+    const { app, auth } = createBrowserApp({ betterAuth: betterAuth.instance });
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authBrowserRefresh,
+      headers: {
+        cookie: "opentag_refresh=legacy-refresh; opentag_csrf=csrf",
+        origin: "http://localhost:8000",
+        "x-opentag-csrf": "csrf",
+      },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(betterAuth.paths).toEqual(["/api/v1/auth/legacy/upgrade"]);
+    // Reissuing through the legacy provider would leave the browser on a credential stage 5 removes.
+    expect(auth.refresh).not.toHaveBeenCalled();
+    const cookies = response.headers["set-cookie"] as string[];
+    expect(cookies.find((value) => value.startsWith("opentag.session_token="))).toContain("upgraded");
+    expect(cookies.find((value) => value.startsWith("opentag_csrf="))).toBeDefined();
+    expect(cookies.filter((value) => /^opentag_(access|refresh)=;/.test(value))).toHaveLength(2);
+  });
+
+  it("keeps the legacy credentials usable when the upgrade is refused", async () => {
+    const betterAuth = betterAuthStub(
+      () =>
+        new Response(JSON.stringify({ code: "AUTH_USER_SUSPENDED", message: "The user account is suspended" }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance });
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authBrowserRefresh,
+      headers: {
+        cookie: "opentag_refresh=legacy-refresh; opentag_csrf=csrf",
+        origin: "http://localhost:8000",
+        "x-opentag-csrf": "csrf",
+      },
+    });
+
+    /*
+     * The reason has to survive the crossing. Better Auth answers in its own shape, so forwarding it verbatim would
+     * reach the client as an unrecognized failure and be flattened to `AUTH_INVALID_TOKEN` — a suspended Account would
+     * be told to sign in again, and would keep being told that.
+     */
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error: { code: "AUTH_USER_SUSPENDED" } });
+    // Nothing was retired, so the browser can still retry once whatever refused it is resolved.
+    expect(response.headers["set-cookie"]).toBeUndefined();
+  });
 });

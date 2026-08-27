@@ -186,20 +186,20 @@ describe("Account identity resolution under the one-email-per-Account invariant"
   });
 
   it("reports a swap of two Account addresses as a conflict, not a deadlock", async () => {
-    // The interleaving that a second row lock would deadlock on: each Account moves onto the address the other is
-    // leaving, so ordering the locks by target address gives the two transactions opposite orders.
-    await identities.resolveOrCreate(googleIdentity({ email: "left@example.com", subject: "left" }));
-    await identities.resolveOrCreate(googleIdentity({ email: "right@example.com", subject: "right" }));
+    const leftId = await identities.resolveOrCreate(googleIdentity({ email: "left@example.com", subject: "left" }));
+    const rightId = await identities.resolveOrCreate(googleIdentity({ email: "right@example.com", subject: "right" }));
 
+    // Each Account moves onto the address the other is leaving. Both wait on the other's uncommitted tuple through
+    // the unique index, so PostgreSQL kills one; its rollback restores the address the survivor was moving onto, and
+    // the survivor then loses on the restored key. Neither move can succeed, and neither Account may end up moved.
     const results = await raceAtAddressLookup(
       (service) => service.resolveOrCreate(googleIdentity({ email: "right@example.com", subject: "left" })),
       (service) => service.resolveOrCreate(googleIdentity({ email: "left@example.com", subject: "right" })),
     );
 
-    for (const code of typedConflicts(results)) {
-      expect(code).toBe("AUTH_EMAIL_CONFLICT");
-    }
-    expect(await client.database.select().from(users)).toHaveLength(2);
+    expect(typedConflicts(results)).toEqual(["AUTH_EMAIL_CONFLICT", "AUTH_EMAIL_CONFLICT"]);
+    expect((await readAccount(leftId))?.email).toBe("left@example.com");
+    expect((await readAccount(rightId))?.email).toBe("right@example.com");
   });
 
   it("heals an Account a previous server revision left unverified on the next sign-in", async () => {

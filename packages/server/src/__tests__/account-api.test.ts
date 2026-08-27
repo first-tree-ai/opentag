@@ -12,6 +12,7 @@ import { createApp } from "../app.js";
 import type { AgentService } from "../services/agents/index.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
 import type { ComputerService, MachineAuthService } from "../services/computers/index.js";
+import type { TaskService } from "../services/tasks/index.js";
 import type { WorkspaceAdminService, WorkspaceSetupService } from "../services/workspaces/index.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
@@ -73,6 +74,17 @@ const createAgentPayload = {
   runtimeProvider: "codex" as const,
   computerId,
 };
+const taskSummary = {
+  id: "11111111-1111-4111-8111-111111111111",
+  agent: { id: agentId, name: agent.name, displayName: agent.displayName, runtimeProvider: agent.runtimeProvider },
+  source: { provider: "feishu" as const, conversationKind: "dm" as const, channelId: "oc_debug", threadKey: null },
+  sessionKind: "channel" as const,
+  title: "Inspect the latest Turn",
+  status: "completed" as const,
+  createdAt: "2026-08-19T00:00:00.000Z",
+  endedAt: null,
+  lastActivityAt: "2026-08-19T00:01:00.000Z",
+};
 
 const apps: ReturnType<typeof createApp>[] = [];
 
@@ -125,6 +137,16 @@ function services() {
         issuedAt: new Date("2026-08-19T00:00:00.000Z"),
       }),
     },
+    taskService: {
+      list: vi.fn().mockResolvedValue({ tasks: [taskSummary], nextCursor: null }),
+      get: vi.fn().mockResolvedValue({
+        task: taskSummary,
+        turns: [],
+        internalSessions: [],
+        collaborationMessages: [],
+        nextCursor: null,
+      }),
+    },
     workspaceService: {
       listComputers: vi.fn().mockResolvedValue({ computers: [computerSummary] }),
     },
@@ -141,6 +163,7 @@ function appWith(overrides: Partial<ReturnType<typeof services>> = {}) {
     accountScope: service.accountScope as unknown as AccountScopeResolver,
     agentService: service.agentService as unknown as AgentService,
     machineAuthService: service.machineAuthService as unknown as MachineAuthService,
+    taskService: service.taskService as unknown as TaskService,
     // The legacy connect-code route is gated behind the runtime Computer service; the Account-native
     // route is not, so the equivalence comparison needs both registered.
     computerService: {} as unknown as ComputerService,
@@ -153,6 +176,33 @@ function appWith(overrides: Partial<ReturnType<typeof services>> = {}) {
 }
 
 describe("Account-native management collections", () => {
+  it("lists and reads read-only Tasks in the authenticated Account scope", async () => {
+    const { app, service } = appWith();
+
+    const list = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.accountTasks}?limit=25&kind=channel&agentId=${agentId}`,
+      headers: authorization,
+    });
+    expect(list.statusCode).toBe(200);
+    expect(list.headers["cache-control"]).toBe("no-store");
+    expect(list.json()).toEqual({ tasks: [taskSummary], nextCursor: null });
+    expect(service.taskService.list).toHaveBeenCalledWith(workspaceId, {
+      agentId,
+      kind: "channel",
+      limit: 25,
+    });
+
+    const detail = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.accountTasks}/${taskSummary.id}`,
+      headers: authorization,
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.headers["cache-control"]).toBe("no-store");
+    expect(service.taskService.get).toHaveBeenCalledWith(workspaceId, taskSummary.id, { limit: 50 });
+  });
+
   it("creates and lists Agents without a client-selected scope", async () => {
     const { app, service } = appWith();
 

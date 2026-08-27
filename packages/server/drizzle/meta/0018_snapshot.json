@@ -1,5 +1,5 @@
 {
-  "id": "8b60ea12-62b3-48e3-ae12-92c5c1c453ca",
+  "id": "a246d5f9-64bc-40be-aac1-22e2f67ad93b",
   "prevId": "d3a69f86-252a-4f2e-bf84-0afc079c9164",
   "version": "7",
   "dialect": "postgresql",
@@ -474,24 +474,11 @@
           "primaryKey": false,
           "notNull": true
         },
-        "email_verified": {
-          "name": "email_verified",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "display_name": {
           "name": "display_name",
           "type": "text",
           "primaryKey": false,
           "notNull": true
-        },
-        "image": {
-          "name": "image",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "suspended_at": {
           "name": "suspended_at",
@@ -514,23 +501,7 @@
           "default": "now()"
         }
       },
-      "indexes": {
-        "users_email_unique": {
-          "name": "users_email_unique",
-          "columns": [
-            {
-              "expression": "lower(\"email\")",
-              "asc": true,
-              "isExpression": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
+      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -2020,6 +1991,21 @@
             }
           ],
           "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "im_message_deliveries_session_id_idx": {
+          "name": "im_message_deliveries_session_id_idx",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}

@@ -256,8 +256,15 @@ boundary without changing JWT claims. Internal grants are still loaded from Post
 they are not exposed as Admin membership.
 
 An Account email is stored lowercased and is unique case-insensitively, so one address identifies at most one Account.
-Every write path normalizes before insert and the `users_email_unique` index is the backstop. `users.email_verified`
-records whether an identity provider asserted the address; the login-code flow never sets it.
+Every write path normalizes before insert and the `users_email_unique` index is the backstop.
+
+A provider identity therefore attaches to the Account that already holds its address rather than creating a second one.
+Attachment requires the provider to have verified the address, because it hands over an existing Account; an unverified
+address that is already taken, and a provider email change onto another Account's address, are both refused with
+`AUTH_EMAIL_CONFLICT`. This is how a bootstrap Account and that person's first Google sign-in become one Account.
+
+`users.email_verified` records whether a provider asserted the address currently stored on the Account. It is only ever
+raised for that address, never for some other address the provider returned, and the login-code flow never sets it.
 
 ## Google sign-in and Web App
 

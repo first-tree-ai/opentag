@@ -245,6 +245,23 @@ export const RuntimeImHistoryItemSchema = z
   })
   .strict();
 
+export const RuntimeImDeliveryContentSchema = z
+  .object({
+    kind: z.literal("text"),
+    text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "Direct text exceeds the 16 KiB limit", 1),
+    providerRef: RuntimeProviderMessageRefSchema,
+    history: z.array(RuntimeImHistoryItemSchema).max(100).optional(),
+    historyTruncated: z.boolean().optional(),
+    resources: z.array(RuntimeImResourceReferenceSchema).max(RUNTIME_IM_RESOURCE_MAX_COUNT).optional(),
+  })
+  .strict()
+  .superRefine((content, context) => {
+    const historyBytes = utf8Length(JSON.stringify(content.history ?? []));
+    if (historyBytes > RUNTIME_IM_HISTORY_MAX_BYTES) {
+      context.addIssue({ code: "custom", path: ["history"], message: "IM history exceeds 40 KiB" });
+    }
+  });
+
 export const RetainedTurnReportClaimSchema = z
   .object({
     dispatchRequestId: RuntimeRequestIdSchema,
@@ -330,16 +347,7 @@ export const DirectImMessageDeliveryRequestSchema = z
     agentId: RuntimeOpaqueIdSchema,
     placementGeneration: RuntimeSequenceSchema,
     attention: z.enum(["direct", "ambient"]),
-    content: z
-      .object({
-        kind: z.literal("text"),
-        text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "Direct text exceeds the 16 KiB limit", 1),
-        providerRef: RuntimeProviderMessageRefSchema,
-        history: z.array(RuntimeImHistoryItemSchema).max(100).optional(),
-        historyTruncated: z.boolean().optional(),
-        resources: z.array(RuntimeImResourceReferenceSchema).max(RUNTIME_IM_RESOURCE_MAX_COUNT).optional(),
-      })
-      .strict(),
+    content: RuntimeImDeliveryContentSchema,
     runtime: EffectiveRuntimeSnapshotSchema,
     deadlineAt: z.string().datetime({ offset: true }).optional(),
   })
@@ -348,11 +356,24 @@ export const DirectImMessageDeliveryRequestSchema = z
     if (frame.runtime.agentId !== frame.agentId) {
       context.addIssue({ code: "custom", path: ["runtime", "agentId"], message: "Agent identity does not match" });
     }
-    const historyBytes = utf8Length(JSON.stringify(frame.content.history ?? []));
-    if (historyBytes > RUNTIME_IM_HISTORY_MAX_BYTES) {
-      context.addIssue({ code: "custom", path: ["content", "history"], message: "IM history exceeds 40 KiB" });
-    }
   });
+
+export const RuntimeImSteerRequestSchema = z
+  .object({
+    type: z.literal("im:steer"),
+    requestId: RuntimeRequestIdSchema,
+    deliveryId: RuntimeOpaqueIdSchema,
+    imMessageId: RuntimeOpaqueIdSchema,
+    sessionId: RuntimeOpaqueIdSchema,
+    agentId: RuntimeOpaqueIdSchema,
+    placementGeneration: RuntimeSequenceSchema,
+    rootDeliveryId: RuntimeOpaqueIdSchema,
+    expectedTurnId: RuntimeOpaqueIdSchema,
+    attention: z.enum(["direct", "ambient"]),
+    content: RuntimeImDeliveryContentSchema,
+    deadlineAt: z.string().datetime({ offset: true }).optional(),
+  })
+  .strict();
 
 export const RuntimeImCredentialGrantRequestSchema = z
   .object({
@@ -401,26 +422,52 @@ export const RuntimeImCredentialGrantResultSchema = z.discriminatedUnion("status
     .strict(),
 ]);
 
-export const ImMessageDeliveryResultSchema = z
-  .object({
-    type: z.literal("im:deliver:result"),
-    requestId: RuntimeRequestIdSchema,
-    deliveryId: RuntimeOpaqueIdSchema,
-    sessionId: RuntimeOpaqueIdSchema,
-    placementGeneration: RuntimeSequenceSchema,
-    status: z.enum(["accepted", "rejected"]),
-    turnId: RuntimeOpaqueIdSchema.optional(),
-    reason: InputRejectReasonSchema.optional(),
-  })
-  .strict()
-  .superRefine((frame, context) => {
-    if (frame.status === "accepted" && (!frame.turnId || frame.reason)) {
-      context.addIssue({ code: "custom", message: "Accepted deliveries require a turn ID and forbid a reason" });
-    }
-    if (frame.status === "rejected" && (!frame.reason || frame.turnId)) {
-      context.addIssue({ code: "custom", message: "Rejected deliveries require a reason and forbid a turn ID" });
-    }
-  });
+const ImMessageDeliveryResultBaseSchema = z.object({
+  type: z.literal("im:deliver:result"),
+  requestId: RuntimeRequestIdSchema,
+  deliveryId: RuntimeOpaqueIdSchema,
+  sessionId: RuntimeOpaqueIdSchema,
+  placementGeneration: RuntimeSequenceSchema,
+});
+
+export const ImMessageDeliveryResultSchema = z.discriminatedUnion("status", [
+  ImMessageDeliveryResultBaseSchema.extend({
+    status: z.literal("accepted"),
+    turnId: RuntimeOpaqueIdSchema,
+  }).strict(),
+  ImMessageDeliveryResultBaseSchema.extend({
+    status: z.literal("absorbed"),
+    rootDeliveryId: RuntimeOpaqueIdSchema,
+    turnId: RuntimeOpaqueIdSchema,
+  }).strict(),
+  ImMessageDeliveryResultBaseSchema.extend({
+    status: z.literal("rejected"),
+    reason: InputRejectReasonSchema,
+  }).strict(),
+]);
+
+const RuntimeImSteerResultBaseSchema = z.object({
+  type: z.literal("im:steer:result"),
+  requestId: RuntimeRequestIdSchema,
+  deliveryId: RuntimeOpaqueIdSchema,
+  sessionId: RuntimeOpaqueIdSchema,
+  placementGeneration: RuntimeSequenceSchema,
+  rootDeliveryId: RuntimeOpaqueIdSchema,
+  expectedTurnId: RuntimeOpaqueIdSchema,
+});
+
+export const RuntimeImSteerResultSchema = z.discriminatedUnion("status", [
+  RuntimeImSteerResultBaseSchema.extend({ status: z.literal("steered") }).strict(),
+  RuntimeImSteerResultBaseSchema.extend({ status: z.literal("retry"), reason: z.literal("turn_starting") }).strict(),
+  RuntimeImSteerResultBaseSchema.extend({
+    status: z.literal("deferred"),
+    reason: z.enum(["turn_not_running", "steer_unsupported", "steer_state_unknown"]),
+  }).strict(),
+  RuntimeImSteerResultBaseSchema.extend({
+    status: z.literal("rejected"),
+    reason: z.enum(["invalid_input", "input_conflict", "target_mismatch", "stale_generation"]),
+  }).strict(),
+]);
 
 export const InternalSessionRuntimeOverridesSchema = z
   .object({
@@ -580,6 +627,7 @@ export const TurnReportResultSchema = z
 export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionReconcileRequestSchema,
   DirectImMessageDeliveryRequestSchema,
+  RuntimeImSteerRequestSchema,
   SessionMessageDeliveryRequestSchema,
   TurnReportResultSchema,
   RuntimeImCredentialGrantResultSchema,
@@ -588,6 +636,7 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
 export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionReconcileResultSchema,
   ImMessageDeliveryResultSchema,
+  RuntimeImSteerResultSchema,
   SessionMessageDeliveryResultSchema,
   AgentTraceBatchSchema,
   TurnReportRequestSchema,
@@ -603,6 +652,9 @@ export type SessionReconcileRequest = z.infer<typeof SessionReconcileRequestSche
 export type SessionReconcileResult = z.infer<typeof SessionReconcileResultSchema>;
 export type RetainedTurnReportClaim = z.infer<typeof RetainedTurnReportClaimSchema>;
 export type DirectImMessageDeliveryRequest = z.infer<typeof DirectImMessageDeliveryRequestSchema>;
+export type RuntimeImDeliveryContent = z.infer<typeof RuntimeImDeliveryContentSchema>;
+export type RuntimeImSteerRequest = z.infer<typeof RuntimeImSteerRequestSchema>;
+export type RuntimeImSteerResult = z.infer<typeof RuntimeImSteerResultSchema>;
 export type RuntimeImResourceReference = z.infer<typeof RuntimeImResourceReferenceSchema>;
 export type RuntimeImHistoryItem = z.infer<typeof RuntimeImHistoryItemSchema>;
 export type RuntimeProviderMessageRef = z.infer<typeof RuntimeProviderMessageRefSchema>;
@@ -684,6 +736,38 @@ export function computeDirectInputHash(input: DirectImMessageDeliveryRequest): s
     frame.content.resources ?? [],
     computeRuntimeSnapshotHashes(frame.runtime).effectiveSnapshotHash,
     frame.deadlineAt ?? null,
+  ]);
+}
+
+export function computeRuntimeImMessageSemanticHash(
+  input: DirectImMessageDeliveryRequest | RuntimeImSteerRequest,
+): string {
+  const frame =
+    input.type === "im:deliver"
+      ? DirectImMessageDeliveryRequestSchema.parse(input)
+      : RuntimeImSteerRequestSchema.parse(input);
+  return hashTuple([
+    1,
+    frame.imMessageId,
+    frame.sessionId,
+    frame.agentId,
+    frame.placementGeneration,
+    frame.attention,
+    frame.content.kind,
+    frame.content.text,
+    frame.content.providerRef,
+    frame.deadlineAt ?? null,
+  ]);
+}
+
+export function computeRuntimeImSteerInputHash(input: RuntimeImSteerRequest): string {
+  const frame = RuntimeImSteerRequestSchema.parse(input);
+  return hashTuple([
+    1,
+    frame.deliveryId,
+    computeRuntimeImMessageSemanticHash(frame),
+    frame.rootDeliveryId,
+    frame.expectedTurnId,
   ]);
 }
 

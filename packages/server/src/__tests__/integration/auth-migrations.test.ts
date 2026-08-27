@@ -97,8 +97,8 @@ describe("database migrations", () => {
       { idx: 16, tag: "0016_certain_revanche" },
       { idx: 17, tag: "0017_sour_tiger_shark" },
       { idx: 18, tag: "0018_salty_tombstone" },
-      { idx: 19, tag: "0019_next_quasar" },
-      { idx: 20, tag: "0020_numerous_puppet_master" },
+      { idx: 19, tag: "0019_previous_magneto" },
+      { idx: 20, tag: "0020_condemned_tarot" },
     ]);
   });
 

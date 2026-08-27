@@ -25,6 +25,7 @@ export const RUNTIME_V0_CAPABILITIES = {
 export const RUNTIME_CAPABILITY = {
   agentTrace: "runtime.agentTrace",
   imDelivery: "runtime.imDelivery",
+  imSteer: "runtime.imSteer",
   imCredentialGrant: "runtime.imCredentialGrant",
   sessionCollaboration: "runtime.sessionCollaboration",
   sessionReconcile: "runtime.sessionReconcile",
@@ -34,6 +35,7 @@ export const RUNTIME_CAPABILITY = {
 export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.agentTrace]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.imDelivery]: { min: 1, max: 1 },
+  [RUNTIME_CAPABILITY.imSteer]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.imCredentialGrant]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.sessionCollaboration]: { min: 2, max: 2 },
   [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },

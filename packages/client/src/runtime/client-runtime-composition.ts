@@ -461,6 +461,8 @@ export async function createClientRuntime(
     preflight,
     /* v8 ignore next -- late binding is required because custody and runner own each other. */
     start: (owner) => runner.start(owner),
+    /* v8 ignore next -- late binding is required because custody and runner own each other. */
+    steer: (request) => runner.steer(request),
   });
   runner = new AgentTurnRunner({
     bindingStore,
@@ -740,6 +742,7 @@ type ComposedClientRuntimeHandlers = Required<
   Pick<
     ClientRuntimeOptions,
     | "handleDelivery"
+    | "handleSteer"
     | "handleTurnReportResult"
     | "onReconcileResultSendFailed"
     | "onReconciled"
@@ -748,12 +751,13 @@ type ComposedClientRuntimeHandlers = Required<
 >;
 
 export function createClientRuntimeHandlers(
-  custody: Pick<TurnCustodyOwner, "accept">,
+  custody: Pick<TurnCustodyOwner, "accept" | "acceptSteer">,
   reportOwner: Pick<TurnReportOwner, "handleResult">,
   recovery: Pick<MvpTurnReportRecovery, "afterReconciled" | "cancel" | "prepare">,
 ): ComposedClientRuntimeHandlers {
   return {
     handleDelivery: (request) => custody.accept(request),
+    handleSteer: (request) => custody.acceptSteer(request),
     handleTurnReportResult: (result) => reportOwner.handleResult(result).then(() => undefined),
     prepareReconcileResult: (request, result) => recovery.prepare(request, result),
     onReconcileResultSendFailed: (request, result) => recovery.cancel(request, result),

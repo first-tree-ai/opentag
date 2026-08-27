@@ -4,6 +4,7 @@ import {
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
+  type RuntimeImSteerRequest,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
   type SessionReconcileRequest,
@@ -103,6 +104,41 @@ describe("RuntimeDomainOwner", () => {
     expect(() => fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, conflictRequest)).toThrow(
       RuntimeDomainConflictError,
     );
+  });
+
+  it("records one steered disposition and returns the completed result on request retry", async () => {
+    const fixture = await ownerFixture();
+    const root = deliveryRequest();
+    const accepted = fixture.owner.requestDelivery(fixture.computerId, fixture.instanceId, root);
+    await waitForDeliveryFrame(fixture.frames, root.requestId);
+    await fixture.owner.handle(acceptedResult(root), fixture.context);
+    await accepted;
+
+    const request = steerRequest(root);
+    const first = fixture.owner.requestSteer(fixture.computerId, fixture.instanceId, request);
+    await vi.waitFor(() =>
+      expect(fixture.frames).toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: "im:steer", requestId: request.requestId })]),
+      ),
+    );
+    const result = {
+      type: "im:steer:result" as const,
+      requestId: request.requestId,
+      deliveryId: request.deliveryId,
+      sessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      rootDeliveryId: request.rootDeliveryId,
+      expectedTurnId: request.expectedTurnId,
+      status: "steered" as const,
+    };
+    await fixture.owner.handle(result, fixture.context);
+    await expect(first).resolves.toEqual(result);
+    const frameCount = fixture.frames.length;
+    await expect(
+      fixture.owner.requestSteer(fixture.computerId, fixture.instanceId, structuredClone(request)),
+    ).resolves.toEqual(result);
+    expect(fixture.frames).toHaveLength(frameCount);
+    expect(fixture.owner.businessOptions().laneKey(result as never)).toBe(`delivery:${root.deliveryId}`);
   });
 
   it("B-21 records a report only after acceptance and makes equal duplicates idempotent", async () => {
@@ -387,7 +423,7 @@ describe("RuntimeDomainOwner", () => {
     expect((await fixture.owner.getTurn(report.turnId))?.instanceId).toBe(replacement.instanceId);
   });
 
-  it("correlates remote SessionMessage delivery and delegates unmatched local acknowledgements", async () => {
+  it("correlates SessionMessage delivery results and ignores unmatched results", async () => {
     const registry = new ConnectionRegistry();
     const computerId = randomUUID();
     const instanceId = randomUUID();
@@ -671,6 +707,33 @@ function acceptedResult(request: DirectImMessageDeliveryRequest) {
   };
 }
 
+function steerRequest(root: DirectImMessageDeliveryRequest): RuntimeImSteerRequest {
+  return {
+    type: "im:steer",
+    requestId: randomUUID(),
+    deliveryId: "delivery-steer",
+    imMessageId: "message-steer",
+    sessionId: root.sessionId,
+    agentId: root.agentId,
+    placementGeneration: root.placementGeneration,
+    rootDeliveryId: root.deliveryId,
+    expectedTurnId: "turn-1",
+    attention: "ambient",
+    content: {
+      kind: "text",
+      text: "new direction",
+      providerRef: {
+        provider: "slack",
+        appId: "app-1",
+        teamId: "workspace-1",
+        botUserId: "bot-1",
+        channelId: "channel-1",
+        messageTs: "1710000000.000002",
+      },
+    },
+  };
+}
+
 function sessionMessageDelivery(): SessionMessageDeliveryRequest {
   const agentId = randomUUID();
   return {
@@ -720,6 +783,29 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
     }
     this.#dispatches.set(request.deliveryId, { inputHash, requestId: request.requestId });
     return "dispatched";
+  }
+
+  async beginSteerDispatch(request: RuntimeImSteerRequest, inputHash: string): Promise<DeliveryDispatchStatus> {
+    const current = this.#dispatches.get(request.deliveryId);
+    if (current) {
+      return current.requestId === request.requestId && current.inputHash === inputHash
+        ? "already_dispatched"
+        : "conflict";
+    }
+    this.#dispatches.set(request.deliveryId, { inputHash, requestId: request.requestId });
+    return "dispatched";
+  }
+
+  async recordSteered(): Promise<"steered"> {
+    return "steered";
+  }
+
+  async recordAbsorbed(): Promise<"steered"> {
+    return "steered";
+  }
+
+  async releaseSteerDispatch(): Promise<"released"> {
+    return "released";
   }
 
   async acceptDelivery(

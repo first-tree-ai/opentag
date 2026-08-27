@@ -4,11 +4,15 @@ import {
   ClientRuntimeBusinessFrameSchema,
   computeDirectInputHash,
   computeReconcilePayloadHash,
+  computeRuntimeImMessageSemanticHash,
+  computeRuntimeImSteerInputHash,
   type DirectImMessageDeliveryRequest,
   hashTuple,
   type ImMessageDeliveryResult,
   type RuntimeImCredentialGrantRequest,
   type RuntimeImCredentialGrantResult,
+  type RuntimeImSteerRequest,
+  type RuntimeImSteerResult,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
   type SessionReconcileRequest,
@@ -88,11 +92,17 @@ interface PendingDelivery extends PendingBase<DirectImMessageDeliveryRequest, Im
   inputHash: string;
 }
 
+interface PendingSteer extends PendingBase<RuntimeImSteerRequest, RuntimeImSteerResult> {
+  kind: "steer";
+  inputHash: string;
+  semanticHash: string;
+}
+
 interface PendingSessionMessage extends PendingBase<SessionMessageDeliveryRequest, SessionMessageDeliveryResult> {
   kind: "session-message";
 }
 
-type PendingRequest = PendingReconcile | PendingDelivery | PendingSessionMessage;
+type PendingRequest = PendingReconcile | PendingDelivery | PendingSteer | PendingSessionMessage;
 
 interface ExpiredDelivery {
   workspaceComputerId: string;
@@ -107,8 +117,8 @@ interface CompletedRequest {
   workspaceComputerId: string;
   hash: string;
   instanceId: string;
-  kind: "reconcile" | "delivery" | "session-message";
-  result: SessionReconcileResult | ImMessageDeliveryResult | SessionMessageDeliveryResult;
+  kind: "reconcile" | "delivery" | "steer" | "session-message";
+  result: SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult;
 }
 
 interface StartingDelivery {
@@ -162,6 +172,9 @@ export class RuntimeDomainOwner {
   close(): void {
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer);
+      if (pending.kind === "steer") {
+        void this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined);
+      }
       pending.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
     }
     this.#pending.clear();
@@ -202,6 +215,7 @@ export class RuntimeDomainOwner {
               request,
               hash,
               undefined,
+              undefined,
               admissionDispatched,
             ) as Promise<SessionReconcileResult>,
           onDispatched,
@@ -229,6 +243,7 @@ export class RuntimeDomainOwner {
                   instanceId,
                   value,
                   computeReconcilePayloadHash(value),
+                  undefined,
                   undefined,
                   admissionDispatched,
                 ) as Promise<SessionReconcileResult>,
@@ -263,9 +278,50 @@ export class RuntimeDomainOwner {
       "runtime.reconcile",
       attrs,
       operation,
-      (result) => outcomeAttrs(result.status, result.reason),
+      (result) => outcomeAttrs(result.status, "reason" in result ? result.reason : undefined),
       runtimeDomainFailureAttrs,
     );
+  }
+
+  async requestSteer(
+    workspaceComputerId: string,
+    instanceId: string,
+    request: RuntimeImSteerRequest,
+    onDispatched?: () => void,
+  ): Promise<RuntimeImSteerResult> {
+    const inputHash = computeRuntimeImSteerInputHash(request);
+    const semanticHash = computeRuntimeImMessageSemanticHash(request);
+    const requestHash = hashTuple([request.deliveryId, inputHash]);
+    if (this.#pending.has(request.requestId) || this.#completed.has(request.requestId)) {
+      return this.#request(
+        "steer",
+        workspaceComputerId,
+        instanceId,
+        request,
+        requestHash,
+        inputHash,
+        semanticHash,
+        onDispatched,
+      ) as Promise<RuntimeImSteerResult>;
+    }
+    const dispatch = await this.#custody.beginSteerDispatch(request, inputHash, {
+      workspaceComputerId,
+      instanceId,
+    });
+    if (dispatch === "conflict") throw new RuntimeDomainConflictError("The steer dispatch conflicts");
+    if (dispatch === "stale_generation") {
+      throw new RuntimeDomainRequestError("stale_placement", "The steer dispatch placement is stale");
+    }
+    return this.#request(
+      "steer",
+      workspaceComputerId,
+      instanceId,
+      request,
+      requestHash,
+      inputHash,
+      semanticHash,
+      onDispatched,
+    ) as Promise<RuntimeImSteerResult>;
   }
 
   requestDelivery(
@@ -302,7 +358,7 @@ export class RuntimeDomainOwner {
       "runtime.delivery",
       attrs,
       operation,
-      (result) => outcomeAttrs(result.status, result.reason),
+      (result) => outcomeAttrs(result.status, "reason" in result ? result.reason : undefined),
       runtimeDomainFailureAttrs,
     );
   }
@@ -331,6 +387,7 @@ export class RuntimeDomainOwner {
             request.content,
             request.runtime,
           ]),
+          undefined,
           undefined,
           admissionDispatched,
         ) as Promise<SessionMessageDeliveryResult>,
@@ -403,6 +460,7 @@ export class RuntimeDomainOwner {
         request,
         requestHash,
         inputHash,
+        undefined,
         onDispatched,
       ) as Promise<ImMessageDeliveryResult>;
     }
@@ -445,6 +503,7 @@ export class RuntimeDomainOwner {
       request,
       requestHash,
       inputHash,
+      undefined,
       onDispatched,
     ) as Promise<ImMessageDeliveryResult>;
   }
@@ -503,6 +562,10 @@ export class RuntimeDomainOwner {
       await this.#completeDelivery(frame, context);
       return undefined;
     }
+    if (frame.type === "im:steer:result") {
+      await this.#completeSteer(frame, context);
+      return undefined;
+    }
     if (frame.type === "session:message:deliver:result") {
       await this.#completeSessionMessage(frame, context);
       return undefined;
@@ -545,14 +608,19 @@ export class RuntimeDomainOwner {
   }
 
   #request(
-    kind: "reconcile" | "delivery" | "session-message",
+    kind: "reconcile" | "delivery" | "steer" | "session-message",
     workspaceComputerId: string,
     instanceId: string,
-    request: SessionReconcileRequest | DirectImMessageDeliveryRequest | SessionMessageDeliveryRequest,
+    request:
+      | SessionReconcileRequest
+      | DirectImMessageDeliveryRequest
+      | RuntimeImSteerRequest
+      | SessionMessageDeliveryRequest,
     hash: string,
     inputHash?: string,
+    semanticHash?: string,
     onDispatched?: () => void,
-  ): Promise<SessionReconcileResult | ImMessageDeliveryResult | SessionMessageDeliveryResult> {
+  ): Promise<SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult> {
     const existing = this.#pending.get(request.requestId);
     if (existing) {
       if (
@@ -581,11 +649,12 @@ export class RuntimeDomainOwner {
     }
     const expired = this.#expiredDeliveries.get(request.requestId);
     if (expired) {
+      const expiredRequest = expired;
       if (
-        kind !== "delivery" ||
-        expired.hash !== hash ||
-        expired.workspaceComputerId !== workspaceComputerId ||
-        expired.instanceId !== instanceId
+        expiredRequest?.kind !== kind ||
+        expiredRequest.hash !== hash ||
+        expiredRequest.workspaceComputerId !== workspaceComputerId ||
+        expiredRequest.instanceId !== instanceId
       ) {
         throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
       }
@@ -596,19 +665,22 @@ export class RuntimeDomainOwner {
     if (expired) this.#expiredDeliveries.delete(request.requestId);
 
     let resolvePromise: (
-      result: SessionReconcileResult | ImMessageDeliveryResult | SessionMessageDeliveryResult,
+      result: SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult,
     ) => void = () => undefined;
     let rejectPromise: (error: Error) => void = () => undefined;
-    const promise = new Promise<SessionReconcileResult | ImMessageDeliveryResult | SessionMessageDeliveryResult>(
-      (resolve, reject) => {
-        resolvePromise = resolve;
-        rejectPromise = reject;
-      },
-    );
+    const promise = new Promise<
+      SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult
+    >((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    });
     const timer = setTimeout(() => {
       if (this.#pending.get(request.requestId)?.promise !== promise) return;
       this.#pending.delete(request.requestId);
       if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
+      if (pending.kind === "steer") {
+        void this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined);
+      }
       rejectPromise(new RuntimeDomainRequestError("timeout", "The runtime domain request timed out"));
     }, this.#options.requestTimeoutMs);
     timer.unref();
@@ -632,7 +704,15 @@ export class RuntimeDomainOwner {
               request: request as DirectImMessageDeliveryRequest,
               inputHash: inputHash ?? "",
             } as PendingDelivery)
-          : ({ ...base, kind, request: request as SessionMessageDeliveryRequest } as PendingSessionMessage);
+          : kind === "steer"
+            ? ({
+                ...base,
+                kind,
+                request: request as RuntimeImSteerRequest,
+                inputHash: inputHash ?? "",
+                semanticHash: semanticHash ?? "",
+              } as PendingSteer)
+            : ({ ...base, kind, request: request as SessionMessageDeliveryRequest } as PendingSessionMessage);
     this.#pending.set(request.requestId, pending);
     const dispatch = this.#registry.send(workspaceComputerId, instanceId, request);
     onDispatched?.();
@@ -641,6 +721,9 @@ export class RuntimeDomainOwner {
       this.#pending.delete(request.requestId);
       clearTimeout(timer);
       if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
+      if (pending.kind === "steer") {
+        void this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined);
+      }
       pending.reject(
         error instanceof Error
           ? error
@@ -689,10 +772,29 @@ export class RuntimeDomainOwner {
       if (custody === "conflict") throw new RuntimeDomainConflictError("The delivery custody conflicts");
       if (custody === "stale_generation") {
         if (pending?.kind === "delivery") {
-          this.#settle(pending, { ...result, status: "rejected", turnId: undefined, reason: "target_mismatch" });
+          this.#settle(pending, {
+            type: "im:deliver:result",
+            requestId: result.requestId,
+            deliveryId: result.deliveryId,
+            sessionId: result.sessionId,
+            placementGeneration: result.placementGeneration,
+            status: "rejected",
+            reason: "target_mismatch",
+          });
         }
         return;
       }
+    } else if (result.status === "absorbed") {
+      const custody = await this.#custody.recordAbsorbed(
+        attempt.request,
+        attempt.inputHash,
+        computeRuntimeImMessageSemanticHash(attempt.request),
+        result.rootDeliveryId,
+        result.turnId,
+        context,
+      );
+      if (custody === "conflict") throw new RuntimeDomainConflictError("The absorbed delivery custody conflicts");
+      if (custody === "stale_generation") return;
     }
     if (pending?.kind === "delivery") {
       this.#settle(pending, result);
@@ -701,6 +803,36 @@ export class RuntimeDomainOwner {
     if (!expired) return;
     this.#expiredDeliveries.delete(result.requestId);
     this.#rememberCompleted(expired, result);
+  }
+
+  async #completeSteer(result: RuntimeImSteerResult, context: RuntimeBusinessContext): Promise<void> {
+    const pending = this.#pending.get(result.requestId);
+    const attempt = pending?.kind === "steer" ? pending : undefined;
+    if (!attempt || !this.#matchesContext(attempt, context)) return;
+    if (
+      result.deliveryId !== attempt.request.deliveryId ||
+      result.sessionId !== attempt.request.sessionId ||
+      result.placementGeneration !== attempt.request.placementGeneration ||
+      result.rootDeliveryId !== attempt.request.rootDeliveryId ||
+      result.expectedTurnId !== attempt.request.expectedTurnId
+    ) {
+      return;
+    }
+    if (result.status === "steered") {
+      const custody = await this.#custody.recordSteered(
+        attempt.request,
+        attempt.inputHash,
+        attempt.semanticHash,
+        context,
+      );
+      if (custody === "conflict") throw new RuntimeDomainConflictError("The steer custody conflicts");
+      if (custody === "stale_generation") return;
+    } else {
+      const disposition = result.status === "retry" ? "retry" : "deferred";
+      const release = await this.#custody.releaseSteerDispatch(attempt.request, attempt.inputHash, disposition);
+      if (release === "conflict") throw new RuntimeDomainConflictError("The steer dispatch release conflicts");
+    }
+    if (pending?.kind === "steer") this.#settle(pending, result);
   }
 
   async #completeSessionMessage(result: SessionMessageDeliveryResult, context: RuntimeBusinessContext): Promise<void> {
@@ -713,10 +845,9 @@ export class RuntimeDomainOwner {
       result.targetSessionId !== pending.request.targetSessionId ||
       result.placementGeneration !== pending.request.placementGeneration
     ) {
-      return undefined;
+      return;
     }
     this.#settle(pending, result);
-    return undefined;
   }
 
   async #recordTurn(report: TurnReportRequest, context: RuntimeBusinessContext): Promise<TurnReportResult | undefined> {
@@ -774,7 +905,7 @@ export class RuntimeDomainOwner {
 
   #settle(
     pending: PendingRequest,
-    result: SessionReconcileResult | ImMessageDeliveryResult | SessionMessageDeliveryResult,
+    result: SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult,
   ): void {
     if (this.#pending.get(pending.request.requestId) !== pending) return;
     this.#pending.delete(pending.request.requestId);
@@ -785,7 +916,7 @@ export class RuntimeDomainOwner {
 
   #rememberCompleted(
     request: Pick<PendingRequest | ExpiredDelivery, "hash" | "instanceId" | "kind" | "request" | "workspaceComputerId">,
-    result: SessionReconcileResult | ImMessageDeliveryResult | SessionMessageDeliveryResult,
+    result: SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult,
   ): void {
     this.#completed.set(request.request.requestId, {
       workspaceComputerId: request.workspaceComputerId,
@@ -861,6 +992,7 @@ function businessFailureResult(frame: unknown): RuntimeImCredentialGrantResult |
 function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   if (frame.type === "session:reconcile:result") return `request:${frame.requestId}`;
   if (frame.type === "im:deliver:result" || frame.type === "turn:report") return `delivery:${frame.deliveryId}`;
+  if (frame.type === "im:steer:result") return `delivery:${frame.rootDeliveryId}`;
   if (frame.type === "im:credential") return `session:${frame.sessionId}`;
   if (frame.type === "session:message:deliver:result") {
     return `session-message:${frame.targetSessionId}:${frame.messageId}`;

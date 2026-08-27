@@ -2,6 +2,10 @@ import {
   type DirectImMessageDeliveryRequest,
   type ImMessageDeliveryResult,
   ImMessageDeliveryResultSchema,
+  type InputRejectReason,
+  type RuntimeImSteerRequest,
+  type RuntimeImSteerResult,
+  RuntimeImSteerResultSchema,
   ServerRuntimeBusinessFrameSchema,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
@@ -23,6 +27,7 @@ export interface DeliveryDecision {
 export interface ClientRuntimeOptions {
   logger?: ClientLogger;
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
+  handleSteer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult> | RuntimeImSteerResult;
   handleTurnReportResult?(result: TurnReportResult): Promise<void> | void;
   handleSessionMessageDelivery?(
     request: SessionMessageDeliveryRequest,
@@ -114,10 +119,28 @@ export class ClientRuntime {
           });
       const result = ImMessageDeliveryResultSchema.parse(decision.result);
       await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
-      const resultFields = { ...fields, reason: result.reason, status: result.status };
+      const resultFields = { ...fields, reason: "reason" in result ? result.reason : undefined, status: result.status };
       if (result.status === "accepted") this.#logger.debug(resultFields, "IM delivery accepted");
+      else if (result.status === "absorbed") this.#logger.debug(resultFields, "IM delivery absorbed");
       else this.#logger.warn(resultFields, "IM delivery rejected");
       if (result.status === "accepted") await decision.onAcceptedSent?.();
+      return;
+    }
+    if (frame.type === "im:steer") {
+      const result = RuntimeImSteerResultSchema.parse(
+        (await this.#options.handleSteer?.(frame)) ?? {
+          type: "im:steer:result",
+          requestId: frame.requestId,
+          deliveryId: frame.deliveryId,
+          sessionId: frame.sessionId,
+          placementGeneration: frame.placementGeneration,
+          rootDeliveryId: frame.rootDeliveryId,
+          expectedTurnId: frame.expectedTurnId,
+          status: "deferred",
+          reason: "steer_unsupported",
+        },
+      );
+      await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
       return;
     }
     if (frame.type === "session:message:deliver") {
@@ -140,10 +163,7 @@ export class ClientRuntime {
   }
 }
 
-function rejectedDelivery(
-  request: DirectImMessageDeliveryRequest,
-  reason: ImMessageDeliveryResult["reason"],
-): ImMessageDeliveryResult {
+function rejectedDelivery(request: DirectImMessageDeliveryRequest, reason: InputRejectReason): ImMessageDeliveryResult {
   if (!reason) throw new Error("A rejected delivery requires a reason");
   return {
     type: "im:deliver:result",

@@ -1,6 +1,6 @@
 {
-  "id": "d8d75618-86e0-4461-9bf8-ef872db18208",
-  "prevId": "b54db0be-fc40-4073-a522-3373274cff94",
+  "id": "bd0261fd-92e0-451f-9576-c5321478d3b6",
+  "prevId": "ad244a34-4913-4129-b0c8-0e8e3fe9de30",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1910,6 +1910,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "steer_target_delivery_id": {
+          "name": "steer_target_delivery_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "steered_at": {
+          "name": "steered_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
         "report_owner_instance_id": {
           "name": "report_owner_instance_id",
           "type": "uuid",
@@ -2010,6 +2022,21 @@
           "method": "btree",
           "with": {}
         },
+        "im_message_deliveries_steer_target_idx": {
+          "name": "im_message_deliveries_steer_target_idx",
+          "columns": [
+            {
+              "expression": "steer_target_delivery_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "im_message_deliveries_pending_idx": {
           "name": "im_message_deliveries_pending_idx",
           "columns": [
@@ -2090,6 +2117,19 @@
           ],
           "onDelete": "restrict",
           "onUpdate": "no action"
+        },
+        "im_message_deliveries_steer_target_delivery_id_im_message_deliveries_id_fk": {
+          "name": "im_message_deliveries_steer_target_delivery_id_im_message_deliveries_id_fk",
+          "tableFrom": "im_message_deliveries",
+          "tableTo": "im_message_deliveries",
+          "columnsFrom": [
+            "steer_target_delivery_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "restrict",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -2102,7 +2142,7 @@
         },
         "im_message_deliveries_custody_shape": {
           "name": "im_message_deliveries_custody_shape",
-          "value": "(\"im_message_deliveries\".\"state\" = 'accepted' and \"im_message_deliveries\".\"input_hash\" is not null and \"im_message_deliveries\".\"turn_id\" is not null and \"im_message_deliveries\".\"report_owner_instance_id\" is not null and \"im_message_deliveries\".\"accepted_at\" is not null)\n        or (\"im_message_deliveries\".\"state\" <> 'accepted' and \"im_message_deliveries\".\"turn_id\" is null and \"im_message_deliveries\".\"report_owner_instance_id\" is null and \"im_message_deliveries\".\"reported_at\" is null and \"im_message_deliveries\".\"turn_report\" is null and \"im_message_deliveries\".\"result_hash\" is null)"
+          "value": "(\"im_message_deliveries\".\"state\" = 'accepted' and \"im_message_deliveries\".\"input_hash\" is not null and \"im_message_deliveries\".\"turn_id\" is not null\n          and \"im_message_deliveries\".\"report_owner_instance_id\" is not null and \"im_message_deliveries\".\"accepted_at\" is not null\n          and \"im_message_deliveries\".\"steer_target_delivery_id\" is null and \"im_message_deliveries\".\"steered_at\" is null)\n        or (\"im_message_deliveries\".\"state\" = 'steered' and \"im_message_deliveries\".\"input_hash\" is not null and \"im_message_deliveries\".\"steer_target_delivery_id\" is not null\n          and \"im_message_deliveries\".\"steered_at\" is not null and \"im_message_deliveries\".\"turn_id\" is null and \"im_message_deliveries\".\"report_owner_instance_id\" is null\n          and \"im_message_deliveries\".\"accepted_at\" is null and \"im_message_deliveries\".\"reported_at\" is null and \"im_message_deliveries\".\"turn_report\" is null\n          and \"im_message_deliveries\".\"result_hash\" is null)\n        or (\"im_message_deliveries\".\"state\" not in ('accepted', 'steered') and \"im_message_deliveries\".\"input_hash\" is null and \"im_message_deliveries\".\"turn_id\" is null\n          and \"im_message_deliveries\".\"report_owner_instance_id\" is null and \"im_message_deliveries\".\"accepted_at\" is null and \"im_message_deliveries\".\"steered_at\" is null\n          and \"im_message_deliveries\".\"reported_at\" is null and \"im_message_deliveries\".\"turn_report\" is null and \"im_message_deliveries\".\"result_hash\" is null)"
         },
         "im_message_deliveries_report_shape": {
           "name": "im_message_deliveries_report_shape",
@@ -3674,6 +3714,7 @@
       "values": [
         "pending",
         "accepted",
+        "steered",
         "terminal_rejected",
         "expired"
       ]

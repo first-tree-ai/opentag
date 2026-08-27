@@ -138,15 +138,15 @@
     {
       "idx": 19,
       "version": "7",
-      "when": 1787821681979,
-      "tag": "0019_next_quasar",
+      "when": 1787815096949,
+      "tag": "0019_previous_magneto",
       "breakpoints": true
     },
     {
       "idx": 20,
       "version": "7",
-      "when": 1787823585581,
-      "tag": "0020_numerous_puppet_master",
+      "when": 1787828226918,
+      "tag": "0020_condemned_tarot",
       "breakpoints": true
     }
   ]

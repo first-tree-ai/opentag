@@ -383,6 +383,19 @@ describe("database migrations", () => {
     }
     await writeFile(join(legacyMeta, "_journal.json"), JSON.stringify({ ...journal, entries: legacyEntries }, null, 2));
 
+    // Bounded at 0019 on purpose: this asserts what that migration alone does, before the uniqueness backstop lands.
+    const through0019Folder = await mkdtemp(join(tmpdir(), "opentag-0019-normalization-"));
+    const through0019Meta = join(through0019Folder, "meta");
+    await mkdir(through0019Meta);
+    const through0019Entries = journal.entries.filter(({ idx }) => idx <= 19);
+    for (const entry of through0019Entries) {
+      await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(through0019Folder, `${entry.tag}.sql`));
+    }
+    await writeFile(
+      join(through0019Meta, "_journal.json"),
+      JSON.stringify({ ...journal, entries: through0019Entries }, null, 2),
+    );
+
     try {
       await migrateDatabase(databaseUrl, legacyFolder);
       const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
@@ -402,7 +415,7 @@ describe("database migrations", () => {
           values (${verifiedUserId}, 'google', 'https://accounts.google.com', 'google-subject-1', 'Verified@Example.com')
         `;
 
-        await migrateDatabase(databaseUrl, migrationsFolder);
+        await migrateDatabase(databaseUrl, through0019Folder);
 
         const accounts = await sql<{ email: string; email_verified: boolean; id: string }[]>`
           select id, email, email_verified from users order by email
@@ -421,6 +434,60 @@ describe("database migrations", () => {
         await expect(
           sql`insert into users (email, display_name) values ('CASING@EXAMPLE.COM', 'Previous Revision')`,
         ).resolves.toBeDefined();
+      } finally {
+        await sql.end();
+      }
+    } finally {
+      await rm(legacyFolder, { force: true, recursive: true });
+      await rm(through0019Folder, { force: true, recursive: true });
+    }
+  });
+
+  it("adds email uniqueness only after the pre-resolver writer is gone, and refuses to hide a duplicate", async () => {
+    const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0019-uniqueness-"));
+    const legacyMeta = join(legacyFolder, "meta");
+    await mkdir(legacyMeta);
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+      version: string;
+      dialect: string;
+      entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
+    };
+    const legacyEntries = journal.entries.filter(({ idx }) => idx <= 19);
+    for (const entry of legacyEntries) {
+      await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(legacyFolder, `${entry.tag}.sql`));
+    }
+    await writeFile(join(legacyMeta, "_journal.json"), JSON.stringify({ ...journal, entries: legacyEntries }, null, 2));
+
+    try {
+      await migrateDatabase(databaseUrl, legacyFolder);
+      const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      try {
+        // The duplicate a pre-resolver writer could still have created between the two deployments.
+        const keptUserId = crypto.randomUUID();
+        const duplicateUserId = crypto.randomUUID();
+        await sql`
+          insert into users (id, email, display_name)
+          values
+            (${keptUserId}, 'casing@example.com', 'Kept'),
+            (${duplicateUserId}, 'CASING@example.com', 'Duplicate')
+        `;
+
+        await expect(migrateDatabase(databaseUrl, migrationsFolder)).rejects.toThrow(
+          "Accounts sharing an email address",
+        );
+        const [blocked] = await sql<{ index_count: number; migration_count: number }[]>`
+          select
+            (select count(*)::int from drizzle.__drizzle_migrations) as migration_count,
+            (select count(*)::int from pg_indexes where indexname = 'users_email_unique') as index_count
+        `;
+        expect(blocked).toEqual({ index_count: 0, migration_count: legacyEntries.length });
+
+        await sql`delete from users where id = ${duplicateUserId}`;
+        await migrateDatabase(databaseUrl, migrationsFolder);
+
+        await expect(
+          sql`insert into users (email, display_name) values ('CASING@EXAMPLE.COM', 'Rejected')`,
+        ).rejects.toThrow("users_email_unique");
       } finally {
         await sql.end();
       }

@@ -58,4 +58,33 @@ CREATE UNIQUE INDEX "auth_identities_issuer_subject_unique" ON "auth_identities"
  */
 UPDATE "users" SET "email_verified" = true, "updated_at" = now()
 WHERE "email_verified" = false
-	AND EXISTS (SELECT 1 FROM "auth_identities" WHERE "auth_identities"."user_id" = "users"."id");
+	AND EXISTS (SELECT 1 FROM "auth_identities" WHERE "auth_identities"."user_id" = "users"."id");--> statement-breakpoint
+/*
+ * The uniqueness backstop, deliberately one deployment later than the columns.
+ *
+ * 0019 could not create this: the revision serving before it answers an unknown provider subject by inserting a
+ * `users` row without resolving the Account already holding the address, so the index would have turned that request
+ * into a raw `23505`. By the time this migration runs, only the resolver — which serializes on the address and decides
+ * between creating and attaching — is still writing, and the index is what it always should have been: a backstop for
+ * a writer that skips it, not the thing carrying the invariant.
+ *
+ * The guard fails loudly rather than letting `CREATE UNIQUE INDEX` report a bare violation, and covers the window in
+ * which a pre-resolver writer could still have created a duplicate.
+ */
+DO $$
+DECLARE
+	duplicate_count integer;
+	duplicate_ids text;
+BEGIN
+	SELECT count(*), string_agg("id"::text, ', ' ORDER BY "id")
+	INTO duplicate_count, duplicate_ids
+	FROM "users"
+	WHERE lower("email") IN (
+		SELECT lower("email") FROM "users" GROUP BY lower("email") HAVING count(*) > 1
+	);
+	IF duplicate_count > 0 THEN
+		RAISE EXCEPTION 'Account email uniqueness found % Accounts sharing an email address (users.id: %)', duplicate_count, duplicate_ids
+			USING HINT = 'Merge each duplicate before migrating: keep the earliest users row, repoint every foreign key that references the others, then delete them.';
+	END IF;
+END $$;--> statement-breakpoint
+CREATE UNIQUE INDEX "users_email_unique" ON "users" USING btree (lower("email"));

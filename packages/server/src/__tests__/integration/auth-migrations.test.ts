@@ -87,7 +87,9 @@ describe("database migrations", () => {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    expect(journal.entries.slice(-10).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    // Anchored to the fixed 0010..0019 range rather than the tail: a trailing slice silently stops covering the
+    // earliest entry every time a migration is appended, which would quietly shrink what this test guarantees.
+    expect(journal.entries.slice(10, 20).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 10, tag: "0010_optimal_jazinda" },
       { idx: 11, tag: "0011_staging_team_setup_repair" },
       { idx: 12, tag: "0012_supreme_maddog" },
@@ -367,6 +369,67 @@ describe("database migrations", () => {
     }
   });
 
+  it("normalizes Account email casing and backfills verification without constraining the previous writer", async () => {
+    const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0017-migrations-"));
+    const legacyMeta = join(legacyFolder, "meta");
+    await mkdir(legacyMeta);
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+      version: string;
+      dialect: string;
+      entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
+    };
+    const legacyEntries = journal.entries.filter(({ idx }) => idx <= 19);
+    for (const entry of legacyEntries) {
+      await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(legacyFolder, `${entry.tag}.sql`));
+    }
+    await writeFile(join(legacyMeta, "_journal.json"), JSON.stringify({ ...journal, entries: legacyEntries }, null, 2));
+
+    try {
+      await migrateDatabase(databaseUrl, legacyFolder);
+      const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      try {
+        const casingUserId = crypto.randomUUID();
+        const verifiedUserId = crypto.randomUUID();
+        await sql`
+          insert into users (id, email, display_name)
+          values (${casingUserId}, 'Casing@Example.com', 'Mixed Casing')
+        `;
+        await sql`
+          insert into users (id, email, display_name)
+          values (${verifiedUserId}, 'Verified@Example.com', 'Verified Identity')
+        `;
+        await sql`
+          insert into auth_identities (user_id, provider, issuer, subject, email)
+          values (${verifiedUserId}, 'google', 'https://accounts.google.com', 'google-subject-1', 'Verified@Example.com')
+        `;
+
+        await migrateDatabase(databaseUrl, migrationsFolder);
+
+        const accounts = await sql<{ email: string; email_verified: boolean; id: string }[]>`
+          select id, email, email_verified from users order by email
+        `;
+        expect([...accounts]).toEqual([
+          // No identity asserts this address, so the backfill leaves it unverified.
+          { email: "casing@example.com", email_verified: false, id: casingUserId },
+          { email: "verified@example.com", email_verified: true, id: verifiedUserId },
+        ]);
+
+        /*
+         * The previous server revision inserts a `users` row for an unknown provider subject without resolving the
+         * address first. It has to keep working after this migration, so no uniqueness lands here: creating the index
+         * while that revision is still serving would turn its bootstrap-Account first sign-in into a raw `23505`.
+         */
+        await expect(
+          sql`insert into users (email, display_name) values ('CASING@EXAMPLE.COM', 'Previous Revision')`,
+        ).resolves.toBeDefined();
+      } finally {
+        await sql.end();
+      }
+    } finally {
+      await rm(legacyFolder, { force: true, recursive: true });
+    }
+  });
+
   it("maps legacy left_at rows to the single membership status truth", async () => {
     const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
     const applyFile = async (name: string) => {
@@ -630,7 +693,8 @@ describe("database migrations", () => {
             ) as creator_owner_constraint_removed
         `;
         expect(lifecycle).toEqual({
-          count: 20,
+          // Derived from the journal so appending a migration cannot turn "applied exactly once" into a stale literal.
+          count: journal.entries.length,
           creation_intents_null: true,
           deleted_at_exists: false,
           setup_completed_at_exists: true,
@@ -714,7 +778,7 @@ describe("database migrations", () => {
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(20);
+        expect(rerun?.count).toBe(journal.entries.length);
       } finally {
         await sql.end();
       }

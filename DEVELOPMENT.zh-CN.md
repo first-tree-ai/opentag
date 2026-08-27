@@ -246,6 +246,17 @@ bootstrap email 是 Account 资料，不是邮箱密码凭据。Account 登录 c
 无关的 token 颁发边界。未来 Google 或 OIDC identity resolver 可以接入这个边界，无需改变 JWT claims。内部 grant
 仍会从 PostgreSQL 读取，作为 Phase 2 前的兼容 seam；产品不把它暴露为 Admin 成员关系。
 
+Account email 以小写存储，且一个地址最多对应一个 Account。这由 identity resolver 保证：它在决定新建还是挂载之前先对该地址
+串行化，因此不依赖数据库约束也成立；`users_email_unique` 索引作为兜底，用于防范绕过 resolver 的写入方，并且只在没有任何
+早于该 resolver 的版本仍在服务时才创建。
+
+因此 provider identity 会挂到已持有该地址的 Account 上，而不是新建第二个。挂载要求 provider 已验证该地址，因为这等于交出一个
+已存在的 Account；未验证却已被占用的地址，以及 provider 邮箱变更撞上另一个 Account 的地址，都会以 `AUTH_EMAIL_CONFLICT`
+拒绝。bootstrap Account 与本人首次 Google 登录就是这样合成同一个 Account 的。
+
+`users.email_verified` 记录 Account 当前存储的那个地址是否被 provider 断言过。它只会为该地址置位，不会为 provider 返回的
+其他地址置位；登录 code 流程不会设置它。
+
 ## Google 登录与 Web App
 
 创建 Google Web OAuth client，并将 callback 配置为

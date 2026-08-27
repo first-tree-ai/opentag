@@ -255,6 +255,19 @@ stable user ID and then uses the provider-neutral token issuer. Future Google or
 boundary without changing JWT claims. Internal grants are still loaded from PostgreSQL as a Phase 2 compatibility seam;
 they are not exposed as Admin membership.
 
+An Account email is stored lowercased, and one address identifies at most one Account. The identity resolver enforces
+that by serializing on the address before deciding whether to create or attach, so it holds without a database
+constraint; a `users_email_unique` index backs it up for any writer that skips the resolver, and is added only once no
+revision predating the resolver is still serving.
+
+A provider identity therefore attaches to the Account that already holds its address rather than creating a second one.
+Attachment requires the provider to have verified the address, because it hands over an existing Account; an unverified
+address that is already taken, and a provider email change onto another Account's address, are both refused with
+`AUTH_EMAIL_CONFLICT`. This is how a bootstrap Account and that person's first Google sign-in become one Account.
+
+`users.email_verified` records whether a provider asserted the address currently stored on the Account. It is only ever
+raised for that address, never for some other address the provider returned, and the login-code flow never sets it.
+
 ## Google sign-in and Web App
 
 Create a Google Web OAuth client whose callback is

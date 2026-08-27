@@ -198,7 +198,7 @@ describe("Onboarding Lab route", () => {
 
   function installApi(
     options: {
-      configured?: boolean;
+      offered?: boolean;
       resetAvailable?: boolean;
       workspaces?: "none";
       setupCompletedAt?: string | null;
@@ -241,7 +241,7 @@ describe("Onboarding Lab route", () => {
           resetRequests += 1;
           return new Response(null, { status: 204 });
         }
-        if (options.configured === false) return new Response(null, { status: 404 });
+        if (options.offered === false) return new Response(null, { status: 404 });
         return json({ reset: options.resetAvailable !== false });
       }
       if (path.endsWith("/computers")) return json({ computers: [] });
@@ -267,8 +267,8 @@ describe("Onboarding Lab route", () => {
     expect(window.location.pathname).toBe("/internal/onboarding-lab");
   });
 
-  it("renders Not Found where the deployment configures no Lab", async () => {
-    installApi({ configured: false });
+  it("renders Not Found where the deployment offers no Lab at all", async () => {
+    installApi({ offered: false });
 
     render(<App />);
 

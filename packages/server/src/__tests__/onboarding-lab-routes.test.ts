@@ -53,7 +53,7 @@ function browserHeaders(extra: Record<string, string> = {}) {
 }
 
 describe("internal Onboarding Lab interface", () => {
-  it("registers no Lab route when the deployment configures no Lab Account", async () => {
+  it("registers no Lab route where the deployment offers no Lab at all", async () => {
     const value = fixture({ registered: false });
 
     expect(value.app.hasRoute({ method: "GET", url: INTERNAL_ONBOARDING_LAB_PATH })).toBe(false);

@@ -62,7 +62,10 @@ export interface CreateAppOptions {
   readiness?: BootstrapReadiness;
   runtime?: RuntimeRoutesOptions;
   slackEvents?: SlackEventsRouteOptions;
-  /** Registered only by a staging deployment that configures the shared Onboarding Lab Account. */
+  /**
+   * Registered by any staging deployment. Scenario Preview needs no Account configuration; the reset
+   * half is closed until the service is given the Account that owns it.
+   */
   stagingOnboardingLab?: { reset: OnboardingResetService };
   taskService?: TaskService;
   workspaceService?: WorkspaceAdminService;

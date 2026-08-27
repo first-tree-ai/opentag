@@ -85,6 +85,14 @@ describe("AgentTurnRunner", () => {
     expect(feishuInput.items[0]?.text).toContain("The official lark-cli CLI is your outbox and the only path");
     expect(feishuInput.items[0]?.text).toContain("official lark-cli CLI");
     expect(feishuInput.items[0]?.text).toContain("lark-cli im --help");
+    expect(feishuInput.items[0]?.text).toContain("never write literal `\\n` sequences for layout");
+    expect(feishuInput.items[0]?.text).toContain("two or more literal `\\n` sequences");
+    expect(feishuInput.items[0]?.text).toContain(
+      "IFS= read -r -d '' OPENTAG_LARK_BODY <<'EOF' || true\nfirst line\n\nsecond line",
+    );
+    expect(feishuInput.items[0]?.text).toContain("$OpenTagLarkBody = @'\nfirst line\n\nsecond line");
+    expect(feishuInput.items[0]?.text).toContain('lark-cli ... --markdown "$OPENTAG_LARK_BODY"');
+    expect(input.items[0]?.text).not.toContain("OPENTAG_LARK_BODY");
     expect(() => buildAgentInput(steerRequest())).toThrow("A steer input requires the root runtime snapshot");
   });
 

@@ -1,5 +1,5 @@
 import { writeSync } from "node:fs";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -146,7 +146,8 @@ describe("RotatingFileStream", () => {
 });
 
 async function temporaryDirectory(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "opentag-rotation-"));
+  // Temp roots are symlinked on macOS, so canonicalize to match the paths the code under test resolves.
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "opentag-rotation-")));
   directories.push(directory);
   return directory;
 }

@@ -1850,7 +1850,8 @@ async function runtimeServer(): Promise<{ close(): Promise<void>; url: string; w
 }
 
 async function temporaryDirectory(prefix: string): Promise<string> {
-  const directory = await mkdtemp(resolve(tmpdir(), prefix));
+  // Temp roots are symlinked on macOS, so canonicalize to match the paths the code under test resolves.
+  const directory = await realpath(await mkdtemp(resolve(tmpdir(), prefix)));
   directories.push(directory);
   return directory;
 }

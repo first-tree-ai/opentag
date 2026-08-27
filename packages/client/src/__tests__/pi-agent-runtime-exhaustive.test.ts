@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -910,7 +910,8 @@ async function probeCli(body: string): Promise<string> {
 }
 
 async function temporaryDirectory(prefix: string): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), prefix));
+  // Temp roots are symlinked on macOS, so canonicalize to match the paths the code under test resolves.
+  const directory = await realpath(await mkdtemp(join(tmpdir(), prefix)));
   directories.push(directory);
   return directory;
 }

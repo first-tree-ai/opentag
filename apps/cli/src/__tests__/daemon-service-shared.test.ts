@@ -428,7 +428,8 @@ function parseTestLease(value: unknown): TestLeaseRecord {
 }
 
 async function temporaryDirectory(prefix: string): Promise<string> {
-  const path = await mkdtemp(join(tmpdir(), prefix));
+  // Temp roots are symlinked on macOS, so canonicalize to match the paths the code under test resolves.
+  const path = await realpath(await mkdtemp(join(tmpdir(), prefix)));
   directories.push(path);
   return path;
 }

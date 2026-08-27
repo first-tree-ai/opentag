@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import {
@@ -624,13 +624,14 @@ async function readWorkspaceState(workspace: AgentWorkspaceManager, agentId: str
 }
 
 async function temporaryHome(): Promise<string> {
-  const home = await mkdtemp(resolve(tmpdir(), "opentag-client-test-"));
+  // Temp roots are symlinked on macOS, so canonicalize to match the paths the code under test resolves.
+  const home = await realpath(await mkdtemp(resolve(tmpdir(), "opentag-client-test-")));
   homes.push(home);
   return home;
 }
 
 async function realpathForTest(path: string): Promise<string> {
-  return (await import("node:fs/promises")).realpath(path);
+  return await realpath(path);
 }
 
 function sha256(value: string): string {

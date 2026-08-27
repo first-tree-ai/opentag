@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -82,7 +82,8 @@ describe("Client logger", () => {
 });
 
 async function temporaryDirectory(): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), "opentag-logger-"));
+  // Temp roots are symlinked on macOS, so canonicalize to match the paths the code under test resolves.
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "opentag-logger-")));
   directories.push(directory);
   return directory;
 }

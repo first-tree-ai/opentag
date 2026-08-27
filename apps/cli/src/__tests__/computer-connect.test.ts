@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readCredentials, readMachineCredentials, writeCredentialsAtomically } from "@opentag/client";
@@ -131,7 +131,8 @@ describe("computer connect", () => {
 });
 
 async function temporaryHome(): Promise<string> {
-  const home = await mkdtemp(join(tmpdir(), "opentag-computer-connect-"));
+  // Temp roots are symlinked on macOS, so canonicalize to match the paths the code under test resolves.
+  const home = await realpath(await mkdtemp(join(tmpdir(), "opentag-computer-connect-")));
   homes.push(home);
   return home;
 }

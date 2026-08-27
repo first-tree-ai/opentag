@@ -257,8 +257,18 @@ preserved, and the Runs produced 53 and 95 ordered events respectively. The
 Client manifests contain no Pi package, SDK, CLI, or bundled-binary dependency.
 
 The two macOS CLI failures this command used to retain, caused solely by `/tmp`
-versus `/private/tmp` path spelling, no longer occur. Every temporary-directory
-test helper canonicalizes its directory with `realpath`, so fixture paths match
-the canonical paths the code under test resolves, on every platform and under
-Turborepo's strict environment mode. No `TMPDIR` override is required. All
-package tests passed; the Pi and Client suites are green.
+versus `/private/tmp` path spelling, no longer occur. The 13 reusable
+temporary-directory helpers across the CLI and Client suites now canonicalize
+with `realpath`, so the fixture paths they hand out match the canonical paths
+the code under test resolves, on every platform and under Turborepo's strict
+environment mode. No `TMPDIR` override is required. Tests that call `mkdtemp`
+inline still receive raw paths, which is harmless where the directory serves
+only as a filesystem location rather than as a string compared against a
+resolved path.
+
+On 2026-08-27 that change measured locally on macOS, through
+`turbo run test --continue`, as `@opentag/shared` 67/67, `@opentag/web`
+322/322, `apps/cli` 124/124 and `@opentag/client` 463/463, with
+`@opentag/server` at 256/257: its `observability` tracing case fails there for
+unrelated reasons and is tracked separately. The same commit ran green across
+all five packages in CI, where that case did not reproduce.

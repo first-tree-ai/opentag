@@ -1,318 +1,216 @@
 import { randomUUID } from "node:crypto";
-import { RUNTIME_CAPABILITY } from "@opentag/shared";
+import type { SessionCliCreateRequest, SessionCliSendRequest } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
-import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
+import type { SessionCliSourceContext } from "../services/sessions/session-cli-proof-service.js";
 import { SessionCollaborationService } from "../services/sessions/session-collaboration-service.js";
 
 describe("SessionCollaborationService", () => {
-  it("rejects an unnegotiated command before touching Session authority", async () => {
-    const fixture = serviceFixture();
-    const result = await fixture.service.handle(sendCommand(), context({ negotiatedCapabilities: {} }));
-    expect(result).toMatchObject({ status: "rejected", code: "configuration_unsupported" });
-    expect(fixture.sessions.authorizeAndRecordMessage).not.toHaveBeenCalled();
-  });
+  it("returns an already accepted durable message without reconciling or delivering again", async () => {
+    const fixture = serviceFixture({ attemptCount: null, lastOutcome: "accepted" });
 
-  it("emits a body-free diagnostic for an authority rejection", async () => {
-    const fixture = serviceFixture();
-    fixture.sessions.authorizeAndRecordMessage.mockRejectedValue(
-      Object.assign(new Error("scope mismatch"), { code: "SESSION_SCOPE_MISMATCH" }),
-    );
-
-    const result = await fixture.service.handle(sendCommand(), context());
-
-    expect(result).toMatchObject({ status: "rejected", code: "scope_mismatch" });
-    expect(fixture.onDiagnostic).toHaveBeenCalledWith("SESSION_COLLABORATION_SCOPE_MISMATCH");
-  });
-
-  it("returns a durable accepted result without reconciling or relaying it again", async () => {
-    const fixture = serviceFixture({ attempt: attempt({ attemptCount: null, lastOutcome: "accepted" }) });
-    const result = await fixture.service.handle(sendCommand(), context());
-    expect(result).toMatchObject({ status: "accepted" });
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "accepted",
+    });
     expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
+    expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
     expect(fixture.sessions.recordMessageOutcome).not.toHaveBeenCalled();
   });
 
-  it("keeps the created Session identity when initial delivery is unreachable", async () => {
-    const created = attempt();
-    const sessionId = created.route.targetSessionId;
-    const fixture = serviceFixture({ createAttempt: created });
+  it("preserves the created Session identity when its first reconcile fails", async () => {
+    const fixture = serviceFixture();
     fixture.domain.requestReconcile.mockRejectedValue(new Error("runtime unavailable"));
-    const command = createCommand();
+    const request = createRequest(fixture);
 
-    const result = await fixture.service.handle(command, context());
-
-    expect(result).toMatchObject({
+    await expect(fixture.service.create(request, fixture.source)).resolves.toEqual({
       status: "unreachable",
       code: "runtime_not_ready",
-      messageId: command.initialMessage.messageId,
-      sessionId,
+      messageId: request.messageId,
+      sessionId: fixture.targetSessionId,
     });
-    expect(fixture.sessions.createInternalSessionWithMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        messageId: command.initialMessage.messageId,
-        initialMessage: command.initialMessage.text,
-      }),
-    );
     expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith({
-      messageId: command.initialMessage.messageId,
+      messageId: request.messageId,
       attemptCount: 1,
       outcome: "unreachable",
       errorCode: "runtime_not_ready",
     });
   });
 
-  it("completes a local fast path only after the Client result is fenced into the durable fact", async () => {
-    const sourceContext = context();
-    const fixture = serviceFixture({
-      sourceComputerId: sourceContext.computerId,
-      sourceWorkspaceComputerId: sourceContext.workspaceComputerId,
-      sourceInstanceId: sourceContext.instanceId,
+  it("records a busy target as unreachable capacity", async () => {
+    const fixture = serviceFixture();
+    fixture.domain.requestSessionMessageDelivery.mockResolvedValue({
+      type: "session:message:deliver:result",
+      requestId: randomUUID(),
+      messageId: fixture.messageId,
+      targetSessionId: fixture.targetSessionId,
+      placementGeneration: 1,
+      status: "rejected",
+      reason: "session_busy",
     });
-    const command = sendCommand();
-    const local = await fixture.service.handle(command, sourceContext);
-    expect(local).toMatchObject({ status: "local", delivery: { messageId: command.messageId } });
-    expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
-    expect(fixture.sessions.recordMessageOutcome).not.toHaveBeenCalled();
 
-    const completed = await fixture.service.handleLocalDeliveryResult(
-      {
-        type: "session:message:deliver:result",
-        requestId: local.delivery?.requestId ?? randomUUID(),
-        messageId: command.messageId,
-        targetSessionId: command.targetSessionId,
-        placementGeneration: 1,
-        status: "accepted",
-      },
-      sourceContext,
-    );
-    expect(completed).toMatchObject({ status: "accepted", requestId: command.requestId });
-    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith({
-      messageId: command.messageId,
-      attemptCount: 1,
-      outcome: "accepted",
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "unreachable",
+      code: "capacity",
     });
+    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "unreachable", errorCode: "capacity" }),
+    );
   });
 
-  it("persists remote timeouts as unknown and reports an outcome-write failure as unknown", async () => {
+  it("records reconcile failure as unreachable without attempting delivery", async () => {
+    const fixture = serviceFixture();
+    fixture.domain.requestReconcile.mockResolvedValue({
+      type: "session:reconcile:result",
+      requestId: randomUUID(),
+      sessionId: fixture.targetSessionId,
+      placementGeneration: 1,
+      status: "failed",
+      errorCode: "provider_failed",
+    });
+
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "unreachable",
+      code: "runtime_not_ready",
+    });
+    expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+  });
+
+  it("records an uncertain delivery timeout as unknown and keeps it unknown if outcome fencing fails", async () => {
     const fixture = serviceFixture();
     fixture.domain.requestSessionMessageDelivery.mockRejectedValue(
       new RuntimeDomainRequestError("timeout", "confirmation was lost"),
     );
     fixture.sessions.recordMessageOutcome.mockResolvedValue(false);
-    const result = await fixture.service.handle(sendCommand(), context());
-    expect(result).toMatchObject({ status: "unknown", code: "outcome_write_failed" });
+
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "unknown",
+      code: "outcome_write_failed",
+    });
     expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
-      expect.objectContaining({ attemptCount: 1, outcome: "unknown", errorCode: "delivery_timeout" }),
+      expect.objectContaining({ outcome: "unknown", errorCode: "delivery_timeout" }),
     );
   });
 
-  it("persists transient target admission as unreachable and allows an explicit retry attempt", async () => {
+  it("maps source authority failures without exposing their details", async () => {
     const fixture = serviceFixture();
-    const command = {
-      ...sendCommand(),
-      messageId: fixture.messageAttempt.message.id,
-      targetSessionId: fixture.messageAttempt.route.targetSessionId,
-    };
-    fixture.domain.requestSessionMessageDelivery.mockResolvedValueOnce({
-      type: "session:message:deliver:result",
-      requestId: randomUUID(),
-      messageId: command.messageId,
-      targetSessionId: command.targetSessionId,
-      placementGeneration: 1,
-      status: "rejected",
-      reason: "stale_generation",
-    });
+    fixture.sessions.authorizeAndRecordMessage.mockRejectedValue(
+      Object.assign(new Error("placement is stale"), { code: "SESSION_PLACEMENT_STALE" }),
+    );
 
-    await expect(fixture.service.handle(command, context())).resolves.toMatchObject({
-      status: "unreachable",
-      code: "runtime_not_ready",
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "rejected",
+      code: "source_unavailable",
     });
-    fixture.messageAttempt.attemptCount = 2;
-    await expect(fixture.service.handle(command, context())).resolves.toMatchObject({ status: "accepted" });
-    expect(fixture.sessions.recordMessageOutcome).toHaveBeenNthCalledWith(1, {
-      messageId: command.messageId,
-      attemptCount: 1,
-      outcome: "unreachable",
-      errorCode: "runtime_not_ready",
-    });
-    expect(fixture.sessions.recordMessageOutcome).toHaveBeenNthCalledWith(2, {
-      messageId: command.messageId,
-      attemptCount: 2,
-      outcome: "accepted",
-    });
+    expect(fixture.onDiagnostic).toHaveBeenCalledWith("SESSION_COLLABORATION_SOURCE_UNAVAILABLE");
   });
 });
 
-function serviceFixture(
-  options: {
-    attempt?: ReturnType<typeof attempt>;
-    createAttempt?: ReturnType<typeof attempt>;
-    sourceComputerId?: string;
-    sourceWorkspaceComputerId?: string;
-    sourceInstanceId?: string;
-  } = {},
-) {
-  const messageAttempt = options.attempt ?? attempt();
-  if (options.sourceComputerId) messageAttempt.route.targetComputerId = options.sourceComputerId;
-  if (options.sourceWorkspaceComputerId) {
-    messageAttempt.route.targetWorkspaceComputerId = options.sourceWorkspaceComputerId;
-  }
+function serviceFixture(options: { attemptCount?: number | null; lastOutcome?: "accepted" | "unknown" } = {}) {
+  const sourceSessionId = randomUUID();
+  const targetSessionId = randomUUID();
+  const messageId = randomUUID();
+  const agentId = randomUUID();
+  const imBindingId = randomUUID();
+  const targetWorkspaceComputerId = randomUUID();
+  const targetComputerId = randomUUID();
+  const instanceId = randomUUID();
+  const source: SessionCliSourceContext = {
+    agentId,
+    computerId: randomUUID(),
+    connectionInstanceId: randomUUID(),
+    placementGeneration: 1,
+    sessionId: sourceSessionId,
+    sessionKind: "channel",
+    workspaceComputerId: randomUUID(),
+  };
+  const attempt = {
+    route: {
+      agentId,
+      imBindingId,
+      sourceSessionId,
+      targetSessionId,
+      targetComputerId,
+      targetWorkspaceComputerId,
+      targetPlacementGeneration: 1,
+      targetSessionKind: "internal" as const,
+      targetCreatorSessionId: sourceSessionId,
+    },
+    message: {
+      id: messageId,
+      sourceSessionId,
+      targetSessionId,
+      content: "hello",
+      contentHash: "a".repeat(64),
+      lastOutcome: options.lastOutcome ?? "unknown",
+      lastErrorCode: null,
+      attemptCount: options.attemptCount === null ? 1 : (options.attemptCount ?? 1),
+      lastAttemptAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    },
+    deduplicated: options.attemptCount === null,
+    attemptCount: options.attemptCount === undefined ? 1 : options.attemptCount,
+  };
   const sessions = {
-    authorizeAndRecordMessage: vi
+    authorizeAndRecordMessage: vi.fn().mockImplementation(async (input: { content: string; messageId: string }) => ({
+      ...attempt,
+      message: { ...attempt.message, id: input.messageId, content: input.content },
+    })),
+    createInternalSessionWithMessage: vi
       .fn()
-      .mockImplementation(
-        async (input: { content: string; messageId: string; sourceSessionId: string; targetSessionId: string }) => ({
-          ...messageAttempt,
-          route: {
-            ...messageAttempt.route,
-            sourceSessionId: input.sourceSessionId,
-            targetSessionId: input.targetSessionId,
-          },
-          message: {
-            ...messageAttempt.message,
-            id: input.messageId,
-            sourceSessionId: input.sourceSessionId,
-            targetSessionId: input.targetSessionId,
-            content: input.content,
-          },
-        }),
-      ),
-    createInternalSessionWithMessage: vi.fn(async (input: { initialMessage: string; messageId: string }) => {
-      const created = options.createAttempt ?? messageAttempt;
-      return {
-        ...created,
-        session: {
-          id: created.route.targetSessionId,
-          imBindingId: randomUUID(),
-          channelId: "C1",
-          conversationKind: "channel" as const,
-          kind: "internal" as const,
-          threadKey: null,
-          createdBySessionId: created.route.sourceSessionId,
-          runtimeModel: null,
-          runtimeReasoningEffort: null,
-          runtimeMaxDurationMs: null,
-          endedAt: null,
-          revision: 1,
-          createdAt: new Date().toISOString(),
-        },
-        placement: {
-          sessionId: created.route.targetSessionId,
-          computerId: created.route.targetComputerId,
-          generation: 1,
-          updatedAt: new Date().toISOString(),
-        },
-        message: { ...created.message, id: input.messageId, content: input.initialMessage },
-      };
-    }),
+      .mockImplementation(async (input: { initialMessage: string; messageId: string }) => ({
+        ...attempt,
+        session: { id: targetSessionId },
+        placement: { sessionId: targetSessionId },
+        message: { ...attempt.message, id: input.messageId, content: input.initialMessage },
+      })),
     recordMessageOutcome: vi.fn().mockResolvedValue(true),
+    withCollaborationDispatchAdmission: vi.fn(),
   };
   const domain = {
     requestReconcile: vi.fn().mockResolvedValue({
       type: "session:reconcile:result",
       requestId: randomUUID(),
-      sessionId: messageAttempt.route.targetSessionId,
+      sessionId: targetSessionId,
       placementGeneration: 1,
       status: "ready",
     }),
     requestSessionMessageDelivery: vi.fn().mockResolvedValue({
       type: "session:message:deliver:result",
       requestId: randomUUID(),
-      messageId: messageAttempt.message.id,
-      targetSessionId: messageAttempt.route.targetSessionId,
+      messageId,
+      targetSessionId,
       placementGeneration: 1,
       status: "accepted",
     }),
   };
-  const targetInstanceId = options.sourceInstanceId ?? randomUUID();
-  const registry = {
-    currentInstanceId: vi.fn().mockReturnValue(targetInstanceId),
-    supportsCapability: vi.fn().mockReturnValue(true),
-  };
   const onDiagnostic = vi.fn();
   return {
     domain,
-    messageAttempt,
+    messageId,
     onDiagnostic,
     sessions,
+    source,
+    targetSessionId,
     service: new SessionCollaborationService({
-      assembler: { assembleForSession: vi.fn().mockResolvedValue(snapshot(messageAttempt.route.agentId)) },
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(snapshot(agentId)) },
       domain: domain as never,
       onDiagnostic,
-      registry,
+      registry: {
+        currentInstanceId: vi.fn().mockReturnValue(instanceId),
+        supportsCapability: vi.fn().mockReturnValue(true),
+      },
       sessions: sessions as never,
-      localResultTimeoutMs: 1_000,
     }),
   };
 }
 
-function attempt(
-  overrides: { attemptCount?: number | null; lastOutcome?: "accepted" | "rejected" | "unknown" | "unreachable" } = {},
-) {
-  const sourceSessionId = randomUUID();
-  const targetSessionId = randomUUID();
-  const agentId = randomUUID();
-  return {
-    route: {
-      agentId,
-      sourceSessionId,
-      targetSessionId,
-      targetComputerId: String(randomUUID()),
-      targetWorkspaceComputerId: String(randomUUID()),
-      targetPlacementGeneration: 1,
-      targetSessionKind: "internal" as const,
-    },
-    message: {
-      id: randomUUID(),
-      sourceSessionId,
-      targetSessionId,
-      content: "hello",
-      contentHash: "a".repeat(64),
-      lastOutcome: overrides.lastOutcome ?? "unknown",
-      lastErrorCode: null,
-      attemptCount: overrides.attemptCount === undefined ? 1 : (overrides.attemptCount ?? 1),
-      lastAttemptAt: new Date(),
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    },
-    deduplicated: overrides.attemptCount === null,
-    attemptCount: overrides.attemptCount === undefined ? 1 : overrides.attemptCount,
-  };
+function sendRequest(fixture: ReturnType<typeof serviceFixture>): SessionCliSendRequest {
+  return { messageId: fixture.messageId, targetSessionId: fixture.targetSessionId, message: "hello" };
 }
 
-function sendCommand() {
-  return {
-    type: "session:message" as const,
-    requestId: randomUUID(),
-    messageId: randomUUID(),
-    sourceSessionId: randomUUID(),
-    sourcePlacementGeneration: 1,
-    targetSessionId: randomUUID(),
-    content: { kind: "text" as const, text: "hello" },
-  };
-}
-
-function createCommand() {
-  return {
-    type: "session:internal:create" as const,
-    requestId: randomUUID(),
-    sourceSessionId: randomUUID(),
-    sourcePlacementGeneration: 1,
-    initialMessage: { messageId: randomUUID(), text: "Investigate" },
-  };
-}
-
-function context(overrides: Partial<RuntimeBusinessContext> = {}): RuntimeBusinessContext {
-  return {
-    computerId: randomUUID(),
-    workspaceComputerId: randomUUID(),
-    workspaceId: randomUUID(),
-    instanceId: randomUUID(),
-    negotiatedCapabilities: { [RUNTIME_CAPABILITY.sessionCollaboration]: 1 },
-    signal: new AbortController().signal,
-    ...overrides,
-  };
+function createRequest(fixture: ReturnType<typeof serviceFixture>): SessionCliCreateRequest {
+  return { messageId: fixture.messageId, message: "investigate" };
 }
 
 function snapshot(agentId: string) {

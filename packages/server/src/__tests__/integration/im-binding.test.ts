@@ -2141,7 +2141,7 @@ describe("IM binding persistence", () => {
         .where(and(eq(sessions.kind, "thread"), eq(sessions.threadKey, "4000.100"), isNull(sessions.endedAt)))
         .then((rows) => rows[0]);
       if (!thread) throw new Error("Thread Session fixture was not created");
-      await new SessionService(value.database).end(thread.id);
+      await value.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, thread.id));
 
       const unmentioned = await inbox.ingest(
         value.imBindingId,

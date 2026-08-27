@@ -9,7 +9,6 @@ import {
   type ImMessageDeliveryResult,
   type RuntimeImCredentialGrantRequest,
   type RuntimeImCredentialGrantResult,
-  type SessionCollaborationCommandResult,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
   type SessionReconcileRequest,
@@ -35,13 +34,24 @@ export class RuntimeDomainConflictError extends Error {
 
 export class RuntimeDomainRequestError extends Error {
   constructor(
-    readonly code: "capacity" | "not_pending" | "send_unavailable" | "stale_placement" | "stopped" | "timeout",
+    readonly code:
+      | "authority_unavailable"
+      | "capacity"
+      | "not_pending"
+      | "send_unavailable"
+      | "stale_placement"
+      | "stopped"
+      | "timeout",
     message: string,
   ) {
     super(message);
     this.name = "RuntimeDomainRequestError";
   }
 }
+
+export type RuntimeDispatchAdmission<T> = (
+  operation: (onDispatched: () => void) => Promise<T>,
+) => Promise<{ admitted: false } | { admitted: true; result: Promise<T> }>;
 
 export interface RuntimeDomainOwnerOptions {
   maxPendingRequests?: number;
@@ -50,14 +60,11 @@ export interface RuntimeDomainOwnerOptions {
     request: RuntimeImCredentialGrantRequest,
     context: RuntimeBusinessContext,
   ): Promise<RuntimeImCredentialGrantResult>;
-  onSessionCollaborationCommand?(
-    request: Extract<ClientRuntimeBusinessFrame, { type: "session:internal:create" | "session:message" }>,
-    context: RuntimeBusinessContext,
-  ): Promise<SessionCollaborationCommandResult>;
-  onLocalSessionMessageDeliveryResult?(
-    result: SessionMessageDeliveryResult,
-    context: RuntimeBusinessContext,
-  ): Promise<SessionCollaborationCommandResult | undefined>;
+  prepareReconcile?(
+    workspaceComputerId: string,
+    instanceId: string,
+    request: SessionReconcileRequest,
+  ): Promise<SessionReconcileRequest>;
   requestTimeoutMs?: number;
 }
 
@@ -115,15 +122,16 @@ export class RuntimeDomainOwner {
   readonly #registry: ConnectionRegistry;
   readonly #custody: RuntimeCustodyStore;
   readonly #options: Required<Pick<RuntimeDomainOwnerOptions, "maxPendingRequests" | "requestTimeoutMs">> &
-    Pick<
-      RuntimeDomainOwnerOptions,
-      "onImCredentialGrant" | "onLocalSessionMessageDeliveryResult" | "onSessionCollaborationCommand" | "onTrace"
-    >;
+    Pick<RuntimeDomainOwnerOptions, "onImCredentialGrant" | "onTrace" | "prepareReconcile">;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #startingDeliveries = new Map<string, StartingDelivery>();
   readonly #expiredDeliveries = new Map<string, ExpiredDelivery>();
   readonly #completed = new Map<string, CompletedRequest>();
   readonly #tracedPromises = new WeakMap<Promise<unknown>, Promise<unknown>>();
+  readonly #preparingReconciles = new Map<
+    string,
+    { hash: string; instanceId: string; workspaceComputerId: string; promise: Promise<SessionReconcileResult> }
+  >();
 
   constructor(registry: ConnectionRegistry, custody: RuntimeCustodyStore, options: RuntimeDomainOwnerOptions = {}) {
     this.#registry = registry;
@@ -132,8 +140,7 @@ export class RuntimeDomainOwner {
       maxPendingRequests: options.maxPendingRequests ?? 1024,
       onTrace: options.onTrace,
       onImCredentialGrant: options.onImCredentialGrant,
-      onLocalSessionMessageDeliveryResult: options.onLocalSessionMessageDeliveryResult,
-      onSessionCollaborationCommand: options.onSessionCollaborationCommand,
+      prepareReconcile: options.prepareReconcile,
       requestTimeoutMs: options.requestTimeoutMs ?? 30_000,
     };
     if (!Number.isSafeInteger(this.#options.maxPendingRequests) || this.#options.maxPendingRequests < 1) {
@@ -161,6 +168,7 @@ export class RuntimeDomainOwner {
     this.#startingDeliveries.clear();
     this.#expiredDeliveries.clear();
     this.#completed.clear();
+    this.#preparingReconciles.clear();
   }
 
   requestReconcile(
@@ -168,6 +176,7 @@ export class RuntimeDomainOwner {
     instanceId: string,
     request: SessionReconcileRequest,
     onDispatched?: () => void,
+    admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
   ): Promise<SessionReconcileResult> {
     const attrs = runtimeAttrs({
       requestId: request.requestId,
@@ -180,15 +189,65 @@ export class RuntimeDomainOwner {
     });
     let operation: Promise<SessionReconcileResult>;
     try {
-      operation = this.#request(
-        "reconcile",
-        workspaceComputerId,
-        instanceId,
-        request,
-        computeReconcilePayloadHash(request),
-        undefined,
-        onDispatched,
-      ) as Promise<SessionReconcileResult>;
+      const hash = computeReconcilePayloadHash(request);
+      const preparation = this.#options.prepareReconcile;
+      if (!preparation) {
+        operation = this.#withDispatchAdmission(
+          admission,
+          (admissionDispatched) =>
+            this.#request(
+              "reconcile",
+              workspaceComputerId,
+              instanceId,
+              request,
+              hash,
+              undefined,
+              admissionDispatched,
+            ) as Promise<SessionReconcileResult>,
+          onDispatched,
+        );
+      } else {
+        const existing = this.#preparingReconciles.get(request.requestId);
+        if (existing) {
+          if (
+            existing.hash !== hash ||
+            existing.workspaceComputerId !== workspaceComputerId ||
+            existing.instanceId !== instanceId
+          ) {
+            throw new RuntimeDomainConflictError("The request ID is already bound to a different runtime request");
+          }
+          onDispatched?.();
+          operation = existing.promise;
+        } else {
+          operation = preparation(workspaceComputerId, instanceId, request).then((value) =>
+            this.#withDispatchAdmission(
+              admission,
+              (admissionDispatched) =>
+                this.#request(
+                  "reconcile",
+                  workspaceComputerId,
+                  instanceId,
+                  value,
+                  computeReconcilePayloadHash(value),
+                  undefined,
+                  admissionDispatched,
+                ) as Promise<SessionReconcileResult>,
+              onDispatched,
+            ),
+          );
+          this.#preparingReconciles.set(request.requestId, {
+            hash,
+            instanceId,
+            workspaceComputerId,
+            promise: operation,
+          });
+          while (this.#preparingReconciles.size > this.#options.maxPendingRequests) {
+            const oldest = this.#preparingReconciles.keys().next().value;
+            if (oldest === undefined) break;
+            this.#preparingReconciles.delete(oldest);
+          }
+        }
+      }
     } catch (error) {
       return tracePromise(
         "runtime.reconcile",
@@ -252,22 +311,50 @@ export class RuntimeDomainOwner {
     workspaceComputerId: string,
     instanceId: string,
     request: SessionMessageDeliveryRequest,
+    onDispatched?: () => void,
+    admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
   ): Promise<SessionMessageDeliveryResult> {
-    return this.#request(
-      "session-message",
-      workspaceComputerId,
-      instanceId,
-      request,
-      hashTuple([
-        request.messageId,
-        request.sourceSessionId,
-        request.targetSessionId,
-        request.agentId,
-        request.placementGeneration,
-        request.content,
-        request.runtime,
-      ]),
-    ) as Promise<SessionMessageDeliveryResult>;
+    return this.#withDispatchAdmission(
+      admission,
+      (admissionDispatched) =>
+        this.#request(
+          "session-message",
+          workspaceComputerId,
+          instanceId,
+          request,
+          hashTuple([
+            request.messageId,
+            request.sourceSessionId,
+            request.targetSessionId,
+            request.agentId,
+            request.placementGeneration,
+            request.content,
+            request.runtime,
+          ]),
+          undefined,
+          admissionDispatched,
+        ) as Promise<SessionMessageDeliveryResult>,
+      onDispatched,
+    );
+  }
+
+  #withDispatchAdmission<T>(
+    admission: RuntimeDispatchAdmission<T> | undefined,
+    operation: (onDispatched?: () => void) => Promise<T>,
+    onDispatched?: () => void,
+  ): Promise<T> {
+    if (!admission) return operation(onDispatched);
+    return admission((admissionDispatched) =>
+      operation(() => {
+        admissionDispatched();
+        onDispatched?.();
+      }),
+    ).then((admitted) => {
+      if (!admitted.admitted) {
+        throw new RuntimeDomainRequestError("authority_unavailable", "Runtime dispatch authority is unavailable");
+      }
+      return admitted.result;
+    });
   }
 
   #traceOnce<T>(
@@ -387,7 +474,7 @@ export class RuntimeDomainOwner {
   async handle(
     frame: ClientRuntimeBusinessFrame,
     context: RuntimeBusinessContext,
-  ): Promise<TurnReportResult | RuntimeImCredentialGrantResult | SessionCollaborationCommandResult | undefined> {
+  ): Promise<TurnReportResult | RuntimeImCredentialGrantResult | undefined> {
     if (this.#registry.currentInstanceId(context.workspaceComputerId) !== context.instanceId) {
       if (frame.type === "turn:report") {
         return {
@@ -406,9 +493,6 @@ export class RuntimeDomainOwner {
           code: "placement_stale",
         };
       }
-      if (frame.type === "session:internal:create" || frame.type === "session:message") {
-        return collaborationFailureResult(frame, "source_unavailable");
-      }
       return undefined;
     }
     if (frame.type === "session:reconcile:result") {
@@ -420,7 +504,8 @@ export class RuntimeDomainOwner {
       return undefined;
     }
     if (frame.type === "session:message:deliver:result") {
-      return this.#completeSessionMessage(frame, context);
+      await this.#completeSessionMessage(frame, context);
+      return undefined;
     }
     if (frame.type === "agent:trace") {
       const delivery = await this.#custody.getDeliveryByTurn(frame.turnId);
@@ -438,12 +523,6 @@ export class RuntimeDomainOwner {
     if (frame.type === "im:credential") {
       if (!this.#options.onImCredentialGrant) return businessFailureResult(frame);
       return this.#options.onImCredentialGrant(frame, context);
-    }
-    if (frame.type === "session:internal:create" || frame.type === "session:message") {
-      if (!this.#options.onSessionCollaborationCommand) {
-        return collaborationFailureResult(frame, "configuration_unsupported");
-      }
-      return this.#options.onSessionCollaborationCommand(frame, context);
     }
     return withSpan(
       "runtime.report",
@@ -624,13 +703,10 @@ export class RuntimeDomainOwner {
     this.#rememberCompleted(expired, result);
   }
 
-  async #completeSessionMessage(
-    result: SessionMessageDeliveryResult,
-    context: RuntimeBusinessContext,
-  ): Promise<SessionCollaborationCommandResult | undefined> {
+  async #completeSessionMessage(result: SessionMessageDeliveryResult, context: RuntimeBusinessContext): Promise<void> {
     const pending = this.#pending.get(result.requestId);
     if (pending?.kind !== "session-message" || !this.#matchesContext(pending, context)) {
-      return this.#options.onLocalSessionMessageDeliveryResult?.(result, context);
+      return;
     }
     if (
       result.messageId !== pending.request.messageId ||
@@ -749,6 +825,7 @@ function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
   } else if (error instanceof RuntimeDomainRequestError) {
     code =
       {
+        authority_unavailable: "RUNTIME_AUTHORITY_UNAVAILABLE",
         capacity: "RUNTIME_OWNER_CAPACITY",
         not_pending: "RUNTIME_REQUEST_NOT_PENDING",
         send_unavailable: "RUNTIME_SEND_UNAVAILABLE",
@@ -767,9 +844,7 @@ function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
   return outcomeAttrs("failed", code);
 }
 
-function businessFailureResult(
-  frame: unknown,
-): RuntimeImCredentialGrantResult | SessionCollaborationCommandResult | undefined {
+function businessFailureResult(frame: unknown): RuntimeImCredentialGrantResult | undefined {
   const parsed = ClientRuntimeBusinessFrameSchema.safeParse(frame);
   if (!parsed.success) return undefined;
   if (parsed.data.type === "im:credential") {
@@ -780,32 +855,13 @@ function businessFailureResult(
       code: "credential_stale",
     };
   }
-  if (parsed.data.type === "session:internal:create" || parsed.data.type === "session:message") {
-    return collaborationFailureResult(parsed.data, "runtime_unavailable");
-  }
   return undefined;
-}
-
-function collaborationFailureResult(
-  frame: Extract<ClientRuntimeBusinessFrame, { type: "session:internal:create" | "session:message" }>,
-  code: string,
-): SessionCollaborationCommandResult {
-  return {
-    type: "session:collaboration:result",
-    requestId: frame.requestId,
-    messageId: frame.type === "session:internal:create" ? frame.initialMessage.messageId : frame.messageId,
-    status: "rejected",
-    code,
-  };
 }
 
 function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   if (frame.type === "session:reconcile:result") return `request:${frame.requestId}`;
   if (frame.type === "im:deliver:result" || frame.type === "turn:report") return `delivery:${frame.deliveryId}`;
   if (frame.type === "im:credential") return `session:${frame.sessionId}`;
-  if (frame.type === "session:internal:create" || frame.type === "session:message") {
-    return `session:${frame.sourceSessionId}`;
-  }
   if (frame.type === "session:message:deliver:result") {
     return `session-message:${frame.targetSessionId}:${frame.messageId}`;
   }

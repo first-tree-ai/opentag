@@ -87,7 +87,7 @@ describe("database migrations", () => {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    expect(journal.entries.slice(-9).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    expect(journal.entries.slice(-11).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 10, tag: "0010_optimal_jazinda" },
       { idx: 11, tag: "0011_staging_team_setup_repair" },
       { idx: 12, tag: "0012_supreme_maddog" },
@@ -97,6 +97,8 @@ describe("database migrations", () => {
       { idx: 16, tag: "0016_certain_revanche" },
       { idx: 17, tag: "0017_sour_tiger_shark" },
       { idx: 18, tag: "0018_salty_tombstone" },
+      { idx: 19, tag: "0019_next_quasar" },
+      { idx: 20, tag: "0020_numerous_puppet_master" },
     ]);
   });
 
@@ -629,7 +631,7 @@ describe("database migrations", () => {
             ) as creator_owner_constraint_removed
         `;
         expect(lifecycle).toEqual({
-          count: 19,
+          count: 21,
           creation_intents_null: true,
           deleted_at_exists: false,
           setup_completed_at_exists: true,
@@ -713,7 +715,7 @@ describe("database migrations", () => {
         const [rerun] = await sql<{ count: number }[]>`
           select count(*)::int as count from drizzle.__drizzle_migrations
         `;
-        expect(rerun?.count).toBe(19);
+        expect(rerun?.count).toBe(21);
       } finally {
         await sql.end();
       }

@@ -218,10 +218,10 @@ export {
   type UnresolvedTurnPhase,
 } from "./runtime/session-binding-store.js";
 export {
-  type AgentVisibleCollaborationResult,
-  SessionCollaborationClient,
-  type SessionCollaborationClientOptions,
-} from "./runtime/session-collaboration-client.js";
+  readSessionCliProofFile,
+  SessionCliProofManager,
+  type StoredSessionCliProof,
+} from "./runtime/session-cli-proof-manager.js";
 export {
   buildSessionMessageInput,
   SessionMessageInbox,

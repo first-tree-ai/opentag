@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -29,7 +28,6 @@ import type {
   InteractiveCodexAppServerClient,
 } from "../providers/codex/app-server-wire.js";
 import { CodexAppServerError } from "../providers/codex/app-server-wire.js";
-import { SessionCollaborationClient } from "../runtime/session-collaboration-client.js";
 
 const fixture = fileURLToPath(new URL("./fixtures/codex-app-server.mjs", import.meta.url));
 const directories: string[] = [];
@@ -262,7 +260,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
   });
 
   it("replaces an old Codex binding that has threadId but no hostedToolsHash", async () => {
-    const hostedTools = collaborationHostedTools();
+    const hostedTools = exampleHostedTools();
     const legacyBinding = { providerId: "codex", schemaVersion: 1, payload: { threadId: "existing-thread" } } as const;
     expect(codexBindingRequiresHostedToolReplacement(legacyBinding, hostedTools)).toBe(true);
 
@@ -1604,21 +1602,17 @@ function factory(client: ManualCodexClient): CodexAgentRuntimeFactory {
   });
 }
 
-function collaborationHostedTools() {
-  const tools = new SessionCollaborationClient({
-    connection: {
-      supportsCapability: () => true,
-      send: async () => undefined,
-    },
-    inbox: { accept: vi.fn() },
-  }).hostedToolsForSession({
-    agentId: randomUUID(),
-    sessionId: randomUUID(),
-    placementGeneration: 1,
-    sessionKind: "visible",
-  });
-  if (!tools) throw new Error("Expected production collaboration hosted tools");
-  return tools;
+function exampleHostedTools() {
+  return {
+    definitions: [
+      {
+        name: "example_tool",
+        description: "Example hosted tool",
+        inputSchema: { type: "object", properties: {} },
+      },
+    ],
+    handler: vi.fn(async () => ({ success: true, content: [] })),
+  };
 }
 
 function createRequest(eventSink: CreateAgentRuntimeRequest["eventSink"]): CreateAgentRuntimeRequest {

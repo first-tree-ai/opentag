@@ -45,7 +45,7 @@ import {
 } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetService } from "./services/onboarding-lab/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
-import { SessionCollaborationService, SessionService } from "./services/sessions/index.js";
+import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { TaskService } from "./services/tasks/index.js";
 import { WorkspaceAdminAccess } from "./services/workspace-admin-access/index.js";
 import { WorkspaceAdminService, WorkspaceSetupService } from "./services/workspaces/index.js";
@@ -88,6 +88,7 @@ export { AuthService, AuthServiceError, AuthTokenService } from "./services/auth
 export { ComputerService } from "./services/computers/index.js";
 export { OnboardingResetError, OnboardingResetService } from "./services/onboarding-lab/index.js";
 export {
+  SessionCliProofService,
   SessionCollaborationService,
   type SessionCollaborationServiceOptions,
   SessionService,
@@ -179,14 +180,13 @@ export async function startServer(): Promise<void> {
     const sessionService = new SessionService(database);
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
-    let sessionCollaborationService: SessionCollaborationService;
+    const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey);
     const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
-      onLocalSessionMessageDeliveryResult: (result, context) =>
-        sessionCollaborationService.handleLocalDeliveryResult(result, context),
-      onSessionCollaborationCommand: (request, context) => sessionCollaborationService.handle(request, context),
+      prepareReconcile: (workspaceComputerId, connectionInstanceId, request) =>
+        sessionCliProofService.prepareReconcile(workspaceComputerId, connectionInstanceId, request),
     });
-    sessionCollaborationService = new SessionCollaborationService({
+    const sessionCollaborationService = new SessionCollaborationService({
       assembler: runtimeSnapshotAssembler,
       domain: domainOwner,
       onDiagnostic: reportDiagnostic,
@@ -316,6 +316,11 @@ export async function startServer(): Promise<void> {
       imResourceService,
       readiness,
       runtime: { registry, domainOwner },
+      runtimeSessions: {
+        collaboration: sessionCollaborationService,
+        proofs: sessionCliProofService,
+        sessions: sessionService,
+      },
       slackEvents: {
         imBindings: imBindingService,
         inbox: imMessageInbox,

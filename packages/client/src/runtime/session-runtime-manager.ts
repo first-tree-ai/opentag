@@ -4,11 +4,12 @@ import type {
   RuntimeSnapshotHashes,
   SessionReconcileRequest,
 } from "@opentag/shared";
-import type { AgentHostedTools, AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
+import type { AgentRuntime, AgentRuntimeEventSink } from "../agent-runtime/types.js";
 import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-registry.js";
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
 import { renderManagedSystemPrompt } from "./managed-instructions.js";
 import type { LocalSessionBinding, SessionBindingStore, SessionPreparationResult } from "./session-binding-store.js";
+import type { SessionCliProofManager } from "./session-cli-proof-manager.js";
 import type { RuntimeLocalPolicy, RuntimePreparation } from "./session-reconciler.js";
 
 interface ManagedSessionRuntime {
@@ -18,8 +19,9 @@ interface ManagedSessionRuntime {
   readonly providerId: string;
   readonly snapshot: EffectiveRuntimeSnapshot;
   readonly sessionKind: "visible" | "internal";
-  readonly hostedTools?: AgentHostedTools;
-  readonly hostedToolsFingerprint?: string;
+  readonly creatorSessionId?: string;
+  proofId?: string;
+  proofPath?: string;
   readonly placementGeneration: number;
   binding: LocalSessionBinding;
   eventSink?: AgentRuntimeEventSink;
@@ -40,26 +42,25 @@ export class ClientRuntimeProviderStartError extends Error {
 
 export interface SessionRuntimeManagerOptions {
   readonly bindingStore: SessionBindingStore;
+  readonly cliCommand?: string;
   readonly cleanupProviderEnvironment?: (sessionId: string) => Promise<void>;
   readonly ensureProviderReady: (providerId: string, signal?: AbortSignal) => Promise<void>;
   readonly providers: AgentRuntimeProviderRegistry;
+  readonly home?: string;
   readonly providerEnvironmentPath: (sessionId: string) => string;
-  readonly hostedToolsForSession?: (binding: {
-    agentId: string;
-    sessionId: string;
-    placementGeneration: number;
-    sessionKind: "visible" | "internal";
-  }) => AgentHostedTools | undefined;
+  readonly proofManager?: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   readonly workspace: AgentWorkspaceManager;
 }
 
 export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPolicy {
   readonly #bindingStore: SessionBindingStore;
+  readonly #cliCommand: string;
   readonly #cleanupProviderEnvironment?: SessionRuntimeManagerOptions["cleanupProviderEnvironment"];
   readonly #ensureProviderReady: SessionRuntimeManagerOptions["ensureProviderReady"];
   readonly #providers: AgentRuntimeProviderRegistry;
+  readonly #home: string;
   readonly #providerEnvironmentPath: SessionRuntimeManagerOptions["providerEnvironmentPath"];
-  readonly #hostedToolsForSession?: SessionRuntimeManagerOptions["hostedToolsForSession"];
+  readonly #proofManager: Pick<SessionCliProofManager, "cleanup" | "materialize">;
   readonly #workspace: AgentWorkspaceManager;
   readonly #sessions = new Map<string, ManagedSessionRuntime>();
   readonly #prepares = new Set<Promise<SessionPreparationResult>>();
@@ -70,11 +71,20 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
 
   constructor(options: SessionRuntimeManagerOptions) {
     this.#bindingStore = options.bindingStore;
+    this.#cliCommand = options.cliCommand ?? "opentag";
     this.#cleanupProviderEnvironment = options.cleanupProviderEnvironment;
     this.#ensureProviderReady = options.ensureProviderReady;
     this.#providers = options.providers;
+    this.#home = options.home ?? "";
     this.#providerEnvironmentPath = options.providerEnvironmentPath;
-    this.#hostedToolsForSession = options.hostedToolsForSession;
+    this.#proofManager =
+      options.proofManager ??
+      ({
+        cleanup: async () => undefined,
+        materialize: async () => {
+          throw new Error("Session CLI proof manager is unavailable");
+        },
+      } satisfies Pick<SessionCliProofManager, "cleanup" | "materialize">);
     this.#workspace = options.workspace;
   }
 
@@ -97,7 +107,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   requiresSessionPreparation(request: SessionReconcileRequest): boolean {
     const current = this.#sessions.get(request.sessionId);
     if (!current) return false;
-    return current.hostedToolsFingerprint !== this.#hostedTools(request).fingerprint;
+    return current.proofId !== request.sessionCliProof?.proofId;
   }
 
   prepareSession(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): Promise<SessionPreparationResult> {
@@ -120,7 +130,9 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     if (!this.#providers.registration(snapshot.provider)) {
       throw new Error(`Agent Runtime provider is not registered: ${snapshot.provider}`);
     }
-    const hostedTools = this.#hostedTools(request);
+    const proofPath = request.sessionCliProof
+      ? await this.#proofManager.materialize(request.sessionId, request.sessionCliProof)
+      : undefined;
 
     const current = this.#sessions.get(request.sessionId);
     if (
@@ -128,10 +140,11 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       current.effectiveSnapshotHash === hashes.effectiveSnapshotHash &&
       current.providerId === snapshot.provider &&
       current.placementGeneration === request.placementGeneration &&
-      current.sessionKind === (request.sessionKind ?? "visible") &&
-      current.hostedToolsFingerprint === hostedTools.fingerprint
+      current.sessionKind === (request.sessionKind ?? "visible")
     ) {
       current.binding = prepared.binding;
+      current.proofId = request.sessionCliProof?.proofId;
+      current.proofPath = proofPath;
       if (current.runtime?.state.phase === "closed") current.runtime = undefined;
       return prepared;
     }
@@ -153,8 +166,9 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       binding: prepared.binding,
       cwd,
       effectiveSnapshotHash: hashes.effectiveSnapshotHash,
-      hostedTools: hostedTools.tools,
-      hostedToolsFingerprint: hostedTools.fingerprint,
+      ...(request.creatorSessionId ? { creatorSessionId: request.creatorSessionId } : {}),
+      ...(request.sessionCliProof ? { proofId: request.sessionCliProof.proofId } : {}),
+      ...(proofPath ? { proofPath } : {}),
       providerId: snapshot.provider,
       sessionKind: request.sessionKind ?? "visible",
       placementGeneration: request.placementGeneration,
@@ -205,13 +219,22 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     };
     const common = {
       eventSink,
-      hostedTools: managed.hostedTools,
-      systemPrompt: renderManagedSystemPrompt(managed.snapshot),
+      systemPrompt: renderManagedSystemPrompt(managed.snapshot, {
+        sessionId: managed.binding.sessionId,
+        sessionKind: managed.sessionKind,
+        ...(managed.creatorSessionId ? { creatorSessionId: managed.creatorSessionId } : {}),
+        cliCommand: this.#cliCommand,
+        sessionCliAvailable: Boolean(managed.proofPath),
+      }),
       workspace: {
         cwd: managed.cwd,
-        ...(managed.sessionKind === "visible"
-          ? { environment: { OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId) } }
-          : {}),
+        environment: {
+          ...(this.#home ? { OPENTAG_HOME: this.#home } : {}),
+          ...(managed.proofPath ? { OPENTAG_SESSION_PROOF_FILE: managed.proofPath } : {}),
+          ...(managed.sessionKind === "visible"
+            ? { OPENTAG_PROVIDER_ENV_FILE: this.#providerEnvironmentPath(managed.binding.sessionId) }
+            : {}),
+        },
         writableRoots: [managed.cwd],
       },
       policy: provider.policy(managed.snapshot),
@@ -225,7 +248,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       try {
         const runtimeBinding = managed.binding.runtimeBinding;
         const replaceBinding =
-          runtimeBinding && provider.requiresBindingReplacement?.(runtimeBinding, managed.hostedTools) === true;
+          runtimeBinding && provider.requiresBindingReplacement?.(runtimeBinding, undefined) === true;
         runtime =
           runtimeBinding && !replaceBinding
             ? await provider.factory.resume({ ...common, binding: runtimeBinding })
@@ -265,19 +288,6 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     }
   }
 
-  #hostedTools(request: SessionReconcileRequest): {
-    tools: AgentHostedTools | undefined;
-    fingerprint: string | undefined;
-  } {
-    const tools = this.#hostedToolsForSession?.({
-      agentId: request.agentId,
-      sessionId: request.sessionId,
-      placementGeneration: request.placementGeneration,
-      sessionKind: request.sessionKind ?? "visible",
-    });
-    return { tools, fingerprint: tools ? JSON.stringify(tools.definitions) : undefined };
-  }
-
   async stopSession(sessionId: string, placementGeneration: number): Promise<void> {
     const sessionKind = this.#sessions.get(sessionId)?.sessionKind;
     try {
@@ -288,6 +298,7 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       }
       await this.#workspace.stopSession(sessionId, placementGeneration);
     } finally {
+      await this.#proofManager.cleanup(sessionId);
       if (sessionKind !== "internal") {
         await this.#cleanupProviderEnvironment?.(sessionId);
       }
@@ -330,7 +341,15 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       await Promise.allSettled([...this.#prepares, ...this.#starts]);
       const sessions = [...this.#sessions.values()];
       this.#sessions.clear();
-      const results = await Promise.allSettled(sessions.map((session) => this.#closeManaged(session)));
+      const results = await Promise.allSettled(
+        sessions.map(async (session) => {
+          try {
+            await this.#closeManaged(session);
+          } finally {
+            await this.#proofManager.cleanup(session.binding.sessionId);
+          }
+        }),
+      );
       for (const result of results) {
         if (result.status === "rejected") this.#closeFailures.push(result.reason);
       }

@@ -51,3 +51,12 @@ export function snapshotPath(home: string, agentId: string, snapshotHash: string
   const paths = agentRuntimePaths(home, agentId);
   return resolve(paths.snapshots, `${deriveRuntimeKey("snapshot", snapshotHash)}.json`);
 }
+
+export function sessionCliProofPath(home: string, sessionId: string): string {
+  const layout = resolveOpenTagHomeLayout(home);
+  return resolve(layout.runtime, "session-cli-proofs", `${deriveRuntimeKey("session", sessionId)}.json`);
+}
+
+export function sessionCliProofRoot(home: string): string {
+  return resolve(resolveOpenTagHomeLayout(home).runtime, "session-cli-proofs");
+}

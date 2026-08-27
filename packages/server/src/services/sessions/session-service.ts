@@ -3,6 +3,9 @@ import type {
   ImConversationKind,
   InternalSessionRuntimeOverrides,
   Session,
+  SessionCliListItem,
+  SessionCliListQuery,
+  SessionCliListResponse,
   SessionKind,
   SessionPlacement,
 } from "@opentag/shared";
@@ -12,6 +15,7 @@ import {
   agents,
   imBindings,
   imMessageDeliveries,
+  sessionDescendants,
   sessionMessages,
   sessionPlacements,
   sessions,
@@ -66,12 +70,14 @@ export interface AuthorizeAndRecordSessionMessageInput {
 
 export interface AuthorizedSessionMessageRoute {
   agentId: string;
+  imBindingId: string;
   sourceSessionId: string;
   targetSessionId: string;
   targetComputerId: string;
   targetWorkspaceComputerId: string;
   targetPlacementGeneration: number;
   targetSessionKind: SessionKind;
+  targetCreatorSessionId: string | null;
 }
 
 export interface SessionMessageAttempt {
@@ -287,6 +293,37 @@ export class SessionService {
         throw new SessionServiceError("SESSION_MESSAGE_CONFLICT", "The Session message ID is already in use");
       }
       const attempt = await this.#beginAttempt(transaction, message);
+      const taskPreview = truncateUtf8(input.initialMessage, 256);
+      await transaction.insert(sessionDescendants).values({
+        ancestorSessionId: input.creatorSessionId,
+        descendantSessionId: created.id,
+        depth: 1,
+        lastMessageCreatedAt: message.createdAt,
+        lastMessageId: message.id,
+        lastDeliveryOutcome: attempt.message.lastOutcome,
+        taskPreview,
+      });
+      await transaction.execute(sql`
+        insert into session_descendants (
+          ancestor_session_id,
+          descendant_session_id,
+          depth,
+          last_message_created_at,
+          last_message_id,
+          last_delivery_outcome,
+          task_preview
+        )
+        select
+          ancestor_session_id,
+          ${created.id}::uuid,
+          depth + 1,
+          ${message.createdAt.toISOString()}::timestamptz,
+          ${message.id}::uuid,
+          ${attempt.message.lastOutcome},
+          ${taskPreview}
+        from session_descendants
+        where descendant_session_id = ${input.creatorSessionId}::uuid
+      `);
       const target = {
         session: created,
         placement,
@@ -351,6 +388,7 @@ export class SessionService {
       }
       if (!message) throw new Error("Session message insert did not return a row");
       const attempt = await this.#beginAttempt(transaction, message);
+      await this.#recordSessionActivity(transaction, attempt.message, [input.sourceSessionId, input.targetSessionId]);
       return {
         route: this.#route(source, target),
         message: attempt.message,
@@ -360,43 +398,172 @@ export class SessionService {
     });
   }
 
+  async withCollaborationDispatchAdmission<T>(
+    route: AuthorizedSessionMessageRoute,
+    operation: (onDispatched: () => void) => Promise<T>,
+  ): Promise<{ admitted: false } | { admitted: true; result: Promise<T> }> {
+    return this.#database.transaction(async (transaction) => {
+      const [agent] = await transaction
+        .select({ status: agents.status })
+        .from(agents)
+        .where(eq(agents.id, route.agentId))
+        .limit(1)
+        .for("update");
+      if (agent?.status !== "active") return { admitted: false } as const;
+
+      const [binding] = await transaction
+        .select({ agentId: imBindings.agentId, status: imBindings.status })
+        .from(imBindings)
+        .where(eq(imBindings.id, route.imBindingId))
+        .limit(1)
+        .for("update");
+      if (binding?.agentId !== route.agentId || binding.status !== "active") return { admitted: false } as const;
+
+      const authoritySessionIds = [...new Set([route.sourceSessionId, route.targetSessionId])].sort();
+      const authoritySessions = await transaction
+        .select({ id: sessions.id, imBindingId: sessions.imBindingId, endedAt: sessions.endedAt })
+        .from(sessions)
+        .where(inArray(sessions.id, authoritySessionIds))
+        .orderBy(sessions.id)
+        .for("update");
+      if (
+        authoritySessions.length !== authoritySessionIds.length ||
+        authoritySessions.some(({ endedAt, imBindingId }) => endedAt !== null || imBindingId !== route.imBindingId)
+      ) {
+        return { admitted: false } as const;
+      }
+
+      const [placement] = await transaction
+        .select({
+          generation: sessionPlacements.generation,
+          workspaceComputerId: sessionPlacements.workspaceComputerId,
+        })
+        .from(sessionPlacements)
+        .where(eq(sessionPlacements.sessionId, route.targetSessionId))
+        .limit(1)
+        .for("update");
+      if (
+        placement?.workspaceComputerId !== route.targetWorkspaceComputerId ||
+        placement.generation !== route.targetPlacementGeneration
+      ) {
+        return { admitted: false } as const;
+      }
+
+      let markDispatched: () => void = () => undefined;
+      const dispatched = new Promise<void>((resolve) => {
+        markDispatched = resolve;
+      });
+      let result: Promise<T>;
+      try {
+        result = operation(markDispatched);
+      } catch (error) {
+        markDispatched();
+        throw error;
+      }
+      void result.catch(() => markDispatched());
+      await dispatched;
+      return { admitted: true, result } as const;
+    });
+  }
+
   async recordMessageOutcome(input: {
     messageId: string;
     attemptCount: number;
     outcome: SessionMessageOutcome;
     errorCode?: string;
   }): Promise<boolean> {
-    const now = this.#now();
-    const [updated] = await this.#database
-      .update(sessionMessages)
-      .set({
-        lastOutcome: input.outcome,
-        lastErrorCode: input.errorCode ?? null,
-        updatedAt: now,
-      })
-      .where(and(eq(sessionMessages.id, input.messageId), eq(sessionMessages.attemptCount, input.attemptCount)))
-      .returning({ id: sessionMessages.id });
-    return updated !== undefined;
+    return this.#database.transaction(async (transaction) => {
+      const now = this.#now();
+      const [updated] = await transaction
+        .update(sessionMessages)
+        .set({
+          lastOutcome: input.outcome,
+          lastErrorCode: input.errorCode ?? null,
+          updatedAt: now,
+        })
+        .where(and(eq(sessionMessages.id, input.messageId), eq(sessionMessages.attemptCount, input.attemptCount)))
+        .returning({ id: sessionMessages.id });
+      if (!updated) return false;
+      await transaction
+        .update(sessionDescendants)
+        .set({ lastDeliveryOutcome: input.outcome })
+        .where(eq(sessionDescendants.lastMessageId, input.messageId));
+      return true;
+    });
   }
 
-  async end(sessionId: string): Promise<Session> {
-    return this.#database.transaction(async (transaction) => {
-      const [current] = await transaction
-        .select()
-        .from(sessions)
-        .where(eq(sessions.id, sessionId))
-        .limit(1)
-        .for("update");
-      if (!current) throw new SessionServiceError("SESSION_NOT_FOUND", "The Session was not found");
-      if (current.endedAt) return toSession(current);
-      const [ended] = await transaction
-        .update(sessions)
-        .set({ endedAt: this.#now(), revision: sql`${sessions.revision} + 1` })
-        .where(eq(sessions.id, sessionId))
-        .returning();
-      if (!ended) throw new Error("Session end did not return a row");
-      return toSession(ended);
-    });
+  async listInternalSessions(sourceSessionId: string, query: SessionCliListQuery): Promise<SessionCliListResponse> {
+    const cursor = query.cursor ? decodeListCursor(query.cursor) : undefined;
+    const since = query.since ? new Date(query.since) : undefined;
+    type ListRow = {
+      sessionId: string;
+      parentSessionId: string;
+      createdAt: Date | string;
+      lastMessageAt: Date | string;
+      lastMessageId: string;
+      lastDeliveryOutcome: SessionCliListItem["lastDeliveryOutcome"];
+      taskPreview: string;
+    };
+    const rows = await this.#database.execute<ListRow>(sql`
+      select
+        link.descendant_session_id as "sessionId",
+        child.created_by_session_id as "parentSessionId",
+        child.created_at as "createdAt",
+        link.last_message_created_at as "lastMessageAt",
+        link.last_message_id as "lastMessageId",
+        link.last_delivery_outcome as "lastDeliveryOutcome",
+        link.task_preview as "taskPreview"
+      from session_descendants link
+      inner join sessions child on child.id = link.descendant_session_id
+      where link.ancestor_session_id = ${sourceSessionId}::uuid
+        and child.ended_at is null
+        ${query.recursive ? sql`` : sql`and link.depth = 1`}
+        ${since ? sql`and link.last_message_created_at >= ${since.toISOString()}::timestamptz` : sql``}
+        ${
+          cursor
+            ? sql`and (link.last_message_created_at, link.last_message_id, link.descendant_session_id) < (${cursor.at.toISOString()}::timestamptz, ${cursor.messageId}::uuid, ${cursor.sessionId}::uuid)`
+            : sql``
+        }
+      order by link.last_message_created_at desc, link.last_message_id desc, link.descendant_session_id desc
+      limit ${query.limit + 1}
+    `);
+    const page = [...rows].slice(0, query.limit);
+    const last = page.at(-1);
+    return {
+      items: page.map((row) => ({
+        sessionId: row.sessionId,
+        parentSessionId: row.parentSessionId,
+        createdAt: new Date(row.createdAt).toISOString(),
+        lastMessageAt: new Date(row.lastMessageAt).toISOString(),
+        lastDeliveryOutcome: row.lastDeliveryOutcome,
+        taskPreview: truncateUtf8(row.taskPreview, 256),
+      })),
+      ...(rows.length > query.limit && last
+        ? { nextCursor: encodeListCursor(new Date(last.lastMessageAt), last.lastMessageId, last.sessionId) }
+        : {}),
+    };
+  }
+
+  async #recordSessionActivity(
+    transaction: DatabaseTransaction,
+    message: SessionMessageRow,
+    sessionIds: readonly string[],
+  ): Promise<void> {
+    await transaction.execute(sql`
+      update session_descendants
+      set
+        last_message_created_at = ${message.createdAt.toISOString()}::timestamptz,
+        last_message_id = ${message.id}::uuid,
+        last_delivery_outcome = ${message.lastOutcome}
+      where descendant_session_id in (${sql.join(
+        [...new Set(sessionIds)].map((sessionId) => sql`${sessionId}::uuid`),
+        sql`, `,
+      )})
+        and (last_message_created_at, last_message_id) <= (
+          ${message.createdAt.toISOString()}::timestamptz,
+          ${message.id}::uuid
+        )
+    `);
   }
 
   async movePlacement(sessionId: string, workspaceComputerId: string): Promise<SessionPlacement> {
@@ -604,12 +771,14 @@ export class SessionService {
   ): AuthorizedSessionMessageRoute {
     return {
       agentId: source.agentId,
+      imBindingId: source.session.imBindingId,
       sourceSessionId: source.session.id,
       targetSessionId: target.session.id,
       targetComputerId: target.computerId,
       targetWorkspaceComputerId: target.workspaceComputerId,
       targetPlacementGeneration: target.placement.generation,
       targetSessionKind: target.session.kind,
+      targetCreatorSessionId: target.session.createdBySessionId,
     };
   }
 
@@ -691,4 +860,50 @@ export class SessionService {
     if (!converged) throw new Error("Session placement ensure did not converge");
     return { session: toSession(session), placement: toPlacement(converged) };
   }
+}
+
+function encodeListCursor(at: Date, messageId: string, sessionId: string): string {
+  return Buffer.from(JSON.stringify({ v: 2, at: at.toISOString(), messageId, sessionId }), "utf8").toString(
+    "base64url",
+  );
+}
+
+function decodeListCursor(cursor: string): { at: Date; messageId: string; sessionId: string } {
+  try {
+    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as unknown;
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      !("v" in value) ||
+      value.v !== 2 ||
+      !("at" in value) ||
+      typeof value.at !== "string" ||
+      Number.isNaN(new Date(value.at).getTime()) ||
+      !("messageId" in value) ||
+      typeof value.messageId !== "string" ||
+      !isUuid(value.messageId) ||
+      !("sessionId" in value) ||
+      typeof value.sessionId !== "string" ||
+      !isUuid(value.sessionId)
+    ) {
+      throw new Error("invalid");
+    }
+    return { at: new Date(value.at), messageId: value.messageId, sessionId: value.sessionId };
+  } catch {
+    throw new SessionServiceError("SESSION_CURSOR_INVALID", "The Session list cursor is invalid");
+  }
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
+  let result = "";
+  for (const character of value) {
+    if (Buffer.byteLength(`${result}${character}…`, "utf8") > maxBytes) break;
+    result += character;
+  }
+  return `${result}…`;
 }

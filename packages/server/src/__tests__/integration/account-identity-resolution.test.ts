@@ -60,6 +60,56 @@ async function raceAtAddressLookup(
   }
 }
 
+/**
+ * Proves the second resolution is blocked by the first one's address claim, then lets both finish.
+ *
+ * Concurrency here cannot be shown by starting two promises: the first may simply commit before the second reads, and
+ * the outcome would then be identical with no lock at all. This holds the first transaction inside its claim, starts
+ * the second, and requires it to make no progress while the claim is held — which is the property, not the outcome.
+ */
+async function serializedOnAddressClaim(
+  first: (service: AuthIdentityService) => Promise<unknown>,
+  second: (service: AuthIdentityService) => Promise<unknown>,
+): Promise<PromiseSettledResult<unknown>[]> {
+  let announceHolding: () => void = () => undefined;
+  const holdingClaim = new Promise<void>((resolve) => {
+    announceHolding = resolve;
+  });
+  let releaseClaim: () => void = () => undefined;
+  const claimReleased = new Promise<void>((resolve) => {
+    releaseClaim = resolve;
+  });
+
+  const holder = new AuthIdentityService(client.database, {
+    afterAccountLookup: async () => {
+      announceHolding();
+      await claimReleased;
+    },
+  });
+  const firstResult = first(holder).then(
+    (value) => ({ status: "fulfilled", value }) as PromiseFulfilledResult<unknown>,
+    (reason) => ({ status: "rejected", reason }) as PromiseRejectedResult,
+  );
+  await holdingClaim;
+
+  let secondSettled = false;
+  const secondResult = second(identities).then(
+    (value) => {
+      secondSettled = true;
+      return { status: "fulfilled", value } as PromiseFulfilledResult<unknown>;
+    },
+    (reason) => {
+      secondSettled = true;
+      return { status: "rejected", reason } as PromiseRejectedResult;
+    },
+  );
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  expect(secondSettled, "the second resolution ran while the first held the address claim").toBe(false);
+
+  releaseClaim();
+  return Promise.all([firstResult, secondResult]);
+}
+
 function typedConflicts(results: PromiseSettledResult<unknown>[]): string[] {
   return results
     .filter((result): result is PromiseRejectedResult => result.status === "rejected")
@@ -172,10 +222,10 @@ describe("Account identity resolution under the one-email-per-Account invariant"
   it("creates one Account when two first sign-ins race for the same address", async () => {
     // No row exists to lock, so without serializing on the address itself both would read it as free and create an
     // Account each. They serialize instead: the first creates, and the second sees that Account rather than a gap.
-    const results = await Promise.allSettled([
-      identities.resolveOrCreate(googleIdentity({ email: "race@example.com", subject: "racer-one" })),
-      identities.resolveOrCreate(googleIdentity({ email: "race@example.com", subject: "racer-two" })),
-    ]);
+    const results = await serializedOnAddressClaim(
+      (service) => service.resolveOrCreate(googleIdentity({ email: "race@example.com", subject: "racer-one" })),
+      (service) => service.resolveOrCreate(googleIdentity({ email: "race@example.com", subject: "racer-two" })),
+    );
 
     // One Account, and the second subject is refused rather than becoming a second Google identity on it.
     expect(typedConflicts(results)).toEqual(["AUTH_IDENTITY_CONFLICT"]);
@@ -187,10 +237,10 @@ describe("Account identity resolution under the one-email-per-Account invariant"
     await identities.resolveOrCreate(googleIdentity({ email: "mover-one@example.com", subject: "mover-one" }));
     await identities.resolveOrCreate(googleIdentity({ email: "mover-two@example.com", subject: "mover-two" }));
 
-    const results = await Promise.allSettled([
-      identities.resolveOrCreate(googleIdentity({ email: "target@example.com", subject: "mover-one" })),
-      identities.resolveOrCreate(googleIdentity({ email: "target@example.com", subject: "mover-two" })),
-    ]);
+    const results = await serializedOnAddressClaim(
+      (service) => service.resolveOrCreate(googleIdentity({ email: "target@example.com", subject: "mover-one" })),
+      (service) => service.resolveOrCreate(googleIdentity({ email: "target@example.com", subject: "mover-two" })),
+    );
 
     expect(typedConflicts(results)).toEqual(["AUTH_EMAIL_CONFLICT"]);
     const holders = await client.database.select().from(users).where(eq(users.email, "target@example.com"));
@@ -201,9 +251,9 @@ describe("Account identity resolution under the one-email-per-Account invariant"
     const leftId = await identities.resolveOrCreate(googleIdentity({ email: "left@example.com", subject: "left" }));
     const rightId = await identities.resolveOrCreate(googleIdentity({ email: "right@example.com", subject: "right" }));
 
-    // Each Account moves onto the address the other is leaving. Both wait on the other's uncommitted tuple through
-    // the unique index, so PostgreSQL kills one; its rollback restores the address the survivor was moving onto, and
-    // the survivor then loses on the restored key. Neither move can succeed, and neither Account may end up moved.
+    // Each Account moves onto the address the other is leaving. The two claims are different keys, so neither waits
+    // on the other and no cycle exists; each simply reads the other still holding its address and refuses. Both moves
+    // fail by decision rather than by database error, and neither Account may end up moved.
     const results = await raceAtAddressLookup(
       (service) => service.resolveOrCreate(googleIdentity({ email: "right@example.com", subject: "left" })),
       (service) => service.resolveOrCreate(googleIdentity({ email: "left@example.com", subject: "right" })),
@@ -223,6 +273,31 @@ describe("Account identity resolution under the one-email-per-Account invariant"
     await identities.resolveOrCreate(googleIdentity({ email: "healed@example.com", subject: "healed" }));
 
     expect(await readAccount(userId)).toEqual({ email: "healed@example.com", emailVerified: true, id: userId });
+  });
+
+  it("refuses to pick between two Accounts already sharing an address", async () => {
+    /*
+     * Until the uniqueness index lands one deployment later, a writer predating this resolver can leave two Accounts
+     * on one address. Attaching to either would hand ownership to whichever row the database returned first, so the
+     * resolver must refuse instead of choosing — including for a fully trusted, verified identity.
+     */
+    const [first] = await client.database
+      .insert(users)
+      .values({ displayName: "First", email: "shared@example.com" })
+      .returning({ id: users.id });
+    const [second] = await client.database
+      .insert(users)
+      .values({ displayName: "Second", email: "SHARED@example.com" })
+      .returning({ id: users.id });
+
+    await expect(
+      identities.resolveOrCreate(googleIdentity({ email: "shared@example.com", subject: "shared-subject" })),
+    ).rejects.toMatchObject({ code: "AUTH_EMAIL_CONFLICT", statusCode: 409 });
+
+    // Nothing was attached, so an operator still sees the two rows the index migration will report by id.
+    expect(await client.database.select().from(authIdentities)).toHaveLength(0);
+    expect(await client.database.select().from(users)).toHaveLength(2);
+    expect([first?.id, second?.id].every(Boolean)).toBe(true);
   });
 
   it("refuses to hand an existing Account to a verified but untrusted provider", async () => {

@@ -1,6 +1,6 @@
 {
-  "id": "a246d5f9-64bc-40be-aac1-22e2f67ad93b",
-  "prevId": "d3a69f86-252a-4f2e-bf84-0afc079c9164",
+  "id": "f300aa92-a18e-4851-9070-21bb656dc98a",
+  "prevId": "a246d5f9-64bc-40be-aac1-22e2f67ad93b",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -474,11 +474,24 @@
           "primaryKey": false,
           "notNull": true
         },
+        "email_verified": {
+          "name": "email_verified",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
         "display_name": {
           "name": "display_name",
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "image": {
+          "name": "image",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         },
         "suspended_at": {
           "name": "suspended_at",
@@ -501,7 +514,23 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "users_email_unique": {
+          "name": "users_email_unique",
+          "columns": [
+            {
+              "expression": "lower(\"email\")",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},

@@ -27,6 +27,7 @@ import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bind
 import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
 import { type SlackConfigurationService, SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-lab/index.js";
+import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
 import {
   type WorkspaceAdminService,
   type WorkspaceSetupService,
@@ -63,6 +64,7 @@ export interface CreateAppOptions {
   slackEvents?: SlackEventsRouteOptions;
   /** Registered only by a staging deployment that configures the shared Onboarding Lab Account. */
   stagingOnboardingLab?: { reset: OnboardingResetService };
+  taskService?: TaskService;
   workspaceService?: WorkspaceAdminService;
   workspaceSetupService?: WorkspaceSetupService;
 }
@@ -202,6 +204,7 @@ export function createApp(options: CreateAppOptions = {}) {
         ...(options.machineAuthService ? { machineAuthService: options.machineAuthService } : {}),
         ...(options.workspaceService ? { workspaceService: options.workspaceService } : {}),
         ...(options.workspaceSetupService ? { workspaceSetupService: options.workspaceSetupService } : {}),
+        ...(options.taskService ? { taskService: options.taskService } : {}),
         publicOrigin,
       });
     }
@@ -273,6 +276,7 @@ export function createApp(options: CreateAppOptions = {}) {
       error instanceof AgentServiceError ||
       error instanceof ImBindingServiceError ||
       error instanceof OnboardingResetError ||
+      error instanceof TaskQueryError ||
       error instanceof SlackConfigurationServiceError ||
       error instanceof WorkspaceSetupServiceError
     ) {

@@ -48,15 +48,15 @@ CREATE INDEX "auth_verifications_identifier_idx" ON "auth_verifications" USING b
 CREATE INDEX "auth_verifications_expires_at_idx" ON "auth_verifications" USING btree ("expires_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "auth_identities_issuer_subject_unique" ON "auth_identities" USING btree ("issuer","subject");--> statement-breakpoint
 /*
- * Repeat 0019's verification backfill.
+ * Repeat the verification backfill from the Account email migration.
  *
- * 0019 is deliberately expand-only so the previous server revision keeps running against the new schema, which a
+ * 0020 is deliberately expand-only so the previous server revision keeps running against the new schema, which a
  * rollback requires because rolling back application code does not roll back migrations. That revision predates the
  * writer which maintains `email_verified`, so any Account it created between the two deployments carries `false`
  * despite holding a verified provider identity. Every migration that precedes a consumer of this flag repeats the
  * reconciliation; it is idempotent, and the stage that first reads the flag must repeat it again.
  *
- * The `users_email_unique` backstop is deliberately in neither this migration nor 0019. Staging deploys the tip and
+ * The `users_email_unique` backstop is deliberately in neither this migration nor 0020. Staging deploys the tip and
  * skips revisions it has passed, so a rollout can go straight from a pre-resolver server to this head with the old
  * container still serving — and that container inserts a `users` row without resolving the address, which the index
  * would answer with a raw `23505`. Nothing depends on the index; the resolver's advisory claim already keeps one

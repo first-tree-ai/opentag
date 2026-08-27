@@ -1074,14 +1074,18 @@ function runtimeDeliveryRequest(): DirectImMessageDeliveryRequest {
 }
 
 function runtimeDeliveryResult(request: DirectImMessageDeliveryRequest, status: "accepted" | "rejected") {
-  return {
+  const base = {
     type: "im:deliver:result" as const,
     requestId: request.requestId,
     deliveryId: request.deliveryId,
     sessionId: request.sessionId,
     placementGeneration: request.placementGeneration,
+  };
+  if (status === "accepted") return { ...base, status, turnId: randomUUID() };
+  return {
+    ...base,
     status,
-    ...(status === "accepted" ? { turnId: randomUUID() } : { reason: "target_mismatch" as const }),
+    reason: "target_mismatch" as const,
   };
 }
 

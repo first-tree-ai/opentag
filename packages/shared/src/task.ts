@@ -49,9 +49,10 @@ export const TaskTurnSchema = z
     attention: ImAttentionSchema,
     delivery: z
       .object({
-        state: z.enum(["pending", "accepted", "terminal_rejected", "expired"]),
+        state: z.enum(["pending", "accepted", "steered", "terminal_rejected", "expired"]),
         attemptCount: z.number().int().nonnegative(),
         acceptedAt: z.string().datetime().nullable(),
+        steeredAt: z.string().datetime().nullable(),
         expiresAt: z.string().datetime(),
         reason: z.string().nullable(),
         lastErrorCode: z.string().nullable(),
@@ -69,6 +70,13 @@ export const TaskTurnSchema = z
         occurredAt: z.string().datetime(),
       })
       .strict(),
+    absorbedBy: z
+      .object({
+        deliveryId: z.string().uuid(),
+        turnId: z.string().min(1),
+      })
+      .strict()
+      .nullable(),
     report: z
       .object({
         turnId: z.string().min(1),

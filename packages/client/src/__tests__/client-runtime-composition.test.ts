@@ -204,7 +204,7 @@ describe("createClientRuntime production composition", () => {
     expect(result).toMatchObject({ status: "ready" });
     await runtime.runtimeManager.ensureRuntime("session-1", new AbortController().signal);
     expect(await runtime.bindingStore.read("agent-1", "session-1")).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       runtimeBinding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "thread-1" } },
     });
     const launches = (await readFile(argsLog, "utf8")).trim().split("\n");
@@ -434,7 +434,11 @@ describe("createClientRuntime production composition", () => {
 
   it("unit-tests composition delegates and every preflight outcome", async () => {
     const accepted = { result: { status: "accepted" } };
-    const custody = { accept: vi.fn(async () => accepted) };
+    const steered = { status: "steered" };
+    const custody = {
+      accept: vi.fn(async () => accepted),
+      acceptSteer: vi.fn(async () => steered),
+    };
     const reportOwner = { handleResult: vi.fn(async () => "handled") };
     const recovery = {
       afterReconciled: vi.fn(async () => undefined),
@@ -443,6 +447,7 @@ describe("createClientRuntime production composition", () => {
     };
     const handlers = createClientRuntimeHandlers(custody as never, reportOwner as never, recovery as never);
     await expect(handlers.handleDelivery({} as never)).resolves.toBe(accepted);
+    await expect(handlers.handleSteer({} as never)).resolves.toBe(steered);
     await expect(handlers.handleTurnReportResult({} as never)).resolves.toBeUndefined();
     await expect(handlers.prepareReconcileResult({} as never, { status: "ready" } as never)).resolves.toEqual({
       status: "ready",

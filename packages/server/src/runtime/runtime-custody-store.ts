@@ -1,5 +1,6 @@
 import type {
   DirectImMessageDeliveryRequest,
+  RuntimeImSteerRequest,
   SessionReconcileRequest,
   SessionReconcileResult,
   TurnReportRequest,
@@ -38,6 +39,8 @@ export interface RecordedTurnRecord {
 
 export type DeliveryCustodyStatus = "accepted" | "already_accepted" | "conflict" | "stale_generation";
 export type DeliveryDispatchStatus = "dispatched" | "already_dispatched" | "conflict" | "stale_generation";
+export type SteerCustodyStatus = "steered" | "already_steered" | "conflict" | "stale_generation";
+export type SteerReleaseStatus = "released" | "already_released" | "conflict";
 
 export interface DeliveryDispatchContext {
   workspaceComputerId: string;
@@ -56,6 +59,30 @@ export interface RuntimeCustodyStore {
     turnId: string,
     context: RuntimeBusinessContext,
   ): Promise<DeliveryCustodyStatus>;
+  beginSteerDispatch(
+    request: RuntimeImSteerRequest,
+    inputHash: string,
+    context: DeliveryDispatchContext,
+  ): Promise<DeliveryDispatchStatus>;
+  recordSteered(
+    request: RuntimeImSteerRequest,
+    inputHash: string,
+    semanticHash: string,
+    context: RuntimeBusinessContext,
+  ): Promise<SteerCustodyStatus>;
+  recordAbsorbed(
+    request: DirectImMessageDeliveryRequest,
+    inputHash: string,
+    semanticHash: string,
+    rootDeliveryId: string,
+    turnId: string,
+    context: RuntimeBusinessContext,
+  ): Promise<SteerCustodyStatus>;
+  releaseSteerDispatch(
+    request: RuntimeImSteerRequest,
+    inputHash: string,
+    disposition: "retry" | "deferred",
+  ): Promise<SteerReleaseStatus>;
   claimRetainedReports(
     request: SessionReconcileRequest,
     claims: NonNullable<SessionReconcileResult["retainedReports"]>,
@@ -105,7 +132,12 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       }
       const [dispatched] = await transaction
         .update(imMessageDeliveries)
-        .set({ dispatchRequestId: request.requestId, dispatchInputHash: inputHash, dispatchPayload: request })
+        .set({
+          dispatchRequestId: request.requestId,
+          dispatchInputHash: inputHash,
+          dispatchPayload: request,
+          steerTargetDeliveryId: null,
+        })
         .where(
           and(
             eq(imMessageDeliveries.id, request.deliveryId),
@@ -115,6 +147,153 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         )
         .returning({ id: imMessageDeliveries.id });
       return dispatched ? "dispatched" : "conflict";
+    });
+  }
+
+  async beginSteerDispatch(
+    request: RuntimeImSteerRequest,
+    inputHash: string,
+    context: DeliveryDispatchContext,
+  ): Promise<DeliveryDispatchStatus> {
+    return this.#database.transaction(async (transaction) => {
+      const scope = await this.#deliveryScope(transaction, request.deliveryId);
+      if (!scope || !steerRequestMatches(scope, request)) return "conflict";
+      if (!placementMatches(scope, context.workspaceComputerId, request.placementGeneration)) return "stale_generation";
+      if (scope.delivery.state !== "pending") return "conflict";
+      if (scope.delivery.dispatchRequestId !== null) {
+        return scope.delivery.dispatchRequestId === request.requestId && scope.delivery.dispatchInputHash === inputHash
+          ? "already_dispatched"
+          : "conflict";
+      }
+      if (scope.delivery.steerTargetDeliveryId !== null) return "conflict";
+      const target = await this.#deliveryScope(transaction, request.rootDeliveryId);
+      if (!target || !steerTargetMatches(scope, target, request, context)) return "conflict";
+      const [dispatched] = await transaction
+        .update(imMessageDeliveries)
+        .set({
+          dispatchRequestId: request.requestId,
+          dispatchInputHash: inputHash,
+          dispatchPayload: request,
+          steerTargetDeliveryId: request.rootDeliveryId,
+        })
+        .where(
+          and(
+            eq(imMessageDeliveries.id, request.deliveryId),
+            eq(imMessageDeliveries.state, "pending"),
+            isNull(imMessageDeliveries.dispatchRequestId),
+            isNull(imMessageDeliveries.steerTargetDeliveryId),
+          ),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      return dispatched ? "dispatched" : "conflict";
+    });
+  }
+
+  async recordSteered(
+    request: RuntimeImSteerRequest,
+    inputHash: string,
+    semanticHash: string,
+    context: RuntimeBusinessContext,
+  ): Promise<SteerCustodyStatus> {
+    return this.#database.transaction(async (transaction) => {
+      const scope = await this.#deliveryScope(transaction, request.deliveryId);
+      if (!scope || !steerRequestMatches(scope, request)) return "conflict";
+      if (!placementMatches(scope, context.workspaceComputerId, request.placementGeneration)) return "stale_generation";
+      if (scope.delivery.state === "steered") {
+        return scope.delivery.inputHash === semanticHash &&
+          scope.delivery.steerTargetDeliveryId === request.rootDeliveryId
+          ? "already_steered"
+          : "conflict";
+      }
+      if (
+        !["pending", "expired"].includes(scope.delivery.state) ||
+        scope.delivery.dispatchRequestId !== request.requestId ||
+        scope.delivery.dispatchInputHash !== inputHash ||
+        scope.delivery.steerTargetDeliveryId !== request.rootDeliveryId
+      ) {
+        return "conflict";
+      }
+      const target = await this.#deliveryScope(transaction, request.rootDeliveryId);
+      if (!target || !steerTargetMatches(scope, target, request, context, true)) return "conflict";
+      return (await this.#writeSteered(transaction, request.deliveryId, semanticHash, request.rootDeliveryId))
+        ? "steered"
+        : "conflict";
+    });
+  }
+
+  async recordAbsorbed(
+    request: DirectImMessageDeliveryRequest,
+    inputHash: string,
+    semanticHash: string,
+    rootDeliveryId: string,
+    turnId: string,
+    context: RuntimeBusinessContext,
+  ): Promise<SteerCustodyStatus> {
+    return this.#database.transaction(async (transaction) => {
+      const scope = await this.#deliveryScope(transaction, request.deliveryId);
+      if (!scope || !deliveryRequestMatches(scope, request)) return "conflict";
+      if (!placementMatches(scope, context.workspaceComputerId, request.placementGeneration)) return "stale_generation";
+      if (scope.delivery.state === "steered") {
+        return scope.delivery.inputHash === semanticHash && scope.delivery.steerTargetDeliveryId === rootDeliveryId
+          ? "already_steered"
+          : "conflict";
+      }
+      if (
+        !["pending", "expired"].includes(scope.delivery.state) ||
+        scope.delivery.dispatchRequestId !== request.requestId ||
+        scope.delivery.dispatchInputHash !== inputHash
+      ) {
+        return "conflict";
+      }
+      const target = await this.#deliveryScope(transaction, rootDeliveryId);
+      if (!target || !absorbedTargetMatches(scope, target, turnId, context)) return "conflict";
+      return (await this.#writeSteered(transaction, request.deliveryId, semanticHash, rootDeliveryId))
+        ? "steered"
+        : "conflict";
+    });
+  }
+
+  async releaseSteerDispatch(
+    request: RuntimeImSteerRequest,
+    inputHash: string,
+    disposition: "retry" | "deferred",
+  ): Promise<SteerReleaseStatus> {
+    return this.#database.transaction(async (transaction) => {
+      const scope = await this.#deliveryScope(transaction, request.deliveryId);
+      if (!scope || !steerRequestMatches(scope, request) || scope.delivery.state !== "pending") return "conflict";
+      if (scope.delivery.dispatchRequestId === null) {
+        const targetMatches =
+          disposition === "retry"
+            ? scope.delivery.steerTargetDeliveryId === null
+            : scope.delivery.steerTargetDeliveryId === request.rootDeliveryId;
+        return targetMatches ? "already_released" : "conflict";
+      }
+      if (
+        scope.delivery.dispatchRequestId !== request.requestId ||
+        scope.delivery.dispatchInputHash !== inputHash ||
+        scope.delivery.steerTargetDeliveryId !== request.rootDeliveryId
+      ) {
+        return "conflict";
+      }
+      const [released] = await transaction
+        .update(imMessageDeliveries)
+        .set({
+          dispatchRequestId: null,
+          dispatchInputHash: null,
+          dispatchPayload: null,
+          ...(disposition === "retry" ? { steerTargetDeliveryId: null } : {}),
+        })
+        .where(
+          and(
+            eq(imMessageDeliveries.id, request.deliveryId),
+            eq(imMessageDeliveries.state, "pending"),
+            eq(imMessageDeliveries.dispatchRequestId, request.requestId),
+            eq(imMessageDeliveries.dispatchInputHash, inputHash),
+            eq(imMessageDeliveries.steerTargetDeliveryId, request.rootDeliveryId),
+          ),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      return released ? "released" : "conflict";
     });
   }
 
@@ -146,6 +325,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           turnId,
           reportOwnerInstanceId: context.instanceId,
           acceptedAt: this.#now(),
+          steerTargetDeliveryId: null,
           reason: null,
           lastErrorCode: null,
         })
@@ -207,6 +387,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
               reportOwnerInstanceId: context.instanceId,
               resultHash: claim.resultHash,
               acceptedAt: this.#now(),
+              steerTargetDeliveryId: null,
               reason: null,
               lastErrorCode: null,
             })
@@ -380,6 +561,27 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .for("update", { of: imMessageDeliveries });
     return scope;
   }
+
+  async #writeSteered(
+    transaction: DatabaseTransaction,
+    deliveryId: string,
+    semanticHash: string,
+    rootDeliveryId: string,
+  ): Promise<boolean> {
+    const [steered] = await transaction
+      .update(imMessageDeliveries)
+      .set({
+        state: "steered",
+        inputHash: semanticHash,
+        steerTargetDeliveryId: rootDeliveryId,
+        steeredAt: this.#now(),
+        reason: null,
+        lastErrorCode: null,
+      })
+      .where(and(eq(imMessageDeliveries.id, deliveryId), inArray(imMessageDeliveries.state, ["pending", "expired"])))
+      .returning({ id: imMessageDeliveries.id });
+    return steered !== undefined;
+  }
 }
 
 function acceptedRecord(
@@ -407,6 +609,52 @@ function deliveryRequestMatches(scope: DeliveryScope, request: DirectImMessageDe
     scope.delivery.sessionId === request.sessionId &&
     scope.message.id === request.imMessageId &&
     scope.agentId === request.agentId
+  );
+}
+
+function steerRequestMatches(scope: DeliveryScope, request: RuntimeImSteerRequest): boolean {
+  return (
+    scope.delivery.id === request.deliveryId &&
+    scope.delivery.sessionId === request.sessionId &&
+    scope.message.id === request.imMessageId &&
+    scope.agentId === request.agentId
+  );
+}
+
+function steerTargetMatches(
+  delivery: DeliveryScope,
+  target: DeliveryScope,
+  request: RuntimeImSteerRequest,
+  context: DeliveryDispatchContext,
+  allowReported = false,
+): boolean {
+  return (
+    target.delivery.id === request.rootDeliveryId &&
+    target.delivery.state === "accepted" &&
+    (allowReported || target.delivery.reportedAt === null) &&
+    target.delivery.turnId === request.expectedTurnId &&
+    target.delivery.sessionId === delivery.delivery.sessionId &&
+    target.agentId === delivery.agentId &&
+    target.delivery.placementGeneration === request.placementGeneration &&
+    target.workspaceComputer.id === context.workspaceComputerId &&
+    target.delivery.reportOwnerInstanceId === context.instanceId
+  );
+}
+
+function absorbedTargetMatches(
+  delivery: DeliveryScope,
+  target: DeliveryScope,
+  turnId: string,
+  context: RuntimeBusinessContext,
+): boolean {
+  return (
+    target.delivery.state === "accepted" &&
+    target.delivery.turnId === turnId &&
+    target.delivery.sessionId === delivery.delivery.sessionId &&
+    target.agentId === delivery.agentId &&
+    target.delivery.placementGeneration === delivery.delivery.placementGeneration &&
+    target.workspaceComputer.id === context.workspaceComputerId &&
+    target.delivery.reportOwnerInstanceId === context.instanceId
   );
 }
 

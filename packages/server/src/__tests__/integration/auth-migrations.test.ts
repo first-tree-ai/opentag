@@ -87,9 +87,9 @@ describe("database migrations", () => {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    // Anchored to the fixed 0010..0018 range rather than the tail: a trailing slice silently stops covering the
+    // Anchored to the fixed 0010..0019 range rather than the tail: a trailing slice silently stops covering the
     // earliest entry every time a migration is appended, which would quietly shrink what this test guarantees.
-    expect(journal.entries.slice(10, 19).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    expect(journal.entries.slice(10, 20).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 10, tag: "0010_optimal_jazinda" },
       { idx: 11, tag: "0011_staging_team_setup_repair" },
       { idx: 12, tag: "0012_supreme_maddog" },
@@ -99,6 +99,7 @@ describe("database migrations", () => {
       { idx: 16, tag: "0016_certain_revanche" },
       { idx: 17, tag: "0017_sour_tiger_shark" },
       { idx: 18, tag: "0018_salty_tombstone" },
+      { idx: 19, tag: "0019_previous_magneto" },
     ]);
   });
 
@@ -377,7 +378,7 @@ describe("database migrations", () => {
       dialect: string;
       entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
     };
-    const legacyEntries = journal.entries.filter(({ idx }) => idx <= 18);
+    const legacyEntries = journal.entries.filter(({ idx }) => idx <= 19);
     for (const entry of legacyEntries) {
       await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(legacyFolder, `${entry.tag}.sql`));
     }
@@ -431,12 +432,12 @@ describe("database migrations", () => {
 
   it("reconciles Accounts a rolled-back server revision left unverified", async () => {
     /*
-     * 0019 is expand-only so the previous revision keeps running against the new schema, which a rollback needs
+     * 0020 is expand-only so the previous revision keeps running against the new schema, which a rollback needs
      * because rolling back code does not roll back migrations. That revision predates the writer maintaining
-     * `email_verified`, so this replays it: stop at 0019, write the row that revision would have written, then let the
+     * `email_verified`, so this replays it: stop at 0020, write the row that revision would have written, then let the
      * next migration reconcile it.
      */
-    const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0019-migrations-"));
+    const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0020-migrations-"));
     const legacyMeta = join(legacyFolder, "meta");
     await mkdir(legacyMeta);
     const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
@@ -444,7 +445,7 @@ describe("database migrations", () => {
       dialect: string;
       entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
     };
-    const legacyEntries = journal.entries.filter(({ idx }) => idx <= 19);
+    const legacyEntries = journal.entries.filter(({ idx }) => idx <= 20);
     for (const entry of legacyEntries) {
       await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(legacyFolder, `${entry.tag}.sql`));
     }

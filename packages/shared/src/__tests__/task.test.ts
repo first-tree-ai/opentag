@@ -38,6 +38,7 @@ describe("Task browser contracts", () => {
             state: "accepted",
             attemptCount: 1,
             acceptedAt: "2026-08-27T01:01:00.000Z",
+            steeredAt: null,
             expiresAt: "2026-08-28T01:00:00.000Z",
             reason: null,
             lastErrorCode: null,
@@ -52,6 +53,7 @@ describe("Task browser contracts", () => {
             truncated: false,
             occurredAt: "2026-08-27T01:00:00.000Z",
           },
+          absorbedBy: null,
           report: {
             turnId: "turn-debug",
             outcome: "completed",

@@ -3,7 +3,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { authIdentities, users } from "../../db/schema/index.js";
-import { isUniqueViolation } from "../../db/unique-violation.js";
 import { AuthIdentityService, type ExternalIdentity } from "../../services/auth/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -276,24 +275,29 @@ describe("Account identity resolution under the one-email-per-Account invariant"
     expect(await readAccount(userId)).toEqual({ email: "healed@example.com", emailVerified: true, id: userId });
   });
 
-  it("cannot reach two Accounts sharing an address once the uniqueness backstop exists", async () => {
+  it("refuses to pick between two Accounts already sharing an address", async () => {
     /*
-     * The base branch covers the resolver refusing to choose between two such Accounts, which is the defence for the
-     * deployment window before `0020`. From this migration onward the state is unreachable: the index rejects the
-     * second row, so the refusal has nothing left to guard against.
+     * Until the uniqueness index lands one deployment later, a writer predating this resolver can leave two Accounts
+     * on one address. Attaching to either would hand ownership to whichever row the database returned first, so the
+     * resolver must refuse instead of choosing — including for a fully trusted, verified identity.
      */
-    await client.database.insert(users).values({ displayName: "First", email: "shared@example.com" });
-
-    const rejection = await client.database
+    const [first] = await client.database
+      .insert(users)
+      .values({ displayName: "First", email: "shared@example.com" })
+      .returning({ id: users.id });
+    const [second] = await client.database
       .insert(users)
       .values({ displayName: "Second", email: "SHARED@example.com" })
-      .then(
-        () => undefined,
-        (error: unknown) => error,
-      );
+      .returning({ id: users.id });
 
-    expect(isUniqueViolation(rejection, "users_email_unique")).toBe(true);
-    expect(await client.database.select().from(users)).toHaveLength(1);
+    await expect(
+      identities.resolveOrCreate(googleIdentity({ email: "shared@example.com", subject: "shared-subject" })),
+    ).rejects.toMatchObject({ code: "AUTH_EMAIL_CONFLICT", statusCode: 409 });
+
+    // Nothing was attached, so an operator still sees the two rows the index migration will report by id.
+    expect(await client.database.select().from(authIdentities)).toHaveLength(0);
+    expect(await client.database.select().from(users)).toHaveLength(2);
+    expect([first?.id, second?.id].every(Boolean)).toBe(true);
   });
 
   it("refuses to hand an existing Account to a verified but untrusted provider", async () => {

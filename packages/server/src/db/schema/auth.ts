@@ -11,19 +11,15 @@ const timestamps = {
  * resolver, which serializes on the address before deciding whether to create or attach. A case-insensitive unique
  * index backs it up for any writer that skips the resolver, and lands once no pre-resolver revision is still serving.
  */
-export const users = pgTable(
-  "users",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    email: text("email").notNull(),
-    emailVerified: boolean("email_verified").notNull().default(false),
-    displayName: text("display_name").notNull(),
-    image: text("image"),
-    suspendedAt: timestamp("suspended_at", { withTimezone: true }),
-    ...timestamps,
-  },
-  (table) => [uniqueIndex("users_email_unique").on(sql`lower(${table.email})`)],
-);
+export const users = pgTable("users", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  email: text("email").notNull(),
+  emailVerified: boolean("email_verified").notNull().default(false),
+  displayName: text("display_name").notNull(),
+  image: text("image"),
+  suspendedAt: timestamp("suspended_at", { withTimezone: true }),
+  ...timestamps,
+});
 
 export const workspaces = pgTable(
   "workspaces",

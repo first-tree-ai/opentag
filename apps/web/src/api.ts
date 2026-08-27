@@ -16,6 +16,7 @@ import {
   agentImBindingPath,
   agentReactivatePath,
   agentSlackConfigurationPath,
+  agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
   type ComputerConnectCodeIssueResponse,
@@ -48,6 +49,9 @@ import {
   SlackAppConfigurationSchema,
   type SlackConfigurationResult,
   SlackConfigurationResultSchema,
+  type StartSlackOAuthRequest,
+  type StartSlackOAuthResponse,
+  StartSlackOAuthResponseSchema,
   type UpdateAgentRequest,
   type UpdateUserProfileRequest,
   type UserProfile,
@@ -188,6 +192,14 @@ export class BrowserApi {
   configureSlackApp(agentId: string, input: ConfigureSlackAppRequest): Promise<SlackConfigurationResult> {
     return this.request(agentSlackConfigurationPath(agentId), SlackConfigurationResultSchema, {
       method: "PUT",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+    });
+  }
+
+  startSlackOAuth(agentId: string, input: StartSlackOAuthRequest): Promise<StartSlackOAuthResponse> {
+    return this.request(agentSlackOAuthStartPath(agentId), StartSlackOAuthResponseSchema, {
+      method: "POST",
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });

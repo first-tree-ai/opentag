@@ -15,6 +15,7 @@ import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
+import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
 import { registerWorkspaceRoutes } from "./api/workspaces.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { currentTraceId } from "./observability/index.js";
@@ -55,6 +56,7 @@ export interface CreateAppOptions {
   imResourceService?: ImResourceService;
   feishuSetupService?: FeishuSetupService;
   slackConfigurationService?: SlackConfigurationService;
+  slackOAuth?: SlackOAuthRouteOptions;
   loggerStream?: FastifyLoggerOptions["stream"];
   readiness?: BootstrapReadiness;
   runtime?: RuntimeRoutesOptions;
@@ -216,6 +218,7 @@ export function createApp(options: CreateAppOptions = {}) {
         publicOrigin,
       );
     }
+    if (options.slackOAuth) registerSlackOAuthRoutes(app, options.slackOAuth);
     if (options.imResourceService && options.machineAuthService) {
       registerImResourceRoute(app, options.machineAuthService, options.imResourceService);
     }

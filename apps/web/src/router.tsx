@@ -2288,6 +2288,10 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                 setError(undefined);
                 await slackConfiguration.open(intent);
               };
+              const connectOpenTagSlack = async (intent: "create" | "reauthorize" | "replace" = "create") => {
+                setError(undefined);
+                await slackConfiguration.startOAuth(intent);
+              };
               return (
                 <AsyncState state={state}>
                   {(binding) => (
@@ -2333,7 +2337,17 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                             ) : null}
                             {binding.bindingState === "reauthorization_required" && binding.provider === "slack" ? (
                               <div className="im-actions">
-                                <Button onClick={() => void connectSlack("reauthorize")}>Reauthorize Slack</Button>
+                                {slackConfiguration.oauthAvailable ? (
+                                  <Button onClick={() => void connectOpenTagSlack("reauthorize")}>
+                                    Reauthorize OpenTag Slack
+                                  </Button>
+                                ) : null}
+                                <Button
+                                  variant={slackConfiguration.oauthAvailable ? "secondary" : undefined}
+                                  onClick={() => void connectSlack("reauthorize")}
+                                >
+                                  Reauthorize Slack
+                                </Button>
                               </div>
                             ) : null}
                             <div className="im-actions messaging-connection-actions">
@@ -2343,9 +2357,20 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                                 </Button>
                               ) : null}
                               {binding.provider === "slack" ? (
-                                <Button size="compact" variant="outline" onClick={() => void connectSlack("replace")}>
-                                  Change Slack App
-                                </Button>
+                                <>
+                                  {slackConfiguration.oauthAvailable ? (
+                                    <Button
+                                      size="compact"
+                                      variant="outline"
+                                      onClick={() => void connectOpenTagSlack("replace")}
+                                    >
+                                      Switch to OpenTag Slack
+                                    </Button>
+                                  ) : null}
+                                  <Button size="compact" variant="outline" onClick={() => void connectSlack("replace")}>
+                                    Change Slack App
+                                  </Button>
+                                </>
                               ) : null}
                               <Button
                                 ref={disableBindingButtonRef}
@@ -2414,6 +2439,11 @@ function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChang
                           </EmptyState>
                           <div className="im-actions">
                             <Button onClick={() => void connectFeishu()}>Connect a Feishu Bot</Button>
+                            {slackConfiguration.oauthAvailable ? (
+                              <Button variant="secondary" onClick={() => void connectOpenTagSlack()}>
+                                Add OpenTag to Slack
+                              </Button>
+                            ) : null}
                             <Button variant="secondary" onClick={() => void connectSlack()}>
                               Connect Slack App
                             </Button>

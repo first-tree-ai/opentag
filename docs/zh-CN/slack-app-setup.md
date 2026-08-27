@@ -2,8 +2,15 @@
 
 [English](../slack-app-setup.md)
 
-OpenTag 为每个 Agent 支持一个由客户持有的 Slack App 安装。配置是一次经过验证的写入，不是临时 setup 工作流。
-URL verification 与真实入站消息只属于运行观测；两者都不能创建、完成或激活凭证代际。
+OpenTag 为每个 Agent 支持一组 Slack App/Team/Bot 身份。两条配置路径共用同一 verified Integration 激活边界：
+
+- **OpenTag Slack（分布式 OAuth）**：一个名为 OpenTag 的一等 Slack App。已认证的 Agent 管理流程发起 OAuth，callback
+  检查授权后激活该 Agent。内部 subagent 在 Slack 中保持不可见。
+- **客户自有 Slack App**：配置人员仍一次提交 App ID、Bot Token 与 Signing Secret。
+
+Slack workspace 安装绝不会被静默共享给另一个 Agent；第二次安装返回 `SLACK_APP_TEAM_ALREADY_BOUND`。URL verification
+与真实入站消息只属于运行观测；两者都不能创建、完成或激活凭证代际。生产 Events API 仍是带签名的 HTTP，并包含
+`app_uninstalled` 与 `tokens_revoked`。不使用 Socket Mode。
 
 ## 固定的 Slack 能力契约
 
@@ -139,6 +146,7 @@ challenge。Signing Secret 永不进入 runtime grant、诊断、日志或 trace
 - `SLACK_BINDING_IDENTITY_MISMATCH`：Slack 返回的 App ID 与配置值不同。
 - `SLACK_SCOPE_REAUTH_REQUIRED`：token 缺少至少一个固定 scope。
 - `SLACK_CONFIGURATION_CONFLICT`：打开表单后绑定或代际发生变化。
+- `SLACK_OAUTH_FAILED`：一等 Slack OAuth state 无效、过期、被重放，或用户取消了授权。
 - `SLACK_APP_TEAM_ALREADY_BOUND`：该 App/Team 安装已被另一个 Agent 当前绑定。
 
 ## 迁移与恢复
@@ -160,19 +168,45 @@ App ID typo 也不能变成隐式 replacement。同身份成功时原子推进�
 replacement、禁用旧绑定并停止旧绑定 Sessions。并发配置同时受预期 binding ID/generation 与数据库唯一约束保护；运行
 观测、身份闭合、provider 撤销与 provider 禁用还分别受事件解析时精确 credential generation 的栅栏保护。
 
-## 未来的分布式 App 适配器
+## 一等分布式 OpenTag Slack App
 
-当前产品模式是每个 Agent 一个由客户持有的 Slack App。以后若引入 OpenTag 托管的分布式 App，它必须作为同一 verified
-Integration 激活边界后的独立适配器。该适配器目前只存在于文档：本版本不增加 OAuth setup 状态、占位表或 token 交换持久化。
+当 Server 配置了一等 Slack App 凭据后，Agent 管理可以从 OAuth 开始，而不再粘贴客户自有 token。Slack 中可见的 Bot 就是
+这一个 OpenTag App；OpenTag 内部 subagent 不会再安装为额外的 Slack Bot。
 
-若引入该适配器，OAuth state 必须签名，并绑定一次性 nonce、浏览器 session、Account、Agent、Team 与配置意图。installation
-store 与 token rotation 属于该适配器，不属于 active binding。实际 Slack 返回的 scopes 仍然决定能否激活。在此之前，
-配置 Agent 的人员一次提交 App ID、Bot Token 与 Signing Secret。
+必需的 Server 环境变量，要么全部配置，要么全部不配：
 
-一个分布式 App 安装只产生一组 Team/Bot 身份。因此，若同一 Slack workspace 需要支持多个 OpenTag Agent，必须引入独立的
-workspace-installation aggregate 与显式 Agent 路由；不能静默复用当前 App/Team 到 Agent 的唯一绑定约束。
+- `OPENTAG_SLACK_CLIENT_ID`
+- `OPENTAG_SLACK_CLIENT_SECRET`
+- `OPENTAG_SLACK_SIGNING_SECRET`
+- `OPENTAG_SLACK_REDIRECT_URL` — 本 Server 的 public origin，或精确 callback URL
+  `{OPENTAG_PUBLIC_URL}/api/v1/im-bindings/slack/oauth/callback`
+
+托管环境要求 HTTPS。缺一项会在进程启动时失败关闭。callback origin 必须与 `OPENTAG_PUBLIC_URL` 一致。Client secret、
+signing secret、OAuth code 与 token 都不会出现在管理 API 响应或日志中。带签名的 OAuth state 只会出现在 start endpoint
+返回的短期 Slack 授权 URL 中，并会在 callback 的 Server 请求日志中被移除。
+
+已认证的 start `POST /api/v1/agents/:agentId/im-binding/slack/oauth/start` 会签发带签名的 state，其中包含一次性 nonce，
+并绑定浏览器 session cookie、Account、Agent、意图（`create` / `reauthorize` / `replace`）以及预期 binding generation。
+公开 callback 用 Slack code 换 token，检查 Bot 身份与实际 `x-oauth-scopes`，只有在七项固定 bot scopes 与身份检查都通过后，
+才通过与手工路径相同的 `SlackConfigurationService` 写入激活或重新授权。重放、过期、session 不匹配，以及第二个 Agent
+声称同一 App/Team 安装时，都不会改写当前绑定。
+
+运营人员必须把 OpenTag Slack App 配置为：
+
+- Bot 展示名 **OpenTag**
+- Redirect URL 等于 `OPENTAG_SLACK_REDIRECT_URL`
+- Events Request URL 为 `{OPENTAG_PUBLIC_URL}/api/v1/im-bindings/slack/events`（带签名 HTTP，而不是 Socket Mode）
+- 与客户自有 manifest 相同的七项 bot scopes 与订阅 bot events，包括 `app_uninstalled` 与 `tokens_revoked`
+
+该共享 Request URL 的无身份 URL verification 使用一等 signing secret，且不记录 binding 观测。安装之后，真实事件仍按
+active App/Team 绑定查找，并用已存储的 signing secret 校验 HMAC。未启用 token rotation；若要在 active binding 凭证信封之外
+轮换 token，需要以后由适配器持有的 installation store。
+
+一个分布式 App 安装仍然只产生一组 Team/Bot 身份。若同一 Slack workspace 需要支持多个 OpenTag Agent，必须引入独立的
+workspace-installation aggregate 与显式 Agent 路由；本版本返回 `SLACK_APP_TEAM_ALREADY_BOUND`，而不会共享安装。
 
 Slack 协议参考：[App manifests](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/)、
 [`auth.test`](https://docs.slack.dev/reference/methods/auth.test/)、
+[OAuth V2](https://docs.slack.dev/authentication/installing-with-oauth/)、
 [请求签名](https://docs.slack.dev/authentication/verifying-requests-from-slack/) 与
 [`url_verification`](https://docs.slack.dev/reference/events/url_verification/)。

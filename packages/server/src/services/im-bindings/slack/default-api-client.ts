@@ -2,7 +2,7 @@ import { Readable } from "node:stream";
 import { WebClient, type WebClientOptions } from "@slack/web-api";
 import { z } from "zod";
 import type { ProviderResourceInput, ReadableResource } from "../provider-adapter.js";
-import type { SlackApiClient, SlackInstallationInspection } from "./adapter.js";
+import type { SlackApiClient, SlackInstallationInspection, SlackOAuthAccessResult } from "./adapter.js";
 
 const SLACK_AUTH_TEST_TIMEOUT_MS = 10_000;
 
@@ -33,6 +33,63 @@ export class DefaultSlackApiClient implements SlackApiClient {
       teamId: result.team_id,
       botUserId: result.user_id,
       botId: result.bot_id,
+    };
+  }
+
+  async oauthAccess(input: {
+    clientId: string;
+    clientSecret: string;
+    code: string;
+    redirectUri: string;
+  }): Promise<SlackOAuthAccessResult> {
+    let response: Response;
+    try {
+      response = await this.#fetch("https://slack.com/api/oauth.v2.access", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: input.clientId,
+          client_secret: input.clientSecret,
+          code: input.code,
+          redirect_uri: input.redirectUri,
+        }).toString(),
+        redirect: "error",
+        signal: AbortSignal.timeout(SLACK_AUTH_TEST_TIMEOUT_MS),
+      });
+    } catch {
+      throw new Error("SLACK_AUTH_UPSTREAM_UNAVAILABLE");
+    }
+    if (!response.ok) throw new Error("SLACK_AUTH_UPSTREAM_UNAVAILABLE");
+    const result = z
+      .object({
+        ok: z.boolean(),
+        error: z.string().optional(),
+        access_token: z.string().optional(),
+        token_type: z.string().optional(),
+        app_id: z.string().optional(),
+        bot_user_id: z.string().optional(),
+        enterprise_id: z.string().nullable().optional(),
+        team: z.object({ id: z.string().optional() }).passthrough().optional(),
+        enterprise: z.object({ id: z.string().optional() }).passthrough().nullable().optional(),
+      })
+      .passthrough()
+      .parse(await response.json());
+    if (!result.ok) throw new Error(result.error === "invalid_code" ? "SLACK_AUTH_INVALID" : "SLACK_AUTH_REJECTED");
+    if (
+      result.token_type !== "bot" ||
+      !result.access_token ||
+      !result.app_id ||
+      !result.bot_user_id ||
+      !result.team?.id
+    ) {
+      throw new Error("SLACK_AUTH_IDENTITY_INCOMPLETE");
+    }
+    return {
+      appId: result.app_id,
+      teamId: result.team.id,
+      enterpriseId: result.enterprise?.id ?? result.enterprise_id ?? null,
+      botUserId: result.bot_user_id,
+      botAccessToken: result.access_token,
     };
   }
 

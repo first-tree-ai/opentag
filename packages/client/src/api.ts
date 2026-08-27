@@ -13,6 +13,7 @@ import {
   agentImBindingPath,
   agentReactivatePath,
   agentSlackConfigurationPath,
+  agentSlackOAuthStartPath,
   agentSuspendPath,
   agentUsagePath,
   type ComputerConnectCodeExchangeRequest,
@@ -53,6 +54,9 @@ import {
   SlackAppConfigurationSchema,
   type SlackConfigurationResult,
   SlackConfigurationResultSchema,
+  type StartSlackOAuthRequest,
+  type StartSlackOAuthResponse,
+  StartSlackOAuthResponseSchema,
   type UpdateAgentRequest,
   type ValidationIssue,
 } from "@opentag/shared";
@@ -237,6 +241,18 @@ export class OpenTagApi {
   ): Promise<SlackConfigurationResult> {
     return this.#request(agentSlackConfigurationPath(agentId), SlackConfigurationResultSchema, {
       method: "PUT",
+      body: JSON.stringify(input),
+      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
+    });
+  }
+
+  startSlackOAuth(
+    accessToken: string,
+    agentId: string,
+    input: StartSlackOAuthRequest,
+  ): Promise<StartSlackOAuthResponse> {
+    return this.#request(agentSlackOAuthStartPath(agentId), StartSlackOAuthResponseSchema, {
+      method: "POST",
       body: JSON.stringify(input),
       headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
     });

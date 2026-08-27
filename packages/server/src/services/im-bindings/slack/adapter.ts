@@ -58,9 +58,23 @@ export interface VerifiedSlackEnvelope {
   eventTime?: number;
 }
 
+export interface SlackOAuthAccessResult {
+  appId: string;
+  teamId: string;
+  enterpriseId: string | null;
+  botUserId: string;
+  botAccessToken: string;
+}
+
 export interface SlackApiClient {
   authTest(token: string): Promise<{ appId: string | null; teamId: string; botUserId: string; botId: string }>;
   inspectInstallation(token: string): Promise<SlackInstallationInspection>;
+  oauthAccess(input: {
+    clientId: string;
+    clientSecret: string;
+    code: string;
+    redirectUri: string;
+  }): Promise<SlackOAuthAccessResult>;
   fetchResource(input: ProviderResourceInput & { token: string }): Promise<ReadableResource>;
 }
 

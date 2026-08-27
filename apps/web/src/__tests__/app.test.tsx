@@ -76,6 +76,7 @@ function installApi(
     profileUpdateFails?: boolean;
     setupFailureCode?: string;
     setupCompletedAt?: string | null;
+    slackOAuth?: boolean;
     unauthenticated?: boolean;
     workspaceless?: boolean;
   } = {},
@@ -469,6 +470,13 @@ function installApi(
           "tokens_revoked",
         ],
         currentBinding: null,
+        distributedOAuthAvailable: options.slackOAuth === true,
+      });
+    }
+    if (path === `/api/v1/agents/${agentId}/im-binding/slack/oauth/start` && init?.method === "POST") {
+      return json({
+        authorizationUrl: "https://slack.com/oauth/v2/authorize?client_id=client&state=signed-state",
+        expiresAt: "2026-08-20T00:10:00.000Z",
       });
     }
     if (path === "/api/v1/auth/browser/logout" && init?.method === "POST") return new Response(null, { status: 204 });
@@ -1824,7 +1832,12 @@ describe("OpenTag Web App Shell", () => {
       ).toHaveLength(1),
     );
     expect(
-      vi.mocked(fetch).mock.calls.filter(([input]) => String(input).includes("/im-binding/slack/configuration")),
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(
+          ([input, init]) =>
+            String(input).includes("/im-binding/slack/configuration") && (init?.method ?? "GET") !== "GET",
+        ),
     ).toHaveLength(0);
     await waitFor(() =>
       expect(
@@ -2069,6 +2082,34 @@ describe("OpenTag Web App Shell", () => {
     });
   });
 
+  it("starts first-party OpenTag Slack OAuth from the Agent IM tab when configured", async () => {
+    installApi({ slackOAuth: true });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add OpenTag to Slack" }));
+    await waitFor(() =>
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([input, init]) => String(input).endsWith("/im-binding/slack/oauth/start") && init?.method === "POST",
+          ),
+      ).toHaveLength(1),
+    );
+    expect(
+      JSON.parse(
+        String(
+          vi
+            .mocked(fetch)
+            .mock.calls.find(
+              ([input, init]) => String(input).endsWith("/im-binding/slack/oauth/start") && init?.method === "POST",
+            )?.[1]?.body,
+        ),
+      ),
+    ).toEqual({ intent: "create" });
+  });
+
   it("opens a stateless customer-owned Slack App configuration from the Agent IM tab", async () => {
     installApi();
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
@@ -2084,8 +2125,8 @@ describe("OpenTag Web App Shell", () => {
     const requests = vi
       .mocked(fetch)
       .mock.calls.filter(([input]) => String(input).endsWith("/im-binding/slack/configuration"));
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.[1]?.method ?? "GET").toBe("GET");
+    expect(requests.length).toBeGreaterThanOrEqual(1);
+    expect(requests.every(([, init]) => (init?.method ?? "GET") === "GET")).toBe(true);
   });
 
   it("creates a Computer connection command only after an explicit admin click", async () => {

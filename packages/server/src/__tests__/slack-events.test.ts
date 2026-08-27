@@ -143,6 +143,41 @@ describe("Slack Events API ingress", () => {
     expect(invalid.imBindings.recordSlackObservation).not.toHaveBeenCalled();
   });
 
+  it("verifies identity-less URL challenges for the first-party Slack App signing secret", async () => {
+    const { app, imBindings } = createServices({}, undefined);
+    const payload = { type: "url_verification", challenge: "first-party-challenge" };
+    const unsigned = await app.inject({
+      method: "POST",
+      url: "/api/v1/im-bindings/slack/events",
+      payload: JSON.stringify(payload),
+      headers: {
+        "content-type": "application/json",
+        "x-slack-request-timestamp": timestamp,
+        "x-slack-signature": "v0=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      },
+    });
+    expect(unsigned.statusCode).toBe(400);
+    expect(unsigned.json()).toEqual({ error: "invalid_route" });
+
+    const firstParty = createApp({
+      slackEvents: {
+        now: () => now,
+        firstPartySigningSecret: "first-party-signing",
+        imBindings: imBindings as never,
+        inbox: { ingest: vi.fn() } as never,
+        createAdapter: vi.fn() as never,
+      },
+    });
+    apps.push(firstParty);
+    const invalid = await firstParty.inject(signedRequest(payload, "wrong-secret"));
+    expect(invalid.statusCode).toBe(401);
+    const verified = await firstParty.inject(signedRequest(payload, "first-party-signing"));
+    expect(verified.statusCode).toBe(200);
+    expect(verified.json()).toEqual({ challenge: "first-party-challenge" });
+    expect(imBindings.recordSlackObservation).not.toHaveBeenCalled();
+    expect(imBindings.findSlackIngressBinding).not.toHaveBeenCalled();
+  });
+
   it("rejects non-buffer and unroutable bodies before credential lookup", async () => {
     const { app, imBindings } = createServices();
     const nonBuffer = await app.inject({

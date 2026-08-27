@@ -25,10 +25,25 @@ class SlackEventProcessingError extends Error {
   }
 }
 
+function isIdentityLessUrlVerification(rawBody: Buffer): boolean {
+  try {
+    const value = JSON.parse(rawBody.toString("utf8")) as Record<string, unknown>;
+    return (
+      value.type === "url_verification" &&
+      typeof value.api_app_id !== "string" &&
+      typeof value.team_id !== "string" &&
+      typeof value.workspace !== "string"
+    );
+  } catch {
+    return false;
+  }
+}
+
 export interface SlackEventsRouteOptions {
   imBindings: ImBindingService;
   inbox: ImMessageInbox;
   createAdapter(binding: SlackIngressBinding): SlackAdapter;
+  firstPartySigningSecret?: string;
   now?: () => Date;
 }
 
@@ -139,13 +154,28 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
 
   app.post(SLACK_EVENTS_PATH, async (request, reply) => {
     if (!Buffer.isBuffer(request.body)) return reply.code(400).send({ error: "invalid_body" });
+    const requestHeaders = headers(request);
+    if (options.firstPartySigningSecret && isIdentityLessUrlVerification(request.body)) {
+      if (
+        !verifySlackSignature({
+          rawBody: request.body,
+          ...requestHeaders,
+          signingSecret: options.firstPartySigningSecret,
+          now: options.now?.(),
+        })
+      ) {
+        return reply.code(401).send({ error: "invalid_signature" });
+      }
+      const envelope = parseEnvelope(request.body);
+      if (typeof envelope?.challenge !== "string") return reply.code(400).send({ error: "invalid_challenge" });
+      return reply.code(200).send({ challenge: envelope.challenge });
+    }
     // Bounded App/Team fields are used only to locate the Signing Secret. The raw body is not
     // trusted until the HMAC below succeeds.
     const route = preparseSlackRoute(request.body);
     if (!route) return reply.code(400).send({ error: "invalid_route" });
     const binding = await options.imBindings.findSlackIngressBinding(route.appId, route.teamId);
     if (!binding) return reply.code(404).send({ error: "binding_not_found" });
-    const requestHeaders = headers(request);
     if (
       !verifySlackSignature({
         rawBody: request.body,

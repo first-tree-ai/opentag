@@ -1,6 +1,12 @@
 import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
-import { type ChannelConfig, type ChannelName, ChannelNameSchema, getChannelConfig } from "@opentag/shared";
+import {
+  type ChannelConfig,
+  type ChannelName,
+  ChannelNameSchema,
+  getChannelConfig,
+  SLACK_OAUTH_CALLBACK_PATH,
+} from "@opentag/shared";
 import { z } from "zod";
 
 const booleanString = (defaultValue: "true" | "false") =>
@@ -89,6 +95,10 @@ const ServerEnvironmentSchema = z
     OPENTAG_DEV_AUTH_EMAIL: z.string().trim().toLowerCase().email().optional(),
     OPENTAG_GOOGLE_CLIENT_ID: z.string().min(1).optional(),
     OPENTAG_GOOGLE_CLIENT_SECRET: z.string().min(1).optional(),
+    OPENTAG_SLACK_CLIENT_ID: z.string().min(1).optional(),
+    OPENTAG_SLACK_CLIENT_SECRET: z.string().min(1).optional(),
+    OPENTAG_SLACK_SIGNING_SECRET: z.string().min(1).optional(),
+    OPENTAG_SLACK_REDIRECT_URL: z.string().min(1).optional(),
     OPENTAG_HOST: z.string().min(1).default("127.0.0.1"),
     OPENTAG_JWT_SECRET: z.string().min(32),
     OPENTAG_PORT: z.coerce.number().int().min(1).max(65_535).default(8000),
@@ -108,6 +118,35 @@ const ServerEnvironmentSchema = z
   .superRefine((value, context) => {
     if (Boolean(value.OPENTAG_GOOGLE_CLIENT_ID) !== Boolean(value.OPENTAG_GOOGLE_CLIENT_SECRET)) {
       context.addIssue({ code: "custom", message: "Google client id and secret must be configured together" });
+    }
+    const slackOAuthValues = [
+      value.OPENTAG_SLACK_CLIENT_ID,
+      value.OPENTAG_SLACK_CLIENT_SECRET,
+      value.OPENTAG_SLACK_SIGNING_SECRET,
+      value.OPENTAG_SLACK_REDIRECT_URL,
+    ];
+    const slackOAuthConfiguredCount = slackOAuthValues.filter(Boolean).length;
+    if (slackOAuthConfiguredCount > 0 && slackOAuthConfiguredCount < slackOAuthValues.length) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "OPENTAG_SLACK_CLIENT_ID, OPENTAG_SLACK_CLIENT_SECRET, OPENTAG_SLACK_SIGNING_SECRET, and OPENTAG_SLACK_REDIRECT_URL must be configured together",
+      });
+    }
+    if (value.OPENTAG_SLACK_REDIRECT_URL) {
+      const redirectUrl = parseSlackRedirectUrl(value.OPENTAG_SLACK_REDIRECT_URL, value.OPENTAG_PUBLIC_URL);
+      if (!redirectUrl) {
+        context.addIssue({
+          code: "custom",
+          message:
+            "OPENTAG_SLACK_REDIRECT_URL must be this server's public origin or the exact Slack OAuth callback URL",
+        });
+      } else if (isHostedEnvironment(value.OPENTAG_ENV) && !redirectUrl.startsWith("https://")) {
+        context.addIssue({
+          code: "custom",
+          message: "OPENTAG_SLACK_REDIRECT_URL must use HTTPS in hosted environments",
+        });
+      }
     }
     if (isHostedEnvironment(value.OPENTAG_ENV) && !value.OPENTAG_PUBLIC_URL.startsWith("https://")) {
       context.addIssue({ code: "custom", message: "OPENTAG_PUBLIC_URL must use HTTPS in hosted environments" });
@@ -146,6 +185,28 @@ function isLoopbackHostname(value: string): boolean {
   return hostname === "localhost" || hostname === "::1" || (isIP(hostname) === 4 && hostname.startsWith("127."));
 }
 
+function emptyToUndefined(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+}
+
+export function parseSlackRedirectUrl(value: string, publicOrigin: string): string | undefined {
+  try {
+    const url = new URL(value);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+      return undefined;
+    }
+    if (url.origin !== publicOrigin) return undefined;
+    if (url.pathname === "/" || url.pathname === "") {
+      return new URL(SLACK_OAUTH_CALLBACK_PATH, publicOrigin).toString();
+    }
+    if (url.pathname !== SLACK_OAUTH_CALLBACK_PATH) return undefined;
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 export interface ServerConfig {
   accessTokenTtlSeconds: number;
   autoMigrate: boolean;
@@ -155,6 +216,7 @@ export interface ServerConfig {
   environment: ChannelName;
   devAuth?: { email: string };
   google?: { clientId: string; clientSecret: string };
+  slackOAuth?: { clientId: string; clientSecret: string; signingSecret: string; redirectUrl: string };
   host: string;
   jwtSecret: string;
   migrationsDirectory: string;
@@ -207,6 +269,10 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_DEV_AUTH_EMAIL: environment.OPENTAG_DEV_AUTH_EMAIL,
     OPENTAG_GOOGLE_CLIENT_ID: environment.OPENTAG_GOOGLE_CLIENT_ID,
     OPENTAG_GOOGLE_CLIENT_SECRET: environment.OPENTAG_GOOGLE_CLIENT_SECRET,
+    OPENTAG_SLACK_CLIENT_ID: emptyToUndefined(environment.OPENTAG_SLACK_CLIENT_ID),
+    OPENTAG_SLACK_CLIENT_SECRET: emptyToUndefined(environment.OPENTAG_SLACK_CLIENT_SECRET),
+    OPENTAG_SLACK_SIGNING_SECRET: emptyToUndefined(environment.OPENTAG_SLACK_SIGNING_SECRET),
+    OPENTAG_SLACK_REDIRECT_URL: emptyToUndefined(environment.OPENTAG_SLACK_REDIRECT_URL),
     OPENTAG_HOST: environment.OPENTAG_HOST,
     OPENTAG_JWT_SECRET: environment.OPENTAG_JWT_SECRET,
     OPENTAG_PORT: environment.OPENTAG_PORT,
@@ -231,6 +297,19 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
       : {}),
     ...(parsed.OPENTAG_GOOGLE_CLIENT_ID && parsed.OPENTAG_GOOGLE_CLIENT_SECRET
       ? { google: { clientId: parsed.OPENTAG_GOOGLE_CLIENT_ID, clientSecret: parsed.OPENTAG_GOOGLE_CLIENT_SECRET } }
+      : {}),
+    ...(parsed.OPENTAG_SLACK_CLIENT_ID &&
+    parsed.OPENTAG_SLACK_CLIENT_SECRET &&
+    parsed.OPENTAG_SLACK_SIGNING_SECRET &&
+    parsed.OPENTAG_SLACK_REDIRECT_URL
+      ? {
+          slackOAuth: {
+            clientId: parsed.OPENTAG_SLACK_CLIENT_ID,
+            clientSecret: parsed.OPENTAG_SLACK_CLIENT_SECRET,
+            signingSecret: parsed.OPENTAG_SLACK_SIGNING_SECRET,
+            redirectUrl: parseSlackRedirectUrl(parsed.OPENTAG_SLACK_REDIRECT_URL, parsed.OPENTAG_PUBLIC_URL) as string,
+          },
+        }
       : {}),
     host: parsed.OPENTAG_HOST,
     jwtSecret: parsed.OPENTAG_JWT_SECRET,

@@ -252,9 +252,24 @@ but its runtime adapter and all Session/Turn delivery remain future work.
 
 The four `OPENTAG_BOOTSTRAP_*` values are inputs to this one-time command only; the running server does not read them.
 The bootstrap email is Account profile data, not an email/password credential. The Account login-code flow resolves a
-stable user ID and then uses the provider-neutral token issuer. Future Google or OIDC identity resolvers can join at that
-boundary without changing JWT claims. Internal grants are still loaded from PostgreSQL as a Phase 2 compatibility seam;
-they are not exposed as Admin membership.
+stable user ID and then uses the provider-neutral token issuer. Internal grants are still loaded from PostgreSQL as a
+Phase 2 compatibility seam; they are not exposed as Admin membership.
+
+That issuer now hands out a Better Auth session rather than a signed access/refresh pair, so a CLI credential is a row
+the server can withdraw instead of a signature it can only wait out. The exchange response keeps its four fields and
+`accessToken` and `refreshToken` carry the same session token, which is why a CLI built before the cutover keeps working
+unchanged. `OPENTAG_SESSION_TTL_SECONDS` is that credential's whole lifetime, defaulted to what the refresh token's was
+because it replaces the same thing: how long a client may be idle and still be signed in. Refreshing rotates — the
+replacement is issued, then the presented token is withdrawn — so a copy taken before the last refresh stops working
+rather than running to its own expiry.
+
+One consequence is worth stating plainly: a disclosed credential is now usable for the session lifetime rather than the
+old fifteen-minute access window. What made that window necessary was that its thirty-day refresh partner could not be
+revoked at all; a session can be, immediately, which is the trade this makes.
+
+Credentials issued before the cutover still verify, and `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` and
+`OPENTAG_REFRESH_TOKEN_TTL_SECONDS` govern only those. A browser holding one moves onto a session the next time it
+refreshes; nothing is issued against them again.
 
 An Account email is stored lowercased, and one address identifies at most one Account. The identity resolver enforces
 that by serializing on the address before deciding whether to create or attach, so it holds without a database
@@ -380,8 +395,9 @@ processes.
 | `OPENTAG_OTEL_HEADERS` | empty | Secret OTLP headers in comma-separated `key=value` form |
 | `OPENTAG_OTEL_ENVIRONMENT` | `OPENTAG_ENV` | Trace deployment environment label |
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | Global trace head sample rate from `0` to `1` |
-| `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | Access-token lifetime |
-| `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-JWT lifetime |
+| `OPENTAG_SESSION_TTL_SECONDS` | `2592000` | Account session lifetime, browser and CLI alike |
+| `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | Access-JWT lifetime; only credentials issued before the Better Auth cutover |
+| `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-JWT lifetime; only credentials issued before the Better Auth cutover |
 | `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` | empty | Staging-only Account UUID allowed to reset the [Onboarding Lab](./docs/staging-onboarding-lab.md) Account; Scenario Preview needs no configuration |
 | `OPENTAG_HOME` | channel-specific | Root for lifecycle-separated `config/`, `data/`, `state/`, and `logs/` (`~/.opentag-dev` in source) |
 

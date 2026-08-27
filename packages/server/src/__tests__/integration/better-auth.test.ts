@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { FastifyRequest } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
@@ -20,6 +20,7 @@ import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated
 const GOOGLE_ISSUER = "https://accounts.google.com";
 const PUBLIC_URL = "http://localhost:8000";
 const LEGACY_SECRET = "legacy-jwt-secret-of-at-least-32-characters";
+const SESSION_TTL_SECONDS = 60 * 60 * 24 * 30;
 
 /** The composition the server runs: Better Auth issues, and credentials it did not issue still verify. */
 function bridgedAuthService(auth: ReturnType<typeof createAuth>): AuthService {
@@ -48,15 +49,27 @@ beforeEach(async () => {
   await testDatabase.reset();
 });
 
-function createAuth(devSignIn?: () => Promise<string>, legacyUpgrade?: (refreshToken: string) => Promise<string>) {
+function createAuth(
+  devSignIn?: () => Promise<string>,
+  legacyUpgrade?: (refreshToken: string) => Promise<{ expiresAt: Date; userId: string }>,
+) {
   return createBetterAuth(client.database, {
     onSessionCreating: (userId) => postAuthentication.ensureAccountReady(userId).then(() => undefined),
     publicUrl: PUBLIC_URL,
     secret: "better-auth-integration-secret-at-least-32-characters",
     secureCookies: false,
+    sessionTtlSeconds: SESSION_TTL_SECONDS,
     ...(devSignIn ? { devSignIn } : {}),
-    ...(legacyUpgrade ? { legacyUpgrade } : {}),
+    ...(legacyUpgrade ? { legacyUpgrade: { resolveCredential: legacyUpgrade, serialize: serializeExchange } } : {}),
     google: { clientId: "google-client-id", clientSecret: "google-client-secret" },
+  });
+}
+
+/** The lock the composition root supplies, so a raced exchange is serialized here exactly as it is in production. */
+function serializeExchange<T>(key: string, run: () => Promise<T>): Promise<T> {
+  return client.database.transaction(async (transaction) => {
+    await transaction.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+    return run();
   });
 }
 
@@ -225,6 +238,7 @@ describe("Better Auth over the existing Account tables", () => {
     const request = { headers: { cookie: "", authorization: `Bearer ${session.token}` } } as unknown as FastifyRequest;
     const authService = new AuthService(client.database, {
       issuePairForUser: async () => ({ accessToken: "", refreshToken: "", expiresIn: 0 }),
+      rotate: async () => ({ accessToken: "", refreshToken: "", expiresIn: 0 }),
       verifyAccess: async () => ({ expiresAt: new Date(), userId }),
       verifyRefresh: async () => ({ expiresAt: new Date(), userId }),
     });
@@ -277,6 +291,62 @@ describe("Better Auth over the existing Account tables", () => {
     await (await auth.$context).internalAdapter.deleteSession(exchanged.accessToken);
     await expect(authService.getAuthenticatedUser(exchanged.accessToken)).rejects.toMatchObject({
       code: "AUTH_INVALID_TOKEN",
+    });
+  });
+
+  it("gives a CLI credential the lifetime the refresh token used to carry", async () => {
+    /*
+     * One credential replaces a pair, so this lifetime has to carry what the refresh token's did: how long a CLI may
+     * go unused and still be signed in. Better Auth's own default is seven days, which would have shortened that from
+     * thirty without anyone choosing it, and left a CLI idle for longer unable to refresh at all.
+     */
+    const bootstrap = await bootstrapInitialAdmin(client.database, {
+      displayName: "Admin",
+      email: "admin@example.com",
+      workspaceDisplayName: "Example",
+      workspaceName: "example",
+    });
+    const before = Date.now();
+
+    const exchanged = await bridgedAuthService(createAuth()).exchangeConnectCode(bootstrap.connectCode);
+
+    expect(exchanged.expiresIn).toBeGreaterThan(SESSION_TTL_SECONDS - 60);
+    expect(exchanged.expiresIn).toBeLessThanOrEqual(SESSION_TTL_SECONDS);
+    const [session] = await client.database.select().from(authSessions);
+    const lifetimeMs = (session?.expiresAt.getTime() ?? 0) - before;
+    expect(lifetimeMs).toBeGreaterThan((SESSION_TTL_SECONDS - 60) * 1000);
+    expect(lifetimeMs).toBeLessThanOrEqual((SESSION_TTL_SECONDS + 60) * 1000);
+  });
+
+  it("withdraws the CLI credential a refresh replaces, leaving one live session", async () => {
+    /*
+     * Access and refresh carry the same token, so a refresh replaces the only credential the CLI has. Issuing without
+     * withdrawing would leave the presented one valid until its own expiry: revoking what the CLI currently holds
+     * would not lock out a copy taken before its last refresh, and every refresh would leave another live row behind.
+     */
+    const bootstrap = await bootstrapInitialAdmin(client.database, {
+      displayName: "Admin",
+      email: "admin@example.com",
+      workspaceDisplayName: "Example",
+      workspaceName: "example",
+    });
+    const authService = bridgedAuthService(createAuth());
+    const initial = await authService.exchangeConnectCode(bootstrap.connectCode);
+
+    const renewed = await authService.refresh(initial.refreshToken);
+
+    expect(renewed.accessToken).not.toBe(initial.accessToken);
+    const live = await client.database.select().from(authSessions).where(eq(authSessions.userId, bootstrap.userId));
+    expect(live.map(({ token }) => token)).toEqual([renewed.accessToken]);
+    // Started one at a time: building both promises up front leaves the second rejecting while nothing is awaiting it.
+    for (const present of [
+      () => authService.getAuthenticatedUser(initial.accessToken),
+      () => authService.refresh(initial.refreshToken),
+    ]) {
+      await expect(present()).rejects.toMatchObject({ code: "AUTH_INVALID_TOKEN" });
+    }
+    await expect(authService.getAuthenticatedUser(renewed.accessToken)).resolves.toMatchObject({
+      me: { user: { id: bootstrap.userId } },
     });
   });
 
@@ -407,7 +477,7 @@ describe("Better Auth over the existing Account tables", () => {
     const authService = bridgedAuthService(createAuth());
     const auth = createAuth(undefined, async (refreshToken) => {
       const identity = await legacy.verifyRefresh(refreshToken);
-      return (await authService.getActiveUserById(identity.userId)).user.id;
+      return { expiresAt: identity.expiresAt, userId: (await authService.getActiveUserById(identity.userId)).user.id };
     });
 
     const upgrade = await auth.handler(
@@ -428,12 +498,66 @@ describe("Better Auth over the existing Account tables", () => {
     expect(await client.database.select().from(users)).toHaveLength(1);
   });
 
+  it("converges a replayed or raced upgrade on one session that sign-out ends", async () => {
+    /*
+     * A stateless refresh token has nothing to consume, so nothing stops it being presented twice — a replay, or two
+     * requests from the same browser that met a 401 together. Each exchange that minted its own session would leave
+     * every row but the last invisible to the browser that created it, and therefore alive after the sign-out meant to
+     * end it. That is the orphan-session failure this endpoint exists to remove, reintroduced by concurrency.
+     */
+    const bootstrap = await bootstrapInitialAdmin(client.database, {
+      displayName: "Browser",
+      email: "browser@example.com",
+      workspaceDisplayName: "Example",
+      workspaceName: "example",
+    });
+    const legacy = new AuthTokenService(LEGACY_SECRET, 900, 3600);
+    const legacyPair = await legacy.issuePairForUser(bootstrap.userId);
+    const authService = bridgedAuthService(createAuth());
+    const auth = createAuth(undefined, async (refreshToken) => {
+      const identity = await legacy.verifyRefresh(refreshToken);
+      return { expiresAt: identity.expiresAt, userId: (await authService.getActiveUserById(identity.userId)).user.id };
+    });
+    const upgrade = () =>
+      auth.handler(
+        new Request(`${PUBLIC_URL}/api/v1/auth/legacy/upgrade`, {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: PUBLIC_URL },
+          body: JSON.stringify({ refreshToken: legacyPair.refreshToken }),
+        }),
+      );
+
+    const [first, second] = await Promise.all([upgrade(), upgrade()]);
+    const replay = await upgrade();
+
+    for (const response of [first, second, replay]) expect(response.status).toBe(200);
+    const sessions = await client.database.select().from(authSessions);
+    expect(sessions).toHaveLength(1);
+    // Every exchange hands back the one session, so no browser is left holding a cookie for a row nothing else knows.
+    for (const response of [first, second, replay]) {
+      await expect(
+        auth.api.getSession({ headers: new Headers({ cookie: cookieHeader(response) }) }),
+      ).resolves.toMatchObject({ session: { token: sessions[0]?.token }, user: { id: bootstrap.userId } });
+    }
+
+    const signOut = await auth.handler(
+      new Request(`${PUBLIC_URL}/api/v1/auth/sign-out`, {
+        method: "POST",
+        headers: { cookie: cookieHeader(first), "content-type": "application/json" },
+        body: "{}",
+      }),
+    );
+
+    expect(signOut.status).toBe(200);
+    expect(await client.database.select().from(authSessions)).toHaveLength(0);
+  });
+
   it("refuses to upgrade a refresh credential that does not verify", async () => {
     const legacy = new AuthTokenService(LEGACY_SECRET, 900, 3600);
     const authService = bridgedAuthService(createAuth());
     const auth = createAuth(undefined, async (refreshToken) => {
       const identity = await legacy.verifyRefresh(refreshToken);
-      return (await authService.getActiveUserById(identity.userId)).user.id;
+      return { expiresAt: identity.expiresAt, userId: (await authService.getActiveUserById(identity.userId)).user.id };
     });
 
     const forged = await auth.handler(

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { ProviderReadinessStatus } from "@opentag/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql as sqlExpression } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
 import { BetterAuthSessionTokens, BridgedSessionTokens } from "./auth/session-tokens.js";
@@ -145,6 +145,7 @@ export async function startServer(): Promise<void> {
       new BridgedSessionTokens(
         {
           issuePairForUser: (userId) => requireSessionTokens(sessionTokens).issuePairForUser(userId),
+          rotate: (token, userId) => requireSessionTokens(sessionTokens).rotate(token, userId),
           verifyAccess: (token) => requireSessionTokens(sessionTokens).verifyAccess(token),
           verifyRefresh: (token) => requireSessionTokens(sessionTokens).verifyRefresh(token),
         },
@@ -280,6 +281,7 @@ export async function startServer(): Promise<void> {
       publicUrl: config.publicUrl,
       secret: config.betterAuthSecret,
       secureCookies: isHostedEnvironment(config.environment),
+      sessionTtlSeconds: config.sessionTtlSeconds,
       ...(dev ? { devSignIn: () => dev.resolveUserId() } : {}),
       ...(config.google ? { google: config.google } : {}),
       /*
@@ -287,9 +289,19 @@ export async function startServer(): Promise<void> {
        * previous revision issued, and a Better Auth session presented here is already what it would upgrade to. The
        * live Account read is what keeps a suspended Account from refreshing its way back in.
        */
-      legacyUpgrade: async (refreshToken) => {
-        const identity = await legacyTokens.verifyRefresh(refreshToken);
-        return (await authService.getActiveUserById(identity.userId)).user.id;
+      legacyUpgrade: {
+        resolveCredential: async (refreshToken) => {
+          const identity = await legacyTokens.verifyRefresh(refreshToken);
+          return {
+            expiresAt: identity.expiresAt,
+            userId: (await authService.getActiveUserById(identity.userId)).user.id,
+          };
+        },
+        serialize: (key, run) =>
+          database.transaction(async (transaction) => {
+            await transaction.execute(sqlExpression`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+            return run();
+          }),
       },
     });
     sessionTokens = new BetterAuthSessionTokens(betterAuth);
@@ -301,7 +313,14 @@ export async function startServer(): Promise<void> {
           identities: identityService,
           postAuthentication,
           publicUrl: config.publicUrl,
-          tokenIssuer: authService,
+          /*
+           * Deliberately the legacy issuer, not the bridge. This route only ever completes a flow that started before
+           * this revision deployed, and it writes its result into the legacy cookies. A session token written there
+           * authenticates through the fallback but is invisible to `getSession`, so sign-out could not revoke it —
+           * a pre-cutover flow therefore finishes exactly as it would have, and that browser moves across on its next
+           * refresh, where the upgrade puts the replacement in Better Auth's own cookie.
+           */
+          tokenIssuer: new AuthService(database, legacyTokens, { workspaceAdmins }),
         })
       : undefined;
     const stagingOnboardingLab = config.stagingOnboardingLab

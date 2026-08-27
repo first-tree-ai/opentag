@@ -113,6 +113,16 @@ const ServerEnvironmentSchema = z
       .int()
       .positive()
       .default(60 * 60 * 24 * 30),
+    /*
+     * Defaults to what the refresh token's lifetime was, because that is the number this replaces: how long a client
+     * may be idle and still be signed in. It is defaulted so no deployment has to be configured before the revision
+     * that reads it.
+     */
+    OPENTAG_SESSION_TTL_SECONDS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(60 * 60 * 24 * 30),
     OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: StagingOnboardingAccountIdSchema,
   })
   .strict()
@@ -241,7 +251,10 @@ export interface ServerConfig {
   };
   port: number;
   publicUrl: string;
+  /** Lifetime of the credentials the previous revision issued; they are only verified now, never issued. */
   refreshTokenTtlSeconds: number;
+  /** Lifetime of an Account session, browser and CLI alike. */
+  sessionTtlSeconds: number;
   /**
    * Present on every staging deployment. Scenario Preview is fixed client-side fixtures, so it needs
    * no Account configuration; `accountId` names the one Account that additionally owns the reset,
@@ -298,6 +311,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_OTEL_HEADERS: environment.OPENTAG_OTEL_HEADERS,
     OPENTAG_OTEL_SAMPLE_RATE: environment.OPENTAG_OTEL_SAMPLE_RATE,
     OPENTAG_REFRESH_TOKEN_TTL_SECONDS: environment.OPENTAG_REFRESH_TOKEN_TTL_SECONDS,
+    OPENTAG_SESSION_TTL_SECONDS: environment.OPENTAG_SESSION_TTL_SECONDS,
     OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: environment.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID,
   });
 
@@ -342,6 +356,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     port: parsed.OPENTAG_PORT,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
     refreshTokenTtlSeconds: parsed.OPENTAG_REFRESH_TOKEN_TTL_SECONDS,
+    sessionTtlSeconds: parsed.OPENTAG_SESSION_TTL_SECONDS,
     ...(parsed.OPENTAG_ENV === "staging"
       ? {
           stagingOnboardingLab: parsed.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID

@@ -86,6 +86,8 @@ export class ApiError extends Error {
 }
 
 export class BrowserApi {
+  private refreshInFlight?: Promise<Response>;
+
   constructor(readonly fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)) {}
 
   me(): Promise<MeResponse> {
@@ -316,11 +318,7 @@ export class BrowserApi {
   private async fetchWithRefresh(path: string, init: RequestInit = {}, retry = true): Promise<Response> {
     const response = await this.fetchImpl(path, { ...init, credentials: "same-origin" });
     if (response.status !== 401 || !retry || !this.csrfToken()) return response;
-    const refreshed = await this.fetchImpl("/api/v1/auth/browser/refresh", {
-      method: "POST",
-      credentials: "same-origin",
-      headers: this.csrfHeaders(),
-    });
+    const refreshed = await this.refreshOnce();
     if (!refreshed.ok) return response;
     const headers = new Headers(init.headers);
     const csrf = this.csrfToken();
@@ -328,6 +326,24 @@ export class BrowserApi {
       headers.set("X-OpenTag-CSRF", csrf);
     }
     return this.fetchWithRefresh(path, { ...init, headers }, false);
+  }
+
+  /**
+   * Collapses concurrent refreshes into one.
+   *
+   * Several requests can meet a `401` at once — the page loads more than one resource — and each would otherwise send
+   * the same cookie to an endpoint that exchanges it. The server converges those on one session regardless; this keeps
+   * the browser from asking it to.
+   */
+  private refreshOnce(): Promise<Response> {
+    this.refreshInFlight ??= this.fetchImpl("/api/v1/auth/browser/refresh", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: this.csrfHeaders(),
+    }).finally(() => {
+      this.refreshInFlight = undefined;
+    });
+    return this.refreshInFlight;
   }
 
   private apiError(response: Response, body: unknown): ApiError {

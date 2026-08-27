@@ -1,4 +1,4 @@
-import { invalidCredential } from "../services/auth/errors.js";
+import { AuthServiceError, invalidCredential } from "../services/auth/errors.js";
 import type { AuthTokenIdentity, AuthTokenPair, AuthTokenProvider } from "../services/auth/tokens.js";
 import type { OpenTagBetterAuth } from "./better-auth.js";
 
@@ -29,6 +29,17 @@ export class BetterAuthSessionTokens implements AuthTokenProvider {
       refreshToken: session.token,
       expiresIn: this.#secondsUntil(session.expiresAt),
     };
+  }
+
+  async rotate(token: string, userId: string): Promise<AuthTokenPair> {
+    const pair = await this.issuePairForUser(userId);
+    /*
+     * Withdrawn only once the replacement exists, so a failure between the two costs a stale row rather than a
+     * signed-out client. Issuing without withdrawing would leave the presented credential valid until its own expiry,
+     * so revoking what a client currently holds would not lock out a copy taken before its last refresh.
+     */
+    await (await this.#auth.$context).internalAdapter.deleteSession(token);
+    return pair;
   }
 
   verifyAccess(token: string): Promise<AuthTokenIdentity> {
@@ -73,6 +84,11 @@ export class BridgedSessionTokens implements AuthTokenProvider {
     return this.#sessions.issuePairForUser(userId);
   }
 
+  /** Always a session, and the presented credential is withdrawn when the session store is the one holding it. */
+  rotate(token: string, userId: string): Promise<AuthTokenPair> {
+    return this.#sessions.rotate(token, userId);
+  }
+
   verifyAccess(token: string): Promise<AuthTokenIdentity> {
     return this.#either((provider) => provider.verifyAccess(token));
   }
@@ -84,8 +100,13 @@ export class BridgedSessionTokens implements AuthTokenProvider {
   async #either(verify: (provider: AuthTokenProvider) => Promise<AuthTokenIdentity>): Promise<AuthTokenIdentity> {
     try {
       return await verify(this.#sessions);
-    } catch {
-      // A credential the session store does not know is either legacy or invalid; the legacy check decides which.
+    } catch (cause) {
+      /*
+       * Only an explicit "this store does not know that token" means the credential might be a legacy one. A session
+       * store that is failing must not be reported as an invalid credential, and must not get a legacy credential
+       * admitted behind its back: an outage would silently widen what the server accepts.
+       */
+      if (!(cause instanceof AuthServiceError) || cause.code !== "AUTH_INVALID_TOKEN") throw cause;
       return verify(this.#legacy);
     }
   }

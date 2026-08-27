@@ -103,7 +103,12 @@ vi.mock("../runtime/runtime-domain-owner.js", () => ({
 vi.mock("../services/agents/index.js", () => ({ AgentService: class {}, AgentServiceError: class extends Error {} }));
 vi.mock("../services/auth/index.js", () => ({
   AuthIdentityService: class {},
-  AuthService: class {},
+  AuthService: class {
+    constructor(
+      _database: unknown,
+      readonly tokens: unknown,
+    ) {}
+  },
   AuthServiceError: class extends Error {},
   AuthTokenService: class {},
   ConnectCodeService: class {},
@@ -197,6 +202,7 @@ vi.mock("../services/workspaces/index.js", () => ({
 vi.mock("../web-app.js", () => ({ defaultWebAppRoot: "/mock-web" }));
 
 import { startServer } from "../index.js";
+import * as authModule from "../services/auth/index.js";
 
 const originalSecrets = {
   database: process.env.OPENTAG_DATABASE_URL,
@@ -351,6 +357,13 @@ describe("Server startup", () => {
     expect(appOptions.browserAuth.google).toBeDefined();
     expect(state.devAuthArgs).toEqual(expect.arrayContaining(["dev@example.com"]));
     expect(state.googleOptions).toMatchObject({ publicUrl: state.config.publicUrl });
+    /*
+     * The retained legacy callback only ever completes a flow that started before this revision deployed, and it
+     * writes its result into the legacy cookies. Handing it the bridged issuer would put a session token there:
+     * authenticated through the fallback, invisible to `getSession`, and therefore beyond what sign-out can revoke.
+     */
+    const googleIssuer = (state.googleOptions as { tokenIssuer: { tokens: unknown } }).tokenIssuer;
+    expect(googleIssuer.tokens).toBeInstanceOf(authModule.AuthTokenService);
 
     const slackBinding = {
       botAccessToken: "xoxb-current",

@@ -3,7 +3,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer } from "better-auth/plugins/bearer";
 import type { DatabaseClient } from "../db/client.js";
 import { authIdentities, authSessions, authVerifications, users } from "../db/schema/index.js";
-import { devSignInPlugin, legacyUpgradePlugin } from "./internal-sign-in.js";
+import { devSignInPlugin, type LegacyUpgradeOptions, legacyUpgradePlugin } from "./internal-sign-in.js";
 
 /**
  * Where the instance will be mounted, under the repository's `/api/v1` versioning convention rather than Better Auth's
@@ -33,6 +33,13 @@ export interface BetterAuthConfig {
   secret: string;
   secureCookies: boolean;
   /**
+   * How long an issued session lives, and therefore how long a client may be idle and still be signed in.
+   *
+   * Left to the library this would default to seven days and quietly shorten what a CLI was promised, so it is
+   * required rather than optional: a lifetime this visible should not be something a caller can forget to state.
+   */
+  sessionTtlSeconds: number;
+  /**
    * Resolves the single Account development sign-in may issue a session for.
    *
    * Supplied only when development sign-in is configured, so the endpoint does not exist on a server without it.
@@ -45,7 +52,7 @@ export interface BetterAuthConfig {
    * Supplied while the compatibility window is open. It must reject anything it cannot verify: it is the only thing
    * standing between the upgrade endpoint and an unauthenticated session.
    */
-  legacyUpgrade?: (refreshToken: string) => Promise<string>;
+  legacyUpgrade?: LegacyUpgradeOptions;
 }
 
 export type OpenTagBetterAuth = ReturnType<typeof createBetterAuth>;
@@ -82,6 +89,12 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
       },
       useSecureCookies: config.secureCookies,
     },
+    /*
+     * One credential replaces a pair, so this single lifetime has to carry what the refresh token's did: how long a
+     * client may go unused and still be signed in. Inheriting the library's seven days would have shortened that from
+     * thirty without anyone choosing it, and left an idle CLI unable to refresh.
+     */
+    session: { expiresIn: config.sessionTtlSeconds },
     user: { fields: { name: "displayName" } },
     account: {
       fields: { accountId: "subject", providerId: "provider" },

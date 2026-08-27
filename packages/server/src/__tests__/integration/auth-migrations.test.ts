@@ -1080,6 +1080,7 @@ describe("authentication persistence", () => {
         }
         return delegate.issuePairForUser(userId);
       },
+      rotate: (token, userId) => delegate.rotate(token, userId),
       verifyAccess: (token) => delegate.verifyAccess(token),
       verifyRefresh: (token) => delegate.verifyRefresh(token),
     };

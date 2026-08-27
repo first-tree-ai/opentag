@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type {
   EffectiveRuntimeSnapshot,
+  RuntimeImSteerRequest,
   SessionMessageDeliveryRequest,
   SessionReconcileRequest,
   SessionReconcileResult,
@@ -161,6 +162,88 @@ describe("ClientRuntime domain dispatch", () => {
       expect.objectContaining({ type: "session:message:deliver:result", messageId: delivery.messageId }),
     );
     expect(handleSessionCollaborationResult).toHaveBeenCalledWith(commandResult);
+  });
+
+  it("dispatches optional IM steer frames and returns the typed result", async () => {
+    const request: RuntimeImSteerRequest = {
+      type: "im:steer",
+      requestId: randomUUID(),
+      deliveryId: randomUUID(),
+      imMessageId: randomUUID(),
+      sessionId: "session-1",
+      agentId: "agent-1",
+      placementGeneration: 1,
+      rootDeliveryId: randomUUID(),
+      expectedTurnId: "turn-1",
+      attention: "direct",
+      content: {
+        kind: "text",
+        text: "new direction",
+        providerRef: {
+          provider: "slack",
+          appId: "app-1",
+          teamId: "workspace-1",
+          botUserId: "bot-1",
+          channelId: "channel-1",
+          messageTs: "1710000000.000002",
+        },
+      },
+    };
+    const connection = new FrameConnection([request]);
+    const handleSteer = vi.fn(() => ({
+      type: "im:steer:result" as const,
+      requestId: request.requestId,
+      deliveryId: request.deliveryId,
+      sessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      rootDeliveryId: request.rootDeliveryId,
+      expectedTurnId: request.expectedTurnId,
+      status: "steered" as const,
+    }));
+    await new ClientRuntime(connection as unknown as RuntimeConnection, { handleSteer }).run();
+    expect(handleSteer).toHaveBeenCalledWith(request);
+    expect(connection.sent).toEqual([expect.objectContaining({ type: "im:steer:result", status: "steered" })]);
+  });
+
+  it("returns a schema-valid deferred result when no IM steer handler is installed", async () => {
+    const request: RuntimeImSteerRequest = {
+      type: "im:steer",
+      requestId: randomUUID(),
+      deliveryId: randomUUID(),
+      imMessageId: randomUUID(),
+      sessionId: "session-1",
+      agentId: "agent-1",
+      placementGeneration: 7,
+      rootDeliveryId: randomUUID(),
+      expectedTurnId: "turn-1",
+      attention: "direct",
+      content: {
+        kind: "text",
+        text: "new direction",
+        providerRef: {
+          provider: "slack",
+          appId: "app-1",
+          teamId: "workspace-1",
+          botUserId: "bot-1",
+          channelId: "channel-1",
+          messageTs: "1710000000.000003",
+        },
+      },
+    };
+    const connection = new FrameConnection([request]);
+
+    await new ClientRuntime(connection as unknown as RuntimeConnection).run();
+
+    expect(connection.sent).toEqual([
+      expect.objectContaining({
+        type: "im:steer:result",
+        deliveryId: request.deliveryId,
+        sessionId: request.sessionId,
+        placementGeneration: request.placementGeneration,
+        status: "deferred",
+        reason: "steer_unsupported",
+      }),
+    ]);
   });
 });
 

@@ -29,7 +29,7 @@ interface TaskSummaryRow extends Record<string, unknown> {
   endedAt: Date | string | null;
   lastActivityAt: Date | string;
   fallbackText: string | null;
-  deliveryState: "pending" | "accepted" | "terminal_rejected" | "expired" | null;
+  deliveryState: "pending" | "accepted" | "steered" | "terminal_rejected" | "expired" | null;
   reportedAt: Date | string | null;
   turnReport: TurnReportRequest | null;
 }
@@ -37,15 +37,18 @@ interface TaskSummaryRow extends Record<string, unknown> {
 interface TaskTurnRow extends Record<string, unknown> {
   deliveryId: string;
   attention: "direct" | "ambient";
-  deliveryState: "pending" | "accepted" | "terminal_rejected" | "expired";
+  deliveryState: "pending" | "accepted" | "steered" | "terminal_rejected" | "expired";
   attemptCount: number;
   acceptedAt: Date | string | null;
+  steeredAt: Date | string | null;
   expiresAt: Date | string;
   reason: string | null;
   lastErrorCode: string | null;
   turnId: string | null;
   turnReport: TurnReportRequest | null;
   reportedAt: Date | string | null;
+  absorbedByDeliveryId: string | null;
+  absorbedByTurnId: string | null;
   messageId: string;
   externalMessageId: string;
   operation: "created" | "edited" | "deleted";
@@ -138,6 +141,7 @@ function toTurn(row: TaskTurnRow): TaskTurn {
       state: row.deliveryState,
       attemptCount: row.attemptCount,
       acceptedAt: row.acceptedAt ? toIso(row.acceptedAt) : null,
+      steeredAt: row.steeredAt ? toIso(row.steeredAt) : null,
       expiresAt: toIso(row.expiresAt),
       reason: row.reason,
       lastErrorCode: row.lastErrorCode,
@@ -152,6 +156,10 @@ function toTurn(row: TaskTurnRow): TaskTurn {
       truncated: row.content.truncated === true,
       occurredAt: toIso(row.occurredAt),
     },
+    absorbedBy:
+      row.deliveryState === "steered" && row.absorbedByDeliveryId && row.absorbedByTurnId
+        ? { deliveryId: row.absorbedByDeliveryId, turnId: row.absorbedByTurnId }
+        : null,
     report:
       report && row.turnId && row.reportedAt
         ? {
@@ -218,12 +226,15 @@ export class TaskService {
         d.state as "deliveryState",
         d.attempt_count::int as "attemptCount",
         d.accepted_at as "acceptedAt",
+        d.steered_at as "steeredAt",
         d.expires_at as "expiresAt",
         d.reason,
         d.last_error_code as "lastErrorCode",
         d.turn_id as "turnId",
         d.turn_report as "turnReport",
         d.reported_at as "reportedAt",
+        root.id as "absorbedByDeliveryId",
+        root.turn_id as "absorbedByTurnId",
         m.id as "messageId",
         m.external_message_id as "externalMessageId",
         m.operation,
@@ -233,6 +244,7 @@ export class TaskService {
         m.occurred_at as "occurredAt"
       from im_message_deliveries d
       inner join im_messages m on m.id = d.message_id
+      left join im_message_deliveries root on root.id = d.steer_target_delivery_id
       where d.session_id = ${sessionId}::uuid
         ${cursor ? sql`and (m.occurred_at, d.id) < (${cursor.at}, ${cursor.id}::uuid)` : sql``}
       order by m.occurred_at desc, d.id desc
@@ -318,12 +330,18 @@ export class TaskService {
         select distinct on (d.session_id)
           d.session_id,
           d.state as delivery_state,
-          d.reported_at,
-          d.turn_report,
+          case when d.state = 'steered' then root.reported_at else d.reported_at end as reported_at,
+          case when d.state = 'steered' then root.turn_report else d.turn_report end as turn_report,
           m.content ->> 'fallbackText' as fallback_text,
-          greatest(m.occurred_at, coalesce(d.accepted_at, m.occurred_at), coalesce(d.reported_at, m.occurred_at)) as activity_at
+          greatest(
+            m.occurred_at,
+            coalesce(d.accepted_at, m.occurred_at),
+            coalesce(d.steered_at, m.occurred_at),
+            coalesce(case when d.state = 'steered' then root.reported_at else d.reported_at end, m.occurred_at)
+          ) as activity_at
         from im_message_deliveries d
         inner join im_messages m on m.id = d.message_id
+        left join im_message_deliveries root on root.id = d.steer_target_delivery_id
         order by d.session_id, activity_at desc, d.id desc
       )
       select

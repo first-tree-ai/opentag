@@ -1,17 +1,39 @@
 import { randomUUID } from "node:crypto";
 import {
   computeDirectInputHash,
+  computeRuntimeImSteerInputHash,
   type DirectImMessageDeliveryRequest,
   DirectImMessageDeliveryRequestSchema,
   type EffectiveRuntimeSnapshot,
   type ProviderInboundContext,
+  RUNTIME_CAPABILITY,
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
   RUNTIME_IM_HISTORY_MAX_BYTES,
   RUNTIME_MAX_FRAME_BYTES,
+  type RuntimeImDeliveryContent,
+  type RuntimeImSteerRequest,
+  RuntimeImSteerRequestSchema,
   type RuntimeProviderMessageRef,
   runtimeFrameByteLength,
 } from "@opentag/shared";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, like, lt, lte, ne, notExists, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  exists,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  like,
+  lt,
+  lte,
+  ne,
+  notExists,
+  or,
+  sql,
+} from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
@@ -108,6 +130,7 @@ export class ImDeliveryWorker {
       const claimed = await this.#claim();
       await traceDeliveryClaim(claimed, async (claim) => {
         if (claim.kind === "pending") await this.#deliver(claim.id, claim.claimToken);
+        else if (claim.kind === "steer") await this.#deliverSteer(claim);
         else await this.#recover(claim.id);
       });
     } finally {
@@ -120,7 +143,16 @@ export class ImDeliveryWorker {
   }
 
   async #claim(): Promise<
-    { id: string; kind: "pending"; claimToken: string } | { id: string; kind: "recovery" } | undefined
+    | { id: string; kind: "pending"; claimToken: string }
+    | {
+        id: string;
+        kind: "steer";
+        claimToken: string;
+        rootDeliveryId: string;
+        expectedTurnId: string;
+      }
+    | { id: string; kind: "recovery" }
+    | undefined
   > {
     return this.#database.transaction(async (transaction) => {
       const now = new Date();
@@ -144,6 +176,9 @@ export class ImDeliveryWorker {
           dispatchPayload: imMessageDeliveries.dispatchPayload,
           generation: sessionPlacements.generation,
           agentId: imBindings.agentId,
+          sessionId: imMessageDeliveries.sessionId,
+          workspaceComputerId: sessionPlacements.workspaceComputerId,
+          steerTargetDeliveryId: imMessageDeliveries.steerTargetDeliveryId,
         })
         .from(imMessageDeliveries)
         .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
@@ -171,23 +206,46 @@ export class ImDeliveryWorker {
                     lte(imMessageDeliveries.nextAttemptAt, now),
                   ),
                 ),
-                notExists(
-                  transaction
-                    .select({ id: acceptedDeliveries.id })
-                    .from(acceptedDeliveries)
-                    .innerJoin(acceptedSessions, eq(acceptedSessions.id, acceptedDeliveries.sessionId))
-                    .innerJoin(acceptedImBindings, eq(acceptedImBindings.id, acceptedSessions.imBindingId))
-                    .innerJoin(acceptedAgents, eq(acceptedAgents.id, acceptedImBindings.agentId))
-                    .where(
-                      and(
-                        eq(acceptedImBindings.agentId, imBindings.agentId),
-                        ne(acceptedDeliveries.id, imMessageDeliveries.id),
-                        isNull(acceptedSessions.endedAt),
-                        eq(acceptedImBindings.status, "active"),
-                        ne(acceptedAgents.status, "deleted"),
-                        uncertainAgentCustody(acceptedDeliveries),
+                or(
+                  notExists(
+                    transaction
+                      .select({ id: acceptedDeliveries.id })
+                      .from(acceptedDeliveries)
+                      .innerJoin(acceptedSessions, eq(acceptedSessions.id, acceptedDeliveries.sessionId))
+                      .innerJoin(acceptedImBindings, eq(acceptedImBindings.id, acceptedSessions.imBindingId))
+                      .innerJoin(acceptedAgents, eq(acceptedAgents.id, acceptedImBindings.agentId))
+                      .where(
+                        and(
+                          eq(acceptedImBindings.agentId, imBindings.agentId),
+                          ne(acceptedDeliveries.id, imMessageDeliveries.id),
+                          isNull(acceptedSessions.endedAt),
+                          eq(acceptedImBindings.status, "active"),
+                          ne(acceptedAgents.status, "deleted"),
+                          uncertainAgentCustody(acceptedDeliveries),
+                        ),
                       ),
+                  ),
+                  and(
+                    eq(imMessageDeliveries.state, "pending"),
+                    isNull(imMessageDeliveries.dispatchRequestId),
+                    isNull(imMessageDeliveries.steerTargetDeliveryId),
+                    exists(
+                      transaction
+                        .select({ id: acceptedDeliveries.id })
+                        .from(acceptedDeliveries)
+                        .innerJoin(acceptedSessions, eq(acceptedSessions.id, acceptedDeliveries.sessionId))
+                        .innerJoin(acceptedImBindings, eq(acceptedImBindings.id, acceptedSessions.imBindingId))
+                        .where(
+                          and(
+                            eq(acceptedImBindings.agentId, imBindings.agentId),
+                            ne(acceptedDeliveries.id, imMessageDeliveries.id),
+                            eq(acceptedDeliveries.sessionId, imMessageDeliveries.sessionId),
+                            eq(acceptedDeliveries.state, "accepted"),
+                            isNull(acceptedDeliveries.reportedAt),
+                          ),
+                        ),
                     ),
+                  ),
                 ),
               ),
               and(
@@ -206,8 +264,26 @@ export class ImDeliveryWorker {
       await transaction.execute(
         sql`select pg_advisory_xact_lock(hashtextextended(${`im-agent-custody:${row.agentId}`}, 0))`,
       );
-      if (row.state !== "accepted" && (await hasOtherAgentCustody(transaction, row.agentId, row.id))) {
-        return undefined;
+      const otherCustody =
+        row.state === "accepted" ? undefined : await findOtherAgentCustody(transaction, row.agentId, row.id);
+      let steerTarget: { id: string; turnId: string } | undefined;
+      if (otherCustody) {
+        const instanceId = this.#registry.currentInstanceId(row.workspaceComputerId);
+        if (
+          row.state !== "pending" ||
+          row.dispatchRequestId !== null ||
+          row.steerTargetDeliveryId !== null ||
+          otherCustody.state !== "accepted" ||
+          otherCustody.sessionId !== row.sessionId ||
+          otherCustody.reportedAt !== null ||
+          !otherCustody.turnId ||
+          !instanceId ||
+          otherCustody.reportOwnerInstanceId !== instanceId ||
+          !this.#registry.supportsCapability(row.workspaceComputerId, instanceId, RUNTIME_CAPABILITY.imSteer)
+        ) {
+          return undefined;
+        }
+        steerTarget = { id: otherCustody.id, turnId: otherCustody.turnId };
       }
       if (row.state === "accepted") {
         await transaction
@@ -223,10 +299,18 @@ export class ImDeliveryWorker {
       const persistedRequest = row.dispatchPayload
         ? DirectImMessageDeliveryRequestSchema.safeParse(row.dispatchPayload)
         : undefined;
+      const persistedSteer = row.dispatchPayload
+        ? RuntimeImSteerRequestSchema.safeParse(row.dispatchPayload)
+        : undefined;
+      const persistedPlacementGeneration = persistedRequest?.success
+        ? persistedRequest.data.placementGeneration
+        : persistedSteer?.success
+          ? persistedSteer.data.placementGeneration
+          : undefined;
       const staleCorrelation =
         row.dispatchRequestId !== null &&
         (row.deliveryGeneration !== row.generation ||
-          (persistedRequest?.success && persistedRequest.data.placementGeneration !== row.generation));
+          (persistedPlacementGeneration !== undefined && persistedPlacementGeneration !== row.generation));
       if (staleCorrelation) {
         await transaction
           .update(imMessageDeliveries)
@@ -237,17 +321,54 @@ export class ImDeliveryWorker {
           .where(eq(imMessageDeliveries.id, row.id));
         return undefined;
       }
+      const retiredSteerCorrelation =
+        persistedSteer?.success === true &&
+        row.dispatchRequestId === persistedSteer.data.requestId &&
+        row.dispatchInputHash === computeRuntimeImSteerInputHash(persistedSteer.data) &&
+        row.steerTargetDeliveryId === persistedSteer.data.rootDeliveryId &&
+        row.id === persistedSteer.data.deliveryId &&
+        row.sessionId === persistedSteer.data.sessionId &&
+        row.agentId === persistedSteer.data.agentId;
+      if (retiredSteerCorrelation && row.state === "expired") {
+        await transaction
+          .update(imMessageDeliveries)
+          .set({
+            dispatchRequestId: null,
+            dispatchInputHash: null,
+            dispatchPayload: null,
+            steerTargetDeliveryId: null,
+            lastErrorCode: null,
+          })
+          .where(eq(imMessageDeliveries.id, row.id));
+        return undefined;
+      }
       const claimToken = dispatchClaimToken();
       await transaction
         .update(imMessageDeliveries)
         .set({
           attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
           ...(row.state === "pending" ? { placementGeneration: row.generation } : {}),
+          ...(retiredSteerCorrelation
+            ? {
+                dispatchRequestId: null,
+                dispatchInputHash: null,
+                dispatchPayload: null,
+                steerTargetDeliveryId: null,
+              }
+            : {}),
           nextAttemptAt: new Date(now.getTime() + this.#claimLeaseMs),
           lastErrorCode: claimToken,
         })
         .where(eq(imMessageDeliveries.id, row.id));
-      return { id: row.id, kind: "pending" as const, claimToken };
+      return steerTarget
+        ? {
+            id: row.id,
+            kind: "steer" as const,
+            claimToken,
+            rootDeliveryId: steerTarget.id,
+            expectedTurnId: steerTarget.turnId,
+          }
+        : { id: row.id, kind: "pending" as const, claimToken };
     });
   }
 
@@ -255,6 +376,132 @@ export class ImDeliveryWorker {
     const lease = this.#maintainClaimLease(deliveryId, claimToken);
     try {
       await this.#deliverClaimed(deliveryId, claimToken, lease);
+    } finally {
+      await lease.stop();
+    }
+  }
+
+  async #deliverSteer(claim: {
+    id: string;
+    claimToken: string;
+    rootDeliveryId: string;
+    expectedTurnId: string;
+  }): Promise<void> {
+    const lease = this.#maintainClaimLease(claim.id, claim.claimToken);
+    try {
+      const [row] = await this.#database
+        .select({
+          delivery: imMessageDeliveries,
+          message: imMessages,
+          session: sessions,
+          placement: sessionPlacements,
+          imBinding: imBindings,
+          agent: agents,
+          computer: workspaceComputers,
+        })
+        .from(imMessageDeliveries)
+        .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+        .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+        .innerJoin(agents, eq(agents.id, imBindings.agentId))
+        .innerJoin(
+          workspaceComputers,
+          and(
+            eq(workspaceComputers.workspaceId, agents.workspaceId),
+            eq(workspaceComputers.id, sessionPlacements.workspaceComputerId),
+            isNull(workspaceComputers.revokedAt),
+          ),
+        )
+        .where(
+          and(
+            eq(imMessageDeliveries.id, claim.id),
+            eq(imMessageDeliveries.state, "pending"),
+            isNull(imMessageDeliveries.reason),
+            isNull(sessions.endedAt),
+            eq(imBindings.status, "active"),
+            eq(agents.status, "active"),
+          ),
+        )
+        .limit(1);
+      if (!row || row.delivery.placementGeneration !== row.placement.generation) {
+        await this.#recordFailure(claim.id, "IM_DELIVERY_STEER_AUTHORITY_UNAVAILABLE", claim.claimToken);
+        return;
+      }
+      const instanceId = this.#registry.currentInstanceId(row.computer.id);
+      if (
+        !instanceId ||
+        row.computer.currentInstanceId !== instanceId ||
+        !this.#registry.supportsCapability(row.computer.id, instanceId, RUNTIME_CAPABILITY.imSteer)
+      ) {
+        await this.#recordFailure(claim.id, "IM_DELIVERY_STEER_UNAVAILABLE", claim.claimToken);
+        return;
+      }
+      const [target] = await this.#database
+        .select({
+          id: imMessageDeliveries.id,
+          sessionId: imMessageDeliveries.sessionId,
+          state: imMessageDeliveries.state,
+          turnId: imMessageDeliveries.turnId,
+          reportedAt: imMessageDeliveries.reportedAt,
+          reportOwnerInstanceId: imMessageDeliveries.reportOwnerInstanceId,
+        })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, claim.rootDeliveryId))
+        .limit(1);
+      if (
+        target?.state !== "accepted" ||
+        target.sessionId !== row.session.id ||
+        target.turnId !== claim.expectedTurnId ||
+        target.reportedAt !== null ||
+        target.reportOwnerInstanceId !== instanceId
+      ) {
+        await this.#recordFailure(claim.id, "IM_DELIVERY_STEER_TARGET_ENDED", claim.claimToken);
+        return;
+      }
+      const content = await this.#buildDeliveryContent({
+        delivery: row.delivery,
+        message: row.message,
+        session: row.session,
+        imBinding: row.imBinding,
+        receiveMode: row.agent.receiveMode,
+      });
+      const request: RuntimeImSteerRequest = {
+        type: "im:steer",
+        requestId: randomUUID(),
+        deliveryId: row.delivery.id,
+        imMessageId: row.message.id,
+        sessionId: row.session.id,
+        agentId: row.agent.id,
+        placementGeneration: row.placement.generation,
+        rootDeliveryId: target.id,
+        expectedTurnId: claim.expectedTurnId,
+        attention: row.delivery.attention,
+        content,
+        deadlineAt: row.delivery.expiresAt.toISOString(),
+      };
+      fitDeliveryFrame(request);
+      if (!(await lease.assertOwned())) return;
+      const admitted = await this.#withActiveAgentAdmission(row.agent.id, (onDispatched) =>
+        this.#domain.requestSteer(row.computer.id, instanceId, request, onDispatched),
+      );
+      if (!admitted.admitted) {
+        await this.#recordFailure(claim.id, "IM_DELIVERY_AGENT_NOT_ACTIVE", claim.claimToken);
+        return;
+      }
+      const result = await admitted.result;
+      setActiveSpanAttributes(outcomeAttrs(result.status, "reason" in result ? result.reason : undefined));
+      if (result.status === "rejected") {
+        await this.#reject(claim.id, result.reason, claim.claimToken);
+      } else if (result.status !== "steered") {
+        await this.#recordFailure(
+          claim.id,
+          result.status === "retry" ? "IM_DELIVERY_STEER_STARTING" : "IM_DELIVERY_STEER_DEFERRED",
+          claim.claimToken,
+        );
+      }
+    } catch {
+      await this.#recordFailure(claim.id, "IM_DELIVERY_STEER_FAILED", claim.claimToken);
     } finally {
       await lease.stop();
     }
@@ -417,19 +664,13 @@ export class ImDeliveryWorker {
         );
         return;
       }
-      const resources = row.message.content.resources ?? [];
-      const history =
-        row.delivery.attention === "direct" &&
-        (row.agent.receiveMode === "mention_only" || row.session.kind === "thread")
-          ? await this.#history(
-              row.session,
-              row.message.providerContext,
-              row.message.externalMessageId,
-              row.message.occurredAt,
-              row.message.providerRevisionKey,
-              row.message.id,
-            )
-          : { items: [], truncated: false };
+      const content = await this.#buildDeliveryContent({
+        delivery: row.delivery,
+        message: row.message,
+        session: row.session,
+        imBinding: row.imBinding,
+        receiveMode: row.agent.receiveMode,
+      });
       const request: DirectImMessageDeliveryRequest = {
         type: "im:deliver",
         requestId: randomUUID(),
@@ -439,28 +680,7 @@ export class ImDeliveryWorker {
         agentId: row.agent.id,
         placementGeneration: row.placement.generation,
         attention: row.delivery.attention,
-        content: {
-          kind: "text",
-          text: truncateUtf8(
-            row.message.operation === "deleted" ? "[deleted]" : row.message.content.fallbackText,
-            RUNTIME_DIRECT_TEXT_MAX_BYTES,
-          ),
-          providerRef: runtimeProviderMessageRef(row.message, row.imBinding),
-          ...(history.items.length > 0 ? { history: history.items, historyTruncated: history.truncated } : {}),
-          ...(resources.length > 0
-            ? {
-                resources: resources.map((resource, index) => ({
-                  imMessageId: row.message.id,
-                  ordinal: resource.ordinal ?? index,
-                  kind: resource.kind,
-                  ...(resource.filename ? { filename: resource.filename } : {}),
-                  ...(resource.mediaType ? { mediaType: resource.mediaType } : {}),
-                  ...(resource.sizeBytes !== null ? { sizeBytes: resource.sizeBytes } : {}),
-                  availability: resource.availability ?? "available",
-                })),
-              }
-            : {}),
-        },
+        content,
         runtime,
         deadlineAt: row.delivery.expiresAt.toISOString(),
       };
@@ -475,7 +695,7 @@ export class ImDeliveryWorker {
         return;
       }
       const result = await admittedDelivery.result;
-      setActiveSpanAttributes(outcomeAttrs(result.status, result.reason));
+      setActiveSpanAttributes(outcomeAttrs(result.status, "reason" in result ? result.reason : undefined));
       if (
         result.status === "rejected" &&
         ["configuration_unsupported", "invalid_input"].includes(result.reason ?? "")
@@ -794,7 +1014,7 @@ export class ImDeliveryWorker {
       .where(
         and(
           eq(imMessageDeliveries.sessionId, session.id),
-          eq(imMessageDeliveries.state, "accepted"),
+          inArray(imMessageDeliveries.state, ["accepted", "steered"]),
           messageBefore(occurredAt, providerRevisionKey, messageId),
         ),
       )
@@ -933,6 +1153,49 @@ export class ImDeliveryWorker {
     }
     return { items: [...(rootItem ? [rootItem] : []), ...items.reverse()], truncated };
   }
+
+  async #buildDeliveryContent(input: {
+    delivery: Pick<typeof imMessageDeliveries.$inferSelect, "attention">;
+    message: typeof imMessages.$inferSelect;
+    session: typeof sessions.$inferSelect;
+    imBinding: typeof imBindings.$inferSelect;
+    receiveMode: (typeof agents.$inferSelect)["receiveMode"];
+  }): Promise<RuntimeImDeliveryContent> {
+    const resources = input.message.content.resources ?? [];
+    const history =
+      input.delivery.attention === "direct" && (input.receiveMode === "mention_only" || input.session.kind === "thread")
+        ? await this.#history(
+            input.session,
+            input.message.providerContext,
+            input.message.externalMessageId,
+            input.message.occurredAt,
+            input.message.providerRevisionKey,
+            input.message.id,
+          )
+        : { items: [], truncated: false };
+    return {
+      kind: "text",
+      text: truncateUtf8(
+        input.message.operation === "deleted" ? "[deleted]" : input.message.content.fallbackText,
+        RUNTIME_DIRECT_TEXT_MAX_BYTES,
+      ),
+      providerRef: runtimeProviderMessageRef(input.message, input.imBinding),
+      ...(history.items.length > 0 ? { history: history.items, historyTruncated: history.truncated } : {}),
+      ...(resources.length > 0
+        ? {
+            resources: resources.map((resource, index) => ({
+              imMessageId: input.message.id,
+              ordinal: resource.ordinal ?? index,
+              kind: resource.kind,
+              ...(resource.filename ? { filename: resource.filename } : {}),
+              ...(resource.mediaType ? { mediaType: resource.mediaType } : {}),
+              ...(resource.sizeBytes !== null ? { sizeBytes: resource.sizeBytes } : {}),
+              availability: resource.availability ?? "available",
+            })),
+          }
+        : {}),
+    };
+  }
 }
 
 function runtimeProviderMessageRef(
@@ -974,8 +1237,19 @@ interface ClaimLease {
 }
 
 async function hasOtherAgentCustody(database: CustodyQuery, agentId: string, deliveryId: string): Promise<boolean> {
+  return (await findOtherAgentCustody(database, agentId, deliveryId)) !== undefined;
+}
+
+async function findOtherAgentCustody(database: CustodyQuery, agentId: string, deliveryId: string) {
   const [row] = await database
-    .select({ id: imMessageDeliveries.id })
+    .select({
+      id: imMessageDeliveries.id,
+      sessionId: imMessageDeliveries.sessionId,
+      state: imMessageDeliveries.state,
+      reportedAt: imMessageDeliveries.reportedAt,
+      turnId: imMessageDeliveries.turnId,
+      reportOwnerInstanceId: imMessageDeliveries.reportOwnerInstanceId,
+    })
     .from(imMessageDeliveries)
     .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
     .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
@@ -991,7 +1265,7 @@ async function hasOtherAgentCustody(database: CustodyQuery, agentId: string, del
       ),
     )
     .limit(1);
-  return row !== undefined;
+  return row;
 }
 
 function uncertainAgentCustody(delivery: typeof imMessageDeliveries | typeof acceptedDeliveries) {
@@ -1037,7 +1311,7 @@ function truncateUtf8(value: string, maxBytes: number): string {
   return encoded.byteLength <= maxBytes ? value : encoded.subarray(0, maxBytes).toString("utf8");
 }
 
-function fitDeliveryFrame(request: DirectImMessageDeliveryRequest): void {
+function fitDeliveryFrame(request: DirectImMessageDeliveryRequest | RuntimeImSteerRequest): void {
   const fits = () => runtimeFrameByteLength(JSON.stringify(request)) <= RUNTIME_MAX_FRAME_BYTES;
   while (!fits() && request.content.history && request.content.history.length > 0) {
     request.content.history.shift();

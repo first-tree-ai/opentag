@@ -4,11 +4,14 @@ import { resolve } from "node:path";
 import { Readable } from "node:stream";
 import {
   computeDirectInputHash,
+  computeRuntimeImSteerInputHash,
   computeRuntimeSnapshotHashes,
   computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   FEISHU_REQUIRED_TENANT_SCOPES,
   type NormalizedInboundImEvent,
+  RUNTIME_CAPABILITY,
+  type RuntimeImSteerRequest,
   type SessionReconcileRequest,
   type SessionReconcileResult,
   SLACK_REQUIRED_BOT_SCOPES,
@@ -345,6 +348,7 @@ async function respondingRuntime(input: {
   instanceId: string;
   requestTimeoutMs?: number;
   reconcileResult?: (frame: Record<string, unknown>) => Promise<Record<string, unknown>> | Record<string, unknown>;
+  steerResult?: "steered" | "retry" | "deferred" | "rejected";
   workspaceComputerId: string;
   workspaceId: string;
 }) {
@@ -394,6 +398,28 @@ async function respondingRuntime(input: {
               } as never,
               context,
             );
+          } else if (frame.type === "im:steer" && input.steerResult) {
+            const request = frame as unknown as RuntimeImSteerRequest;
+            await domain.handle(
+              {
+                type: "im:steer:result",
+                requestId: request.requestId,
+                deliveryId: request.deliveryId,
+                sessionId: request.sessionId,
+                placementGeneration: request.placementGeneration,
+                rootDeliveryId: request.rootDeliveryId,
+                expectedTurnId: request.expectedTurnId,
+                status: input.steerResult,
+                ...(input.steerResult === "retry"
+                  ? { reason: "turn_starting" }
+                  : input.steerResult === "deferred"
+                    ? { reason: "turn_not_running" }
+                    : input.steerResult === "rejected"
+                      ? { reason: "input_conflict" }
+                      : {}),
+              } as never,
+              context,
+            );
           }
         })();
       });
@@ -408,6 +434,13 @@ async function respondingRuntime(input: {
       workspaceId: input.workspaceId,
       instanceId: input.instanceId,
       lastHeartbeatAt: Date.now(),
+      ...(input.steerResult
+        ? {
+            connectionId: crypto.randomUUID(),
+            negotiatedCapabilities: { [RUNTIME_CAPABILITY.imSteer]: 1 },
+            protocolVersion: 2 as const,
+          }
+        : {}),
       socket,
     },
     async () => undefined,
@@ -2679,6 +2712,317 @@ describe("IM binding persistence", () => {
     }
   });
 
+  it("steers a normalized ambient Slack message into the active same-Session Turn", async () => {
+    const value = await fixture();
+    try {
+      await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(workspaceComputers.id, value.workspaceComputer.id));
+      const inbox = new ImMessageInbox(value.database);
+      await inbox.ingest(value.imBindingId, 1, inbound("Ev-steer-slack-root"));
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        steerResult: "steered",
+        workspaceComputerId: value.workspaceComputer.id,
+        workspaceId: value.bootstrap.workspaceId,
+      });
+      const worker = imDeliveryWorker({ database: value.database, registry: runtime.registry, domain: runtime.domain });
+      await worker.runOnce();
+      const [root] = await value.database.select().from(imMessageDeliveries);
+      if (!root?.turnId) {
+        throw new Error(`Root Turn custody was not accepted: ${JSON.stringify({ root, frames: runtime.frames })}`);
+      }
+
+      const followUp = inbound("Ev-steer-slack-follow-up");
+      followUp.message.externalId = "1000.2";
+      followUp.message.revisionKey = "created:1000.2";
+      followUp.message.occurredAt = new Date("2026-08-19T00:00:02.000Z");
+      followUp.mentions = [];
+      await inbox.ingest(value.imBindingId, 1, followUp);
+      await worker.runOnce();
+
+      expect(runtime.frames).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "im:steer",
+            attention: "ambient",
+            rootDeliveryId: root.id,
+            expectedTurnId: root.turnId,
+            content: expect.objectContaining({ providerRef: expect.objectContaining({ provider: "slack" }) }),
+          }),
+        ]),
+      );
+      const deliveries = await value.database.select().from(imMessageDeliveries);
+      expect(deliveries).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: root.id, state: "accepted" }),
+          expect.objectContaining({ state: "steered", steerTargetDeliveryId: root.id, acceptedAt: null }),
+        ]),
+      );
+
+      await expect(
+        runtime.domain.handle(
+          turnReportFor({
+            agentId: value.agent.id,
+            deliveryId: root.id,
+            placementGeneration: root.placementGeneration,
+            sessionId: root.sessionId,
+            turnId: root.turnId,
+          }),
+          runtime.context,
+        ),
+      ).resolves.toMatchObject({ status: "recorded" });
+      const next = inbound("Ev-steer-slack-next");
+      next.message.externalId = "1000.3";
+      next.message.revisionKey = "created:1000.3";
+      next.message.occurredAt = new Date("2026-08-19T00:00:03.000Z");
+      const framesBeforeNext = runtime.frames.length;
+      await inbox.ingest(value.imBindingId, 1, next);
+      await worker.runOnce();
+      const nextDelivery = runtime.frames
+        .slice(framesBeforeNext)
+        .find(
+          (frame): frame is DirectImMessageDeliveryRequest =>
+            typeof frame === "object" && frame !== null && (frame as { type?: unknown }).type === "im:deliver",
+        );
+      expect(nextDelivery?.content.history).toBeUndefined();
+      runtime.domain.close();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("terminally rejects a deterministic IM steer rejection and preserves its reason", async () => {
+    const value = await fixture();
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(workspaceComputers.id, value.workspaceComputer.id));
+      const inbox = new ImMessageInbox(value.database);
+      await inbox.ingest(value.imBindingId, 1, inbound("Ev-steer-rejected-root"));
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        steerResult: "rejected",
+        workspaceComputerId: value.workspaceComputer.id,
+        workspaceId: value.bootstrap.workspaceId,
+      });
+      const worker = imDeliveryWorker({ database: value.database, registry: runtime.registry, domain: runtime.domain });
+      await worker.runOnce();
+      const [root] = await value.database.select().from(imMessageDeliveries);
+      if (!root?.turnId) throw new Error("Root Turn custody was not accepted");
+
+      const followUp = inbound("Ev-steer-rejected-follow-up");
+      followUp.message.externalId = "1000.2";
+      followUp.message.revisionKey = "created:1000.2";
+      followUp.message.occurredAt = new Date("2026-08-19T00:00:02.000Z");
+      const admitted = await inbox.ingest(value.imBindingId, 1, followUp);
+      await worker.runOnce();
+
+      const [rejected] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, admitted.deliveryIds[0] as string));
+      expect(rejected).toMatchObject({
+        state: "terminal_rejected",
+        reason: "input_conflict",
+        lastErrorCode: "IM_DELIVERY_TERMINAL",
+      });
+      runtime.domain.close();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("retires a persisted steer correlation after the root completes and falls back to a new Turn", async () => {
+    const value = await fixture();
+    try {
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(workspaceComputers.id, value.workspaceComputer.id));
+      const inbox = new ImMessageInbox(value.database);
+      await inbox.ingest(value.imBindingId, 1, inbound("Ev-steer-restart-root"));
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        steerResult: "steered",
+        workspaceComputerId: value.workspaceComputer.id,
+        workspaceId: value.bootstrap.workspaceId,
+      });
+      const worker = imDeliveryWorker({ database: value.database, registry: runtime.registry, domain: runtime.domain });
+      await worker.runOnce();
+      const [root] = await value.database.select().from(imMessageDeliveries);
+      if (!root?.turnId) throw new Error("Root Turn custody was not accepted");
+
+      const followUp = inbound("Ev-steer-restart-follow-up");
+      followUp.message.externalId = "1000.2";
+      followUp.message.revisionKey = "created:1000.2";
+      followUp.message.occurredAt = new Date("2026-08-19T00:00:02.000Z");
+      const ingested = await inbox.ingest(value.imBindingId, 1, followUp);
+      const [pending] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, ingested.deliveryIds[0] as string));
+      if (!pending) throw new Error("Follow-up delivery was not persisted");
+      const steerRequest: RuntimeImSteerRequest = {
+        type: "im:steer",
+        requestId: crypto.randomUUID(),
+        deliveryId: pending.id,
+        imMessageId: pending.messageId,
+        sessionId: pending.sessionId,
+        agentId: value.agent.id,
+        placementGeneration: pending.placementGeneration,
+        rootDeliveryId: root.id,
+        expectedTurnId: root.turnId,
+        attention: pending.attention,
+        content: {
+          kind: "text",
+          text: "follow-up after restart",
+          providerRef: {
+            provider: "slack",
+            appId: "app_1",
+            teamId: "T1",
+            botUserId: "B1",
+            channelId: "C1",
+            messageTs: "1000.2",
+          },
+        },
+        deadlineAt: pending.expiresAt.toISOString(),
+      };
+      const custody = new PostgresRuntimeCustodyStore(value.database);
+      await expect(
+        custody.beginSteerDispatch(steerRequest, computeRuntimeImSteerInputHash(steerRequest), {
+          workspaceComputerId: value.workspaceComputer.id,
+          instanceId,
+        }),
+      ).resolves.toBe("dispatched");
+      await expect(
+        runtime.domain.handle(
+          turnReportFor({
+            agentId: value.agent.id,
+            deliveryId: root.id,
+            placementGeneration: root.placementGeneration,
+            sessionId: root.sessionId,
+            turnId: root.turnId,
+          }),
+          runtime.context,
+        ),
+      ).resolves.toMatchObject({ status: "recorded" });
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(0) })
+        .where(eq(imMessageDeliveries.id, pending.id));
+
+      const frameCount = runtime.frames.length;
+      await worker.runOnce();
+      expect(runtime.frames.slice(frameCount)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ type: "session:reconcile", sessionId: pending.sessionId }),
+          expect.objectContaining({ type: "im:deliver", deliveryId: pending.id }),
+        ]),
+      );
+      expect(runtime.frames.slice(frameCount)).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: "im:steer", deliveryId: pending.id })]),
+      );
+      const [accepted] = await value.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, pending.id));
+      expect(accepted).toMatchObject({ state: "accepted", steerTargetDeliveryId: null });
+      runtime.domain.close();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("steers a normalized direct Feishu message into the active same-Session Turn", async () => {
+    const value = await unboundFixture();
+    try {
+      const imBindingId = await value.imBindingService.activateFeishu({
+        agentId: value.agent.id,
+        appId: "cli_steer",
+        teamId: "tenant_steer",
+        botOpenId: "ou_bot",
+        teamBrand: "feishu",
+        appSecret: "secret",
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+      });
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(workspaceComputers.id, value.workspaceComputer.id));
+      const feishuEvent = (eventId: string, messageId: string, occurredAt: string) => {
+        const event = revisionEvent({
+          providerEventId: eventId,
+          externalMessageId: messageId,
+          operation: "created",
+          occurredAt,
+          revisionKey: "1",
+        });
+        event.externalAppId = "cli_steer";
+        event.externalTeamId = "tenant_steer";
+        event.providerContext = { provider: "feishu", chatType: "p2p" };
+        event.mentions = [{ externalId: "ou_bot", displayName: "Assistant" }];
+        return event;
+      };
+      const inbox = new ImMessageInbox(value.database);
+      await inbox.ingest(imBindingId, 1, feishuEvent("Ev-steer-feishu-root", "om_root", "2026-08-19T00:00:01.000Z"));
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        steerResult: "steered",
+        workspaceComputerId: value.workspaceComputer.id,
+        workspaceId: value.bootstrap.workspaceId,
+      });
+      const worker = imDeliveryWorker({ database: value.database, registry: runtime.registry, domain: runtime.domain });
+      await worker.runOnce();
+      const [root] = await value.database.select().from(imMessageDeliveries);
+      if (!root?.turnId) {
+        throw new Error(`Root Turn custody was not accepted: ${JSON.stringify({ root, frames: runtime.frames })}`);
+      }
+      await inbox.ingest(
+        imBindingId,
+        1,
+        feishuEvent("Ev-steer-feishu-follow-up", "om_follow_up", "2026-08-19T00:00:02.000Z"),
+      );
+      await worker.runOnce();
+
+      expect(runtime.frames).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "im:steer",
+            attention: "direct",
+            rootDeliveryId: root.id,
+            expectedTurnId: root.turnId,
+            content: expect.objectContaining({ providerRef: expect.objectContaining({ provider: "feishu" }) }),
+          }),
+        ]),
+      );
+      expect(await value.database.select().from(imMessageDeliveries)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: root.id, state: "accepted" }),
+          expect.objectContaining({ state: "steered", steerTargetDeliveryId: root.id }),
+        ]),
+      );
+      runtime.domain.close();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("advances both effective revisions when an existing Session receives each Agent config update", async () => {
     const value = await fixture();
     const clientHome = await mkdtemp(resolve(tmpdir(), "opentag-im-config-update-"));
@@ -3418,7 +3762,9 @@ describe("IM binding persistence", () => {
         });
         await worker.runOnce();
         const [stored] = await value.database.select().from(imMessageDeliveries);
-        if (!stored?.dispatchPayload) throw new Error("Custody payload was not persisted");
+        if (stored?.dispatchPayload?.type !== "im:deliver") {
+          throw new Error("Direct delivery custody payload was not persisted");
+        }
         await value.database
           .update(imMessageDeliveries)
           .set({
@@ -3514,7 +3860,8 @@ describe("IM binding persistence", () => {
         !accepted?.turnId ||
         !accepted.dispatchRequestId ||
         !accepted.dispatchInputHash ||
-        !accepted.dispatchPayload
+        !accepted.dispatchPayload ||
+        accepted.dispatchPayload.type !== "im:deliver"
       ) {
         throw new Error("Accepted delivery fixture was not persisted");
       }

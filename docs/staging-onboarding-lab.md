@@ -10,8 +10,9 @@ It exists because clearing the setup-completion timestamp alone is not enough. E
 runtime readiness and IM bindings immediately advance the fact-derived onboarding flow, so a completed Account cannot
 return to a first-run state on its own.
 
-The Lab is not available in production, it never resets an Account other than the authenticated one, and ordinary
-staging Accounts cannot discover it.
+The Lab is not available in production and it never resets an Account other than the authenticated one. Its two halves
+are gated differently: Scenario Preview reads nothing and writes nothing, so every signed-in Account on a configured
+staging deployment may open it; the destructive reset stays limited to the single configured Lab Account.
 
 ## Shared staging Account
 
@@ -39,8 +40,10 @@ Rules the Server enforces:
 - the value must be an Account UUID; an empty value leaves the Lab unconfigured;
 - the setting is valid only with `OPENTAG_ENV=staging`, so configuring it in production fails Server startup;
 - when it is unset, no Lab route is registered at all;
-- every request must be authenticated as exactly that Account, and any other Account is answered like a page that does
-  not exist;
+- every request must be authenticated; on a configured staging deployment any Account may read the Lab and see Scenario
+  Preview, and the response reports whether that Account owns the reset;
+- an unconfigured deployment, and any deployment outside staging, answers both requests like a page that does not exist;
+- only the configured Account may reset; any other Account is refused exactly like a page that does not exist;
 - reset always targets the authenticated Account and accepts no client-selected Account;
 - reset requires the normal browser CSRF protection.
 

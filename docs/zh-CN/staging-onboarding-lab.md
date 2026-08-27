@@ -8,7 +8,8 @@ Onboarding Lab 是仅限 staging 的页面，用于迭代首次使用体验。�
 之所以需要它，是因为仅清除 setup 完成时间戳并不够。已有的 Computer enrollment、Agent、runtime readiness 和 IM binding 会立即
 推进由事实推导出的 onboarding 流程，因此一个已完成的 Account 无法自行回到首次使用状态。
 
-Lab 在 production 不可用，永远不会 reset 除已认证 Account 之外的任何 Account，普通 staging Account 也无法发现它。
+Lab 在 production 不可用，也永远不会 reset 除已认证 Account 之外的任何 Account。它的两半门禁不同：Scenario Preview 不读取也不
+写入任何内容，因此在已配置的 staging 部署上，任何已登录 Account 都可以打开；破坏性的 reset 仍然只属于那个被配置的 Lab Account。
 
 ## 共享 staging Account
 
@@ -35,7 +36,10 @@ Server 强制执行的规则：
 - 取值必须是 Account UUID；空值表示 Lab 未配置；
 - 该设置只在 `OPENTAG_ENV=staging` 时有效，因此在 production 配置会导致 Server 启动失败；
 - 未配置时完全不注册任何 Lab 路由；
-- 每个请求都必须以该 Account 完成认证，其他 Account 得到的响应与页面不存在完全一致；
+- 每个请求都必须完成认证；在已配置的 staging 部署上，任何 Account 都可以读取 Lab 并查看 Scenario Preview，响应会说明该 Account
+  是否拥有 reset；
+- 未配置的部署，以及 staging 之外的任何部署，对两种请求的响应都与页面不存在完全一致；
+- 只有被配置的 Account 可以 reset；其他 Account 得到的拒绝与页面不存在完全一致；
 - reset 始终作用于已认证 Account，不接受客户端选择的 Account；
 - reset 需要常规的浏览器 CSRF 保护。
 

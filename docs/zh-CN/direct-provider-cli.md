@@ -6,6 +6,10 @@ OpenTag 负责 IM 入站路由、Integration 凭证、Client 临时凭证投影�
 
 每个有效且 Agent 可见的 IM Turn 开始前，Client 创建私有的 `0600` 环境文件，只通过 `OPENTAG_PROVIDER_ENV_FILE` 把文件路径交给 Agent。Agent source 该文件后直接调用官方 `lark-cli` 或 `slack api`。Turn 完成时删除文件；若删除失败，会在 Session 或 Client 关闭时重试；Client 崩溃留下的文件由下次启动恢复清理。
 
+对于 Feishu Turn，managed Turn context 会要求 Agent 使用不插值的 POSIX heredoc 或 PowerShell here-string 变量向
+`lark-cli` 传递富文本或多行正文。发送前还必须检查：如果预期为多行的正文没有真实换行，却包含多个字面量
+`\n`，则拒绝发送。该检查不会一律改写所有 `\n`，因为代码和正文可能确实需要讨论这个 token。
+
 卡片、Blocks、文件、thread、贴纸和 Reaction 都保留 provider 原生格式。OpenTag 不转换这些内容，也不接收出站正文、provider message ID 或发送结果。因此 OpenTag 不提供出站投递状态、审计、幂等、防过时回复或会话级出站目标限制。
 
 `direct` 与 `ambient` 使用相同的凭证生命周期。`direct` 表示人明确对当前 Agent/Session 说话；`ambient` 表示 Agent 旁听到消息，默认避免重复或打扰式介入，但仍可自主回复、Reaction、主动发送或不行动。

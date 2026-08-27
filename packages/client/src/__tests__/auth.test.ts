@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -20,7 +20,8 @@ afterEach(async () => {
 });
 
 async function temporaryHome(): Promise<string> {
-  const path = await mkdtemp(join(tmpdir(), "opentag-auth-"));
+  // Temp roots are symlinked on macOS, so canonicalize to match the paths the code under test resolves.
+  const path = await realpath(await mkdtemp(join(tmpdir(), "opentag-auth-")));
   temporaryDirectories.push(path);
   return path;
 }

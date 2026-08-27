@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -893,7 +893,8 @@ function argumentAfter(args: readonly string[], flag: string): string | undefine
 }
 
 async function temporaryDirectory(prefix: string): Promise<string> {
-  const directory = await mkdtemp(join(tmpdir(), prefix));
+  // Temp roots are symlinked on macOS, so canonicalize to match the paths the code under test resolves.
+  const directory = await realpath(await mkdtemp(join(tmpdir(), prefix)));
   directories.push(directory);
   return directory;
 }

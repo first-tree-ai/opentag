@@ -256,6 +256,9 @@ both create and resumed Runs completed, the materialized opaque binding was
 preserved, and the Runs produced 53 and 95 ordered events respectively. The
 Client manifests contain no Pi package, SDK, CLI, or bundled-binary dependency.
 
-The monorepo test command retains two unrelated existing macOS CLI failures
-caused solely by `/tmp` versus `/private/tmp` path spelling. All other package
-tests passed; the Pi and Client suites are green.
+The two macOS CLI failures this command used to retain, caused solely by `/tmp`
+versus `/private/tmp` path spelling, no longer occur. Every temporary-directory
+test helper canonicalizes its directory with `realpath`, so fixture paths match
+the canonical paths the code under test resolves, on every platform and under
+Turborepo's strict environment mode. No `TMPDIR` override is required. All
+package tests passed; the Pi and Client suites are green.

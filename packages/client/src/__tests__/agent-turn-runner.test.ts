@@ -44,6 +44,18 @@ describe("AgentTurnRunner", () => {
     expect(JSON.stringify(input)).not.toContain(request.runtime.instructions.platform);
     expect(JSON.stringify(input)).not.toContain(request.runtime.instructions.agent);
     expect(input.items[0]?.text).toContain("slack api");
+    expect(input.items[0]?.text).toContain('the "user" your underlying agent addresses');
+    expect(input.items[0]?.text).toContain("is the OpenTag runtime");
+    expect(input.items[0]?.text).toContain("including the text that closes this Turn");
+    expect(input.items[0]?.text).toContain("This is your runtime console");
+    expect(input.items[0]?.text).toContain("ordinary output is not delivered to the IM participant");
+    expect(input.items[0]?.text).not.toContain("as the Turn report");
+    expect(input.items[0]?.text).toContain("The IM participant is a separate audience");
+    expect(input.items[0]?.text).toContain("The official slack api CLI is your outbox and the only path");
+    expect(input.items[0]?.text).toContain("only records it in OpenTag; it does not deliver it");
+    expect(input.items[0]?.text).toContain("run the provider CLI command before ending this Turn");
+    expect(input.items[0]?.text).toContain("Choosing to take no provider action remains valid");
+    expect(input.items[0]?.text).not.toContain("Your final text is not sent to the IM provider automatically");
     expect(input.items[0]?.text).toContain("OpenTag has no message send, reply, or reaction interface");
     expect(input.items[0]?.text).toContain("query the provider before deciding whether to retry");
     expect(input.items[0]?.text).toContain("Attention: direct");
@@ -69,6 +81,7 @@ describe("AgentTurnRunner", () => {
         },
       },
     });
+    expect(feishuInput.items[0]?.text).toContain("The official lark-cli CLI is your outbox and the only path");
     expect(feishuInput.items[0]?.text).toContain("official lark-cli CLI");
     expect(feishuInput.items[0]?.text).toContain("lark-cli im --help");
   });

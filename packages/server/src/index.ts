@@ -104,6 +104,7 @@ export async function startServer(): Promise<void> {
     knownSecrets.push(
       process.env.OPENTAG_DATABASE_URL ?? "",
       process.env.OPENTAG_JWT_SECRET ?? "",
+      process.env.BETTER_AUTH_SECRET ?? "",
       process.env.OPENTAG_GOOGLE_CLIENT_SECRET ?? "",
       process.env.OPENTAG_ENCRYPTION_KEY ?? "",
       process.env.OPENTAG_OTEL_HEADERS ?? "",

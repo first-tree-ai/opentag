@@ -247,6 +247,7 @@ jobs:
           docker run --detach --name opentag-server-ci --network opentag-ci --publish 18000:8000
           --env OPENTAG_DATABASE_URL=postgresql://opentag:opentag@opentag-postgres-ci:5432/opentag
           --env OPENTAG_JWT_SECRET=ci-only-secret-that-is-at-least-32-characters
+          --env BETTER_AUTH_SECRET=ci-only-better-auth-secret-at-least-32-characters
           --env OPENTAG_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
           --env OPENTAG_PUBLIC_URL=https://localhost:18000
           opentag-server:ci

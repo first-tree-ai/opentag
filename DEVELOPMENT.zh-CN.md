@@ -359,7 +359,7 @@ setup attempt 并记录结果，然后把一条已授权的 binding 写入数据
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | `0` 到 `1` 的全局 trace head sample rate |
 | `OPENTAG_ACCESS_TOKEN_TTL_SECONDS` | `900` | access token 有效期 |
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | refresh JWT 有效期 |
-| `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` | 空 | 仅限 staging，允许使用 [Onboarding Lab](./docs/zh-CN/staging-onboarding-lab.md) 的 Account UUID |
+| `OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID` | 空 | 仅限 staging，允许 reset [Onboarding Lab](./docs/zh-CN/staging-onboarding-lab.md) Account 的 Account UUID；Scenario Preview 不需要配置 |
 | `OPENTAG_HOME` | 随 channel 而定 | 按生命周期分层的 `config/`、`data/`、`state/`、`logs/` 根目录（源码默认为 `~/.opentag-dev`） |
 
 如果 `doctor` 失败，其错误类别会区分配置、网络、HTTP 和无效响应。请确认 Server 已启动，且配置的 URL 指向其基础地址。

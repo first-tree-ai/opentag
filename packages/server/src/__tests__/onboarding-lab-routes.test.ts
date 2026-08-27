@@ -12,7 +12,11 @@ afterEach(async () => {
 });
 
 function fixture(
-  options: { environment?: "dev" | "staging" | "prod"; labAccountId?: string; registered?: boolean } = {},
+  options: {
+    environment?: "dev" | "staging" | "prod";
+    labAccountId?: string | "unconfigured";
+    registered?: boolean;
+  } = {},
 ) {
   const accountId = randomUUID();
   const labAccountId = options.labAccountId ?? accountId;
@@ -21,7 +25,7 @@ function fixture(
     agents: { suspendById: vi.fn(), deleteById: vi.fn() },
     database: {} as never,
     environment: options.environment ?? "staging",
-    labAccountId,
+    ...(labAccountId === "unconfigured" ? {} : { labAccountId }),
     workspaceAdmins: {} as never,
   });
   vi.spyOn(reset, "resetOnboarding").mockImplementation(resetOnboarding);
@@ -75,6 +79,20 @@ describe("internal Onboarding Lab interface", () => {
 
     expect(read.statusCode).toBe(200);
     expect(read.json()).toEqual({ reset: true });
+  });
+
+  it("offers Preview but no reset owner where staging configures no Lab Account", async () => {
+    const value = fixture({ labAccountId: "unconfigured" });
+
+    const [read, reset] = await Promise.all([
+      value.app.inject({ method: "GET", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
+      value.app.inject({ method: "POST", url: INTERNAL_ONBOARDING_LAB_PATH, headers: browserHeaders() }),
+    ]);
+
+    expect(read.statusCode).toBe(200);
+    expect(read.json()).toEqual({ reset: false });
+    expect(reset.statusCode).toBe(404);
+    expect(value.resetOnboarding).not.toHaveBeenCalled();
   });
 
   it("resets the authenticated Account and never a client-selected Account", async () => {

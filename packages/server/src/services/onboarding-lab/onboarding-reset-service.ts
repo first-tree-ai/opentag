@@ -49,8 +49,11 @@ export interface OnboardingResetServiceOptions {
   agents: OnboardingResetAgentLifecycle;
   database: DatabaseClient;
   environment: ChannelName;
-  /** The single staging Account this deployment may reset. */
-  labAccountId: string;
+  /**
+   * The single staging Account this deployment may reset. Absent where no Account is configured:
+   * the Lab then offers Scenario Preview alone, and no Account owns the reset.
+   */
+  labAccountId?: string;
   now?: () => Date;
   registry?: OnboardingResetConnectionRegistry;
   workspaceAdmins?: WorkspaceAdminAccess;
@@ -74,7 +77,7 @@ export class OnboardingResetService {
   readonly #agents: OnboardingResetAgentLifecycle;
   readonly #database: DatabaseClient;
   readonly #environment: ChannelName;
-  readonly #labAccountId: string;
+  readonly #labAccountId: string | undefined;
   readonly #now: () => Date;
   readonly #registry: OnboardingResetConnectionRegistry | undefined;
   readonly #workspaceAdmins: WorkspaceAdminAccess;
@@ -100,9 +103,9 @@ export class OnboardingResetService {
     return this.#environment === "staging";
   }
 
-  /** Whether this Account owns the Lab's destructive half. */
+  /** Whether this Account owns the Lab's destructive half; no Account does until one is configured. */
   allows(accountId: string): boolean {
-    return this.enabled && accountId === this.#labAccountId;
+    return this.enabled && this.#labAccountId !== undefined && accountId === this.#labAccountId;
   }
 
   async resetOnboarding(accountId: string): Promise<void> {

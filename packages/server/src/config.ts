@@ -231,8 +231,12 @@ export interface ServerConfig {
   port: number;
   publicUrl: string;
   refreshTokenTtlSeconds: number;
-  /** Present only when a staging deployment configures the shared Onboarding Lab Account. */
-  stagingOnboardingLab?: { accountId: string };
+  /**
+   * Present on every staging deployment. Scenario Preview is fixed client-side fixtures, so it needs
+   * no Account configuration; `accountId` names the one Account that additionally owns the reset,
+   * and stays absent until a deployment configures it.
+   */
+  stagingOnboardingLab?: { accountId?: string };
 }
 
 export interface DatabaseConfig {
@@ -325,8 +329,12 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     port: parsed.OPENTAG_PORT,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
     refreshTokenTtlSeconds: parsed.OPENTAG_REFRESH_TOKEN_TTL_SECONDS,
-    ...(parsed.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID
-      ? { stagingOnboardingLab: { accountId: parsed.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID } }
+    ...(parsed.OPENTAG_ENV === "staging"
+      ? {
+          stagingOnboardingLab: parsed.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID
+            ? { accountId: parsed.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID }
+            : {},
+        }
       : {}),
   };
 }

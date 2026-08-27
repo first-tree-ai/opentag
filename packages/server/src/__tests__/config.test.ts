@@ -9,7 +9,7 @@ const required = {
 };
 
 describe("parseServerConfig", () => {
-  it("registers the staging Onboarding Lab Account only for an explicit staging environment", () => {
+  it("offers the staging Onboarding Lab on every staging deployment and its reset only when configured", () => {
     const accountId = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
     expect(
       parseServerConfig({
@@ -20,10 +20,32 @@ describe("parseServerConfig", () => {
       }).stagingOnboardingLab,
     ).toEqual({ accountId });
 
+    // Scenario Preview is fixed client-side fixtures, so staging offers the Lab with no Account
+    // configured; only the reset half waits for one.
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENV: "staging",
+        OPENTAG_PUBLIC_URL: "https://staging.example.com",
+        OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: "",
+      }).stagingOnboardingLab,
+    ).toEqual({});
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENV: "staging",
+        OPENTAG_PUBLIC_URL: "https://staging.example.com",
+      }).stagingOnboardingLab,
+    ).toEqual({});
+
     expect(parseServerConfig({ ...required, OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: "" }).stagingOnboardingLab).toBe(
       undefined,
     );
     expect(parseServerConfig(required).stagingOnboardingLab).toBe(undefined);
+    expect(
+      parseServerConfig({ ...required, OPENTAG_ENV: "prod", OPENTAG_PUBLIC_URL: "https://example.com" })
+        .stagingOnboardingLab,
+    ).toBe(undefined);
 
     for (const invalid of [
       {

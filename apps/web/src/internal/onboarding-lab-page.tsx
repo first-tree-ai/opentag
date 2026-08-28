@@ -106,6 +106,23 @@ export function OnboardingLabPage({
       />
 
       <div className="onboarding-lab-switcher" ref={switcherRef}>
+        {/*
+          The toggle precedes the panel it controls, so a forward Tab from it reaches the controls it
+          just revealed instead of leaving the switcher and traversing the whole onboarding page. The
+          panel still reads above the toggle: that is visual order, and the stylesheet owns it.
+        */}
+        <button
+          aria-controls="onboarding-lab-switcher-panel"
+          aria-expanded={open}
+          className="onboarding-lab-switcher-toggle"
+          ref={toggleRef}
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+        >
+          <span className="onboarding-lab-switcher-toggle-eyebrow">Onboarding Lab</span>
+          <span className="onboarding-lab-switcher-toggle-scenario">{scenario.title}</span>
+        </button>
+
         {open ? (
           <div className="onboarding-lab-switcher-panel" id="onboarding-lab-switcher-panel">
             <div className="onboarding-lab-switcher-intro">
@@ -175,18 +192,6 @@ export function OnboardingLabPage({
             </div>
           </div>
         ) : null}
-
-        <button
-          aria-controls="onboarding-lab-switcher-panel"
-          aria-expanded={open}
-          className="onboarding-lab-switcher-toggle"
-          ref={toggleRef}
-          type="button"
-          onClick={() => setOpen((value) => !value)}
-        >
-          <span className="onboarding-lab-switcher-toggle-eyebrow">Onboarding Lab</span>
-          <span className="onboarding-lab-switcher-toggle-scenario">{scenario.title}</span>
-        </button>
       </div>
 
       {resetAvailable && confirming ? (

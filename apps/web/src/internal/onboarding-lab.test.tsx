@@ -154,6 +154,23 @@ describe("Onboarding Lab page", () => {
     expect(requests).not.toHaveBeenCalled();
   });
 
+  it("puts the controls it reveals next in the tab order", () => {
+    renderLab();
+    const toggle = openSwitcher();
+    const panel = document.getElementById("onboarding-lab-switcher-panel");
+    if (!panel) throw new Error("The switcher panel did not open");
+
+    // A forward Tab from the toggle has to land inside the panel it just opened. Rendering the panel
+    // ahead of its toggle would send it into the onboarding page instead.
+    expect(toggle.compareDocumentPosition(panel) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(toggle.getAttribute("aria-controls")).toBe("onboarding-lab-switcher-panel");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(document.getElementById("onboarding-lab-switcher-panel")).toBeNull();
+    expect(document.activeElement).toBe(toggle);
+  });
+
   it("keeps only the selected fixture in the URL", () => {
     const { onScenarioChange } = renderLab();
     openSwitcher();

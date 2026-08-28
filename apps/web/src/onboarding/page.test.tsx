@@ -255,6 +255,61 @@ describe("OnboardingPage", () => {
     expect(screen.getByText("Install Codex on Ada's Mac.")).toBeTruthy();
   });
 
+  /**
+   * `handoffReady` is one combined gate. The Server clears it for an unready Agent runtime, an
+   * unready Feishu CLI or a lapsed connection lease, and reports which only as one false, so the
+   * strip may not turn any of them into a claim about the transport or about progress.
+   */
+  const readyComputer = {
+    ...computerA,
+    providerReadiness: [
+      { provider: "codex" as const, status: "ready" as const, observedAt: "2026-08-20T00:00:00.000Z" },
+    ],
+  };
+
+  it("reports an active binding that fails the readiness gate as unconfirmed, not as progress", async () => {
+    installFacts({
+      agents: [agent],
+      computers: [readyComputer],
+      handoff: { bindingState: "active", handoffReady: false },
+    });
+    render(<OnboardingPage user={user} />);
+
+    const strip = await screen.findByLabelText(/OpenTag Agent .* Feishu/);
+    expect(within(strip).getByText("Not ready")).toBeTruthy();
+    expect(within(strip).queryByText("Connecting…")).toBeNull();
+    expect(strip.getAttribute("data-status")).toBe("current");
+  });
+
+  it("reports a provisioning binding as the one state the Server states as in progress", async () => {
+    installFacts({
+      agents: [agent],
+      computers: [readyComputer],
+      handoff: { bindingState: "provisioning", handoffReady: false },
+    });
+    render(<OnboardingPage user={user} />);
+
+    const strip = await screen.findByLabelText(/OpenTag Agent .* Feishu/);
+    expect(within(strip).getByText("Connecting…")).toBeTruthy();
+  });
+
+  it.each(["reauthorization_required", "error", "disabled"] as const)(
+    "reports %s as needing attention rather than as a severed transport",
+    async (bindingState) => {
+      installFacts({
+        agents: [agent],
+        computers: [readyComputer],
+        handoff: { bindingState, handoffReady: false },
+      });
+      render(<OnboardingPage user={user} />);
+
+      const strip = await screen.findByLabelText(/OpenTag Agent .* Feishu/);
+      expect(within(strip).getByText("Needs attention")).toBeTruthy();
+      expect(within(strip).queryByText("Disconnected")).toBeNull();
+      expect(strip.getAttribute("data-status")).toBe("attention");
+    },
+  );
+
   it("reaches Ready from production runtime and authoritative handoff facts", async () => {
     installFacts({
       agents: [agent],

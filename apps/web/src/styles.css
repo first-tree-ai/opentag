@@ -4561,6 +4561,7 @@ textarea:focus {
 }
 
 .onboarding-lab-switcher-panel {
+  order: -1;
   display: grid;
   gap: 16px;
   width: min(380px, calc(100vw - 40px));

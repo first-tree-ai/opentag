@@ -144,7 +144,7 @@ interface JourneyFact {
  * started, one being provisioned, and one that has broken, and those ask different things of the
  * Account.
  */
-type MessagingLink = "none" | "connecting" | "attention" | "connected";
+type MessagingLink = "none" | "connecting" | "not-ready" | "attention" | "connected";
 
 interface OnboardingJourneyState {
   readonly activeStep: 1 | 2;
@@ -279,9 +279,15 @@ function OnboardingStageContext({ journey }: { journey: OnboardingJourneyState }
 }
 
 /**
- * Every label is a state of the link itself, on one axis, so the strip reads as one value changing
- * rather than as unrelated words taking turns. What has to happen to advance it — authorizing a
- * Feishu Bot — is named by the action below, which is where the Account acts on it.
+ * Every label is a state of the link itself, on one axis — whether work can be handed through it —
+ * so the strip reads as one value changing rather than as unrelated words taking turns. What has to
+ * happen to advance it is named by the action below, which is where the Account acts on it.
+ *
+ * Each label is held to the evidence the page actually has. `handoffReady` is a single combined
+ * gate: the Server clears it when the Agent runtime is not ready, when the Feishu CLI is not ready,
+ * or when the connection lease has lapsed, and it reports which of those only as one false. An
+ * active binding that fails that gate is therefore not progress and not a severed transport; it is
+ * a link the page cannot confirm, and it says exactly that.
  */
 const MESSAGING_LINK_COPY: Record<
   MessagingLink,
@@ -289,14 +295,19 @@ const MESSAGING_LINK_COPY: Record<
 > = {
   none: { label: "Not connected", description: "not yet connected to", status: "current" },
   connecting: { label: "Connecting…", description: "connecting to", status: "working" },
-  attention: { label: "Disconnected", description: "disconnected from", status: "attention" },
+  "not-ready": { label: "Not ready", description: "not yet ready to reach", status: "current" },
+  attention: { label: "Needs attention", description: "unable to reach", status: "attention" },
   connected: { label: "Connected", description: "connected to", status: "complete" },
 };
 
 function messagingLink(current: OnboardingCurrentState | undefined, messaging: JourneyStatus): MessagingLink {
   if (messaging === "complete") return "connected";
   if (current?.kind !== "handoff") return "none";
-  if (current.progress.kind === "provisioning" || current.progress.kind === "active-not-ready") return "connecting";
+  // `provisioning` is the one state the Server states as an act in progress. `active-not-ready`
+  // names no cause, and `attention` covers an expired authorization as much as a failure, so
+  // neither is reported as movement or as a disconnection.
+  if (current.progress.kind === "provisioning") return "connecting";
+  if (current.progress.kind === "active-not-ready") return "not-ready";
   if (current.progress.kind === "attention") return "attention";
   return "none";
 }

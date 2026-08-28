@@ -407,8 +407,10 @@ coding agent can run it.
 
 Readiness is published by the installed daemon service, so `doctor` answers for that service rather than for the shell
 it was typed into. It reads the installed service definition and probes with the environment that service actually
-runs with: the account-level variables its service manager provides, plus exactly what the definition declares, plus
-`daemon.env` layered on top the way the daemon layers it. A shell-only `ANTHROPIC_API_KEY`, `CODEX_HOME`, or
+runs with: the account identity from the operating system, the service manager's own variables read from an authority
+that represents the manager rather than from the caller, exactly what the definition declares, and `daemon.env` layered
+on top the way the daemon layers it. A manager variable that cannot be established from that authority is omitted
+rather than borrowed from the shell. A shell-only `ANTHROPIC_API_KEY`, `CODEX_HOME`, or
 `CLAUDE_CONFIG_DIR` therefore never reaches a probe, because it never reaches the daemon either. Every report names the
 definition it answered for.
 

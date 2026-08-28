@@ -381,8 +381,9 @@ setup attempt 并记录结果，然后把一条已授权的 binding 写入数据
 失败检查都会打印可直接执行的修复命令，其措辞便于用户自己的 coding agent 直接执行。
 
 readiness 是由已安装的 daemon service 上报的，所以 `doctor` 回答的是那个 service 的处境，而不是敲命令的这个 shell 的。
-它读取已安装的 service 定义，并用那个 service 真正运行时的环境做探测：service manager 提供的账户级变量 + 定义里显式
-声明的变量 + 按 daemon 的方式叠加的 `daemon.env`。因此只存在于 shell 里的 `ANTHROPIC_API_KEY`、`CODEX_HOME`、
+它读取已安装的 service 定义，并用那个 service 真正运行时的环境做探测：来自操作系统的账户身份 + 由「代表 service
+manager 的权威来源」而非调用方提供的 manager 变量 + 定义里显式声明的变量 + 按 daemon 的方式叠加的 `daemon.env`。
+无法从该权威来源确定的 manager 变量会被省略，而不是从 shell 借用。因此只存在于 shell 里的 `ANTHROPIC_API_KEY`、`CODEX_HOME`、
 `CLAUDE_CONFIG_DIR` 不会进入任何探测——因为它们同样不会进入 daemon。每次报告都会点名它为哪个定义文件作答。
 
 调用方 shell 的 `PATH` 只用于对比。当某个 CLI 在 shell 的 `PATH` 上能解析、在 service 的 `PATH` 上不能时——这正是

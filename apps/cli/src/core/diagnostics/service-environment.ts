@@ -1,4 +1,8 @@
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { readFile, stat } from "node:fs/promises";
+import { userInfo } from "node:os";
+import { isAbsolute } from "node:path";
+import { promisify } from "node:util";
 import { resolveOpenTagHome } from "@opentag/client";
 import {
   createDaemonServiceManager,
@@ -31,6 +35,62 @@ export type DaemonServiceEnvironment =
   | { readonly kind: "not-installed" }
   | { readonly kind: "unsupported"; readonly platform: string }
   | { readonly definitionPath?: string; readonly kind: "unreadable"; readonly reason: string };
+
+const execFileAsync = promisify(execFile);
+
+export interface ServiceManagerProbes {
+  readonly directoryExists?: (path: string) => Promise<boolean>;
+  readonly readDarwinUserTemporaryDirectory?: () => Promise<string | undefined>;
+  readonly uid?: number;
+}
+
+/**
+ * The variables a service manager sets for the jobs it starts. They must come from an authority that
+ * represents the installed service, never from the invoking shell: an operator can point `TMPDIR` or
+ * `XDG_RUNTIME_DIR` somewhere else for one command without changing anything the daemon runs with,
+ * and a provider that reads sockets or temporary state from there answers differently because of it.
+ * Whether the value is secret is not the test; whether it can change the answer is.
+ *
+ * When no such authority can be reached, the variable is omitted so the probe fails closed rather
+ * than borrowing the caller's.
+ */
+export async function serviceManagerVariables(
+  manager: "launchd" | "systemd" | undefined,
+  probes: ServiceManagerProbes = {},
+): Promise<Readonly<Record<string, string>>> {
+  if (manager === "launchd") {
+    const directory = await (probes.readDarwinUserTemporaryDirectory ?? darwinUserTemporaryDirectory)();
+    return directory ? { TMPDIR: directory } : {};
+  }
+  if (manager === "systemd") {
+    const directory = `/run/user/${probes.uid ?? userInfo().uid}`;
+    return (await (probes.directoryExists ?? directoryExists)(directory)) ? { XDG_RUNTIME_DIR: directory } : {};
+  }
+  return {};
+}
+
+/** launchd assigns each account a private temporary directory; `getconf` reports that assignment. */
+async function darwinUserTemporaryDirectory(): Promise<string | undefined> {
+  try {
+    const { stdout } = await execFileAsync("getconf", ["DARWIN_USER_TEMP_DIR"], {
+      encoding: "utf8",
+      timeout: 5_000,
+      windowsHide: true,
+    });
+    const directory = stdout.trim();
+    return isAbsolute(directory) ? directory : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function directoryExists(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 export interface ReadDaemonServiceEnvironmentOptions {
   readonly env?: NodeJS.ProcessEnv;

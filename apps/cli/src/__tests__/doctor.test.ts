@@ -26,7 +26,7 @@ import {
   runDoctor,
   serviceProcessEnvironment,
 } from "../core/diagnostics/doctor.js";
-import { readDaemonServiceEnvironment } from "../core/diagnostics/service-environment.js";
+import { readDaemonServiceEnvironment, serviceManagerVariables } from "../core/diagnostics/service-environment.js";
 
 const directories: string[] = [];
 afterEach(async () => {
@@ -208,24 +208,17 @@ describe("runDoctor", () => {
 describe("serviceProcessEnvironment", () => {
   const account = { homedir: "/Users/tester", shell: "/bin/zsh", username: "tester" };
 
-  it("drops shell-only credentials and provider overrides the service never receives", () => {
+  it("builds the environment from the account, the manager, and the definition alone", () => {
     const environment = serviceProcessEnvironment(
-      {
-        ANTHROPIC_API_KEY: "shell-only",
-        CLAUDE_CODE_OAUTH_TOKEN: "shell-only",
-        CLAUDE_CONFIG_DIR: "/shell/claude",
-        CODEX_HOME: "/shell/codex",
-        PATH: "/shell/bin",
-        TMPDIR: "/tmp/user",
-      },
       {
         environment: { OPENTAG_HOME: "/Users/tester/.opentag", OPENTAG_SERVICE_MODE: "1", PATH: "/service/bin" },
         platform: "launchd",
       },
       account,
+      { TMPDIR: "/var/folders/ab/cd/T/" },
     );
 
-    // A launchd job receives the account's own variables plus exactly what its definition declares.
+    // No parameter carries the invoking shell, so nothing of it can reach a probe.
     expect(environment).toEqual({
       HOME: "/Users/tester",
       LOGNAME: "tester",
@@ -233,27 +226,26 @@ describe("serviceProcessEnvironment", () => {
       OPENTAG_SERVICE_MODE: "1",
       PATH: "/service/bin",
       SHELL: "/bin/zsh",
-      TMPDIR: "/tmp/user",
+      TMPDIR: "/var/folders/ab/cd/T/",
       USER: "tester",
     });
   });
 
-  it("takes the account identity from the operating system, not the invoking shell", () => {
+  it("lets the definition override a manager variable, because the job would receive that", () => {
     const environment = serviceProcessEnvironment(
-      // A shell can export any HOME; the service manager still starts the job from the account.
-      { HOME: "/tmp/pretend-home", USER: "someone-else" },
-      { environment: { PATH: "/service/bin" }, platform: "launchd" },
+      { environment: { PATH: "/service/bin", TMPDIR: "/declared/tmp" }, platform: "launchd" },
       account,
+      { TMPDIR: "/var/folders/ab/cd/T/" },
     );
 
-    expect(environment).toMatchObject({ HOME: "/Users/tester", USER: "tester" });
+    expect(environment.TMPDIR).toBe("/declared/tmp");
   });
 
-  it("gives a systemd unit its own manager variables", () => {
+  it("omits a manager variable the manager authority could not supply", () => {
     const environment = serviceProcessEnvironment(
-      { TMPDIR: "/tmp/user", XDG_RUNTIME_DIR: "/run/user/1000" },
       { environment: { PATH: "/service/bin" }, platform: "systemd" },
       { homedir: "/home/tester", shell: null, username: "tester" },
+      {},
     );
 
     expect(environment).toEqual({
@@ -261,8 +253,41 @@ describe("serviceProcessEnvironment", () => {
       LOGNAME: "tester",
       PATH: "/service/bin",
       USER: "tester",
-      XDG_RUNTIME_DIR: "/run/user/1000",
     });
+  });
+});
+
+describe("serviceManagerVariables", () => {
+  it("asks the operating system for the launchd temporary directory", async () => {
+    await expect(
+      serviceManagerVariables("launchd", {
+        readDarwinUserTemporaryDirectory: async () => "/var/folders/ab/cd/T/",
+      }),
+    ).resolves.toEqual({ TMPDIR: "/var/folders/ab/cd/T/" });
+  });
+
+  it("omits the variable when that authority cannot answer", async () => {
+    await expect(
+      serviceManagerVariables("launchd", { readDarwinUserTemporaryDirectory: async () => undefined }),
+    ).resolves.toEqual({});
+    await expect(
+      serviceManagerVariables("systemd", { directoryExists: async () => false, uid: 1000 }),
+    ).resolves.toEqual({});
+    await expect(serviceManagerVariables(undefined)).resolves.toEqual({});
+  });
+
+  it("derives the systemd runtime directory from the account uid", async () => {
+    const asked: string[] = [];
+    await expect(
+      serviceManagerVariables("systemd", {
+        directoryExists: async (path) => {
+          asked.push(path);
+          return true;
+        },
+        uid: 1000,
+      }),
+    ).resolves.toEqual({ XDG_RUNTIME_DIR: "/run/user/1000" });
+    expect(asked).toEqual(["/run/user/1000"]);
   });
 });
 
@@ -423,6 +448,48 @@ describe("daemon service environment", () => {
     expect(result.checks.find((check) => check.id === "runtime:codex")?.status).toBe("ok");
   });
 
+  it("never hands the probes a manager variable the invoking shell set", async () => {
+    const captured: NodeJS.ProcessEnv[] = [];
+    const options = await doctorOptions({
+      // Overriding TMPDIR for one command changes nothing about the installed service, so it must
+      // not change what the probes see: it can still move where a provider reads temporary state.
+      env: { PATH: "/shell/bin", TMPDIR: "/shell/tmp", XDG_RUNTIME_DIR: "/shell/run" },
+      service: { path: "/service/bin" },
+    });
+
+    await runDoctor({
+      ...options,
+      runtimeProbe: async (_provider, _signal, environment) => {
+        captured.push(environment);
+        return NOT_INSTALLED;
+      },
+    });
+
+    expect(captured).toHaveLength(2);
+    for (const environment of captured) {
+      expect(environment.TMPDIR).not.toBe("/shell/tmp");
+      expect(environment.XDG_RUNTIME_DIR).toBeUndefined();
+    }
+  });
+
+  it("hands the probes a manager variable the definition declares", async () => {
+    const captured: NodeJS.ProcessEnv[] = [];
+    const options = await doctorOptions({
+      env: { TMPDIR: "/shell/tmp" },
+      service: { declared: { TMPDIR: "/declared/tmp" }, path: "/service/bin" },
+    });
+
+    await runDoctor({
+      ...options,
+      runtimeProbe: async (_provider, _signal, environment) => {
+        captured.push(environment);
+        return NOT_INSTALLED;
+      },
+    });
+
+    expect(captured[0]?.TMPDIR).toBe("/declared/tmp");
+  });
+
   it("explains a CLI the operator can run but the daemon cannot", async () => {
     const shell = await temporaryDirectory("opentag-doctor-shell-path-");
     await writeFile(resolve(shell, "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -491,7 +558,9 @@ async function doctorOptions(overrides: {
   imStatuses?: Partial<Record<ImCliProvider, "install" | "ready" | "unavailable">>;
   runtimeResults?: Partial<Record<AgentRuntimeProvider, AgentRuntimeProbeResult>>;
   runtimes?: readonly AgentRuntimeProvider[];
-  service?: { home?: string; path?: string; state?: DaemonServiceState } | "not-installed";
+  service?:
+    | { declared?: Record<string, string>; home?: string; path?: string; state?: DaemonServiceState }
+    | "not-installed";
 }): Promise<DoctorOptions> {
   const home = await temporaryDirectory("opentag-doctor-");
   return {
@@ -505,6 +574,14 @@ async function doctorOptions(overrides: {
     serviceManager: await fakeServiceManager(home, overrides.service),
     ...(overrides.runtimes ? { runtimes: overrides.runtimes } : {}),
   };
+}
+
+/** Adds extra declared variables to a rendered plist, the way an operator-edited definition would. */
+function declaredPlist(plist: string, declared: Record<string, string>): string {
+  const entries = Object.entries(declared)
+    .map(([key, value]) => `    <key>${key}</key>\n    <string>${value}</string>`)
+    .join("\n");
+  return entries ? plist.replace("    <key>PATH</key>", `${entries}\n    <key>PATH</key>`) : plist;
 }
 
 function statusManager(info: {
@@ -527,7 +604,9 @@ function statusManager(info: {
 /** Stands in for launchd: a real plist on disk, so the PATH parser is exercised for real. */
 async function fakeServiceManager(
   home: string,
-  service: { home?: string; path?: string; state?: DaemonServiceState } | "not-installed" = {},
+  service:
+    | { declared?: Record<string, string>; home?: string; path?: string; state?: DaemonServiceState }
+    | "not-installed" = {},
 ): Promise<DaemonServiceManager> {
   const definitionPath = resolve(home, "opentag.plist");
   const state: DaemonServiceState = service === "not-installed" ? "not-installed" : (service.state ?? "active");
@@ -535,14 +614,17 @@ async function fakeServiceManager(
   if (service !== "not-installed") {
     await writeFile(
       definitionPath,
-      renderLaunchdPlist({
-        home: serviceHome,
-        label: "opentag-test",
-        path: service.path ?? "/usr/bin:/bin",
-        stderrPath: resolve(home, "err.log"),
-        stdoutPath: resolve(home, "out.log"),
-        wrapperPath: resolve(home, "wrapper"),
-      }),
+      declaredPlist(
+        renderLaunchdPlist({
+          home: serviceHome,
+          label: "opentag-test",
+          path: service.path ?? "/usr/bin:/bin",
+          stderrPath: resolve(home, "err.log"),
+          stdoutPath: resolve(home, "out.log"),
+          wrapperPath: resolve(home, "wrapper"),
+        }),
+        service.declared ?? {},
+      ),
       "utf8",
     );
   }

@@ -28,11 +28,16 @@ import {
   type ImCliProbe,
 } from "./checks.js";
 import type { DoctorFix } from "./fixes.js";
-import { type DaemonServiceEnvironment, readDaemonServiceEnvironment } from "./service-environment.js";
+import {
+  type DaemonServiceEnvironment,
+  readDaemonServiceEnvironment,
+  serviceManagerVariables,
+} from "./service-environment.js";
 
 export type HealthChecker = (serverUrl: string) => Promise<ServerHealth>;
 
 export interface DoctorOptions {
+  account?: ServiceAccount;
   clientVersion?: string;
   env?: NodeJS.ProcessEnv;
   healthChecker?: HealthChecker;
@@ -75,10 +80,15 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorResu
   });
   const serviceCheck = daemonServiceCheck(service);
   const environmentChecks: DoctorCheck[] = [];
+  const account = options.account ?? userInfo();
+  const platform = options.platform ?? process.platform;
+  const managerVariables = await serviceManagerVariables(
+    service.kind === "installed" ? service.platform : serviceManagerFor(platform),
+  );
   const serviceEnvironment =
     service.kind === "installed"
-      ? serviceProcessEnvironment(baseEnvironment, service)
-      : unmanagedProbeEnvironment(baseEnvironment, options.platform ?? process.platform);
+      ? serviceProcessEnvironment(service, account, managerVariables)
+      : unmanagedProbeEnvironment(baseEnvironment, account, managerVariables);
   let probeEnvironment = serviceEnvironment;
   try {
     // The daemon layers daemon.env over its service environment, filling only unset keys.
@@ -173,11 +183,6 @@ function blockingGroup(checks: readonly DoctorCheck[], selected: boolean): Docto
  * strict makes the diagnostic err toward "not ready", which is the safe direction: the daemon
  * gets its extra configuration from `daemon.env`, and that is layered on separately.
  */
-const SERVICE_MANAGER_VARIABLES: Readonly<Record<"launchd" | "systemd", readonly string[]>> = {
-  launchd: ["TMPDIR"],
-  systemd: ["XDG_RUNTIME_DIR"],
-};
-
 export interface ServiceAccount {
   readonly homedir: string;
   readonly shell: string | null;
@@ -195,11 +200,11 @@ export interface ServiceAccount {
  * the same value, and it carries no credential.
  */
 export function serviceProcessEnvironment(
-  base: NodeJS.ProcessEnv,
   service: { readonly environment: Readonly<Record<string, string>>; readonly platform: "launchd" | "systemd" },
-  account: ServiceAccount = userInfo(),
+  account: ServiceAccount,
+  managerVariables: Readonly<Record<string, string>>,
 ): NodeJS.ProcessEnv {
-  return { ...accountEnvironment(base, service.platform, account), ...service.environment };
+  return { ...accountEnvironment(account), ...managerVariables, ...service.environment };
 }
 
 /**
@@ -211,31 +216,26 @@ export function serviceProcessEnvironment(
  */
 export function unmanagedProbeEnvironment(
   base: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform,
-  account: ServiceAccount = userInfo(),
+  account: ServiceAccount,
+  managerVariables: Readonly<Record<string, string>>,
 ): NodeJS.ProcessEnv {
-  const manager = platform === "linux" ? "systemd" : platform === "darwin" ? "launchd" : undefined;
-  const environment = accountEnvironment(base, manager, account);
+  const environment: NodeJS.ProcessEnv = { ...accountEnvironment(account), ...managerVariables };
   if (base.PATH !== undefined) environment.PATH = base.PATH;
   return environment;
 }
 
-function accountEnvironment(
-  base: NodeJS.ProcessEnv,
-  manager: "launchd" | "systemd" | undefined,
-  account: ServiceAccount,
-): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = {
+function accountEnvironment(account: ServiceAccount): NodeJS.ProcessEnv {
+  return {
     HOME: account.homedir,
     LOGNAME: account.username,
     USER: account.username,
     ...(account.shell ? { SHELL: account.shell } : {}),
   };
-  for (const key of manager ? SERVICE_MANAGER_VARIABLES[manager] : []) {
-    const value = base[key];
-    if (value !== undefined) environment[key] = value;
-  }
-  return environment;
+}
+
+function serviceManagerFor(platform: NodeJS.Platform): "launchd" | "systemd" | undefined {
+  if (platform === "linux") return "systemd";
+  return platform === "darwin" ? "launchd" : undefined;
 }
 
 /**

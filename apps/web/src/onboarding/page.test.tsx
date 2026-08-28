@@ -275,7 +275,7 @@ describe("OnboardingPage", () => {
     });
     render(<OnboardingPage user={user} />);
 
-    const strip = await screen.findByLabelText(/OpenTag Agent .* Feishu/);
+    const strip = await screen.findByLabelText("OpenTag Agent not confirmed ready to reach Feishu");
     expect(within(strip).getByText("Not ready")).toBeTruthy();
     expect(within(strip).queryByText("Connecting…")).toBeNull();
     expect(strip.getAttribute("data-status")).toBe("current");
@@ -303,7 +303,9 @@ describe("OnboardingPage", () => {
       });
       render(<OnboardingPage user={user} />);
 
-      const strip = await screen.findByLabelText(/OpenTag Agent .* Feishu/);
+      // The accessible name carries the same claim as the label: an expired authorization is not
+      // evidence that Feishu is unreachable, so neither representation may say so.
+      const strip = await screen.findByLabelText("OpenTag Agent needs attention on its link to Feishu");
       expect(within(strip).getByText("Needs attention")).toBeTruthy();
       expect(within(strip).queryByText("Disconnected")).toBeNull();
       expect(strip.getAttribute("data-status")).toBe("attention");

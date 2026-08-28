@@ -295,8 +295,8 @@ const MESSAGING_LINK_COPY: Record<
 > = {
   none: { label: "Not connected", description: "not yet connected to", status: "current" },
   connecting: { label: "Connecting…", description: "connecting to", status: "working" },
-  "not-ready": { label: "Not ready", description: "not yet ready to reach", status: "current" },
-  attention: { label: "Needs attention", description: "unable to reach", status: "attention" },
+  "not-ready": { label: "Not ready", description: "not confirmed ready to reach", status: "current" },
+  attention: { label: "Needs attention", description: "needs attention on its link to", status: "attention" },
   connected: { label: "Connected", description: "connected to", status: "complete" },
 };
 

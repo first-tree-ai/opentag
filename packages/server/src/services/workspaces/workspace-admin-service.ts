@@ -40,16 +40,25 @@ export class WorkspaceAdminService {
     await this.#workspaceAdmins.bootstrapAdminInTransaction(transaction, userId, workspaceId);
   }
 
+  /**
+   * Workspace Admin authority opens the collection; enrollment decides its contents. Recovery is
+   * stated against the physical host ("start OpenTag there"), so a Computer is only listed to the
+   * Account that enrolled it — the one Account known to have reached that machine.
+   */
   async listComputers(
     accountId: string,
     workspaceId: string,
     includeProviderReadiness = false,
   ): Promise<ListWorkspaceComputersResponse> {
     await this.#workspaceAdmins.requireAdmin(accountId, workspaceId);
-    return { computers: await this.#projectComputers(workspaceId, includeProviderReadiness) };
+    return { computers: await this.#projectComputers(accountId, workspaceId, includeProviderReadiness) };
   }
 
-  async #projectComputers(workspaceId: string, includeProviderReadiness: boolean): Promise<WorkspaceComputerSummary[]> {
+  async #projectComputers(
+    accountId: string,
+    workspaceId: string,
+    includeProviderReadiness: boolean,
+  ): Promise<WorkspaceComputerSummary[]> {
     const rows = await this.#database
       .select({ enrollment: workspaceComputers, agentId: agents.id })
       .from(workspaceComputers)
@@ -61,7 +70,13 @@ export class WorkspaceAdminService {
           ne(agents.status, "deleted"),
         ),
       )
-      .where(and(eq(workspaceComputers.workspaceId, workspaceId), isNull(workspaceComputers.revokedAt)))
+      .where(
+        and(
+          eq(workspaceComputers.workspaceId, workspaceId),
+          eq(workspaceComputers.enrolledByUserId, accountId),
+          isNull(workspaceComputers.revokedAt),
+        ),
+      )
       .orderBy(asc(workspaceComputers.displayName), asc(workspaceComputers.computerId), asc(agents.id));
     const observedAt = this.#now();
     const cutoff = observedAt.getTime() - this.#presenceTimeoutMs;

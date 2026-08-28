@@ -536,11 +536,15 @@ describe("Agent persistence and authorization", () => {
         ...createInput(computer.id),
         creationIntentId: "d2af68d9-9017-4584-a29d-c4c00f5e5b6d",
       };
-      const [left, right] = await Promise.all([
-        value.service.createForWorkspace(value.bootstrap.userId, value.bootstrap.workspaceId, input),
-        value.service.createForWorkspace(otherAdmin.id, value.bootstrap.workspaceId, input),
-      ]);
-      expect(right.id).toBe(left.id);
+      // Only the enrolling Account can reach the Computer, so the other Admin's submission has to
+      // resolve through the replay rather than through a second insert.
+      const created = await value.service.createForWorkspace(otherAdmin.id, value.bootstrap.workspaceId, input);
+      const replayed = await value.service.createForWorkspace(
+        value.bootstrap.userId,
+        value.bootstrap.workspaceId,
+        input,
+      );
+      expect(replayed.id).toBe(created.id);
       expect(await value.database.select({ id: agents.id }).from(agents)).toHaveLength(1);
     } finally {
       await value.sql.end();
@@ -758,16 +762,19 @@ describe("Agent persistence and authorization", () => {
     }
   });
 
-  it("allows an Admin to use another Account's active Workspace Computer enrollment", async () => {
+  it("creates an Agent only on a Computer the same Account enrolled", async () => {
     const value = await fixture();
     try {
       const other = await createUser(value.database, value.bootstrap.workspaceId, "other@example.com", "admin");
       const computer = await createComputer(value.database, other.id, value.bootstrap.workspaceId);
       await expect(
         value.service.createForWorkspace(value.bootstrap.userId, value.bootstrap.workspaceId, createInput(computer.id)),
+      ).rejects.toMatchObject({ code: "COMPUTER_NOT_FOUND", statusCode: 404 });
+      await expect(
+        value.service.createForWorkspace(other.id, value.bootstrap.workspaceId, createInput(computer.id)),
       ).resolves.toMatchObject({
         computerId: computer.id,
-        createdByUserId: value.bootstrap.userId,
+        createdByUserId: other.id,
       });
     } finally {
       await value.sql.end();

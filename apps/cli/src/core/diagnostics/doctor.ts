@@ -64,10 +64,22 @@ export function resolveServerUrl(serverUrl: string | undefined, env: NodeJS.Proc
 export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorResult> {
   const baseEnvironment = options.env ?? process.env;
   const home = options.home ?? resolveOpenTagHome(baseEnvironment);
+  // Readiness is published by the installed daemon service, so the service's own environment — not
+  // the operator's shell — is the only one whose answer matches what the Server receives.
+  const service = await readDaemonServiceEnvironment({
+    env: baseEnvironment,
+    home,
+    ...(options.serviceManager ? { manager: options.serviceManager } : {}),
+    ...(options.platform ? { platform: options.platform } : {}),
+  });
+  const serviceCheck = daemonServiceCheck(service);
   const environmentChecks: DoctorCheck[] = [];
-  let environment = baseEnvironment;
+  const serviceEnvironment =
+    service.kind === "installed" ? serviceProcessEnvironment(baseEnvironment, service) : { ...baseEnvironment };
+  let probeEnvironment = serviceEnvironment;
   try {
-    environment = (await loadDaemonEnvironment(home, baseEnvironment)).env;
+    // The daemon layers daemon.env over its service environment, filling only unset keys.
+    probeEnvironment = (await loadDaemonEnvironment(home, serviceEnvironment)).env;
   } catch (error) {
     environmentChecks.push({
       detail: `${describeError(error)}; the daemon reads the same file and fails the same way`,
@@ -77,18 +89,8 @@ export async function runDoctor(options: DoctorOptions = {}): Promise<DoctorResu
       title: "Daemon environment",
     });
   }
-
-  // Readiness is published by the installed daemon service, which resolves provider CLIs through the
-  // PATH captured when it was installed. Probing with anything else answers a different question.
-  const service = await readDaemonServiceEnvironment({
-    env: baseEnvironment,
-    home,
-    ...(options.serviceManager ? { manager: options.serviceManager } : {}),
-    ...(options.platform ? { platform: options.platform } : {}),
-  });
-  const serviceCheck = daemonServiceCheck(service);
-  const shellPath = environment.PATH ?? "";
-  const probeEnvironment = service.kind === "installed" ? { ...environment, PATH: service.path } : { ...environment };
+  // The invoking shell's PATH is comparison-only: it explains a divergence, it never probes.
+  const shellPath = baseEnvironment.PATH ?? "";
 
   const runtimeProviders = options.runtimes ?? AGENT_RUNTIME_PROVIDERS;
   const imProviders = options.imProviders ?? IM_CLI_PROVIDERS;
@@ -162,6 +164,35 @@ function blockingGroup(checks: readonly DoctorCheck[], selected: boolean): Docto
 }
 
 /**
+ * Variables a user service receives from the service manager itself rather than from any shell.
+ * launchd and systemd both establish the account's own identity and locations for the process; a
+ * shell export such as `ANTHROPIC_API_KEY` or `CODEX_HOME` never reaches it. Keeping this list
+ * strict makes the diagnostic err toward "not ready", which is the safe direction: the daemon
+ * gets its extra configuration from `daemon.env`, and that is layered on separately.
+ */
+const SERVICE_ACCOUNT_VARIABLES = ["HOME", "LOGNAME", "SHELL", "USER"] as const;
+const SERVICE_MANAGER_VARIABLES: Readonly<Record<"launchd" | "systemd", readonly string[]>> = {
+  launchd: ["TMPDIR"],
+  systemd: ["XDG_RUNTIME_DIR"],
+};
+
+/**
+ * Reconstruct the environment the installed service's process actually has: the account-level
+ * variables its manager provides, overlaid with exactly what its definition declares.
+ */
+export function serviceProcessEnvironment(
+  base: NodeJS.ProcessEnv,
+  service: { readonly environment: Readonly<Record<string, string>>; readonly platform: "launchd" | "systemd" },
+): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  for (const key of [...SERVICE_ACCOUNT_VARIABLES, ...SERVICE_MANAGER_VARIABLES[service.platform]]) {
+    const value = base[key];
+    if (value !== undefined) environment[key] = value;
+  }
+  return { ...environment, ...service.environment };
+}
+
+/**
  * The daemon is what runs Agents and publishes readiness, so a Computer without a usable service is
  * not ready however healthy its CLIs look. Anything short of an installed, readable, active service
  * fails closed: doctor then has no authority to declare the Computer ready.
@@ -178,6 +209,18 @@ function daemonServiceCheck(service: DaemonServiceEnvironment): DoctorCheck {
       fix: { commands: [`${channelConfig.binName} daemon restart`], summary: "Start the OpenTag daemon service" },
       id,
       status: "unavailable",
+      title,
+    };
+  }
+  if (service.kind === "home-mismatch") {
+    return {
+      detail: `active for another OpenTag home (${service.serviceHome}), not ${service.requestedHome}`,
+      fix: {
+        commands: [],
+        summary: `Run doctor against the home the installed service belongs to: OPENTAG_HOME=${service.serviceHome}`,
+      },
+      id,
+      status: "error",
       title,
     };
   }

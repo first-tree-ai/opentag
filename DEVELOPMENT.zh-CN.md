@@ -381,9 +381,13 @@ setup attempt 并记录结果，然后把一条已授权的 binding 写入数据
 失败检查都会打印可直接执行的修复命令，其措辞便于用户自己的 coding agent 直接执行。
 
 readiness 是由已安装的 daemon service 上报的，所以 `doctor` 回答的是那个 service 的处境，而不是敲命令的这个 shell 的。
-它会读取已安装的 service 定义，用定义里声明的 `PATH` 做探测，并在每次报告末尾点名用的是哪个定义文件。当某个 CLI 在
-调用方 shell 的 `PATH` 上能解析、在 service 的 `PATH` 上不能时——这正是「连上 computer 之后才装 runtime」的典型结果
-——`doctor` 会直接这么说，并让用户从当前 shell 重装 service，而不是让他去装一个他已经装过的东西。
+它读取已安装的 service 定义，并用那个 service 真正运行时的环境做探测：service manager 提供的账户级变量 + 定义里显式
+声明的变量 + 按 daemon 的方式叠加的 `daemon.env`。因此只存在于 shell 里的 `ANTHROPIC_API_KEY`、`CODEX_HOME`、
+`CLAUDE_CONFIG_DIR` 不会进入任何探测——因为它们同样不会进入 daemon。每次报告都会点名它为哪个定义文件作答。
+
+调用方 shell 的 `PATH` 只用于对比。当某个 CLI 在 shell 的 `PATH` 上能解析、在 service 的 `PATH` 上不能时——这正是
+「连上 computer 之后才装 runtime」的典型结果——`doctor` 会直接这么说，并让用户从当前 shell 重装 service，而不是让
+他去装一个他已经装过的东西。
 
 `doctor` 宁可 fail closed 也不猜：没有安装 service、service 没在运行、定义读不出来、平台不支持，这四种情况都会变成
 blocking 检查，任何一种都不会给出「这台机器已就绪」的结论。

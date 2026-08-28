@@ -406,11 +406,15 @@ and `sign-in` mean what the Server sees. Each failed check prints the exact fix 
 coding agent can run it.
 
 Readiness is published by the installed daemon service, so `doctor` answers for that service rather than for the shell
-it was typed into. It reads the installed service definition, probes with the `PATH` that definition declares, and names
-the definition it used at the end of every report. When a CLI resolves on the invoking shell's `PATH` but not on the
-service's — the usual outcome of installing a runtime after connecting the computer — `doctor` says exactly that and
-tells the operator to re-install the service from the current shell, instead of telling them to install what they
-already have.
+it was typed into. It reads the installed service definition and probes with the environment that service actually
+runs with: the account-level variables its service manager provides, plus exactly what the definition declares, plus
+`daemon.env` layered on top the way the daemon layers it. A shell-only `ANTHROPIC_API_KEY`, `CODEX_HOME`, or
+`CLAUDE_CONFIG_DIR` therefore never reaches a probe, because it never reaches the daemon either. Every report names the
+definition it answered for.
+
+The invoking shell's `PATH` is kept for comparison only. When a CLI resolves there but not on the service's `PATH` —
+the usual outcome of installing a runtime after connecting the computer — `doctor` says exactly that and tells the
+operator to re-install the service from the current shell, instead of telling them to install what they already have.
 
 `doctor` fails closed rather than guessing: no installed service, a service that is not running, an unreadable
 definition, or an unsupported platform each become a blocking check, and none of them can produce a

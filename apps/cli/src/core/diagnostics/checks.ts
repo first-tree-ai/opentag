@@ -39,9 +39,14 @@ export interface DoctorCheck {
 export type AgentRuntimeProbe = (
   provider: AgentRuntimeProvider,
   signal: AbortSignal,
+  environment: NodeJS.ProcessEnv,
 ) => Promise<AgentRuntimeProbeResult>;
 
-export type ImCliProbe = (provider: ImCliProvider, signal: AbortSignal) => Promise<"install" | "ready" | "unavailable">;
+export type ImCliProbe = (
+  provider: ImCliProvider,
+  signal: AbortSignal,
+  environment: NodeJS.ProcessEnv,
+) => Promise<"install" | "ready" | "unavailable">;
 
 export interface AgentRuntimeCheckOptions {
   readonly clientVersion: string;
@@ -78,7 +83,7 @@ export async function checkAgentRuntimes(options: AgentRuntimeCheckOptions): Pro
     const deadline = AbortSignal.timeout(deadlineMs);
     let result: AgentRuntimeProbeResult;
     try {
-      result = await probe(provider, mergeSignals(options.signal, deadline));
+      result = await probe(provider, mergeSignals(options.signal, deadline), options.environment);
     } catch (error) {
       options.signal?.throwIfAborted();
       checks.push({
@@ -106,8 +111,8 @@ export async function checkImClis(options: ImCliCheckOptions): Promise<DoctorChe
   const deadlineMs = options.probeDeadlineMs ?? DOCTOR_PROBE_DEADLINE_MS;
   const probe =
     options.probe ??
-    ((provider: ImCliProvider, signal: AbortSignal) =>
-      probeImCliReadiness(provider, DEFAULT_IM_CLI_COMMANDS[provider], options.environment, signal));
+    ((provider: ImCliProvider, signal: AbortSignal, environment: NodeJS.ProcessEnv) =>
+      probeImCliReadiness(provider, DEFAULT_IM_CLI_COMMANDS[provider], environment, signal));
   const checks: DoctorCheck[] = [];
   for (const provider of options.providers) {
     const id = `im:${provider}`;
@@ -115,7 +120,7 @@ export async function checkImClis(options: ImCliCheckOptions): Promise<DoctorChe
     const deadline = AbortSignal.timeout(deadlineMs);
     let status: "install" | "ready" | "unavailable";
     try {
-      status = await probe(provider, mergeSignals(options.signal, deadline));
+      status = await probe(provider, mergeSignals(options.signal, deadline), options.environment);
     } catch (error) {
       options.signal?.throwIfAborted();
       checks.push({
@@ -145,12 +150,12 @@ export async function checkImClis(options: ImCliCheckOptions): Promise<DoctorChe
 
 function createAgentRuntimeProbe(options: AgentRuntimeCheckOptions): AgentRuntimeProbe {
   let composition: Promise<ReadonlyMap<string, AgentRuntimeFactory>> | undefined;
-  return async (provider, signal) => {
+  return async (provider, signal, environment) => {
     composition ??= resolveAgentRuntimeProviders({
       clientVersion: options.clientVersion,
       // Doctor observes a Computer; it must not create the provider homes it is reporting on.
       ensureProviderHomes: false,
-      environment: options.environment,
+      environment,
       ...(options.signal ? { signal: options.signal } : {}),
     }).then((resolved) => new Map(resolved.factories.map((factory) => [factory.manifest.providerId, factory])));
     const factory = (await composition).get(provider);

@@ -19,7 +19,13 @@ import { renderLaunchdPlist } from "../core/daemon/service/launchd.js";
 import { renderSystemdUnit } from "../core/daemon/service/systemd.js";
 import type { DaemonServiceState } from "../core/daemon/service/types.js";
 import { checkAgentRuntimes, checkImClis } from "../core/diagnostics/checks.js";
-import { type DoctorOptions, renderDoctorJson, resolveServerUrl, runDoctor } from "../core/diagnostics/doctor.js";
+import {
+  type DoctorOptions,
+  renderDoctorJson,
+  resolveServerUrl,
+  runDoctor,
+  serviceProcessEnvironment,
+} from "../core/diagnostics/doctor.js";
 import { readDaemonServiceEnvironment } from "../core/diagnostics/service-environment.js";
 
 const directories: string[] = [];
@@ -199,6 +205,48 @@ describe("runDoctor", () => {
   });
 });
 
+describe("serviceProcessEnvironment", () => {
+  it("drops shell-only credentials and provider overrides the service never receives", () => {
+    const environment = serviceProcessEnvironment(
+      {
+        ANTHROPIC_API_KEY: "shell-only",
+        CLAUDE_CODE_OAUTH_TOKEN: "shell-only",
+        CLAUDE_CONFIG_DIR: "/shell/claude",
+        CODEX_HOME: "/shell/codex",
+        HOME: "/Users/tester",
+        PATH: "/shell/bin",
+        SHELL: "/bin/zsh",
+        TMPDIR: "/tmp/user",
+        USER: "tester",
+      },
+      {
+        environment: { OPENTAG_HOME: "/Users/tester/.opentag", OPENTAG_SERVICE_MODE: "1", PATH: "/service/bin" },
+        platform: "launchd",
+      },
+    );
+
+    // A launchd job receives the account's own variables plus exactly what its definition declares.
+    expect(environment).toEqual({
+      HOME: "/Users/tester",
+      OPENTAG_HOME: "/Users/tester/.opentag",
+      OPENTAG_SERVICE_MODE: "1",
+      PATH: "/service/bin",
+      SHELL: "/bin/zsh",
+      TMPDIR: "/tmp/user",
+      USER: "tester",
+    });
+  });
+
+  it("gives a systemd unit its own manager variables", () => {
+    const environment = serviceProcessEnvironment(
+      { HOME: "/home/tester", TMPDIR: "/tmp/user", XDG_RUNTIME_DIR: "/run/user/1000" },
+      { environment: { PATH: "/service/bin" }, platform: "systemd" },
+    );
+
+    expect(environment).toEqual({ HOME: "/home/tester", PATH: "/service/bin", XDG_RUNTIME_DIR: "/run/user/1000" });
+  });
+});
+
 describe("readDaemonServiceEnvironment", () => {
   it("reads the PATH out of a systemd unit", async () => {
     const home = await temporaryDirectory("opentag-service-systemd-");
@@ -216,10 +264,19 @@ describe("readDaemonServiceEnvironment", () => {
 
     await expect(
       readDaemonServiceEnvironment({
+        home,
         manager: statusManager({ definitionPath, platform: "systemd", state: "active" }),
         platform: "linux",
       }),
-    ).resolves.toEqual({ definitionPath, kind: "installed", path: "/opt/tools/bin:/usr/bin", state: "active" });
+    ).resolves.toEqual({
+      definitionPath,
+      environment: { OPENTAG_HOME: home, OPENTAG_SERVICE_MODE: "1", PATH: "/opt/tools/bin:/usr/bin" },
+      kind: "installed",
+      path: "/opt/tools/bin:/usr/bin",
+      platform: "systemd",
+      serviceHome: home,
+      state: "active",
+    });
   });
 
   it("fails closed when an installed definition declares no PATH", async () => {
@@ -229,6 +286,7 @@ describe("readDaemonServiceEnvironment", () => {
 
     await expect(
       readDaemonServiceEnvironment({
+        home,
         manager: statusManager({ definitionPath, platform: "launchd", state: "active" }),
         platform: "darwin",
       }),
@@ -277,6 +335,46 @@ describe("daemon service environment", () => {
       "active; checks below use the PATH it runs with",
     );
     expect(result.message).toMatch(/CLI checks used the PATH declared by .*opentag\.plist/u);
+  });
+
+  it("refuses a service that belongs to another OpenTag home", async () => {
+    const other = await temporaryDirectory("opentag-doctor-other-home-");
+    const options = await doctorOptions({ service: { home: other } });
+
+    const result = await runDoctor(options);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.checks.find((check) => check.id === "daemon-service")).toMatchObject({
+      detail: `active for another OpenTag home (${other}), not ${options.home as string}`,
+      status: "error",
+    });
+    expect(result.message).not.toContain("can run an OpenTag agent on");
+  });
+
+  it("keeps shell-only credentials and provider overrides out of what it probes with", async () => {
+    const captured: NodeJS.ProcessEnv[] = [];
+    const options = await doctorOptions({
+      // A launchd job never sees these; only the operator's shell has them.
+      env: { ANTHROPIC_API_KEY: "shell-only", CLAUDE_CONFIG_DIR: "/shell/claude", PATH: "/shell/bin" },
+      service: { path: "/service/bin" },
+    });
+
+    const result = await runDoctor({
+      ...options,
+      runtimeProbe: async (provider, _signal, environment) => {
+        captured.push(environment);
+        return provider === "codex" ? READY : NOT_INSTALLED;
+      },
+    });
+
+    expect(captured).toHaveLength(2);
+    for (const environment of captured) {
+      expect(environment.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(environment.CLAUDE_CONFIG_DIR).toBeUndefined();
+      expect(environment.PATH).toBe("/service/bin");
+    }
+    // The shell PATH stays available for the divergence diagnosis, never for probing.
+    expect(result.checks.find((check) => check.id === "runtime:codex")?.status).toBe("ok");
   });
 
   it("explains a CLI the operator can run but the daemon cannot", async () => {
@@ -347,7 +445,7 @@ async function doctorOptions(overrides: {
   imStatuses?: Partial<Record<ImCliProvider, "install" | "ready" | "unavailable">>;
   runtimeResults?: Partial<Record<AgentRuntimeProvider, AgentRuntimeProbeResult>>;
   runtimes?: readonly AgentRuntimeProvider[];
-  service?: { path?: string; state?: DaemonServiceState } | "not-installed";
+  service?: { home?: string; path?: string; state?: DaemonServiceState } | "not-installed";
 }): Promise<DoctorOptions> {
   const home = await temporaryDirectory("opentag-doctor-");
   return {
@@ -383,15 +481,16 @@ function statusManager(info: {
 /** Stands in for launchd: a real plist on disk, so the PATH parser is exercised for real. */
 async function fakeServiceManager(
   home: string,
-  service: { path?: string; state?: DaemonServiceState } | "not-installed" = {},
+  service: { home?: string; path?: string; state?: DaemonServiceState } | "not-installed" = {},
 ): Promise<DaemonServiceManager> {
   const definitionPath = resolve(home, "opentag.plist");
   const state: DaemonServiceState = service === "not-installed" ? "not-installed" : (service.state ?? "active");
+  const serviceHome = service === "not-installed" ? home : (service.home ?? home);
   if (service !== "not-installed") {
     await writeFile(
       definitionPath,
       renderLaunchdPlist({
-        home,
+        home: serviceHome,
         label: "opentag-test",
         path: service.path ?? "/usr/bin:/bin",
         stderrPath: resolve(home, "err.log"),
@@ -402,6 +501,7 @@ async function fakeServiceManager(
     );
   }
   const info = {
+    configuredHome: serviceHome,
     currentHome: home,
     definitionPath,
     logHint: resolve(home, "logs"),

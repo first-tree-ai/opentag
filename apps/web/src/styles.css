@@ -955,7 +955,6 @@ pre {
   gap: 8px;
 }
 
-.muted,
 .timestamp {
   color: var(--muted);
 }
@@ -3234,17 +3233,7 @@ textarea:focus {
   gap: 24px;
 }
 
-.settings-workspace-stack {
-  display: grid;
-  gap: 32px;
-}
-
-.settings-workspace-stack #members {
-  scroll-margin-top: 28px;
-}
-
 .settings-profile-form > h2,
-.settings-list-section h2,
 .settings-readonly-panel h2,
 .settings-unavailable h2,
 .settings-policy-banner h2 {
@@ -3315,8 +3304,7 @@ textarea:focus {
   padding: 8px 11px;
 }
 
-.settings-readonly-panel,
-.settings-list-section {
+.settings-readonly-panel {
   display: grid;
   width: 100%;
   gap: 24px;
@@ -3352,11 +3340,6 @@ textarea:focus {
   font-weight: var(--fw-semibold);
   padding: 5px 8px;
   white-space: nowrap;
-}
-
-.settings-member-list {
-  display: grid;
-  gap: 12px;
 }
 
 .settings-member-summary {

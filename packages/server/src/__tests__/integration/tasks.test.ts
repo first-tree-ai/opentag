@@ -1,4 +1,6 @@
+import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
 import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
@@ -11,6 +13,8 @@ import {
   sessions,
   workspaceComputers,
 } from "../../db/schema/index.js";
+import { normalizeFeishuMessage } from "../../services/im-bindings/feishu/adapter.js";
+import { normalizeSlackEnvelope } from "../../services/im-bindings/slack/adapter.js";
 import { TaskQueryError, TaskService } from "../../services/tasks/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -138,6 +142,7 @@ async function fixture() {
     binding,
     bootstrap,
     deliveryId,
+    message,
     service: new TaskService(client.database),
     session,
     turnId,
@@ -169,6 +174,112 @@ describe("Task debug queries", () => {
         message: { fallbackText: "Please debug this Turn.", authorDisplayName: "Mia" },
         report: { turnId: "turn-debug", finalText: "Stored runtime output", outcome: "completed" },
       });
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("removes only the addressed Slack mention after provider normalization", async () => {
+    const value = await fixture();
+    try {
+      const [event] = normalizeSlackEnvelope({
+        eventId: "event-slack-title",
+        appId: "A1",
+        teamId: "T1",
+        botUserId: "U_BOT",
+        botId: "B_BOT",
+        event: {
+          type: "app_mention",
+          channel: "C1",
+          channel_type: "channel",
+          user: "U_HUMAN",
+          text: "<@U_BOT> ask <@U_ALICE> to review",
+          ts: "1724025600.123",
+        },
+      });
+      if (!event) throw new Error("Slack title event was not normalized");
+      await value.database
+        .update(imBindings)
+        .set({ provider: "slack", externalBotId: "U_BOT" })
+        .where(eq(imBindings.id, value.binding.id));
+      await value.database
+        .update(imMessages)
+        .set({ content: event.message.content, providerContext: event.providerContext })
+        .where(eq(imMessages.id, value.message.id));
+
+      const listed = await value.service.list(value.bootstrap.workspaceId, { limit: 50 });
+      expect(listed.tasks[0]?.title).toBe("ask <@U_ALICE> to review");
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("removes only the addressed Feishu mention after provider normalization", async () => {
+    const value = await fixture();
+    try {
+      const message: NormalizedMessage = {
+        messageId: "om_title",
+        chatId: "oc_debug",
+        chatType: "group",
+        senderId: "ou_human",
+        content: "@_user_1 ask @_user_2 to review",
+        rawContentType: "text",
+        resources: [],
+        mentions: [
+          { key: "@_user_1", openId: "ou_bot", name: "Atlas", isBot: true },
+          { key: "@_user_2", openId: "ou_alice", name: "Alice", isBot: false },
+        ],
+        mentionAll: false,
+        mentionedBot: true,
+        createTime: 1_724_025_600_000,
+      };
+      const [event] = normalizeFeishuMessage({ appId: "cli_1", teamId: "workspace_1", message });
+      if (!event) throw new Error("Feishu title event was not normalized");
+      await value.database
+        .update(imBindings)
+        .set({ externalBotId: "ou_bot" })
+        .where(eq(imBindings.id, value.binding.id));
+      await value.database
+        .update(imMessages)
+        .set({ content: event.message.content, providerContext: event.providerContext })
+        .where(eq(imMessages.id, value.message.id));
+
+      const listed = await value.service.list(value.bootstrap.workspaceId, { limit: 50 });
+      expect(listed.tasks[0]?.title).toBe("ask @Alice to review");
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("titles a Session from a follow-up message that no longer addresses the Agent", async () => {
+    const value = await fixture();
+    try {
+      const message: NormalizedMessage = {
+        messageId: "om_followup",
+        chatId: "oc_debug",
+        chatType: "group",
+        senderId: "ou_human",
+        content: "@_user_2 take another look at the regression",
+        rawContentType: "text",
+        resources: [],
+        mentions: [{ key: "@_user_2", openId: "ou_alice", name: "Alice", isBot: false }],
+        mentionAll: false,
+        mentionedBot: false,
+        createTime: 1_724_025_600_000,
+      };
+      const [event] = normalizeFeishuMessage({ appId: "cli_1", teamId: "workspace_1", message });
+      if (!event) throw new Error("Feishu follow-up event was not normalized");
+      await value.database
+        .update(imBindings)
+        .set({ externalBotId: "ou_bot" })
+        .where(eq(imBindings.id, value.binding.id));
+      await value.database
+        .update(imMessages)
+        .set({ content: event.message.content, providerContext: event.providerContext })
+        .where(eq(imMessages.id, value.message.id));
+
+      const listed = await value.service.list(value.bootstrap.workspaceId, { limit: 50 });
+      expect(listed.tasks[0]?.title).toBe("@Alice take another look at the regression");
     } finally {
       await value.sql.end();
     }

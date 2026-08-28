@@ -45,6 +45,7 @@ export function classifyImInboundPersistenceError(error: unknown): ImInboundPers
 export class ImMessageInbox {
   readonly #afterAdmissionFence: (() => Promise<void>) | undefined;
   readonly #afterMessageAuthority: (() => Promise<void>) | undefined;
+  readonly #beforeReliableThreadRootLookup: (() => void) | undefined;
   readonly #beforeSupersedeDeliveries: (() => Promise<void>) | undefined;
   readonly #database: DatabaseClient;
   readonly #now: () => Date;
@@ -56,6 +57,7 @@ export class ImMessageInbox {
       now?: () => Date;
       afterAdmissionFence?: () => Promise<void>;
       afterMessageAuthority?: () => Promise<void>;
+      beforeReliableThreadRootLookup?: () => void;
       beforeSupersedeDeliveries?: () => Promise<void>;
     } = {},
   ) {
@@ -63,6 +65,7 @@ export class ImMessageInbox {
     this.#now = options.now ?? (() => new Date());
     this.#afterAdmissionFence = options.afterAdmissionFence;
     this.#afterMessageAuthority = options.afterMessageAuthority;
+    this.#beforeReliableThreadRootLookup = options.beforeReliableThreadRootLookup;
     this.#beforeSupersedeDeliveries = options.beforeSupersedeDeliveries;
     this.#sessions = new SessionService(database, { now: this.#now });
   }
@@ -351,17 +354,29 @@ export class ImMessageInbox {
                       event.conversation.externalId,
                       threadKey,
                     );
-                const rootExternalId = threadRootExternalId(event.providerContext);
-                const rootWasDirect =
-                  !existingThread && !direct && !endedThreadExists && rootExternalId
-                    ? await this.#rootWasDirectToChannelSession(
-                        transaction,
-                        imBindingId,
-                        event.conversation.externalId,
-                        rootExternalId,
-                      )
-                    : false;
-                if (existingThread || direct || rootWasDirect) {
+                const rootExternalId = await this.#reliableThreadRootExternalId(
+                  transaction,
+                  imBindingId,
+                  event.conversation.externalId,
+                  threadKey,
+                  event.providerContext,
+                );
+                const rootWasDirect = rootExternalId
+                  ? await this.#rootWasDirectToChannelSession(
+                      transaction,
+                      imBindingId,
+                      event.conversation.externalId,
+                      rootExternalId,
+                    )
+                  : false;
+                const threadWasDirect = existingThread
+                  ? await this.#threadSessionWasDirect(transaction, existingThread.id)
+                  : false;
+                const directContinuity = direct || threadWasDirect || rootWasDirect;
+                const shouldDeliverThread = existingThread
+                  ? directContinuity || scope.agent.receiveMode === "all_message"
+                  : direct || (!endedThreadExists && (rootWasDirect || scope.agent.receiveMode === "all_message"));
+                if (shouldDeliverThread) {
                   const thread =
                     existingThread ??
                     (await this.#ensureChatSession(transaction, {
@@ -373,7 +388,11 @@ export class ImMessageInbox {
                       workspaceComputerId: scope.agent.workspaceComputerId,
                       now,
                     }));
-                  deliveries.push({ sessionId: thread.id, attention: "direct", generation: thread.generation });
+                  deliveries.push({
+                    sessionId: thread.id,
+                    attention: directContinuity ? "direct" : "ambient",
+                    generation: thread.generation,
+                  });
                 }
                 if (scope.agent.receiveMode === "all_message") {
                   const channel = await this.#ensureChatSession(transaction, {
@@ -443,13 +462,21 @@ export class ImMessageInbox {
                   ),
                 )
                 .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id));
+              const reliableRootsByThreadKey = new Map<string, string>();
+              for (const pending of pendingThreadMessages) {
+                if (!pending.threadKey || reliableRootsByThreadKey.has(pending.threadKey)) continue;
+                const reliableRootExternalId = threadRootExternalId(pending.providerContext);
+                if (reliableRootExternalId) {
+                  reliableRootsByThreadKey.set(pending.threadKey, reliableRootExternalId);
+                }
+              }
               const seenExternalMessageIds = new Set<string>();
               for (const pending of pendingThreadMessages) {
                 if (seenExternalMessageIds.has(pending.externalMessageId)) continue;
                 seenExternalMessageIds.add(pending.externalMessageId);
                 if (
                   !pending.threadKey ||
-                  threadRootExternalId(pending.providerContext) !== event.message.externalId ||
+                  reliableRootsByThreadKey.get(pending.threadKey) !== event.message.externalId ||
                   (await this.#hasEndedThreadSession(
                     transaction,
                     imBindingId,
@@ -468,17 +495,37 @@ export class ImMessageInbox {
                   workspaceComputerId: scope.agent.workspaceComputerId,
                   now,
                 });
-                await transaction
-                  .insert(imMessageDeliveries)
-                  .values({
-                    messageId: pending.id,
-                    sessionId: thread.id,
+                const [upgraded] = await transaction
+                  .update(imMessageDeliveries)
+                  .set({
                     attention: "direct",
-                    placementGeneration: thread.generation,
-                    nextAttemptAt: now,
                     expiresAt: new Date(now.getTime() + DIRECT_TTL_MS),
                   })
-                  .onConflictDoNothing();
+                  .where(
+                    and(
+                      eq(imMessageDeliveries.messageId, pending.id),
+                      eq(imMessageDeliveries.sessionId, thread.id),
+                      eq(imMessageDeliveries.state, "pending"),
+                      eq(imMessageDeliveries.attention, "ambient"),
+                      isNull(imMessageDeliveries.dispatchRequestId),
+                      isNull(imMessageDeliveries.dispatchInputHash),
+                      isNull(imMessageDeliveries.dispatchPayload),
+                      isNull(imMessageDeliveries.inputHash),
+                    ),
+                  )
+                  .returning({ id: imMessageDeliveries.id });
+                if (!upgraded)
+                  await transaction
+                    .insert(imMessageDeliveries)
+                    .values({
+                      messageId: pending.id,
+                      sessionId: thread.id,
+                      attention: "direct",
+                      placementGeneration: thread.generation,
+                      nextAttemptAt: now,
+                      expiresAt: new Date(now.getTime() + DIRECT_TTL_MS),
+                    })
+                    .onConflictDoNothing();
                 await this.#expireOverflow(transaction, thread.id, "direct");
               }
             }
@@ -629,5 +676,50 @@ export class ImMessageInbox {
       )
       .limit(1);
     return row !== undefined;
+  }
+
+  async #threadSessionWasDirect(transaction: DatabaseTransaction, sessionId: string): Promise<boolean> {
+    const [row] = await transaction
+      .select({ id: imMessageDeliveries.id })
+      .from(imMessageDeliveries)
+      .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+      .where(
+        and(
+          eq(imMessageDeliveries.sessionId, sessionId),
+          eq(imMessageDeliveries.attention, "direct"),
+          eq(imMessages.direction, "inbound"),
+        ),
+      )
+      .limit(1);
+    return row !== undefined;
+  }
+
+  async #reliableThreadRootExternalId(
+    transaction: DatabaseTransaction,
+    imBindingId: string,
+    channelId: string,
+    threadKey: string,
+    currentContext: NormalizedInboundImEvent["providerContext"],
+  ): Promise<string | undefined> {
+    const current = threadRootExternalId(currentContext);
+    if (current) return current;
+    this.#beforeReliableThreadRootLookup?.();
+    const contexts = await transaction
+      .select({ providerContext: imMessages.providerContext })
+      .from(imMessages)
+      .where(
+        and(
+          eq(imMessages.imBindingId, imBindingId),
+          eq(imMessages.channelId, channelId),
+          eq(imMessages.threadKey, threadKey),
+          eq(imMessages.direction, "inbound"),
+        ),
+      )
+      .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id));
+    for (const row of contexts) {
+      const rootExternalId = threadRootExternalId(row.providerContext);
+      if (rootExternalId) return rootExternalId;
+    }
+    return undefined;
   }
 }

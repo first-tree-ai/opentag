@@ -231,6 +231,18 @@ describe("runtime domain contract", () => {
     ).toBe(computeRuntimeImMessageSemanticHash(steer));
     expect(computeRuntimeImSteerInputHash(steer)).toMatch(/^[a-f0-9]{64}$/);
 
+    const observerDelivery = { ...delivery, replyRole: "observer" as const };
+    const observerSteer = { ...steer, replyRole: "observer" as const };
+    expect(DirectImMessageDeliveryRequestSchema.parse(observerDelivery)).toEqual(observerDelivery);
+    expect(RuntimeImSteerRequestSchema.parse(observerSteer)).toEqual(observerSteer);
+    expect(computeDirectInputHash(observerDelivery)).not.toBe(computeDirectInputHash(delivery));
+    expect(computeRuntimeImMessageSemanticHash(observerDelivery)).toBe(
+      computeRuntimeImMessageSemanticHash(observerSteer),
+    );
+    expect(computeRuntimeImMessageSemanticHash(observerDelivery)).not.toBe(
+      computeRuntimeImMessageSemanticHash(delivery),
+    );
+
     const steered = {
       type: "im:steer:result" as const,
       requestId: steer.requestId,

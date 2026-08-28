@@ -437,6 +437,14 @@ export class ImDeliveryWorker {
         await this.#recordFailure(claim.id, "IM_DELIVERY_STEER_UNAVAILABLE", claim.claimToken);
         return;
       }
+      const replyRole = await this.#replyRole(row.message.id, row.session.kind, row.message.threadKey);
+      if (
+        replyRole === "observer" &&
+        this.#registry.capabilityVersion(row.computer.id, instanceId, RUNTIME_CAPABILITY.imSteer) !== 2
+      ) {
+        await this.#recordFailure(claim.id, "IM_DELIVERY_OBSERVER_STEER_UNSUPPORTED", claim.claimToken);
+        return;
+      }
       const [target] = await this.#database
         .select({
           id: imMessageDeliveries.id,
@@ -477,6 +485,7 @@ export class ImDeliveryWorker {
         rootDeliveryId: target.id,
         expectedTurnId: claim.expectedTurnId,
         attention: row.delivery.attention,
+        ...(replyRole ? { replyRole } : {}),
         content,
         deadlineAt: row.delivery.expiresAt.toISOString(),
       };
@@ -595,6 +604,16 @@ export class ImDeliveryWorker {
       return;
     }
     const persistedRequest = parsedPersistedRequest?.data;
+    const replyRole = persistedRequest
+      ? persistedRequest.replyRole
+      : await this.#replyRole(row.message.id, row.session.kind, row.message.threadKey);
+    if (
+      replyRole === "observer" &&
+      this.#registry.capabilityVersion(row.computer.id, instanceId, RUNTIME_CAPABILITY.imDelivery) !== 2
+    ) {
+      await this.#recordFailure(deliveryId, "IM_DELIVERY_OBSERVER_UNSUPPORTED", claimToken);
+      return;
+    }
     const runtime =
       persistedRequest?.runtime ?? (await this.#assembleRuntime(deliveryId, row.session.id, "delivery", claimToken));
     if (!runtime) return;
@@ -680,6 +699,7 @@ export class ImDeliveryWorker {
         agentId: row.agent.id,
         placementGeneration: row.placement.generation,
         attention: row.delivery.attention,
+        ...(replyRole ? { replyRole } : {}),
         content,
         runtime,
         deadlineAt: row.delivery.expiresAt.toISOString(),
@@ -1195,6 +1215,27 @@ export class ImDeliveryWorker {
           }
         : {}),
     };
+  }
+
+  async #replyRole(
+    messageId: string,
+    sessionKind: (typeof sessions.$inferSelect)["kind"],
+    threadKey: string | null,
+  ): Promise<"observer" | undefined> {
+    if (sessionKind !== "channel" || threadKey === null) return undefined;
+    const [threadDelivery] = await this.#database
+      .select({ id: imMessageDeliveries.id })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .where(
+        and(
+          eq(imMessageDeliveries.messageId, messageId),
+          eq(sessions.kind, "thread"),
+          eq(sessions.threadKey, threadKey),
+        ),
+      )
+      .limit(1);
+    return threadDelivery ? "observer" : undefined;
   }
 }
 

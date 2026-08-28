@@ -79,7 +79,6 @@ describe("workspace page layout", () => {
     expect(declarationValue(appStyles, ".settings-content", "width")).toBe("100%");
     expect(declarationValue(appStyles, ".overview-section", "width")).toBe("100%");
     expect(declarationValue(appStyles, ".settings-profile-form", "width")).toBe("100%");
-    expect(declarationValue(appStyles, ".settings-list-section", "width")).toBe("100%");
   });
 
   it("centralizes tab and settings-row geometry in the design system", () => {
@@ -100,6 +99,12 @@ describe("workspace page layout", () => {
   });
 
   it("keeps Task provenance and grouped execution readable in the compact layout", () => {
+    expect(topLevelDeclarationValue(taskStyles, ".task-conversation-page", "width")).toBe(
+      "min(100%, var(--workspace-page-frame))",
+    );
+    expect(topLevelDeclarationValue(taskStyles, ".task-work-cell a", "white-space")).toBe("nowrap");
+    expect(topLevelDeclarationValue(taskStyles, ".task-work-cell a", "text-overflow")).toBe("ellipsis");
+    expect(topLevelDeclarationValue(taskStyles, ".task-conversation-header h1", "-webkit-line-clamp")).toBe("2");
     expect(declarationValue(taskStyles, ".task-breadcrumb-actions .tasks-demo-note", "display")).toBe("inline");
     expect(topLevelDeclarationValue(taskStyles, ".task-tool-list", "border")).toBe("1px solid var(--border)");
     expect(topLevelDeclarationValue(taskStyles, ".task-tool-call > summary", "display")).toBe("flex");

@@ -299,6 +299,10 @@ export function buildAgentInput(
     request.attention === "direct"
       ? "A human explicitly addressed this Agent/Session. Handle the message normally, then choose whether to reply, react, send proactively, or take no provider action."
       : "This Agent overheard the message. Use the conversation context to choose whether to reply, react, send proactively, or take no action; by default avoid meaningless, duplicate, intrusive, or attention-seeking intervention.";
+  const observer = request.replyRole === "observer";
+  const replyRoleMeaning = observer
+    ? "A Thread Session owns the provider reply for this same message. Use this Channel delivery only for ambient channel context; do not reply, react, or perform any other provider mutation for this message."
+    : "This Session is the reply owner for this message. It may reply, react, send another provider message, or take no provider action.";
   // Rebind the provider's native user-facing output to OpenTag's runtime console. Merely saying that
   // final text is not auto-sent is too weak when the provider treats its final channel as the reply.
   const context = [
@@ -309,8 +313,9 @@ export function buildAgentInput(
     `Agent revision: ${runtime.revision.agent.sequence}/${runtime.revision.agent.id}`,
     `Session revision: ${runtime.revision.session.sequence}/${runtime.revision.session.id}`,
     ...buildProviderOutboxInstructions({
-      actionInstruction:
-        "If you choose to reply, react, or send proactively, run the provider CLI command before ending this Turn. Choosing to take no provider action remains valid.",
+      actionInstruction: observer
+        ? "Do not run a provider CLI mutation for this observer copy. The CLI and credentials remain available because they are Session capabilities, not reply-role authorization."
+        : "If you choose to reply, react, or send proactively, run the provider CLI command before ending this Turn. Choosing to take no provider action remains valid.",
       provider,
       target: request.content.providerRef,
       targetLabel: "Current provider reference",
@@ -318,6 +323,9 @@ export function buildAgentInput(
     `Attention: ${request.attention}`,
     `Attention meaning: ${attentionMeaning}`,
     "Attention does not change provider CLI or credential availability for this Turn.",
+    `Reply role: ${observer ? "observer" : "owner"}`,
+    `Reply role meaning: ${replyRoleMeaning}`,
+    "Reply role constrains provider actions for this delivery; it does not change this Session's authority or credential availability.",
     "Session instructions:",
     sessionInstructions,
     "</opentag-im-context>",

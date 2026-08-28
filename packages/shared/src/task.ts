@@ -10,6 +10,22 @@ import {
 
 export const TaskStatusSchema = z.enum(["queued", "running", "completed", "failed", "expired", "ended", "idle"]);
 export const TaskSessionKindSchema = z.enum(["channel", "thread"]);
+export const TASK_AUTO_TITLE_MAX_GRAPHEMES = 80;
+export const TASK_TITLE_MAX_LENGTH = 120;
+const taskTitleSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function taskTitleLength(value: string): number {
+  let length = 0;
+  for (const _segment of taskTitleSegmenter.segment(value)) length += 1;
+  return length;
+}
+
+export const TaskTitleSchema = z
+  .string()
+  .min(1)
+  .refine((value) => taskTitleLength(value) <= TASK_TITLE_MAX_LENGTH, {
+    message: `Task title must contain at most ${TASK_TITLE_MAX_LENGTH} characters`,
+  });
 
 export const TaskSummarySchema = z
   .object({
@@ -31,7 +47,7 @@ export const TaskSummarySchema = z
       })
       .strict(),
     sessionKind: TaskSessionKindSchema,
-    title: z.string().min(1),
+    title: TaskTitleSchema,
     status: TaskStatusSchema,
     createdAt: z.string().datetime(),
     endedAt: z.string().datetime().nullable(),

@@ -482,7 +482,6 @@ export function AppRouter() {
             <Route element={<WorkspaceSetupGate />}>
               <Route index element={<Navigate replace to="/agents" />} />
               <Route path="/agents" element={<AgentsPage />} />
-              <Route path="/agents/computers" element={<ComputersPage />} />
               <Route path="/agents/new" element={<NewAgentPage />} />
               <Route path="/agents/:agentId" element={<AgentDetailPage />} />
               <Route path="/agents/:agentId/usage" element={<AgentUsagePage />} />
@@ -493,6 +492,7 @@ export function AppRouter() {
               <Route path="/tasks/:taskId" element={<TaskDetailPage />} />
               <Route path="/skills" element={<SkillsPage />} />
               <Route path="/integrations" element={<IntegrationsPage />} />
+              <Route path="/agents/computers" element={<Navigate replace to="/agents" />} />
               <Route path="/resources" element={<Navigate replace to="/skills" />} />
               <Route path="/usage" element={<Navigate replace to="/agents" />} />
               <Route path="/account" element={<AccountPage />} />
@@ -537,7 +537,7 @@ function LoginPage() {
             );
           }}
         </AsyncState>
-        <p className="login-access-note">Sign in to manage your Agents and Computers.</p>
+        <p className="login-access-note">Sign in to manage your Agents.</p>
       </section>
     </main>
   );
@@ -851,16 +851,6 @@ function AppShell() {
                 onKeyDown={handleAccountMenuKeyDown}
               >
                 <div className="account-menu-actions">
-                  <NavLink
-                    role="menuitem"
-                    to="/agents/computers"
-                    onClick={() => {
-                      setOpenMenu(undefined);
-                      setNavigationOpen(false);
-                    }}
-                  >
-                    Computers
-                  </NavLink>
                   <NavLink
                     end
                     role="menuitem"
@@ -2732,40 +2722,6 @@ function AccountSettings({ refreshMe, user }: { refreshMe: () => Promise<MeRespo
         </p>
       ) : null}
     </form>
-  );
-}
-
-function ComputersPage() {
-  const { me } = useWorkspace();
-  const state = useResource(() => browserApi.computers(), me.user.id);
-  return (
-    <Page title="Computers" description="Enroll and recover the Computers used by your Agents.">
-      <AsyncState state={state}>
-        {(value) => (
-          <div className="settings-workspace-stack">
-            <section className="settings-list-section">
-              <h2>Enrolled Computers</h2>
-              {value.computers.length === 0 ? (
-                <p className="muted">No Computers are enrolled yet.</p>
-              ) : (
-                <ul className="settings-member-list">
-                  {value.computers.map((computer) => (
-                    <li key={computer.computerId}>
-                      <strong>{computer.displayName}</strong>{" "}
-                      <StatusIndicator
-                        label={computer.connectionStatus === "online" ? "Online" : "Offline"}
-                        tone={computer.connectionStatus === "online" ? "success" : "warning"}
-                      />
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-            <ComputerSetup />
-          </div>
-        )}
-      </AsyncState>
-    </Page>
   );
 }
 

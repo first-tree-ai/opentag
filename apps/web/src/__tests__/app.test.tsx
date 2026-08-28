@@ -622,7 +622,7 @@ describe("OpenTag Web App Shell", () => {
     expect(signIn.classList.contains("login-provider-button--google")).toBe(true);
     expect(signIn.querySelector('img[alt="Sign in with Google"]')).toBeTruthy();
     expect(new URL(signIn.getAttribute("href") ?? "", window.location.origin).searchParams.get("next")).toBe("/agents");
-    expect(screen.getByText("Sign in to manage your Agents and Computers.")).toBeTruthy();
+    expect(screen.getByText("Sign in to manage your Agents.")).toBeTruthy();
   });
 
   it("keeps authenticated invalid Agent tabs on the plain workspace canvas", async () => {
@@ -1996,7 +1996,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("group", { name: "Workspaces" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Workspace" })).toBeNull();
     expect(screen.queryByText("Secondary")).toBeNull();
-    expect(screen.getByRole("menuitem", { name: "Computers" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Computers" })).toBeNull();
     expect(screen.getByRole("menuitem", { name: "Account" })).toBeTruthy();
     expect(screen.queryByRole("menuitem", { name: "Admins" })).toBeNull();
   });
@@ -2447,16 +2447,12 @@ describe("OpenTag Web App Shell", () => {
     );
   });
 
-  it("opens the Computers page from the account menu", async () => {
+  it("sends a retired Computers bookmark to Agents", async () => {
     installApi();
+    window.history.replaceState({}, "", "/agents/computers");
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Account menu" }));
-    const computers = screen.getByRole("menuitem", { name: "Computers" });
-    expect(computers.getAttribute("href")).toBe("/agents/computers");
-    fireEvent.click(computers);
-    expect(await screen.findByRole("heading", { level: 1, name: "Computers" })).toBeTruthy();
-    expect(window.location.pathname).toBe("/agents/computers");
-    expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeTruthy();
+    expect(window.location.pathname).toBe("/agents");
   });
 
   it("moves focus into account actions and returns it to the trigger on Escape", async () => {
@@ -2464,9 +2460,9 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     const trigger = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.click(trigger);
-    const computers = screen.getByRole("menuitem", { name: "Computers" });
-    expect(document.activeElement).toBe(computers);
-    fireEvent.keyDown(computers, { key: "Escape" });
+    const account = screen.getByRole("menuitem", { name: "Account" });
+    expect(document.activeElement).toBe(account);
+    fireEvent.keyDown(account, { key: "Escape" });
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });
@@ -2476,17 +2472,14 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
     const trigger = await screen.findByRole("button", { name: "Account menu" });
     fireEvent.click(trigger);
-    const computers = screen.getByRole("menuitem", { name: "Computers" });
     const account = screen.getByRole("menuitem", { name: "Account" });
     const signOut = screen.getByRole("menuitem", { name: "Sign out" });
-    expect(document.activeElement).toBe(computers);
-    fireEvent.keyDown(computers, { key: "ArrowDown" });
     expect(document.activeElement).toBe(account);
     fireEvent.keyDown(account, { key: "ArrowDown" });
     expect(document.activeElement).toBe(signOut);
     fireEvent.keyDown(signOut, { key: "ArrowDown" });
-    expect(document.activeElement).toBe(computers);
-    fireEvent.keyDown(computers, { key: "End" });
+    expect(document.activeElement).toBe(account);
+    fireEvent.keyDown(account, { key: "End" });
     expect(document.activeElement).toBe(signOut);
     fireEvent.keyDown(signOut, { key: "Escape" });
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();

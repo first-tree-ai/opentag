@@ -79,7 +79,6 @@ describe("workspace page layout", () => {
     expect(declarationValue(appStyles, ".settings-content", "width")).toBe("100%");
     expect(declarationValue(appStyles, ".overview-section", "width")).toBe("100%");
     expect(declarationValue(appStyles, ".settings-profile-form", "width")).toBe("100%");
-    expect(declarationValue(appStyles, ".settings-list-section", "width")).toBe("100%");
   });
 
   it("centralizes tab and settings-row geometry in the design system", () => {

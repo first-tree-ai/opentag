@@ -376,7 +376,14 @@ setup attempt 并记录结果，然后把一条已授权的 binding 写入数据
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | refresh JWT 有效期；仅适用于 Better Auth 切换前签发的凭据 |
 | `OPENTAG_HOME` | 随 channel 而定 | 按生命周期分层的 `config/`、`data/`、`state/`、`logs/` 根目录（源码默认为 `~/.opentag-dev`） |
 
-如果 `doctor` 失败，其错误类别会区分配置、网络、HTTP 和无效响应。请确认 Server 已启动，且配置的 URL 指向其基础地址。
+`doctor` 会逐项输出检查结果：OpenTag Server、各 Agent Runtime CLI、各消息 CLI。Agent Runtime 与消息 CLI 检查
+复用 daemon 的探测逻辑，并使用 daemon 所用的同一份环境，因此不会给出 daemon 不会上报的 readiness。每个失败检查
+都会打印可直接执行的修复命令，其措辞便于用户自己的 coding agent 直接执行。
+
+不带 `--runtime` 或 `--im` 时，只要有一个可用的 Agent Runtime 和一个可用的消息 CLI 即可通过。可用 `--runtime codex`
+或 `--im feishu`（均可重复）指定必须可用的实现，用 `--json` 输出机器可读结果。
+
+如果 Server 检查失败，其错误类别会区分配置、网络、HTTP 和无效响应。请确认 Server 已启动，且配置的 URL 指向其基础地址。
 
 ## 发布
 

@@ -162,11 +162,15 @@ export {
   type DeliveryDecision,
 } from "./runtime/client-runtime.js";
 export {
+  type AgentRuntimeProviderComposition,
   ComposedClientRuntime,
   type CreateClientRuntimeOptions,
   createClientRuntime,
+  probeImCliReadiness,
   providerReadiness,
+  type ResolveAgentRuntimeProvidersOptions,
   type ResolvedClaudeCodeFactoryOptions,
+  resolveAgentRuntimeProviders,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
 } from "./runtime/client-runtime-composition.js";

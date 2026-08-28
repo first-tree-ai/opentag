@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -24,7 +24,9 @@ import {
   createClientRuntime,
   createClientRuntimeHandlers,
   createClientRuntimePreflight,
+  probeImCliReadiness,
   refreshImCliReadiness,
+  resolveAgentRuntimeProviders,
   resolveCodexHome,
   resolvedClaudeCodeFactory,
   resolvedCodexFactory,
@@ -43,6 +45,41 @@ afterEach(async () => {
 });
 
 describe("createClientRuntime production composition", () => {
+  it("resolves the production Agent Runtime factories without a Server connection", async () => {
+    const home = await temporaryDirectory("opentag-provider-composition-");
+    const environment = { HOME: home };
+
+    const resolved = await resolveAgentRuntimeProviders({ clientVersion: "0.0.0-test", environment });
+
+    expect(resolved.factories.map((factory) => factory.manifest.providerId)).toEqual(["codex", "claude-code"]);
+    expect(resolved.providerHomes).toEqual({
+      codex: resolve(home, ".codex"),
+      "claude-code": resolve(home, ".claude"),
+    });
+    expect(resolved.artifactIdentities.codex).toBe(
+      createHash("sha256").update(resolved.providerHomes.codex, "utf8").digest("hex"),
+    );
+    await expect(resolved.factories[0]?.probe({})).resolves.toEqual({
+      ready: false,
+      issues: [{ code: "artifact_missing", message: "Codex CLI could not be executed" }],
+    });
+  });
+
+  it("observes messaging CLI readiness without publishing it", async () => {
+    const home = await temporaryDirectory("opentag-im-cli-probe-");
+    const lark = resolve(home, "lark-cli");
+    await writeFile(
+      lark,
+      '#!/bin/sh\nif [ "$1" = "--version" ] || { [ "$1" = "im" ] && [ "$2" = "--help" ]; }; then exit 0; fi\nexit 1\n',
+      "utf8",
+    );
+    await chmod(lark, 0o755);
+
+    await expect(probeImCliReadiness("feishu", lark, {})).resolves.toBe("ready");
+    await expect(probeImCliReadiness("slack", lark, {})).resolves.toBe("unavailable");
+    await expect(probeImCliReadiness("feishu", resolve(home, "missing"), {})).resolves.toBe("install");
+  });
+
   it("probes Feishu and Slack CLI readiness independently from Agent Runtime providers", async () => {
     const home = await temporaryDirectory("opentag-im-cli-readiness-");
     const lark = resolve(home, "lark-cli");

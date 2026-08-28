@@ -400,8 +400,16 @@ processes.
 | `OPENTAG_REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Refresh-JWT lifetime; only credentials issued before the Better Auth cutover |
 | `OPENTAG_HOME` | channel-specific | Root for lifecycle-separated `config/`, `data/`, `state/`, and `logs/` (`~/.opentag-dev` in source) |
 
-If `doctor` fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures. Confirm
-the server is running and that the configured URL points to its base address.
+`doctor` reports one line per check: the OpenTag server, each Agent Runtime CLI, and each messaging CLI. The Agent
+Runtime and messaging CLI checks run the same probes the daemon runs, in the same environment the daemon uses, so they
+never claim a readiness the daemon would not publish. Each failed check prints the exact fix command, phrased so the
+user's own coding agent can run it.
+
+Without `--runtime` or `--im`, one ready Agent Runtime and one ready messaging CLI are enough. Pass `--runtime codex`
+or `--im feishu` (both repeatable) to require a specific one, and `--json` for machine-readable output.
+
+If the server check fails, its error category distinguishes configuration, network, HTTP, and invalid-response failures.
+Confirm the server is running and that the configured URL points to its base address.
 
 ## Releases
 

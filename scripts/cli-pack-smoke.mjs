@@ -173,7 +173,7 @@ export async function runCliPackSmoke({ channel, expectedName, expectedVersion, 
       throw new Error("CLI Computer connect help is missing --no-start");
     }
     const doctor = run(binaryPath, ["doctor", "--server-url", "http://127.0.0.1:1"], { expectedStatus: 1 });
-    if (!doctor.stderr.includes("Network error:")) {
+    if (!doctor.stderr.includes("network error: could not reach the OpenTag server at http://127.0.0.1:1")) {
       throw new Error("CLI doctor smoke did not report the expected network failure");
     }
 

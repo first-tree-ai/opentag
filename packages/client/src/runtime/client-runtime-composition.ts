@@ -211,11 +211,29 @@ export class ComposedClientRuntime {
   }
 }
 
-export async function createClientRuntime(
-  connection: RuntimeConnection,
-  options: CreateClientRuntimeOptions,
-): Promise<ComposedClientRuntime> {
-  const moduleLogger = (module: string) => options.logger?.child({ module }) ?? createLogger(module);
+/**
+ * The Agent Runtime provider factories the production Client Runtime uses, resolved without a Server
+ * connection so local diagnostics can probe exactly what the daemon probes.
+ */
+export interface AgentRuntimeProviderComposition {
+  readonly artifactIdentities: Readonly<Record<"codex" | "claude-code", string>>;
+  readonly factories: readonly AgentRuntimeFactory[];
+  readonly providerHomes: Readonly<Record<"codex" | "claude-code", string>>;
+}
+
+export interface ResolveAgentRuntimeProvidersOptions {
+  readonly claudeCodeCommand?: string;
+  readonly claudeCodeHome?: string;
+  readonly clientVersion: string;
+  readonly codexCommand?: string;
+  readonly codexHome?: string;
+  readonly environment?: NodeJS.ProcessEnv;
+  readonly signal?: AbortSignal;
+}
+
+export async function resolveAgentRuntimeProviders(
+  options: ResolveAgentRuntimeProvidersOptions,
+): Promise<AgentRuntimeProviderComposition> {
   const sourceEnvironment = options.environment ?? process.env;
   options.signal?.throwIfAborted();
   const defaultHome = sourceEnvironment.HOME ?? homedir();
@@ -235,35 +253,42 @@ export async function createClientRuntime(
     ...sourceEnvironment,
     CLAUDE_CONFIG_DIR: claudeCodeHome,
   });
-  const providerHomes: Readonly<Record<"codex" | "claude-code", string>> = {
-    codex: codexHome,
-    "claude-code": claudeCodeHome,
+  return {
+    artifactIdentities: {
+      codex: createHash("sha256").update(codexHome, "utf8").digest("hex"),
+      "claude-code": createHash("sha256").update(claudeCodeHome, "utf8").digest("hex"),
+    },
+    factories: [
+      resolvedCodexFactory({
+        clientVersion: options.clientVersion,
+        command: codexCommand,
+        codexHome,
+        environment: codexEnvironment,
+        sourceEnvironment,
+      }),
+      resolvedClaudeCodeFactory({
+        claudeCodeHome,
+        command: claudeCodeCommand,
+        environment: claudeCodeEnvironment,
+        sourceEnvironment,
+      }),
+    ],
+    providerHomes: { codex: codexHome, "claude-code": claudeCodeHome },
   };
-  const providerArtifactIdentities: Readonly<Record<"codex" | "claude-code", string>> = {
-    codex: createHash("sha256").update(codexHome, "utf8").digest("hex"),
-    "claude-code": createHash("sha256").update(claudeCodeHome, "utf8").digest("hex"),
-  };
-  const factories =
-    options.factories ??
-    (options.factory
-      ? [options.factory]
-      : [
-          resolvedCodexFactory({
-            clientVersion: options.clientVersion,
-            command: codexCommand,
-            codexHome,
-            environment: codexEnvironment,
-            sourceEnvironment,
-          }),
-          resolvedClaudeCodeFactory({
-            claudeCodeHome,
-            command: claudeCodeCommand,
-            environment: claudeCodeEnvironment,
-            sourceEnvironment,
-          }),
-        ]);
+}
+
+export async function createClientRuntime(
+  connection: RuntimeConnection,
+  options: CreateClientRuntimeOptions,
+): Promise<ComposedClientRuntime> {
+  const moduleLogger = (module: string) => options.logger?.child({ module }) ?? createLogger(module);
+  const sourceEnvironment = options.environment ?? process.env;
+  const composition = await resolveAgentRuntimeProviders(options);
+  const factories = options.factories ?? (options.factory ? [options.factory] : composition.factories);
   const providers = new AgentRuntimeProviderRegistry(
-    factories.map((factory) => productionProviderRegistration(factory, providerArtifactIdentities, providerHomes)),
+    factories.map((factory) =>
+      productionProviderRegistration(factory, composition.artifactIdentities, composition.providerHomes),
+    ),
   );
   const capabilityAbort = new AbortController();
   const readinessSignal = options.signal
@@ -526,6 +551,37 @@ export function providerReadiness(
   return { provider, status: "unavailable" };
 }
 
+/**
+ * Observe one messaging CLI without publishing the result, so both the Client Runtime and local
+ * diagnostics decide readiness from the same probe.
+ */
+export async function probeImCliReadiness(
+  provider: RuntimeImCliReadinessObservation["provider"],
+  configuredCommand: string,
+  environment: NodeJS.ProcessEnv,
+  signal?: AbortSignal,
+): Promise<"install" | "ready" | "unavailable"> {
+  let command: string;
+  try {
+    command = await resolveExecutable(configuredCommand, environment);
+  } catch {
+    return "install";
+  }
+  const execution = { env: environment, signal, timeout: 10_000, windowsHide: true } as const;
+  try {
+    if (provider === "feishu") {
+      await execFileAsync(command, ["--version"], execution);
+      await execFileAsync(command, ["im", "--help"], execution);
+    } else {
+      await execFileAsync(command, ["version"], execution);
+      await execFileAsync(command, ["api", "--help"], execution);
+    }
+    return "ready";
+  } catch {
+    return "unavailable";
+  }
+}
+
 export async function refreshImCliReadiness(
   connection: Pick<RuntimeConnection, "setImCliReadiness">,
   provider: RuntimeImCliReadinessObservation["provider"],
@@ -535,27 +591,7 @@ export async function refreshImCliReadiness(
 ): Promise<void> {
   if (signal?.aborted) return;
   connection.setImCliReadiness({ provider, status: "checking" });
-  const probe = (async () => {
-    let command: string;
-    try {
-      command = await resolveExecutable(configuredCommand, environment);
-    } catch {
-      return "install" as const;
-    }
-    const execution = { env: environment, signal, timeout: 10_000, windowsHide: true } as const;
-    try {
-      if (provider === "feishu") {
-        await execFileAsync(command, ["--version"], execution);
-        await execFileAsync(command, ["im", "--help"], execution);
-      } else {
-        await execFileAsync(command, ["version"], execution);
-        await execFileAsync(command, ["api", "--help"], execution);
-      }
-      return "ready" as const;
-    } catch {
-      return "unavailable" as const;
-    }
-  })();
+  const probe = probeImCliReadiness(provider, configuredCommand, environment, signal);
   let onAbort: (() => void) | undefined;
   const status = await (signal
     ? Promise.race([

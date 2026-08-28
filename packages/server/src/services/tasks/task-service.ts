@@ -11,6 +11,7 @@ import { z } from "zod";
 import type { DatabaseClient } from "../../db/client.js";
 import { sessionMessages } from "../../db/schema/index.js";
 import { workspaceNotFound } from "../workspace-admin-access/workspace-admin-access.js";
+import { deriveTaskTitle } from "./task-title.js";
 
 const CursorSchema = z.object({ at: z.string().datetime(), id: z.string().uuid() }).strict();
 
@@ -124,7 +125,7 @@ function toSummary(row: TaskSummaryRow): TaskSummary {
       threadKey: row.threadKey,
     },
     sessionKind: row.sessionKind,
-    title: row.fallbackText?.trim() || fallbackTitle,
+    title: deriveTaskTitle(row.fallbackText, fallbackTitle),
     status: taskStatus(row),
     createdAt: toIso(row.createdAt),
     endedAt: row.endedAt ? toIso(row.endedAt) : null,

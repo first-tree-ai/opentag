@@ -225,7 +225,7 @@ export function TaskDetailPage() {
       </nav>
 
       <header className="task-conversation-header">
-        <h1>{task.title}</h1>
+        <h1 title={task.title}>{task.title}</h1>
         <section className="task-conversation-context" aria-label="Task source">
           <SourceIdentity task={task} />
           <StatusIndicator
@@ -411,7 +411,9 @@ function TaskRow({ task }: { task: TaskSummary }) {
   return (
     <tr className="task-table-grid task-table-row">
       <td className="task-work-cell" data-label="Task">
-        <Link to={`/tasks/${task.id}`}>{task.title}</Link>
+        <Link title={task.title} to={`/tasks/${task.id}`}>
+          {task.title}
+        </Link>
         <span className="task-list-metadata">
           <span>{task.agent.displayName}</span>
           <span aria-hidden="true">·</span>

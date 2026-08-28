@@ -347,6 +347,7 @@ async function respondingRuntime(input: {
   computerId: string;
   deliveryGate?: Promise<void>;
   instanceId: string;
+  negotiatedCapabilities?: Readonly<Record<string, number>>;
   requestTimeoutMs?: number;
   reconcileResult?: (frame: Record<string, unknown>) => Promise<Record<string, unknown>> | Record<string, unknown>;
   steerDeferredReason?: "turn_not_running" | "steer_unsupported" | "steer_state_unknown";
@@ -428,30 +429,35 @@ async function respondingRuntime(input: {
       });
     }),
   } as unknown as WebSocket;
-  await registry.register(
-    {
-      capabilities: { imCredentialGrant: 1 },
-      capabilitiesUpdatedAt: Date.now(),
-      computerId: input.computerId,
-      workspaceComputerId: input.workspaceComputerId,
-      workspaceId: input.workspaceId,
-      instanceId: input.instanceId,
-      lastHeartbeatAt: Date.now(),
-      ...(input.steerResult
-        ? {
-            connectionId: crypto.randomUUID(),
-            negotiatedCapabilities: { [RUNTIME_CAPABILITY.imSteer]: 1 },
-            protocolVersion: 2 as const,
-          }
-        : {}),
-      socket,
-    },
-    async () => undefined,
-  );
+  const register = async (negotiatedCapabilities = input.negotiatedCapabilities) =>
+    registry.register(
+      {
+        capabilities: { imCredentialGrant: 1 },
+        capabilitiesUpdatedAt: Date.now(),
+        computerId: input.computerId,
+        workspaceComputerId: input.workspaceComputerId,
+        workspaceId: input.workspaceId,
+        instanceId: input.instanceId,
+        lastHeartbeatAt: Date.now(),
+        ...(input.steerResult || negotiatedCapabilities
+          ? {
+              connectionId: crypto.randomUUID(),
+              negotiatedCapabilities: {
+                ...(input.steerResult ? { [RUNTIME_CAPABILITY.imSteer]: 1 } : {}),
+                ...negotiatedCapabilities,
+              },
+              protocolVersion: 2 as const,
+            }
+          : {}),
+        socket,
+      },
+      async () => undefined,
+    );
+  await register();
   domain = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(input.database), {
     requestTimeoutMs: input.requestTimeoutMs,
   });
-  return { context, domain, frames, registry };
+  return { context, domain, frames, registry, register };
 }
 
 function turnReportFor(input: {
@@ -2015,6 +2021,105 @@ describe("IM binding persistence", () => {
     }
   });
 
+  it("materializes ambient all-message Threads without treating existence as direct continuity", async () => {
+    const value = await fixture();
+    try {
+      await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
+      const inbox = new ImMessageInbox(value.database);
+      const first = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "ambient-thread-first",
+          externalMessageId: "2200.101",
+          rootExternalMessageId: "2200.100",
+          occurredAt: "2026-08-19T00:00:01.000Z",
+        }),
+      );
+      const firstScopes = await value.database
+        .select({ attention: imMessageDeliveries.attention, kind: sessions.kind, sessionId: sessions.id })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(imMessageDeliveries.messageId, first.messageId as string));
+      expect(firstScopes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ attention: "ambient", kind: "thread" }),
+          expect.objectContaining({ attention: "ambient", kind: "channel" }),
+        ]),
+      );
+      expect(firstScopes).toHaveLength(2);
+      const threadSessionId = firstScopes.find((scope) => scope.kind === "thread")?.sessionId;
+
+      const second = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "ambient-thread-second",
+          externalMessageId: "2200.102",
+          rootExternalMessageId: "2200.100",
+          occurredAt: "2026-08-19T00:00:02.000Z",
+        }),
+      );
+      expect(
+        await value.database
+          .select({ attention: imMessageDeliveries.attention, kind: sessions.kind, sessionId: sessions.id })
+          .from(imMessageDeliveries)
+          .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+          .where(eq(imMessageDeliveries.messageId, second.messageId as string)),
+      ).toEqual(
+        expect.arrayContaining([
+          { attention: "ambient", kind: "thread", sessionId: threadSessionId },
+          expect.objectContaining({ attention: "ambient", kind: "channel" }),
+        ]),
+      );
+
+      await value.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, value.agent.id));
+      const unaddressed = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "ambient-thread-mention-only",
+          externalMessageId: "2200.103",
+          rootExternalMessageId: "2200.100",
+          occurredAt: "2026-08-19T00:00:03.000Z",
+        }),
+      );
+      expect(unaddressed.deliveryIds).toEqual([]);
+
+      const addressed = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "ambient-thread-direct",
+          externalMessageId: "2200.104",
+          rootExternalMessageId: "2200.100",
+          occurredAt: "2026-08-19T00:00:04.000Z",
+          direct: true,
+        }),
+      );
+      expect(addressed.deliveryIds).toHaveLength(1);
+      const continuation = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "ambient-thread-direct-continuation",
+          externalMessageId: "2200.105",
+          rootExternalMessageId: "2200.100",
+          occurredAt: "2026-08-19T00:00:05.000Z",
+        }),
+      );
+      expect(
+        await value.database
+          .select({ attention: imMessageDeliveries.attention, kind: sessions.kind, sessionId: sessions.id })
+          .from(imMessageDeliveries)
+          .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+          .where(eq(imMessageDeliveries.messageId, continuation.messageId as string)),
+      ).toEqual([{ attention: "direct", kind: "thread", sessionId: threadSessionId }]);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("uses only a reliable Feishu rootId for implicit Thread admission", async () => {
     const value = await unboundFixture();
     try {
@@ -2079,10 +2184,114 @@ describe("IM binding persistence", () => {
       missingRoot.message.threadKey = "omt_2";
       missingRoot.mentions = [];
       expect((await inbox.ingest(imBindingId, 1, missingRoot)).deliveryIds).toEqual([]);
+      await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
+      const allMessageMissingRoot = structuredClone(missingRoot);
+      allMessageMissingRoot.providerEventId = "feishu-thread-missing-root-all-message";
+      allMessageMissingRoot.message.externalId = "om_reply_2_all_message";
+      const ambient = await inbox.ingest(imBindingId, 1, allMessageMissingRoot);
+      expect(
+        await value.database
+          .select({ attention: imMessageDeliveries.attention, kind: sessions.kind })
+          .from(imMessageDeliveries)
+          .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+          .where(eq(imMessageDeliveries.messageId, ambient.messageId as string)),
+      ).toEqual(
+        expect.arrayContaining([
+          { attention: "ambient", kind: "thread" },
+          { attention: "ambient", kind: "channel" },
+        ]),
+      );
+      await value.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, value.agent.id));
       missingRoot.providerEventId = "feishu-thread-current-direct";
       missingRoot.message = { ...missingRoot.message, externalId: "om_reply_3" };
       missingRoot.mentions = [{ externalId: "ou_bot", displayName: "Assistant" }];
       expect((await inbox.ingest(imBindingId, 1, missingRoot)).deliveryIds).toHaveLength(1);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("upgrades only undispatched ambient Thread deliveries when a direct root arrives out of order", async () => {
+    const value = await fixture();
+    try {
+      await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
+      const inbox = new ImMessageInbox(value.database);
+      const correlatedReply = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "correlated-reply-first",
+          externalMessageId: "2300.101",
+          rootExternalMessageId: "2300.100",
+          occurredAt: "2026-08-19T00:00:02.000Z",
+        }),
+      );
+      const [correlatedThread] = await value.database
+        .select({ id: imMessageDeliveries.id })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(
+          and(eq(imMessageDeliveries.messageId, correlatedReply.messageId as string), eq(sessions.kind, "thread")),
+        );
+      await value.database
+        .update(imMessageDeliveries)
+        .set({
+          dispatchRequestId: crypto.randomUUID(),
+          dispatchInputHash: "a".repeat(64),
+          dispatchPayload: {} as never,
+        })
+        .where(eq(imMessageDeliveries.id, correlatedThread?.id as string));
+      await inbox.ingest(
+        value.imBindingId,
+        1,
+        revisionEvent({
+          providerEventId: "correlated-direct-root",
+          externalMessageId: "2300.100",
+          operation: "created",
+          occurredAt: "2026-08-19T00:00:01.000Z",
+          revisionKey: "1",
+        }),
+      );
+      expect(
+        await value.database
+          .select({ attention: imMessageDeliveries.attention })
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, correlatedThread?.id as string)),
+      ).toEqual([{ attention: "ambient" }]);
+
+      const pendingReply = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "pending-reply-first",
+          externalMessageId: "2400.101",
+          rootExternalMessageId: "2400.100",
+          occurredAt: "2026-08-19T00:00:04.000Z",
+        }),
+      );
+      await inbox.ingest(
+        value.imBindingId,
+        1,
+        revisionEvent({
+          providerEventId: "pending-direct-root",
+          externalMessageId: "2400.100",
+          operation: "created",
+          occurredAt: "2026-08-19T00:00:03.000Z",
+          revisionKey: "1",
+        }),
+      );
+      expect(
+        await value.database
+          .select({ attention: imMessageDeliveries.attention, kind: sessions.kind })
+          .from(imMessageDeliveries)
+          .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+          .where(eq(imMessageDeliveries.messageId, pendingReply.messageId as string)),
+      ).toEqual(
+        expect.arrayContaining([
+          { attention: "direct", kind: "thread" },
+          { attention: "ambient", kind: "channel" },
+        ]),
+      );
     } finally {
       await value.sql.end();
     }
@@ -2243,19 +2452,8 @@ describe("IM binding persistence", () => {
   it("converges concurrent first Thread admissions on one active Session and placement", async () => {
     const value = await fixture();
     try {
-      await value.database.update(agents).set({ receiveMode: "mention_only" }).where(eq(agents.id, value.agent.id));
+      await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
       const inbox = new ImMessageInbox(value.database);
-      await inbox.ingest(
-        value.imBindingId,
-        1,
-        revisionEvent({
-          providerEventId: "concurrent-root",
-          externalMessageId: "6000.100",
-          operation: "created",
-          occurredAt: "2026-08-19T00:00:01.000Z",
-          revisionKey: "1",
-        }),
-      );
       const admissions = await Promise.all([
         inbox.ingest(
           value.imBindingId,
@@ -2278,7 +2476,7 @@ describe("IM binding persistence", () => {
           }),
         ),
       ]);
-      expect(admissions.every((admission) => admission.deliveryIds.length === 1)).toBe(true);
+      expect(admissions.every((admission) => admission.deliveryIds.length === 2)).toBe(true);
       const threadRows = await value.database
         .select({ id: sessions.id })
         .from(sessions)
@@ -2294,10 +2492,14 @@ describe("IM binding persistence", () => {
         await value.database
           .select({ sessionId: imMessageDeliveries.sessionId })
           .from(imMessageDeliveries)
+          .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
           .where(
-            inArray(
-              imMessageDeliveries.id,
-              admissions.flatMap((admission) => admission.deliveryIds),
+            and(
+              eq(sessions.kind, "thread"),
+              inArray(
+                imMessageDeliveries.id,
+                admissions.flatMap((admission) => admission.deliveryIds),
+              ),
             ),
           ),
       ).toEqual([{ sessionId: threadRows[0]?.id }, { sessionId: threadRows[0]?.id }]);
@@ -2863,6 +3065,88 @@ describe("IM binding persistence", () => {
         reason: "input_conflict",
         lastErrorCode: "IM_DELIVERY_TERMINAL",
       });
+      runtime.domain.close();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("fails observer steer closed under v1 and retries it after v2 negotiation", async () => {
+    const value = await fixture();
+    try {
+      await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(workspaceComputers.id, value.workspaceComputer.id));
+      const inbox = new ImMessageInbox(value.database);
+      await inbox.ingest(value.imBindingId, 1, inbound("observer-steer-root"));
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        negotiatedCapabilities: { [RUNTIME_CAPABILITY.imDelivery]: 2, [RUNTIME_CAPABILITY.imSteer]: 1 },
+        steerResult: "steered",
+        workspaceComputerId: value.workspaceComputer.id,
+        workspaceId: value.bootstrap.workspaceId,
+      });
+      const worker = imDeliveryWorker({ database: value.database, registry: runtime.registry, domain: runtime.domain });
+      await worker.runOnce();
+      const [root] = await value.database.select().from(imMessageDeliveries);
+      if (!root?.turnId) throw new Error("Root Channel Turn custody was not accepted");
+
+      const followUp = await inbox.ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "observer-steer-follow-up",
+          externalMessageId: "7100.101",
+          rootExternalMessageId: "7100.100",
+          occurredAt: "2026-08-19T00:00:02.000Z",
+        }),
+      );
+      const scoped = await value.database
+        .select({ id: imMessageDeliveries.id, kind: sessions.kind })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(imMessageDeliveries.messageId, followUp.messageId as string));
+      const channelDelivery = scoped.find((row) => row.kind === "channel");
+      const threadDelivery = scoped.find((row) => row.kind === "thread");
+      if (!channelDelivery || !threadDelivery) throw new Error("Expected observer fan-out deliveries");
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date("2099-01-01T00:00:00.000Z") })
+        .where(eq(imMessageDeliveries.id, threadDelivery.id));
+
+      const beforeV1 = runtime.frames.length;
+      await worker.runOnce();
+      expect(
+        runtime.frames.slice(beforeV1).filter((frame) => (frame as { type?: unknown }).type === "im:steer"),
+      ).toEqual([]);
+      expect(
+        await value.database
+          .select({ dispatchRequestId: imMessageDeliveries.dispatchRequestId, state: imMessageDeliveries.state })
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, channelDelivery.id)),
+      ).toEqual([{ dispatchRequestId: null, state: "pending" }]);
+
+      await runtime.register({ [RUNTIME_CAPABILITY.imDelivery]: 2, [RUNTIME_CAPABILITY.imSteer]: 2 });
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(0) })
+        .where(eq(imMessageDeliveries.id, channelDelivery.id));
+      await worker.runOnce();
+      expect(runtime.frames).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "im:steer",
+            deliveryId: channelDelivery.id,
+            rootDeliveryId: root.id,
+            replyRole: "observer",
+          }),
+        ]),
+      );
       runtime.domain.close();
     } finally {
       await value.sql.end();
@@ -4065,6 +4349,105 @@ describe("IM binding persistence", () => {
       await expect(
         third.domain.handle({ ...report, requestId: crypto.randomUUID() }, third.context),
       ).resolves.toMatchObject({ status: "already_recorded" });
+    } finally {
+      for (const owner of owners) owner.close();
+      await value.sql.end();
+    }
+  });
+
+  it("fails observer delivery closed under v1 and retries the same delivery after v2 negotiation", async () => {
+    const value = await fixture();
+    const owners: RuntimeDomainOwner[] = [];
+    try {
+      await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
+      const admitted = await new ImMessageInbox(value.database).ingest(
+        value.imBindingId,
+        1,
+        slackThreadEvent({
+          providerEventId: "observer-capability-message",
+          externalMessageId: "7000.101",
+          rootExternalMessageId: "7000.100",
+          occurredAt: "2026-08-19T00:00:01.000Z",
+        }),
+      );
+      const scoped = await value.database
+        .select({ id: imMessageDeliveries.id, kind: sessions.kind })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(imMessageDeliveries.messageId, admitted.messageId as string));
+      const channelDelivery = scoped.find((row) => row.kind === "channel");
+      const threadDelivery = scoped.find((row) => row.kind === "thread");
+      if (!channelDelivery || !threadDelivery) throw new Error("Expected Channel and Thread deliveries");
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date("2099-01-01T00:00:00.000Z") })
+        .where(eq(imMessageDeliveries.id, threadDelivery.id));
+
+      const instanceId = crypto.randomUUID();
+      await value.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: instanceId })
+        .where(eq(workspaceComputers.id, value.workspaceComputer.id));
+      const runtime = await respondingRuntime({
+        database: value.database,
+        computerId: value.computer.id,
+        instanceId,
+        negotiatedCapabilities: { [RUNTIME_CAPABILITY.imDelivery]: 1 },
+        workspaceComputerId: value.workspaceComputer.id,
+        workspaceId: value.bootstrap.workspaceId,
+      });
+      owners.push(runtime.domain);
+      const worker = imDeliveryWorker({ database: value.database, registry: runtime.registry, domain: runtime.domain });
+      await worker.runOnce();
+      expect(runtime.frames).toEqual([]);
+      expect(
+        await value.database
+          .select({ dispatchRequestId: imMessageDeliveries.dispatchRequestId, state: imMessageDeliveries.state })
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, channelDelivery.id)),
+      ).toEqual([{ dispatchRequestId: null, state: "pending" }]);
+
+      await runtime.register({ [RUNTIME_CAPABILITY.imDelivery]: 2 });
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(0) })
+        .where(eq(imMessageDeliveries.id, channelDelivery.id));
+      await worker.runOnce();
+      const observerFrames = runtime.frames.filter(
+        (frame): frame is DirectImMessageDeliveryRequest =>
+          typeof frame === "object" && frame !== null && (frame as { type?: unknown }).type === "im:deliver",
+      );
+      expect(observerFrames).toHaveLength(1);
+      expect(observerFrames[0]).toMatchObject({ deliveryId: channelDelivery.id, replyRole: "observer" });
+
+      const accepted = observerFrames[0];
+      if (!accepted) throw new Error("Expected accepted observer frame");
+      await expect(
+        runtime.domain.handle(
+          turnReportFor({
+            agentId: accepted.agentId,
+            deliveryId: accepted.deliveryId,
+            placementGeneration: accepted.placementGeneration,
+            sessionId: accepted.sessionId,
+            turnId: `turn-${accepted.deliveryId}`,
+          }),
+          runtime.context,
+        ),
+      ).resolves.toMatchObject({ status: "recorded" });
+      await value.database
+        .update(imMessageDeliveries)
+        .set({ nextAttemptAt: new Date(0) })
+        .where(eq(imMessageDeliveries.id, threadDelivery.id));
+      await worker.runOnce();
+      const ownerFrame = runtime.frames.find(
+        (frame): frame is DirectImMessageDeliveryRequest =>
+          typeof frame === "object" &&
+          frame !== null &&
+          (frame as { type?: unknown }).type === "im:deliver" &&
+          (frame as { deliveryId?: unknown }).deliveryId === threadDelivery.id,
+      );
+      expect(ownerFrame).toBeDefined();
+      expect(ownerFrame).not.toHaveProperty("replyRole");
     } finally {
       for (const owner of owners) owner.close();
       await value.sql.end();

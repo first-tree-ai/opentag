@@ -106,6 +106,22 @@ describe("AgentTurnRunner", () => {
     expect(context).toContain("Attention does not change provider CLI or credential availability");
   });
 
+  it("compiles observer role independently from attention without removing Session credentials", () => {
+    const request = { ...delivery(), attention: "ambient" as const, replyRole: "observer" as const };
+    const context = buildAgentInput(request).items[0]?.text;
+    expect(context).toContain("Attention: ambient");
+    expect(context).toContain("Reply role: observer");
+    expect(context).toContain("A Thread Session owns the provider reply");
+    expect(context).toContain("do not reply, react, or perform any other provider mutation");
+    expect(context).toContain("The CLI and credentials remain available");
+    expect(context).toContain("does not change this Session's authority or credential availability");
+
+    const ownerContext = buildAgentInput(delivery()).items[0]?.text;
+    expect(ownerContext).toContain("Reply role: owner");
+    expect(ownerContext).toContain("may reply, react, send another provider message, or take no provider action");
+    expect(ownerContext).not.toContain("must reply");
+  });
+
   it("exposes provider-native thread facts without adding a provider reply policy", () => {
     const slackRequest = delivery();
     slackRequest.content.providerRef = {

@@ -608,7 +608,8 @@ function deliveryRequestMatches(scope: DeliveryScope, request: DirectImMessageDe
     scope.delivery.id === request.deliveryId &&
     scope.delivery.sessionId === request.sessionId &&
     scope.message.id === request.imMessageId &&
-    scope.agentId === request.agentId
+    scope.agentId === request.agentId &&
+    scope.delivery.attention === request.attention
   );
 }
 
@@ -617,7 +618,8 @@ function steerRequestMatches(scope: DeliveryScope, request: RuntimeImSteerReques
     scope.delivery.id === request.deliveryId &&
     scope.delivery.sessionId === request.sessionId &&
     scope.message.id === request.imMessageId &&
-    scope.agentId === request.agentId
+    scope.agentId === request.agentId &&
+    scope.delivery.attention === request.attention
   );
 }
 

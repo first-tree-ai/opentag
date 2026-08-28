@@ -347,6 +347,7 @@ export const DirectImMessageDeliveryRequestSchema = z
     agentId: RuntimeOpaqueIdSchema,
     placementGeneration: RuntimeSequenceSchema,
     attention: z.enum(["direct", "ambient"]),
+    replyRole: z.literal("observer").optional(),
     content: RuntimeImDeliveryContentSchema,
     runtime: EffectiveRuntimeSnapshotSchema,
     deadlineAt: z.string().datetime({ offset: true }).optional(),
@@ -370,6 +371,7 @@ export const RuntimeImSteerRequestSchema = z
     rootDeliveryId: RuntimeOpaqueIdSchema,
     expectedTurnId: RuntimeOpaqueIdSchema,
     attention: z.enum(["direct", "ambient"]),
+    replyRole: z.literal("observer").optional(),
     content: RuntimeImDeliveryContentSchema,
     deadlineAt: z.string().datetime({ offset: true }).optional(),
   })
@@ -767,7 +769,7 @@ export function computeRuntimeSnapshotHashes(input: EffectiveRuntimeSnapshot): R
 
 export function computeDirectInputHash(input: DirectImMessageDeliveryRequest): string {
   const frame = DirectImMessageDeliveryRequestSchema.parse(input);
-  return hashTuple([
+  const payload = [
     1,
     frame.imMessageId,
     frame.sessionId,
@@ -782,7 +784,8 @@ export function computeDirectInputHash(input: DirectImMessageDeliveryRequest): s
     frame.content.resources ?? [],
     computeRuntimeSnapshotHashes(frame.runtime).effectiveSnapshotHash,
     frame.deadlineAt ?? null,
-  ]);
+  ];
+  return frame.replyRole === "observer" ? hashTuple([2, "observer", ...payload.slice(1)]) : hashTuple(payload);
 }
 
 export function computeRuntimeImMessageSemanticHash(
@@ -792,7 +795,7 @@ export function computeRuntimeImMessageSemanticHash(
     input.type === "im:deliver"
       ? DirectImMessageDeliveryRequestSchema.parse(input)
       : RuntimeImSteerRequestSchema.parse(input);
-  return hashTuple([
+  const payload = [
     1,
     frame.imMessageId,
     frame.sessionId,
@@ -803,7 +806,8 @@ export function computeRuntimeImMessageSemanticHash(
     frame.content.text,
     frame.content.providerRef,
     frame.deadlineAt ?? null,
-  ]);
+  ];
+  return frame.replyRole === "observer" ? hashTuple([2, "observer", ...payload.slice(1)]) : hashTuple(payload);
 }
 
 export function computeRuntimeImSteerInputHash(input: RuntimeImSteerRequest): string {

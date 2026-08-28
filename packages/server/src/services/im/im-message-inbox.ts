@@ -460,12 +460,28 @@ export class ImMessageInbox {
                 )
                 .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id));
               const seenExternalMessageIds = new Set<string>();
+              const reliableRootsByThreadKey = new Map<string, string | undefined>();
               for (const pending of pendingThreadMessages) {
                 if (seenExternalMessageIds.has(pending.externalMessageId)) continue;
                 seenExternalMessageIds.add(pending.externalMessageId);
+                let reliableRootExternalId: string | undefined;
+                if (pending.threadKey) {
+                  if (reliableRootsByThreadKey.has(pending.threadKey)) {
+                    reliableRootExternalId = reliableRootsByThreadKey.get(pending.threadKey);
+                  } else {
+                    reliableRootExternalId = await this.#reliableThreadRootExternalId(
+                      transaction,
+                      imBindingId,
+                      event.conversation.externalId,
+                      pending.threadKey,
+                      pending.providerContext,
+                    );
+                    reliableRootsByThreadKey.set(pending.threadKey, reliableRootExternalId);
+                  }
+                }
                 if (
                   !pending.threadKey ||
-                  threadRootExternalId(pending.providerContext) !== event.message.externalId ||
+                  reliableRootExternalId !== event.message.externalId ||
                   (await this.#hasEndedThreadSession(
                     transaction,
                     imBindingId,

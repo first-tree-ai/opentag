@@ -44,18 +44,24 @@ export const defaultServiceRunner: ServiceRunner = {
     // Resolution happens here rather than in the backends because this is where a name becomes a
     // running process. A service manager reached through the caller's PATH would let an executable
     // placed earlier there decide what OpenTag believes about its own daemon.
-    const resolved = await resolveServiceManagerCommand(program);
-    if (!resolved) {
+    const resolution = await resolveServiceManagerCommand(program);
+    if (resolution.kind !== "resolved") {
+      // The two cases read differently on purpose. "Not installed here" is a fact about the host that
+      // callers are entitled to degrade around; "not governed" means this runner was handed a program
+      // nobody registered, which is a defect that should not be mistaken for a missing binary.
       return {
         code: null,
-        stderr: `${program} was not found at a known system location`,
+        stderr:
+          resolution.kind === "ungoverned"
+            ? `${program} is not a program this runner may execute`
+            : `${program} was not found at a known system location`,
         stdout: "",
         timedOut: false,
       };
     }
     return new Promise<CommandResult>((complete) => {
       execFile(
-        resolved,
+        resolution.path,
         [...args],
         {
           encoding: "utf8",
@@ -89,24 +95,36 @@ export const defaultServiceRunner: ServiceRunner = {
  * variables that address the user manager, so stripping them would break the call rather than
  * secure it; the executable is what had to stop being the caller's choice.
  */
-const SERVICE_MANAGER_PATHS: Readonly<Record<"launchctl" | "systemctl", readonly string[]>> = {
+const SERVICE_MANAGER_PATHS: Readonly<Record<string, readonly string[]>> = {
   launchctl: ["/bin/launchctl", "/usr/bin/launchctl"],
+  loginctl: ["/usr/bin/loginctl", "/bin/loginctl"],
   systemctl: ["/usr/bin/systemctl", "/bin/systemctl"],
 };
 
-async function resolveServiceManagerCommand(program: string): Promise<string | undefined> {
-  if (isAbsolute(program)) return program;
-  const candidates = SERVICE_MANAGER_PATHS[program as "launchctl" | "systemctl"];
-  if (!candidates) return undefined;
+/** Every program name this runner is allowed to execute, for the drift guard that enforces it. */
+export const SERVICE_MANAGER_PROGRAMS: readonly string[] = Object.keys(SERVICE_MANAGER_PATHS).sort();
+
+type ServiceManagerResolution =
+  /** A program this runner governs, present on this host. */
+  | { readonly kind: "resolved"; readonly path: string }
+  /** A program this runner governs that this host does not have; callers degrade on their own terms. */
+  | { readonly kind: "unavailable" }
+  /** A program this runner does not govern. That is a defect here, not a fact about the host. */
+  | { readonly kind: "ungoverned" };
+
+async function resolveServiceManagerCommand(program: string): Promise<ServiceManagerResolution> {
+  if (isAbsolute(program)) return { kind: "resolved", path: program };
+  const candidates = SERVICE_MANAGER_PATHS[program];
+  if (!candidates) return { kind: "ungoverned" };
   for (const candidate of candidates) {
     try {
       await access(candidate, constants.X_OK);
-      return candidate;
+      return { kind: "resolved", path: candidate };
     } catch {
       // Try the next well-known location.
     }
   }
-  return undefined;
+  return { kind: "unavailable" };
 }
 
 export function deriveServiceIdentity(serviceId: string): ServiceIdentity {

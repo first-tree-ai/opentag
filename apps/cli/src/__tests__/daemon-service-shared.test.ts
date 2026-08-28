@@ -23,6 +23,7 @@ import {
   quoteSystemdToken,
   resolveCliInvocation,
   runRequired,
+  SERVICE_MANAGER_PROGRAMS,
   writeFileAtomically,
 } from "../core/daemon/service/shared.js";
 
@@ -371,15 +372,38 @@ describe("defaultServiceRunner", () => {
     }
   });
 
-  it("refuses a program it cannot place at a known system location", async () => {
-    await expect(
-      defaultServiceRunner.run("definitely-not-a-service-manager", [], { timeoutMs: 1_000 }),
-    ).resolves.toEqual({
+  it("says a program it does not govern is a defect, not a missing binary", async () => {
+    // /bin/echo exists and is executable; it is refused because nobody registered it. That has to
+    // read differently from "this host does not have it", or the next omission looks environmental.
+    await expect(defaultServiceRunner.run("echo", ["hello"], { timeoutMs: 1_000 })).resolves.toEqual({
       code: null,
-      stderr: "definitely-not-a-service-manager was not found at a known system location",
+      stderr: "echo is not a program this runner may execute",
       stdout: "",
       timedOut: false,
     });
+    await expect(defaultServiceRunner.run("/bin/echo", ["hello"], { timeoutMs: 1_000 })).resolves.toMatchObject({
+      code: 0,
+      stdout: "hello",
+    });
+  });
+
+  it("governs every program the service backends hand it", async () => {
+    // The omission this guards against already happened once: moving resolution into the runner put
+    // every program behind this list, and `loginctl` was not on it, so Linux installs silently
+    // stopped enabling lingering.
+    const sources = await Promise.all(
+      ["launchd.ts", "systemd.ts"].map((file) =>
+        readFile(new URL(`../core/daemon/service/${file}`, import.meta.url), "utf8"),
+      ),
+    );
+    const invoked = new Set(
+      sources.flatMap((source) => [...source.matchAll(/runner\.run\(\s*"([a-z][a-z-]*)"/gu)].map((match) => match[1])),
+    );
+
+    expect(invoked.size).toBeGreaterThan(0);
+    for (const program of invoked) {
+      expect(SERVICE_MANAGER_PROGRAMS).toContain(program);
+    }
   });
 });
 

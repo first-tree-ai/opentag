@@ -2310,7 +2310,12 @@ describe("IM binding persistence", () => {
         grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
       });
       await value.database.update(agents).set({ receiveMode: "all_message" }).where(eq(agents.id, value.agent.id));
-      const inbox = new ImMessageInbox(value.database);
+      let rootHistoryLookups = 0;
+      const inbox = new ImMessageInbox(value.database, {
+        beforeReliableThreadRootLookup: () => {
+          rootHistoryLookups += 1;
+        },
+      });
 
       const firstReply = revisionEvent({
         providerEventId: "feishu-out-of-order-first-reply",
@@ -2349,6 +2354,31 @@ describe("IM binding persistence", () => {
       laterReply.mentions = [];
       const later = await inbox.ingest(imBindingId, 1, laterReply);
 
+      const unrelatedFirstReply = structuredClone(firstReply);
+      unrelatedFirstReply.providerEventId = "feishu-out-of-order-unrelated-first-reply";
+      unrelatedFirstReply.message.externalId = "om_unrelated_reply_1";
+      unrelatedFirstReply.message.threadKey = "omt_unrelated";
+      unrelatedFirstReply.message.occurredAt = new Date("2026-08-19T00:00:04.000Z");
+      unrelatedFirstReply.providerContext = {
+        provider: "feishu",
+        chatType: "group",
+        threadId: "omt_unrelated",
+        rootId: "om_unrelated_root",
+      };
+      await inbox.ingest(imBindingId, 1, unrelatedFirstReply);
+
+      const unrelatedLaterReply = structuredClone(unrelatedFirstReply);
+      unrelatedLaterReply.providerEventId = "feishu-out-of-order-unrelated-later-reply";
+      unrelatedLaterReply.message.externalId = "om_unrelated_reply_2";
+      unrelatedLaterReply.message.occurredAt = new Date("2026-08-19T00:00:05.000Z");
+      unrelatedLaterReply.providerContext = {
+        provider: "feishu",
+        chatType: "group",
+        threadId: "omt_unrelated",
+      };
+      await inbox.ingest(imBindingId, 1, unrelatedLaterReply);
+      const lookupsBeforeDirectRoot = rootHistoryLookups;
+
       const root = revisionEvent({
         providerEventId: "feishu-out-of-order-direct-root",
         externalMessageId: "om_out_of_order_root",
@@ -2361,6 +2391,7 @@ describe("IM binding persistence", () => {
       root.providerContext = { provider: "feishu", chatType: "group" };
       root.mentions = [{ externalId: "ou_out_of_order_bot", displayName: "Assistant" }];
       await inbox.ingest(imBindingId, 1, root);
+      expect(rootHistoryLookups).toBe(lookupsBeforeDirectRoot);
 
       const upgradedDeliveries = await value.database
         .select({ attention: imMessageDeliveries.attention, externalMessageId: imMessages.externalMessageId })

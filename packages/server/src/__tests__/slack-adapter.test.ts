@@ -189,7 +189,7 @@ describe("Slack installed-binding adapter", () => {
         channel: "C1",
         channel_type: "channel",
         user: "U2",
-        text: "hello <@U1>",
+        text: "<@U_BOT> hello <@U1>",
         ts: "1724025600.123",
         event_ts: "1724025600.124",
         thread_ts: "1724025500.000",
@@ -200,8 +200,19 @@ describe("Slack installed-binding adapter", () => {
       providerEventId: "Ev1",
       providerContext: { provider: "slack", channelType: "channel", threadTs: "1724025500.000" },
       conversation: { externalId: "C1", kind: "channel" },
-      message: { externalId: "1724025600.123", threadKey: "1724025500.000" },
-      mentions: [{ externalId: "U1" }],
+      message: {
+        externalId: "1724025600.123",
+        threadKey: "1724025500.000",
+        content: {
+          fallbackText: "<@U_BOT> hello <@U1>",
+          blocks: [
+            { type: "mention", externalId: "U_BOT", label: "<@U_BOT>" },
+            { type: "text", text: " hello " },
+            { type: "mention", externalId: "U1", label: "<@U1>" },
+          ],
+        },
+      },
+      mentions: [{ externalId: "U_BOT" }, { externalId: "U1" }],
     });
     expect(event?.message.resources[0]).toMatchObject({ providerResourceKey: "F1", kind: "image" });
 

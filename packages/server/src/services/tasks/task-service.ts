@@ -1,4 +1,5 @@
 import type {
+  ImContentV1,
   ListTasksResponse,
   TaskDetail,
   TaskStatus,
@@ -30,6 +31,8 @@ interface TaskSummaryRow extends Record<string, unknown> {
   endedAt: Date | string | null;
   lastActivityAt: Date | string;
   fallbackText: string | null;
+  titleContent: ImContentV1 | null;
+  addressedExternalId: string | null;
   deliveryState: "pending" | "accepted" | "steered" | "terminal_rejected" | "expired" | null;
   reportedAt: Date | string | null;
   turnReport: TurnReportRequest | null;
@@ -125,7 +128,13 @@ function toSummary(row: TaskSummaryRow): TaskSummary {
       threadKey: row.threadKey,
     },
     sessionKind: row.sessionKind,
-    title: deriveTaskTitle(row.fallbackText, fallbackTitle),
+    title: deriveTaskTitle({
+      fallbackText: row.fallbackText,
+      fallbackTitle,
+      provider: row.provider,
+      addressedExternalId: row.addressedExternalId,
+      blocks: row.titleContent?.blocks ?? null,
+    }),
     status: taskStatus(row),
     createdAt: toIso(row.createdAt),
     endedAt: row.endedAt ? toIso(row.endedAt) : null,
@@ -334,6 +343,7 @@ export class TaskService {
           case when d.state = 'steered' then root.reported_at else d.reported_at end as reported_at,
           case when d.state = 'steered' then root.turn_report else d.turn_report end as turn_report,
           m.content ->> 'fallbackText' as fallback_text,
+          m.content as title_content,
           greatest(
             m.occurred_at,
             coalesce(d.accepted_at, m.occurred_at),
@@ -360,6 +370,8 @@ export class TaskService {
         s.ended_at as "endedAt",
         greatest(s.created_at, coalesce(ld.activity_at, s.created_at)) as "lastActivityAt",
         ld.fallback_text as "fallbackText",
+        ld.title_content as "titleContent",
+        b.external_bot_id as "addressedExternalId",
         ld.delivery_state as "deliveryState",
         ld.reported_at as "reportedAt",
         ld.turn_report as "turnReport"

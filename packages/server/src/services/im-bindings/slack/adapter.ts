@@ -1,5 +1,6 @@
 import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
 import { z } from "zod";
+import { contentBlocksWithMentions } from "../mention-content.js";
 import type {
   ImProviderAdapter,
   ProviderResourceInput,
@@ -123,6 +124,7 @@ export function normalizeSlackEnvelope(envelope: VerifiedSlackEnvelope): Normali
   const messageId = nested?.ts ?? (operation === "deleted" ? event.deleted_ts : undefined) ?? event.ts;
   const text = canonical.text ?? "";
   const bounded = boundedText(operation === "deleted" ? "[deleted]" : text);
+  const mentions = mentionsFromText(text, envelope.botUserId);
   const isSelf =
     canonical.user === envelope.botUserId ||
     canonical.bot_id === envelope.botId ||
@@ -165,12 +167,19 @@ export function normalizeSlackEnvelope(envelope: VerifiedSlackEnvelope): Normali
         content: {
           version: 1,
           fallbackText: bounded.text,
-          blocks: [{ type: "text", text: bounded.text }],
+          blocks: contentBlocksWithMentions(
+            bounded.text,
+            mentions.map(({ externalId }) => ({
+              token: `<@${externalId}>`,
+              externalId,
+              label: `<@${externalId}>`,
+            })),
+          ),
           truncated: bounded.truncated,
         },
         resources,
       },
-      mentions: mentionsFromText(text, envelope.botUserId),
+      mentions,
     }),
   ];
 }

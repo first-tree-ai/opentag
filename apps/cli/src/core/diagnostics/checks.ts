@@ -1,6 +1,8 @@
 import {
   type AgentRuntimeFactory,
   type AgentRuntimeProbeResult,
+  DEFAULT_AGENT_RUNTIME_COMMANDS,
+  DEFAULT_IM_CLI_COMMANDS,
   probeImCliReadiness,
   providerReadiness,
   resolveAgentRuntimeProviders,
@@ -58,14 +60,12 @@ export interface ImCliCheckOptions {
   readonly signal?: AbortSignal;
 }
 
-const IM_CLI_COMMANDS: Readonly<Record<ImCliProvider, string>> = { feishu: "lark-cli", slack: "slack" };
-
 /** The bare command each check resolves through PATH, keyed by check id. */
 export const DOCTOR_PROBE_COMMANDS: Readonly<Record<string, string | undefined>> = {
-  "im:feishu": IM_CLI_COMMANDS.feishu,
-  "im:slack": IM_CLI_COMMANDS.slack,
-  "runtime:claude-code": "claude",
-  "runtime:codex": "codex",
+  "im:feishu": DEFAULT_IM_CLI_COMMANDS.feishu,
+  "im:slack": DEFAULT_IM_CLI_COMMANDS.slack,
+  "runtime:claude-code": DEFAULT_AGENT_RUNTIME_COMMANDS["claude-code"],
+  "runtime:codex": DEFAULT_AGENT_RUNTIME_COMMANDS.codex,
 };
 
 export async function checkAgentRuntimes(options: AgentRuntimeCheckOptions): Promise<DoctorCheck[]> {
@@ -107,7 +107,7 @@ export async function checkImClis(options: ImCliCheckOptions): Promise<DoctorChe
   const probe =
     options.probe ??
     ((provider: ImCliProvider, signal: AbortSignal) =>
-      probeImCliReadiness(provider, IM_CLI_COMMANDS[provider], options.environment, signal));
+      probeImCliReadiness(provider, DEFAULT_IM_CLI_COMMANDS[provider], options.environment, signal));
   const checks: DoctorCheck[] = [];
   for (const provider of options.providers) {
     const id = `im:${provider}`;

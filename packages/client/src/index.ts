@@ -166,6 +166,8 @@ export {
   ComposedClientRuntime,
   type CreateClientRuntimeOptions,
   createClientRuntime,
+  DEFAULT_AGENT_RUNTIME_COMMANDS,
+  DEFAULT_IM_CLI_COMMANDS,
   probeImCliReadiness,
   providerReadiness,
   type ResolveAgentRuntimeProvidersOptions,

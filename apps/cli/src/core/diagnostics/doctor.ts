@@ -26,6 +26,7 @@ import {
   type DoctorCheck,
   type ImCliProbe,
 } from "./checks.js";
+import type { DoctorFix } from "./fixes.js";
 import { type DaemonServiceEnvironment, readDaemonServiceEnvironment } from "./service-environment.js";
 
 export type HealthChecker = (serverUrl: string) => Promise<ServerHealth>;
@@ -233,16 +234,20 @@ async function explainPathDivergence(
     }
     explained.push({
       ...check,
-      detail: `on this shell's PATH, but not on the PATH the daemon service runs with`,
-      fix: {
-        commands: [`${channelConfig.binName} daemon install`],
-        note: `\`${command}\` resolves for you but not for the daemon, which uses the PATH captured when its service was installed. Re-installing the service from this shell captures the current one.`,
-        summary: `Give the daemon the same PATH this shell has, so that it can run \`${command}\``,
-      },
+      detail: "on this shell's PATH, but not on the PATH the daemon service runs with",
+      // One shared fix object: several diverging CLIs have one cause and one remedy, and the
+      // renderer collapses identical fixes so the operator is not told the same thing four times.
+      fix: STALE_DAEMON_PATH_FIX,
     });
   }
   return explained;
 }
+
+const STALE_DAEMON_PATH_FIX: DoctorFix = {
+  commands: [`${channelConfig.binName} daemon install`],
+  note: "The daemon uses the PATH captured when its service was installed. Re-installing the service from this shell captures the current one.",
+  summary: "Give the daemon the same PATH this shell has, so that it can resolve the CLIs above",
+};
 
 async function resolvesOnPath(command: string, path: string): Promise<boolean> {
   try {
@@ -311,7 +316,7 @@ function renderDoctorText(
     `${blocking.length} ${blocking.length === 1 ? "check" : "checks"} must be fixed before this computer can run an OpenTag agent.`,
     "",
   );
-  const fixes = blocking.flatMap((check) => (check.fix ? [check.fix] : []));
+  const fixes = uniqueFixes(blocking.flatMap((check) => (check.fix ? [check.fix] : [])));
   for (const [index, fix] of fixes.entries()) {
     lines.push(`Fix ${index + 1}/${fixes.length} — ${fix.summary}`);
     for (const command of fix.commands) lines.push(`  ${command}`);
@@ -326,6 +331,17 @@ function renderDoctorText(
     pathSource(service),
   );
   return lines.join("\n");
+}
+
+/** Two checks with one cause deserve one instruction, not the same instruction twice. */
+function uniqueFixes(fixes: readonly DoctorFix[]): DoctorFix[] {
+  const seen = new Set<string>();
+  return fixes.filter((fix) => {
+    const key = JSON.stringify([fix.summary, fix.commands, fix.note, fix.docsUrl]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /** Naming the PATH a report was produced with is what makes the report checkable. */

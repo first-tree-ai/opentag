@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir, tmpdir } from "node:os";
@@ -63,6 +63,34 @@ describe("createClientRuntime production composition", () => {
       ready: false,
       issues: [{ code: "artifact_missing", message: "Codex CLI could not be executed" }],
     });
+  });
+
+  it("names provider homes it must not create, and still surfaces a broken one", async () => {
+    const home = await temporaryDirectory("opentag-provider-read-only-");
+
+    const resolved = await resolveAgentRuntimeProviders({
+      clientVersion: "0.0.0-test",
+      ensureProviderHomes: false,
+      environment: { HOME: home },
+    });
+
+    expect(resolved.providerHomes).toEqual({
+      codex: resolve(home, ".codex"),
+      "claude-code": resolve(home, ".claude"),
+    });
+    await expect(stat(resolve(home, ".codex"))).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(resolve(home, ".claude"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    // A home that cannot exist is a real fault rather than a home waiting to be created.
+    const file = resolve(home, "not-a-directory");
+    await writeFile(file, "", "utf8");
+    await expect(
+      resolveAgentRuntimeProviders({
+        clientVersion: "0.0.0-test",
+        ensureProviderHomes: false,
+        environment: { HOME: file },
+      }),
+    ).rejects.toMatchObject({ code: "ENOTDIR" });
   });
 
   it("observes messaging CLI readiness without publishing it", async () => {

@@ -122,6 +122,8 @@ describe("runDoctor", () => {
     expect(result.message).toContain("Fix 2/4 — Sign in to Claude Code on this computer");
     expect(result.message).toContain("Fix 3/4 — Install the Feishu (Lark) CLI");
     expect(result.message).toContain("Fix 4/4 — Repair the Slack CLI");
+    // A CLI that is installed but unresponsive must not be told to reinstall.
+    expect(result.message).not.toContain("npm install -g @larksuite/cli\n  Note: OpenTag needs it");
   });
 
   it("reports an unreachable server as a blocking check", async () => {
@@ -295,6 +297,8 @@ describe("daemon service environment", () => {
     });
     expect(result.message).toContain("Give the daemon the same PATH this shell has");
     expect(result.message).toContain("daemon install");
+    // One cause, one instruction: a second diverging CLI must not repeat the same fix.
+    expect(result.message.match(/Give the daemon the same PATH/gu)).toHaveLength(1);
     // The runtime the shell cannot resolve either keeps the ordinary install fix.
     expect(result.message).toContain("Install the Claude Code CLI");
   });

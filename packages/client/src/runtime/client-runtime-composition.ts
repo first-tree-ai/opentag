@@ -57,6 +57,18 @@ import { SessionRuntimeManager } from "./session-runtime-manager.js";
 import { TurnCustodyOwner } from "./turn-custody-owner.js";
 import { TurnReportOwner } from "./turn-report-owner.js";
 
+/** The bare commands the Client Runtime resolves through PATH, so no caller has to restate them. */
+export const DEFAULT_AGENT_RUNTIME_COMMANDS: Readonly<Record<"codex" | "claude-code", string>> = {
+  "claude-code": "claude",
+  codex: "codex",
+};
+
+/** The bare commands the Client Runtime resolves for messaging delivery. */
+export const DEFAULT_IM_CLI_COMMANDS: Readonly<Record<"feishu" | "slack", string>> = {
+  feishu: "lark-cli",
+  slack: "slack",
+};
+
 const DEFAULT_CAPABILITY_REFRESH_INTERVAL_MS = Math.floor(RUNTIME_CLIENT_CAPABILITY_TTL_MS / 2);
 const DEFAULT_PROVIDER_PROBE_DEADLINE_MS = 10_000;
 const execFileAsync = promisify(execFile);
@@ -262,8 +274,8 @@ export async function resolveAgentRuntimeProviders(
   }
   const codexHome = await canonicalProviderHome(configuredCodexHome);
   const claudeCodeHome = await canonicalProviderHome(configuredClaudeCodeHome);
-  const codexCommand = options.codexCommand ?? "codex";
-  const claudeCodeCommand = options.claudeCodeCommand ?? "claude";
+  const codexCommand = options.codexCommand ?? DEFAULT_AGENT_RUNTIME_COMMANDS.codex;
+  const claudeCodeCommand = options.claudeCodeCommand ?? DEFAULT_AGENT_RUNTIME_COMMANDS["claude-code"];
   options.signal?.throwIfAborted();
   const codexEnvironment = codexAgentRuntimeEnvironment({ ...sourceEnvironment, CODEX_HOME: codexHome });
   const claudeCodeEnvironment = claudeCodeAgentRuntimeEnvironment({
@@ -410,14 +422,14 @@ export async function createClientRuntime(
       refreshImCliReadiness(
         connection,
         "feishu",
-        options.larkCliCommand ?? "lark-cli",
+        options.larkCliCommand ?? DEFAULT_IM_CLI_COMMANDS.feishu,
         sourceEnvironment,
         readinessSignal,
       ),
       refreshImCliReadiness(
         connection,
         "slack",
-        options.slackCliCommand ?? "slack",
+        options.slackCliCommand ?? DEFAULT_IM_CLI_COMMANDS.slack,
         sourceEnvironment,
         readinessSignal,
       ),

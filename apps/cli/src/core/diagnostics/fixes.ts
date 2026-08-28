@@ -93,6 +93,9 @@ export function imCliRepairFix(provider: ImCliProvider): DoctorFix {
   const install = IM_CLI_INSTALL_FIXES[provider];
   return {
     ...install,
+    // No command: reinstalling does not fix a CLI that hangs, and printing one would contradict the
+    // summary. Naming what OpenTag needs lets the operator decide what to repair.
+    commands: [],
     note: `OpenTag needs it to answer its own probe: ${IM_CLI_REQUIREMENTS[provider]}`,
     summary: `Repair the ${imCliTitle(provider)}: it is installed but does not answer OpenTag's probe`,
   };

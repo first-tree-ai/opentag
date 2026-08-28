@@ -52,7 +52,8 @@ export interface ServiceManagerProbes {
  * Whether the value is secret is not the test; whether it can change the answer is.
  *
  * When no such authority can be reached, the variable is omitted so the probe fails closed rather
- * than borrowing the caller's.
+ * than borrowing the caller's. The authority itself must not be reachable through the caller either:
+ * an executable it resolves through `PATH` is the caller's choice, not the system's.
  */
 export async function serviceManagerVariables(
   manager: "launchd" | "systemd" | undefined,
@@ -69,11 +70,21 @@ export async function serviceManagerVariables(
   return {};
 }
 
-/** launchd assigns each account a private temporary directory; `getconf` reports that assignment. */
+/**
+ * launchd assigns each account a private temporary directory, and this is the system utility that
+ * reports that assignment.
+ *
+ * It is invoked by absolute path with an empty environment. Resolving `getconf` through the caller's
+ * `PATH` would put the answer back in the caller's hands — an executable earlier on that path could
+ * name any directory, and the authority would be the shell's again with an extra step in between.
+ */
+const DARWIN_GETCONF = "/usr/bin/getconf";
+
 async function darwinUserTemporaryDirectory(): Promise<string | undefined> {
   try {
-    const { stdout } = await execFileAsync("getconf", ["DARWIN_USER_TEMP_DIR"], {
+    const { stdout } = await execFileAsync(DARWIN_GETCONF, ["DARWIN_USER_TEMP_DIR"], {
       encoding: "utf8",
+      env: {},
       timeout: 5_000,
       windowsHide: true,
     });

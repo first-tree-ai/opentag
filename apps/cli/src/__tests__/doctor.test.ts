@@ -266,6 +266,22 @@ describe("serviceManagerVariables", () => {
     ).resolves.toEqual({ TMPDIR: "/var/folders/ab/cd/T/" });
   });
 
+  it("cannot be redirected by an executable on the invoking process's PATH", async () => {
+    const injected = await temporaryDirectory("opentag-fake-getconf-");
+    await writeFile(resolve(injected, "getconf"), "#!/bin/sh\necho /shell/injected/tmp\n", { mode: 0o755 });
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${injected}:${originalPath ?? ""}`;
+    try {
+      // The real implementation, with a hostile getconf first on this process's PATH.
+      const variables = await serviceManagerVariables("launchd");
+
+      expect(variables.TMPDIR).not.toBe("/shell/injected/tmp");
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+    }
+  });
+
   it("omits the variable when that authority cannot answer", async () => {
     await expect(
       serviceManagerVariables("launchd", { readDarwinUserTemporaryDirectory: async () => undefined }),

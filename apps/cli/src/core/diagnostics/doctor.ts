@@ -183,6 +183,17 @@ function blockingGroup(checks: readonly DoctorCheck[], selected: boolean): Docto
  * strict makes the diagnostic err toward "not ready", which is the safe direction: the daemon
  * gets its extra configuration from `daemon.env`, and that is layered on separately.
  */
+/**
+ * The account identity a service manager establishes for the jobs it starts.
+ *
+ * This is a deliberate subset, not the whole of what a job receives. A real launchd job also gets
+ * `SSH_AUTH_SOCK` and launchd bookkeeping such as `XPC_SERVICE_NAME`, `XPC_FLAGS` and
+ * `OSLogRateLimit` — measured, not assumed. Omitting them is safe because omission can only make a
+ * probe fail where the daemon would succeed, never the reverse. `SSH_AUTH_SOCK` is the one worth
+ * revisiting if a provider ever authenticates through the SSH agent during a probe: it would then
+ * be a value that changes the answer, which is the test that matters rather than whether it is
+ * secret.
+ */
 export interface ServiceAccount {
   readonly homedir: string;
   readonly shell: string | null;

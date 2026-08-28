@@ -76,7 +76,14 @@ export const COPY = {
   setup: {
     title: "Set up your agent to run",
     description: "Your AI worker runs on your own computer. Connect that computer to OpenTag.",
-    privacy: "Your code and data never leave your machine.",
+    /**
+     * The honest boundary, split in two. OpenTag's own guarantee is about the workspace and where
+     * execution happens; it cannot promise anything about the provider the chosen runtime talks to,
+     * because both selectable runtimes send prompts and context to an external service.
+     */
+    privacy: "Your code and files stay on your computer — OpenTag runs your agent there and never copies them out.",
+    privacyProvider:
+      "Your agent still sends prompts and context to its own provider, under that provider's data policy.",
     commandIntro: "Run this in your terminal, or paste it to your agent.",
     commandComment: "# Install the OpenTag CLI and connect this computer to OpenTag.",
     copy: "Copy",
@@ -97,6 +104,7 @@ export const COPY = {
     doctorIntro: "Run this to diagnose and fix it — or paste it to your agent and let it do the work.",
     doctorComment: "# Diagnose and fix the OpenTag agent runtime on this computer.",
     doctorWaiting: "This page updates on its own once it's fixed.",
+    doctorPending: "Design only: `opentag doctor` does not run these checks yet, and `--fix` is not a supported flag.",
     blockedNote: "We'll know once the CLI is installed.",
     finish: "Create my agent",
     creating: "Creating…",

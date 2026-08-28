@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { COPY } from "./copy.js";
 import {
   type AgentDraft,
@@ -44,15 +44,19 @@ export function OnboardingV2Page() {
     if (flow.page === "setup") backend.issueConnectCode();
   }, [backend.issueConnectCode, flow.page]);
 
+  // Held so a restart or an unmount can cancel a creation that is still in flight; otherwise the
+  // stale timer lands on the next run and skips its confirmation step.
+  const creationTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(creationTimer.current), []);
+
   const createAgent = useCallback(() => {
-    setCreation((current) => {
-      if (current !== "idle") return current;
-      window.setTimeout(() => setCreation("created"), CREATE_AGENT_MS);
-      return "creating";
-    });
-  }, []);
+    if (creation !== "idle") return;
+    setCreation("creating");
+    creationTimer.current = window.setTimeout(() => setCreation("created"), CREATE_AGENT_MS);
+  }, [creation]);
 
   const startOver = useCallback(() => {
+    window.clearTimeout(creationTimer.current);
     setDraft(emptyDraft());
     setDraftConfirmed(false);
     setCreation("idle");

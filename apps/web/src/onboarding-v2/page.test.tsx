@@ -178,6 +178,55 @@ describe("OnboardingV2Page", () => {
     expect(screen.getByRole("heading", { name: "@opentag is ready." })).toBeTruthy();
   });
 
+  it("never connects a Computer with an expired code", async () => {
+    render(<OnboardingV2Page />);
+    await reachSetupStep();
+
+    openLab();
+    fireEvent.click(screen.getByRole("button", { name: "Expire code" }));
+    fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
+
+    // The arrival timer from the original issue is still pending; it must not resurrect the code.
+    await advance(CONNECT_MS);
+    expect(screen.getByText("This command has expired.")).toBeTruthy();
+    expect(screen.queryByText("MacBook Pro is connected.")).toBeNull();
+    expect(screen.getByText("Waiting for your computer…")).toBeTruthy();
+  });
+
+  it("cancels a creation still in flight when the flow is restarted", async () => {
+    render(<OnboardingV2Page />);
+    await reachSetupStep();
+    await connectAndProbe();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create my agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start over" }));
+    await advance(CREATE_MS);
+
+    // Second run: the stale creation must not carry the flow past its confirmation.
+    await reachSetupStep();
+    await connectAndProbe();
+    expect(screen.getByRole("button", { name: "Create my agent" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Connect your messaging app" })).toBeNull();
+  });
+
+  it("states the OpenTag boundary without promising provider-side privacy", async () => {
+    render(<OnboardingV2Page />);
+    await reachSetupStep();
+    expect(screen.getByText(/stay on your computer/)).toBeTruthy();
+    expect(screen.getByText(/sends prompts and context to its own provider/)).toBeTruthy();
+  });
+
+  it("marks the repair command as design-only while the CLI cannot run it", async () => {
+    render(<OnboardingV2Page />);
+    openLab();
+    fireEvent.change(screen.getByLabelText("Readiness outcome"), { target: { value: "runtime-install" } });
+    fireEvent.click(screen.getByRole("button", { name: "Mock controls" }));
+
+    await reachSetupStep();
+    await connectAndProbe();
+    expect(screen.getByText(/does not run these checks yet/)).toBeTruthy();
+  });
+
   it("returns to the first step when the flow is restarted", async () => {
     render(<OnboardingV2Page />);
     await reachSetupStep();

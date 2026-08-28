@@ -207,7 +207,10 @@ export function SetupStep({
         <p>{COPY.setup.description}</p>
         <p className="otv2-privacy">
           <Icon name="shield" />
-          {COPY.setup.privacy}
+          <span>
+            {COPY.setup.privacy}
+            <small>{COPY.setup.privacyProvider}</small>
+          </span>
         </p>
       </header>
 
@@ -340,6 +343,7 @@ function ReadinessPanel({
               </span>
             }
           />
+          <p className="otv2-pending">{COPY.setup.doctorPending}</p>
         </div>
       ) : null}
 

@@ -126,9 +126,12 @@ export function useMockBackend(scenario: MockScenario, speed: MockSpeed): MockBa
 
   useEffect(() => clearTimers, [clearTimers]);
 
+  // Only a live code can produce a Computer. The arrival timer outlives an expiry, so without this
+  // guard an expired code would still "connect" and the expiry scenario would report an impossible
+  // success. A reissue clears the old timer, so the guard is the only thing an expiry needs.
   const arrive = useCallback(() => {
     setConnect((current) =>
-      current.kind === "issued" || current.kind === "expired"
+      current.kind === "issued"
         ? { kind: "connected", command: current.command, computerName: COMPUTER_NAME }
         : current,
     );

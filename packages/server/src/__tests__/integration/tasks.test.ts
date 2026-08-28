@@ -251,6 +251,40 @@ describe("Task debug queries", () => {
     }
   });
 
+  it("titles a Session from a follow-up message that no longer addresses the Agent", async () => {
+    const value = await fixture();
+    try {
+      const message: NormalizedMessage = {
+        messageId: "om_followup",
+        chatId: "oc_debug",
+        chatType: "group",
+        senderId: "ou_human",
+        content: "@_user_2 take another look at the regression",
+        rawContentType: "text",
+        resources: [],
+        mentions: [{ key: "@_user_2", openId: "ou_alice", name: "Alice", isBot: false }],
+        mentionAll: false,
+        mentionedBot: false,
+        createTime: 1_724_025_600_000,
+      };
+      const [event] = normalizeFeishuMessage({ appId: "cli_1", teamId: "workspace_1", message });
+      if (!event) throw new Error("Feishu follow-up event was not normalized");
+      await value.database
+        .update(imBindings)
+        .set({ externalBotId: "ou_bot" })
+        .where(eq(imBindings.id, value.binding.id));
+      await value.database
+        .update(imMessages)
+        .set({ content: event.message.content, providerContext: event.providerContext })
+        .where(eq(imMessages.id, value.message.id));
+
+      const listed = await value.service.list(value.bootstrap.workspaceId, { limit: 50 });
+      expect(listed.tasks[0]?.title).toBe("@Alice take another look at the regression");
+    } finally {
+      await value.sql.end();
+    }
+  });
+
   it("isolates Workspace data and rejects malformed cursors", async () => {
     const value = await fixture();
     try {

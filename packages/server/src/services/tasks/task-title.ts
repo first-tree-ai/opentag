@@ -35,12 +35,15 @@ function truncateGraphemes(value: string): string {
   return title;
 }
 
+/**
+ * Resolve the stored mention facts, whoever this message addresses.
+ *
+ * A Task is titled from its latest inbound message, and a follow-up rarely mentions the
+ * Agent again, so gating this on the addressed mention would leave those Sessions titled
+ * from raw provider text — a Feishu `@_user_2` placeholder key names nobody.
+ */
 function titleTextFromStructuredBlocks(input: TaskTitleInput): string | undefined {
-  if (!input.addressedExternalId) return undefined;
-  const hasAddressedMention = input.blocks?.some(
-    (block) => block.type === "mention" && block.externalId === input.addressedExternalId,
-  );
-  if (!hasAddressedMention) return undefined;
+  if (!input.blocks?.some((block) => block.type === "mention")) return undefined;
 
   return input.blocks
     ?.map((block) => {

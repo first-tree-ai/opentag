@@ -1,5 +1,7 @@
+import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
 import { TASK_AUTO_TITLE_MAX_GRAPHEMES } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
+import { normalizeFeishuMessage } from "../im-bindings/feishu/adapter.js";
 import { deriveTaskTitle } from "./task-title.js";
 
 describe("deriveTaskTitle", () => {
@@ -75,5 +77,33 @@ describe("deriveTaskTitle", () => {
         fallbackText: "<@U_BOT> ask <@U_ALICE> to review",
       }),
     ).toBe("ask <@U_ALICE> to review");
+  });
+
+  it("resolves mentions in a follow-up message that no longer addresses the Agent", () => {
+    const [event] = normalizeFeishuMessage({
+      appId: "cli_1",
+      teamId: "workspace_1",
+      message: {
+        messageId: "om_followup",
+        chatId: "oc_1",
+        chatType: "group",
+        senderId: "ou_human",
+        content: "@_user_2 帮忙看下这个回归",
+        rawContentType: "text",
+        resources: [],
+        mentions: [{ key: "@_user_2", openId: "ou_alice", name: "Alice", isBot: false }],
+        mentionAll: false,
+        mentionedBot: false,
+        createTime: 1_724_025_600_000,
+      } as unknown as NormalizedMessage,
+    });
+    if (!event) throw new Error("Feishu follow-up was not normalized");
+    expect(
+      deriveTaskTitle({
+        ...input,
+        fallbackText: event.message.content.fallbackText,
+        blocks: event.message.content.blocks,
+      }),
+    ).toBe("@Alice 帮忙看下这个回归");
   });
 });

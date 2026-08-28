@@ -3,7 +3,7 @@
  * than layout during this phase, so it stays out of the components and can be read end to end.
  */
 
-import type { CheckRow, Destination, Runtime, StepId } from "./flow.js";
+import type { CheckRow, CheckState, Destination, Runtime, StepId } from "./flow.js";
 
 export const STEP_LABELS: Record<StepId, string> = {
   destination: "Where it runs",
@@ -33,21 +33,41 @@ export const RUNTIME_COPY: Record<Runtime, { readonly title: string; readonly de
   "claude-code": { title: "Claude Code", description: "Anthropic" },
 };
 
+/**
+ * Every check carries a line of detail in every state, not only when it fails. The list is the
+ * page's spine while the user works in their terminal, so its rows must not change height as
+ * results land — a list that reflows under someone is worse than one that says "checking".
+ */
 export const CHECK_COPY: Record<
   CheckRow["id"],
-  { readonly title: (runtime: string) => string; readonly failure: (runtime: string) => string }
+  { readonly title: (runtime: string) => string; readonly detail: Record<CheckState, (runtime: string) => string> }
 > = {
   "runtime-cli": {
     title: (runtime) => `${runtime} CLI is installed`,
-    failure: (runtime) => `We can't find the ${runtime} command on this computer.`,
+    detail: {
+      pending: (runtime) => `Looking for the ${runtime} command.`,
+      passed: () => "Found on this computer.",
+      failed: (runtime) => `We can't find the ${runtime} command on this computer.`,
+      blocked: () => "",
+    },
   },
   "runtime-auth": {
     title: (runtime) => `${runtime} is signed in`,
-    failure: (runtime) => `${runtime} is installed but not signed in.`,
+    detail: {
+      pending: (runtime) => `Checking your ${runtime} sign-in.`,
+      passed: () => "Signed in and ready.",
+      failed: (runtime) => `${runtime} is installed but not signed in.`,
+      blocked: () => "We'll know once the CLI is installed.",
+    },
   },
   "messaging-cli": {
     title: () => "Feishu CLI is installed",
-    failure: () => "Feishu messages are sent through lark-cli, which isn't installed yet.",
+    detail: {
+      pending: () => "Looking for lark-cli.",
+      passed: () => "Found on this computer.",
+      failed: () => "We need lark-cli to send Feishu messages.",
+      blocked: () => "",
+    },
   },
 };
 
@@ -71,7 +91,7 @@ export const COPY = {
     nameEmptyError: "Your agent needs a name.",
     nameTooLongError: "Keep the name to 64 characters or fewer.",
     runtimeLabel: "Agent runtime",
-    runtimeHint: "The coding agent OpenTag will drive.",
+    runtimeHint: "The coding agent OpenTag will use.",
     runtimeFootnote: "More runtimes coming soon.",
   },
 
@@ -98,9 +118,8 @@ export const COPY = {
 
   check: {
     title: "Computer check",
-    checkingHeading: "Checking your environment",
-    resolvedHeading: "Environment check",
-    checkingDescription: "OpenTag is looking at what's already installed on your computer.",
+    /** One heading in every state: the list below it is what changes, and only its detail lines. */
+    heading: "Environment check",
     passed: "Everything your agent needs is ready.",
     failedIntro: (count: number) =>
       count > 1
@@ -109,8 +128,6 @@ export const COPY = {
     commandIntro: "Run this in your terminal or paste it to your agent.",
     commandComment: "# Diagnose and fix the OpenTag agent runtime on this computer.",
     command: "opentag doctor --fix",
-    blockedNote: "We'll know once the CLI is installed.",
-    finish: "Create my agent",
     creating: "Creating…",
   },
 
@@ -124,7 +141,7 @@ export const COPY = {
   },
 
   done: {
-    title: (name: string) => `@${name} is ready.`,
-    description: (name: string) => `Say @${name} in Feishu to put it to work.`,
+    title: (name: string) => `${name} is ready.`,
+    description: (name: string) => `Tag @${name} in Feishu to put it to work.`,
   },
 } as const;

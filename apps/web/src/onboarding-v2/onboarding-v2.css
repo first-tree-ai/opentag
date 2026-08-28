@@ -374,12 +374,6 @@
   background: var(--surface);
 }
 
-.otv2-panel--checks h2 {
-  margin: 0;
-  font-size: var(--text-subsection);
-  font-weight: var(--fw-medium);
-}
-
 .otv2-panel--qr {
   align-items: center;
   gap: var(--space-4);
@@ -514,12 +508,25 @@
 
 /* Checks ----------------------------------------------------------------- */
 
+.otv2-subhead {
+  margin: 0;
+  font-size: var(--text-subsection);
+  font-weight: var(--fw-medium);
+}
+
+/*
+ * The three checks are the one grouped surface on this step: everything else sits flat on the
+ * page. Rows are a fixed shape — number, title, one line of detail — so results landing never
+ * moves the list under someone who is reading it.
+ */
 .otv2-checks {
   display: flex;
   flex-direction: column;
-  gap: var(--space-3);
   margin: 0;
   padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+  background: var(--surface);
   list-style: none;
 }
 
@@ -527,6 +534,11 @@
   display: flex;
   gap: var(--space-3);
   align-items: flex-start;
+  padding: var(--space-4);
+}
+
+.otv2-check + .otv2-check {
+  border-top: 1px solid var(--border);
 }
 
 .otv2-check__marker {
@@ -534,12 +546,14 @@
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: 20px;
-  height: 20px;
-  margin-top: 1px;
+  width: 22px;
+  height: 22px;
   border: 1px solid var(--strong-border);
   border-radius: 50%;
   color: var(--muted);
+  font-size: var(--text-meta);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
 }
 
 .otv2-check[data-state="passed"] .otv2-check__marker {
@@ -598,8 +612,6 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding-top: var(--space-4);
-  border-top: 1px solid var(--border);
 }
 
 .otv2-repair__intro {

@@ -177,6 +177,29 @@ describe("OnboardingV2Page", () => {
     expect(screen.getByText("We'll know once the CLI is installed.")).toBeTruthy();
   });
 
+  it("keeps one heading and a detail line on every check, in every state", async () => {
+    render(<OnboardingV2Page />);
+    chooseScenario("runtime-install");
+    await reachConnectStep();
+    await advance(CONNECT_MS);
+    await advance(DWELL_MS);
+
+    // Mid-probe: the heading is already final and every row already has its detail line.
+    expect(screen.getByRole("heading", { name: "Environment check" })).toBeTruthy();
+    const rowsWhileChecking = document.querySelectorAll(".otv2-check");
+    expect(rowsWhileChecking).toHaveLength(3);
+    for (const row of rowsWhileChecking) {
+      expect(row.querySelectorAll("span > span")).toHaveLength(1);
+    }
+
+    await advance(PROBE_MS);
+    expect(screen.getByRole("heading", { name: "Environment check" })).toBeTruthy();
+    expect(document.querySelectorAll(".otv2-check")).toHaveLength(3);
+    for (const row of document.querySelectorAll(".otv2-check")) {
+      expect((row.textContent ?? "").trim().length).toBeGreaterThan(0);
+    }
+  });
+
   it("counts multiple failures in its summary", async () => {
     render(<OnboardingV2Page />);
     chooseScenario("both-failing");
@@ -190,12 +213,12 @@ describe("OnboardingV2Page", () => {
     chooseScenario("messaging-install");
     await reachConnectStep();
     await reachCheckStep();
-    expect(screen.getByText(/lark-cli, which isn't installed yet/)).toBeTruthy();
+    expect(screen.getByText("We need lark-cli to send Feishu messages.")).toBeTruthy();
 
     openLab();
     fireEvent.click(screen.getByRole("button", { name: "Ran doctor --fix" }));
     await advance(4_000);
-    expect(screen.getByRole("button", { name: "Create my agent" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
   });
 
   it("creates the Agent only after a runnable route is proven, then asks for Feishu", async () => {
@@ -203,13 +226,13 @@ describe("OnboardingV2Page", () => {
     await reachConnectStep();
     await reachCheckStep();
 
-    fireEvent.click(screen.getByRole("button", { name: "Create my agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await advance(CREATE_MS);
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
 
     await advance(ISSUE_MS);
     await advance(SCAN_MS);
-    expect(screen.getByRole("heading", { name: "@opentag is ready." })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "opentag is ready." })).toBeTruthy();
   });
 
   describe("going back", () => {
@@ -249,7 +272,7 @@ describe("OnboardingV2Page", () => {
       render(<OnboardingV2Page />);
       await reachConnectStep();
       await reachCheckStep();
-      fireEvent.click(screen.getByRole("button", { name: "Create my agent" }));
+      fireEvent.click(screen.getByRole("button", { name: "Continue" }));
       await advance(CREATE_MS);
       expect(screen.queryByRole("button", { name: "Go back" })).toBeNull();
     });
@@ -274,14 +297,14 @@ describe("OnboardingV2Page", () => {
     await reachConnectStep();
     await reachCheckStep();
 
-    fireEvent.click(screen.getByRole("button", { name: "Create my agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     fireEvent.click(screen.getByRole("button", { name: "Start over" }));
     await advance(CREATE_MS);
 
     // Second run: the stale creation must not carry the flow past its confirmation.
     await reachConnectStep();
     await reachCheckStep();
-    expect(screen.getByRole("button", { name: "Create my agent" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Continue" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Connect your messaging app" })).toBeNull();
   });
 

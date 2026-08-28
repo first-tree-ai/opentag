@@ -234,19 +234,17 @@ export function ConnectStep({
       <header className="otv2-step__header">
         <h1>{COPY.connect.title}</h1>
       </header>
-      <div className="otv2-panel">
-        {/* The command's own preamble: what it does, what it means for your data, how to run it. */}
-        <div className="otv2-lead">
-          <p>{COPY.connect.lead}</p>
-          <p className="otv2-privacy">
-            <Icon name="shield" />
-            {COPY.connect.privacy}
-          </p>
-          <p>{COPY.connect.commandIntro}</p>
-        </div>
-        <ConnectCommand connect={connect} onRefreshCommand={onRefreshCommand} />
-        <ConnectStatus connect={connect} />
+      {/* The command's own preamble: what it does, what it means for your data, how to run it. */}
+      <div className="otv2-lead">
+        <p>{COPY.connect.lead}</p>
+        <p className="otv2-privacy">
+          <Icon name="shield" />
+          {COPY.connect.privacy}
+        </p>
+        <p>{COPY.connect.commandIntro}</p>
       </div>
+      <ConnectCommand connect={connect} onRefreshCommand={onRefreshCommand} />
+      <ConnectStatus connect={connect} />
       <StepNav back={onBack} />
     </section>
   );
@@ -343,35 +341,32 @@ export function CheckStep({
       <header className="otv2-step__header">
         <h1>{COPY.check.title}</h1>
       </header>
-      <div className="otv2-panel otv2-panel--checks">
-        <h2>{resolving ? COPY.check.checkingHeading : COPY.check.resolvedHeading}</h2>
-        {resolving ? <p className="otv2-muted">{COPY.check.checkingDescription}</p> : null}
-        <ul className="otv2-checks">
-          {checks.map((check) => (
-            <CheckLine check={check} key={check.id} runtimeLabel={runtimeLabel} />
-          ))}
-        </ul>
+      <h2 className="otv2-subhead">{COPY.check.heading}</h2>
+      <ol className="otv2-checks">
+        {checks.map((check, index) => (
+          <CheckLine check={check} key={check.id} position={index + 1} runtimeLabel={runtimeLabel} />
+        ))}
+      </ol>
 
-        {!resolving && failures.length > 0 ? (
-          <div className="otv2-repair">
-            <p className="otv2-repair__intro">{COPY.check.failedIntro(failures.length)}</p>
-            <p className="otv2-muted">{COPY.check.commandIntro}</p>
-            <CommandBlock
-              command={COPY.check.command}
-              comment={COPY.check.commandComment}
-              copiedLabel={COPY.connect.copied}
-              copyLabel={COPY.connect.copy}
-              fallbackHint={COPY.connect.copyFallback}
-            />
-          </div>
-        ) : null}
+      {!resolving && failures.length > 0 ? (
+        <div className="otv2-repair">
+          <p className="otv2-repair__intro">{COPY.check.failedIntro(failures.length)}</p>
+          <p className="otv2-muted">{COPY.check.commandIntro}</p>
+          <CommandBlock
+            command={COPY.check.command}
+            comment={COPY.check.commandComment}
+            copiedLabel={COPY.connect.copied}
+            copyLabel={COPY.connect.copy}
+            fallbackHint={COPY.connect.copyFallback}
+          />
+        </div>
+      ) : null}
 
-        {passed ? <StatusIndicator className="otv2-status" label={COPY.check.passed} tone="success" /> : null}
-      </div>
+      {passed ? <StatusIndicator className="otv2-status" label={COPY.check.passed} tone="success" /> : null}
       <StepNav back={onBack}>
         {passed ? (
           <Button disabled={creation === "creating"} onClick={onCreate}>
-            {creation === "creating" ? COPY.check.creating : COPY.check.finish}
+            {creation === "creating" ? COPY.check.creating : COPY.nav.next}
           </Button>
         ) : null}
       </StepNav>
@@ -379,17 +374,18 @@ export function CheckStep({
   );
 }
 
-function CheckLine({ check, runtimeLabel }: { check: CheckRow; runtimeLabel: string }) {
+function CheckLine({ check, position, runtimeLabel }: { check: CheckRow; position: number; runtimeLabel: string }) {
   const copy = CHECK_COPY[check.id];
+  // Always rendered, even when empty, so a resolving check never changes the row's height.
+  const detail = copy.detail[check.state](runtimeLabel);
   return (
     <li className="otv2-check" data-state={check.state}>
       <span aria-hidden="true" className="otv2-check__marker">
-        {check.state === "passed" ? <Icon name="check" /> : check.state === "failed" ? <Icon name="close" /> : null}
+        {position}
       </span>
       <span className="otv2-check__copy">
         <strong>{copy.title(runtimeLabel)}</strong>
-        {check.state === "failed" ? <span>{copy.failure(runtimeLabel)}</span> : null}
-        {check.state === "blocked" ? <span>{COPY.check.blockedNote}</span> : null}
+        <span>{detail || "\u00a0"}</span>
       </span>
     </li>
   );

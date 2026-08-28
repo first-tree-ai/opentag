@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { ProviderReadinessStatus } from "@opentag/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql as sqlExpression } from "drizzle-orm";
 import { createApp } from "./app.js";
+import { createBetterAuth } from "./auth/better-auth.js";
+import { BetterAuthSessionTokens, BridgedSessionTokens } from "./auth/session-tokens.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { isHostedEnvironment, parseServerConfig, serverEnvironmentSummary } from "./config.js";
 import { createDatabaseClient } from "./db/client.js";
 import { migrateDatabase, verifyDatabaseMigrations } from "./db/migrate.js";
-import { agents, workspaceComputers } from "./db/schema/index.js";
+import { accountLegacyUpgrades, agents, workspaceComputers } from "./db/schema/index.js";
 import { createServerDiagnosticReporter, initTelemetry, shutdownTelemetry } from "./observability/index.js";
 import { stopAgentSessions } from "./runtime/agent-session-stopper.js";
 import { ConnectionRegistry } from "./runtime/connection-registry.js";
@@ -18,6 +20,7 @@ import { AgentService } from "./services/agents/index.js";
 import {
   AuthIdentityService,
   AuthService,
+  type AuthTokenProvider,
   AuthTokenService,
   ConnectCodeService,
   DefaultGoogleIdentityClient,
@@ -45,7 +48,7 @@ import {
 } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetService } from "./services/onboarding-lab/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "./services/runtime-config/index.js";
-import { SessionCollaborationService, SessionService } from "./services/sessions/index.js";
+import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { TaskService } from "./services/tasks/index.js";
 import { WorkspaceAdminAccess } from "./services/workspace-admin-access/index.js";
 import { WorkspaceAdminService, WorkspaceSetupService } from "./services/workspaces/index.js";
@@ -88,10 +91,17 @@ export { AuthService, AuthServiceError, AuthTokenService } from "./services/auth
 export { ComputerService } from "./services/computers/index.js";
 export { OnboardingResetError, OnboardingResetService } from "./services/onboarding-lab/index.js";
 export {
+  SessionCliProofService,
   SessionCollaborationService,
   type SessionCollaborationServiceOptions,
   SessionService,
 } from "./services/sessions/index.js";
+
+/** The bridge is constructed before Better Auth exists; this makes the ordering mistake loud rather than silent. */
+function requireSessionTokens(tokens: AuthTokenProvider | undefined): AuthTokenProvider {
+  if (!tokens) throw new Error("Session tokens were used before Better Auth was constructed");
+  return tokens;
+}
 
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
@@ -103,6 +113,7 @@ export async function startServer(): Promise<void> {
     knownSecrets.push(
       process.env.OPENTAG_DATABASE_URL ?? "",
       process.env.OPENTAG_JWT_SECRET ?? "",
+      process.env.BETTER_AUTH_SECRET ?? "",
       process.env.OPENTAG_GOOGLE_CLIENT_SECRET ?? "",
       process.env.OPENTAG_ENCRYPTION_KEY ?? "",
       process.env.OPENTAG_OTEL_HEADERS ?? "",
@@ -122,9 +133,24 @@ export async function startServer(): Promise<void> {
 
     const { database, sql } = createDatabaseClient(config.databaseUrl);
     const workspaceAdmins = new WorkspaceAdminAccess(database);
+    const legacyTokens = new AuthTokenService(
+      config.jwtSecret,
+      config.accessTokenTtlSeconds,
+      config.refreshTokenTtlSeconds,
+    );
+    // Assigned below, once Better Auth exists; the bridge reads it lazily so the two can be constructed in either order.
+    let sessionTokens: AuthTokenProvider | undefined;
     const authService = new AuthService(
       database,
-      new AuthTokenService(config.jwtSecret, config.accessTokenTtlSeconds, config.refreshTokenTtlSeconds),
+      new BridgedSessionTokens(
+        {
+          issuePairForUser: (userId) => requireSessionTokens(sessionTokens).issuePairForUser(userId),
+          rotate: (token, userId) => requireSessionTokens(sessionTokens).rotate(token, userId),
+          verifyAccess: (token) => requireSessionTokens(sessionTokens).verifyAccess(token),
+          verifyRefresh: (token) => requireSessionTokens(sessionTokens).verifyRefresh(token),
+        },
+        legacyTokens,
+      ),
       { workspaceAdmins },
     );
     const connectCodeService = new ConnectCodeService(database);
@@ -179,14 +205,13 @@ export async function startServer(): Promise<void> {
     const sessionService = new SessionService(database);
     const taskService = new TaskService(database);
     const runtimeSnapshotAssembler = new EffectiveRuntimeSnapshotAssembler(database);
-    let sessionCollaborationService: SessionCollaborationService;
+    const sessionCliProofService = new SessionCliProofService(database, registry, config.encryptionKey);
     const domainOwner = new RuntimeDomainOwner(registry, new PostgresRuntimeCustodyStore(database), {
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
-      onLocalSessionMessageDeliveryResult: (result, context) =>
-        sessionCollaborationService.handleLocalDeliveryResult(result, context),
-      onSessionCollaborationCommand: (request, context) => sessionCollaborationService.handle(request, context),
+      prepareReconcile: (workspaceComputerId, connectionInstanceId, request) =>
+        sessionCliProofService.prepareReconcile(workspaceComputerId, connectionInstanceId, request),
     });
-    sessionCollaborationService = new SessionCollaborationService({
+    const sessionCollaborationService = new SessionCollaborationService({
       assembler: runtimeSnapshotAssembler,
       domain: domainOwner,
       onDiagnostic: reportDiagnostic,
@@ -230,10 +255,6 @@ export async function startServer(): Promise<void> {
       ? new SlackOAuthService({
           api: slackApi,
           app: config.slackOAuth,
-          authenticateUser: async (accessToken) => {
-            const authenticated = await authService.getAuthenticatedUser(accessToken);
-            return { userId: authenticated.me.user.id };
-          },
           database,
           slack: slackConfigurationService,
           state: new SlackOAuthStateService(config.jwtSecret),
@@ -250,6 +271,50 @@ export async function startServer(): Promise<void> {
     });
     const identityService = new AuthIdentityService(database);
     const postAuthentication = new PostAuthenticationService(database, workspaceAdmins);
+    const dev = config.devAuth ? new DevBrowserAuthService(database, config.devAuth.email) : undefined;
+    const betterAuth = createBetterAuth(database, {
+      onSessionCreating: async (userId) => {
+        await postAuthentication.ensureAccountReady(userId);
+      },
+      publicUrl: config.publicUrl,
+      secret: config.betterAuthSecret,
+      secureCookies: isHostedEnvironment(config.environment),
+      sessionTtlSeconds: config.sessionTtlSeconds,
+      ...(dev ? { devSignIn: () => dev.resolveUserId() } : {}),
+      ...(config.google ? { google: config.google } : {}),
+      /*
+       * Verified against the legacy provider alone, never the bridge: this endpoint exists to retire a credential the
+       * previous revision issued, and a Better Auth session presented here is already what it would upgrade to. The
+       * live Account read is what keeps a suspended Account from refreshing its way back in.
+       */
+      legacyUpgrade: {
+        resolveCredential: async (refreshToken) => {
+          const identity = await legacyTokens.verifyRefresh(refreshToken);
+          return {
+            expiresAt: identity.expiresAt,
+            userId: (await authService.getActiveUserById(identity.userId)).user.id,
+          };
+        },
+        /*
+         * One statement decides the winner, so a replay or a raced tab converges without a lock — and therefore
+         * without a connection waiting on one. The conflict branch rewrites the key with its own value: a no-op that
+         * exists only so `RETURNING` reports the row already there, since `DO NOTHING` returns nothing at all.
+         */
+        recordExchange: async ({ expiresAt, sessionToken, tokenHash }) => {
+          const [recorded] = await database
+            .insert(accountLegacyUpgrades)
+            .values({ expiresAt, sessionToken, tokenHash })
+            .onConflictDoUpdate({
+              target: accountLegacyUpgrades.tokenHash,
+              set: { tokenHash: sqlExpression`${accountLegacyUpgrades.tokenHash}` },
+            })
+            .returning({ winner: accountLegacyUpgrades.sessionToken });
+          if (!recorded) throw new Error("The legacy upgrade record did not return a session");
+          return recorded.winner;
+        },
+      },
+    });
+    sessionTokens = new BetterAuthSessionTokens(betterAuth, database);
     const google = config.google
       ? new GoogleBrowserAuthService({
           database,
@@ -258,32 +323,40 @@ export async function startServer(): Promise<void> {
           identities: identityService,
           postAuthentication,
           publicUrl: config.publicUrl,
-          tokenIssuer: authService,
+          /*
+           * Deliberately the legacy issuer, not the bridge. This route only ever completes a flow that started before
+           * this revision deployed, and it writes its result into the legacy cookies. A session token written there
+           * authenticates through the fallback but is invisible to `getSession`, so sign-out could not revoke it —
+           * a pre-cutover flow therefore finishes exactly as it would have, and that browser moves across on its next
+           * refresh, where the upgrade puts the replacement in Better Auth's own cookie.
+           */
+          tokenIssuer: new AuthService(database, legacyTokens, { workspaceAdmins }),
         })
       : undefined;
-    const dev = config.devAuth ? new DevBrowserAuthService(database, authService, config.devAuth.email) : undefined;
     const stagingOnboardingLab = config.stagingOnboardingLab
       ? {
           reset: new OnboardingResetService({
             agents: agentService,
             database,
             environment: config.environment,
-            labAccountId: config.stagingOnboardingLab.accountId,
+            ...(config.stagingOnboardingLab.accountId ? { labAccountId: config.stagingOnboardingLab.accountId } : {}),
             registry,
             workspaceAdmins,
           }),
         }
       : undefined;
     app = createApp({
+      betterAuth: { instance: betterAuth, publicUrl: config.publicUrl },
       webAppRoot: defaultWebAppRoot,
       accountScope: workspaceAdmins,
       agentService,
       authService,
       browserAuth: {
-        dev,
+        devSignIn: Boolean(dev),
         google,
         publicOrigin: config.publicUrl,
         refreshTokenTtlSeconds: config.refreshTokenTtlSeconds,
+        sessionTtlSeconds: config.sessionTtlSeconds,
         secureCookies: isHostedEnvironment(config.environment),
       },
       connectCode: {
@@ -313,6 +386,11 @@ export async function startServer(): Promise<void> {
       imResourceService,
       readiness,
       runtime: { registry, domainOwner },
+      runtimeSessions: {
+        collaboration: sessionCollaborationService,
+        proofs: sessionCliProofService,
+        sessions: sessionService,
+      },
       slackEvents: {
         imBindings: imBindingService,
         inbox: imMessageInbox,

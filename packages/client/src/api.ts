@@ -48,6 +48,14 @@ import {
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
   runtimeImResourcePath,
+  SESSION_CLI_PROOF_HEADER,
+  type SessionCliCommandResponse,
+  SessionCliCommandResponseSchema,
+  type SessionCliCreateRequest,
+  type SessionCliListQuery,
+  type SessionCliListResponse,
+  SessionCliListResponseSchema,
+  type SessionCliSendRequest,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
   StartSlackOAuthResponseSchema,
@@ -261,6 +269,34 @@ export class OpenTagApi {
       this.#throwResponseError(response.status, body);
     }
     return response;
+  }
+
+  createInternalSession(proof: string, input: SessionCliCreateRequest): Promise<SessionCliCommandResponse> {
+    return this.#request(HTTP_PATHS.runtimeInternalSessions, SessionCliCommandResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+    });
+  }
+
+  sendSessionMessage(proof: string, input: SessionCliSendRequest): Promise<SessionCliCommandResponse> {
+    return this.#request(HTTP_PATHS.runtimeSessionMessages, SessionCliCommandResponseSchema, {
+      method: "POST",
+      body: JSON.stringify(input),
+      headers: { "content-type": "application/json", [SESSION_CLI_PROOF_HEADER]: proof },
+    });
+  }
+
+  listInternalSessions(proof: string, input: SessionCliListQuery): Promise<SessionCliListResponse> {
+    const query = new URLSearchParams({
+      recursive: String(input.recursive),
+      limit: String(input.limit),
+      ...(input.cursor ? { cursor: input.cursor } : {}),
+      ...(input.since ? { since: input.since } : {}),
+    });
+    return this.#request(`${HTTP_PATHS.runtimeSessions}?${query.toString()}`, SessionCliListResponseSchema, {
+      headers: { [SESSION_CLI_PROOF_HEADER]: proof },
+    });
   }
 
   async #request<T>(path: string, schema: RuntimeSchema<T>, init: RequestInit): Promise<T> {

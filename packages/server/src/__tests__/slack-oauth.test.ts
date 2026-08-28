@@ -151,7 +151,8 @@ describe("Slack OAuth HTTP routes", () => {
     );
     expect(JSON.stringify(success.headers)).not.toContain("slack-oauth-code");
     expect(slackOAuth.callback).toHaveBeenCalledWith({
-      accessToken: "access",
+      // The route resolves the identity now, so a browser holding either credential reaches the same call.
+      authenticatedUserId: userId,
       code: "slack-oauth-code",
       sessionBinding: "session-binding",
       state: "signed-state",

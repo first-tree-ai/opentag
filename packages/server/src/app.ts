@@ -14,9 +14,12 @@ import { registerInternalOnboardingLabRoutes } from "./api/internal-onboarding-l
 import { registerMeRoutes } from "./api/me.js";
 import { RequestValidationError } from "./api/request-validation.js";
 import { type RuntimeRoutesOptions, registerRuntimeRoutes } from "./api/runtime.js";
+import { type RuntimeSessionRoutesOptions, registerRuntimeSessionRoutes } from "./api/runtime-sessions.js";
 import { registerSlackEventsRoute, type SlackEventsRouteOptions } from "./api/slack-events.js";
 import { registerSlackOAuthRoutes, type SlackOAuthRouteOptions } from "./api/slack-oauth.js";
 import { registerWorkspaceRoutes } from "./api/workspaces.js";
+import type { OpenTagBetterAuth } from "./auth/better-auth.js";
+import { registerBetterAuthRoutes } from "./auth/fastify-handler.js";
 import { BootstrapReadiness } from "./bootstrap-readiness.js";
 import { currentTraceId } from "./observability/index.js";
 import { type AgentService, AgentServiceError } from "./services/agents/index.js";
@@ -27,6 +30,7 @@ import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bind
 import { type ImBindingService, ImBindingServiceError } from "./services/im-bindings/index.js";
 import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
 import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-lab/index.js";
+import { SessionCliProofError, SessionServiceError } from "./services/sessions/index.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
 import {
   type WorkspaceAdminService,
@@ -39,6 +43,8 @@ export interface CreateAppOptions {
   /** Enables the Account-native management collections that back the Workspace-free client contracts. */
   accountScope?: AccountScopeResolver;
   authService?: UserAuthService;
+  /** Publishes Better Auth's allowlisted endpoints and lets every authenticated route resolve its sessions. */
+  betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
   webAppRoot?: string;
   agentService?: AgentService;
   computerService?: ComputerService;
@@ -60,8 +66,12 @@ export interface CreateAppOptions {
   loggerStream?: FastifyLoggerOptions["stream"];
   readiness?: BootstrapReadiness;
   runtime?: RuntimeRoutesOptions;
+  runtimeSessions?: RuntimeSessionRoutesOptions;
   slackEvents?: SlackEventsRouteOptions;
-  /** Registered only by a staging deployment that configures the shared Onboarding Lab Account. */
+  /**
+   * Registered by any staging deployment. Scenario Preview needs no Account configuration; the reset
+   * half is closed until the service is given the Account that owns it.
+   */
   stagingOnboardingLab?: { reset: OnboardingResetService };
   taskService?: TaskService;
   workspaceService?: WorkspaceAdminService;
@@ -124,6 +134,8 @@ export function createApp(options: CreateAppOptions = {}) {
   });
   const readiness = options.readiness ?? new BootstrapReadiness();
 
+  if (options.runtimeSessions) registerRuntimeSessionRoutes(app, options.runtimeSessions);
+
   app.register(fastifyOpenTelemetry, {
     wrapRoutes: true,
     formatSpanName: formatHttpSpanName,
@@ -177,6 +189,23 @@ export function createApp(options: CreateAppOptions = {}) {
   if (options.authService) {
     const authService = options.authService;
     const publicOrigin = options.browserAuth?.publicOrigin;
+    const authOptions = {
+      ...(options.betterAuth ? { betterAuth: options.betterAuth.instance } : {}),
+      ...(publicOrigin ? { publicOrigin } : {}),
+      ...(options.browserAuth
+        ? {
+            secureCookies: options.browserAuth.secureCookies,
+            sessionTtlSeconds: options.browserAuth.sessionTtlSeconds,
+          }
+        : {}),
+    };
+    if (options.betterAuth) {
+      registerBetterAuthRoutes(app, options.betterAuth.instance, {
+        publicUrl: options.betterAuth.publicUrl,
+        secureCookies: options.browserAuth?.secureCookies ?? true,
+        sessionTtlSeconds: options.browserAuth?.sessionTtlSeconds ?? 60 * 60 * 24 * 30,
+      });
+    }
     registerAuthRoutes(app, authService);
     registerMeRoutes(app, authService, {
       ...(options.connectCode
@@ -186,14 +215,19 @@ export function createApp(options: CreateAppOptions = {}) {
             publicUrl: options.connectCode.publicUrl,
           }
         : {}),
-      publicOrigin,
+      authOptions,
     });
-    if (options.browserAuth) registerBrowserAuthRoutes(app, authService, options.browserAuth);
+    if (options.browserAuth) {
+      registerBrowserAuthRoutes(app, authService, {
+        ...options.browserAuth,
+        ...(options.betterAuth ? { betterAuth: options.betterAuth } : {}),
+      });
+    }
     if (options.agentService) {
-      registerAgentRoutes(app, authService, options.agentService, publicOrigin);
+      registerAgentRoutes(app, authService, options.agentService, authOptions);
     }
     if (options.workspaceService) {
-      registerWorkspaceRoutes(app, authService, options.workspaceService, publicOrigin, options.workspaceSetupService);
+      registerWorkspaceRoutes(app, authService, options.workspaceService, authOptions, options.workspaceSetupService);
     }
     if (options.accountScope) {
       registerAccountRoutes(app, authService, {
@@ -204,16 +238,16 @@ export function createApp(options: CreateAppOptions = {}) {
         ...(options.workspaceService ? { workspaceService: options.workspaceService } : {}),
         ...(options.workspaceSetupService ? { workspaceSetupService: options.workspaceSetupService } : {}),
         ...(options.taskService ? { taskService: options.taskService } : {}),
-        publicOrigin,
+        authOptions,
       });
     }
     if (options.stagingOnboardingLab) {
-      registerInternalOnboardingLabRoutes(app, authService, options.stagingOnboardingLab.reset, publicOrigin);
+      registerInternalOnboardingLabRoutes(app, authService, options.stagingOnboardingLab.reset, authOptions);
     }
     if (options.imBindingService) {
-      registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, publicOrigin);
+      registerImBindingRoutes(app, authService, options.imBindingService, options.feishuSetupService, authOptions);
     }
-    if (options.slackOAuth) registerSlackOAuthRoutes(app, options.slackOAuth);
+    if (options.slackOAuth) registerSlackOAuthRoutes(app, { ...options.slackOAuth, authOptions });
     if (options.imResourceService && options.machineAuthService) {
       registerImResourceRoute(app, options.machineAuthService, options.imResourceService);
     }
@@ -224,7 +258,7 @@ export function createApp(options: CreateAppOptions = {}) {
         app,
         authService,
         machineAuthService,
-        publicOrigin,
+        authOptions,
         options.computerConnectCode?.environment,
         options.computerConnectCode?.publicUrl,
       );
@@ -281,6 +315,30 @@ export function createApp(options: CreateAppOptions = {}) {
         },
       });
       return reply.code(error.statusCode).send(envelope);
+    }
+    if (error instanceof SessionCliProofError) {
+      return reply.code(401).send(
+        ErrorEnvelopeSchema.parse({
+          error: {
+            code: "SESSION_PROOF_INVALID",
+            category: "credential",
+            message: "The Session CLI proof is invalid or stale",
+            requestId: request.id,
+          },
+        }),
+      );
+    }
+    if (error instanceof SessionServiceError && error.code === "SESSION_CURSOR_INVALID") {
+      return reply.code(400).send(
+        ErrorEnvelopeSchema.parse({
+          error: {
+            code: error.code,
+            category: "validation",
+            message: error.message,
+            requestId: request.id,
+          },
+        }),
+      );
     }
     if (error instanceof RequestValidationError) {
       const envelope = ErrorEnvelopeSchema.parse({

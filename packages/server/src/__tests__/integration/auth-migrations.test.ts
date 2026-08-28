@@ -82,14 +82,14 @@ async function createAuthFixture(now = new Date("2026-08-18T00:00:00.000Z"), aut
 }
 
 describe("database migrations", () => {
-  it("orders Slack workspace routing after the deployed setup and identity migrations", async () => {
+  it("orders Slack workspace routing after the deployed auth and Session collaboration migrations", async () => {
     const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
       entries: Array<{ idx: number; tag: string }>;
     };
 
-    // Anchored to the fixed 0010..0021 range rather than the tail: a trailing slice silently stops covering the
+    // Anchored to the fixed 0010..0024 range rather than the tail: a trailing slice silently stops covering the
     // earliest entry every time a migration is appended, which would quietly shrink what this test guarantees.
-    expect(journal.entries.slice(10, 22).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+    expect(journal.entries.slice(10, 25).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
       { idx: 10, tag: "0010_optimal_jazinda" },
       { idx: 11, tag: "0011_staging_team_setup_repair" },
       { idx: 12, tag: "0012_supreme_maddog" },
@@ -101,7 +101,24 @@ describe("database migrations", () => {
       { idx: 18, tag: "0018_salty_tombstone" },
       { idx: 19, tag: "0019_previous_magneto" },
       { idx: 20, tag: "0020_large_jack_power" },
-      { idx: 21, tag: "0021_slack_workspace_routing" },
+      { idx: 21, tag: "0021_slow_gamora" },
+      { idx: 22, tag: "0022_short_kitty_pryde" },
+      { idx: 23, tag: "0023_motionless_gideon" },
+      { idx: 24, tag: "0024_icy_warlock" },
+    ]);
+  });
+
+  it("orders the Account and Better Auth expansions before Session collaboration storage", async () => {
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+      entries: Array<{ idx: number; tag: string }>;
+    };
+
+    expect(journal.entries.slice(20, 24).map(({ idx, tag }) => ({ idx, tag }))).toEqual([
+      { idx: 20, tag: "0020_large_jack_power" },
+      { idx: 21, tag: "0021_slow_gamora" },
+      { idx: 22, tag: "0022_short_kitty_pryde" },
+      // Records which session a legacy credential was exchanged for, so a replayed exchange converges on one row.
+      { idx: 23, tag: "0023_motionless_gideon" },
     ]);
   });
 
@@ -613,6 +630,62 @@ describe("database migrations", () => {
         await expect(
           sql`insert into users (email, display_name) values ('CASING@EXAMPLE.COM', 'Previous Revision')`,
         ).resolves.toBeDefined();
+      } finally {
+        await sql.end();
+      }
+    } finally {
+      await rm(legacyFolder, { force: true, recursive: true });
+    }
+  });
+
+  it("reconciles Accounts a rolled-back server revision left unverified", async () => {
+    /*
+     * 0020 is expand-only so the previous revision keeps running against the new schema, which a rollback needs
+     * because rolling back code does not roll back migrations. That revision predates the writer maintaining
+     * `email_verified`, so this replays it: stop at 0020, write the row that revision would have written, then let the
+     * next migration reconcile it.
+     */
+    const legacyFolder = await mkdtemp(join(tmpdir(), "opentag-0020-migrations-"));
+    const legacyMeta = join(legacyFolder, "meta");
+    await mkdir(legacyMeta);
+    const journal = JSON.parse(await readFile(join(migrationsFolder, "meta/_journal.json"), "utf8")) as {
+      version: string;
+      dialect: string;
+      entries: Array<{ idx: number; version: string; when: number; tag: string; breakpoints: boolean }>;
+    };
+    const legacyEntries = journal.entries.filter(({ idx }) => idx <= 20);
+    for (const entry of legacyEntries) {
+      await copyFile(join(migrationsFolder, `${entry.tag}.sql`), join(legacyFolder, `${entry.tag}.sql`));
+    }
+    await writeFile(join(legacyMeta, "_journal.json"), JSON.stringify({ ...journal, entries: legacyEntries }, null, 2));
+
+    try {
+      await migrateDatabase(databaseUrl, legacyFolder);
+      const sql = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+      try {
+        const staleId = crypto.randomUUID();
+        const untouchedId = crypto.randomUUID();
+        await sql`
+          insert into users (id, email, display_name, email_verified)
+          values
+            (${staleId}, 'stale@example.com', 'Stale Account', false),
+            (${untouchedId}, 'no-identity@example.com', 'No Identity', false)
+        `;
+        await sql`
+          insert into auth_identities (user_id, provider, issuer, subject, email)
+          values (${staleId}, 'google', 'https://accounts.google.com', 'stale-subject', 'stale@example.com')
+        `;
+
+        await migrateDatabase(databaseUrl, migrationsFolder);
+
+        const verified = await sql<{ email_verified: boolean; id: string }[]>`
+          select id, email_verified from users order by email
+        `;
+        expect([...verified]).toEqual([
+          // An Account with no provider identity has nothing asserting its address, so it stays unverified.
+          { email_verified: false, id: untouchedId },
+          { email_verified: true, id: staleId },
+        ]);
       } finally {
         await sql.end();
       }
@@ -1203,6 +1276,7 @@ describe("authentication persistence", () => {
         }
         return delegate.issuePairForUser(userId);
       },
+      rotate: (token, userId) => delegate.rotate(token, userId),
       verifyAccess: (token) => delegate.verifyAccess(token),
       verifyRefresh: (token) => delegate.verifyRefresh(token),
     };

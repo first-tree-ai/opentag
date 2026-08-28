@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { isHostedEnvironment, parseDatabaseConfig, parseServerConfig, serverEnvironmentSummary } from "../config.js";
 
 const required = {
+  BETTER_AUTH_SECRET: "a-better-auth-secret-of-at-least-32-characters",
   OPENTAG_DATABASE_URL: "postgresql://opentag:opentag@localhost:5432/opentag",
   OPENTAG_ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
   OPENTAG_JWT_SECRET: "a-secret-that-is-at-least-32-characters",
@@ -9,7 +10,7 @@ const required = {
 };
 
 describe("parseServerConfig", () => {
-  it("registers the staging Onboarding Lab Account only for an explicit staging environment", () => {
+  it("offers the staging Onboarding Lab on every staging deployment and its reset only when configured", () => {
     const accountId = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
     expect(
       parseServerConfig({
@@ -20,10 +21,32 @@ describe("parseServerConfig", () => {
       }).stagingOnboardingLab,
     ).toEqual({ accountId });
 
+    // Scenario Preview is fixed client-side fixtures, so staging offers the Lab with no Account
+    // configured; only the reset half waits for one.
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENV: "staging",
+        OPENTAG_PUBLIC_URL: "https://staging.example.com",
+        OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: "",
+      }).stagingOnboardingLab,
+    ).toEqual({});
+    expect(
+      parseServerConfig({
+        ...required,
+        OPENTAG_ENV: "staging",
+        OPENTAG_PUBLIC_URL: "https://staging.example.com",
+      }).stagingOnboardingLab,
+    ).toEqual({});
+
     expect(parseServerConfig({ ...required, OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: "" }).stagingOnboardingLab).toBe(
       undefined,
     );
     expect(parseServerConfig(required).stagingOnboardingLab).toBe(undefined);
+    expect(
+      parseServerConfig({ ...required, OPENTAG_ENV: "prod", OPENTAG_PUBLIC_URL: "https://example.com" })
+        .stagingOnboardingLab,
+    ).toBe(undefined);
 
     for (const invalid of [
       {
@@ -189,6 +212,16 @@ describe("parseServerConfig", () => {
     expect(() => parseServerConfig({ ...required, OPENTAG_PORT: "0" })).toThrow();
     expect(() => parseServerConfig({ ...required, OPENTAG_JWT_SECRET: "short" })).toThrow();
     expect(() => parseServerConfig({ ...required, OPENTAG_DATABASE_URL: "https://example.com" })).toThrow();
+  });
+
+  it("requires a Better Auth secret that is independent of the legacy JWT secret", () => {
+    expect(parseServerConfig(required).betterAuthSecret).toBe(required.BETTER_AUTH_SECRET);
+    expect(parseServerConfig(required).betterAuthSecret).not.toBe(parseServerConfig(required).jwtSecret);
+
+    const { BETTER_AUTH_SECRET: _omitted, ...withoutSecret } = required;
+    expect(() => parseServerConfig(withoutSecret)).toThrow();
+    expect(() => parseServerConfig({ ...required, BETTER_AUTH_SECRET: "short" })).toThrow();
+    expect(() => parseServerConfig({ ...required, BETTER_AUTH_SECRET: required.OPENTAG_JWT_SECRET })).toThrow();
   });
 
   it("parses optional OTLP tracing configuration and validates its bounds", () => {

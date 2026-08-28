@@ -6,7 +6,11 @@ import {
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { createUserAuthPreHandler } from "../plugins/user-auth.js";
+import {
+  createUserAuthPreHandler,
+  resolveAuthenticatedUserId,
+  type UserAuthPreHandlerOptions,
+} from "../plugins/user-auth.js";
 import {
   BROWSER_COOKIE_NAMES,
   clearSlackOAuthContextCookie,
@@ -29,6 +33,7 @@ const CallbackQuerySchema = z.object({
 
 export interface SlackOAuthRouteOptions {
   authService: UserAuthService;
+  authOptions?: UserAuthPreHandlerOptions;
   publicOrigin: string;
   secureCookies: boolean;
   slackOAuth: SlackOAuthService;
@@ -72,7 +77,7 @@ function errorAgentId(error: unknown): string | undefined {
 }
 
 export function registerSlackOAuthRoutes(app: FastifyInstance, options: SlackOAuthRouteOptions): void {
-  const preHandler = createUserAuthPreHandler(options.authService, { publicOrigin: options.publicOrigin });
+  const preHandler = createUserAuthPreHandler(options.authService, options.authOptions ?? {});
 
   app.post(AGENT_SLACK_OAUTH_START_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
@@ -95,8 +100,10 @@ export function registerSlackOAuthRoutes(app: FastifyInstance, options: SlackOAu
     clearSlackOAuthContextCookie(reply, SLACK_OAUTH_CALLBACK_PATH, options.secureCookies);
     try {
       const query = parseRequest(CallbackQuerySchema, request.query);
+      // Resolved through the shared resolver so a browser holding either credential completes authorization.
+      const authenticatedUserId = await resolveAuthenticatedUserId(request, options.authService, options.authOptions);
       const result = await options.slackOAuth.callback({
-        accessToken: cookies[BROWSER_COOKIE_NAMES.access],
+        ...(authenticatedUserId === undefined ? {} : { authenticatedUserId }),
         ...(query.code !== undefined ? { code: query.code } : {}),
         ...(query.error !== undefined ? { error: query.error } : {}),
         sessionBinding: cookies[BROWSER_COOKIE_NAMES.slackOAuthContext],

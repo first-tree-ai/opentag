@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import type {
+  SessionMessageDeliveryRequest,
+  SessionMessageDeliveryResult,
+  SessionReconcileRequest,
+  SessionReconcileResult,
+} from "@opentag/shared";
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
@@ -7,9 +13,19 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
-import { computers, imBindings, sessionMessages, sessions, workspaceComputers } from "../../db/schema/index.js";
+import {
+  agents,
+  computers,
+  imBindings,
+  sessionMessages,
+  sessionPlacements,
+  sessions,
+  workspaceComputers,
+} from "../../db/schema/index.js";
+import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../../runtime/runtime-domain-owner.js";
 import { AgentService } from "../../services/agents/index.js";
-import { SessionService } from "../../services/sessions/index.js";
+import { disableImBindingInTransaction } from "../../services/im-bindings/index.js";
+import { SessionCliProofService, SessionCollaborationService, SessionService } from "../../services/sessions/index.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 
@@ -46,6 +62,7 @@ describe("Session collaboration authority", () => {
       const input = {
         creatorSessionId: creator.session.id,
         creatorComputerId: fixture.computerId,
+        creatorConnectionInstanceId: fixture.connectionInstanceId,
         creatorWorkspaceComputerId: fixture.workspaceComputerId,
         creatorPlacementGeneration: creator.placement.generation,
         messageId,
@@ -99,6 +116,150 @@ describe("Session collaboration authority", () => {
     }
   });
 
+  it("lists direct and recursive internal Sessions with bounded cursor pages", async () => {
+    const fixture = await createFixture();
+    try {
+      const creator = await fixture.sessions.ensureChatSession(
+        { imBindingId: fixture.imBindingId, channelId: "C1", conversationKind: "dm" },
+        "channel",
+      );
+      const children = [];
+      for (const task of ["one", "two", "three"]) {
+        children.push(
+          await fixture.sessions.createInternalSessionWithMessage({
+            creatorSessionId: creator.session.id,
+            creatorComputerId: fixture.computerId,
+            creatorConnectionInstanceId: fixture.connectionInstanceId,
+            creatorWorkspaceComputerId: fixture.workspaceComputerId,
+            creatorPlacementGeneration: 1,
+            messageId: randomUUID(),
+            initialMessage: task,
+          }),
+        );
+      }
+      const grandchild = await fixture.sessions.createInternalSessionWithMessage({
+        creatorSessionId: children[0]?.session.id as string,
+        creatorComputerId: fixture.computerId,
+        creatorConnectionInstanceId: fixture.connectionInstanceId,
+        creatorWorkspaceComputerId: fixture.workspaceComputerId,
+        creatorPlacementGeneration: 1,
+        messageId: randomUUID(),
+        initialMessage: "nested",
+      });
+      const first = await fixture.sessions.listInternalSessions(creator.session.id, {
+        recursive: false,
+        limit: 2,
+      });
+      expect(first.items).toHaveLength(2);
+      expect(first.nextCursor).toBeDefined();
+      const omitted = children.find(({ session }) => !first.items.some(({ sessionId }) => sessionId === session.id));
+      if (!omitted) throw new Error("Expected one direct child after the first page");
+      const omittedBefore = (
+        await fixture.sessions.listInternalSessions(creator.session.id, { recursive: false, limit: 20 })
+      ).items.find(({ sessionId }) => sessionId === omitted.session.id);
+      expect(
+        await fixture.sessions.recordMessageOutcome({
+          messageId: omitted.message.id,
+          attemptCount: omitted.attemptCount as number,
+          outcome: "accepted",
+        }),
+      ).toBe(true);
+      const second = await fixture.sessions.listInternalSessions(creator.session.id, {
+        recursive: false,
+        limit: 2,
+        cursor: first.nextCursor,
+      });
+      const pagedIds = [...first.items, ...second.items].map(({ sessionId }) => sessionId);
+      expect(pagedIds).toHaveLength(3);
+      expect(new Set(pagedIds)).toHaveLength(3);
+      expect(second.items.find(({ sessionId }) => sessionId === omitted.session.id)).toMatchObject({
+        lastMessageAt: omittedBefore?.lastMessageAt,
+        lastDeliveryOutcome: "accepted",
+      });
+      const recursive = await fixture.sessions.listInternalSessions(creator.session.id, {
+        recursive: true,
+        limit: 20,
+      });
+      expect(recursive.items.map(({ sessionId }) => sessionId)).toContain(grandchild.session.id);
+      await expect(
+        fixture.sessions.listInternalSessions(creator.session.id, {
+          recursive: false,
+          limit: 20,
+          cursor: "invalid",
+        }),
+      ).rejects.toMatchObject({ code: "SESSION_CURSOR_INVALID" });
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("uses bounded indexes for recursive pages and descendant activity writes", async () => {
+    const fixture = await createFixture();
+    try {
+      const root = await fixture.sessions.ensureChatSession(
+        { imBindingId: fixture.imBindingId, channelId: "C1", conversationKind: "dm" },
+        "channel",
+      );
+      let parent = root;
+      let lastMessageId: string | undefined;
+      for (let index = 0; index < 120; index += 1) {
+        const created = await fixture.sessions.createInternalSessionWithMessage({
+          creatorSessionId: parent.session.id,
+          creatorComputerId: fixture.computerId,
+          creatorConnectionInstanceId: fixture.connectionInstanceId,
+          creatorWorkspaceComputerId: fixture.workspaceComputerId,
+          creatorPlacementGeneration: 1,
+          messageId: randomUUID(),
+          initialMessage: `nested-${index}`,
+        });
+        parent = created;
+        lastMessageId = created.message.id;
+      }
+      if (!lastMessageId) throw new Error("Expected a nested Session message");
+
+      const page = await fixture.sessions.listInternalSessions(root.session.id, { recursive: true, limit: 10 });
+      expect(page.items).toHaveLength(10);
+      expect(page.nextCursor).toBeDefined();
+
+      await fixture.sql.unsafe("set enable_seqscan = off");
+      const plan = await fixture.sql`
+        explain (format json)
+        select descendant_session_id
+        from session_descendants
+        where ancestor_session_id = ${root.session.id}::uuid
+        order by last_message_created_at desc, last_message_id desc, descendant_session_id desc
+        limit 11
+      `;
+      expect(JSON.stringify(plan)).toContain("session_descendants_ancestor_activity_idx");
+
+      const ancestorCopyPlan = await fixture.sql`
+        explain (format json)
+        select ancestor_session_id
+        from session_descendants
+        where descendant_session_id = ${parent.session.id}::uuid
+      `;
+      expect(JSON.stringify(ancestorCopyPlan)).toContain("session_descendants_descendant_ancestor_idx");
+
+      const activityUpdatePlan = await fixture.sql`
+        explain (format json)
+        update session_descendants
+        set last_delivery_outcome = last_delivery_outcome
+        where descendant_session_id = ${parent.session.id}::uuid
+      `;
+      expect(JSON.stringify(activityUpdatePlan)).toContain("session_descendants_descendant_ancestor_idx");
+
+      const outcomeUpdatePlan = await fixture.sql`
+        explain (format json)
+        update session_descendants
+        set last_delivery_outcome = last_delivery_outcome
+        where last_message_id = ${lastMessageId}::uuid
+      `;
+      expect(JSON.stringify(outcomeUpdatePlan)).toContain("session_descendants_last_message_idx");
+    } finally {
+      await fixture.sql.end();
+    }
+  }, 15_000);
+
   it("retries only explicit unknown or unreachable attempts and fences stale outcome writers", async () => {
     const fixture = await createFixture();
     try {
@@ -109,6 +270,7 @@ describe("Session collaboration authority", () => {
       const child = await fixture.sessions.createInternalSessionWithMessage({
         creatorSessionId: creator.session.id,
         creatorComputerId: fixture.computerId,
+        creatorConnectionInstanceId: fixture.connectionInstanceId,
         creatorWorkspaceComputerId: fixture.workspaceComputerId,
         creatorPlacementGeneration: 1,
         messageId: randomUUID(),
@@ -119,6 +281,7 @@ describe("Session collaboration authority", () => {
         messageId,
         sourceSessionId: child.session.id,
         sourceComputerId: fixture.computerId,
+        sourceConnectionInstanceId: fixture.connectionInstanceId,
         sourceWorkspaceComputerId: fixture.workspaceComputerId,
         sourcePlacementGeneration: 1,
         targetSessionId: creator.session.id,
@@ -170,6 +333,7 @@ describe("Session collaboration authority", () => {
           messageId: staleId,
           sourceSessionId: source.session.id,
           sourceComputerId: fixture.computerId,
+          sourceConnectionInstanceId: fixture.connectionInstanceId,
           sourceWorkspaceComputerId: fixture.workspaceComputerId,
           sourcePlacementGeneration: 2,
           targetSessionId: source.session.id,
@@ -182,19 +346,24 @@ describe("Session collaboration authority", () => {
           messageId: crossScopeId,
           sourceSessionId: source.session.id,
           sourceComputerId: fixture.computerId,
+          sourceConnectionInstanceId: fixture.connectionInstanceId,
           sourceWorkspaceComputerId: fixture.workspaceComputerId,
           sourcePlacementGeneration: 1,
           targetSessionId: otherScope.session.id,
           content: "cross scope",
         }),
       ).rejects.toMatchObject({ code: "SESSION_SCOPE_MISMATCH" });
-      await fixture.sessions.end(otherScope.session.id);
+      await fixture.database
+        .update(sessions)
+        .set({ endedAt: new Date() })
+        .where(eq(sessions.id, otherScope.session.id));
       const endedId = randomUUID();
       await expect(
         fixture.sessions.authorizeAndRecordMessage({
           messageId: endedId,
           sourceSessionId: source.session.id,
           sourceComputerId: fixture.computerId,
+          sourceConnectionInstanceId: fixture.connectionInstanceId,
           sourceWorkspaceComputerId: fixture.workspaceComputerId,
           sourcePlacementGeneration: 1,
           targetSessionId: otherScope.session.id,
@@ -222,6 +391,7 @@ describe("Session collaboration authority", () => {
       const child = await fixture.sessions.createInternalSessionWithMessage({
         creatorSessionId: thread.session.id,
         creatorComputerId: fixture.computerId,
+        creatorConnectionInstanceId: fixture.connectionInstanceId,
         creatorWorkspaceComputerId: fixture.workspaceComputerId,
         creatorPlacementGeneration: 1,
         messageId: randomUUID(),
@@ -230,6 +400,7 @@ describe("Session collaboration authority", () => {
       const grandchild = await fixture.sessions.createInternalSessionWithMessage({
         creatorSessionId: child.session.id,
         creatorComputerId: fixture.computerId,
+        creatorConnectionInstanceId: fixture.connectionInstanceId,
         creatorWorkspaceComputerId: fixture.workspaceComputerId,
         creatorPlacementGeneration: 1,
         messageId: randomUUID(),
@@ -246,6 +417,384 @@ describe("Session collaboration authority", () => {
       await fixture.sql.end();
     }
   });
+
+  it("keeps proofs stable across busy, lost-response, retry, and concurrent reconciles", async () => {
+    const fixture = await createFixture();
+    try {
+      const source = await fixture.sessions.ensureChatSession(
+        { imBindingId: fixture.imBindingId, channelId: "C1", conversationKind: "dm" },
+        "channel",
+      );
+      let currentInstanceId = randomUUID();
+      await fixture.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId })
+        .where(eq(workspaceComputers.id, fixture.workspaceComputerId));
+      const registry = {
+        currentInstanceId: (workspaceComputerId: string) =>
+          workspaceComputerId === fixture.workspaceComputerId ? currentInstanceId : undefined,
+        supportsCapability: (workspaceComputerId: string, instanceId: string) =>
+          workspaceComputerId === fixture.workspaceComputerId && instanceId === currentInstanceId,
+      };
+      const proofs = new SessionCliProofService(fixture.database, registry, new Uint8Array(32).fill(7));
+      const input = {
+        sessionId: source.session.id,
+        workspaceComputerId: fixture.workspaceComputerId,
+        placementGeneration: 1,
+        connectionInstanceId: currentInstanceId,
+      };
+
+      const [first, retried, concurrent] = await Promise.all([
+        proofs.mint(input),
+        proofs.mint(input),
+        proofs.mint(input),
+      ]);
+      expect(retried).toEqual(first);
+      expect(concurrent).toEqual(first);
+      await expect(proofs.authenticate(first.token)).resolves.toMatchObject({ sessionId: source.session.id });
+
+      const busyReconcile = await proofs.prepareReconcile(fixture.workspaceComputerId, currentInstanceId, {
+        type: "session:reconcile",
+        requestId: randomUUID(),
+        computerId: fixture.computerId,
+        sessionId: source.session.id,
+        agentId: fixture.agentId,
+        placementGeneration: 1,
+        desired: "ready",
+        runtime: runtimeSnapshot(fixture.agentId),
+      });
+      expect(busyReconcile.sessionCliProof).toEqual(first);
+      await expect(proofs.authenticate(first.token)).resolves.toMatchObject({ sessionId: source.session.id });
+
+      const replacementInstanceId = randomUUID();
+      currentInstanceId = replacementInstanceId;
+      await fixture.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: replacementInstanceId })
+        .where(eq(workspaceComputers.id, fixture.workspaceComputerId));
+      await expect(proofs.authenticate(first.token)).rejects.toMatchObject({ code: "invalid_proof" });
+      const replacement = await proofs.mint({ ...input, connectionInstanceId: replacementInstanceId });
+      expect(replacement).not.toEqual(first);
+      await expect(proofs.authenticate(replacement.token)).resolves.toMatchObject({ sessionId: source.session.id });
+
+      const moved = await fixture.sessions.movePlacement(source.session.id, fixture.workspaceComputerId);
+      expect(moved.generation).toBe(2);
+      const current = await proofs.mint({
+        ...input,
+        placementGeneration: 2,
+        connectionInstanceId: replacementInstanceId,
+      });
+      await expect(
+        proofs.prepareReconcile(fixture.workspaceComputerId, replacementInstanceId, {
+          type: "session:reconcile",
+          requestId: randomUUID(),
+          computerId: fixture.computerId,
+          sessionId: source.session.id,
+          agentId: fixture.agentId,
+          placementGeneration: 1,
+          desired: "ready",
+          runtime: runtimeSnapshot(fixture.agentId),
+        }),
+      ).rejects.toMatchObject({ code: "runtime_unavailable" });
+      await expect(proofs.authenticate(current.token)).resolves.toMatchObject({ placementGeneration: 2 });
+
+      await proofs.prepareReconcile(fixture.workspaceComputerId, replacementInstanceId, {
+        type: "session:reconcile",
+        requestId: randomUUID(),
+        computerId: fixture.computerId,
+        sessionId: source.session.id,
+        agentId: fixture.agentId,
+        placementGeneration: 1,
+        desired: "stopped",
+      });
+      await expect(proofs.authenticate(current.token)).resolves.toMatchObject({ placementGeneration: 2 });
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("invalidates proofs on wrong Computer, stale generation, inactive Agent, or inactive IM binding", async () => {
+    const fixture = await createFixture();
+    try {
+      const source = await fixture.sessions.ensureChatSession(
+        { imBindingId: fixture.imBindingId, channelId: "C1", conversationKind: "dm" },
+        "channel",
+      );
+      const connectionInstanceId = randomUUID();
+      await fixture.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: connectionInstanceId })
+        .where(eq(workspaceComputers.id, fixture.workspaceComputerId));
+      const registry = {
+        currentInstanceId: () => connectionInstanceId,
+        supportsCapability: () => true,
+      };
+      const proofs = new SessionCliProofService(fixture.database, registry, new Uint8Array(32).fill(9));
+      const mint = () =>
+        proofs.mint({
+          sessionId: source.session.id,
+          workspaceComputerId: fixture.workspaceComputerId,
+          placementGeneration: 1,
+          connectionInstanceId,
+        });
+
+      let proof = await mint();
+      await fixture.database
+        .update(sessionPlacements)
+        .set({ generation: 2 })
+        .where(eq(sessionPlacements.sessionId, source.session.id));
+      await expect(proofs.authenticate(proof.token)).rejects.toMatchObject({ code: "invalid_proof" });
+      await fixture.database
+        .update(sessionPlacements)
+        .set({ generation: 1 })
+        .where(eq(sessionPlacements.sessionId, source.session.id));
+
+      proof = await mint();
+      await fixture.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, fixture.agentId));
+      await expect(proofs.authenticate(proof.token)).rejects.toMatchObject({ code: "invalid_proof" });
+      await fixture.database.update(agents).set({ status: "active" }).where(eq(agents.id, fixture.agentId));
+
+      proof = await mint();
+      await fixture.database.update(imBindings).set({ status: "error" }).where(eq(imBindings.id, fixture.imBindingId));
+      await expect(proofs.authenticate(proof.token)).rejects.toMatchObject({ code: "invalid_proof" });
+      await fixture.database.update(imBindings).set({ status: "active" }).where(eq(imBindings.id, fixture.imBindingId));
+
+      const otherComputerId = randomUUID();
+      await fixture.database.insert(computers).values({ id: otherComputerId });
+      const [otherWorkspaceComputer] = await fixture.database
+        .insert(workspaceComputers)
+        .values({
+          workspaceId: fixture.workspaceId,
+          computerId: otherComputerId,
+          displayName: "other-workstation",
+          platform: "linux",
+          arch: "x64",
+          clientVersion: "0.0.1",
+          enrolledByUserId: fixture.userId,
+          currentInstanceId: connectionInstanceId,
+        })
+        .returning({ id: workspaceComputers.id });
+      if (!otherWorkspaceComputer) throw new Error("Second Workspace Computer fixture was not created");
+      proof = await mint();
+      await fixture.database
+        .update(sessionPlacements)
+        .set({ workspaceComputerId: otherWorkspaceComputer.id })
+        .where(eq(sessionPlacements.sessionId, source.session.id));
+      await expect(proofs.authenticate(proof.token)).rejects.toMatchObject({ code: "invalid_proof" });
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("does not dispatch collaboration frames when suspension wins before ready admission", async () => {
+    const fixture = await createFixture();
+    try {
+      const assemblyStarted = deferred<void>();
+      const continueAssembly = deferred<void>();
+      const collaboration = await createCollaborationFixture(fixture, {
+        assemble: async () => {
+          assemblyStarted.resolve();
+          await continueAssembly.promise;
+          return runtimeSnapshot(fixture.agentId);
+        },
+      });
+      const sending = collaboration.service.send(
+        { messageId: randomUUID(), targetSessionId: collaboration.targetSessionId, message: "late work" },
+        collaboration.source,
+      );
+      await assemblyStarted.promise;
+
+      await new AgentService(fixture.database, {
+        stopSessions: async () => {
+          collaboration.frames.push("stopped");
+        },
+      }).suspendById(fixture.userId, fixture.agentId);
+      continueAssembly.resolve();
+
+      await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_not_ready" });
+      expect(collaboration.frames).toEqual(["stopped"]);
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("admits ready before suspension but fences the later SessionMessage frame", async () => {
+    const fixture = await createFixture();
+    try {
+      const reconcileDispatched = deferred<void>();
+      const continueReconcile = deferred<void>();
+      const collaboration = await createCollaborationFixture(fixture, {
+        onReconcileDispatched: () => reconcileDispatched.resolve(),
+        beforeReconcileResult: () => continueReconcile.promise,
+      });
+      const sending = collaboration.service.send(
+        { messageId: randomUUID(), targetSessionId: collaboration.targetSessionId, message: "race suspension" },
+        collaboration.source,
+      );
+      await reconcileDispatched.promise;
+
+      await new AgentService(fixture.database, {
+        stopSessions: async () => {
+          collaboration.frames.push("stopped");
+        },
+      }).suspendById(fixture.userId, fixture.agentId);
+      continueReconcile.resolve();
+
+      await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_unavailable" });
+      expect(collaboration.frames).toEqual(["ready", "stopped"]);
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("does not deliver to an ended target when IM binding disable commits between frames", async () => {
+    const fixture = await createFixture();
+    try {
+      const deliveryRequested = deferred<void>();
+      const continueDeliveryAdmission = deferred<void>();
+      const collaboration = await createCollaborationFixture(fixture, {
+        onDeliveryRequested: () => deliveryRequested.resolve(),
+        beforeDeliveryAdmission: () => continueDeliveryAdmission.promise,
+      });
+      const sending = collaboration.service.send(
+        { messageId: randomUUID(), targetSessionId: collaboration.targetSessionId, message: "race disable" },
+        collaboration.source,
+      );
+      await deliveryRequested.promise;
+
+      await fixture.database.transaction((transaction) =>
+        disableImBindingInTransaction(transaction, fixture.imBindingId, new Date()),
+      );
+      continueDeliveryAdmission.resolve();
+
+      await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_unavailable" });
+      expect(collaboration.frames).toEqual(["ready"]);
+      const [target] = await fixture.database
+        .select({ endedAt: sessions.endedAt })
+        .from(sessions)
+        .where(eq(sessions.id, collaboration.targetSessionId))
+        .limit(1);
+      expect(target?.endedAt).toBeInstanceOf(Date);
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("does not dispatch ready after the source placement generation advances", async () => {
+    const fixture = await createFixture();
+    try {
+      const assemblyStarted = deferred<void>();
+      const continueAssembly = deferred<void>();
+      const collaboration = await createCollaborationFixture(fixture, {
+        assemble: async () => {
+          assemblyStarted.resolve();
+          await continueAssembly.promise;
+          return runtimeSnapshot(fixture.agentId);
+        },
+      });
+      const sending = collaboration.service.send(
+        { messageId: randomUUID(), targetSessionId: collaboration.targetSessionId, message: "stale source placement" },
+        collaboration.source,
+      );
+      await assemblyStarted.promise;
+
+      await fixture.sessions.movePlacement(collaboration.source.sessionId, fixture.workspaceComputerId);
+      continueAssembly.resolve();
+
+      await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_not_ready" });
+      expect(collaboration.frames).toEqual([]);
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("does not dispatch ready after the source connection is replaced", async () => {
+    const fixture = await createFixture();
+    try {
+      const assemblyStarted = deferred<void>();
+      const continueAssembly = deferred<void>();
+      const collaboration = await createCollaborationFixture(fixture, {
+        assemble: async () => {
+          assemblyStarted.resolve();
+          await continueAssembly.promise;
+          return runtimeSnapshot(fixture.agentId);
+        },
+      });
+      const sending = collaboration.service.send(
+        { messageId: randomUUID(), targetSessionId: collaboration.targetSessionId, message: "stale source connection" },
+        collaboration.source,
+      );
+      await assemblyStarted.promise;
+
+      await fixture.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: randomUUID() })
+        .where(eq(workspaceComputers.id, fixture.workspaceComputerId));
+      continueAssembly.resolve();
+
+      await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_not_ready" });
+      expect(collaboration.frames).toEqual([]);
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("does not deliver a SessionMessage after the source placement advances between frames", async () => {
+    const fixture = await createFixture();
+    try {
+      const deliveryRequested = deferred<void>();
+      const continueDeliveryAdmission = deferred<void>();
+      const collaboration = await createCollaborationFixture(fixture, {
+        onDeliveryRequested: () => deliveryRequested.resolve(),
+        beforeDeliveryAdmission: () => continueDeliveryAdmission.promise,
+      });
+      const sending = collaboration.service.send(
+        { messageId: randomUUID(), targetSessionId: collaboration.targetSessionId, message: "move between frames" },
+        collaboration.source,
+      );
+      await deliveryRequested.promise;
+
+      await fixture.sessions.movePlacement(collaboration.source.sessionId, fixture.workspaceComputerId);
+      continueDeliveryAdmission.resolve();
+
+      await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_unavailable" });
+      expect(collaboration.frames).toEqual(["ready"]);
+    } finally {
+      await fixture.sql.end();
+    }
+  });
+
+  it("does not deliver a SessionMessage after the source connection is replaced between frames", async () => {
+    const fixture = await createFixture();
+    try {
+      const deliveryRequested = deferred<void>();
+      const continueDeliveryAdmission = deferred<void>();
+      const collaboration = await createCollaborationFixture(fixture, {
+        onDeliveryRequested: () => deliveryRequested.resolve(),
+        beforeDeliveryAdmission: () => continueDeliveryAdmission.promise,
+      });
+      const sending = collaboration.service.send(
+        {
+          messageId: randomUUID(),
+          targetSessionId: collaboration.targetSessionId,
+          message: "replace connection between frames",
+        },
+        collaboration.source,
+      );
+      await deliveryRequested.promise;
+
+      await fixture.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: randomUUID() })
+        .where(eq(workspaceComputers.id, fixture.workspaceComputerId));
+      continueDeliveryAdmission.resolve();
+
+      await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_unavailable" });
+      expect(collaboration.frames).toEqual(["ready"]);
+    } finally {
+      await fixture.sql.end();
+    }
+  });
 });
 
 async function createFixture() {
@@ -258,6 +807,7 @@ async function createFixture() {
     workspaceName: "example",
   });
   const computerId = randomUUID();
+  const connectionInstanceId = randomUUID();
   await client.database.insert(computers).values({
     id: computerId,
   });
@@ -271,6 +821,7 @@ async function createFixture() {
       arch: "x64",
       clientVersion: "0.0.1",
       enrolledByUserId: bootstrap.userId,
+      currentInstanceId: connectionInstanceId,
     })
     .returning({ id: workspaceComputers.id });
   if (!workspaceComputer) throw new Error("Workspace Computer fixture was not created");
@@ -297,9 +848,141 @@ async function createFixture() {
   if (!binding) throw new Error("Binding fixture was not created");
   return {
     ...client,
+    agentId: agent.id,
     computerId,
+    connectionInstanceId,
+    userId: bootstrap.userId,
+    workspaceId: bootstrap.workspaceId,
     workspaceComputerId: workspaceComputer.id,
     imBindingId: binding.id,
     sessions: new SessionService(client.database),
   };
+}
+
+function runtimeSnapshot(agentId: string) {
+  return {
+    revision: { agent: { sequence: 1, id: "a".repeat(64) }, session: { sequence: 1, id: "b".repeat(64) } },
+    agentId,
+    provider: "codex" as const,
+    instructions: { platform: "platform", agent: "agent" },
+    execution: { approvalPolicy: "never" as const, networkAccess: true },
+    workspace: { workspaceId: agentId, mode: "empty_on_create" as const, sharing: "agent" as const },
+  };
+}
+
+interface CollaborationRuntimeOptions {
+  assemble?: () => Promise<ReturnType<typeof runtimeSnapshot>>;
+  beforeDeliveryAdmission?: () => Promise<void>;
+  beforeReconcileResult?: () => Promise<void>;
+  onDeliveryRequested?: () => void;
+  onReconcileDispatched?: () => void;
+}
+
+async function createCollaborationFixture(
+  fixture: Awaited<ReturnType<typeof createFixture>>,
+  options: CollaborationRuntimeOptions = {},
+) {
+  const source = await fixture.sessions.ensureChatSession(
+    { imBindingId: fixture.imBindingId, channelId: "C1", conversationKind: "dm" },
+    "channel",
+  );
+  const target = await fixture.sessions.createInternalSessionWithMessage({
+    creatorSessionId: source.session.id,
+    creatorComputerId: fixture.computerId,
+    creatorConnectionInstanceId: fixture.connectionInstanceId,
+    creatorWorkspaceComputerId: fixture.workspaceComputerId,
+    creatorPlacementGeneration: source.placement.generation,
+    messageId: randomUUID(),
+    initialMessage: "initial task",
+  });
+  const frames: string[] = [];
+  const instanceId = fixture.connectionInstanceId;
+  const domain = {
+    requestReconcile: async (
+      _workspaceComputerId: string,
+      _instanceId: string,
+      request: SessionReconcileRequest,
+      onDispatched?: () => void,
+      admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
+    ): Promise<SessionReconcileResult> =>
+      withAdmission(admission, async (admissionDispatched) => {
+        frames.push("ready");
+        admissionDispatched();
+        onDispatched?.();
+        options.onReconcileDispatched?.();
+        await options.beforeReconcileResult?.();
+        return {
+          type: "session:reconcile:result",
+          requestId: request.requestId,
+          sessionId: request.sessionId,
+          placementGeneration: request.placementGeneration,
+          status: "ready",
+        };
+      }),
+    requestSessionMessageDelivery: async (
+      _workspaceComputerId: string,
+      _instanceId: string,
+      request: SessionMessageDeliveryRequest,
+      onDispatched?: () => void,
+      admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
+    ): Promise<SessionMessageDeliveryResult> => {
+      options.onDeliveryRequested?.();
+      await options.beforeDeliveryAdmission?.();
+      return withAdmission(admission, async (admissionDispatched) => {
+        frames.push("message");
+        admissionDispatched();
+        onDispatched?.();
+        return {
+          type: "session:message:deliver:result",
+          requestId: request.requestId,
+          messageId: request.messageId,
+          targetSessionId: request.targetSessionId,
+          placementGeneration: request.placementGeneration,
+          status: "accepted",
+        };
+      });
+    },
+  };
+  return {
+    frames,
+    service: new SessionCollaborationService({
+      assembler: { assembleForSession: options.assemble ?? (async () => runtimeSnapshot(fixture.agentId)) },
+      domain,
+      registry: {
+        currentInstanceId: () => instanceId,
+        supportsCapability: () => true,
+      },
+      sessions: fixture.sessions,
+    }),
+    source: {
+      agentId: fixture.agentId,
+      computerId: fixture.computerId,
+      connectionInstanceId: instanceId,
+      placementGeneration: source.placement.generation,
+      sessionId: source.session.id,
+      sessionKind: source.session.kind,
+      workspaceComputerId: fixture.workspaceComputerId,
+    },
+    targetSessionId: target.session.id,
+  };
+}
+
+async function withAdmission<T>(
+  admission: RuntimeDispatchAdmission<T> | undefined,
+  operation: (onDispatched: () => void) => Promise<T>,
+): Promise<T> {
+  if (!admission) return operation(() => undefined);
+  const admitted = await admission(operation);
+  if (!admitted.admitted) {
+    throw new RuntimeDomainRequestError("authority_unavailable", "Runtime dispatch authority is unavailable");
+  }
+  return admitted.result;
+}
+
+function deferred<T>() {
+  let resolve: (value: T | PromiseLike<T>) => void = () => undefined;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
 }

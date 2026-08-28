@@ -2393,6 +2393,19 @@ describe("OpenTag Web App Shell", () => {
     expect(window.location.pathname).toBe("/onboarding");
   });
 
+  it("renders onboarding without the application navigation", async () => {
+    installApi({ setupCompletedAt: null });
+    render(<App />);
+    await screen.findByRole("heading", { name: "Set up OpenTag" });
+
+    // The Account has not entered the application yet. Every destination the primary navigation
+    // offers is behind the setup gate, which sends them all straight back here, and the shell
+    // brand would stand beside the one onboarding renders itself.
+    expect(screen.queryByRole("navigation", { name: "Primary navigation" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Agents" })).toBeNull();
+    expect(screen.getAllByRole("link", { name: "OpenTag" })).toHaveLength(1);
+  });
+
   it("keeps completed Workspaces out of onboarding even when it is requested directly", async () => {
     installApi();
     window.history.replaceState({}, "", "/onboarding");

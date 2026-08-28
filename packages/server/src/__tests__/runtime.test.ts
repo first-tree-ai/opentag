@@ -323,7 +323,7 @@ describe("Computer runtime WebSocket", () => {
       connectionId,
     });
     expect(businessContext?.negotiatedCapabilities).toMatchObject({
-      "runtime.sessionCollaboration": 1,
+      "runtime.sessionCollaboration": 2,
     });
 
     socket.send(

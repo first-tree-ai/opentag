@@ -13,6 +13,7 @@ import {
   resolveOpenTagHome,
 } from "@opentag/client";
 import { CLI_VERSION } from "../../build-info.js";
+import { channelConfig } from "../channel/config.js";
 import { applyDaemonEnvironment } from "./environment.js";
 import { acquireDaemonOwner, DaemonOwnerStartupError } from "./ownership.js";
 import { resolveDaemonPaths } from "./paths.js";
@@ -170,6 +171,7 @@ export async function runDaemonService(options: DaemonRuntimeOptions = {}): Prom
           const runtime = await createClientRuntime(connection, {
             home,
             clientVersion: CLI_VERSION,
+            cliCommand: channelConfig.binName,
             logger: runtimeLogger,
             signal,
             api,

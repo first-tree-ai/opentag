@@ -687,6 +687,8 @@ export function claudeCodeAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = pr
     "LOGNAME",
     "NODE_EXTRA_CA_CERTS",
     "OPENTAG_PROVIDER_ENV_FILE",
+    "OPENTAG_HOME",
+    "OPENTAG_SESSION_PROOF_FILE",
     "PATH",
     "PATHEXT",
     "SHELL",

@@ -462,17 +462,24 @@ export function AppRouter() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route element={<AuthenticatedAccountGate />}>
-        <Route element={<AppShell />}>
-          {/*
-            Outside the setup-completion gate so a stuck run can always reopen the Lab, and outside
-            the Workspace-authority gate because Scenario Preview needs the Account and nothing else.
-          */}
-          <Route path="/internal/onboarding-lab" element={<OnboardingLabRoute />} />
-        </Route>
+        {/*
+          Outside AppShell because the Lab renders the onboarding surface verbatim, and onboarding
+          has no primary navigation. Outside the setup-completion gate so a stuck run can always
+          reopen the Lab, and outside the Workspace-authority gate because Scenario Preview needs
+          the Account and nothing else.
+        */}
+        <Route path="/internal/onboarding-lab" element={<OnboardingLabRoute />} />
         <Route element={<WorkspaceAuthorityGate />}>
+          {/*
+            Onboarding runs before the Account has entered the application, so it carries no
+            AppShell: the primary navigation would offer destinations this gate sends straight
+            back here, and a second brand mark beside the one onboarding renders itself.
+          */}
+          <Route element={<WorkspaceSetupGate />}>
+            <Route path="/onboarding" element={<OnboardingRoute />} />
+          </Route>
           <Route element={<AppShell />}>
             <Route element={<WorkspaceSetupGate />}>
-              <Route path="/onboarding" element={<OnboardingRoute />} />
               <Route index element={<Navigate replace to="/agents" />} />
               <Route path="/agents" element={<AgentsPage />} />
               <Route path="/agents/computers" element={<ComputersPage />} />
@@ -669,9 +676,9 @@ function OnboardingRoute() {
 }
 
 /**
- * The staging-only Onboarding Lab. A deployment that configures no Lab Account is answered exactly
- * like a page that does not exist; where one is configured, every signed-in Account may read the
- * Scenario Preview, and the Server still decides which single Account may run the reset.
+ * The staging-only Onboarding Lab. A deployment outside staging is answered exactly like a page that
+ * does not exist; on staging every signed-in Account may read the Scenario Preview, and the Server
+ * still decides which single Account, if any, may run the reset.
  */
 function OnboardingLabRoute() {
   const { me, refreshMe } = useAccount();
@@ -702,7 +709,8 @@ function OnboardingLabRoute() {
             }}
           />
         ) : (
-          <NotFoundPage />
+          // The Lab renders outside AppShell, so its not-found answer must carry its own page frame.
+          <StandaloneNotFoundPage />
         )
       }
     </AsyncState>

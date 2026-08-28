@@ -1,12 +1,8 @@
 import { HTTP_PATHS } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
-import {
-  AuthServiceError,
-  type DevBrowserAuthService,
-  type GoogleBrowserAuthService,
-  type UserAuthService,
-} from "../services/auth/index.js";
+import type { OpenTagBetterAuth } from "../auth/better-auth.js";
+import { AuthServiceError, type GoogleBrowserAuthService, type UserAuthService } from "../services/auth/index.js";
 
 const apps: ReturnType<typeof createApp>[] = [];
 afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
@@ -59,29 +55,49 @@ function failAfterVerification(error: Error) {
   };
 }
 
-function dev() {
-  return {
-    signIn: vi.fn().mockResolvedValue({
-      accessToken: "dev-access-secret",
-      refreshToken: "dev-refresh-secret",
-      tokenType: "Bearer",
-      expiresIn: 900,
-    }),
-  };
+/** Stands in for the Better Auth mount, recording which endpoint a route drove rather than guessing from its effects. */
+function betterAuthStub(reply: () => Response) {
+  const paths: string[] = [];
+  const handler = vi.fn(async (request: Request) => {
+    paths.push(new URL(request.url).pathname);
+    return reply();
+  });
+  const instance = {
+    $context: Promise.resolve({ authCookies: { sessionToken: { name: "opentag.session_token" } } }),
+    api: { getSession: vi.fn().mockResolvedValue(null) },
+    handler,
+  } as unknown as OpenTagBetterAuth;
+  return { instance: { instance, publicUrl: "http://localhost:8000" }, paths };
+}
+
+function devSession() {
+  return new Response(JSON.stringify({ userId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e" }), {
+    status: 200,
+    headers: {
+      "content-type": "application/json",
+      "set-cookie": "opentag.session_token=dev-session; Path=/; HttpOnly",
+    },
+  });
 }
 
 function createBrowserApp(
-  options: { devService?: ReturnType<typeof dev>; googleService?: ReturnType<typeof google> | null } = {},
+  options: {
+    betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
+    devSignIn?: boolean;
+    googleService?: ReturnType<typeof google> | null;
+  } = {},
 ) {
   const googleService = options.googleService === null ? undefined : (options.googleService ?? google());
   const auth = authService();
   const app = createApp({
     authService: auth,
+    ...(options.betterAuth ? { betterAuth: options.betterAuth } : {}),
     browserAuth: {
-      ...(options.devService ? { dev: options.devService as unknown as DevBrowserAuthService } : {}),
+      ...(options.devSignIn ? { devSignIn: true } : {}),
       ...(googleService ? { google: googleService as unknown as GoogleBrowserAuthService } : {}),
       publicOrigin: "http://localhost:8000",
       refreshTokenTtlSeconds: 3600,
+      sessionTtlSeconds: 3600,
       secureCookies: false,
     },
   });
@@ -106,8 +122,8 @@ describe("browser authentication routes", () => {
   });
 
   it("signs in the configured development user only from a loopback request", async () => {
-    const devService = dev();
-    const { app } = createBrowserApp({ devService, googleService: null });
+    const betterAuth = betterAuthStub(devSession);
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, devSignIn: true, googleService: null });
     expect((await app.inject({ method: "GET", url: HTTP_PATHS.authProviders })).json()).toEqual({
       providers: [
         { id: "google", enabled: false, startUrl: null },
@@ -133,8 +149,17 @@ describe("browser authentication routes", () => {
     });
     expect(response.statusCode).toBe(302);
     expect(response.headers.location).toBe("/agents");
-    expect(String(response.headers["set-cookie"])).toContain("opentag_access=dev-access-secret");
-    expect(devService.signIn).toHaveBeenCalledOnce();
+    expect(betterAuth.paths).toEqual(["/api/v1/auth/dev/sign-in"]);
+    const cookies = String(response.headers["set-cookie"]);
+    expect(cookies).toContain("opentag.session_token=dev-session");
+    // Without the double-submit token a signed-in development browser could read but never write, sign-out included.
+    expect(cookies).toContain("opentag_csrf=");
+    /*
+     * The credential must live only in Better Auth's own cookie. A session token written into `opentag_access` still
+     * authenticates through the legacy fallback, which is what makes the mistake invisible — but `getSession` cannot
+     * see it, so sign-out has nothing to revoke and the session outlives the logout that claimed to end it.
+     */
+    expect(cookies).not.toContain("opentag_access=");
 
     for (const request of [
       { headers: { host: "localhost:8000" }, remoteAddress: "192.0.2.10" },
@@ -143,12 +168,12 @@ describe("browser authentication routes", () => {
       const rejected = await app.inject({ method: "GET", url: HTTP_PATHS.authDevCallback, ...request });
       expect(rejected.statusCode).toBe(404);
     }
-    expect(devService.signIn).toHaveBeenCalledOnce();
+    expect(betterAuth.paths).toEqual(["/api/v1/auth/dev/sign-in"]);
   });
 
   it("rejects an external development redirect before issuing credentials", async () => {
-    const devService = dev();
-    const { app } = createBrowserApp({ devService, googleService: null });
+    const betterAuth = betterAuthStub(devSession);
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, devSignIn: true, googleService: null });
     const response = await app.inject({
       method: "GET",
       url: `${HTTP_PATHS.authDevCallback}?next=${encodeURIComponent("https://example.com")}`,
@@ -156,7 +181,21 @@ describe("browser authentication routes", () => {
       remoteAddress: "127.0.0.1",
     });
     expect(response.statusCode).toBe(400);
-    expect(devService.signIn).not.toHaveBeenCalled();
+    expect(betterAuth.paths).toEqual([]);
+  });
+
+  it("reports an unresolvable development user instead of redirecting to a signed-out page", async () => {
+    const betterAuth = betterAuthStub(() => new Response(JSON.stringify({ message: "gone" }), { status: 503 }));
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, devSignIn: true, googleService: null });
+    const response = await app.inject({
+      method: "GET",
+      url: `${HTTP_PATHS.authDevCallback}?next=%2Fagents`,
+      headers: { host: "localhost:8000" },
+      remoteAddress: "127.0.0.1",
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ error: { code: "AUTH_DEV_USER_UNAVAILABLE" } });
+    expect(response.headers["set-cookie"]).toBeUndefined();
   });
 
   it("sets HttpOnly browser tokens only in cookies after a verified callback", async () => {
@@ -311,5 +350,69 @@ describe("browser authentication routes", () => {
     });
     expect(refreshed.statusCode).toBe(204);
     expect(auth.refresh).toHaveBeenCalledWith("refresh");
+  });
+
+  it("spends a legacy refresh on a Better Auth session rather than another legacy pair", async () => {
+    const betterAuth = betterAuthStub(
+      () =>
+        new Response(JSON.stringify({ userId: "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e" }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "set-cookie": "opentag.session_token=upgraded; Path=/; HttpOnly",
+          },
+        }),
+    );
+    const { app, auth } = createBrowserApp({ betterAuth: betterAuth.instance });
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authBrowserRefresh,
+      headers: {
+        cookie: "opentag_refresh=legacy-refresh; opentag_csrf=csrf",
+        origin: "http://localhost:8000",
+        "x-opentag-csrf": "csrf",
+      },
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(betterAuth.paths).toEqual(["/api/v1/auth/legacy/upgrade"]);
+    // Reissuing through the legacy provider would leave the browser on a credential stage 5 removes.
+    expect(auth.refresh).not.toHaveBeenCalled();
+    const cookies = response.headers["set-cookie"] as string[];
+    expect(cookies.find((value) => value.startsWith("opentag.session_token="))).toContain("upgraded");
+    expect(cookies.find((value) => value.startsWith("opentag_csrf="))).toBeDefined();
+    expect(cookies.filter((value) => /^opentag_(access|refresh)=;/.test(value))).toHaveLength(2);
+  });
+
+  it("keeps the legacy credentials usable when the upgrade is refused", async () => {
+    const betterAuth = betterAuthStub(
+      () =>
+        new Response(JSON.stringify({ code: "AUTH_USER_SUSPENDED", message: "The user account is suspended" }), {
+          status: 403,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance });
+
+    const response = await app.inject({
+      method: "POST",
+      url: HTTP_PATHS.authBrowserRefresh,
+      headers: {
+        cookie: "opentag_refresh=legacy-refresh; opentag_csrf=csrf",
+        origin: "http://localhost:8000",
+        "x-opentag-csrf": "csrf",
+      },
+    });
+
+    /*
+     * The reason has to survive the crossing. Better Auth answers in its own shape, so forwarding it verbatim would
+     * reach the client as an unrecognized failure and be flattened to `AUTH_INVALID_TOKEN` — a suspended Account would
+     * be told to sign in again, and would keep being told that.
+     */
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error: { code: "AUTH_USER_SUSPENDED" } });
+    // Nothing was retired, so the browser can still retry once whatever refused it is resolved.
+    expect(response.headers["set-cookie"]).toBeUndefined();
   });
 });

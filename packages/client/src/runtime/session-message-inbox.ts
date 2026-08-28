@@ -24,6 +24,7 @@ interface RememberedMessage {
 
 export interface SessionMessageInboxOptions {
   admission: AdmissionController;
+  cliCommand?: string;
   maxQueuedPerSession?: number;
   maxQueuedTotal?: number;
   maxRememberedMessages?: number;
@@ -36,6 +37,7 @@ export interface SessionMessageInboxOptions {
 
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
+  readonly #cliCommand: string;
   readonly #maxQueuedPerSession: number;
   readonly #maxQueuedTotal: number;
   readonly #maxRememberedMessages: number;
@@ -49,6 +51,7 @@ export class SessionMessageInbox {
 
   constructor(options: SessionMessageInboxOptions) {
     this.#admission = options.admission;
+    this.#cliCommand = options.cliCommand ?? "opentag";
     this.#maxQueuedPerSession = positive(options.maxQueuedPerSession ?? 64, "maxQueuedPerSession");
     this.#maxQueuedTotal = positive(options.maxQueuedTotal ?? 256, "maxQueuedTotal");
     this.#maxRememberedMessages = positive(options.maxRememberedMessages ?? 512, "maxRememberedMessages");
@@ -147,7 +150,7 @@ export class SessionMessageInbox {
         try {
           await runtime.prompt({
             runId,
-            input: buildSessionMessageInput(next.request),
+            input: buildSessionMessageInput(next.request, this.#cliCommand),
             signal: AbortSignal.any([this.#abort.signal, timeout.signal]),
           });
         } finally {
@@ -181,7 +184,7 @@ function retryableAuthorityReason(reason: InputRejectReason): boolean {
   );
 }
 
-export function buildSessionMessageInput(request: SessionMessageDeliveryRequest): AgentInput {
+export function buildSessionMessageInput(request: SessionMessageDeliveryRequest, cliCommand = "opentag"): AgentInput {
   return {
     items: [
       {
@@ -189,11 +192,12 @@ export function buildSessionMessageInput(request: SessionMessageDeliveryRequest)
         text: [
           '<opentag-session-message-context source="managed">',
           "OpenTag internal collaboration message.",
+          `Message ID: ${request.messageId}`,
           `Source Session: ${request.sourceSessionId}`,
           `Target Session: ${request.targetSessionId}`,
           "This message is not an IM provider event.",
           "Your final text is not returned automatically.",
-          "Use send_session_message to report progress or results, ask a question, or continue collaboration.",
+          `Use ${cliCommand} session send <target-session-id> to report progress or results, ask a question, or continue collaboration.`,
           "No IM provider reference or credential is attached to this message.",
           "</opentag-session-message-context>",
         ].join("\n"),

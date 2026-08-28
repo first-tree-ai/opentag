@@ -85,6 +85,7 @@ export function isHostedEnvironment(environment: ChannelName): boolean {
 
 const ServerEnvironmentSchema = z
   .object({
+    BETTER_AUTH_SECRET: z.string().min(32),
     OPENTAG_ACCESS_TOKEN_TTL_SECONDS: z.coerce.number().int().positive().default(900),
     OPENTAG_AUTO_MIGRATE: booleanString("true"),
     OPENTAG_DATABASE_URL: DatabaseUrlSchema,
@@ -108,6 +109,16 @@ const ServerEnvironmentSchema = z
     OPENTAG_OTEL_HEADERS: z.string().default(""),
     OPENTAG_OTEL_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(1),
     OPENTAG_REFRESH_TOKEN_TTL_SECONDS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(60 * 60 * 24 * 30),
+    /*
+     * Defaults to what the refresh token's lifetime was, because that is the number this replaces: how long a client
+     * may be idle and still be signed in. It is defaulted so no deployment has to be configured before the revision
+     * that reads it.
+     */
+    OPENTAG_SESSION_TTL_SECONDS: z.coerce
       .number()
       .int()
       .positive()
@@ -150,6 +161,14 @@ const ServerEnvironmentSchema = z
     }
     if (isHostedEnvironment(value.OPENTAG_ENV) && !value.OPENTAG_PUBLIC_URL.startsWith("https://")) {
       context.addIssue({ code: "custom", message: "OPENTAG_PUBLIC_URL must use HTTPS in hosted environments" });
+    }
+    if (value.BETTER_AUTH_SECRET === value.OPENTAG_JWT_SECRET) {
+      // Sharing one key across both would make either rotation invalidate the other's credentials at the same time,
+      // which is the coupling the separate secret exists to remove.
+      context.addIssue({
+        code: "custom",
+        message: "BETTER_AUTH_SECRET must differ from OPENTAG_JWT_SECRET",
+      });
     }
     if (value.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID && value.OPENTAG_ENV !== "staging") {
       context.addIssue({
@@ -210,6 +229,8 @@ export function parseSlackRedirectUrl(value: string, publicOrigin: string): stri
 export interface ServerConfig {
   accessTokenTtlSeconds: number;
   autoMigrate: boolean;
+  /** Signs Better Auth sessions and cookies. Distinct from `jwtSecret` so the two can be rotated independently. */
+  betterAuthSecret: string;
   databaseUrl: string;
   encryptionKey: Uint8Array;
   channel: ChannelConfig;
@@ -230,9 +251,16 @@ export interface ServerConfig {
   };
   port: number;
   publicUrl: string;
+  /** Lifetime of the credentials the previous revision issued; they are only verified now, never issued. */
   refreshTokenTtlSeconds: number;
-  /** Present only when a staging deployment configures the shared Onboarding Lab Account. */
-  stagingOnboardingLab?: { accountId: string };
+  /** Lifetime of an Account session, browser and CLI alike. */
+  sessionTtlSeconds: number;
+  /**
+   * Present on every staging deployment. Scenario Preview is fixed client-side fixtures, so it needs
+   * no Account configuration; `accountId` names the one Account that additionally owns the reset,
+   * and stays absent until a deployment configures it.
+   */
+  stagingOnboardingLab?: { accountId?: string };
 }
 
 export interface DatabaseConfig {
@@ -259,6 +287,7 @@ export function parseDatabaseConfig(environment: NodeJS.ProcessEnv): DatabaseCon
 
 export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig {
   const parsed = ServerEnvironmentSchema.parse({
+    BETTER_AUTH_SECRET: environment.BETTER_AUTH_SECRET,
     OPENTAG_ACCESS_TOKEN_TTL_SECONDS: environment.OPENTAG_ACCESS_TOKEN_TTL_SECONDS,
     OPENTAG_AUTO_MIGRATE: environment.OPENTAG_AUTO_MIGRATE,
     OPENTAG_DATABASE_URL: environment.OPENTAG_DATABASE_URL,
@@ -282,12 +311,14 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_OTEL_HEADERS: environment.OPENTAG_OTEL_HEADERS,
     OPENTAG_OTEL_SAMPLE_RATE: environment.OPENTAG_OTEL_SAMPLE_RATE,
     OPENTAG_REFRESH_TOKEN_TTL_SECONDS: environment.OPENTAG_REFRESH_TOKEN_TTL_SECONDS,
+    OPENTAG_SESSION_TTL_SECONDS: environment.OPENTAG_SESSION_TTL_SECONDS,
     OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID: environment.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID,
   });
 
   return {
     accessTokenTtlSeconds: parsed.OPENTAG_ACCESS_TOKEN_TTL_SECONDS,
     autoMigrate: parsed.OPENTAG_AUTO_MIGRATE,
+    betterAuthSecret: parsed.BETTER_AUTH_SECRET,
     channel: getChannelConfig(parsed.OPENTAG_ENV),
     databaseUrl: parsed.OPENTAG_DATABASE_URL,
     encryptionKey: parsed.OPENTAG_ENCRYPTION_KEY,
@@ -325,8 +356,13 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     port: parsed.OPENTAG_PORT,
     publicUrl: parsed.OPENTAG_PUBLIC_URL,
     refreshTokenTtlSeconds: parsed.OPENTAG_REFRESH_TOKEN_TTL_SECONDS,
-    ...(parsed.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID
-      ? { stagingOnboardingLab: { accountId: parsed.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID } }
+    sessionTtlSeconds: parsed.OPENTAG_SESSION_TTL_SECONDS,
+    ...(parsed.OPENTAG_ENV === "staging"
+      ? {
+          stagingOnboardingLab: parsed.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID
+            ? { accountId: parsed.OPENTAG_STAGING_ONBOARDING_ACCOUNT_ID }
+            : {},
+        }
       : {}),
   };
 }

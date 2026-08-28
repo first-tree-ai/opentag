@@ -692,9 +692,15 @@ describe("IM binding persistence", () => {
           computerAuthFor(value),
         ),
       ).resolves.toMatchObject({ status: "succeeded", grant: { provider: "slack" } });
+      const sourceConnectionInstanceId = crypto.randomUUID();
+      await value.database
+        .update(workspaceComputers)
+        .set({ currentInstanceId: sourceConnectionInstanceId })
+        .where(eq(workspaceComputers.id, value.workspaceComputer.id));
       const internal = await sessionService.createInternalSessionWithMessage({
         creatorSessionId: session.id,
         creatorComputerId: value.computer.id,
+        creatorConnectionInstanceId: sourceConnectionInstanceId,
         creatorWorkspaceComputerId: value.workspaceComputer.id,
         creatorPlacementGeneration: 1,
         messageId: crypto.randomUUID(),
@@ -2173,7 +2179,7 @@ describe("IM binding persistence", () => {
         .where(and(eq(sessions.kind, "thread"), eq(sessions.threadKey, "4000.100"), isNull(sessions.endedAt)))
         .then((rows) => rows[0]);
       if (!thread) throw new Error("Thread Session fixture was not created");
-      await new SessionService(value.database).end(thread.id);
+      await value.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, thread.id));
 
       const unmentioned = await inbox.ingest(
         value.imBindingId,

@@ -16,7 +16,7 @@ import {
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { createUserAuthPreHandler } from "../plugins/user-auth.js";
+import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import type { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { buildComputerConnectCommand, type MachineAuthService } from "../services/computers/index.js";
@@ -54,7 +54,7 @@ export interface AccountRoutesOptions {
   agentService?: AgentService;
   computerConnectCode?: { environment: ChannelName; publicUrl: string };
   machineAuthService?: MachineAuthService;
-  publicOrigin?: string;
+  authOptions?: UserAuthPreHandlerOptions;
   taskService?: TaskService;
   workspaceService?: WorkspaceAdminService;
   workspaceSetupService?: WorkspaceSetupService;
@@ -76,7 +76,7 @@ export function registerAccountRoutes(
   authService: UserAuthService,
   options: AccountRoutesOptions,
 ): void {
-  const preHandler = createUserAuthPreHandler(authService, { publicOrigin: options.publicOrigin });
+  const preHandler = createUserAuthPreHandler(authService, options.authOptions ?? {});
   const { accountScope } = options;
 
   async function scopeOf(request: FastifyRequest): Promise<{ accountId: string; workspaceId: string }> {

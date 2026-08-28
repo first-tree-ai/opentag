@@ -5,7 +5,6 @@ import { resolve } from "node:path";
 import {
   computeRuntimeSnapshotHashes,
   type EffectiveRuntimeSnapshot,
-  RUNTIME_CAPABILITY,
   type SessionReconcileRequest,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -26,7 +25,6 @@ import { codexRuntimePolicy, validateCodexRuntimePolicy } from "../providers/cod
 import { AgentRuntimeProviderRegistry } from "../runtime/agent-runtime-provider-registry.js";
 import { AgentWorkspaceManager } from "../runtime/agent-workspace.js";
 import { SessionBindingStore } from "../runtime/session-binding-store.js";
-import { SessionCollaborationClient } from "../runtime/session-collaboration-client.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import {
   SessionRuntimeManager as ProductionSessionRuntimeManager,
@@ -46,165 +44,79 @@ const homes: string[] = [];
 afterEach(async () => Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))));
 
 describe("SessionRuntimeManager", () => {
-  it("adds hosted collaboration tools while omitting IM credential environment from internal Sessions", async () => {
+  it("materializes a runtime-managed proof for internal Sessions without exposing IM credentials", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-internal-runtime-"));
     homes.push(home);
     const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const factory = new FakeFactory();
-    const hostedToolsForSession = vi.fn(() => ({
-      definitions: [
-        {
-          name: "send_session_message",
-          description: "Send a Session message",
-          inputSchema: { type: "object", properties: {} },
-        },
-      ],
-      handler: vi.fn(),
-    }));
+    const proofManager = {
+      materialize: vi.fn(async () => "/tmp/session-proof.json"),
+      cleanup: vi.fn(async () => undefined),
+    };
     const manager = new SessionRuntimeManager({
       bindingStore: store,
-      hostedToolsForSession,
+      cliCommand: "opentag-dev",
+      home,
+      proofManager,
       providers: await providerRegistry(factory),
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
     const computerId = randomUUID();
     const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
-    const internal = { ...reconcile(computerId, snapshot(1)), sessionKind: "internal" as const };
-    await reconciler.reconcile(internal);
-    await manager.ensureRuntime(internal.sessionId);
-    expect(factory.created[0]?.workspace.environment).toBeUndefined();
-    expect(factory.created[0]?.hostedTools?.definitions.map(({ name }) => name)).toEqual(["send_session_message"]);
-    expect(hostedToolsForSession).toHaveBeenCalledWith({
-      agentId: internal.agentId,
-      sessionId: internal.sessionId,
-      placementGeneration: 1,
-      sessionKind: "internal",
-    });
-
-    const visible = { ...reconcile(computerId, snapshot(1)), requestId: randomUUID(), sessionId: "session-2" };
-    await reconciler.reconcile(visible);
-    await manager.ensureRuntime(visible.sessionId);
-    expect(factory.created[1]?.workspace.environment).toEqual({
-      OPENTAG_PROVIDER_ENV_FILE: "/tmp/provider-env.sh",
-    });
-    await manager.close();
-  });
-
-  it("re-prepares an existing runtime when negotiated collaboration tools are enabled or disabled", async () => {
-    const home = await mkdtemp(resolve(tmpdir(), "opentag-runtime-capability-change-"));
-    homes.push(home);
-    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
-    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
-    const factory = new FakeFactory();
-    let collaborationEnabled = false;
-    const manager = new SessionRuntimeManager({
-      bindingStore: store,
-      hostedToolsForSession: () =>
-        collaborationEnabled
-          ? {
-              definitions: [
-                {
-                  name: "send_session_message",
-                  description: "Send a Session message",
-                  inputSchema: { type: "object", properties: {} },
-                },
-              ],
-              handler: vi.fn(),
-            }
-          : undefined,
-      providers: await providerRegistry(factory),
-      providerEnvironmentPath: () => "/tmp/provider-env.sh",
-      workspace,
-    });
-    const computerId = randomUUID();
-    const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
-    const request = reconcile(computerId, snapshot(1));
+    const request = {
+      ...reconcile(computerId, snapshot(1)),
+      sessionKind: "internal" as const,
+      creatorSessionId: randomUUID(),
+      sessionCliProof: { proofId: randomUUID(), token: "p".repeat(32) },
+    };
 
     expect(manager.requiresSessionPreparation(request)).toBe(false);
     await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
     await manager.ensureRuntime(request.sessionId);
+
+    expect(proofManager.materialize).toHaveBeenCalledWith(request.sessionId, request.sessionCliProof);
+    expect(factory.created[0]?.workspace.environment).toEqual({
+      OPENTAG_HOME: home,
+      OPENTAG_SESSION_PROOF_FILE: "/tmp/session-proof.json",
+    });
     expect(factory.created[0]?.hostedTools).toBeUndefined();
-
-    collaborationEnabled = true;
-    await expect(reconciler.reconcile({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
-      status: "ready",
-    });
-    expect(factory.runtimes[0]?.closed).toBe(true);
-    await manager.ensureRuntime(request.sessionId);
-    expect(factory.resumed).toEqual([]);
-    expect(factory.created[1]?.hostedTools?.definitions.map(({ name }) => name)).toEqual(["send_session_message"]);
-    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-2", true));
-
-    collaborationEnabled = false;
-    await expect(reconciler.reconcile({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
-      status: "ready",
-    });
-    expect(factory.runtimes[1]?.closed).toBe(true);
-    await manager.ensureRuntime(request.sessionId);
-    expect(factory.resumed).toEqual([]);
-    expect(factory.created[2]?.hostedTools).toBeUndefined();
-    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-3"));
-
-    await expect(reconciler.reconcile({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
-      status: "ready",
-    });
-    expect(factory.runtimes).toHaveLength(3);
+    expect(factory.created[0]?.systemPrompt).toContain("opentag-dev session send");
+    expect(factory.created[0]?.systemPrompt).toContain(request.creatorSessionId);
+    expect(manager.requiresSessionPreparation(request)).toBe(false);
+    const rotated = {
+      ...request,
+      requestId: randomUUID(),
+      sessionCliProof: { proofId: randomUUID(), token: "q".repeat(32) },
+    };
+    expect(manager.requiresSessionPreparation(rotated)).toBe(true);
+    await expect(reconciler.reconcile(rotated)).resolves.toMatchObject({ status: "ready" });
+    expect(manager.requiresSessionPreparation(rotated)).toBe(false);
+    expect(proofManager.materialize).toHaveBeenLastCalledWith(rotated.sessionId, rotated.sessionCliProof);
     await manager.close();
   });
 
-  it("replaces an old Codex binding that has threadId but no hostedToolsHash", async () => {
-    const home = await mkdtemp(resolve(tmpdir(), "opentag-old-codex-binding-"));
+  it("fails closed when a reconcile carries a proof but no proof manager is configured", async () => {
+    const home = await mkdtemp(resolve(tmpdir(), "opentag-missing-proof-manager-"));
     homes.push(home);
     const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
-    const factory = new FakeFactory();
-    const computerId = randomUUID();
     const manager = new SessionRuntimeManager({
       bindingStore: store,
-      providers: await providerRegistry(factory),
+      providers: await providerRegistry(new FakeFactory()),
       providerEnvironmentPath: () => "/tmp/provider-env.sh",
       workspace,
     });
+    const computerId = randomUUID();
     const reconciler = new SessionReconciler({ computerId, preparation: manager, localPolicy: manager });
-    const request = reconcile(computerId, snapshot(1));
-    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
-    await manager.ensureRuntime(request.sessionId);
-    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-1"));
-    await manager.close();
+    const request = {
+      ...reconcile(computerId, snapshot(1)),
+      sessionCliProof: { proofId: randomUUID(), token: "p".repeat(32) },
+    };
 
-    const replacementFactory = new FakeFactory();
-    const collaboration = new SessionCollaborationClient({
-      connection: {
-        supportsCapability: (capability: string) => capability === RUNTIME_CAPABILITY.sessionCollaboration,
-        send: async () => undefined,
-      },
-      inbox: { accept: vi.fn() },
-    });
-    const replacement = new SessionRuntimeManager({
-      bindingStore: store,
-      hostedToolsForSession: (session) => collaboration.hostedToolsForSession(session),
-      providers: await providerRegistry(replacementFactory),
-      providerEnvironmentPath: () => "/tmp/provider-env.sh",
-      workspace: new AgentWorkspaceManager({ home, bindingStore: store }),
-    });
-    const replacementReconciler = new SessionReconciler({
-      computerId,
-      preparation: replacement,
-      localPolicy: replacement,
-    });
-    await expect(replacementReconciler.reconcile({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
-      status: "ready",
-    });
-    await replacement.ensureRuntime(request.sessionId);
-    expect(replacementFactory.resumed).toEqual([]);
-    expect(replacementFactory.created[0]?.hostedTools?.definitions.map(({ name }) => name)).toEqual([
-      "create_internal_session",
-      "send_session_message",
-    ]);
-    expect((await store.read("agent-1", "session-1"))?.runtimeBinding).toEqual(binding("thread-1", true));
-    await replacement.close();
+    await expect(reconciler.reconcile(request)).rejects.toThrow("Session CLI proof manager is unavailable");
+    await manager.close();
   });
 
   it("durably creates, reuses, upgrades, resumes, and stops Session-scoped runtimes", async () => {

@@ -16,7 +16,7 @@ import {
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { createUserAuthPreHandler } from "../plugins/user-auth.js";
+import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import type { AgentService } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
 import { parseRequest } from "./request-validation.js";
@@ -37,9 +37,9 @@ export function registerAgentRoutes(
   app: FastifyInstance,
   authService: UserAuthService,
   agentService: AgentService,
-  publicOrigin?: string,
+  authOptions?: UserAuthPreHandlerOptions,
 ): void {
-  const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
+  const preHandler = createUserAuthPreHandler(authService, authOptions ?? {});
 
   app.post(WORKSPACE_AGENTS_TEMPLATE, { preHandler }, async (request, reply) => {
     const { workspaceId } = parseRequest(WorkspaceParamsSchema, request.params);

@@ -7,6 +7,7 @@ import {
   integer,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   uniqueIndex,
@@ -46,6 +47,7 @@ export const sessions = pgTable(
       .on(table.imBindingId, table.channelId, table.threadKey)
       .where(sql`${table.kind} = 'thread' and ${table.endedAt} is null`),
     index("sessions_im_binding_scope_idx").on(table.imBindingId, table.channelId, table.threadKey),
+    index("sessions_creator_created_idx").on(table.createdBySessionId, table.createdAt, table.id),
     check(
       "sessions_shape_check",
       sql`(${table.kind} = 'channel' and ${table.threadKey} is null and ${table.createdBySessionId} is null and ${table.runtimeModel} is null and ${table.runtimeReasoningEffort} is null and ${table.runtimeMaxDurationMs} is null)
@@ -83,6 +85,47 @@ export const sessionPlacements = pgTable(
   (table) => [
     index("session_placements_workspace_computer_id_idx").on(table.workspaceComputerId),
     check("session_placements_generation_positive", sql`${table.generation} >= 1`),
+  ],
+);
+
+export const sessionDescendants = pgTable(
+  "session_descendants",
+  {
+    ancestorSessionId: uuid("ancestor_session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    descendantSessionId: uuid("descendant_session_id")
+      .notNull()
+      .references(() => sessions.id, { onDelete: "cascade" }),
+    depth: integer("depth").notNull(),
+    lastMessageCreatedAt: timestamp("last_message_created_at", { withTimezone: true }).notNull(),
+    lastMessageId: uuid("last_message_id").notNull(),
+    lastDeliveryOutcome: text("last_delivery_outcome").notNull(),
+    taskPreview: text("task_preview").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.ancestorSessionId, table.descendantSessionId] }),
+    index("session_descendants_ancestor_activity_idx").on(
+      table.ancestorSessionId,
+      table.lastMessageCreatedAt,
+      table.lastMessageId,
+      table.descendantSessionId,
+    ),
+    index("session_descendants_ancestor_depth_activity_idx").on(
+      table.ancestorSessionId,
+      table.depth,
+      table.lastMessageCreatedAt,
+      table.lastMessageId,
+      table.descendantSessionId,
+    ),
+    index("session_descendants_descendant_ancestor_idx").on(table.descendantSessionId, table.ancestorSessionId),
+    index("session_descendants_last_message_idx").on(table.lastMessageId),
+    check("session_descendants_depth_positive", sql`${table.depth} >= 1`),
+    check(
+      "session_descendants_outcome_valid",
+      sql`${table.lastDeliveryOutcome} in ('accepted', 'unreachable', 'unknown', 'rejected')`,
+    ),
+    check("session_descendants_preview_bounds", sql`char_length(${table.taskPreview}) between 1 and 256`),
   ],
 );
 

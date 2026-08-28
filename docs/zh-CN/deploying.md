@@ -66,11 +66,15 @@ Workflow 只改变 App 运行哪个镜像。以下都是首次部署前必须在
 | `OPENTAG_PUBLIC_URL` | App 的 HTTPS URL；hosted environment 拒绝纯 HTTP |
 | `OPENTAG_DATABASE_URL` | Staging 数据库的 `postgresql://…` |
 | `OPENTAG_JWT_SECRET` | 至少 32 个随机字符，Staging 专用 |
+| `BETTER_AUTH_SECRET` | 至少 32 个随机字符，Staging 专用，且与 `OPENTAG_JWT_SECRET` 不同 |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 编码的 32 字节 key，Staging 专用 |
 | `OPENTAG_AUTO_MIGRATE` | `true`，使每次上线都应用待执行的 migration |
 
 设置 `OPENTAG_PUBLIC_URL` 之前，先在 App 上启用 HTTPS 并强制 HTTPS；在 hosted environment 中，public URL 不是 HTTPS
 时 server 会拒绝启动。Staging 的 secret 不得与任何其他环境共用。
+
+配置在 server 开始监听之前校验，因此新增的必需变量要**先**加到 App 上，再部署需要它的 revision。缺少变量时，
+CapRover 会不断重启一个在启动阶段就退出的容器，而不是以降级状态提供服务。
 
 GHCR package 是公开的，因此 CapRover 匿名拉取镜像即可。如果该 package 之后被改为私有，需要在
 **CapRover → Cluster → Docker Registries** 中用带 `read:packages` 的 GitHub token 添加 registry 凭据，否则每次部署都会

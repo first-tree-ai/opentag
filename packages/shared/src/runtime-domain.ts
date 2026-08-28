@@ -140,6 +140,14 @@ export const SessionReconcileRequestSchema = z
     agentId: RuntimeOpaqueIdSchema,
     placementGeneration: RuntimeSequenceSchema,
     sessionKind: z.literal("internal").optional(),
+    creatorSessionId: z.string().uuid().optional(),
+    sessionCliProof: z
+      .object({
+        proofId: z.string().uuid(),
+        token: byteString(4096, "Session CLI proof exceeds the 4 KiB limit", 32),
+      })
+      .strict()
+      .optional(),
     desired: z.enum(["ready", "stopped"]),
     runtime: EffectiveRuntimeSnapshotSchema.optional(),
   })
@@ -157,6 +165,23 @@ export const SessionReconcileRequestSchema = z
     }
     if (frame.runtime && frame.runtime.agentId !== frame.agentId) {
       context.addIssue({ code: "custom", path: ["runtime", "agentId"], message: "Agent identity does not match" });
+    }
+    if (frame.sessionKind === "internal" && !frame.creatorSessionId) {
+      context.addIssue({
+        code: "custom",
+        path: ["creatorSessionId"],
+        message: "An internal Session requires its creator",
+      });
+    }
+    if (frame.sessionKind !== "internal" && frame.creatorSessionId) {
+      context.addIssue({ code: "custom", path: ["creatorSessionId"], message: "A visible Session forbids a creator" });
+    }
+    if (frame.desired === "stopped" && frame.sessionCliProof) {
+      context.addIssue({
+        code: "custom",
+        path: ["sessionCliProof"],
+        message: "A stopped reconcile forbids a Session CLI proof",
+      });
     }
   });
 
@@ -459,36 +484,6 @@ const SessionMessageContentSchema = z
   })
   .strict();
 
-const InitialSessionMessageSchema = z
-  .object({
-    messageId: z.string().uuid(),
-    text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "Initial Session message exceeds the 16 KiB limit", 1),
-  })
-  .strict();
-
-export const InternalSessionCreateRequestSchema = z
-  .object({
-    type: z.literal("session:internal:create"),
-    requestId: RuntimeRequestIdSchema,
-    sourceSessionId: z.string().uuid(),
-    sourcePlacementGeneration: RuntimeSequenceSchema,
-    initialMessage: InitialSessionMessageSchema,
-    overrides: InternalSessionRuntimeOverridesSchema.optional(),
-  })
-  .strict();
-
-export const SessionMessageSendRequestSchema = z
-  .object({
-    type: z.literal("session:message"),
-    requestId: RuntimeRequestIdSchema,
-    messageId: z.string().uuid(),
-    sourceSessionId: z.string().uuid(),
-    sourcePlacementGeneration: RuntimeSequenceSchema,
-    targetSessionId: z.string().uuid(),
-    content: SessionMessageContentSchema,
-  })
-  .strict();
-
 export const SessionMessageDeliveryRequestSchema = z
   .object({
     type: z.literal("session:message:deliver"),
@@ -525,33 +520,6 @@ export const SessionMessageDeliveryResultSchema = z
     }
     if (frame.status === "rejected" && !frame.reason) {
       context.addIssue({ code: "custom", path: ["reason"], message: "Rejected deliveries require a reason" });
-    }
-  });
-
-export const SessionCollaborationCommandResultSchema = z
-  .object({
-    type: z.literal("session:collaboration:result"),
-    requestId: RuntimeRequestIdSchema,
-    messageId: z.string().uuid(),
-    status: z.enum(["local", "accepted", "unreachable", "unknown", "rejected"]),
-    sessionId: z.string().uuid().optional(),
-    code: byteString(128, "Session collaboration code exceeds the 128-byte limit", 1).optional(),
-    delivery: SessionMessageDeliveryRequestSchema.optional(),
-  })
-  .strict()
-  .superRefine((frame, context) => {
-    if ((frame.status === "local") !== Boolean(frame.delivery)) {
-      context.addIssue({ code: "custom", path: ["delivery"], message: "Only local results require a delivery plan" });
-    }
-    if (frame.delivery && frame.delivery.messageId !== frame.messageId) {
-      context.addIssue({ code: "custom", path: ["delivery", "messageId"], message: "Message identity does not match" });
-    }
-    if (frame.delivery && frame.sessionId && frame.delivery.targetSessionId !== frame.sessionId) {
-      context.addIssue({
-        code: "custom",
-        path: ["delivery", "targetSessionId"],
-        message: "Session identity does not match",
-      });
     }
   });
 
@@ -661,7 +629,6 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   DirectImMessageDeliveryRequestSchema,
   RuntimeImSteerRequestSchema,
   SessionMessageDeliveryRequestSchema,
-  SessionCollaborationCommandResultSchema,
   TurnReportResultSchema,
   RuntimeImCredentialGrantResultSchema,
 ]);
@@ -670,8 +637,6 @@ export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   SessionReconcileResultSchema,
   ImMessageDeliveryResultSchema,
   RuntimeImSteerResultSchema,
-  InternalSessionCreateRequestSchema,
-  SessionMessageSendRequestSchema,
   SessionMessageDeliveryResultSchema,
   AgentTraceBatchSchema,
   TurnReportRequestSchema,
@@ -697,11 +662,8 @@ export type RuntimeImCredentialGrantRequest = z.infer<typeof RuntimeImCredential
 export type RuntimeImCredentialGrantResult = z.infer<typeof RuntimeImCredentialGrantResultSchema>;
 export type ImMessageDeliveryResult = z.infer<typeof ImMessageDeliveryResultSchema>;
 export type InternalSessionRuntimeOverrides = z.infer<typeof InternalSessionRuntimeOverridesSchema>;
-export type InternalSessionCreateRequest = z.infer<typeof InternalSessionCreateRequestSchema>;
-export type SessionMessageSendRequest = z.infer<typeof SessionMessageSendRequestSchema>;
 export type SessionMessageDeliveryRequest = z.infer<typeof SessionMessageDeliveryRequestSchema>;
 export type SessionMessageDeliveryResult = z.infer<typeof SessionMessageDeliveryResultSchema>;
-export type SessionCollaborationCommandResult = z.infer<typeof SessionCollaborationCommandResultSchema>;
 export type AgentTraceEvent = z.infer<typeof AgentTraceEventSchema>;
 export type AgentTraceBatch = z.infer<typeof AgentTraceBatchSchema>;
 export type TurnReportRequest = z.infer<typeof TurnReportRequestSchema>;
@@ -818,6 +780,8 @@ export function computeReconcilePayloadHash(input: SessionReconcileRequest): str
     frame.agentId,
     frame.placementGeneration,
     frame.sessionKind ?? null,
+    frame.creatorSessionId ?? null,
+    frame.sessionCliProof?.proofId ?? null,
     frame.desired,
     frame.runtime ? computeRuntimeSnapshotHashes(frame.runtime).effectiveSnapshotHash : null,
   ]);

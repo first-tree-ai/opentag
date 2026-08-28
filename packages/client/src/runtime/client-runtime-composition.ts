@@ -49,7 +49,7 @@ import { ImResourceFetcher } from "./im-resource-fetcher.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import type { RuntimeConnection } from "./runtime-connection.js";
 import { SessionBindingStore } from "./session-binding-store.js";
-import { SessionCollaborationClient } from "./session-collaboration-client.js";
+import { SessionCliProofManager } from "./session-cli-proof-manager.js";
 import { SessionMessageInbox } from "./session-message-inbox.js";
 import { SessionReconciler } from "./session-reconciler.js";
 import { SessionRuntimeManager } from "./session-runtime-manager.js";
@@ -96,6 +96,7 @@ export interface CreateClientRuntimeOptions {
   readonly claudeCodeHome?: string;
   readonly larkCliCommand?: string;
   readonly slackCliCommand?: string;
+  readonly cliCommand?: string;
   readonly environment?: NodeJS.ProcessEnv;
   readonly factory?: AgentRuntimeFactory;
   readonly factories?: readonly AgentRuntimeFactory[];
@@ -110,7 +111,6 @@ export class ComposedClientRuntime {
   readonly custody: TurnCustodyOwner;
   readonly credentialEnvironment: ImCredentialEnvironmentManager;
   readonly reconciler: SessionReconciler;
-  readonly collaboration: SessionCollaborationClient;
   readonly sessionMessageInbox: SessionMessageInbox;
   readonly reportOwner: TurnReportOwner;
   readonly runner: AgentTurnRunner;
@@ -131,7 +131,6 @@ export class ComposedClientRuntime {
       custody: TurnCustodyOwner;
       credentialEnvironment: ImCredentialEnvironmentManager;
       reconciler: SessionReconciler;
-      collaboration: SessionCollaborationClient;
       sessionMessageInbox: SessionMessageInbox;
       reportOwner: TurnReportOwner;
       runner: AgentTurnRunner;
@@ -147,7 +146,6 @@ export class ComposedClientRuntime {
     this.custody = components.custody;
     this.credentialEnvironment = components.credentialEnvironment;
     this.reconciler = components.reconciler;
-    this.collaboration = components.collaboration;
     this.sessionMessageInbox = components.sessionMessageInbox;
     this.reportOwner = components.reportOwner;
     this.runner = components.runner;
@@ -166,7 +164,6 @@ export class ComposedClientRuntime {
       this.#stopCapabilityMonitor();
       this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
       await this.#capabilityRefreshInFlight?.catch(() => undefined);
-      this.collaboration.close();
       this.sessionMessageInbox.stop();
       this.runner.stop();
       await this.runner.settled();
@@ -185,7 +182,6 @@ export class ComposedClientRuntime {
     this.#stopped = true;
     this.#stopCapabilityMonitor();
     this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
-    this.collaboration.close();
     this.sessionMessageInbox.stop();
     this.runner.stop();
     void Promise.allSettled([this.runtimeManager.close(), this.credentialEnvironment.close()]);
@@ -418,14 +414,16 @@ export async function createClientRuntime(
     home: options.home,
     logger: moduleLogger("im-credential-environment"),
   });
-  let collaboration: SessionCollaborationClient;
+  const proofManager = new SessionCliProofManager(options.home);
   const runtimeManager = new SessionRuntimeManager({
     bindingStore,
+    cliCommand: options.cliCommand ?? "opentag",
     cleanupProviderEnvironment: (sessionId) => credentialEnvironment.cleanup(sessionId),
     ensureProviderReady,
+    home: options.home,
     providers,
     providerEnvironmentPath: (sessionId) => credentialEnvironment.pathForSession(sessionId),
-    hostedToolsForSession: (binding) => collaboration.hostedToolsForSession(binding),
+    proofManager,
     workspace,
   });
   const reconciler = new SessionReconciler({
@@ -436,10 +434,10 @@ export async function createClientRuntime(
   const admission = new AdmissionController();
   const sessionMessageInbox = new SessionMessageInbox({
     admission,
+    cliCommand: options.cliCommand ?? "opentag",
     reconciler,
     runtimeManager,
   });
-  collaboration = new SessionCollaborationClient({ connection, inbox: sessionMessageInbox });
   const resourceFetcher = new ImResourceFetcher({
     instanceId: connection.instanceId,
     api: options.api,
@@ -479,7 +477,6 @@ export async function createClientRuntime(
   const runtime = new ClientRuntime(connection, {
     logger: moduleLogger("client-runtime"),
     reconciler,
-    handleSessionCollaborationResult: collaboration.handleCommandResult.bind(collaboration),
     handleSessionMessageDelivery: sessionMessageInbox.accept.bind(sessionMessageInbox),
     ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
   });
@@ -487,7 +484,6 @@ export async function createClientRuntime(
     bindingStore,
     custody,
     credentialEnvironment,
-    collaboration,
     sessionMessageInbox,
     reconciler,
     reportOwner,

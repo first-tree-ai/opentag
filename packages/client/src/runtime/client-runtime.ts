@@ -7,7 +7,6 @@ import {
   type RuntimeImSteerResult,
   RuntimeImSteerResultSchema,
   ServerRuntimeBusinessFrameSchema,
-  type SessionCollaborationCommandResult,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
   SessionMessageDeliveryResultSchema,
@@ -30,7 +29,6 @@ export interface ClientRuntimeOptions {
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
   handleSteer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult> | RuntimeImSteerResult;
   handleTurnReportResult?(result: TurnReportResult): Promise<void> | void;
-  handleSessionCollaborationResult?(result: SessionCollaborationCommandResult): Promise<void> | void;
   handleSessionMessageDelivery?(
     request: SessionMessageDeliveryRequest,
   ): Promise<SessionMessageDeliveryResult> | SessionMessageDeliveryResult;
@@ -158,10 +156,6 @@ export class ClientRuntime {
         },
       );
       await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
-      return;
-    }
-    if (frame.type === "session:collaboration:result") {
-      await this.#options.handleSessionCollaborationResult?.(frame);
       return;
     }
     if (frame.type === "im:credential:result") return;

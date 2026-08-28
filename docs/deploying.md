@@ -71,11 +71,16 @@ before the first deployment.
 | `OPENTAG_PUBLIC_URL` | The App's HTTPS URL; hosted environments reject plain HTTP |
 | `OPENTAG_DATABASE_URL` | `postgresql://…` for the Staging database |
 | `OPENTAG_JWT_SECRET` | At least 32 random characters, unique to Staging |
+| `BETTER_AUTH_SECRET` | At least 32 random characters, unique to Staging and distinct from `OPENTAG_JWT_SECRET` |
 | `OPENTAG_ENCRYPTION_KEY` | Base64 32-byte key, unique to Staging |
 | `OPENTAG_AUTO_MIGRATE` | `true` so each rollout applies pending migrations |
 
 Enable HTTPS and force HTTPS on the App before setting `OPENTAG_PUBLIC_URL`; the server refuses to start in a hosted
 environment whose public URL is not HTTPS. Staging secrets must not be shared with any other environment.
+
+Configuration is validated before the server listens, so add a newly required variable to the App **before** the
+revision that needs it is deployed. A missing one leaves CapRover restarting a container that exits at startup rather
+than serving a degraded App.
 
 The GHCR package is public, so CapRover pulls the image anonymously. If the package is ever made private, add a
 registry credential in **CapRover → Cluster → Docker Registries** using a GitHub token with `read:packages`, otherwise

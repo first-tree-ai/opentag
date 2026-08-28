@@ -13,3 +13,10 @@ export { channelConfig } from "./core/channel/config.js";
 export { formatComputerList } from "./core/computer/formatting.js";
 export { listComputers } from "./core/computer/queries.js";
 export { type DoctorOptions, type DoctorResult, resolveServerUrl, runDoctor } from "./core/diagnostics/doctor.js";
+export {
+  formatSessionCommandResult,
+  formatSessionList,
+  runSessionCreate,
+  runSessionList,
+  runSessionSend,
+} from "./core/session/index.js";

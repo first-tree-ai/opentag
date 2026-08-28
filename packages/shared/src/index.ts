@@ -207,8 +207,6 @@ export {
   ImMessageDeliveryResultSchema,
   type InputRejectReason,
   InputRejectReasonSchema,
-  type InternalSessionCreateRequest,
-  InternalSessionCreateRequestSchema,
   type InternalSessionRuntimeOverrides,
   InternalSessionRuntimeOverridesSchema,
   OPENTAG_PLATFORM_INSTRUCTIONS,
@@ -256,14 +254,10 @@ export {
   runtimeUsageTotalTokens,
   type ServerRuntimeBusinessFrame,
   ServerRuntimeBusinessFrameSchema,
-  type SessionCollaborationCommandResult,
-  SessionCollaborationCommandResultSchema,
   type SessionMessageDeliveryRequest,
   SessionMessageDeliveryRequestSchema,
   type SessionMessageDeliveryResult,
   SessionMessageDeliveryResultSchema,
-  type SessionMessageSendRequest,
-  SessionMessageSendRequestSchema,
   type SessionReconcileRequest,
   SessionReconcileRequestSchema,
   type SessionReconcileResult,
@@ -358,6 +352,7 @@ export {
   ServerWelcomeV2FrameSchema,
 } from "./runtime-protocol.js";
 export * from "./session.js";
+export * from "./session-cli.js";
 export * from "./task.js";
 export {
   type CompleteWorkspaceSetupRequest,

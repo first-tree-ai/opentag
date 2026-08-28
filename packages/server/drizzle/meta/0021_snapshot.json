@@ -1,5 +1,5 @@
 {
-  "id": "295c9306-5a74-4ee8-a809-7242027ce8fc",
+  "id": "5d08a60d-0c6a-41c4-923c-74775a12ee0f",
   "prevId": "04509559-efb3-40b9-8513-d7d6de06a68e",
   "version": "7",
   "dialect": "postgresql",
@@ -816,6 +816,48 @@
           "primaryKey": false,
           "notNull": false
         },
+        "access_token": {
+          "name": "access_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "refresh_token": {
+          "name": "refresh_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "id_token": {
+          "name": "id_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "access_token_expires_at": {
+          "name": "access_token_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "refresh_token_expires_at": {
+          "name": "refresh_token_expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "scope": {
+          "name": "scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "password": {
+          "name": "password",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -886,6 +928,27 @@
           "method": "btree",
           "with": {}
         },
+        "auth_identities_issuer_subject_unique": {
+          "name": "auth_identities_issuer_subject_unique",
+          "columns": [
+            {
+              "expression": "issuer",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "subject",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "auth_identities_user_id_idx": {
           "name": "auth_identities_user_id_idx",
           "columns": [
@@ -917,6 +980,213 @@
           "onUpdate": "no action"
         }
       },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.auth_sessions": {
+      "name": "auth_sessions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token": {
+          "name": "token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ip_address": {
+          "name": "ip_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "user_agent": {
+          "name": "user_agent",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "auth_sessions_token_unique": {
+          "name": "auth_sessions_token_unique",
+          "columns": [
+            {
+              "expression": "token",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "auth_sessions_user_id_idx": {
+          "name": "auth_sessions_user_id_idx",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "auth_sessions_expires_at_idx": {
+          "name": "auth_sessions_expires_at_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "auth_sessions_user_id_users_id_fk": {
+          "name": "auth_sessions_user_id_users_id_fk",
+          "tableFrom": "auth_sessions",
+          "tableTo": "users",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.auth_verifications": {
+      "name": "auth_verifications",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "identifier": {
+          "name": "identifier",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "value": {
+          "name": "value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "auth_verifications_identifier_idx": {
+          "name": "auth_verifications_identifier_idx",
+          "columns": [
+            {
+              "expression": "identifier",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "auth_verifications_expires_at_idx": {
+          "name": "auth_verifications_expires_at_idx",
+          "columns": [
+            {
+              "expression": "expires_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
@@ -1660,19 +1930,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "slack_installation_id": {
-          "name": "slack_installation_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "slack_route_kind": {
-          "name": "slack_route_kind",
-          "type": "slack_route_kind",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": false
-        },
         "replacement_im_binding_id": {
           "name": "replacement_im_binding_id",
           "type": "uuid",
@@ -1776,11 +2033,17 @@
           "method": "btree",
           "with": {}
         },
-        "im_bindings_slack_installation_current_unique": {
-          "name": "im_bindings_slack_installation_current_unique",
+        "im_bindings_slack_app_team_current_unique": {
+          "name": "im_bindings_slack_app_team_current_unique",
           "columns": [
             {
-              "expression": "slack_installation_id",
+              "expression": "external_app_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "external_team_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1788,21 +2051,6 @@
           ],
           "isUnique": true,
           "where": "\"im_bindings\".\"provider\" = 'slack' and \"im_bindings\".\"status\" <> 'disabled'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "im_bindings_slack_installation_id_idx": {
-          "name": "im_bindings_slack_installation_id_idx",
-          "columns": [
-            {
-              "expression": "slack_installation_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -1815,19 +2063,6 @@
           "tableTo": "agents",
           "columnsFrom": [
             "agent_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "im_bindings_slack_installation_id_slack_installations_id_fk": {
-          "name": "im_bindings_slack_installation_id_slack_installations_id_fk",
-          "tableFrom": "im_bindings",
-          "tableTo": "slack_installations",
-          "columnsFrom": [
-            "slack_installation_id"
           ],
           "columnsTo": [
             "id"
@@ -1863,7 +2098,7 @@
         },
         "im_bindings_active_binding_shape": {
           "name": "im_bindings_active_binding_shape",
-          "value": "\"im_bindings\".\"status\" not in ('active', 'reauthorization_required') or (\n        \"im_bindings\".\"external_app_id\" is not null and\n        (\"im_bindings\".\"provider\" = 'feishu' or \"im_bindings\".\"external_team_id\" is not null) and\n        \"im_bindings\".\"external_bot_id\" is not null and \"im_bindings\".\"credential_schema_version\" is not null and\n        \"im_bindings\".\"credential_generation\" >= 1 and\n        \"im_bindings\".\"activated_at\" is not null and \"im_bindings\".\"disabled_at\" is null and\n        (\n          (\"im_bindings\".\"provider\" = 'feishu' and \"im_bindings\".\"encrypted_credential\" is not null and\n            \"im_bindings\".\"slack_installation_id\" is null and \"im_bindings\".\"slack_route_kind\" is null) or\n          (\"im_bindings\".\"provider\" = 'slack' and \"im_bindings\".\"encrypted_credential\" is null and\n            \"im_bindings\".\"slack_installation_id\" is not null and \"im_bindings\".\"slack_route_kind\" is not null)\n        )\n      )"
+          "value": "\"im_bindings\".\"status\" not in ('active', 'reauthorization_required') or (\n        \"im_bindings\".\"external_app_id\" is not null and\n        (\"im_bindings\".\"provider\" = 'feishu' or \"im_bindings\".\"external_team_id\" is not null) and\n        \"im_bindings\".\"external_bot_id\" is not null and \"im_bindings\".\"credential_schema_version\" is not null and\n        \"im_bindings\".\"credential_generation\" >= 1 and \"im_bindings\".\"encrypted_credential\" is not null and\n        \"im_bindings\".\"activated_at\" is not null and \"im_bindings\".\"disabled_at\" is null\n      )"
         },
         "im_bindings_disabled_secret_shape": {
           "name": "im_bindings_disabled_secret_shape",
@@ -1880,10 +2115,6 @@
         "im_bindings_slack_setup_fields_null": {
           "name": "im_bindings_slack_setup_fields_null",
           "value": "\"im_bindings\".\"provider\" <> 'slack' or (\n        \"im_bindings\".\"setup_attempt_id\" is null and \"im_bindings\".\"setup_intent\" is null and\n        \"im_bindings\".\"setup_state\" is null and \"im_bindings\".\"setup_owner_instance_id\" is null and\n        \"im_bindings\".\"setup_owner_heartbeat_at\" is null and \"im_bindings\".\"encrypted_setup_context\" is null and\n        \"im_bindings\".\"setup_expires_at\" is null\n      )"
-        },
-        "im_bindings_slack_route_fields": {
-          "name": "im_bindings_slack_route_fields",
-          "value": "\"im_bindings\".\"provider\" = 'slack' or (\n        \"im_bindings\".\"slack_installation_id\" is null and \"im_bindings\".\"slack_route_kind\" is null\n      )"
         }
       },
       "isRLSEnabled": false
@@ -3129,273 +3360,6 @@
       },
       "isRLSEnabled": false
     },
-    "public.slack_installations": {
-      "name": "slack_installations",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "status": {
-          "name": "status",
-          "type": "slack_installation_status",
-          "typeSchema": "public",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'active'"
-        },
-        "external_app_id": {
-          "name": "external_app_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "external_team_id": {
-          "name": "external_team_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "external_enterprise_id": {
-          "name": "external_enterprise_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "external_bot_id": {
-          "name": "external_bot_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "external_team_name": {
-          "name": "external_team_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "bot_display_name": {
-          "name": "bot_display_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "bot_avatar_url": {
-          "name": "bot_avatar_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_schema_version": {
-          "name": "credential_schema_version",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "credential_generation": {
-          "name": "credential_generation",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "encrypted_credential": {
-          "name": "encrypted_credential",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "granted_capabilities": {
-          "name": "granted_capabilities",
-          "type": "text[]",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::text[]"
-        },
-        "replacement_slack_installation_id": {
-          "name": "replacement_slack_installation_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "observed_connected_at": {
-          "name": "observed_connected_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "observed_at": {
-          "name": "observed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "activated_at": {
-          "name": "activated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "disabled_at": {
-          "name": "disabled_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "last_error_code": {
-          "name": "last_error_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "slack_installations_app_team_current_unique": {
-          "name": "slack_installations_app_team_current_unique",
-          "columns": [
-            {
-              "expression": "external_app_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "external_team_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"slack_installations\".\"status\" <> 'disabled'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "slack_installations_workspace_current_unique": {
-          "name": "slack_installations_workspace_current_unique",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"slack_installations\".\"status\" <> 'disabled'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "slack_installations_workspace_id_idx": {
-          "name": "slack_installations_workspace_id_idx",
-          "columns": [
-            {
-              "expression": "workspace_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "slack_installations_app_team_idx": {
-          "name": "slack_installations_app_team_idx",
-          "columns": [
-            {
-              "expression": "external_app_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "external_team_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "slack_installations_workspace_id_workspaces_id_fk": {
-          "name": "slack_installations_workspace_id_workspaces_id_fk",
-          "tableFrom": "slack_installations",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        },
-        "slack_installations_replacement_slack_installation_id_slack_installations_id_fk": {
-          "name": "slack_installations_replacement_slack_installation_id_slack_installations_id_fk",
-          "tableFrom": "slack_installations",
-          "tableTo": "slack_installations",
-          "columnsFrom": [
-            "replacement_slack_installation_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "slack_installations_credential_generation_nonnegative": {
-          "name": "slack_installations_credential_generation_nonnegative",
-          "value": "\"slack_installations\".\"credential_generation\" >= 0"
-        },
-        "slack_installations_active_shape": {
-          "name": "slack_installations_active_shape",
-          "value": "\"slack_installations\".\"status\" not in ('active', 'reauthorization_required') or (\n        \"slack_installations\".\"credential_schema_version\" is not null and\n        \"slack_installations\".\"credential_generation\" >= 1 and \"slack_installations\".\"encrypted_credential\" is not null and\n        \"slack_installations\".\"activated_at\" is not null and \"slack_installations\".\"disabled_at\" is null\n      )"
-        },
-        "slack_installations_disabled_secret_shape": {
-          "name": "slack_installations_disabled_secret_shape",
-          "value": "\"slack_installations\".\"status\" <> 'disabled' or (\n        \"slack_installations\".\"encrypted_credential\" is null and \"slack_installations\".\"disabled_at\" is not null\n      )"
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.slack_oauth_nonces": {
       "name": "slack_oauth_nonces",
       "schema": "",
@@ -3555,7 +3519,7 @@
       "checkConstraints": {
         "slack_oauth_nonces_intent": {
           "name": "slack_oauth_nonces_intent",
-          "value": "\"slack_oauth_nonces\".\"intent\" in ('create', 'reauthorize')"
+          "value": "\"slack_oauth_nonces\".\"intent\" in ('create', 'reauthorize', 'replace')"
         },
         "slack_oauth_nonces_expiry": {
           "name": "slack_oauth_nonces_expiry",
@@ -3657,13 +3621,6 @@
         "slack"
       ]
     },
-    "public.slack_route_kind": {
-      "name": "slack_route_kind",
-      "schema": "public",
-      "values": [
-        "default"
-      ]
-    },
     "public.im_author_kind": {
       "name": "im_author_kind",
       "schema": "public",
@@ -3726,15 +3683,6 @@
         "channel",
         "thread",
         "internal"
-      ]
-    },
-    "public.slack_installation_status": {
-      "name": "slack_installation_status",
-      "schema": "public",
-      "values": [
-        "active",
-        "reauthorization_required",
-        "disabled"
       ]
     }
   },

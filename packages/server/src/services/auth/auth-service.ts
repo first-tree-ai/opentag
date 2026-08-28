@@ -107,7 +107,9 @@ export class AuthService implements ResolvedUserTokenIssuer, UserAuthService {
 
   async refresh(refreshToken: string): Promise<RefreshTokenResponse> {
     const identity = await this.#authTokens.verifyRefresh(refreshToken);
-    return this.issueTokensForUser(identity.userId);
+    await this.#resolveActiveUser(identity.userId);
+    // Rotated rather than reissued, so the credential just replaced stops working instead of running to its own expiry.
+    return { ...(await this.#authTokens.rotate(refreshToken, identity.userId)), tokenType: "Bearer" };
   }
 
   /** Shared post-identity boundary for connect codes and future OAuth/OIDC resolvers. */

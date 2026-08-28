@@ -37,6 +37,7 @@ describe("SessionReconciler", () => {
     const request = {
       ...reconcileRequest(computerId, sessionId, snapshot(agentId, agentId)),
       sessionKind: "internal" as const,
+      creatorSessionId: randomUUID(),
     };
     await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
     expect(reconciler.checkDelivery(directDelivery(request))).toBe("target_mismatch");
@@ -65,11 +66,17 @@ describe("SessionReconciler", () => {
     const internal = {
       ...reconcileRequest(computerId, internalId, snapshot(agentId, agentId)),
       sessionKind: "internal" as const,
+      creatorSessionId: randomUUID(),
     };
     await expect(reconciler.reconcile(internal)).resolves.toMatchObject({ status: "ready" });
 
     await expect(
-      reconciler.reconcile({ ...internal, requestId: randomUUID(), sessionKind: undefined }),
+      reconciler.reconcile({
+        ...internal,
+        requestId: randomUUID(),
+        sessionKind: undefined,
+        creatorSessionId: undefined,
+      }),
     ).resolves.toMatchObject({ status: "rejected", reason: "session_binding_conflict" });
     expect(reconciler.getSession(internalId)?.sessionKind).toBe("internal");
     expect(reconciler.checkDelivery(directDelivery(internal))).toBe("target_mismatch");
@@ -78,7 +85,12 @@ describe("SessionReconciler", () => {
     const visible = reconcileRequest(computerId, visibleId, snapshot(agentId, agentId));
     await expect(reconciler.reconcile(visible)).resolves.toMatchObject({ status: "ready" });
     await expect(
-      reconciler.reconcile({ ...visible, requestId: randomUUID(), sessionKind: "internal" }),
+      reconciler.reconcile({
+        ...visible,
+        requestId: randomUUID(),
+        sessionKind: "internal",
+        creatorSessionId: randomUUID(),
+      }),
     ).resolves.toMatchObject({ status: "rejected", reason: "session_binding_conflict" });
     expect(reconciler.getSession(visibleId)?.sessionKind).toBe("visible");
   });
@@ -92,6 +104,7 @@ describe("SessionReconciler", () => {
     const initial = {
       ...reconcileRequest(computerId, sessionId, initialRuntime),
       sessionKind: "internal" as const,
+      creatorSessionId: randomUUID(),
     };
     await expect(reconciler.reconcile(initial)).resolves.toMatchObject({ status: "ready" });
 

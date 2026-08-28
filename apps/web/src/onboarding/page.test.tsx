@@ -148,7 +148,7 @@ describe("OnboardingPage", () => {
     const summary = screen.getByRole("region", { name: "Agent preparation summary" });
     expect(summary.textContent).toContain("ComputerNot connected");
     expect(summary.textContent).toContain("RuntimeWaiting");
-    expect(summary.textContent).toContain("AgentName pending");
+    expect(summary.textContent).toContain("AgentNot created");
     expect(screen.queryByRole("img")).toBeNull();
   });
 
@@ -254,6 +254,63 @@ describe("OnboardingPage", () => {
     expect(await screen.findByText("Install Codex")).toBeTruthy();
     expect(screen.getByText("Install Codex on Ada's Mac.")).toBeTruthy();
   });
+
+  /**
+   * `handoffReady` is one combined gate. The Server clears it for an unready Agent runtime, an
+   * unready Feishu CLI or a lapsed connection lease, and reports which only as one false, so the
+   * strip may not turn any of them into a claim about the transport or about progress.
+   */
+  const readyComputer = {
+    ...computerA,
+    providerReadiness: [
+      { provider: "codex" as const, status: "ready" as const, observedAt: "2026-08-20T00:00:00.000Z" },
+    ],
+  };
+
+  it("reports an active binding that fails the readiness gate as unconfirmed, not as progress", async () => {
+    installFacts({
+      agents: [agent],
+      computers: [readyComputer],
+      handoff: { bindingState: "active", handoffReady: false },
+    });
+    render(<OnboardingPage user={user} />);
+
+    const strip = await screen.findByLabelText("OpenTag Agent not confirmed ready to reach Feishu");
+    expect(within(strip).getByText("Not ready")).toBeTruthy();
+    expect(within(strip).queryByText("Connecting…")).toBeNull();
+    expect(strip.getAttribute("data-status")).toBe("current");
+  });
+
+  it("reports a provisioning binding as the one state the Server states as in progress", async () => {
+    installFacts({
+      agents: [agent],
+      computers: [readyComputer],
+      handoff: { bindingState: "provisioning", handoffReady: false },
+    });
+    render(<OnboardingPage user={user} />);
+
+    const strip = await screen.findByLabelText(/OpenTag Agent .* Feishu/);
+    expect(within(strip).getByText("Connecting…")).toBeTruthy();
+  });
+
+  it.each(["reauthorization_required", "error", "disabled"] as const)(
+    "reports %s as needing attention rather than as a severed transport",
+    async (bindingState) => {
+      installFacts({
+        agents: [agent],
+        computers: [readyComputer],
+        handoff: { bindingState, handoffReady: false },
+      });
+      render(<OnboardingPage user={user} />);
+
+      // The accessible name carries the same claim as the label: an expired authorization is not
+      // evidence that Feishu is unreachable, so neither representation may say so.
+      const strip = await screen.findByLabelText("OpenTag Agent needs attention on its link to Feishu");
+      expect(within(strip).getByText("Needs attention")).toBeTruthy();
+      expect(within(strip).queryByText("Disconnected")).toBeNull();
+      expect(strip.getAttribute("data-status")).toBe("attention");
+    },
+  );
 
   it("reaches Ready from production runtime and authoritative handoff facts", async () => {
     installFacts({
@@ -449,7 +506,7 @@ describe("OnboardingPage", () => {
   it("preserves an existing Agent identity during runtime outage", async () => {
     installFacts({ agents: [agent], computers: [computerA], handoff: { bindingState: "active", handoffReady: true } });
     renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: false }]) });
-    expect(await screen.findByRole("heading", { name: "OpenTag needs its runtime route" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "OpenTag needs a Runtime" })).toBeTruthy();
     expect(screen.getByText(/identity and Feishu setup are unchanged/)).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Connect a Local Computer" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "OpenTag is ready" })).toBeNull();
@@ -462,14 +519,14 @@ describe("OnboardingPage", () => {
     });
     renderPage({ runtime: runtimeFacts([{ computerId: computerBId, provider: "codex", runtimeReady: true }]) });
 
-    expect(await screen.findByRole("heading", { name: "OpenTag needs its runtime route" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "OpenTag needs a Runtime" })).toBeTruthy();
     const route = screen.getByText("Ada's Mac · Offline");
     expect(route.closest("div")?.dataset.status).toBe("attention");
     expect(screen.getByRole("region", { name: "Agent preparation summary" }).textContent).not.toContain("Studio Mac");
   });
 
   it.each([
-    [undefined, "Connect OpenTag to Feishu", "Connect existing or new Feishu Bot"],
+    [undefined, "Connect OpenTag to Feishu", "Connect a Feishu bot"],
     [
       { bindingState: "provisioning", handoffReady: false } as const,
       "Finish Feishu authorization",
@@ -511,6 +568,45 @@ describe("OnboardingPage", () => {
       expect(create).toHaveBeenCalledWith(
         expect.objectContaining({ displayName: "Research Partner", name: "research-partner" }),
       ),
+    );
+  });
+
+  it("keeps the derived Agent name out of the first run", async () => {
+    installFacts({ computers: [computerA] });
+    const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]) });
+
+    const name = await screen.findByLabelText("Display name");
+    // This is the Account's first Agent, so the derived name cannot collide and needs no attention.
+    expect(screen.queryByRole("button", { name: "Edit Agent name" })).toBeNull();
+    fireEvent.change(name, { target: { value: "Research Partner" } });
+    expect(screen.queryByRole("button", { name: "Edit Agent name" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    // Hidden, not dropped: the derivation still names the Agent.
+    await waitFor(() => expect(create).toHaveBeenCalledWith(expect.objectContaining({ name: "research-partner" })));
+  });
+
+  it("asks for an Agent name only when the display name derives to none", async () => {
+    installFacts({ computers: [computerA] });
+    const create = vi.spyOn(browserApi, "createAgent").mockResolvedValue(adminConfig());
+    renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]) });
+
+    const name = await screen.findByLabelText("Display name");
+    // A display name carrying no Latin letters or digits derives to nothing, which submit refuses.
+    // Revealing it here is what keeps that rejection from being the first mention of the field.
+    fireEvent.change(name, { target: { value: "小助手" } });
+    expect(screen.getByText("This display name cannot produce an @ name. Set one to continue.")).toBeTruthy();
+
+    const reveal = screen.getByRole("button", { name: "Edit Agent name" });
+    expect(reveal.textContent).toBe("Set Agent name");
+    fireEvent.click(reveal);
+    fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "xiao-zhu-shou" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
+
+    await waitFor(() =>
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({ displayName: "小助手", name: "xiao-zhu-shou" })),
     );
   });
 
@@ -749,7 +845,7 @@ describe("OnboardingPage", () => {
       createdAt: "2026-08-20T00:00:00.000Z",
     });
     renderPage({ runtime: runtimeFacts([{ computerId: computerAId, provider: "codex", runtimeReady: true }]) });
-    fireEvent.click(await screen.findByRole("button", { name: "Connect existing or new Feishu Bot" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect a Feishu bot" }));
     await waitFor(() => expect(computers.mock.calls.length).toBeGreaterThan(1));
   });
 

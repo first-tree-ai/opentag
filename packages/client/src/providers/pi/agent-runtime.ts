@@ -87,7 +87,11 @@ export interface PiAgentRuntimeFactoryOptions {
       options: PiRpcProcessSpawnOptions,
     ) => ChildProcessWithoutNullStreams;
   };
-  readonly createClient?: (cwd: string, args: readonly string[]) => PiRpcClient;
+  readonly createClient?: (
+    cwd: string,
+    args: readonly string[],
+    environment?: Readonly<Record<string, string>>,
+  ) => PiRpcClient;
   readonly createSessionId?: () => string;
   readonly probeRunner?: (signal?: AbortSignal) => Promise<{
     readonly credential: boolean;
@@ -610,7 +614,11 @@ export class PiAgentRuntime extends BaseAgentRuntime {
 export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
   readonly manifest = PI_AGENT_RUNTIME_MANIFEST;
   readonly #createSessionId: () => string;
-  readonly #createClient: (cwd: string, args: readonly string[]) => PiRpcClient;
+  readonly #createClient: (
+    cwd: string,
+    args: readonly string[],
+    environment?: Readonly<Record<string, string>>,
+  ) => PiRpcClient;
   readonly #probeRunner: (signal?: AbortSignal) => Promise<{
     readonly credential: boolean;
     readonly rpc: boolean;
@@ -630,12 +638,12 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
     this.#sessionDirectory = sessionDirectory;
     this.#createClient =
       options.createClient ??
-      ((cwd, args) =>
+      ((cwd, args, workspaceEnvironment) =>
         new PiRpcProcess({
           command,
           args: [...prefix, ...args],
           cwd,
-          env: environment,
+          env: { ...environment, ...workspaceEnvironment },
           maxLineBytes: options.process?.maxLineBytes,
           maxStderrBytes: options.process?.maxStderrBytes,
           requestTimeoutMs: options.process?.requestTimeoutMs,
@@ -693,7 +701,7 @@ export class PiAgentRuntimeFactory implements AgentRuntimeFactory {
       return new PiAgentRuntime({
         binding,
         configuration: request.configuration,
-        createClient: (args) => this.#createClient(request.workspace.cwd, args),
+        createClient: (args) => this.#createClient(request.workspace.cwd, args, request.workspace.environment),
         eventSink: request.eventSink,
         policy: request.policy,
         resume: mode === "resume",
@@ -747,6 +755,9 @@ export function piAgentRuntimeEnvironment(source: NodeJS.ProcessEnv = process.en
     "OPENCODE_API_KEY",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
+    "OPENTAG_HOME",
+    "OPENTAG_PROVIDER_ENV_FILE",
+    "OPENTAG_SESSION_PROOF_FILE",
     "PATH",
     "PATHEXT",
     "PI_CODING_AGENT_DIR",

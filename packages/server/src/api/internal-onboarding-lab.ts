@@ -1,6 +1,6 @@
 import { INTERNAL_ONBOARDING_LAB_PATH, OnboardingLabAccessSchema } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { createUserAuthPreHandler } from "../plugins/user-auth.js";
+import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
 import type { OnboardingResetService } from "../services/onboarding-lab/index.js";
 
@@ -11,19 +11,19 @@ function accountId(request: FastifyRequest): string {
 }
 
 /**
- * The staging-only Onboarding Lab interface. It is registered only when the deployment configures
- * the Lab Account, so an unconfigured deployment stays indistinguishable from one that never had
- * the feature. Reading access is open to any authenticated Account, because Scenario Preview is
- * client-side fixtures that read nothing and write nothing; the destructive reset stays closed and
- * never accepts a client-selected Account.
+ * The staging-only Onboarding Lab interface. Any staging deployment registers it, and every
+ * deployment outside staging stays indistinguishable from one that never had the feature. Reading
+ * access is open to any authenticated Account, because Scenario Preview is client-side fixtures that
+ * read nothing and write nothing; the destructive reset stays closed, is refused until a deployment
+ * configures the Account that owns it, and never accepts a client-selected Account.
  */
 export function registerInternalOnboardingLabRoutes(
   app: FastifyInstance,
   authService: UserAuthService,
   reset: OnboardingResetService,
-  publicOrigin?: string,
+  authOptions?: UserAuthPreHandlerOptions,
 ): void {
-  const preHandler = createUserAuthPreHandler(authService, { publicOrigin });
+  const preHandler = createUserAuthPreHandler(authService, authOptions ?? {});
   const requireLabAccount = (request: FastifyRequest): string => {
     const account = accountId(request);
     if (!reset.allows(account)) throw labNotFound();

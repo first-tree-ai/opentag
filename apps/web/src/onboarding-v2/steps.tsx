@@ -1,5 +1,5 @@
 import { toString as qrToString } from "qrcode";
-import { type FormEvent, type ReactNode, useEffect, useId, useState } from "react";
+import { type FormEvent, useEffect, useId, useState } from "react";
 import { Button, Field, Icon, StatusIndicator } from "../ui/design-system.js";
 import { CommandBlock } from "./command-block.js";
 import { CHECK_COPY, COPY, DESTINATION_COPY, RUNTIME_COPY, STEP_LABELS } from "./copy.js";
@@ -40,13 +40,25 @@ export function StepRail({ steps }: { steps: FlowState["steps"] }) {
 }
 
 /**
- * The footer every step shares: Go back on the left, the step's forward action on the right.
- *
- * Steps the system advances on its own — waiting for a Computer, waiting for a scan — pass no
- * forward action, because a button that cannot be pressed until something external happens is
- * worse than no button at all. Go back still sits where it always does.
+ * The footer every step shares: Go back on the left, Continue on the right, in the same place on
+ * every page. Continue is always rendered and simply disabled until the step's condition is met,
+ * so the way forward never appears or disappears under the reader. Steps the system advances by
+ * itself keep it too: it enables the moment they could move on, which lets an impatient reader
+ * skip the pause rather than wait it out.
  */
-function StepNav({ back, children }: { back?: () => void; children?: ReactNode }) {
+function StepNav({
+  back,
+  disabled = false,
+  label = COPY.nav.next,
+  onNext,
+  submit = false,
+}: {
+  back?: () => void;
+  disabled?: boolean;
+  label?: string;
+  onNext?: () => void;
+  submit?: boolean;
+}) {
   return (
     <div className="otv2-nav">
       <div className="otv2-nav__back">
@@ -57,7 +69,11 @@ function StepNav({ back, children }: { back?: () => void; children?: ReactNode }
           </Button>
         ) : null}
       </div>
-      <div className="otv2-nav__next">{children}</div>
+      <div className="otv2-nav__next">
+        <Button disabled={disabled} onClick={onNext} type={submit ? "submit" : "button"}>
+          {label}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -105,11 +121,7 @@ export function DestinationStep({
           );
         })}
       </ul>
-      <StepNav>
-        <Button disabled={!draft.destination} onClick={onSubmit}>
-          {COPY.nav.next}
-        </Button>
-      </StepNav>
+      <StepNav disabled={!draft.destination} onNext={onSubmit} />
     </section>
   );
 }
@@ -198,11 +210,7 @@ export function AgentStep({
           <p className="otv2-footnote">{COPY.agent.runtimeFootnote}</p>
         </fieldset>
 
-        <StepNav back={onBack}>
-          <Button disabled={!draft.runtime} type="submit">
-            {COPY.nav.next}
-          </Button>
-        </StepNav>
+        <StepNav back={onBack} disabled={!draft.runtime} submit />
       </form>
     </section>
   );
@@ -222,10 +230,12 @@ function RuntimeMark({ runtime }: { runtime: Runtime }) {
 
 export function ConnectStep({
   connect,
+  onAdvance,
   onBack,
   onRefreshCommand,
 }: {
   connect: ConnectState;
+  onAdvance: () => void;
   onBack: () => void;
   onRefreshCommand: () => void;
 }) {
@@ -233,19 +243,18 @@ export function ConnectStep({
     <section className="otv2-step">
       <header className="otv2-step__header">
         <h1>{COPY.connect.title}</h1>
-      </header>
-      {/* The command's own preamble: what it does, what it means for your data, how to run it. */}
-      <div className="otv2-lead">
         <p>{COPY.connect.lead}</p>
         <p className="otv2-privacy">
           <Icon name="shield" />
           {COPY.connect.privacy}
         </p>
-        <p>{COPY.connect.commandIntro}</p>
+      </header>
+      <div className="otv2-command-group">
+        <p className="otv2-muted">{COPY.connect.commandIntro}</p>
+        <ConnectCommand connect={connect} onRefreshCommand={onRefreshCommand} />
       </div>
-      <ConnectCommand connect={connect} onRefreshCommand={onRefreshCommand} />
       <ConnectStatus connect={connect} />
-      <StepNav back={onBack} />
+      <StepNav back={onBack} disabled={connect.kind !== "connected"} onNext={onAdvance} />
     </section>
   );
 }
@@ -341,7 +350,6 @@ export function CheckStep({
       <header className="otv2-step__header">
         <h1>{COPY.check.title}</h1>
       </header>
-      <h2 className="otv2-subhead">{COPY.check.heading}</h2>
       <ol className="otv2-checks">
         {checks.map((check, index) => (
           <CheckLine check={check} key={check.id} position={index + 1} runtimeLabel={runtimeLabel} />
@@ -351,25 +359,19 @@ export function CheckStep({
       {!resolving && failures.length > 0 ? (
         <div className="otv2-repair">
           <p className="otv2-repair__intro">{COPY.check.failedIntro(failures.length)}</p>
-          <p className="otv2-muted">{COPY.check.commandIntro}</p>
-          <CommandBlock
-            command={COPY.check.command}
-            comment={COPY.check.commandComment}
-            copiedLabel={COPY.connect.copied}
-            copyLabel={COPY.connect.copy}
-            fallbackHint={COPY.connect.copyFallback}
-          />
+          <p className="otv2-muted">
+            {COPY.check.repairHint} <code>{COPY.check.repairCommand}</code> {COPY.check.repairHintSuffix}
+          </p>
         </div>
       ) : null}
 
       {passed ? <StatusIndicator className="otv2-status" label={COPY.check.passed} tone="success" /> : null}
-      <StepNav back={onBack}>
-        {passed ? (
-          <Button disabled={creation === "creating"} onClick={onCreate}>
-            {creation === "creating" ? COPY.check.creating : COPY.nav.next}
-          </Button>
-        ) : null}
-      </StepNav>
+      <StepNav
+        back={onBack}
+        disabled={!passed || creation === "creating"}
+        label={creation === "creating" ? COPY.check.creating : COPY.nav.next}
+        onNext={onCreate}
+      />
     </section>
   );
 }
@@ -418,6 +420,7 @@ export function MessagingStep({ messaging, onStart }: { messaging: MessagingStat
       <p className="otv2-footnote">
         {COPY.messaging.slack} <em className="otv2-badge">{COPY.messaging.slackBadge}</em>
       </p>
+      <StepNav disabled />
     </section>
   );
 }

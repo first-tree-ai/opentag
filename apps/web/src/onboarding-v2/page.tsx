@@ -120,7 +120,12 @@ export function OnboardingV2Page() {
               onSubmit={() => setDraftConfirmed(true)}
             />
           ) : flow.page === "connect" ? (
-            <ConnectStep connect={backend.connect} onBack={backToAgent} onRefreshCommand={backend.refreshConnectCode} />
+            <ConnectStep
+              connect={backend.connect}
+              onAdvance={() => setConnectAcknowledged(true)}
+              onBack={backToAgent}
+              onRefreshCommand={backend.refreshConnectCode}
+            />
           ) : flow.page === "check" ? (
             <CheckStep
               creation={creation}

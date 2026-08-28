@@ -157,7 +157,6 @@ describe("OnboardingV2Page", () => {
     await reachConnectStep();
     await reachCheckStep();
 
-    expect(screen.getByRole("heading", { name: "Environment check" })).toBeTruthy();
     expect(screen.getByText("Codex CLI is installed")).toBeTruthy();
     expect(screen.getByText("Feishu CLI is installed")).toBeTruthy();
     expect(screen.getByText("Everything your agent needs is ready.")).toBeTruthy();
@@ -170,9 +169,11 @@ describe("OnboardingV2Page", () => {
     await reachCheckStep();
 
     expect(screen.getByText("One thing needs fixing before your agent can run.")).toBeTruthy();
-    expect(screen.getByText("Run this in your terminal or paste it to your agent.")).toBeTruthy();
-    expect(screen.getByText("opentag doctor --fix")).toBeTruthy();
+    // A light pointer back to the terminal, not a command block: the repair is already running there.
+    expect(screen.getByText("opentag doctor --fix").tagName).toBe("CODE");
+    expect(screen.getByText(/Continue in your terminal or agent for instructions/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /check again/i })).toBeNull();
+    expect(screen.queryAllByRole("button", { name: /Copy/ })).toHaveLength(0);
     // Sign-in cannot be answered while the CLI is missing, and the page says so.
     expect(screen.getByText("We'll know once the CLI is installed.")).toBeTruthy();
   });
@@ -184,8 +185,7 @@ describe("OnboardingV2Page", () => {
     await advance(CONNECT_MS);
     await advance(DWELL_MS);
 
-    // Mid-probe: the heading is already final and every row already has its detail line.
-    expect(screen.getByRole("heading", { name: "Environment check" })).toBeTruthy();
+    // Mid-probe: every row already has its detail line.
     const rowsWhileChecking = document.querySelectorAll(".otv2-check");
     expect(rowsWhileChecking).toHaveLength(3);
     for (const row of rowsWhileChecking) {
@@ -193,11 +193,30 @@ describe("OnboardingV2Page", () => {
     }
 
     await advance(PROBE_MS);
-    expect(screen.getByRole("heading", { name: "Environment check" })).toBeTruthy();
     expect(document.querySelectorAll(".otv2-check")).toHaveLength(3);
     for (const row of document.querySelectorAll(".otv2-check")) {
       expect((row.textContent ?? "").trim().length).toBeGreaterThan(0);
     }
+  });
+
+  it("keeps Continue on every step, disabled until the step can be left", async () => {
+    render(<OnboardingV2Page />);
+    const next = () => screen.getByRole("button", { name: "Continue" }) as HTMLButtonElement;
+
+    expect(next().disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
+    expect(next().disabled).toBe(false);
+    fireEvent.click(next());
+
+    expect(next().disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
+    expect(next().disabled).toBe(false);
+    fireEvent.click(next());
+
+    await advance(ISSUE_MS);
+    expect(next().disabled).toBe(true);
+    await advance(CONNECT_MS);
+    expect(next().disabled).toBe(false);
   });
 
   it("counts multiple failures in its summary", async () => {

@@ -97,13 +97,10 @@ export const COPY = {
 
   connect: {
     title: "Your computer",
-    /**
-     * These three lines annotate the command, not the page title, so they sit with the command
-     * rather than in the page header: what the command is for, what it means for your data, and
-     * how to run it.
-     */
+    /** What the step is about, and what it means for your data: both belong with the title. */
     lead: "Your AI worker runs on your own computer. Connect that computer to OpenTag.",
     privacy: "Your code and data never leave your machine.",
+    /** How to run it, which belongs with the command itself. */
     commandIntro: "Run this in your terminal, or paste it to your agent.",
     commandComment: "# Install the OpenTag CLI and connect this computer to OpenTag.",
     copy: "Copy",
@@ -118,16 +115,19 @@ export const COPY = {
 
   check: {
     title: "Computer check",
-    /** One heading in every state: the list below it is what changes, and only its detail lines. */
-    heading: "Environment check",
     passed: "Everything your agent needs is ready.",
     failedIntro: (count: number) =>
       count > 1
         ? `${count} things need fixing before your agent can run.`
         : "One thing needs fixing before your agent can run.",
-    commandIntro: "Run this in your terminal or paste it to your agent.",
-    commandComment: "# Diagnose and fix the OpenTag agent runtime on this computer.",
-    command: "opentag doctor --fix",
+    /**
+     * By the time this page is read, `doctor --fix` is usually already running on the user's
+     * machine — signing in during the previous step starts it. So this is a pointer back to where
+     * the work is happening, not a command to go and run: one light line, no block, no copy button.
+     */
+    repairHint: "Continue in your terminal or agent for instructions, or run",
+    repairCommand: "opentag doctor --fix",
+    repairHintSuffix: "again.",
     creating: "Creating…",
   },
 

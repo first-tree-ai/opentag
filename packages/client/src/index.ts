@@ -181,6 +181,8 @@ export {
   ImCredentialEnvironmentError,
   ImCredentialEnvironmentManager,
   type ImCredentialEnvironmentManagerOptions,
+  type ImCredentialGrantSubject,
+  type PreparedImCredentialEnvironment,
   serializeEnvironment,
 } from "./runtime/im-credential-environment-manager.js";
 export { ImResourceFetcher } from "./runtime/im-resource-fetcher.js";
@@ -226,6 +228,7 @@ export {
   buildSessionMessageInput,
   SessionMessageInbox,
   type SessionMessageInboxOptions,
+  type SessionMessageTurnContext,
 } from "./runtime/session-message-inbox.js";
 export {
   type AgentRuntimeState,

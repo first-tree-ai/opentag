@@ -75,6 +75,20 @@ describe("SessionCollaborationService", () => {
     expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
   });
 
+  it("fails closed before reconcile when a visible target lacks credential grant v2", async () => {
+    const fixture = serviceFixture({ targetSessionKind: "channel" });
+    fixture.registry.capabilityVersion.mockReturnValue(1);
+
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "unreachable",
+      code: "outbox_unavailable",
+    });
+    expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
+    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "unreachable", errorCode: "outbox_unavailable" }),
+    );
+  });
+
   it("records an uncertain delivery timeout as unknown and keeps it unknown if outcome fencing fails", async () => {
     const fixture = serviceFixture();
     fixture.domain.requestSessionMessageDelivery.mockRejectedValue(
@@ -105,7 +119,13 @@ describe("SessionCollaborationService", () => {
   });
 });
 
-function serviceFixture(options: { attemptCount?: number | null; lastOutcome?: "accepted" | "unknown" } = {}) {
+function serviceFixture(
+  options: {
+    attemptCount?: number | null;
+    lastOutcome?: "accepted" | "unknown";
+    targetSessionKind?: "channel" | "thread" | "internal";
+  } = {},
+) {
   const sourceSessionId = randomUUID();
   const targetSessionId = randomUUID();
   const messageId = randomUUID();
@@ -132,7 +152,7 @@ function serviceFixture(options: { attemptCount?: number | null; lastOutcome?: "
       targetComputerId,
       targetWorkspaceComputerId,
       targetPlacementGeneration: 1,
-      targetSessionKind: "internal" as const,
+      targetSessionKind: options.targetSessionKind ?? ("internal" as const),
       targetCreatorSessionId: sourceSessionId,
     },
     message: {
@@ -185,10 +205,16 @@ function serviceFixture(options: { attemptCount?: number | null; lastOutcome?: "
     }),
   };
   const onDiagnostic = vi.fn();
+  const registry = {
+    capabilityVersion: vi.fn().mockReturnValue(2),
+    currentInstanceId: vi.fn().mockReturnValue(instanceId),
+    supportsCapability: vi.fn().mockReturnValue(true),
+  };
   return {
     domain,
     messageId,
     onDiagnostic,
+    registry,
     sessions,
     source,
     targetSessionId,
@@ -196,10 +222,7 @@ function serviceFixture(options: { attemptCount?: number | null; lastOutcome?: "
       assembler: { assembleForSession: vi.fn().mockResolvedValue(snapshot(agentId)) },
       domain: domain as never,
       onDiagnostic,
-      registry: {
-        currentInstanceId: vi.fn().mockReturnValue(instanceId),
-        supportsCapability: vi.fn().mockReturnValue(true),
-      },
+      registry,
       sessions: sessions as never,
     }),
   };

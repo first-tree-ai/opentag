@@ -19,6 +19,17 @@ import {
 } from "../runtime-protocol.js";
 
 describe("runtime protocol", () => {
+  it("negotiates credential grants across v1 and v2", () => {
+    expect(RUNTIME_SERVER_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imCredentialGrant]).toEqual({ min: 1, max: 2 });
+    expect(RUNTIME_CLIENT_CAPABILITY_OFFERS[RUNTIME_CAPABILITY.imCredentialGrant]).toEqual({ min: 1, max: 2 });
+    expect(
+      negotiateRuntimeCapabilities(
+        { [RUNTIME_CAPABILITY.imCredentialGrant]: { min: 1, max: 1 } },
+        RUNTIME_SERVER_CAPABILITY_OFFERS,
+      ),
+    ).toEqual({ [RUNTIME_CAPABILITY.imCredentialGrant]: 1 });
+  });
+
   it("keeps the v1 handshake strict after the credential-grant capability replacement", () => {
     expect(
       ServerRuntimeFrameSchema.parse({

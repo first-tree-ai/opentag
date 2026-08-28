@@ -23,8 +23,13 @@ describe("SessionMessageInbox", () => {
     };
     const inbox = new SessionMessageInbox({
       admission,
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
       reconciler: inboxReconciler(),
-      runtimeManager: { ensureRuntime: vi.fn(async () => runtime as never) },
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
     });
     const first = delivery({ targetSessionId, agentId, text: "first" });
     const second = delivery({ targetSessionId, agentId, text: "second" });
@@ -40,8 +45,10 @@ describe("SessionMessageInbox", () => {
   it("deduplicates the same logical payload and rejects a conflicting retry", async () => {
     const inbox = new SessionMessageInbox({
       admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
       reconciler: inboxReconciler("session_not_ready"),
-      runtimeManager: { ensureRuntime: vi.fn() },
+      runtimeManager: { ensureRuntime: vi.fn(), sessionKind: vi.fn(() => "internal" as const) },
     });
     const original = delivery({ text: "same" });
     await expect(inbox.accept(original)).resolves.toMatchObject({ status: "rejected", reason: "session_not_ready" });
@@ -62,8 +69,13 @@ describe("SessionMessageInbox", () => {
     };
     const inbox = new SessionMessageInbox({
       admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
       reconciler: inboxReconciler(),
-      runtimeManager: { ensureRuntime: vi.fn(async () => runtime as never) },
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
     });
     const original = delivery({ text: "same logical message" });
     expect((await inbox.accept(original)).status).toBe("accepted");
@@ -115,8 +127,13 @@ describe("SessionMessageInbox", () => {
     };
     const inbox = new SessionMessageInbox({
       admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
       reconciler,
-      runtimeManager: { ensureRuntime: vi.fn(async () => runtime as never) },
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
     });
     expect((await inbox.accept(request)).status).toBe("accepted");
     await vi.waitFor(() => expect(promptStarted).toHaveBeenCalledOnce());
@@ -163,9 +180,14 @@ describe("SessionMessageInbox", () => {
       waitForIdle: vi.fn(async () => undefined),
       prompt: vi.fn(async ({ runId }: { runId: string }) => ({ runId, status: "completed", output: [] })),
     };
-    const runtimeManager = { ensureRuntime: vi.fn(async () => runtime as never) };
+    const runtimeManager = {
+      ensureRuntime: vi.fn(async () => runtime as never),
+      sessionKind: vi.fn(() => "internal" as const),
+    };
     const inbox = new SessionMessageInbox({
       admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
       reconciler,
       runtimeManager,
     });
@@ -209,6 +231,141 @@ describe("SessionMessageInbox", () => {
     expect(input.items[1]?.text).toBe("Report the result");
   });
 
+  it("prepares visible Session outbox resources before Provider start and cleans them after the Run", async () => {
+    const order: string[] = [];
+    const credentials = {
+      prepare: vi.fn(async () => {
+        order.push("prepare");
+        return {
+          path: "/tmp/provider-env.sh",
+          provider: "slack" as const,
+          outboxContext: {
+            provider: "slack" as const,
+            sessionKind: "thread" as const,
+            channelId: "C-visible",
+            threadTs: "1710000000.000001",
+          },
+        };
+      }),
+      cleanup: vi.fn(async () => {
+        order.push("cleanup");
+      }),
+    };
+    const runtime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async (request: { runId: string; input: { items: readonly { text: string }[] } }) => {
+        order.push("prompt");
+        expect(request.input.items[0]?.text).toContain("OPENTAG_PROVIDER_ENV_FILE");
+        expect(request.input.items[0]?.text).toContain('"threadTs":"1710000000.000001"');
+        expect(request.input.items[0]?.text).toContain("Do not wait for another IM message");
+        return { runId: request.runId, status: "completed", output: [] };
+      }),
+    };
+    const runtimeManager = {
+      ensureRuntime: vi.fn(async () => {
+        order.push("runtime");
+        return runtime as never;
+      }),
+      sessionKind: vi.fn(() => "visible" as const),
+    };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentials,
+      imCredentialGrantVersion: () => 2,
+      reconciler: inboxReconciler(),
+      runtimeManager,
+    });
+
+    expect((await inbox.accept(delivery())).status).toBe("accepted");
+    await inbox.settled();
+    expect(order).toEqual(["prepare", "runtime", "prompt", "cleanup"]);
+    expect(credentials.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ placementGeneration: 1 }),
+      expect.any(AbortSignal),
+    );
+    inbox.stop();
+  });
+
+  it("rejects a visible callback before ACK under grant v1 and accepts the same message after v2 is restored", async () => {
+    let grantVersion = 1;
+    const credentials = {
+      prepare: vi.fn(async () => ({
+        path: "/tmp/provider-env.sh",
+        provider: "slack" as const,
+        outboxContext: {
+          provider: "slack" as const,
+          sessionKind: "channel" as const,
+          channelId: "C-visible",
+        },
+      })),
+      cleanup: vi.fn(async () => undefined),
+    };
+    const runtime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async (request: { runId: string }) => ({
+        runId: request.runId,
+        status: "completed" as const,
+        output: [],
+      })),
+    };
+    const runtimeManager = {
+      ensureRuntime: vi.fn(async () => runtime as never),
+      sessionKind: vi.fn(() => "visible" as const),
+    };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentials,
+      imCredentialGrantVersion: () => grantVersion,
+      reconciler: inboxReconciler(),
+      runtimeManager,
+    });
+    const request = delivery();
+
+    await expect(inbox.accept(request)).resolves.toMatchObject({
+      status: "rejected",
+      reason: "session_not_ready",
+    });
+    expect(credentials.prepare).not.toHaveBeenCalled();
+    expect(runtimeManager.ensureRuntime).not.toHaveBeenCalled();
+
+    grantVersion = 2;
+    await expect(inbox.accept({ ...request, requestId: randomUUID() })).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(credentials.prepare).toHaveBeenCalledOnce();
+    expect(runtime.prompt).toHaveBeenCalledOnce();
+    inbox.stop();
+  });
+
+  it("fails closed before Provider start when a v2 credential grant omits visible Session outbox context", async () => {
+    const credentials = {
+      prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh", provider: "slack" as const })),
+      cleanup: vi.fn(async () => undefined),
+    };
+    const runtimeManager = {
+      ensureRuntime: vi.fn(),
+      sessionKind: vi.fn(() => "visible" as const),
+    };
+    const logger = { warn: vi.fn() };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentials,
+      imCredentialGrantVersion: () => 2,
+      logger,
+      reconciler: inboxReconciler(),
+      runtimeManager,
+    });
+
+    expect((await inbox.accept(delivery())).status).toBe("accepted");
+    await inbox.settled();
+    expect(runtimeManager.ensureRuntime).not.toHaveBeenCalled();
+    expect(credentials.cleanup).toHaveBeenCalledOnce();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "SESSION_MESSAGE_OUTBOX_PREPARATION_FAILED" }),
+      expect.any(String),
+    );
+    inbox.stop();
+  });
+
   it("enforces bounded capacity and rejects new work after shutdown", async () => {
     const admission = new AdmissionController();
     const targetSessionId = randomUUID();
@@ -216,9 +373,11 @@ describe("SessionMessageInbox", () => {
     const held = admission.reserve(targetSessionId, agentId);
     if (!held.accepted) throw new Error("Expected the test reservation");
     held.reservation.markActive();
-    const runtimeManager = { ensureRuntime: vi.fn() };
+    const runtimeManager = { ensureRuntime: vi.fn(), sessionKind: vi.fn(() => "internal" as const) };
     const inbox = new SessionMessageInbox({
       admission,
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
       maxQueuedPerSession: 1,
       maxQueuedTotal: 1,
       reconciler: inboxReconciler(),
@@ -287,5 +446,14 @@ function inboxReconciler(reason?: InputRejectReason) {
     clearActivity: () => true,
     setActivity: () => undefined,
     withAgentLock: async <T>(_agentId: string, task: () => Promise<T>) => task(),
+  };
+}
+
+function credentialEnvironment() {
+  return {
+    cleanup: vi.fn(async () => undefined),
+    prepare: vi.fn(async () => {
+      throw new Error("Internal Sessions must not prepare provider credentials");
+    }),
   };
 }

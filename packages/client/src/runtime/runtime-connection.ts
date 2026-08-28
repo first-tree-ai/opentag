@@ -220,6 +220,10 @@ export class RuntimeConnection {
     return this.#state === "registered" && this.#negotiatedCapabilities[capability] !== undefined;
   }
 
+  capabilityVersion(capability: string): number | undefined {
+    return this.#state === "registered" ? this.#negotiatedCapabilities[capability] : undefined;
+  }
+
   setVerifiedCapabilities(
     capabilities: RuntimeClientCapabilities,
     validForMs = RUNTIME_CLIENT_CAPABILITY_TTL_MS,

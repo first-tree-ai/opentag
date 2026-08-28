@@ -331,7 +331,7 @@ async function runtimeFixture(
     } as never,
     runtimeManager,
     credentialEnvironment: {
-      prepare: async () => "/tmp/provider-env.sh",
+      prepare: async () => ({ path: "/tmp/provider-env.sh", provider: "slack" }),
       cleanup: async () => undefined,
     },
     logger: recordingLogger(logs, { computerId, instanceId: "instance-1" }),

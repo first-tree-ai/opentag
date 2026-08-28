@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
-import type { DirectImMessageDeliveryRequest, RuntimeImCredentialGrantResult } from "@opentag/shared";
+import type { RuntimeImCredentialGrantResult, RuntimeImOutboxContext } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { ensurePrivateDirectory, writeDurableFile } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
@@ -36,6 +36,18 @@ export interface ImCredentialEnvironmentManagerOptions {
   readonly platform?: NodeJS.Platform;
   readonly removePath?: (path: string, options: { force: true; recursive?: true }) => Promise<void>;
   readonly writeEnvironmentFile?: (path: string, content: string, mode: number) => Promise<void>;
+}
+
+export interface ImCredentialGrantSubject {
+  readonly agentId: string;
+  readonly placementGeneration: number;
+  readonly sessionId: string;
+}
+
+export interface PreparedImCredentialEnvironment {
+  readonly outboxContext?: RuntimeImOutboxContext;
+  readonly path: string;
+  readonly provider: "feishu" | "slack";
 }
 
 export class ImCredentialEnvironmentManager {
@@ -76,7 +88,7 @@ export class ImCredentialEnvironmentManager {
     return join(this.#root, `${sessionId}${this.#platform === "win32" ? ".ps1" : ".sh"}`);
   }
 
-  async prepare(request: DirectImMessageDeliveryRequest, signal?: AbortSignal): Promise<string> {
+  async prepare(request: ImCredentialGrantSubject, signal?: AbortSignal): Promise<PreparedImCredentialEnvironment> {
     if (this.#closed) throw new ImCredentialEnvironmentError("client_shutdown");
     try {
       const startupFailure = await this.#startupCleanup;
@@ -95,7 +107,11 @@ export class ImCredentialEnvironmentManager {
               SLACK_APP_TOKEN: undefined,
             };
       await this.#writeEnvironmentFile(path, serializeEnvironment(environment, this.#platform), 0o600);
-      return path;
+      return {
+        path,
+        provider: result.grant.provider,
+        ...(result.outboxContext ? { outboxContext: result.outboxContext } : {}),
+      };
     } catch (error) {
       await this.cleanup(request.sessionId).catch(() => undefined);
       throw credentialEnvironmentError(error, signal, "credential_materialization_failed");
@@ -175,10 +191,7 @@ export class ImCredentialEnvironmentManager {
     };
   }
 
-  #requestGrant(
-    request: DirectImMessageDeliveryRequest,
-    signal?: AbortSignal,
-  ): Promise<RuntimeImCredentialGrantResult> {
+  #requestGrant(request: ImCredentialGrantSubject, signal?: AbortSignal): Promise<RuntimeImCredentialGrantResult> {
     if (signal?.aborted) return Promise.reject(new ImCredentialEnvironmentError("aborted"));
     const requestId = randomUUID();
     return new Promise((resolve, reject) => {

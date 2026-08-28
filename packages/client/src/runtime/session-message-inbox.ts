@@ -2,12 +2,16 @@ import {
   hashTuple,
   type InputRejectReason,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
+  type RuntimeImOutboxContext,
   type SessionMessageDeliveryRequest,
   SessionMessageDeliveryRequestSchema,
   type SessionMessageDeliveryResult,
 } from "@opentag/shared";
 import type { AgentInput } from "../agent-runtime/types.js";
+import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { AdmissionController } from "./admission-controller.js";
+import type { ImCredentialEnvironmentManager } from "./im-credential-environment-manager.js";
+import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
 import type { SessionReconciler } from "./session-reconciler.js";
 import type { SessionRuntimeManager } from "./session-runtime-manager.js";
 
@@ -25,6 +29,9 @@ interface RememberedMessage {
 export interface SessionMessageInboxOptions {
   admission: AdmissionController;
   cliCommand?: string;
+  credentialEnvironment: Pick<ImCredentialEnvironmentManager, "cleanup" | "prepare">;
+  imCredentialGrantVersion(): number | undefined;
+  logger?: Pick<ClientLogger, "warn">;
   maxQueuedPerSession?: number;
   maxQueuedTotal?: number;
   maxRememberedMessages?: number;
@@ -32,12 +39,15 @@ export interface SessionMessageInboxOptions {
     SessionReconciler,
     "checkSessionMessageDelivery" | "clearActivity" | "setActivity" | "withAgentLock"
   >;
-  runtimeManager: Pick<SessionRuntimeManager, "ensureRuntime">;
+  runtimeManager: Pick<SessionRuntimeManager, "ensureRuntime" | "sessionKind">;
 }
 
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
   readonly #cliCommand: string;
+  readonly #credentialEnvironment: SessionMessageInboxOptions["credentialEnvironment"];
+  readonly #imCredentialGrantVersion: SessionMessageInboxOptions["imCredentialGrantVersion"];
+  readonly #logger: Pick<ClientLogger, "warn">;
   readonly #maxQueuedPerSession: number;
   readonly #maxQueuedTotal: number;
   readonly #maxRememberedMessages: number;
@@ -52,6 +62,9 @@ export class SessionMessageInbox {
   constructor(options: SessionMessageInboxOptions) {
     this.#admission = options.admission;
     this.#cliCommand = options.cliCommand ?? "opentag";
+    this.#credentialEnvironment = options.credentialEnvironment;
+    this.#imCredentialGrantVersion = options.imCredentialGrantVersion;
+    this.#logger = options.logger ?? createLogger("session-message-inbox");
     this.#maxQueuedPerSession = positive(options.maxQueuedPerSession ?? 64, "maxQueuedPerSession");
     this.#maxQueuedTotal = positive(options.maxQueuedTotal ?? 256, "maxQueuedTotal");
     this.#maxRememberedMessages = positive(options.maxRememberedMessages ?? 512, "maxRememberedMessages");
@@ -79,6 +92,13 @@ export class SessionMessageInbox {
           retryableAuthorityReason(reason) ? { hash, status: "retryable" } : { hash, status: "rejected", reason },
         );
         return deliveryResult(request, "rejected", reason);
+      }
+      if (
+        this.#runtimeManager.sessionKind(request.targetSessionId) === "visible" &&
+        this.#imCredentialGrantVersion() !== 2
+      ) {
+        this.#remember(key, { hash, status: "retryable" });
+        return deliveryResult(request, "rejected", "session_not_ready");
       }
       const queue = this.#queues.get(request.targetSessionId) ?? [];
       if (queue.length >= this.#maxQueuedPerSession || this.#queuedTotal >= this.#maxQueuedTotal) {
@@ -138,7 +158,38 @@ export class SessionMessageInbox {
           turnId: runId,
         });
       });
+      let credentialPrepared = false;
       try {
+        const sessionKind = this.#runtimeManager.sessionKind(sessionId);
+        let outboxContext: RuntimeImOutboxContext | undefined;
+        if (sessionKind === "visible") {
+          try {
+            const prepared = await this.#credentialEnvironment.prepare(
+              {
+                sessionId,
+                agentId: next.request.agentId,
+                placementGeneration: next.request.placementGeneration,
+              },
+              this.#abort.signal,
+            );
+            credentialPrepared = true;
+            if (!prepared.outboxContext) {
+              throw new Error("The credential grant did not include visible Session outbox context");
+            }
+            outboxContext = prepared.outboxContext;
+          } catch (error) {
+            this.#logger.warn(
+              {
+                code: "SESSION_MESSAGE_OUTBOX_PREPARATION_FAILED",
+                errorCode: error instanceof Error && "code" in error ? error.code : undefined,
+                messageId: next.request.messageId,
+                sessionId,
+              },
+              "Visible Session collaboration outbox preparation failed",
+            );
+            throw error;
+          }
+        }
         const runtime = await this.#runtimeManager.ensureRuntime(sessionId, this.#abort.signal);
         await runtime.waitForIdle();
         const timeout = new AbortController();
@@ -150,13 +201,22 @@ export class SessionMessageInbox {
         try {
           await runtime.prompt({
             runId,
-            input: buildSessionMessageInput(next.request, this.#cliCommand),
+            input: buildSessionMessageInput(
+              next.request,
+              this.#cliCommand,
+              sessionKind === "visible"
+                ? { sessionKind, outboxContext: requireOutboxContext(outboxContext) }
+                : { sessionKind },
+            ),
             signal: AbortSignal.any([this.#abort.signal, timeout.signal]),
           });
         } finally {
           clearTimeout(timer);
         }
       } finally {
+        if (credentialPrepared) {
+          await this.#credentialEnvironment.cleanup(sessionId).catch(() => undefined);
+        }
         await this.#reconciler.withAgentLock(next.request.agentId, async () => {
           this.#reconciler.clearActivity(sessionId, runId);
           reservation.reservation.release();
@@ -184,12 +244,43 @@ function retryableAuthorityReason(reason: InputRejectReason): boolean {
   );
 }
 
-export function buildSessionMessageInput(request: SessionMessageDeliveryRequest, cliCommand = "opentag"): AgentInput {
-  return {
-    items: [
-      {
-        type: "text",
-        text: [
+export type SessionMessageTurnContext =
+  | { readonly sessionKind: "internal" }
+  | { readonly outboxContext: RuntimeImOutboxContext; readonly sessionKind: "visible" };
+
+export function buildSessionMessageInput(
+  request: SessionMessageDeliveryRequest,
+  cliCommand = "opentag",
+  turnContext: SessionMessageTurnContext = { sessionKind: "internal" },
+): AgentInput {
+  const managedContext =
+    turnContext.sessionKind === "visible"
+      ? [
+          '<opentag-session-message-context source="managed">',
+          "OpenTag internal collaboration message continuing the visible Session's existing work.",
+          `Message ID: ${request.messageId}`,
+          `Source Session: ${request.sourceSessionId}`,
+          `Target Session: ${request.targetSessionId}`,
+          "This message is not an IM provider event, but the target visible Session retains its IM outbox authority.",
+          ...buildProviderOutboxInstructions({
+            actionInstruction:
+              "When this collaboration message contains a user-visible result, question, or blocker, synthesize it and deliver it through the provider CLI in this Turn before ending. Do not wait for another IM message. Do not automatically forward the source text verbatim.",
+            provider: turnContext.outboxContext.provider,
+            target: turnContext.outboxContext,
+            targetLabel: "Default provider outbox context",
+          }),
+          ...(turnContext.outboxContext.sessionKind === "thread"
+            ? turnContext.outboxContext.provider === "slack"
+              ? ["Keep this collaboration continuation in the supplied Slack threadTs scope."]
+              : [
+                  "Keep this collaboration continuation in the supplied Feishu threadId scope. Use lark-cli to inspect the thread when a native message reply target is required.",
+                ]
+            : []),
+          `Use ${cliCommand} session send <target-session-id> to continue Session collaboration when needed.`,
+          "Ordinary final text remains Runtime console output and is not published automatically.",
+          "</opentag-session-message-context>",
+        ]
+      : [
           '<opentag-session-message-context source="managed">',
           "OpenTag internal collaboration message.",
           `Message ID: ${request.messageId}`,
@@ -200,11 +291,21 @@ export function buildSessionMessageInput(request: SessionMessageDeliveryRequest,
           `Use ${cliCommand} session send <target-session-id> to report progress or results, ask a question, or continue collaboration.`,
           "No IM provider reference or credential is attached to this message.",
           "</opentag-session-message-context>",
-        ].join("\n"),
+        ];
+  return {
+    items: [
+      {
+        type: "text",
+        text: managedContext.join("\n"),
       },
       { type: "text", text: request.content.text },
     ],
   };
+}
+
+function requireOutboxContext(context: RuntimeImOutboxContext | undefined): RuntimeImOutboxContext {
+  if (!context) throw new Error("Visible Session collaboration requires outbox context");
+  return context;
 }
 
 function deliveryResult(

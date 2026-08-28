@@ -4,7 +4,15 @@
 
 OpenTag 负责 IM 入站路由、Integration 凭证、Client 临时凭证投影和 provider 原生入站引用，不提供消息发送、回复、Reaction 或上传 API。
 
-每个有效且 Agent 可见的 IM Turn 开始前，Client 创建私有的 `0600` 环境文件，只通过 `OPENTAG_PROVIDER_ENV_FILE` 把文件路径交给 Agent。Agent source 该文件后直接调用官方 `lark-cli` 或 `slack api`。Turn 完成时删除文件；若删除失败，会在 Session 或 Client 关闭时重试；Client 崩溃留下的文件由下次启动恢复清理。
+每个可以写入 IM 的有效可见 Session Turn（包括 IM delivery 与 Internal Session 协作回调）开始前，Client 创建私有的
+`0600` 环境文件，只通过 `OPENTAG_PROVIDER_ENV_FILE` 把文件路径交给 Agent。Agent source 该文件后直接调用官方
+`lark-cli` 或 `slack api`。Turn 完成时删除文件；若删除失败，会在 Session 或 Client 关闭时重试；Client 崩溃留下的
+文件由下次启动恢复清理。Internal Session 永远不会收到该文件。
+
+IM delivery Turn 使用该事件携带的 provider 原生消息引用；可见 Session 的协作 callback 则使用 credential grant v2
+提供的非敏感默认 outbox context。Server 在授予凭证的同一次授权操作中，从目标 Session 既有 channel/thread scope
+派生该 context；Client 和 Agent 不能自报 OpenTag outbox target。回调目标为 thread Session 时会保持 provider 原生
+thread scope。这个 context 是默认交付目标，不会缩小下文所述 Bot token 的整体权限范围。
 
 对于 Feishu Turn，managed Turn context 会要求 Agent 使用不插值的 POSIX heredoc 或 PowerShell here-string 变量向
 `lark-cli` 传递富文本或多行正文。发送前还必须检查：如果预期为多行的正文没有真实换行，却包含多个字面量

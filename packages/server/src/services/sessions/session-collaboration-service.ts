@@ -18,7 +18,7 @@ import type { SessionMessageAttempt, SessionMessageOutcome, SessionService } fro
 export interface SessionCollaborationServiceOptions {
   assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
   domain: Pick<RuntimeDomainOwner, "requestReconcile" | "requestSessionMessageDelivery">;
-  registry: Pick<ConnectionRegistry, "currentInstanceId" | "supportsCapability">;
+  registry: Pick<ConnectionRegistry, "capabilityVersion" | "currentInstanceId" | "supportsCapability">;
   sessions: Pick<
     SessionService,
     | "authorizeAndRecordMessage"
@@ -113,6 +113,19 @@ export class SessionCollaborationService {
     ) {
       return this.#record(
         response(attempt.message.id, "unreachable", sessionId, "runtime_unavailable"),
+        attempt.attemptCount,
+      );
+    }
+    if (
+      attempt.route.targetSessionKind !== "internal" &&
+      this.#registry.capabilityVersion(
+        attempt.route.targetWorkspaceComputerId,
+        targetInstanceId,
+        RUNTIME_CAPABILITY.imCredentialGrant,
+      ) !== 2
+    ) {
+      return this.#record(
+        response(attempt.message.id, "unreachable", sessionId, "outbox_unavailable"),
         attempt.attemptCount,
       );
     }

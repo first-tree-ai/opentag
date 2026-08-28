@@ -4,7 +4,17 @@
 
 OpenTag owns inbound IM routing, Integration credentials, temporary Client credential projection, and provider-native inbound references. It does not expose a message send, reply, Reaction, or upload API.
 
-For every valid visible IM Turn, the Client creates a private `0600` environment file and passes only its path as `OPENTAG_PROVIDER_ENV_FILE`. The Agent sources that file and calls the official `lark-cli` or `slack api` command directly. The file is removed when the Turn finishes, retried during Session or Client shutdown if removal fails, and recovered by the next Client startup after a crash.
+For every valid visible Session Turn that may write to IM, including an IM delivery or an internal-collaboration callback,
+the Client creates a private `0600` environment file and passes only its path as `OPENTAG_PROVIDER_ENV_FILE`. The Agent
+sources that file and calls the official `lark-cli` or `slack api` command directly. The file is removed when the Turn
+finishes, retried during Session or Client shutdown if removal fails, and recovered by the next Client startup after a
+crash. Internal Sessions never receive the file.
+
+An IM-delivery Turn receives the provider-native message reference from that event. A visible collaboration callback
+instead receives a non-secret default outbox context from credential grant v2. The Server derives that context from the
+target Session's existing channel or thread scope in the same authorization operation that grants credentials; the
+Client and Agent cannot nominate an OpenTag outbox target. A callback to a thread Session keeps its provider-native thread
+scope. This context is a default delivery target, not a restriction on the broader Bot-token authority described below.
 
 For Feishu Turns, the managed Turn context instructs the Agent to pass rich or multiline `lark-cli` text through a
 non-interpolating POSIX heredoc or PowerShell here-string variable. It also requires a pre-send check that rejects an

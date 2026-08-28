@@ -402,25 +402,70 @@ const RuntimeImCredentialGrantSchema = z.discriminatedUnion("provider", [
     .strict(),
 ]);
 
-export const RuntimeImCredentialGrantResultSchema = z.discriminatedUnion("status", [
-  z
-    .object({
-      type: z.literal("im:credential:result"),
-      requestId: RuntimeRequestIdSchema,
-      status: z.literal("succeeded"),
-      credentialGeneration: z.number().int().safe().positive(),
-      grant: RuntimeImCredentialGrantSchema,
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("im:credential:result"),
-      requestId: RuntimeRequestIdSchema,
-      status: z.literal("rejected"),
-      code: z.enum(["binding_inactive", "credential_stale", "placement_stale", "agent_mismatch"]),
-    })
-    .strict(),
-]);
+export const RuntimeImOutboxContextSchema = z
+  .discriminatedUnion("provider", [
+    z
+      .object({
+        provider: z.literal("feishu"),
+        sessionKind: z.enum(["channel", "thread"]),
+        chatId: RuntimeProviderExternalIdSchema,
+        threadId: RuntimeProviderExternalIdSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        provider: z.literal("slack"),
+        sessionKind: z.enum(["channel", "thread"]),
+        channelId: RuntimeProviderExternalIdSchema,
+        threadTs: RuntimeProviderExternalIdSchema.optional(),
+      })
+      .strict(),
+  ])
+  .superRefine((context, refinement) => {
+    const threadReference = context.provider === "feishu" ? context.threadId : context.threadTs;
+    if ((context.sessionKind === "thread") !== Boolean(threadReference)) {
+      refinement.addIssue({
+        code: "custom",
+        path: [context.provider === "feishu" ? "threadId" : "threadTs"],
+        message: `${context.provider === "feishu" ? "Feishu" : "Slack"} thread outbox context must match the Session kind`,
+      });
+    }
+  });
+
+export const RuntimeImCredentialGrantResultSchema = z
+  .discriminatedUnion("status", [
+    z
+      .object({
+        type: z.literal("im:credential:result"),
+        requestId: RuntimeRequestIdSchema,
+        status: z.literal("succeeded"),
+        credentialGeneration: z.number().int().safe().positive(),
+        grant: RuntimeImCredentialGrantSchema,
+        outboxContext: RuntimeImOutboxContextSchema.optional(),
+      })
+      .strict(),
+    z
+      .object({
+        type: z.literal("im:credential:result"),
+        requestId: RuntimeRequestIdSchema,
+        status: z.literal("rejected"),
+        code: z.enum(["binding_inactive", "credential_stale", "placement_stale", "agent_mismatch"]),
+      })
+      .strict(),
+  ])
+  .superRefine((result, context) => {
+    if (
+      result.status === "succeeded" &&
+      result.outboxContext &&
+      result.outboxContext.provider !== result.grant.provider
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["outboxContext", "provider"],
+        message: "The outbox context provider must match the credential grant provider",
+      });
+    }
+  });
 
 const ImMessageDeliveryResultBaseSchema = z.object({
   type: z.literal("im:deliver:result"),
@@ -660,6 +705,7 @@ export type RuntimeImHistoryItem = z.infer<typeof RuntimeImHistoryItemSchema>;
 export type RuntimeProviderMessageRef = z.infer<typeof RuntimeProviderMessageRefSchema>;
 export type RuntimeImCredentialGrantRequest = z.infer<typeof RuntimeImCredentialGrantRequestSchema>;
 export type RuntimeImCredentialGrantResult = z.infer<typeof RuntimeImCredentialGrantResultSchema>;
+export type RuntimeImOutboxContext = z.infer<typeof RuntimeImOutboxContextSchema>;
 export type ImMessageDeliveryResult = z.infer<typeof ImMessageDeliveryResultSchema>;
 export type InternalSessionRuntimeOverrides = z.infer<typeof InternalSessionRuntimeOverridesSchema>;
 export type SessionMessageDeliveryRequest = z.infer<typeof SessionMessageDeliveryRequestSchema>;

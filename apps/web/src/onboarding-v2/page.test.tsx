@@ -90,7 +90,9 @@ describe("OnboardingV2Page", () => {
     fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
     fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "Open Tag" } });
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    expect(screen.getByRole("alert").textContent).toContain("lowercase letters");
+    const error = document.querySelector(".otv2-field-error") as HTMLElement;
+    expect(error.textContent).toContain("lowercase letters");
+    expect(error.dataset.empty).toBeUndefined();
     expect(screen.getByRole("heading", { name: "Create your agent" })).toBeTruthy();
   });
 
@@ -197,6 +199,44 @@ describe("OnboardingV2Page", () => {
     for (const row of document.querySelectorAll(".otv2-check")) {
       expect((row.textContent ?? "").trim().length).toBeGreaterThan(0);
     }
+  });
+
+  it("holds the name error's line before there is an error to show", () => {
+    render(<OnboardingV2Page />);
+    fireEvent.click(screen.getByRole("button", { name: /Local computer/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    const error = document.querySelector(".otv2-field-error") as HTMLElement;
+    expect(error).toBeTruthy();
+    expect(error.dataset.empty).toBe("true");
+  });
+
+  it("keeps the connect step's countdown and status slots through the arrival", async () => {
+    render(<OnboardingV2Page />);
+    await reachConnectStep();
+    expect(document.querySelector(".otv2-command__footer")).toBeTruthy();
+    expect(document.querySelector(".otv2-slot--status")).toBeTruthy();
+
+    // The countdown goes away on arrival; its slot, and the status slot, must not.
+    await advance(CONNECT_MS);
+    expect(screen.queryByText(/Expires in/)).toBeNull();
+    expect(document.querySelector(".otv2-command__footer")).toBeTruthy();
+    expect(document.querySelector(".otv2-slot--status")).toBeTruthy();
+  });
+
+  it("keeps the check step's outcome slot before and after the result lands", async () => {
+    render(<OnboardingV2Page />);
+    await reachConnectStep();
+    await advance(CONNECT_MS);
+    await advance(DWELL_MS);
+
+    // Still probing: nothing to say yet, but the space is already held.
+    const slot = () => document.querySelector(".otv2-slot--outcome");
+    expect(slot()).toBeTruthy();
+    expect((slot()?.textContent ?? "").trim()).toBe("");
+
+    await advance(PROBE_MS);
+    expect(slot()).toBeTruthy();
+    expect(slot()?.textContent).toContain("Everything your agent needs is ready.");
   });
 
   it("keeps Continue on every step, disabled until the step can be left", async () => {

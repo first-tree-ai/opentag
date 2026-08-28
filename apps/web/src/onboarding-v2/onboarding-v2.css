@@ -6,6 +6,13 @@
 .otv2-shell {
   --otv2-frame: 720px;
 
+  /* The check markers need to read as green and amber at 22px. The operational status palette is
+     muted for large surfaces and goes indistinct at this size, so these two are stated locally. */
+  --otv2-pass: #17a04a;
+  --otv2-pass-surface: #e6f7ec;
+  --otv2-attention: #d98207;
+  --otv2-attention-surface: #fdf1de;
+
   display: flex;
   flex-direction: column;
   min-height: 100vh;
@@ -384,8 +391,40 @@
   gap: var(--space-2);
 }
 
+/*
+ * Reserved space. Anything that appears, disappears or changes length while the user is reading
+ * gets a slot of its own, so the page never moves under them.
+ */
+.otv2-slot {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.otv2-slot--status {
+  min-height: 28px;
+}
+
+.otv2-slot--outcome {
+  justify-content: flex-start;
+  /* Sized for the tallest state it holds: the two-line repair summary. */
+  min-height: 50px;
+}
+
+.otv2-field-error {
+  min-height: 18px;
+  margin: calc(var(--space-2) * -1) 0 0;
+  color: var(--error);
+  font-size: var(--text-meta);
+  line-height: var(--lh-ui);
+}
+
+.otv2-field-error[data-empty="true"] {
+  visibility: hidden;
+}
+
 .otv2-command--placeholder {
-  height: 92px;
+  min-height: 84px;
   border-radius: var(--radius-control);
   background: var(--surface-soft);
 }
@@ -394,6 +433,7 @@
   display: flex;
   gap: var(--space-3);
   align-items: flex-start;
+  min-height: 84px;
   padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4);
   border: 1px solid var(--strong-border);
   border-radius: var(--radius-control);
@@ -448,6 +488,7 @@
 
 .otv2-command__footer {
   display: flex;
+  min-height: 18px;
   justify-content: flex-end;
 }
 
@@ -548,15 +589,17 @@
 }
 
 .otv2-check[data-state="passed"] .otv2-check__marker {
-  border-color: var(--color-status-success);
-  background: var(--color-status-success-surface);
-  color: var(--color-status-success);
+  border-color: var(--otv2-pass);
+  background: var(--otv2-pass-surface);
+  color: var(--otv2-pass);
+  font-weight: var(--fw-semibold);
 }
 
 .otv2-check[data-state="failed"] .otv2-check__marker {
-  border-color: var(--color-status-warning);
-  background: var(--color-status-warning-surface);
-  color: var(--color-status-warning);
+  border-color: var(--otv2-attention);
+  background: var(--otv2-attention-surface);
+  color: var(--otv2-attention);
+  font-weight: var(--fw-semibold);
 }
 
 .otv2-check[data-state="pending"] .otv2-check__marker {
@@ -754,6 +797,15 @@
 }
 
 @media (width <= 640px) {
+  /* Both reserved slots hold a line more once their copy wraps at this width. */
+  .otv2-slot--outcome {
+    min-height: 92px;
+  }
+
+  .otv2-field-error {
+    min-height: 34px;
+  }
+
   .otv2-choices--grid {
     grid-template-columns: 1fr;
   }

@@ -86,7 +86,8 @@ export function CommandBlock({
           <span>{copied ? copiedLabel : copyLabel}</span>
         </Button>
       </div>
-      {footer ? <div className="otv2-command__footer">{footer}</div> : null}
+      {/* Always rendered, even when empty: the countdown disappearing must not move the page. */}
+      <div className="otv2-command__footer">{footer}</div>
       {hint ? (
         <p className="otv2-command__hint" role="status">
           {hint}

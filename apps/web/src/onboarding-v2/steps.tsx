@@ -164,14 +164,7 @@ export function AgentStep({
         <h1>{COPY.agent.title}</h1>
       </header>
       <form className="otv2-form" onSubmit={submit}>
-        <Field
-          error={errorText}
-          errorId={errorId}
-          hint={COPY.agent.nameHint}
-          hintId={hintId}
-          htmlFor={nameId}
-          label={COPY.agent.nameLabel}
-        >
+        <Field hint={COPY.agent.nameHint} hintId={hintId} htmlFor={nameId} label={COPY.agent.nameLabel}>
           <input
             aria-describedby={errorText ? `${hintId} ${errorId}` : hintId}
             aria-invalid={errorText ? true : undefined}
@@ -185,6 +178,14 @@ export function AgentStep({
             value={draft.name}
           />
         </Field>
+        {/*
+          The error keeps its line whether or not there is one, so validating a name never pushes
+          the runtime picker down the page. The design system's own error slot is conditional, so
+          this is rendered here rather than through `Field`.
+        */}
+        <p aria-live="polite" className="otv2-field-error" id={errorId} data-empty={errorText ? undefined : "true"}>
+          {errorText ?? "\u00a0"}
+        </p>
 
         <fieldset className="otv2-fieldset">
           <legend>{COPY.agent.runtimeLabel}</legend>
@@ -290,14 +291,17 @@ function ConnectCommand({ connect, onRefreshCommand }: { connect: ConnectState; 
 }
 
 function ConnectStatus({ connect }: { connect: ConnectState }) {
-  if (connect.kind === "connected") {
-    return <StatusIndicator className="otv2-status" label={COPY.connect.connected} tone="success" />;
-  }
   return (
-    <p className="otv2-waiting" role="status">
-      <span aria-hidden="true" className="otv2-pulse" />
-      {COPY.connect.waiting}
-    </p>
+    <div className="otv2-slot otv2-slot--status">
+      {connect.kind === "connected" ? (
+        <StatusIndicator className="otv2-status" label={COPY.connect.connected} tone="success" />
+      ) : (
+        <p className="otv2-waiting" role="status">
+          <span aria-hidden="true" className="otv2-pulse" />
+          {COPY.connect.waiting}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -356,16 +360,23 @@ export function CheckStep({
         ))}
       </ol>
 
-      {!resolving && failures.length > 0 ? (
-        <div className="otv2-repair">
-          <p className="otv2-repair__intro">{COPY.check.failedIntro(failures.length)}</p>
-          <p className="otv2-muted">
-            {COPY.check.repairHint} <code>{COPY.check.repairCommand}</code> {COPY.check.repairHintSuffix}
-          </p>
-        </div>
-      ) : null}
-
-      {passed ? <StatusIndicator className="otv2-status" label={COPY.check.passed} tone="success" /> : null}
+      {/*
+        One slot for the outcome, tall enough for the longest of its three states. Results arrive
+        while the user is reading, so the summary must not appear underneath them and push the
+        footer down.
+      */}
+      <div className="otv2-slot otv2-slot--outcome">
+        {resolving ? null : failures.length > 0 ? (
+          <div className="otv2-repair">
+            <p className="otv2-repair__intro">{COPY.check.failedIntro(failures.length)}</p>
+            <p className="otv2-muted">
+              {COPY.check.repairHint} <code>{COPY.check.repairCommand}</code> {COPY.check.repairHintSuffix}
+            </p>
+          </div>
+        ) : passed ? (
+          <StatusIndicator className="otv2-status" label={COPY.check.passed} tone="success" />
+        ) : null}
+      </div>
       <StepNav
         back={onBack}
         disabled={!passed || creation === "creating"}
